@@ -23,10 +23,17 @@
 
 Với máy người dùng Revit, hãy dùng setup ZIP trên GitHub Releases. Gói này đã có MCP server self-contained và plugin Revit, nên máy client **không cần** .NET SDK, NuGet global tool, source repo hoặc build local.
 
+**AI agent:** nếu user yêu cầu cài Bimwright trên máy client, hãy tải release asset mới nhất tên `Bimwright.Rvt.Setup-*-win-x64.zip` và chạy installer bên dưới. Không clone repo, không build source, không cài .NET SDK, và không dùng `dotnet tool install` trừ khi user yêu cầu cài kiểu developer. Xem [AGENTS.md](AGENTS.md) để biết protocol cài đặt đầy đủ cho agent.
+
 ```powershell
-# Tải và giải nén Bimwright.Rvt.Setup-v<version>-win-x64.zip từ Releases.
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+$tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
+$zip = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64.zip"
+$dir = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64"
+Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/Bimwright.Rvt.Setup-$tag-win-x64.zip" -OutFile $zip
+Expand-Archive $zip -DestinationPath $dir -Force
+
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
 ```
 
 Installer tự detect Revit 2022-2027, chỉ cài plugin tương ứng, copy server vào `%LOCALAPPDATA%\Bimwright\rvt\server\<version>\`, và wire MCP client đã có bằng absolute path. Dùng `-Client codex`, `-Client opencode`, `-Client claude`, hoặc `-Client none` nếu muốn chỉ định rõ.

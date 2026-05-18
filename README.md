@@ -23,10 +23,17 @@
 
 For a Revit user machine, use the setup ZIP from GitHub Releases. It includes the self-contained MCP server and Revit plugins, so the client machine does **not** need the .NET SDK, NuGet global tools, this source repo, or a local build.
 
+**AI agents:** if a user asks you to install Bimwright on a client machine, download the latest `Bimwright.Rvt.Setup-*-win-x64.zip` release asset and run the installer below. Do **not** clone this repo, build source, install the .NET SDK, or use `dotnet tool install` unless the user explicitly asks for a developer install. See [AGENTS.md](AGENTS.md) for the full agent install protocol.
+
 ```powershell
-# Download and extract Bimwright.Rvt.Setup-v<version>-win-x64.zip from Releases.
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+$tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
+$zip = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64.zip"
+$dir = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64"
+Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/Bimwright.Rvt.Setup-$tag-win-x64.zip" -OutFile $zip
+Expand-Archive $zip -DestinationPath $dir -Force
+
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
 ```
 
 The installer detects Revit 2022-2027, installs only the matching plugin(s), copies the server under `%LOCALAPPDATA%\Bimwright\rvt\server\<version>\`, and wires installed MCP clients with absolute paths. Use `-Client codex`, `-Client opencode`, `-Client claude`, or `-Client none` to override auto-detection.
