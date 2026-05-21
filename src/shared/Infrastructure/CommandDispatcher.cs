@@ -75,6 +75,62 @@ namespace Bimwright.Rvt.Plugin
             Register(new Handlers.AddScheduleFieldHandler());
             Register(new Handlers.UpdateScheduleFieldHandler());
             Register(new Handlers.ApplyScheduleFilterSortHandler());
+            // Phase 13: Families
+            Register(new Handlers.ListLoadedFamiliesHandler());
+            Register(new Handlers.LoadFamilyFromPathHandler());
+            Register(new Handlers.UnloadFamilyHandler());
+            Register(new Handlers.DuplicateFamilyTypeHandler());
+            Register(new Handlers.RenameFamilyTypeHandler());
+            Register(new Handlers.AuditFamiliesHandler());
+            Register(new Handlers.ReplaceFamilyTypeHandler());
+            Register(new Handlers.GetFamilyInstancesHandler());
+            Register(new Handlers.ListFamilyTypesInFamilyHandler());
+            Register(new Handlers.ExportFamilyToPathHandler());
+            // Phase 14: MEP Systems
+            Register(new Handlers.CreateDuctHandler());
+            Register(new Handlers.CreatePipeHandler());
+            Register(new Handlers.CreateCableTrayHandler());
+            Register(new Handlers.CreateConduitHandler());
+            Register(new Handlers.CreateAirTerminalHandler());
+            Register(new Handlers.CreateLightingFixtureHandler());
+            Register(new Handlers.ListMepSystemsHandler());
+            Register(new Handlers.GetSystemInventoryHandler());
+            Register(new Handlers.GetMepElementConnectorsHandler());
+            Register(new Handlers.ConnectMepElementsHandler());
+            Register(new Handlers.CreateMepFittingHandler());
+            Register(new Handlers.SetSystemClassificationHandler());
+            Register(new Handlers.GetPanelScheduleHandler());
+            Register(new Handlers.FindMepDisconnectsHandler());
+            Register(new Handlers.AnalyzeMepNetworkHandler());
+            // Phase 15: Graphics — Filters / VG overrides / Phases
+            Register(new Handlers.CreateViewFilterHandler());
+            Register(new Handlers.ApplyFilterToViewHandler());
+            Register(new Handlers.SetFilterOverridesHandler());
+            Register(new Handlers.ListViewFiltersHandler());
+            Register(new Handlers.RemoveFilterFromViewHandler());
+            Register(new Handlers.OverrideElementGraphicsHandler());
+            Register(new Handlers.ClearElementOverridesHandler());
+            Register(new Handlers.GetViewVisibilityHandler());
+            Register(new Handlers.SetCategoryVisibilityHandler());
+            Register(new Handlers.ListPhasesHandler());
+            Register(new Handlers.SetViewPhaseHandler());
+            Register(new Handlers.SetElementPhaseHandler());
+            // Phase 16: Print / Export
+            Register(new Handlers.ExportPdfHandler());
+            Register(new Handlers.ExportDwgHandler());
+            Register(new Handlers.ExportDgnHandler());
+            Register(new Handlers.ExportDwfHandler());
+            Register(new Handlers.ExportIfcHandler());
+            Register(new Handlers.ExportNwcHandler());
+            Register(new Handlers.ExportFbxHandler());
+            Register(new Handlers.ExportGbxmlHandler());
+            Register(new Handlers.ExportImageHandler());
+            Register(new Handlers.ExportScheduleCsvHandler());
+            Register(new Handlers.ExportElementsDataHandler());
+            Register(new Handlers.BatchExportSheetsHandler());
+            Register(new Handlers.ListExportSettingsHandler());
+            Register(new Handlers.CreateViewSheetSetHandler());
+            Register(new Handlers.GetPrintSettingsHandler());
             // A6 batch execution — needs dispatcher ref to look up sub-commands
             Register(new Handlers.BatchExecuteHandler(this));
             // ToolBaker runtime access.

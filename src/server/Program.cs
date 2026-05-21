@@ -222,6 +222,8 @@ namespace Bimwright.Rvt.Server
             if (enabled.Contains("delete"))     mcp = mcp.WithTools<DeleteTools>();
             if (enabled.Contains("view"))       mcp = mcp.WithTools<ViewTools>();
             if (enabled.Contains("schedule"))   mcp = mcp.WithTools<ScheduleTools>();
+            if (enabled.Contains("families"))   mcp = mcp.WithTools<FamiliesTools>();
+            if (enabled.Contains("graphics"))   mcp = mcp.WithTools<GraphicsTools>();
             if (enabled.Contains("export"))     mcp = mcp.WithTools<ExportTools>();
             if (enabled.Contains("annotation")) mcp = mcp.WithTools<AnnotationTools>();
             if (enabled.Contains("mep"))        mcp = mcp.WithTools<MepTools>();
@@ -242,6 +244,8 @@ namespace Bimwright.Rvt.Server
             if (enabled.Contains("delete"))     types.Add(typeof(DeleteTools));
             if (enabled.Contains("view"))       types.Add(typeof(ViewTools));
             if (enabled.Contains("schedule"))   types.Add(typeof(ScheduleTools));
+            if (enabled.Contains("families"))   types.Add(typeof(FamiliesTools));
+            if (enabled.Contains("graphics"))   types.Add(typeof(GraphicsTools));
             if (enabled.Contains("export"))     types.Add(typeof(ExportTools));
             if (enabled.Contains("annotation")) types.Add(typeof(AnnotationTools));
             if (enabled.Contains("mep"))        types.Add(typeof(MepTools));
@@ -767,6 +771,121 @@ namespace Bimwright.Rvt.Server
         }
     }
 
+    [McpServerToolType, Toolset("families")]
+    public class FamiliesTools
+    {
+        [McpServerTool(Name = "list_loaded_families", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List all loaded families (loadable + in-place + system) in the active document grouped by category. Returns id, name, category, kind (system|loadable|inplace), type_count, optional instance_count, and is_editable. Filter via categoryFilter (case-insensitive substring) and kindFilter (all|system|loadable|inplace).")]
+        public static async Task<string> ListLoadedFamilies(string categoryFilter = "", string kindFilter = "all", bool includeInstanceCount = false, int limit = 1000)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_loaded_families", new { category_filter = categoryFilter, kind_filter = kindFilter, include_instance_count = includeInstanceCount, limit });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "load_family_from_path", Destructive = false), System.ComponentModel.Description("Load an .rfa family file from disk into the active document. Returns loaded family id and the new symbol/type ids. overwriteExisting controls IFamilyLoadOptions.OnFamilyFound; overwriteParameterValues forwards to the same callback.")]
+        public static async Task<string> LoadFamilyFromPath(string path, bool overwriteExisting = true, bool overwriteParameterValues = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("load_family_from_path", new { path, overwrite_existing = overwriteExisting, overwrite_parameter_values = overwriteParameterValues });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "unload_family", Destructive = true), System.ComponentModel.Description("Remove (purge) a loadable family from the document. Identify by familyId or familyName. cascadeDeleteInstances=true to also delete placed instances; otherwise error if instances exist. dryRun=true returns the projected effect without changing the model. System families cannot be unloaded.")]
+        public static async Task<string> UnloadFamily(long? familyId = null, string familyName = "", bool cascadeDeleteInstances = false, bool dryRun = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("unload_family", new { family_id = familyId, family_name = familyName, cascade_delete_instances = cascadeDeleteInstances, dry_run = dryRun });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "duplicate_family_type", Destructive = false), System.ComponentModel.Description("Duplicate a FamilySymbol or system type within its family under newTypeName, optionally setting type parameter overrides (JSON object as string, parameter name → value). Returns the new type id. Works for FamilySymbol and ElementType subclasses (WallType, FloorType, etc.).")]
+        public static async Task<string> DuplicateFamilyType(long sourceTypeId, string newTypeName, string typeParameterOverrides = "")
+        {
+            try
+            {
+                var parsedOverrides = string.IsNullOrWhiteSpace(typeParameterOverrides) ? null : JObject.Parse(typeParameterOverrides);
+                var result = await ToolGateway.SendToRevit("duplicate_family_type", new { source_type_id = sourceTypeId, new_type_name = newTypeName, type_parameter_overrides = parsedOverrides });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "rename_family_type", Destructive = false), System.ComponentModel.Description("Rename a FamilySymbol or system type. Must be unique within the family. Catches Autodesk.Revit.Exceptions.ArgumentException for duplicate/invalid names and returns a clean error DTO without throwing.")]
+        public static async Task<string> RenameFamilyType(long typeId, string newName)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("rename_family_type", new { type_id = typeId, new_name = newName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "audit_families", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Read-only audit of loaded families. Detects unused families (zero instances), in-place families, duplicate names, and high type-count families. Returns recommendations. Tunable include flags + highTypeCountThreshold.")]
+        public static async Task<string> AuditFamilies(bool includeUnused = true, bool includeInplace = true, bool includeDuplicateNames = true, bool includeHighTypeCount = true, int highTypeCountThreshold = 20)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("audit_families", new { include_unused = includeUnused, include_inplace = includeInplace, include_duplicate_names = includeDuplicateNames, include_high_type_count = includeHighTypeCount, high_type_count_threshold = highTypeCountThreshold });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "replace_family_type", Destructive = false), System.ComponentModel.Description("Replace all instances of FamilySymbol A with FamilySymbol B across the project, active view, or selection. Both types must be the same category. dryRun=true previews counts without changing the model. Target symbol is auto-activated.")]
+        public static async Task<string> ReplaceFamilyType(long fromTypeId, long toTypeId, string scope = "all", long? viewId = null, bool dryRun = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("replace_family_type", new { from_type_id = fromTypeId, to_type_id = toTypeId, scope, view_id = viewId, dry_run = dryRun });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_family_instances", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List placed instances of a Family (or a specific type within it) with location/host/level DTOs in mm. viewOnly=true restricts to the active view. Returns location_kind (point|line|null), coordinates in mm, host_id/name, mark.")]
+        public static async Task<string> GetFamilyInstances(long? familyId = null, string familyName = "", string typeName = "", bool viewOnly = false, int limit = 1000)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_family_instances", new { family_id = familyId, family_name = familyName, type_name = typeName, view_only = viewOnly, limit });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "list_family_types_in_family", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Deep listing of all types within ONE family, including each type's parameter values (unit-converted to mm/m²/m³/deg). includeBuiltInOnly=true filters out shared/project params. Returns is_active per type. More detailed than get_available_family_types.")]
+        public static async Task<string> ListFamilyTypesInFamily(long? familyId = null, string familyName = "", bool includeParameterValues = true, bool includeBuiltInOnly = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_family_types_in_family", new { family_id = familyId, family_name = familyName, include_parameter_values = includeParameterValues, include_built_in_only = includeBuiltInOnly });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_family_to_path", Destructive = false), System.ComponentModel.Description("Save a loadable family from the current project back to an .rfa file at outputPath. Writes to disk (not ReadOnly). Rejects in-place and system families. overwriteExisting=false errors if the file already exists. Uses doc.EditFamily + Document.SaveAs.")]
+        public static async Task<string> ExportFamilyToPath(string outputPath, long? familyId = null, string familyName = "", bool overwriteExisting = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_family_to_path", new { family_id = familyId, family_name = familyName, output_path = outputPath, overwrite_existing = overwriteExisting });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+    }
+
     [McpServerToolType, Toolset("create")]
     public class CreateTools
     {
@@ -986,6 +1105,171 @@ namespace Bimwright.Rvt.Server
             }
             catch (Exception ex) { return $"Error: {ex.Message}"; }
         }
+
+        [McpServerTool(Name = "export_pdf", Destructive = false), System.ComponentModel.Description("Export sheets or views to PDF. outputFolder must be an existing absolute path. viewIds defaults to the active view. combine=true produces one combined PDF.")]
+        public static async Task<string> ExportPdf(string outputFolder, long[] viewIds = null, bool combine = false, string fileName = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_pdf", new { output_folder = outputFolder, view_ids = viewIds, combine, file_name = fileName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_dwg", Destructive = false), System.ComponentModel.Description("Export sheets or views to AutoCAD DWG. outputFolder must be an existing absolute path. viewIds defaults to the active view. settingsName optionally selects a saved ExportDWGSettings.")]
+        public static async Task<string> ExportDwg(string outputFolder, long[] viewIds = null, string settingsName = "", string fileNamePrefix = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_dwg", new { output_folder = outputFolder, view_ids = viewIds, settings_name = settingsName, file_name_prefix = fileNamePrefix });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_dgn", Destructive = false), System.ComponentModel.Description("Export sheets or views to MicroStation DGN. outputFolder must be an existing absolute path. viewIds defaults to the active view.")]
+        public static async Task<string> ExportDgn(string outputFolder, long[] viewIds = null, string fileNamePrefix = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_dgn", new { output_folder = outputFolder, view_ids = viewIds, file_name_prefix = fileNamePrefix });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_dwf", Destructive = false), System.ComponentModel.Description("Export sheets or views to Autodesk DWF/DWFx. outputFolder must be an existing absolute path. viewIds defaults to the active view. useDwfx=true exports DWFx.")]
+        public static async Task<string> ExportDwf(string outputFolder, long[] viewIds = null, string fileName = "", bool useDwfx = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_dwf", new { output_folder = outputFolder, view_ids = viewIds, file_name = fileName, use_dwfx = useDwfx });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_ifc", Destructive = false), System.ComponentModel.Description("Export the model to IFC. outputFolder must be an existing absolute path. ifcVersion: IFC2x3|IFC4|default.")]
+        public static async Task<string> ExportIfc(string outputFolder, string fileName, string ifcVersion = "default")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_ifc", new { output_folder = outputFolder, file_name = fileName, ifc_version = ifcVersion });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_nwc", Destructive = false), System.ComponentModel.Description("Export the model to Navisworks NWC. outputFolder must be an existing absolute path. Optional exportScopeViewId scopes the export to one view. Requires the Navisworks NWC exporter add-in installed.")]
+        public static async Task<string> ExportNwc(string outputFolder, string fileName, long? exportScopeViewId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_nwc", new { output_folder = outputFolder, file_name = fileName, export_scope_view_id = exportScopeViewId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_fbx", Destructive = false), System.ComponentModel.Description("Export a 3D view to Autodesk FBX. outputFolder must be an existing absolute path. viewId must reference a 3D view (defaults to the active view, which must be 3D).")]
+        public static async Task<string> ExportFbx(string outputFolder, string fileName, long? viewId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_fbx", new { output_folder = outputFolder, file_name = fileName, view_id = viewId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_gbxml", Destructive = false), System.ComponentModel.Description("Export the model's energy analytical data to gbXML. outputFolder must be an existing absolute path. Requires rooms/spaces with energy settings.")]
+        public static async Task<string> ExportGbxml(string outputFolder, string fileName)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_gbxml", new { output_folder = outputFolder, file_name = fileName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_image", Destructive = false), System.ComponentModel.Description("Export a view to a raster image. outputPath is an absolute file path (.png/.jpg). viewId defaults to the active view. pixelSize sets the longer dimension. imageFormat: png|jpeg.")]
+        public static async Task<string> ExportImage(string outputPath, long? viewId = null, int pixelSize = 2048, string imageFormat = "png")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_image", new { output_path = outputPath, view_id = viewId, pixel_size = pixelSize, image_format = imageFormat });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_schedule_csv", Destructive = false), System.ComponentModel.Description("Export a Revit schedule's data to a delimited text/CSV file. outputPath is an absolute file path. Identify the schedule by scheduleId or scheduleName.")]
+        public static async Task<string> ExportScheduleCsv(string outputPath, long? scheduleId = null, string scheduleName = "", string delimiter = ",")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_schedule_csv", new { output_path = outputPath, schedule_id = scheduleId, schedule_name = scheduleName, delimiter });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "export_elements_data", Destructive = false), System.ComponentModel.Description("Export element parameter data for a category to a JSON or CSV file. outputPath is an absolute file path. parameterNames defaults to a common set. format: json|csv.")]
+        public static async Task<string> ExportElementsData(string category, string outputPath, string[] parameterNames = null, string format = "json")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("export_elements_data", new { category, output_path = outputPath, parameter_names = parameterNames, format });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "batch_export_sheets", Destructive = false), System.ComponentModel.Description("Export many sheets at once to PDF or DWG. outputFolder must be an existing absolute path. format: pdf|dwg. sheetIds defaults to ALL sheets; sheetNumberFilter narrows by sheet-number substring.")]
+        public static async Task<string> BatchExportSheets(string outputFolder, string format, long[] sheetIds = null, string sheetNumberFilter = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("batch_export_sheets", new { output_folder = outputFolder, format, sheet_ids = sheetIds, sheet_number_filter = sheetNumberFilter });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "list_export_settings", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List saved export/print configurations: DWG export setups, named print settings, and view/sheet sets.")]
+        public static async Task<string> ListExportSettings()
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_export_settings", new { });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_view_sheet_set", Destructive = false), System.ComponentModel.Description("Create a named ViewSheetSet (a saved set of views/sheets) for batch printing/exporting. viewIds are the ViewSheet/View ElementIds to include.")]
+        public static async Task<string> CreateViewSheetSet(string name, long[] viewIds)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_view_sheet_set", new { name, view_ids = viewIds });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_print_settings", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Report the document's PrintManager state and all named print settings + view/sheet sets.")]
+        public static async Task<string> GetPrintSettings()
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_print_settings", new { });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
     }
 
     [McpServerToolType, Toolset("annotation")]
@@ -1023,6 +1307,329 @@ namespace Bimwright.Rvt.Server
             try
             {
                 var result = await ToolGateway.SendToRevit("detect_system_elements", new { elementId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_duct", Destructive = false), System.ComponentModel.Description("Create an HVAC duct between two points (mm). ductTypeId/systemTypeId/levelId default to first available / nearest level. Provide diameter for round duct OR width+height (mm) for rectangular.")]
+        public static async Task<string> CreateDuct(double startX, double startY, double startZ, double endX, double endY, double endZ, long? ductTypeId = null, long? systemTypeId = null, long? levelId = null, double? width = null, double? height = null, double? diameter = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_duct", new { start_x = startX, start_y = startY, start_z = startZ, end_x = endX, end_y = endY, end_z = endZ, duct_type_id = ductTypeId, system_type_id = systemTypeId, level_id = levelId, width, height, diameter });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_pipe", Destructive = false), System.ComponentModel.Description("Create a plumbing pipe between two points (mm). pipeTypeId/systemTypeId/levelId default to first available / nearest level. Optional diameter (mm).")]
+        public static async Task<string> CreatePipe(double startX, double startY, double startZ, double endX, double endY, double endZ, long? pipeTypeId = null, long? systemTypeId = null, long? levelId = null, double? diameter = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_pipe", new { start_x = startX, start_y = startY, start_z = startZ, end_x = endX, end_y = endY, end_z = endZ, pipe_type_id = pipeTypeId, system_type_id = systemTypeId, level_id = levelId, diameter });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_cable_tray", Destructive = false), System.ComponentModel.Description("Create an electrical cable tray between two points (mm). cableTrayTypeId/levelId default to first available / nearest level. Optional width+height (mm).")]
+        public static async Task<string> CreateCableTray(double startX, double startY, double startZ, double endX, double endY, double endZ, long? cableTrayTypeId = null, long? levelId = null, double? width = null, double? height = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_cable_tray", new { start_x = startX, start_y = startY, start_z = startZ, end_x = endX, end_y = endY, end_z = endZ, cable_tray_type_id = cableTrayTypeId, level_id = levelId, width, height });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_conduit", Destructive = false), System.ComponentModel.Description("Create an electrical conduit between two points (mm). conduitTypeId/levelId default to first available / nearest level. Optional diameter (mm).")]
+        public static async Task<string> CreateConduit(double startX, double startY, double startZ, double endX, double endY, double endZ, long? conduitTypeId = null, long? levelId = null, double? diameter = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_conduit", new { start_x = startX, start_y = startY, start_z = startZ, end_x = endX, end_y = endY, end_z = endZ, conduit_type_id = conduitTypeId, level_id = levelId, diameter });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_air_terminal", Destructive = false), System.ComponentModel.Description("Place an air terminal (diffuser/grille) family instance at a point (mm). typeId must be an Air Terminal FamilySymbol. Optional hostId for hosted placement on a duct/ceiling.")]
+        public static async Task<string> CreateAirTerminal(long typeId, double x, double y, double z, long? levelId = null, long? hostId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_air_terminal", new { type_id = typeId, x, y, z, level_id = levelId, host_id = hostId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_lighting_fixture", Destructive = false), System.ComponentModel.Description("Place a lighting fixture family instance at a point (mm). typeId must be a Lighting Fixture FamilySymbol. Optional hostId for hosted placement on a ceiling.")]
+        public static async Task<string> CreateLightingFixture(long typeId, double x, double y, double z, long? levelId = null, long? hostId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_lighting_fixture", new { type_id = typeId, x, y, z, level_id = levelId, host_id = hostId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "list_mep_systems", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List all MEP systems (mechanical/HVAC, piping/plumbing, electrical). domainFilter: all|mechanical|piping|electrical. Returns id, name, domain, system type, element count, connectivity status.")]
+        public static async Task<string> ListMepSystems(string domainFilter = "all", int limit = 1000)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_mep_systems", new { domain_filter = domainFilter, limit });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_system_inventory", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Return the full element inventory of one MEP system: all member elements with category/type plus a category breakdown. Identify by systemId or systemName.")]
+        public static async Task<string> GetSystemInventory(long? systemId = null, string systemName = "", bool includeParameters = false, int limit = 2000)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_system_inventory", new { system_id = systemId, system_name = systemName, include_parameters = includeParameters, limit });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_mep_element_connectors", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Inspect all connectors on an MEP element (duct/pipe/fitting/equipment/terminal): domain, shape, position (mm), connection status, flow, direction.")]
+        public static async Task<string> GetMepElementConnectors(long elementId)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_mep_element_connectors", new { element_id = elementId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "connect_mep_elements", Destructive = false), System.ComponentModel.Description("Connect the nearest open connectors of two MEP elements. Optionally pin specific connectors via connectorIndex1/connectorIndex2 — these are Connector.Id values (the connector_id field from get_mep_element_connectors), NOT ordinals. Domains must match.")]
+        public static async Task<string> ConnectMepElements(long elementId1, long elementId2, long? connectorIndex1 = null, long? connectorIndex2 = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("connect_mep_elements", new { element_id_1 = elementId1, element_id_2 = elementId2, connector_index_1 = connectorIndex1, connector_index_2 = connectorIndex2 });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_mep_fitting", Destructive = false), System.ComponentModel.Description("Insert an MEP fitting at connectors of existing MEP elements. fittingKind: elbow|tee|union|cross|transition. connectors is a JSON array of {element_id, connector_index} where connector_index is the connector_id from get_mep_element_connectors: elbow/union/transition need 2, tee 3, cross 4.")]
+        public static async Task<string> CreateMepFitting(string fittingKind, string connectors)
+        {
+            try
+            {
+                var parsedConnectors = JArray.Parse(connectors);
+                var result = await ToolGateway.SendToRevit("create_mep_fitting", new { fitting_kind = fittingKind, connectors = parsedConnectors });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "set_system_classification", Destructive = false), System.ComponentModel.Description("Add MEP elements to an existing duct/piping system. If systemId omitted, only reports current system membership (read-only). elementIds is an array of MEP element ids.")]
+        public static async Task<string> SetSystemClassification(long[] elementIds, long? systemId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("set_system_classification", new { element_ids = elementIds, system_id = systemId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_panel_schedule", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Read an electrical panel's circuit schedule: panel metadata, voltage, and the list of circuits with rating, load (VA), poles. Identify by panelId or panelName.")]
+        public static async Task<string> GetPanelSchedule(long? panelId = null, string panelName = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_panel_schedule", new { panel_id = panelId, panel_name = panelName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "find_mep_disconnects", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Find MEP elements with open/unconnected End connectors (potential gaps in ductwork, piping, conduit). domainFilter: all|hvac|piping|electrical. viewOnly restricts to the active view.")]
+        public static async Task<string> FindMepDisconnects(string domainFilter = "all", bool viewOnly = false, int limit = 2000)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("find_mep_disconnects", new { domain_filter = domainFilter, view_only = viewOnly, limit });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "analyze_mep_network", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Analyze one MEP system's topology: category breakdown, connectivity health, base equipment, open connector count, and issues/recommendations. Identify by systemId or systemName.")]
+        public static async Task<string> AnalyzeMepNetwork(long? systemId = null, string systemName = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("analyze_mep_network", new { system_id = systemId, system_name = systemName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+    }
+
+    [McpServerToolType, Toolset("graphics")]
+    public class GraphicsTools
+    {
+        [McpServerTool(Name = "create_view_filter", Destructive = false), System.ComponentModel.Description("Create a parameter-based view filter (ParameterFilterElement) targeting one or more categories. rules is an optional JSON array of {parameter_name, evaluator, value} where evaluator is equals|not_equals|greater|less|contains|begins_with|ends_with. Omit rules for a category-only filter.")]
+        public static async Task<string> CreateViewFilter(string name, string[] categories, string rules = "")
+        {
+            try
+            {
+                var parsedRules = string.IsNullOrWhiteSpace(rules) ? null : JArray.Parse(rules);
+                var result = await ToolGateway.SendToRevit("create_view_filter", new { name, categories, rules = parsedRules });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "apply_filter_to_view", Destructive = false), System.ComponentModel.Description("Add an existing view filter (ParameterFilterElement) to a view's filter list. viewId defaults to the active view. visible sets the initial visibility of matching elements.")]
+        public static async Task<string> ApplyFilterToView(long filterId, long? viewId = null, bool visible = true)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("apply_filter_to_view", new { filter_id = filterId, view_id = viewId, visible });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "set_filter_overrides", Destructive = false), System.ComponentModel.Description("Set graphic overrides for a filter already applied to a view. Colors are hex '#RRGGBB'. transparency 0-100, projectionLineWeight 1-16. Only supplied properties change; others are preserved. viewId defaults to active view.")]
+        public static async Task<string> SetFilterOverrides(long filterId, long? viewId = null, string projectionLineColor = "", string surfaceForegroundColor = "", string cutLineColor = "", int? transparency = null, bool? halftone = null, int? projectionLineWeight = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("set_filter_overrides", new
+                {
+                    filter_id = filterId,
+                    view_id = viewId,
+                    projection_line_color = string.IsNullOrEmpty(projectionLineColor) ? null : projectionLineColor,
+                    surface_foreground_color = string.IsNullOrEmpty(surfaceForegroundColor) ? null : surfaceForegroundColor,
+                    cut_line_color = string.IsNullOrEmpty(cutLineColor) ? null : cutLineColor,
+                    transparency,
+                    halftone,
+                    projection_line_weight = projectionLineWeight
+                });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "list_view_filters", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List all view filter definitions (ParameterFilterElement) in the document. If viewId is supplied, only filters applied to that view. includeUsage lists which views each filter is applied to.")]
+        public static async Task<string> ListViewFilters(long? viewId = null, bool includeUsage = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_view_filters", new { view_id = viewId, include_usage = includeUsage });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "remove_filter_from_view", Destructive = false), System.ComponentModel.Description("Remove a view filter from a view's filter list. viewId defaults to active view. deleteDefinitionIfUnused deletes the ParameterFilterElement entirely if no other view uses it.")]
+        public static async Task<string> RemoveFilterFromView(long filterId, long? viewId = null, bool deleteDefinitionIfUnused = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("remove_filter_from_view", new { filter_id = filterId, view_id = viewId, delete_definition_if_unused = deleteDefinitionIfUnused });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "override_element_graphics", Destructive = false), System.ComponentModel.Description("Apply per-element view-specific graphic overrides (color, transparency, halftone, line weight) to elements in a view. Colors are hex '#RRGGBB'. transparency 0-100, projectionLineWeight 1-16. viewId defaults to active view.")]
+        public static async Task<string> OverrideElementGraphics(long[] elementIds, long? viewId = null, string projectionLineColor = "", string surfaceForegroundColor = "", string cutLineColor = "", int? transparency = null, bool? halftone = null, int? projectionLineWeight = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("override_element_graphics", new
+                {
+                    element_ids = elementIds,
+                    view_id = viewId,
+                    projection_line_color = string.IsNullOrEmpty(projectionLineColor) ? null : projectionLineColor,
+                    surface_foreground_color = string.IsNullOrEmpty(surfaceForegroundColor) ? null : surfaceForegroundColor,
+                    cut_line_color = string.IsNullOrEmpty(cutLineColor) ? null : cutLineColor,
+                    transparency,
+                    halftone,
+                    projection_line_weight = projectionLineWeight
+                });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "clear_element_overrides", Destructive = false), System.ComponentModel.Description("Reset per-element view-specific graphic overrides to default. If elementIds is omitted, clears overrides on every element in the view that currently has them. viewId defaults to active view.")]
+        public static async Task<string> ClearElementOverrides(long[] elementIds = null, long? viewId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("clear_element_overrides", new { element_ids = elementIds, view_id = viewId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "get_view_visibility", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("Report a view's visibility/graphics state: hidden categories, applied filters, detail level, discipline, scale, view template, graphics-overrides-allowed. includeCategoryList lists every model category with its hidden state. viewId defaults to active view.")]
+        public static async Task<string> GetViewVisibility(long? viewId = null, bool includeCategoryList = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("get_view_visibility", new { view_id = viewId, include_category_list = includeCategoryList });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "set_category_visibility", Destructive = false), System.ComponentModel.Description("Show or hide model categories in a view. categories is an array of category names. hidden=true hides, false shows. viewId defaults to active view.")]
+        public static async Task<string> SetCategoryVisibility(string[] categories, bool hidden, long? viewId = null)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("set_category_visibility", new { categories, hidden, view_id = viewId });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "list_phases", ReadOnly = true, Idempotent = true), System.ComponentModel.Description("List all project phases (in sequence order) and all phase filters. Call before set_view_phase or set_element_phase to discover valid phase names/ids.")]
+        public static async Task<string> ListPhases()
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("list_phases", new { });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "set_view_phase", Destructive = false), System.ComponentModel.Description("Set a view's Phase and/or Phase Filter. Identify each by id or name. At least one of phase / phase filter must be supplied. viewId defaults to active view.")]
+        public static async Task<string> SetViewPhase(long? viewId = null, long? phaseId = null, string phaseName = "", long? phaseFilterId = null, string phaseFilterName = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("set_view_phase", new { view_id = viewId, phase_id = phaseId, phase_name = phaseName, phase_filter_id = phaseFilterId, phase_filter_name = phaseFilterName });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "set_element_phase", Destructive = false), System.ComponentModel.Description("Set the Phase Created and/or Phase Demolished of elements. Identify phases by id or name. Use phaseDemolishedName='None' to clear demolition. At least one phase must be supplied.")]
+        public static async Task<string> SetElementPhase(long[] elementIds, long? phaseCreatedId = null, string phaseCreatedName = "", long? phaseDemolishedId = null, string phaseDemolishedName = "")
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("set_element_phase", new { element_ids = elementIds, phase_created_id = phaseCreatedId, phase_created_name = phaseCreatedName, phase_demolished_id = phaseDemolishedId, phase_demolished_name = phaseDemolishedName });
                 return JsonConvert.SerializeObject(result, Formatting.Indented);
             }
             catch (Exception ex) { return $"Error: {ex.Message}"; }
