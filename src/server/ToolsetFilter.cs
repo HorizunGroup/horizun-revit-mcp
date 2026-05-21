@@ -15,17 +15,22 @@ namespace Bimwright.Rvt.Server
         public static readonly string[] KnownToolsets =
         {
             "query", "create", "modify", "delete", "view",
-            "export", "annotation", "mep", "schedule", "families", "graphics", "toolbaker", "meta", "lint"
+            "export", "annotation", "mep", "schedule", "families", "graphics", "toolbaker", "meta", "lint",
+            "sheets", "materials", "geometry", "rooms", "links", "parameters", "organization", "workflows",
+            "structural"
         };
 
         public static readonly string[] DefaultOn =
         {
-            "query", "create", "view", "schedule", "families", "mep", "graphics", "export", "toolbaker", "meta", "lint"
+            "query", "create", "view", "schedule", "families", "mep", "graphics", "export", "toolbaker", "meta", "lint",
+            "sheets", "materials", "geometry", "annotation", "rooms", "links", "parameters", "organization", "workflows"
         };
 
         public static readonly string[] WriteCapable =
         {
-            "create", "modify", "delete", "schedule", "families", "mep", "graphics", "export", "toolbaker"
+            "create", "modify", "delete", "schedule", "families", "mep", "graphics", "export", "toolbaker",
+            "sheets", "materials", "annotation", "rooms", "links", "parameters", "organization", "workflows",
+            "structural"
         };
 
         public static HashSet<string> Resolve(BimwrightConfig config)
