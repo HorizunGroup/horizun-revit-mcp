@@ -254,6 +254,10 @@ namespace Bimwright.Rvt.Plugin
             Register(new Handlers.AnalyzeStructuralConnectionsHandler());
             Register(new Handlers.TagStructuralFramingHandler());
 
+            // Wave 16: Rebar Creation (deferred from Wave 14)
+            Register(new Handlers.CreateRebarSetHandler());
+            Register(new Handlers.CreateRebarStirrupHandler());
+
             // Wave 15: Final Fill
             Register(new Handlers.SetProjectInfoHandler());
             Register(new Handlers.GetModelWarningsSummaryHandler());

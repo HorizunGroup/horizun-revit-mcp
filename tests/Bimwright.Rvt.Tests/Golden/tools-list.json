@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 219,
+  "tool_count": 221,
   "tools": [
     {
       "name": "acquire_coordinates_from_link",
@@ -1643,6 +1643,143 @@
           "name",
           "dataTypeId",
           "categories"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_rebar_set",
+      "description_hash": "sha256:f993e05e58be47a886b30577375d8ed364f613d0d8a3794607aaedb7b938ac7a",
+      "inputSchema": {
+        "properties": {
+          "bar_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "bar_type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "end_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "host_id": {
+            "description": "",
+            "type": "Int64"
+          },
+          "layout_rule": {
+            "description": "",
+            "type": "String"
+          },
+          "quantity": {
+            "description": "",
+            "type": "Int32"
+          },
+          "spacing_mm": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "start_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_z_mm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "host_id",
+          "start_x_mm",
+          "start_y_mm",
+          "start_z_mm",
+          "end_x_mm",
+          "end_y_mm",
+          "end_z_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_rebar_stirrup",
+      "description_hash": "sha256:86497c7af5675099791ac2390124b1999bc8c72bdee689441137c6bf077313ff",
+      "inputSchema": {
+        "properties": {
+          "bar_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "bar_type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "host_id": {
+            "description": "",
+            "type": "Int64"
+          },
+          "origin_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "origin_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "origin_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "shape_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "shape_name": {
+            "description": "",
+            "type": "String"
+          },
+          "x_vec_x": {
+            "description": "",
+            "type": "Double"
+          },
+          "x_vec_y": {
+            "description": "",
+            "type": "Double"
+          },
+          "x_vec_z": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_x": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_y": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_z": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "host_id",
+          "origin_x_mm",
+          "origin_y_mm",
+          "origin_z_mm"
         ],
         "type": "object"
       }

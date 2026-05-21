@@ -2442,6 +2442,49 @@ namespace Bimwright.Rvt.Server
             }
             catch (Exception ex) { return $"Error: {ex.Message}"; }
         }
+
+        [McpServerTool(Name = "create_rebar_set"), System.ComponentModel.Description("Create a straight rebar set (single bar or arrayed) inside a structural host. Params: host_id (required), bar_type_id OR bar_type_name (optional, default first RebarBarType), layout_rule ('Single'|'FixedNumber'|'MaximumSpacing', default 'Single'), spacing_mm (required for FixedNumber/MaximumSpacing), quantity (required for FixedNumber, default 1), start_x_mm/start_y_mm/start_z_mm + end_x_mm/end_y_mm/end_z_mm (required). Uses Rebar.CreateFromCurves + RebarShapeDrivenAccessor.")]
+        public static async Task<string> CreateRebarSet(
+            long host_id,
+            double start_x_mm, double start_y_mm, double start_z_mm,
+            double end_x_mm, double end_y_mm, double end_z_mm,
+            long? bar_type_id = null, string bar_type_name = null,
+            string layout_rule = "Single",
+            double? spacing_mm = null, int quantity = 1)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_rebar_set", new
+                {
+                    host_id, bar_type_id, bar_type_name, layout_rule, spacing_mm, quantity,
+                    start_x_mm, start_y_mm, start_z_mm, end_x_mm, end_y_mm, end_z_mm
+                });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "create_rebar_stirrup"), System.ComponentModel.Description("Create a shape-driven rebar (typically a closed stirrup) inside a concrete host. Params: host_id (required), bar_type_id OR bar_type_name (optional, default first RebarBarType), shape_id OR shape_name (optional, default first RebarShape — e.g. 'Stirrup T1', 'M_T1'), origin_x_mm/origin_y_mm/origin_z_mm (required), x_vec_x/y/z + y_vec_x/y/z (optional unit-less direction vectors, default world X/Y). Uses Rebar.CreateFromRebarShape.")]
+        public static async Task<string> CreateRebarStirrup(
+            long host_id,
+            double origin_x_mm, double origin_y_mm, double origin_z_mm,
+            long? bar_type_id = null, string bar_type_name = null,
+            long? shape_id = null, string shape_name = null,
+            double x_vec_x = 1, double x_vec_y = 0, double x_vec_z = 0,
+            double y_vec_x = 0, double y_vec_y = 1, double y_vec_z = 0)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("create_rebar_stirrup", new
+                {
+                    host_id, bar_type_id, bar_type_name, shape_id, shape_name,
+                    origin_x_mm, origin_y_mm, origin_z_mm,
+                    x_vec_x, x_vec_y, x_vec_z, y_vec_x, y_vec_y, y_vec_z
+                });
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
     }
 
     [McpServerToolType, Toolset("lint")]
