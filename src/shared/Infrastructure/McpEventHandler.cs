@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading;
@@ -190,7 +190,7 @@ namespace RvtMcp.Plugin
             }
         }
 
-        public string GetName() => "Bimwright.McpEventHandler";
+        public string GetName() => "RvtMcp.McpEventHandler";
 
         public void CancelAll()
         {

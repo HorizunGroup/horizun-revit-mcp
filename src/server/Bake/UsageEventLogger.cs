@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -297,7 +297,7 @@ namespace RvtMcp.Server.Bake
 
             try
             {
-                Console.Error.WriteLine("[Bimwright] Warning: " + message);
+                Console.Error.WriteLine("[RvtMcp] Warning: " + message);
             }
             catch
             {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -157,7 +157,7 @@ namespace RvtMcp.Plugin.Handlers
             }
 
             // Perform mutation inside transaction
-            using (var tx = new Transaction(doc, "Bimwright: Set Project Base Point"))
+            using (var tx = new Transaction(doc, "RvtMcp: Set Project Base Point"))
             {
                 tx.Start();
                 try

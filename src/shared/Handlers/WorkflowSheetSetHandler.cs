@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -137,13 +137,13 @@ namespace RvtMcp.Plugin.Handlers
 
             var hadFailure = false;
             var rollback = WorkflowSupport.Rollback("TransactionGroup", false, "Committed successfully.");
-            using (var group = new TransactionGroup(doc, "Bimwright: workflow sheet set"))
+            using (var group = new TransactionGroup(doc, "RvtMcp: workflow sheet set"))
             {
                 group.Start();
 
                 foreach (var spec in specs)
                 {
-                    using (var tx = new Transaction(doc, "Bimwright: create workflow sheet"))
+                    using (var tx = new Transaction(doc, "RvtMcp: create workflow sheet"))
                     {
                         tx.Start();
                         try

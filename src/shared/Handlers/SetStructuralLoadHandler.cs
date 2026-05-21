@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
@@ -37,7 +37,7 @@ namespace RvtMcp.Plugin.Handlers
             var load = doc.GetElement(RevitCompat.ToElementId(loadId.Value));
             if (load == null) return CommandResult.Fail($"load_id {loadId} not found.");
 
-            using (var tx = new Transaction(doc, "Bimwright: Update structural load"))
+            using (var tx = new Transaction(doc, "RvtMcp: Update structural load"))
             {
                 tx.Start();
                 try

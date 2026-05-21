@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -171,7 +171,7 @@ namespace RvtMcp.Plugin.Handlers
             }
             else
             {
-                using (var tx = new Transaction(doc, "Bimwright: tag all by category"))
+                using (var tx = new Transaction(doc, "RvtMcp: tag all by category"))
                 {
                     tx.Start();
                     try

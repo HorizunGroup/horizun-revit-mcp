@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Windows;
 using Autodesk.Revit.Attributes;
@@ -19,7 +19,7 @@ namespace RvtMcp.Plugin.Commands
             var kind = (ver == "R25" || ver == "R26" || ver == "R27") ? "pipe" : "port";
             var portFile = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright", $"{kind}{ver}.txt");
+                "RvtMcp", $"{kind}{ver}.txt");
 
             var info = App.Instance.IsTransportRunning
                 ? transport.ConnectionInfo

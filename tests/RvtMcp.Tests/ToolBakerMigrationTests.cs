@@ -19,7 +19,7 @@ namespace RvtMcp.Tests
             var paths = new BakePaths(@"C:\local-appdata-test");
 
             Assert.Equal(
-                Path.Combine(@"C:\local-appdata-test", "Bimwright", "bake-audit.jsonl"),
+                Path.Combine(@"C:\local-appdata-test", "RvtMcp", "bake-audit.jsonl"),
                 paths.AuditJsonl);
         }
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -132,7 +132,7 @@ namespace RvtMcp.Plugin.Handlers
 
             if (!dryRun && emptyTags.Count > 0)
             {
-                using (var tx = new Transaction(doc, "Bimwright: wipe empty tags"))
+                using (var tx = new Transaction(doc, "RvtMcp: wipe empty tags"))
                 {
                     tx.Start();
                     try

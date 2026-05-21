@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
@@ -140,7 +140,7 @@ namespace RvtMcp.Plugin.Handlers
             if (level == null)
                 return CommandResult.Fail("No level found in the project.");
 
-            using (var tx = new Transaction(doc, "Bimwright: create lighting fixture"))
+            using (var tx = new Transaction(doc, "RvtMcp: create lighting fixture"))
             {
                 tx.Start();
                 try

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -79,7 +79,7 @@ namespace RvtMcp.Plugin.Handlers
                     return Error(filterError, resolvedViewId, view.Name, null, null);
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: set view phase"))
+            using (var tx = new Transaction(doc, "RvtMcp: set view phase"))
             {
                 tx.Start();
                 try

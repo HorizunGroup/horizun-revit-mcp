@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -53,7 +53,7 @@ namespace RvtMcp.Plugin.Handlers
             if (sheetNumberExists)
                 return CommandResult.Fail($"Sheet with number '{sheetNumber}' already exists.");
 
-            using (var tx = new Transaction(doc, "Bimwright: create placeholder sheet"))
+            using (var tx = new Transaction(doc, "RvtMcp: create placeholder sheet"))
             {
                 tx.Start();
                 try

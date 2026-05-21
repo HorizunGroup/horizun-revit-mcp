@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using RvtMcp.Plugin.ToolBaker;
 
 namespace RvtMcp.Plugin
@@ -330,7 +330,7 @@ namespace RvtMcp.Plugin
                     {
                         if (!BakedToolRuntimeSource.IsAllowedForSuggestionSource(meta.Source))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Bimwright] Skipped baked tool '{meta.Name}': runtime source marker is not allowed for source '{meta.Source}'.");
+                            System.Diagnostics.Debug.WriteLine($"[RvtMcp] Skipped baked tool '{meta.Name}': runtime source marker is not allowed for source '{meta.Source}'.");
                             continue;
                         }
 
@@ -343,7 +343,7 @@ namespace RvtMcp.Plugin
                             out command,
                             out error))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Bimwright] Failed to load baked tool '{meta.Name}': {error}");
+                            System.Diagnostics.Debug.WriteLine($"[RvtMcp] Failed to load baked tool '{meta.Name}': {error}");
                             continue;
                         }
                     }
@@ -356,13 +356,13 @@ namespace RvtMcp.Plugin
                     {
                         if (!string.Equals(command.Name, meta.Name, System.StringComparison.Ordinal))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Bimwright] Skipped baked tool '{meta.Name}': compiled command name '{command.Name}' did not match registry metadata.");
+                            System.Diagnostics.Debug.WriteLine($"[RvtMcp] Skipped baked tool '{meta.Name}': compiled command name '{command.Name}' did not match registry metadata.");
                             continue;
                         }
 
                         if (!RegisterBaked(command))
                         {
-                            System.Diagnostics.Debug.WriteLine($"[Bimwright] Skipped baked tool '{meta.Name}': command name collides with an existing command.");
+                            System.Diagnostics.Debug.WriteLine($"[RvtMcp] Skipped baked tool '{meta.Name}': command name collides with an existing command.");
                         }
                         else
                         {
@@ -376,11 +376,11 @@ namespace RvtMcp.Plugin
                         }
                     }
                     else
-                        System.Diagnostics.Debug.WriteLine($"[Bimwright] Failed to load baked tool '{meta.Name}': {error}");
+                        System.Diagnostics.Debug.WriteLine($"[RvtMcp] Failed to load baked tool '{meta.Name}': {error}");
                 }
                 catch (System.Exception ex)
                 {
-                    System.Diagnostics.Debug.WriteLine($"[Bimwright] Error loading baked tool '{meta.Name}': {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[RvtMcp] Error loading baked tool '{meta.Name}': {ex.Message}");
                 }
             }
         }

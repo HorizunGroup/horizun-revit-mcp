@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json;
@@ -135,7 +135,7 @@ namespace RvtMcp.Plugin.Handlers
                 ? (object)Math.Round(origin1.DistanceTo(origin2) * FeetToMm, 1)
                 : null;
 
-            using (var tx = new Transaction(doc, "Bimwright: connect MEP elements"))
+            using (var tx = new Transaction(doc, "RvtMcp: connect MEP elements"))
             {
                 tx.Start();
                 try

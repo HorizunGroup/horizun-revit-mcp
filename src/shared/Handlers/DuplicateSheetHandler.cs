@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -102,7 +102,7 @@ namespace RvtMcp.Plugin.Handlers
             FamilyInstance titleBlockInstance = null;
 
             // Atomic rollback via TransactionGroup
-            using (var txGroup = new TransactionGroup(doc, "Bimwright: duplicate sheet"))
+            using (var txGroup = new TransactionGroup(doc, "RvtMcp: duplicate sheet"))
             {
                 txGroup.Start();
                 using (var tx = new Transaction(doc, "Duplicate Sheet Internal"))

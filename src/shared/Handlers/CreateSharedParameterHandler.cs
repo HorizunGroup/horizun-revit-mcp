@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -89,7 +89,7 @@ namespace RvtMcp.Plugin.Handlers
                 if (createFileIfMissing)
                 {
                     string localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-                    string dir = Path.Combine(localApp, "Bimwright");
+                    string dir = Path.Combine(localApp, "RvtMcp");
                     resolvedPath = Path.Combine(dir, "shared-parameters.txt");
                 }
                 else

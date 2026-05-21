@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -107,7 +107,7 @@ namespace RvtMcp.Plugin.Handlers
             var targetRevisionId = revision.Id;
             var sheetResultDtos = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: assign revision to sheet"))
+            using (var tx = new Transaction(doc, "RvtMcp: assign revision to sheet"))
             {
                 tx.Start();
                 try

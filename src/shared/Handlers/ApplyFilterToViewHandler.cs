@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -70,7 +70,7 @@ namespace RvtMcp.Plugin.Handlers
                     $"View '{view.Name}' ({view.ViewType}) does not allow graphics overrides; filters cannot be applied.",
                     filterIdRaw, filter.Name, resolvedViewId, view.Name, false);
 
-            using (var tx = new Transaction(doc, "Bimwright: apply filter to view"))
+            using (var tx = new Transaction(doc, "RvtMcp: apply filter to view"))
             {
                 tx.Start();
                 try

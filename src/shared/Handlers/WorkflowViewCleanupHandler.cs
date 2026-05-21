@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -143,7 +143,7 @@ namespace RvtMcp.Plugin.Handlers
                     WorkflowSupport.Rollback("Transaction", false, dryRun ? "Dry-run; no transaction opened." : "No delete candidates selected.")));
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: workflow view cleanup"))
+            using (var tx = new Transaction(doc, "RvtMcp: workflow view cleanup"))
             {
                 tx.Start();
                 try

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -126,7 +126,7 @@ namespace RvtMcp.Plugin.Handlers
             if (densityKgPerM3.HasValue)
                 fields["density_kg_per_m3"] = new { status = "set", value = densityKgPerM3.Value };
 
-            using (var tx = new Transaction(doc, "Bimwright: set material thermal asset"))
+            using (var tx = new Transaction(doc, "RvtMcp: set material thermal asset"))
             {
                 tx.Start();
                 try

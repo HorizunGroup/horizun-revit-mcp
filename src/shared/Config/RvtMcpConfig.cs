@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
@@ -63,8 +63,8 @@ namespace RvtMcp.Plugin
         public static string DefaultConfigFilePath =>
             Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright",
-                "bimwright.config.json");
+                "RvtMcp",
+                "rvtmcp.config.json");
 
         /// <summary>
         /// Load config from JSON → overlay env vars → overlay CLI args. Pass <c>null</c>

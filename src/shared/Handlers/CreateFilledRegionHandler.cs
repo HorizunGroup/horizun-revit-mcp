@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -106,7 +106,7 @@ namespace RvtMcp.Plugin.Handlers
             FilledRegion filledRegion = null;
             double areaM2 = 0;
 
-            using (var tx = new Transaction(doc, "Bimwright: create filled region"))
+            using (var tx = new Transaction(doc, "RvtMcp: create filled region"))
             {
                 tx.Start();
                 try

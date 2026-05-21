@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -84,7 +84,7 @@ namespace RvtMcp.Plugin.Handlers
                 return CommandResult.Fail("Either source_material_id or source_material_name must be supplied.");
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: duplicate material"))
+            using (var tx = new Transaction(doc, "RvtMcp: duplicate material"))
             {
                 tx.Start();
                 try

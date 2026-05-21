@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Autodesk.Revit.DB;
@@ -109,7 +109,7 @@ namespace RvtMcp.Plugin.Handlers
             var parametersSet = new JObject();
             string txError = null;
 
-            using (var tx = new Transaction(doc, "Bimwright: duplicate type"))
+            using (var tx = new Transaction(doc, "RvtMcp: duplicate type"))
             {
                 try
                 {

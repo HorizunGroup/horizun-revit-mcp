@@ -618,7 +618,7 @@
     },
     {
       "name": "capture_view_image",
-      "description_hash": "sha256:ae5f5cc90390e1aaebdfb2d70db36dc7ad3a2b1e4ee8392b44f2a3613c5c71d3",
+      "description_hash": "sha256:f8f7f0eb8598142ac61435c7ee61f5f6feba5291dc4079efc01f0faac29e94e3",
       "inputSchema": {
         "properties": {
           "image_format": {

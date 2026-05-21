@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -160,7 +160,7 @@ namespace RvtMcp.Plugin.Handlers
             int actuallyRemovedTypes = typesRemoved;
             try
             {
-                using (var tx = new Transaction(doc, "Bimwright: unload family"))
+                using (var tx = new Transaction(doc, "RvtMcp: unload family"))
                 {
                     tx.Start();
 

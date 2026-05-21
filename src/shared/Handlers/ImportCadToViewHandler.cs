@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using Autodesk.Revit.DB;
@@ -169,7 +169,7 @@ namespace RvtMcp.Plugin.Handlers
             ElementId createdId = ElementId.InvalidElementId;
             bool importSuccess = false;
 
-            using (var tx = new Transaction(doc, "Bimwright: Import CAD To View"))
+            using (var tx = new Transaction(doc, "RvtMcp: Import CAD To View"))
             {
                 tx.Start();
                 try

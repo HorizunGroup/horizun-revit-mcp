@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
@@ -53,7 +53,7 @@ namespace RvtMcp.Plugin.Handlers
                 _ => StructuralType.Beam
             };
 
-            using (var tx = new Transaction(doc, "Bimwright: Create structural beam"))
+            using (var tx = new Transaction(doc, "RvtMcp: Create structural beam"))
             {
                 tx.Start();
                 try

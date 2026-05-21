@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -118,7 +118,7 @@ namespace RvtMcp.Plugin.Handlers
             var failedElements = new JArray();
             int createdCount = 0;
 
-            using (var tx = new Transaction(doc, "Bimwright: tag elements"))
+            using (var tx = new Transaction(doc, "RvtMcp: tag elements"))
             {
                 tx.Start();
                 try

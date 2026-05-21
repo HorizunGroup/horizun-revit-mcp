@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 
@@ -23,7 +23,7 @@ namespace RvtMcp.Server
 
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright");
+                "RvtMcp");
 
             // If target specified, only try that version
             var versions = Target != null ? new[] { Target } : TcpVersions;
@@ -54,7 +54,7 @@ namespace RvtMcp.Server
 
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright");
+                "RvtMcp");
 
             // If target specified, only try that version
             var versions = Target != null ? new[] { Target } : PipeVersions;

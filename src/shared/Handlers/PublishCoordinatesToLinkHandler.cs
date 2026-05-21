@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -104,7 +104,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var warnings = new List<string> { "Publishing coordinates can modify the linked RVT's shared coordinate data." };
 
-            using (var tx = new Transaction(doc, "Bimwright: Publish Coordinates To Link"))
+            using (var tx = new Transaction(doc, "RvtMcp: Publish Coordinates To Link"))
             {
                 tx.Start();
                 try

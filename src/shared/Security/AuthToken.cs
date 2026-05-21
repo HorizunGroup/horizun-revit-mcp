@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Security.Cryptography;
 
@@ -50,7 +50,7 @@ namespace RvtMcp.Plugin
             {
                 var dir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Bimwright");
+                    "RvtMcp");
                 var filePath = Path.Combine(dir, $"{kind}{RevitVersion}.txt");
                 if (File.Exists(filePath)) File.Delete(filePath);
             }
@@ -87,7 +87,7 @@ namespace RvtMcp.Plugin
         {
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright");
+                "RvtMcp");
             Directory.CreateDirectory(dir);
             var filePath = Path.Combine(dir, fileName);
 
@@ -112,7 +112,7 @@ namespace RvtMcp.Plugin
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[Bimwright] ACL restriction failed for {fileName}: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[RvtMcp] ACL restriction failed for {fileName}: {ex.Message}");
             }
         }
     }

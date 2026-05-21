@@ -47,7 +47,7 @@ namespace RvtMcp.Server
                 var target = config.Target.ToUpperInvariant();
                 if (Array.IndexOf(AuthToken.AllVersions, target) < 0)
                 {
-                    Console.Error.WriteLine("[Bimwright] Invalid target. Expected: R22|R23|R24|R25|R26|R27");
+                    Console.Error.WriteLine("[RvtMcp] Invalid target. Expected: R22|R23|R24|R25|R26|R27");
                     Environment.Exit(1);
                     return;
                 }
@@ -69,7 +69,7 @@ namespace RvtMcp.Server
                 if (httpIndex + 1 >= args.Length || !int.TryParse(args[httpIndex + 1], out var port)
                     || port < 1 || port > 65535)
                 {
-                    Console.Error.WriteLine("[Bimwright] Invalid --http argument. Expected: --http <port> (1-65535)");
+                    Console.Error.WriteLine("[RvtMcp] Invalid --http argument. Expected: --http <port> (1-65535)");
                     Environment.Exit(1);
                     return;
                 }
@@ -104,7 +104,7 @@ namespace RvtMcp.Server
                 result = null;
                 var pathHint = paths?.Root ?? "(unknown path)";
                 Console.Error.WriteLine(
-                    $"[Bimwright] Warning: ToolBaker bake storage initialization failed for {pathHint}. " +
+                    $"[RvtMcp] Warning: ToolBaker bake storage initialization failed for {pathHint}. " +
                     "The MCP server will continue; baked-tool migration/import can be retried on next startup. " +
                     $"{ex.GetType().Name}: {ex.Message}");
                 return false;
@@ -159,8 +159,8 @@ namespace RvtMcp.Server
 
             app.MapMcp();
 
-            Console.Error.WriteLine($"[Bimwright] SSE server listening on http://127.0.0.1:{port}");
-            Console.Error.WriteLine($"[Bimwright] Toolsets enabled: {string.Join(",", enabled.OrderBy(n => n))}");
+            Console.Error.WriteLine($"[RvtMcp] SSE server listening on http://127.0.0.1:{port}");
+            Console.Error.WriteLine($"[RvtMcp] Toolsets enabled: {string.Join(",", enabled.OrderBy(n => n))}");
             await app.RunAsync();
         }
 
@@ -168,9 +168,9 @@ namespace RvtMcp.Server
         {
             var usage = string.Join("\n", new[]
             {
-                "bimwright — Revit MCP server (bimwright.dev)",
+                "rvt-mcp — Revit MCP server (bimwright.dev)",
                 "",
-                "Usage: bimwright [options]",
+                "Usage: rvt-mcp [options]",
                 "",
                 "Transport:",
                 "  --http <port>           Run HTTP SSE on 127.0.0.1:<port> (1-65535). Default = stdio.",
@@ -178,7 +178,7 @@ namespace RvtMcp.Server
                 "Routing:",
                 "  --target R22|R23|R24|R25|R26|R27",
                 "                          Pin to a specific Revit version (when multiple Revits run).",
-                "                          Default: auto-detect via discovery files in %LOCALAPPDATA%\\Bimwright\\.",
+                "                          Default: auto-detect via discovery files in %LOCALAPPDATA%\\RvtMcp\\.",
                 "",
                 "Tool exposure (A3 Progressive Disclosure):",
                 "  --toolsets <csv>        Comma list of toolsets to enable. Default: " + string.Join(",", ToolsetFilter.DefaultOn) + ".",
@@ -207,7 +207,7 @@ namespace RvtMcp.Server
                 "  BIMWRIGHT_ENABLE_ADAPTIVE_BAKE, BIMWRIGHT_CACHE_SEND_CODE_BODIES",
                 "",
                 "Config file (lowest precedence):",
-                "  %LOCALAPPDATA%\\Bimwright\\bimwright.config.json",
+                "  %LOCALAPPDATA%\\RvtMcp\\rvtmcp.config.json",
                 "",
                 "Other:",
                 "  -h, --help              Show this help and exit.",
@@ -336,11 +336,11 @@ namespace RvtMcp.Server
                         CurrentRevitVersion = pipeVer;
                         _pipeStream = pipe;
                         stream = pipe;
-                        Console.Error.WriteLine($"[Bimwright] Connected to Revit {pipeVer} via Named Pipe: {pipeName}");
+                        Console.Error.WriteLine($"[RvtMcp] Connected to Revit {pipeVer} via Named Pipe: {pipeName}");
                     }
                     catch (Exception ex)
                     {
-                        Console.Error.WriteLine($"[Bimwright] Pipe connect failed ({pipeVer}: {ex.Message}) — falling back to TCP");
+                        Console.Error.WriteLine($"[RvtMcp] Pipe connect failed ({pipeVer}: {ex.Message}) — falling back to TCP");
                         try { _pipeStream?.Close(); } catch { }
                         _pipeStream = null;
                     }
@@ -354,21 +354,21 @@ namespace RvtMcp.Server
                     _client = new TcpClient();
                     _client.Connect("127.0.0.1", port);
                     stream = _client.GetStream();
-                    Console.Error.WriteLine($"[Bimwright] Connected to Revit {tcpVer} via TCP on port {port}");
+                    Console.Error.WriteLine($"[RvtMcp] Connected to Revit {tcpVer} via TCP on port {port}");
                 }
 
                 if (stream == null)
                 {
                     var which = target != null ? $"(target={target})" : "(auto-detect R22-R27)";
                     throw new InvalidOperationException(
-                        $"Revit MCP plugin not running {which}. Check discovery files in %LOCALAPPDATA%\\Bimwright\\");
+                        $"Revit MCP plugin not running {which}. Check discovery files in %LOCALAPPDATA%\\RvtMcp\\");
                 }
 
                 _reader = new StreamReader(stream, Encoding.UTF8);
                 _writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
                 _connected = true;
 
-                var readThread = new Thread(ReadLoop) { IsBackground = true, Name = "Bimwright.ResponseReader" };
+                var readThread = new Thread(ReadLoop) { IsBackground = true, Name = "RvtMcp.ResponseReader" };
                 readThread.Start();
             }
         }
@@ -1110,7 +1110,7 @@ namespace RvtMcp.Server
             catch (Exception ex) { return $"Error: {ex.Message}"; }
         }
 
-        [McpServerTool(Name = "capture_view_image"), System.ComponentModel.Description("Export a view to a raster image. output_path must be absolute and inside %TEMP% or %LOCALAPPDATA%\\Bimwright\\captures\\. Params: view_id (optional, default active), output_path (required), pixel_size (default 1600), image_format ('png'|'jpeg', default 'png').")]
+        [McpServerTool(Name = "capture_view_image"), System.ComponentModel.Description("Export a view to a raster image. output_path must be absolute and inside %TEMP% or %LOCALAPPDATA%\\RvtMcp\\captures\\. Params: view_id (optional, default active), output_path (required), pixel_size (default 1600), image_format ('png'|'jpeg', default 'png').")]
         public static async Task<string> CaptureViewImage(
             string output_path,
             long? view_id = null, int pixel_size = 1600, string image_format = "png")

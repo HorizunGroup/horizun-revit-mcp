@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -131,7 +131,7 @@ namespace RvtMcp.Plugin.Handlers
             int succeeded = 0;
             int elementCount = targets.Count;
 
-            using (var tx = new Transaction(doc, "Bimwright: clear element overrides"))
+            using (var tx = new Transaction(doc, "RvtMcp: clear element overrides"))
             {
                 tx.Start();
                 try

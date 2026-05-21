@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
@@ -30,7 +30,7 @@ namespace RvtMcp.Plugin.Handlers
             if (footingType == null)
                 return CommandResult.Fail("Could not resolve WallFoundation type. Provide foundation_type_id or foundation_type_name.");
 
-            using (var tx = new Transaction(doc, "Bimwright: Create wall foundation"))
+            using (var tx = new Transaction(doc, "RvtMcp: Create wall foundation"))
             {
                 tx.Start();
                 try

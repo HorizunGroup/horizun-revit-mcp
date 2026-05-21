@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -283,7 +283,7 @@ namespace RvtMcp.Plugin.Handlers
             }
 
             Dimension dimension = null;
-            using (var tx = new Transaction(doc, "Bimwright: create dimensions"))
+            using (var tx = new Transaction(doc, "RvtMcp: create dimensions"))
             {
                 tx.Start();
                 try

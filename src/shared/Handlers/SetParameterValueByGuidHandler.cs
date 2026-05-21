@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -204,7 +204,7 @@ namespace RvtMcp.Plugin.Handlers
             // 2. Perform transaction / mutations
             if (allOrNothing)
             {
-                using (var tx = new Transaction(doc, "Bimwright: set parameter by GUID"))
+                using (var tx = new Transaction(doc, "RvtMcp: set parameter by GUID"))
                 {
                     tx.Start();
 
@@ -248,7 +248,7 @@ namespace RvtMcp.Plugin.Handlers
             }
             else
             {
-                using (var tx = new Transaction(doc, "Bimwright: set parameter by GUID"))
+                using (var tx = new Transaction(doc, "RvtMcp: set parameter by GUID"))
                 {
                     tx.Start();
 

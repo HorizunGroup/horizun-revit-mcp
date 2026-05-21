@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using RvtMcp.Plugin.Views;
@@ -165,7 +165,7 @@ namespace RvtMcp.Plugin
             {
                 var dir = System.IO.Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Bimwright");
+                    "RvtMcp");
                 System.IO.Directory.CreateDirectory(dir);
                 var logFile = System.IO.Path.Combine(dir, "debug.log");
                 System.IO.File.AppendAllText(logFile,

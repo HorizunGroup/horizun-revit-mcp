@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -87,7 +87,7 @@ namespace RvtMcp.Plugin.Handlers
             var succeeded = 0;
             var failed = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: set element phase"))
+            using (var tx = new Transaction(doc, "RvtMcp: set element phase"))
             {
                 try
                 {

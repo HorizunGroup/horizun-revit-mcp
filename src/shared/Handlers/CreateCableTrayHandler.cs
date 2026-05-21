@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -130,7 +130,7 @@ namespace RvtMcp.Plugin.Handlers
                     return CommandResult.Fail("height must be greater than zero.");
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: create cable tray"))
+            using (var tx = new Transaction(doc, "RvtMcp: create cable tray"))
             {
                 tx.Start();
                 try

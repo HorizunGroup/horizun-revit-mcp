@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -113,7 +113,7 @@ namespace RvtMcp.Plugin.Handlers
                 connectors[i] = connector;
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: create MEP fitting"))
+            using (var tx = new Transaction(doc, "RvtMcp: create MEP fitting"))
             {
                 tx.Start();
                 try

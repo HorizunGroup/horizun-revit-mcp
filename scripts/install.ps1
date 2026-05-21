@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Install or uninstall Bimwright Revit client components.
+  Install or uninstall RvtMcp Revit client components.
 
 .DESCRIPTION
   In a client setup ZIP, this script installs:
@@ -87,7 +87,7 @@ if (Test-Path $manifestPath) {
 }
 
 if (-not $ServerInstallRoot) {
-    $ServerInstallRoot = Join-Path $env:LOCALAPPDATA ("Bimwright\rvt\server\{0}" -f $setupVersion)
+    $ServerInstallRoot = Join-Path $env:LOCALAPPDATA ("RvtMcp\rvt\server\{0}" -f $setupVersion)
 }
 
 function Get-InstalledRevitYears {
@@ -108,14 +108,14 @@ function Get-AddinsRoot([int]$year) {
 function Find-ServerSourceExe {
     param([string]$ServerDir)
     if (-not $ServerDir) { return $null }
-    $preferred = Join-Path $ServerDir 'bimwright-rvt.exe'
+    $preferred = Join-Path $ServerDir 'rvt-mcp.exe'
     if (Test-Path $preferred) { return $preferred }
-    $fallback = Join-Path $ServerDir 'Bimwright.Rvt.Server.exe'
+    $fallback = Join-Path $ServerDir 'RvtMcp.Server.exe'
     if (Test-Path $fallback) { return $fallback }
     return $null
 }
 
-function Get-BimwrightClientTargets {
+function Get-RvtMcpClientTargets {
     param(
         [int[]]$years,
         [string]$serverCommand
@@ -126,7 +126,7 @@ function Get-BimwrightClientTargets {
     }
 
     return ,([pscustomobject]@{
-        Name      = 'bimwright-rvt'
+        Name      = 'rvt-mcp'
         ServerCmd = $serverCommand
         Args      = @()
         Years     = $supportedYears
@@ -139,9 +139,9 @@ function Write-ConfigAtomic {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Content
     )
-    $bak = "$Path.bimwright.bak"
+    $bak = "$Path.rvtmcp.bak"
     Copy-Item -Path $Path -Destination $bak -Force
-    $temp = "$Path.bimwright.tmp"
+    $temp = "$Path.rvtmcp.tmp"
     try {
         Set-Content -Path $temp -Value $Content -Encoding UTF8 -NoNewline
         [System.IO.File]::Replace($temp, $Path, [NullString]::Value)
@@ -219,7 +219,7 @@ function Remove-LegacyBimwrightEntries {
     return $keys.Count
 }
 
-function Install-BimwrightServer {
+function Install-RvtMcpServer {
     param(
         [string]$ServerDir,
         [string]$InstallRoot
@@ -228,7 +228,7 @@ function Install-BimwrightServer {
     if (-not $sourceExe) { return $null }
 
     $plannedExe = Join-Path $InstallRoot (Split-Path -Leaf $sourceExe)
-    if ($PSCmdlet.ShouldProcess($InstallRoot, 'Install self-contained Bimwright RVT server')) {
+    if ($PSCmdlet.ShouldProcess($InstallRoot, 'Install self-contained RvtMcp RVT server')) {
         if (Test-Path $InstallRoot) {
             Remove-Item -Path $InstallRoot -Recurse -Force
         }
@@ -290,7 +290,7 @@ function Add-OpencodeEntry {
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert bimwright-rvt entry')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert rvt-mcp entry')) {
         $content = $cfg | ConvertTo-Json -Depth 50
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $content
         Write-Host ("[opencode] wired {0} entry -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
@@ -356,9 +356,9 @@ enabled = true
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert [mcp_servers.bimwright-rvt] block')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert [mcp_servers.rvt-mcp] block')) {
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $raw
-        Write-Host ("[codex] wired bimwright-rvt block -> {0} (backup: {1})" -f $ConfigPath, $bak)
+        Write-Host ("[codex] wired rvt-mcp block -> {0} (backup: {1})" -f $ConfigPath, $bak)
     }
     return $true
 }
@@ -411,7 +411,7 @@ function Add-ClaudeEntry {
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert mcpServers.bimwright-rvt entry')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert mcpServers.rvt-mcp entry')) {
         $content = $cfg | ConvertTo-Json -Depth 50
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $content
         Write-Host ("[claude] wired {0} entry -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
@@ -453,9 +453,9 @@ $previewed = @()
 
 foreach ($year in $Years) {
     $yearTwo = "{0:D2}" -f ($year - 2000)
-    $addinFile = "Bimwright.R$yearTwo.addin"
+    $addinFile = "RvtMcp.R$yearTwo.addin"
     $addinsRoot = Get-AddinsRoot $year
-    $pluginDir = Join-Path $addinsRoot 'Bimwright'
+    $pluginDir = Join-Path $addinsRoot 'RvtMcp'
     $addinPath = Join-Path $addinsRoot $addinFile
 
     if ($Uninstall) {
@@ -487,7 +487,7 @@ foreach ($year in $Years) {
         continue
     }
 
-    $zip = Join-Path $pluginSourceDir ("Bimwright.Rvt.Plugin.R{0}.zip" -f $yearTwo)
+    $zip = Join-Path $pluginSourceDir ("RvtMcp.Plugin.R{0}.zip" -f $yearTwo)
     if (-not (Test-Path $zip)) {
         Write-Warning ("[R{0}] skipped - missing zip {1}" -f $yearTwo, $zip)
         $skipped += "R$yearTwo"
@@ -543,10 +543,10 @@ foreach ($year in $Years) {
 
 $serverCommand = $null
 if (-not $Uninstall) {
-    $serverCommand = Install-BimwrightServer -ServerDir $serverSourceDir -InstallRoot $ServerInstallRoot
+    $serverCommand = Install-RvtMcpServer -ServerDir $serverSourceDir -InstallRoot $ServerInstallRoot
     if (-not $serverCommand) {
-        if (Get-Command bimwright-rvt -ErrorAction SilentlyContinue) {
-            $serverCommand = 'bimwright-rvt'
+        if (Get-Command rvt-mcp -ErrorAction SilentlyContinue) {
+            $serverCommand = 'rvt-mcp'
         }
     }
 }
@@ -556,12 +556,12 @@ if (-not $Uninstall -and $Client -ne 'none') {
     $clientWasDefaultAuto = ($Client -eq 'Auto' -and -not $WireClient)
     if (-not $serverCommand) {
         if ($clientWasDefaultAuto) {
-            Write-Host "[wire] no setup server found and bimwright-rvt is not on PATH - skipping Auto wire"
+            Write-Host "[wire] no setup server found and rvt-mcp is not on PATH - skipping Auto wire"
         } else {
-            Write-Warning "[wire] no server command available - install from setup ZIP or install Bimwright.Rvt.Server first"
+            Write-Warning "[wire] no server command available - install from setup ZIP or install RvtMcp.Server first"
         }
     } else {
-        $targets = Get-BimwrightClientTargets -years $Years -serverCommand $serverCommand
+        $targets = Get-RvtMcpClientTargets -years $Years -serverCommand $serverCommand
         if ($targets.Count -eq 0) {
             Write-Warning "[wire] no plugin-supported Revit years (2022-2027) detected - skipping wire"
         } else {

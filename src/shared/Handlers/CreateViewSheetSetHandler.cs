@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -111,7 +111,7 @@ namespace RvtMcp.Plugin.Handlers
             if (resolvedViews.Count == 0)
                 return CommandResult.Fail("None of the supplied view_ids resolved to a usable view or sheet.");
 
-            using (var tx = new Transaction(doc, "Bimwright: create view sheet set"))
+            using (var tx = new Transaction(doc, "RvtMcp: create view sheet set"))
             {
                 try
                 {

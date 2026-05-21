@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -156,7 +156,7 @@ namespace RvtMcp.Plugin.Handlers
             int succeeded = 0;
             var failed = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: override element graphics"))
+            using (var tx = new Transaction(doc, "RvtMcp: override element graphics"))
             {
                 tx.Start();
                 try

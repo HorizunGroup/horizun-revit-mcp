@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
@@ -25,13 +25,13 @@ namespace RvtMcp.Plugin
         {
             _onRequest = onRequest ?? throw new ArgumentNullException(nameof(onRequest));
 
-            _pipeName = $"Bimwright-{Process.GetCurrentProcess().Id}";
+            _pipeName = $"RvtMcp-{Process.GetCurrentProcess().Id}";
 
             AuthToken.GenerateAndPersistPipe(_pipeName);
             Log($"Listening on pipe {_pipeName} (auth: enabled)");
 
             _running = true;
-            _listenThread = new Thread(ListenLoop) { IsBackground = true, Name = "Bimwright.PipeTransportServer" };
+            _listenThread = new Thread(ListenLoop) { IsBackground = true, Name = "RvtMcp.PipeTransportServer" };
             _listenThread.Start();
         }
 
@@ -255,7 +255,7 @@ namespace RvtMcp.Plugin
         {
             try
             {
-                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Bimwright");
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "RvtMcp");
                 Directory.CreateDirectory(dir);
                 var logFile = Path.Combine(dir, "revit-mcp.log");
                 File.AppendAllText(logFile, $"[{DateTime.Now:HH:mm:ss}] [PipeTransport] {SecretMasker.Mask(message)}\n");

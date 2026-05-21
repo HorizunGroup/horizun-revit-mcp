@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -110,7 +110,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var applied = new JArray();
             var modifiedIds = new List<long>();
-            using (var tx = new Transaction(doc, "Bimwright: workflow naming normalization"))
+            using (var tx = new Transaction(doc, "RvtMcp: workflow naming normalization"))
             {
                 tx.Start();
                 try

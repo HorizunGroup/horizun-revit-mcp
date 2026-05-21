@@ -105,10 +105,10 @@ namespace RvtMcp.Plugin.Handlers
             if (!string.IsNullOrEmpty(pluginDir))
                 yield return Path.Combine(pluginDir, "firm-profiles");
 
-            // User folder: %LOCALAPPDATA%\Bimwright\firm-profiles
+            // User folder: %LOCALAPPDATA%\RvtMcp\firm-profiles
             var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             if (!string.IsNullOrEmpty(localApp))
-                yield return Path.Combine(localApp, "Bimwright", "firm-profiles");
+                yield return Path.Combine(localApp, "RvtMcp", "firm-profiles");
         }
     }
 }

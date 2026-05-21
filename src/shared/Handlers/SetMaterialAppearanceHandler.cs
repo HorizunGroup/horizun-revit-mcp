@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -199,7 +199,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var changed = new Dictionary<string, string>();
 
-            using (var tx = new Transaction(doc, "Bimwright: set material appearance"))
+            using (var tx = new Transaction(doc, "RvtMcp: set material appearance"))
             {
                 tx.Start();
                 try

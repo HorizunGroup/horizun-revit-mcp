@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -167,7 +167,7 @@ namespace RvtMcp.Plugin.Handlers
             }
             else
             {
-                using (var tx = new Transaction(doc, "Bimwright: remove parameter binding"))
+                using (var tx = new Transaction(doc, "RvtMcp: remove parameter binding"))
                 {
                     tx.Start();
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -180,7 +180,7 @@ namespace RvtMcp.Plugin.Handlers
             if (curveArray.Size == 0)
                 return CommandResult.Fail("Fewer than one valid segment was produced.");
 
-            using (var tx = new Transaction(doc, "Bimwright: Create Room Separator"))
+            using (var tx = new Transaction(doc, "RvtMcp: Create Room Separator"))
             {
                 tx.Start();
                 try

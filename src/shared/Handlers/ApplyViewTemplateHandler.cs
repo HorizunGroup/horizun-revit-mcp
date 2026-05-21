@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -107,7 +107,7 @@ namespace RvtMcp.Plugin.Handlers
             var resultsList = new List<object>();
 
             // 2. Perform the assignment inside a transaction
-            using (var tx = new Transaction(doc, "Bimwright: apply view template"))
+            using (var tx = new Transaction(doc, "RvtMcp: apply view template"))
             {
                 tx.Start();
                 try

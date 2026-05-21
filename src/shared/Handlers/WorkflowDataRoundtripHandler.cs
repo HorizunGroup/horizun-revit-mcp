@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -160,7 +160,7 @@ namespace RvtMcp.Plugin.Handlers
                     return CommandResult.Ok(BuildEnvelope("succeeded", true, steps, warnings, modifiedIds, exportPath, exportedRows, importedRows, changedElements, skippedRows, validationErrors, WorkflowSupport.Rollback("Transaction", false, "Dry-run; no transaction opened.")));
                 }
 
-                using (var tx = new Transaction(doc, "Bimwright: workflow data roundtrip import"))
+                using (var tx = new Transaction(doc, "RvtMcp: workflow data roundtrip import"))
                 {
                     tx.Start();
                     try

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -38,7 +38,7 @@ namespace RvtMcp.Plugin.ToolBaker
         public BakedToolRegistry()
             : this(Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright", "baked"))
+                "RvtMcp", "baked"))
         {
         }
 

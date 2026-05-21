@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -110,7 +110,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var warnings = new List<string>();
 
-            using (var tx = new Transaction(doc, "Bimwright: Acquire Coordinates From Link"))
+            using (var tx = new Transaction(doc, "RvtMcp: Acquire Coordinates From Link"))
             {
                 tx.Start();
                 try

@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-  Stage Bimwright plugin shells into build/plugin-zip/ for release packaging.
+  Stage RvtMcp plugin shells into build/plugin-zip/ for release packaging.
 
 .DESCRIPTION
   For each Revit year R22..R27, copies the built plugin DLL + .addin + runtime deps
   from src/plugin-rNN/bin/<Config>/<TFM>/ into build/plugin-zip/R<nn>/, then produces
-  build/plugin-zip/Bimwright.Rvt.Plugin.R<nn>.zip.
+  build/plugin-zip/RvtMcp.Plugin.R<nn>.zip.
 
   Consumed by install.ps1 (P4-003) and the GitHub Release asset pipeline (P4-004).
 
@@ -54,8 +54,8 @@ foreach ($s in $shells) {
     $tfm = $s.Tfm
     $pluginDir = Join-Path $RepoRoot ("src\plugin-r{0}" -f $year)
     $binDir = Join-Path $pluginDir ("bin\{0}\{1}" -f $Config, $tfm)
-    $pluginDll = Join-Path $binDir 'Bimwright.Rvt.Plugin.dll'
-    $addinFile = Join-Path $pluginDir ("Bimwright.R{0}.addin" -f $year)
+    $pluginDll = Join-Path $binDir 'RvtMcp.Plugin.dll'
+    $addinFile = Join-Path $pluginDir ("RvtMcp.R{0}.addin" -f $year)
 
     if (-not (Test-Path $pluginDll)) {
         Write-Warning "R$year not staged — missing $pluginDll (build first with: dotnet build $pluginDir -c $Config)"
@@ -71,10 +71,10 @@ foreach ($s in $shells) {
     $destDir = Join-Path $stageRoot ("R{0}" -f $year)
     New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 
-    # Runtime deps that ship alongside Bimwright.Rvt.Plugin.dll.
+    # Runtime deps that ship alongside RvtMcp.Plugin.dll.
     # Glob matches the Deploy target in src/plugin-r*/*.csproj — keep in sync.
     $patterns = @(
-        'Bimwright.*.dll',
+        'RvtMcp.*.dll',
         'Newtonsoft.Json.dll',
         'Microsoft.Data.Sqlite.dll',
         'SQLitePCLRaw*.dll',
@@ -99,7 +99,7 @@ foreach ($s in $shells) {
 
             # Revit add-ins are not launched by dotnet.exe, so native assets under
             # runtimes/win-x64/native are not always resolved by the host. Keep a
-            # root copy beside Bimwright.Rvt.Plugin.dll for Microsoft.Data.Sqlite.
+            # root copy beside RvtMcp.Plugin.dll for Microsoft.Data.Sqlite.
             Copy-Item -Path $nativeSqlite -Destination $destDir -Force
         }
     }
@@ -107,7 +107,7 @@ foreach ($s in $shells) {
     # Addin manifest at plugin root.
     Copy-Item -Path $addinFile -Destination $destDir -Force
 
-    $zipPath = Join-Path $stageRoot ("Bimwright.Rvt.Plugin.R{0}.zip" -f $year)
+    $zipPath = Join-Path $stageRoot ("RvtMcp.Plugin.R{0}.zip" -f $year)
     if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
     Compress-Archive -Path (Join-Path $destDir '*') -DestinationPath $zipPath -Force
 

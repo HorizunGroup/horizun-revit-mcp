@@ -1,9 +1,9 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>Bimwright</Name>
-    <Assembly>Bimwright\Bimwright.Rvt.Plugin.dll</Assembly>
-    <FullClassName>Bimwright.Rvt.Plugin.App</FullClassName>
+    <Name>RvtMcp</Name>
+    <Assembly>RvtMcp\RvtMcp.Plugin.dll</Assembly>
+    <FullClassName>RvtMcp.Plugin.App</FullClassName>
     <AddInId>{5e077288-82fd-4b2f-9f4e-a1849c38bb00}</AddInId>
     <VendorId>bimwright</VendorId>
     <VendorDescription>Revit MCP Gateway</VendorDescription>

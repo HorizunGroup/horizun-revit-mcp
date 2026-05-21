@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -100,7 +100,7 @@ namespace RvtMcp.Plugin.Handlers
             ElementId typeId = ElementId.InvalidElementId;
             RevitLinkInstance createdInstance = null;
 
-            using (var tx = new Transaction(doc, "Bimwright: Link Revit Model"))
+            using (var tx = new Transaction(doc, "RvtMcp: Link Revit Model"))
             {
                 tx.Start();
                 try

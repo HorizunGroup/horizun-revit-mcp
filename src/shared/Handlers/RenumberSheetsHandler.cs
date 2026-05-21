@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -261,7 +261,7 @@ namespace RvtMcp.Plugin.Handlers
             }
 
             // 4. Executing changes using a safe two-pass rename strategy (handles swaps cleanly)
-            using (var tx = new Transaction(doc, "Bimwright: renumber sheets"))
+            using (var tx = new Transaction(doc, "RvtMcp: renumber sheets"))
             {
                 tx.Start();
                 try

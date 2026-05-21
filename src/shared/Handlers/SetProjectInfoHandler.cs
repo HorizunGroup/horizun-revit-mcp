@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -43,7 +43,7 @@ namespace RvtMcp.Plugin.Handlers
             var changed = new List<string>();
             var skipped = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: Set project info"))
+            using (var tx = new Transaction(doc, "RvtMcp: Set project info"))
             {
                 tx.Start();
                 try

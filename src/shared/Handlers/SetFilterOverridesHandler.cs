@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -156,7 +156,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var overridesSet = new List<string>();
 
-            using (var tx = new Transaction(doc, "Bimwright: set filter overrides"))
+            using (var tx = new Transaction(doc, "RvtMcp: set filter overrides"))
             {
                 tx.Start();
                 try

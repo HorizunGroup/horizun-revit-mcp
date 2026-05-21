@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -147,7 +147,7 @@ namespace RvtMcp.Plugin.Handlers
             var errors = new List<object>();
             var successfullyChanged = 0;
 
-            using (var tx = new Transaction(doc, "Bimwright: replace type"))
+            using (var tx = new Transaction(doc, "RvtMcp: replace type"))
             {
                 try
                 {

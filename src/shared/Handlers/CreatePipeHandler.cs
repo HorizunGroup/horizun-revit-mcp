@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Plumbing;
 using Autodesk.Revit.UI;
@@ -131,7 +131,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var diameterMm = request.Value<double?>("diameter");
 
-            using (var tx = new Transaction(doc, "Bimwright: create pipe"))
+            using (var tx = new Transaction(doc, "RvtMcp: create pipe"))
             {
                 tx.Start();
                 try

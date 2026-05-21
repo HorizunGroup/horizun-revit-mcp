@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -79,7 +79,7 @@ namespace RvtMcp.Plugin.Handlers
                 });
             }
 
-            using (var tx = new Transaction(doc, "Bimwright: rename type"))
+            using (var tx = new Transaction(doc, "RvtMcp: rename type"))
             {
                 TransactionStatus status;
                 try

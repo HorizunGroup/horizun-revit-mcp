@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using Autodesk.Revit.DB;
@@ -10,7 +10,7 @@ namespace RvtMcp.Plugin.Handlers
     public class CaptureViewImageHandler : IRevitCommand
     {
         public string Name => "capture_view_image";
-        public string Description => "Export a view to a raster image (png/jpeg). output_path must be absolute and inside %TEMP% or %LOCALAPPDATA%\\Bimwright\\captures\\. Returns saved path + pixel size.";
+        public string Description => "Export a view to a raster image (png/jpeg). output_path must be absolute and inside %TEMP% or %LOCALAPPDATA%\\RvtMcp\\captures\\. Returns saved path + pixel size.";
         public string ParametersSchema => @"{""type"":""object"",""properties"":{""view_id"":{""type"":""integer""},""output_path"":{""type"":""string""},""pixel_size"":{""type"":""integer"",""default"":1600},""image_format"":{""type"":""string"",""enum"":[""png"",""jpeg""],""default"":""png""}},""required"":[""output_path""]}";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
@@ -89,13 +89,13 @@ namespace RvtMcp.Plugin.Handlers
                 var temp = Path.GetFullPath(Path.GetTempPath());
                 var captures = Path.GetFullPath(Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Bimwright",
+                    "RvtMcp",
                     "captures"));
 
                 if (full.StartsWith(temp, StringComparison.OrdinalIgnoreCase)) return null;
                 if (full.StartsWith(captures, StringComparison.OrdinalIgnoreCase)) return null;
 
-                return $"output_path must be inside %TEMP% ({temp}) or %LOCALAPPDATA%\\Bimwright\\captures\\ ({captures}).";
+                return $"output_path must be inside %TEMP% ({temp}) or %LOCALAPPDATA%\\RvtMcp\\captures\\ ({captures}).";
             }
             catch (Exception ex)
             {

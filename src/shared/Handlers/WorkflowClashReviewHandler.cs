@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -174,12 +174,12 @@ namespace RvtMcp.Plugin.Handlers
             var markerIds = new JArray();
             var hadWriteError = false;
 
-            using (var group = new TransactionGroup(doc, "Bimwright: workflow clash review"))
+            using (var group = new TransactionGroup(doc, "RvtMcp: workflow clash review"))
             {
                 group.Start();
                 rollback = WorkflowSupport.Rollback("TransactionGroup", false, "Committed clash review write steps.");
 
-                using (var tx = new Transaction(doc, "Bimwright: clash review"))
+                using (var tx = new Transaction(doc, "RvtMcp: clash review"))
                 {
                     tx.Start();
                     try
@@ -330,7 +330,7 @@ namespace RvtMcp.Plugin.Handlers
             view.Name = WorkflowSupport.UniqueName(
                 doc,
                 new FilteredElementCollector(doc).OfClass(typeof(View)).Cast<Element>(),
-                "Bimwright Clash Review");
+                "RvtMcp Clash Review");
             return view;
         }
 

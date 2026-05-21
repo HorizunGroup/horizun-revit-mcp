@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -97,7 +97,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var localApp = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             if (!string.IsNullOrEmpty(localApp))
-                yield return Path.Combine(localApp, "Bimwright", "firm-profiles");
+                yield return Path.Combine(localApp, "RvtMcp", "firm-profiles");
         }
     }
 }

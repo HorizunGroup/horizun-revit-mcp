@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -133,7 +133,7 @@ namespace RvtMcp.Plugin.Handlers
             if (shearModulusMpa.HasValue)
                 fields["shear_modulus_mpa"] = new { status = "set", value = shearModulusMpa.Value };
 
-            using (var tx = new Transaction(doc, "Bimwright: set material structural asset"))
+            using (var tx = new Transaction(doc, "RvtMcp: set material structural asset"))
             {
                 tx.Start();
                 try

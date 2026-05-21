@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -124,7 +124,7 @@ namespace RvtMcp.Plugin.Handlers
 
             SelectionFilterElement filterElement = null;
 
-            using (var tx = new Transaction(doc, "Bimwright: save selection"))
+            using (var tx = new Transaction(doc, "RvtMcp: save selection"))
             {
                 tx.Start();
                 try

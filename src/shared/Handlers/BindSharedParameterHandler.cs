@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -154,7 +154,7 @@ namespace RvtMcp.Plugin.Handlers
             bool rebuiltBinding = false;
             var warnings = new List<string>();
 
-            using (var tx = new Transaction(doc, "Bimwright: bind shared parameter"))
+            using (var tx = new Transaction(doc, "RvtMcp: bind shared parameter"))
             {
                 tx.Start();
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
@@ -58,7 +58,7 @@ namespace RvtMcp.Plugin.Handlers
             if (xVec.IsAlmostEqualTo(yVec) || xVec.CrossProduct(yVec).GetLength() < 1e-6)
                 return CommandResult.Fail("x_vec and y_vec must be linearly independent (non-parallel) directions.");
 
-            using (var tx = new Transaction(doc, "Bimwright: Create rebar stirrup"))
+            using (var tx = new Transaction(doc, "RvtMcp: Create rebar stirrup"))
             {
                 tx.Start();
                 try

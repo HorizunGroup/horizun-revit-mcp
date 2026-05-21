@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using Newtonsoft.Json;
 
@@ -17,7 +17,7 @@ namespace RvtMcp.Server.Memory
         {
             _journalDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Bimwright", "journal");
+                "RvtMcp", "journal");
             Directory.CreateDirectory(_journalDir);
         }
 
@@ -39,7 +39,7 @@ namespace RvtMcp.Server.Memory
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[Bimwright] Journal write failed: {ex.Message}");
+                    Console.Error.WriteLine($"[RvtMcp] Journal write failed: {ex.Message}");
                 }
             }
         }

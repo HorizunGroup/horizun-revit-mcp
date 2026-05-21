@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -194,7 +194,7 @@ namespace RvtMcp.Plugin.Handlers
             var alreadyMember = new List<string>();
             var failed = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: set system classification"))
+            using (var tx = new Transaction(doc, "RvtMcp: set system classification"))
             {
                 tx.Start();
 

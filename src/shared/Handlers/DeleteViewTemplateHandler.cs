@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -78,7 +78,7 @@ namespace RvtMcp.Plugin.Handlers
 
             if (!dryRun && wouldDelete)
             {
-                using (var tx = new Transaction(doc, "Bimwright: delete view template"))
+                using (var tx = new Transaction(doc, "RvtMcp: delete view template"))
                 {
                     tx.Start();
                     try

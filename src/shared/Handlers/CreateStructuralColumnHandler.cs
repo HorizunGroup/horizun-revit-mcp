@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.DB.Structure;
@@ -41,7 +41,7 @@ namespace RvtMcp.Plugin.Handlers
 
             var pt = new XYZ(xMm / 304.8, yMm / 304.8, zMm / 304.8);
 
-            using (var tx = new Transaction(doc, "Bimwright: Create structural column"))
+            using (var tx = new Transaction(doc, "RvtMcp: Create structural column"))
             {
                 tx.Start();
                 try

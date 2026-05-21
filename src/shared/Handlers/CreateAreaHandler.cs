@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -153,7 +153,7 @@ namespace RvtMcp.Plugin.Handlers
                 createdPlan = true;
             }
 
-            var tg = new TransactionGroup(doc, "Bimwright: Create Area");
+            var tg = new TransactionGroup(doc, "RvtMcp: Create Area");
             if (createdPlan)
             {
                 tg.Start();
@@ -161,7 +161,7 @@ namespace RvtMcp.Plugin.Handlers
 
             try
             {
-                using (var tx = new Transaction(doc, "Bimwright: Create Area Inside"))
+                using (var tx = new Transaction(doc, "RvtMcp: Create Area Inside"))
                 {
                     tx.Start();
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -248,7 +248,7 @@ namespace RvtMcp.Plugin.Handlers
                 }
             }
 
-            var baseName = string.IsNullOrWhiteSpace(requestedBase) ? "Bimwright Workflow" : requestedBase.Trim();
+            var baseName = string.IsNullOrWhiteSpace(requestedBase) ? "RvtMcp Workflow" : requestedBase.Trim();
             var candidate = baseName;
             var index = 1;
             while (existing.Contains(candidate))

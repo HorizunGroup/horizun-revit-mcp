@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using System.Collections.Generic;
 using Autodesk.Revit.UI;
 using RvtMcp.Plugin.ToolBaker;
@@ -15,7 +15,7 @@ namespace RvtMcp.Plugin
 
     public static class RibbonSetup
     {
-        private const string PanelName = "BIMwright";
+        private const string PanelName = "RvtMcp";
         private static readonly HashSet<string> CreatedButtons = new HashSet<string>();
 
         public static RibbonResult Create(UIControlledApplication application, RvtMcpConfig config = null, BakedToolRuntimeCache runtimeCache = null)

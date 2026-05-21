@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -82,7 +82,7 @@ namespace RvtMcp.Plugin.Handlers
             var succeeded = new List<string>();
             var failed = new List<object>();
 
-            using (var tx = new Transaction(doc, "Bimwright: set category visibility"))
+            using (var tx = new Transaction(doc, "RvtMcp: set category visibility"))
             {
                 tx.Start();
                 try
