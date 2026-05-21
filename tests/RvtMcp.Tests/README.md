@@ -1,4 +1,4 @@
-# Bimwright.Rvt.Tests
+# RvtMcp.Tests
 
 xUnit test project. Covers unit-test scope + schema/tool-surface drift snapshot.
 
@@ -11,18 +11,18 @@ xUnit test project. Covers unit-test scope + schema/tool-surface drift snapshot.
 ## Running
 
 ```bash
-dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj
+dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 ```
 
 All tests live in one project; there is no matrix.
 
-If the build fails copying `Bimwright.Rvt.Server.exe` because a running MCP session holds it open, add `-c Release` to use a separate output directory, or `/mcp` disconnect in Claude Code first.
+If the build fails copying `RvtMcp.Server.exe` because a running MCP session holds it open, add `-c Release` to use a separate output directory, or `/mcp` disconnect in Claude Code first.
 
 ## Golden snapshot — `Golden/tools-list.json`
 
 This file is the canonical capture of every MCP tool exposed by the server: tool name, description hash (SHA-256 — changes when description text changes, but diffs stay small), and input schema (parameter names, types, required flags).
 
-`ToolsListSnapshotTests` captures the current tool surface via reflection on `[McpServerToolType]`-annotated classes in `Bimwright.Rvt.Server`, serializes it with stable ordering, and compares against `Golden/tools-list.json`.
+`ToolsListSnapshotTests` captures the current tool surface via reflection on `[McpServerToolType]`-annotated classes in `RvtMcp.Server`, serializes it with stable ordering, and compares against `Golden/tools-list.json`.
 
 ### On mismatch
 
@@ -35,12 +35,12 @@ Test output shows the diff. Two possibilities:
 
 ```powershell
 # PowerShell
-$env:UPDATE_SNAPSHOTS="1"; dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj --filter "ToolsListSnapshotTests"; Remove-Item Env:UPDATE_SNAPSHOTS
+$env:UPDATE_SNAPSHOTS="1"; dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj --filter "ToolsListSnapshotTests"; Remove-Item Env:UPDATE_SNAPSHOTS
 ```
 
 ```bash
 # bash / zsh
-UPDATE_SNAPSHOTS=1 dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj --filter "ToolsListSnapshotTests"
+UPDATE_SNAPSHOTS=1 dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj --filter "ToolsListSnapshotTests"
 ```
 
 Then commit the updated `Golden/tools-list.json` alongside the source change in the same PR. Reviewers read the JSON diff.

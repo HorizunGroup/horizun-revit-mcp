@@ -41,7 +41,7 @@
   </ItemGroup>
 
   <!-- Expose internal helpers (ParseCsv, ApplyCliArgs, ApplyEnvVars, Load overloads, etc.)
-       to the test project. Required for BimwrightConfigTests + ToolsListSnapshotTests. -->
+       to the test project. Required for RvtMcpConfigTests + ToolsListSnapshotTests. -->
   <ItemGroup>
     <InternalsVisibleTo Include="RvtMcp.Tests" />
   </ItemGroup>

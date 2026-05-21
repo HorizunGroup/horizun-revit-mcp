@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Build the end-user Bimwright RVT setup ZIP.
+  Build the end-user RvtMcp setup ZIP.
 
 .DESCRIPTION
   Produces a single client-facing archive that contains:
@@ -65,7 +65,7 @@ Write-Host ("RepoRoot : {0}" -f $RepoRoot)
 Write-Host ("Version  : {0}" -f $displayVersion)
 Write-Host ("Config   : {0}" -f $Config)
 
-$serverProject = Join-Path $RepoRoot 'src\server\Bimwright.Rvt.Server.csproj'
+$serverProject = Join-Path $RepoRoot 'src\server\RvtMcp.Server.csproj'
 Write-Host ""
 Write-Host "[server] publishing self-contained win-x64 executable"
 & dotnet publish $serverProject `
@@ -79,8 +79,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "dotnet publish failed with exit code $LASTEXITCODE"
 }
 
-$publishedServerExe = Join-Path $serverStage 'Bimwright.Rvt.Server.exe'
-$friendlyServerExe = Join-Path $serverStage 'bimwright-rvt.exe'
+$publishedServerExe = Join-Path $serverStage 'RvtMcp.Server.exe'
+$friendlyServerExe = Join-Path $serverStage 'rvt-mcp.exe'
 if (-not (Test-Path $publishedServerExe)) {
     throw "Published server executable not found: $publishedServerExe"
 }
@@ -88,12 +88,12 @@ Move-Item -Path $publishedServerExe -Destination $friendlyServerExe -Force
 Write-Host ("[server] staged -> {0}" -f $friendlyServerExe)
 
 $pluginProjects = @(
-    'src\plugin-r22\Bimwright.Rvt.Plugin.R22.csproj',
-    'src\plugin-r23\Bimwright.Rvt.Plugin.R23.csproj',
-    'src\plugin-r24\Bimwright.Rvt.Plugin.R24.csproj',
-    'src\plugin-r25\Bimwright.Rvt.Plugin.R25.csproj',
-    'src\plugin-r26\Bimwright.Rvt.Plugin.R26.csproj',
-    'src\plugin-r27\Bimwright.Rvt.Plugin.R27.csproj'
+    'src\plugin-r22\RvtMcp.Plugin.R22.csproj',
+    'src\plugin-r23\RvtMcp.Plugin.R23.csproj',
+    'src\plugin-r24\RvtMcp.Plugin.R24.csproj',
+    'src\plugin-r25\RvtMcp.Plugin.R25.csproj',
+    'src\plugin-r26\RvtMcp.Plugin.R26.csproj',
+    'src\plugin-r27\RvtMcp.Plugin.R27.csproj'
 )
 
 Write-Host ""
@@ -101,7 +101,7 @@ Write-Host "[plugins] building Revit shells without local auto-deploy"
 foreach ($relativeProject in $pluginProjects) {
     $project = Join-Path $RepoRoot $relativeProject
     Write-Host ("[plugins] build {0}" -f $relativeProject)
-    & dotnet build $project -c $Config /p:BimwrightSkipDeploy=true
+    & dotnet build $project -c $Config /p:RvtMcpSkipDeploy=true
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build failed for $relativeProject with exit code $LASTEXITCODE"
     }
@@ -116,7 +116,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $pluginZipRoot = Join-Path $RepoRoot 'build\plugin-zip'
-$pluginZips = @(Get-ChildItem -Path $pluginZipRoot -Filter 'Bimwright.Rvt.Plugin.R*.zip' -File | Sort-Object Name)
+$pluginZips = @(Get-ChildItem -Path $pluginZipRoot -Filter 'RvtMcp.Plugin.R*.zip' -File | Sort-Object Name)
 if ($pluginZips.Count -eq 0) {
     throw "No plugin ZIPs found in $pluginZipRoot"
 }
@@ -149,7 +149,7 @@ try {
 }
 
 $pluginManifest = @()
-foreach ($zip in @(Get-ChildItem -Path $pluginsStage -Filter 'Bimwright.Rvt.Plugin.R*.zip' -File | Sort-Object Name)) {
+foreach ($zip in @(Get-ChildItem -Path $pluginsStage -Filter 'RvtMcp.Plugin.R*.zip' -File | Sort-Object Name)) {
     if ($zip.BaseName -match 'R(\d{2})$') {
         $year = 2000 + [int]$Matches[1]
         $pluginManifest += [ordered]@{
@@ -171,14 +171,14 @@ foreach ($file in @(Get-ChildItem -Path $stageRoot -File -Recurse | Sort-Object 
 }
 
 $manifest = [ordered]@{
-    name = 'Bimwright.Rvt.Setup'
+    name = 'RvtMcp.Setup'
     version = $Version
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     commit = $commit
     platform = 'win-x64'
     supportedRevitYears = @(2022, 2023, 2024, 2025, 2026, 2027)
     server = [ordered]@{
-        command = 'server/bimwright-rvt.exe'
+        command = 'server/rvt-mcp.exe'
         selfContained = $true
         requiresDotnet = $false
     }
@@ -189,7 +189,7 @@ $manifest = [ordered]@{
 $manifestPath = Join-Path $stageRoot 'manifest.json'
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -Path $manifestPath -Encoding UTF8
 
-$setupZip = Join-Path $OutputDir ("Bimwright.Rvt.Setup-{0}-win-x64.zip" -f $displayVersion)
+$setupZip = Join-Path $OutputDir ("RvtMcp.Setup-{0}-win-x64.zip" -f $displayVersion)
 if (Test-Path $setupZip) {
     Remove-Item -Path $setupZip -Force
 }
