@@ -1,0 +1,500 @@
+{
+  "generated_by": "ToolsListSnapshotTests",
+  "tool_count": 12,
+  "tools": [
+    {
+      "name": "analyze_structural_connections",
+      "description_hash": "sha256:830f522448d3e316d1be100e067e81551c4405fba1b95f9422b8c3e3ce1352eb",
+      "inputSchema": {
+        "properties": {
+          "element_ids": {
+            "description": "",
+            "type": "Int64[]"
+          },
+          "limit": {
+            "description": "",
+            "type": "Int32"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_foundation_isolated",
+      "description_hash": "sha256:161b45ab9251fdff85dc9a1ced02d67f6c5e9afd8937d02f138b3bfd1251933a",
+      "inputSchema": {
+        "properties": {
+          "host_column_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_name": {
+            "description": "",
+            "type": "String"
+          },
+          "rotation_deg": {
+            "description": "",
+            "type": "Double"
+          },
+          "type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "z_mm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "x_mm",
+          "y_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_foundation_wall",
+      "description_hash": "sha256:806b11acb729c9a4c4ee21d04514c171dd2b2e7ff8d3f5abaec13bd27c1bb7b9",
+      "inputSchema": {
+        "properties": {
+          "foundation_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "foundation_type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "wall_id": {
+            "description": "",
+            "type": "Int64"
+          }
+        },
+        "required": [
+          "wall_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_rebar_set",
+      "description_hash": "sha256:f993e05e58be47a886b30577375d8ed364f613d0d8a3794607aaedb7b938ac7a",
+      "inputSchema": {
+        "properties": {
+          "bar_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "bar_type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "end_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "host_id": {
+            "description": "",
+            "type": "Int64"
+          },
+          "layout_rule": {
+            "description": "",
+            "type": "String"
+          },
+          "quantity": {
+            "description": "",
+            "type": "Int32"
+          },
+          "spacing_mm": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "start_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_z_mm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "host_id",
+          "start_x_mm",
+          "start_y_mm",
+          "start_z_mm",
+          "end_x_mm",
+          "end_y_mm",
+          "end_z_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_rebar_stirrup",
+      "description_hash": "sha256:86497c7af5675099791ac2390124b1999bc8c72bdee689441137c6bf077313ff",
+      "inputSchema": {
+        "properties": {
+          "bar_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "bar_type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "host_id": {
+            "description": "",
+            "type": "Int64"
+          },
+          "origin_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "origin_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "origin_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "shape_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "shape_name": {
+            "description": "",
+            "type": "String"
+          },
+          "x_vec_x": {
+            "description": "",
+            "type": "Double"
+          },
+          "x_vec_y": {
+            "description": "",
+            "type": "Double"
+          },
+          "x_vec_z": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_x": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_y": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_vec_z": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [
+          "host_id",
+          "origin_x_mm",
+          "origin_y_mm",
+          "origin_z_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_structural_beam",
+      "description_hash": "sha256:991017a4e97f7c64750793adfd75f2647a5eb6ff27aa328e97119b77a13166a0",
+      "inputSchema": {
+        "properties": {
+          "end_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "level_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_name": {
+            "description": "",
+            "type": "String"
+          },
+          "start_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_z_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "usage": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "start_x_mm",
+          "start_y_mm",
+          "end_x_mm",
+          "end_y_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_structural_column",
+      "description_hash": "sha256:78884483113682a9d7f9a42b8b402ede9ca76af07916a56d5cc6efff2c9a5311",
+      "inputSchema": {
+        "properties": {
+          "height_mm": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_name": {
+            "description": "",
+            "type": "String"
+          },
+          "rotation_deg": {
+            "description": "",
+            "type": "Double"
+          },
+          "type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "type_name": {
+            "description": "",
+            "type": "String"
+          },
+          "x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "z_mm": {
+            "description": "",
+            "type": "Double"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_structural_wall",
+      "description_hash": "sha256:412d1428b5bea6658f1950f058f42738acd7186da3ff68a235db13f2cf0c518a",
+      "inputSchema": {
+        "properties": {
+          "end_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "end_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "height_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "level_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "level_name": {
+            "description": "",
+            "type": "String"
+          },
+          "start_x_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "start_y_mm": {
+            "description": "",
+            "type": "Double"
+          },
+          "wall_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "wall_type_name": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "start_x_mm",
+          "start_y_mm",
+          "end_x_mm",
+          "end_y_mm"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "get_structural_loads",
+      "description_hash": "sha256:e391b349d9c7b852d999be55ca31ebbf2a64240c3d9e412b265bdd065cc2b5fb",
+      "inputSchema": {
+        "properties": {
+          "element_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "limit": {
+            "description": "",
+            "type": "Int32"
+          },
+          "load_type": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "list_rebar",
+      "description_hash": "sha256:e2c583053927361720054a6d2dc5f6811bd90fd7ebacb93758a8c7392b913a37",
+      "inputSchema": {
+        "properties": {
+          "host_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "limit": {
+            "description": "",
+            "type": "Int32"
+          },
+          "view_id": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "set_structural_load",
+      "description_hash": "sha256:a015f085117e8f12ad0ae21661aba314513dbf90f27074b69f96cec1535ffa17",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "",
+            "type": "String"
+          },
+          "force_x": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "force_y": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "force_z": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "load_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "moment_x": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "moment_y": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "moment_z": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "tag_structural_framing",
+      "description_hash": "sha256:d7e89a97276b119c3f3e9c005a150b746f56e17a8e986b6b2e3f0b5a25906bea",
+      "inputSchema": {
+        "properties": {
+          "element_ids": {
+            "description": "",
+            "type": "Int64[]"
+          },
+          "tag_type_id": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "view_id": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    }
+  ]
+}

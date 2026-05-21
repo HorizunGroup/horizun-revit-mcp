@@ -32,7 +32,7 @@ Every plugin writes a per-version discovery file to `%LOCALAPPDATA%\Bimwright\` 
 | 2026  | `pipeR26.txt` | Named Pipe |
 | 2027  | `pipeR27.txt` | Named Pipe |
 
-Each file has three lines: transport endpoint, auth token, owning PID. Server scans these on connect, verifies the PID is alive, and auto-deletes orphan files. Explicit `--target R23` pins a specific version when multiple Revits run concurrently.
+Each file has three lines: transport endpoint, auth token, owning PID. Server scans these on connect, verifies the PID is alive, and auto-deletes orphan files. Installer-generated MCP config uses one auto-detect `bimwright-rvt` entry; `switch_target` or explicit `--target R23` can pin a specific version when multiple Revits run concurrently.
 
 ## Multi-version strategy
 

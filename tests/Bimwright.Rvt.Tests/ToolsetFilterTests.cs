@@ -15,7 +15,7 @@ namespace Bimwright.Rvt.Tests
         {
             var set = ToolsetFilter.Resolve(null);
             Assert.Equal(
-                new[] { "create", "lint", "meta", "query", "view" },
+                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "toolbaker", "view", "workflows" },
                 set.OrderBy(s => s).ToArray());
         }
 
@@ -24,7 +24,7 @@ namespace Bimwright.Rvt.Tests
         {
             var set = ToolsetFilter.Resolve(new BimwrightConfig { Toolsets = new List<string>() });
             Assert.Equal(
-                new[] { "create", "lint", "meta", "query", "view" },
+                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "toolbaker", "view", "workflows" },
                 set.OrderBy(s => s).ToArray());
         }
 
@@ -45,7 +45,7 @@ namespace Bimwright.Rvt.Tests
             });
 
             Assert.Equal(ToolsetFilter.DefaultOn.OrderBy(s => s), set.OrderBy(s => s));
-            Assert.DoesNotContain("toolbaker", set);
+            Assert.Contains("toolbaker", set);
         }
 
         // --- Explicit toolsets --------------------------------------------
@@ -118,19 +118,30 @@ namespace Bimwright.Rvt.Tests
             Assert.DoesNotContain("create", set);
             Assert.DoesNotContain("modify", set);
             Assert.DoesNotContain("delete", set);
+            Assert.DoesNotContain("schedule", set);
+            Assert.DoesNotContain("toolbaker", set);
+            Assert.DoesNotContain("sheets", set);
+            Assert.DoesNotContain("materials", set);
+            Assert.DoesNotContain("annotation", set);
+            Assert.DoesNotContain("rooms", set);
+            Assert.DoesNotContain("links", set);
+            Assert.DoesNotContain("parameters", set);
+            Assert.DoesNotContain("organization", set);
+            Assert.DoesNotContain("workflows", set);
             // Non-write toolsets survive
             Assert.Contains("query", set);
             Assert.Contains("view", set);
-            Assert.Contains("export", set);
+            Assert.Contains("geometry", set);
+            Assert.DoesNotContain("export", set);
         }
 
         [Fact]
         public void Resolve_ReadOnlyWithDefaults_LeavesOnlyReadSafeDefaults()
         {
             var set = ToolsetFilter.Resolve(new BimwrightConfig { ReadOnly = true });
-            // Default = query+create+view+meta+lint. ReadOnly strips create.
+            // Default = query+create+view+schedule+toolbaker+meta+lint+sheets+materials+geometry. ReadOnly strips write-capable sets.
             Assert.Equal(
-                new[] { "lint", "meta", "query", "view" },
+                new[] { "geometry", "lint", "meta", "query", "view" },
                 set.OrderBy(s => s).ToArray());
         }
 
@@ -159,11 +170,22 @@ namespace Bimwright.Rvt.Tests
         }
 
         [Fact]
-        public void Resolve_EnableToolbaker_DoesNotAddToolbakerToDefaults()
+        public void Resolve_EnableToolbaker_KeepsToolbakerInDefaults()
         {
             var set = ToolsetFilter.Resolve(new BimwrightConfig
             {
                 EnableToolbaker = true,
+            });
+
+            Assert.Contains("toolbaker", set);
+        }
+
+        [Fact]
+        public void Resolve_DisableToolbaker_RemovesToolbakerFromDefaults()
+        {
+            var set = ToolsetFilter.Resolve(new BimwrightConfig
+            {
+                EnableToolbaker = false,
             });
 
             Assert.DoesNotContain("toolbaker", set);
@@ -172,9 +194,9 @@ namespace Bimwright.Rvt.Tests
         // --- Invariants ---------------------------------------------------
 
         [Fact]
-        public void KnownToolsets_Contains11Entries()
+        public void KnownToolsets_Contains23Entries()
         {
-            Assert.Equal(11, ToolsetFilter.KnownToolsets.Length);
+            Assert.Equal(23, ToolsetFilter.KnownToolsets.Length);
         }
 
         [Fact]

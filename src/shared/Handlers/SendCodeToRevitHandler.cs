@@ -17,35 +17,11 @@ namespace Bimwright.Rvt.Plugin.Handlers
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
-            var config = BimwrightConfig.Load();
-            if (!config.EnableAdaptiveBakeOrDefault)
-            {
-                return Fail(
-                    "send_code_to_revit is gated by EnableAdaptiveBake. " +
-                    "Set BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1 for the Revit plugin process or set " +
-                    "\"enableAdaptiveBake\": true in %LOCALAPPDATA%\\Bimwright\\bimwright.config.json " +
-                    "after reviewing the BIMwright adaptive bake safety prompt.");
-            }
-
             var request = JObject.Parse(paramsJson);
             var code = request.Value<string>("code");
 
             if (string.IsNullOrWhiteSpace(code))
                 return Fail("code parameter is required.");
-
-            // Runtime confirmation dialog
-            var preview = code.Length > 500 ? code.Substring(0, 500) + "\n...(truncated)" : code;
-            var dlg = new Autodesk.Revit.UI.TaskDialog("Revit MCP — Execute dynamic code?")
-            {
-                MainInstruction = "A tool wants to compile and run C# inside Revit.",
-                MainContent = "Code preview:\n\n" + preview,
-                CommonButtons = Autodesk.Revit.UI.TaskDialogCommonButtons.Yes
-                              | Autodesk.Revit.UI.TaskDialogCommonButtons.No,
-                DefaultButton = Autodesk.Revit.UI.TaskDialogResult.No
-            };
-            var result = dlg.Show();
-            if (result != Autodesk.Revit.UI.TaskDialogResult.Yes)
-                return Fail("User denied dynamic code execution.");
 
             // Wrap user code in a class if it doesn't contain one
             var fullCode = code;

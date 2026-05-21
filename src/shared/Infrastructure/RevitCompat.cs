@@ -1,3 +1,4 @@
+using System;
 using Autodesk.Revit.DB;
 
 namespace Bimwright.Rvt.Plugin
@@ -35,6 +36,8 @@ namespace Bimwright.Rvt.Plugin
 #if REVIT2024_OR_GREATER
             return new ElementId(id);
 #else
+            if (!CanRepresentElementId(id))
+                throw new ArgumentOutOfRangeException(nameof(id), ElementIdRangeError(id));
             return new ElementId((int)id);
 #endif
         }
@@ -47,5 +50,17 @@ namespace Bimwright.Rvt.Plugin
             return new ElementId(id);
 #endif
         }
+
+        public static bool CanRepresentElementId(long id)
+        {
+#if REVIT2024_OR_GREATER
+            return true;
+#else
+            return id >= int.MinValue && id <= int.MaxValue;
+#endif
+        }
+
+        public static string ElementIdRangeError(long id) =>
+            "Element id " + id + " is outside this Revit version's supported ID range.";
     }
 }

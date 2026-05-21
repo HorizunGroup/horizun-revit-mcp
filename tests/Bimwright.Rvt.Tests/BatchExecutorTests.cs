@@ -98,6 +98,54 @@ namespace Bimwright.Rvt.Tests
             Assert.Equal(3, outcome.Results.Count);
         }
 
+        [Fact]
+        public void Run_SuccessPayloadWithFailedCount_StopsAndFlags_ForRollback()
+        {
+            var dispatch = Dispatch(new Dictionary<string, Func<string, BatchExecutor.InvokeResult>>
+            {
+                ["set_element_parameter_values"] = _ => BatchExecutor.InvokeResult.Ok(new { updatedCount = 1, failedCount = 1 }),
+                ["create_grid"] = _ => BatchExecutor.InvokeResult.Ok(new { elementId = 3 }),
+            });
+
+            var cmds = Cmds(
+                ("set_element_parameter_values", null),
+                ("create_grid", null));
+
+            var outcome = BatchExecutor.Run(cmds, continueOnError: false, dispatch);
+
+            Assert.True(outcome.AnyFailed);
+            Assert.Single(outcome.Results);
+            var result = JObject.FromObject(outcome.Results[0]);
+            Assert.False(result.Value<bool>("ok"));
+            Assert.Equal(1, result["data"]?.Value<int>("failedCount"));
+            Assert.Contains("partial failure", result.Value<string>("error"));
+        }
+
+        [Fact]
+        public void Run_SuccessPayloadWithFailedCount_ContinueOnErrorTrue_AttemptsRemaining()
+        {
+            var dispatch = Dispatch(new Dictionary<string, Func<string, BatchExecutor.InvokeResult>>
+            {
+                ["set_type_parameter_values"] = _ => BatchExecutor.InvokeResult.Ok(new JObject
+                {
+                    ["updatedCount"] = 1,
+                    ["failedCount"] = 2
+                }),
+                ["create_grid"] = _ => BatchExecutor.InvokeResult.Ok(new { elementId = 3 }),
+            });
+
+            var cmds = Cmds(
+                ("set_type_parameter_values", null),
+                ("create_grid", null));
+
+            var outcome = BatchExecutor.Run(cmds, continueOnError: true, dispatch);
+
+            Assert.True(outcome.AnyFailed);
+            Assert.Equal(2, outcome.Results.Count);
+            Assert.False(JObject.FromObject(outcome.Results[0]).Value<bool>("ok"));
+            Assert.True(JObject.FromObject(outcome.Results[1]).Value<bool>("ok"));
+        }
+
         // --- Edge / guard cases --------------------------------------------
 
         [Fact]

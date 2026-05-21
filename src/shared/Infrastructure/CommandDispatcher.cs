@@ -19,6 +19,16 @@ namespace Bimwright.Rvt.Plugin
             Register(new Handlers.AiElementFilterHandler());
             Register(new Handlers.AnalyzeModelStatisticsHandler());
             Register(new Handlers.GetMaterialQuantitiesHandler());
+            Register(new Handlers.GetElementDetailsHandler());
+            Register(new Handlers.GetElementParametersHandler());
+            Register(new Handlers.GetTypeParametersHandler());
+            Register(new Handlers.ListProjectParametersHandler());
+            Register(new Handlers.GetElementRelationshipsHandler());
+            Register(new Handlers.ListGroupsHandler());
+            Register(new Handlers.GetGroupMembersHandler());
+            Register(new Handlers.ListAssembliesHandler());
+            Register(new Handlers.GetAssemblyMembersHandler());
+            Register(new Handlers.ListWorksetsHandler());
             // Phase 3: Create
             Register(new Handlers.CreateLineBasedElementHandler());
             Register(new Handlers.CreatePointBasedElementHandler());
@@ -26,9 +36,14 @@ namespace Bimwright.Rvt.Plugin
             Register(new Handlers.CreateLevelHandler());
             Register(new Handlers.CreateGridHandler());
             Register(new Handlers.CreateRoomHandler());
+            Register(new Handlers.CreateGroupFromElementsHandler());
             // Phase 4: Modify & Delete
             Register(new Handlers.OperateElementHandler());
             Register(new Handlers.ColorElementsHandler());
+            Register(new Handlers.SetElementParameterValuesHandler());
+            Register(new Handlers.SetTypeParameterValuesHandler());
+            Register(new Handlers.ChangeElementTypeHandler());
+            Register(new Handlers.AssignElementsToWorksetHandler());
             Register(new Handlers.DeleteElementHandler());
             // Phase 5: Export & Tags
             Register(new Handlers.ExportRoomDataHandler());
@@ -49,6 +64,210 @@ namespace Bimwright.Rvt.Plugin
             Register(new Handlers.AnalyzeViewNamingPatternsHandler());
             Register(new Handlers.SuggestViewNameCorrectionsHandler());
             Register(new Handlers.DetectFirmProfileHandler());
+            // Phase 12: Schedules
+            Register(new Handlers.ListSchedulesHandler());
+            Register(new Handlers.GetScheduleDefinitionHandler());
+            Register(new Handlers.GetScheduleDataHandler());
+            Register(new Handlers.GetScheduleFormulasHandler());
+            Register(new Handlers.GetSchedulableFieldsHandler());
+            Register(new Handlers.FindScheduleElementsHandler());
+            Register(new Handlers.CreateScheduleHandler());
+            Register(new Handlers.AddScheduleFieldHandler());
+            Register(new Handlers.UpdateScheduleFieldHandler());
+            Register(new Handlers.ApplyScheduleFilterSortHandler());
+            // Phase 13: Families
+            Register(new Handlers.ListLoadedFamiliesHandler());
+            Register(new Handlers.LoadFamilyFromPathHandler());
+            Register(new Handlers.UnloadFamilyHandler());
+            Register(new Handlers.DuplicateFamilyTypeHandler());
+            Register(new Handlers.RenameFamilyTypeHandler());
+            Register(new Handlers.AuditFamiliesHandler());
+            Register(new Handlers.ReplaceFamilyTypeHandler());
+            Register(new Handlers.GetFamilyInstancesHandler());
+            Register(new Handlers.ListFamilyTypesInFamilyHandler());
+            Register(new Handlers.ExportFamilyToPathHandler());
+            // Phase 14: MEP Systems
+            Register(new Handlers.CreateDuctHandler());
+            Register(new Handlers.CreatePipeHandler());
+            Register(new Handlers.CreateCableTrayHandler());
+            Register(new Handlers.CreateConduitHandler());
+            Register(new Handlers.CreateAirTerminalHandler());
+            Register(new Handlers.CreateLightingFixtureHandler());
+            Register(new Handlers.ListMepSystemsHandler());
+            Register(new Handlers.GetSystemInventoryHandler());
+            Register(new Handlers.GetMepElementConnectorsHandler());
+            Register(new Handlers.ConnectMepElementsHandler());
+            Register(new Handlers.CreateMepFittingHandler());
+            Register(new Handlers.SetSystemClassificationHandler());
+            Register(new Handlers.GetPanelScheduleHandler());
+            Register(new Handlers.FindMepDisconnectsHandler());
+            Register(new Handlers.AnalyzeMepNetworkHandler());
+            // Phase 15: Graphics — Filters / VG overrides / Phases
+            Register(new Handlers.CreateViewFilterHandler());
+            Register(new Handlers.ApplyFilterToViewHandler());
+            Register(new Handlers.SetFilterOverridesHandler());
+            Register(new Handlers.ListViewFiltersHandler());
+            Register(new Handlers.RemoveFilterFromViewHandler());
+            Register(new Handlers.OverrideElementGraphicsHandler());
+            Register(new Handlers.ClearElementOverridesHandler());
+            Register(new Handlers.GetViewVisibilityHandler());
+            Register(new Handlers.SetCategoryVisibilityHandler());
+            Register(new Handlers.ListPhasesHandler());
+            Register(new Handlers.SetViewPhaseHandler());
+            Register(new Handlers.SetElementPhaseHandler());
+            // Phase 16: Print / Export
+            Register(new Handlers.ExportPdfHandler());
+            Register(new Handlers.ExportDwgHandler());
+            Register(new Handlers.ExportDgnHandler());
+            Register(new Handlers.ExportDwfHandler());
+            Register(new Handlers.ExportIfcHandler());
+            Register(new Handlers.ExportNwcHandler());
+            Register(new Handlers.ExportFbxHandler());
+            Register(new Handlers.ExportGbxmlHandler());
+            Register(new Handlers.ExportImageHandler());
+            Register(new Handlers.ExportScheduleCsvHandler());
+            Register(new Handlers.ExportElementsDataHandler());
+            Register(new Handlers.BatchExportSheetsHandler());
+            Register(new Handlers.ListExportSettingsHandler());
+            Register(new Handlers.CreateViewSheetSetHandler());
+            Register(new Handlers.GetPrintSettingsHandler());
+
+            // Wave 5: Sheets
+            Register(new Handlers.CreateSheetHandler());
+            Register(new Handlers.DuplicateSheetHandler());
+            Register(new Handlers.CreatePlaceholderSheetHandler());
+            Register(new Handlers.ListSheetsHandler());
+            Register(new Handlers.SetTitleblockParametersHandler());
+            Register(new Handlers.GetTitleblockParametersHandler());
+            Register(new Handlers.ListTitleblocksHandler());
+            Register(new Handlers.PlaceScheduleOnSheetHandler());
+            Register(new Handlers.CreateRevisionHandler());
+            Register(new Handlers.AssignRevisionToSheetHandler());
+            Register(new Handlers.ListRevisionsHandler());
+            Register(new Handlers.RenumberSheetsHandler());
+
+            // Wave 6: Materials
+            Register(new Handlers.ListMaterialsHandler());
+            Register(new Handlers.GetMaterialPropertiesHandler());
+            Register(new Handlers.CreateMaterialHandler());
+            Register(new Handlers.DuplicateMaterialHandler());
+            Register(new Handlers.SetMaterialAppearanceHandler());
+            Register(new Handlers.SetMaterialIdentityHandler());
+            Register(new Handlers.SetMaterialStructuralAssetHandler());
+            Register(new Handlers.SetMaterialThermalAssetHandler());
+            Register(new Handlers.AssignMaterialToElementHandler());
+            Register(new Handlers.GetMaterialTakeoffHandler());
+
+            // Wave 7: Geometry Analysis
+            Register(new Handlers.GetElementBoundingBoxHandler());
+            Register(new Handlers.GetElementGeometryHandler());
+            Register(new Handlers.MeasureDistanceBetweenElementsHandler());
+            Register(new Handlers.ClashDetectionHandler());
+            Register(new Handlers.RaycastFromPointHandler());
+            Register(new Handlers.FindElementsInVolumeHandler());
+            Register(new Handlers.ComputeElementVolumeHandler());
+            Register(new Handlers.ComputeElementAreaHandler());
+            Register(new Handlers.ProjectPointOntoFaceHandler());
+            Register(new Handlers.FindOverlappingElementsHandler());
+            Register(new Handlers.GetElementCentroidHandler());
+            Register(new Handlers.AnalyzeGeometryComplexityHandler());
+
+            // Wave 8: Annotation & Detail
+            Register(new Handlers.TagElementsHandler());
+            Register(new Handlers.TagAllByCategoryHandler());
+            Register(new Handlers.CreateTextNoteHandler());
+            Register(new Handlers.CreateDimensionsHandler());
+            Register(new Handlers.CreateFilledRegionHandler());
+            Register(new Handlers.CreateDetailLineHandler());
+            Register(new Handlers.CreateCalloutViewHandler());
+            Register(new Handlers.ListKeynotesHandler());
+            Register(new Handlers.ApplyKeynoteToElementHandler());
+            Register(new Handlers.FindUntaggedElementsHandler());
+            Register(new Handlers.FindUndimensionedElementsHandler());
+            Register(new Handlers.WipeEmptyTagsHandler());
+
+            // Wave 9: Rooms, Areas & Spaces
+            Register(new Handlers.ListRoomsHandler());
+            Register(new Handlers.GetRoomBoundariesHandler());
+            Register(new Handlers.GetRoomOpeningsHandler());
+            Register(new Handlers.CreateRoomSeparatorHandler());
+            Register(new Handlers.CreateAreaHandler());
+            Register(new Handlers.CreateSpaceHandler());
+            Register(new Handlers.ListAreasHandler());
+            Register(new Handlers.ComputeRoomFinishesHandler());
+            Register(new Handlers.AutoCreateRoomsFromWallsHandler());
+            Register(new Handlers.TagAllAreasHandler());
+
+            // Wave 10: Links, CAD & Coordinates
+            Register(new Handlers.ListLinkedModelsHandler());
+            Register(new Handlers.ListLinkedCadHandler());
+            Register(new Handlers.ImportCadToViewHandler());
+            Register(new Handlers.LinkRevitModelHandler());
+            Register(new Handlers.UnloadLinkHandler());
+            Register(new Handlers.ReloadLinkHandler());
+            Register(new Handlers.GetLinkElementsHandler());
+            Register(new Handlers.AcquireCoordinatesFromLinkHandler());
+            Register(new Handlers.PublishCoordinatesToLinkHandler());
+            Register(new Handlers.SetProjectBasePointHandler());
+
+            // Wave 11: Parameters
+            Register(new Handlers.ListSharedParametersHandler());
+            Register(new Handlers.CreateSharedParameterHandler());
+            Register(new Handlers.BindSharedParameterHandler());
+            Register(new Handlers.CreateProjectParameterHandler());
+            Register(new Handlers.ListProjectParameterBindingsHandler());
+            Register(new Handlers.RemoveParameterBindingHandler());
+            Register(new Handlers.ExportSharedParameterFileHandler());
+            Register(new Handlers.SetParameterValueByGuidHandler());
+
+            // Wave 12: View Templates & Selections
+            Register(new Handlers.ListViewTemplatesHandler());
+            Register(new Handlers.CreateViewTemplateFromViewHandler());
+            Register(new Handlers.ApplyViewTemplateHandler());
+            Register(new Handlers.DuplicateViewTemplateHandler());
+            Register(new Handlers.DeleteViewTemplateHandler());
+            Register(new Handlers.SaveSelectionHandler());
+            Register(new Handlers.LoadSelectionHandler());
+            Register(new Handlers.ListSavedSelectionsHandler());
+            Register(new Handlers.DeleteSavedSelectionHandler());
+            Register(new Handlers.SelectElementsHandler());
+
+            // Wave 13: Workflow Composites
+            Register(new Handlers.WorkflowClashReviewHandler());
+            Register(new Handlers.WorkflowModelAuditHandler());
+            Register(new Handlers.WorkflowRoomDocumentationHandler());
+            Register(new Handlers.WorkflowSheetSetHandler());
+            Register(new Handlers.WorkflowDataRoundtripHandler());
+            Register(new Handlers.WorkflowViewCleanupHandler());
+            Register(new Handlers.WorkflowNamingNormalizationHandler());
+            Register(new Handlers.WorkflowTakeoffReportHandler());
+
+            // Wave 14: Structural Deep
+            Register(new Handlers.CreateStructuralColumnHandler());
+            Register(new Handlers.CreateStructuralBeamHandler());
+            Register(new Handlers.CreateStructuralWallHandler());
+            Register(new Handlers.CreateFoundationIsolatedHandler());
+            Register(new Handlers.CreateFoundationWallHandler());
+            Register(new Handlers.ListRebarHandler());
+            Register(new Handlers.GetStructuralLoadsHandler());
+            Register(new Handlers.SetStructuralLoadHandler());
+            Register(new Handlers.AnalyzeStructuralConnectionsHandler());
+            Register(new Handlers.TagStructuralFramingHandler());
+
+            // Wave 16: Rebar Creation (deferred from Wave 14)
+            Register(new Handlers.CreateRebarSetHandler());
+            Register(new Handlers.CreateRebarStirrupHandler());
+
+            // Wave 15: Final Fill
+            Register(new Handlers.SetProjectInfoHandler());
+            Register(new Handlers.GetModelWarningsSummaryHandler());
+            Register(new Handlers.PurgeUnusedHandler());
+            Register(new Handlers.CaptureViewImageHandler());
+            Register(new Handlers.SetViewCropHandler());
+            Register(new Handlers.SetViewScaleHandler());
+            Register(new Handlers.ActivateViewHandler());
+            Register(new Handlers.ShowElementInViewHandler());
+
             // A6 batch execution — needs dispatcher ref to look up sub-commands
             Register(new Handlers.BatchExecuteHandler(this));
             // ToolBaker runtime access.

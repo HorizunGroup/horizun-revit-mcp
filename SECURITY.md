@@ -49,8 +49,9 @@ bimwright runs on `127.0.0.1` only. The attack surface is:
 - Any non-localhost plugin bind requires explicit `BIMWRIGHT_ALLOW_LAN_BIND=1` opt-in.
 
 ### Dynamic code paths (`send_code_to_revit`, ToolBaker)
-- `send_code_to_revit` is Release-capable only after explicit adaptive-bake opt-in visible to the Revit plugin: set `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` in the plugin process environment, or set `enableAdaptiveBake` to `true` in `%LOCALAPPDATA%\Bimwright\bimwright.config.json`.
-- Each `send_code_to_revit` invocation still requires the existing per-call Revit TaskDialog confirmation before code executes.
+- `send_code_to_revit` is available in the default ToolBaker toolset and executes through the same local authenticated MCP channel as the rest of the Revit tools.
+- Adaptive bake is separate: it only enables suggestion/logging tools and is not required for `send_code_to_revit`.
+- Use `--read-only` or `--disable-toolbaker` when a host profile should not expose dynamic-code execution.
 - ToolBaker bakes require user approval per tool + operate under the host Revit process trust boundary. Production hardening, including signed-bake verification, remains tracked as v1.0 hardening work.
 
 ## Reporting a vulnerability

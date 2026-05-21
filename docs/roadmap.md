@@ -4,10 +4,10 @@ Rough direction, not a commitment. Dates are intent; scope is firmer.
 
 ## v0.3.0 — current (ToolBaker redesign release)
 
-- 32 MCP tools across 11 toolsets; 35 tools when adaptive bake is enabled.
+- 47 MCP tools across 11 toolsets; 50 tools when adaptive bake is enabled.
 - Progressive disclosure (`--toolsets`, `--read-only`).
 - `batch_execute` with Revit `TransactionGroup` semantics.
-- ToolBaker accepted-tool indirection via `list_baked_tools` / `run_baked_tool`, with adaptive suggestions default off.
+- ToolBaker accepted-tool indirection via `list_baked_tools` / `run_baked_tool`; `send_code_to_revit` is default-on and adaptive suggestions remain default off.
 - Security: loopback default, token auth, strict schema validation, path-leak mask.
 - Packaging: client setup ZIP with self-contained server + per-year plugin ZIPs; NuGet `dotnet tool` remains for developer/legacy install.
 - CI: matrix R22–R27 + server pack + xUnit.

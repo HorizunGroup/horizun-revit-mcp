@@ -27,6 +27,7 @@
     <Reference Include="PresentationFramework" />
     <Reference Include="WindowsBase" />
     <Reference Include="System.Xaml" />
+    <Reference Include="Microsoft.CSharp" />
   </ItemGroup>
 
   <!-- Shared source compiled into this project -->

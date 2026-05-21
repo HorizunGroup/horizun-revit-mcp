@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-32%20tools%20%7C%2035%20adaptive-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-175%20tools%20%7C%20178%20adaptive-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -111,7 +111,7 @@ Most Revit automation dies between "good idea" and "usable add-in".
 ToolBaker is the path from agent-assisted workflow to personal tool:
 
 1. Use the existing MCP tools to query, create, lint, inspect, or batch operations in Revit.
-2. When advanced automation is needed, opt into the `toolbaker` surface and enable adaptive bake before using `send_code_to_revit` with explicit Revit confirmation.
+2. When advanced automation is needed, call `send_code_to_revit` directly from the default tool surface.
 3. If adaptive bake is enabled, repeated local usage is recorded locally under `%LOCALAPPDATA%\Bimwright\`.
 4. Repeated patterns become suggestions, visible through `list_bake_suggestions`.
 5. You explicitly accept a suggestion with `accept_bake_suggestion`, including the tool name, schema, and output choice.
@@ -241,7 +241,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client none       # inst
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Years 2024        # force a Revit year if registry detection is unavailable
 ```
 
-The setup ZIP contains a self-contained `bimwright-rvt.exe`, so the client machine does not need `.NET 8 SDK`, `dotnet tool install`, or this repository. Config entries use the absolute installed path, so `%USERPROFILE%\.dotnet\tools` and PATH are not involved.
+The setup ZIP contains a self-contained `bimwright-rvt.exe`, so the client machine does not need `.NET 8 SDK`, `dotnet tool install`, or this repository. Config entries use the absolute installed path, so `%USERPROFILE%\.dotnet\tools` and PATH are not involved. The installer deploys plugins for every detected Revit year, then writes one auto-detect MCP entry named `bimwright-rvt`.
 
 ### Verify
 
@@ -300,27 +300,33 @@ This path is for development and backward compatibility. Client machines should 
 
 ## Toolsets
 
-The non-adaptive surface contains 32 tools across 11 toolsets. When adaptive bake is enabled, the surface expands to 35 tools.
+The non-adaptive surface contains 175 tools across 19 toolsets. When adaptive bake is enabled, the surface expands to 178 tools.
 
-Default-on toolsets: `query`, `create`, `view`, `meta`, `lint`.
+Default-on toolsets: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`.
 
-Optional toolsets: `modify`, `delete`, `annotation`, `export`, `mep`, `toolbaker`.
+Optional toolsets: `modify`, `delete`.
 
-Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--read-only` to strip `create`, `modify`, and `delete` regardless of what was requested.
+Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--read-only` to strip write-capable toolsets regardless of what was requested.
 
 | Toolset | Tools | Default |
 |---------|-------|---------|
 | `query` | get current view, selected elements, available family types, material quantities, model stats, AI element filter | on |
-| `create` | grid, level, room, line-based, point-based, surface-based element | on |
+| `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
 | `view` | create view, sheet layout, place view on sheet | on |
 | `meta` | `show_message`, `switch_target`, `batch_execute`, usage stats | on |
 | `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect | on |
-| `modify` | `operate_element`, `color_elements` | off |
+| `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
+| `modify` | `operate_element`, `color_elements`, parameter/type/workset edits | off |
 | `delete` | `delete_element` | off |
-| `annotation` | `tag_all_rooms`, `tag_all_walls` | off |
-| `export` | `export_room_data` | off |
-| `mep` | `detect_system_elements` | off |
-| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | off |
+| `annotation` | element/category tagging, text notes, dimensions, filled regions, detail lines, callouts, keynotes, untagged/undimensioned checks, empty-tag cleanup | on |
+| `export` | `export_room_data` | on |
+| `mep` | `detect_system_elements` | on |
+| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
+| `sheets` | sheet creation, duplication, placeholder sheets, list sheets, titleblock parameters, place schedule, revisions, sheet renumbering | on |
+| `materials` | list/create/duplicate materials, material appearance/identity/structural/thermal properties, material takeoff, element assignment | on |
+| `geometry` | element bounding box, element geometry, distance measurement, clash detection, raycasting, volume/area analysis, centroid, complexity | on |
+| `rooms` | rooms, areas, spaces, boundaries, openings, room separators, finishes, auto-room creation, area tagging | on |
+| `links` | Revit/CAD link listing, CAD import/link, Revit link load/unload/reload, link elements, coordinates, project base point | on |
 
 ### All Tools
 
@@ -332,14 +338,29 @@ Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--re
 | `query` | `ai_element_filter` | Filter by category and parameter/operator, values in mm. |
 | `query` | `analyze_model_statistics` | Element counts grouped by category. |
 | `query` | `get_material_quantities` | Area and volume totals for a category. |
+| `query` | `get_element_details` | Element metadata, location, bounding box, workset, phase, group, and assembly ids. |
+| `query` | `get_element_parameters` | Instance parameters with storage type, display value, raw value, and data/spec ids. |
+| `query` | `get_type_parameters` | Type parameters from type ids or from element ids. |
+| `query` | `list_project_parameters` | Project/shared parameter bindings, binding kind, and categories. |
+| `query` | `get_element_relationships` | Host, group, assembly, owner view, design option, nesting, and dependents. |
+| `query` | `list_groups` | Group instances with type, attached/detail metadata, and optional member ids. |
+| `query` | `get_group_members` | Members of a group instance with category, type, owner view, and pinned state. |
+| `query` | `list_assemblies` | Assembly instances with type, naming category, member count, and optional member ids. |
+| `query` | `get_assembly_members` | Members of an assembly instance with category, type, group, and workset ids. |
+| `query` | `list_worksets` | Worksets, active workset, edit/open state, and optional element counts. |
 | `create` | `create_line_based_element` | Wall or other line-based element. |
 | `create` | `create_point_based_element` | Door, window, furniture or other point element. |
 | `create` | `create_surface_based_element` | Floor or ceiling from a polyline. |
 | `create` | `create_level` | Level at elevation in mm. |
 | `create` | `create_grid` | Grid line between two points in mm. |
 | `create` | `create_room` | Room at a point, bound by walls. |
+| `create` | `create_group_from_elements` | Create a model/detail group from two or more elements. |
 | `modify` | `operate_element` | Select, hide, unhide, isolate, or set-color on IDs. |
 | `modify` | `color_elements` | Color-code a category by parameter value. |
+| `modify` | `set_element_parameter_values` | Set an instance parameter across multiple elements. |
+| `modify` | `set_type_parameter_values` | Set a type parameter across explicit or element-resolved types. |
+| `modify` | `change_element_type` | Change elements to a target compatible type. |
+| `modify` | `assign_elements_to_workset` | Assign elements to a user workset in a workshared model. |
 | `delete` | `delete_element` | Delete by ID list. Keep off unless explicitly needed. |
 | `view` | `create_view` | Floor plan or 3D view. |
 | `view` | `place_view_on_sheet` | Drop a view onto a new or existing sheet. |
@@ -348,7 +369,7 @@ Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--re
 | `annotation` | `tag_all_walls` | Wall-type tags at midpoint; skips already tagged. |
 | `annotation` | `tag_all_rooms` | Room tags at location point; skips already tagged. |
 | `mep` | `detect_system_elements` | Traverse connectors from a seed and return system members. |
-| `toolbaker` | `send_code_to_revit` | Run ad-hoc C# inside Revit after explicit opt-in and confirmation. |
+| `toolbaker` | `send_code_to_revit` | Compile and run ad-hoc C# inside Revit from the default tool surface. |
 | `toolbaker` | `list_baked_tools` | List accepted personal baked tools. |
 | `toolbaker` | `run_baked_tool` | Invoke an accepted baked tool by name. |
 | `toolbaker` | `list_bake_suggestions` | Adaptive bake only: list local suggestions. |
@@ -387,7 +408,7 @@ Short version: your model stays on your machine.
 - **Per-session token handshake.** Discovery files under `%LOCALAPPDATA%\Bimwright\` carry connection information and auth token.
 - **Schema validation.** Malformed tool calls are rejected before command handlers run.
 - **Path masking.** Errors returned to the model are sanitized to avoid leaking absolute paths.
-- **ToolBaker opt-in.** Adaptive bake and send-code paths require explicit enablement; `send_code_to_revit` still requires Revit-side confirmation.
+- **ToolBaker controls.** `send_code_to_revit` is available by default. Adaptive bake remains opt-in and only controls suggestion/logging features; `--read-only` or `--disable-toolbaker` removes the ToolBaker surface.
 - **Local storage.** Usage events, bake database, logs, and accepted-tool metadata stay under local Bimwright storage.
 
 See [SECURITY.md](SECURITY.md) for disclosure and threat-model details.
@@ -404,7 +425,7 @@ Three layers, later wins: JSON file, then env vars, then CLI args.
 | Toolsets | `--toolsets query,create` | `BIMWRIGHT_TOOLSETS` | `toolsets` |
 | Read-only | `--read-only` | `BIMWRIGHT_READ_ONLY=1` | `readOnly` |
 | Allow LAN bind | plugin-side only | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
-| Allow ToolBaker when selected | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
+| Allow ToolBaker tools | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
 | Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
 | Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
 

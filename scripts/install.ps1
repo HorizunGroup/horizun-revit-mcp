@@ -115,23 +115,22 @@ function Find-ServerSourceExe {
     return $null
 }
 
-function Get-BimwrightYearTargets {
+function Get-BimwrightClientTargets {
     param(
         [int[]]$years,
         [string]$serverCommand
     )
-    $targets = @()
-    foreach ($y in $years) {
-        if ($y -lt 2022 -or $y -gt 2027) { continue }
-        $yt = "{0:D2}" -f ($y - 2000)
-        $targets += [pscustomobject]@{
-            Year      = $y
-            YearTwo   = $yt
-            Target    = "R$yt"
-            ServerCmd = $serverCommand
-        }
+    $supportedYears = @($years | Where-Object { $_ -ge 2022 -and $_ -le 2027 })
+    if ($supportedYears.Count -eq 0) {
+        return @()
     }
-    return $targets
+
+    return ,([pscustomobject]@{
+        Name      = 'bimwright-rvt'
+        ServerCmd = $serverCommand
+        Args      = @()
+        Years     = $supportedYears
+    })
 }
 
 function Write-ConfigAtomic {
@@ -199,6 +198,27 @@ function ConvertTo-TomlString {
     return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+function ConvertTo-TomlStringArray {
+    param([object[]]$Values)
+    $items = @()
+    foreach ($v in @($Values)) {
+        if ($null -ne $v) {
+            $items += (ConvertTo-TomlString -Value ([string]$v))
+        }
+    }
+    return '[' + ($items -join ', ') + ']'
+}
+
+function Remove-LegacyBimwrightEntries {
+    param([Parameter(Mandatory = $true)][hashtable]$Map)
+
+    $keys = @($Map.Keys | Where-Object { $_ -match '^bimwright-rvt-r\d{2}$' })
+    foreach ($k in $keys) {
+        $Map.Remove($k) | Out-Null
+    }
+    return $keys.Count
+}
+
 function Install-BimwrightServer {
     param(
         [string]$ServerDir,
@@ -246,15 +266,16 @@ function Add-OpencodeEntry {
 
     $desired = @{}
     foreach ($t in $Targets) {
-        $name = "bimwright-rvt-r$($t.YearTwo)"
+        $name = $t.Name
         $desired[$name] = [ordered]@{
             type    = 'local'
-            command = @($t.ServerCmd, '--target', $t.Target)
+            command = @($t.ServerCmd) + @($t.Args)
             enabled = $true
         }
     }
 
-    $changed = $false
+    $legacyRemoved = Remove-LegacyBimwrightEntries -Map $cfg['mcp']
+    $changed = $legacyRemoved -gt 0
     foreach ($k in $desired.Keys) {
         $existingJson = if ($cfg['mcp'].ContainsKey($k)) { ($cfg['mcp'][$k] | ConvertTo-Json -Depth 20 -Compress) } else { $null }
         $newJson = $desired[$k] | ConvertTo-Json -Depth 20 -Compress
@@ -269,10 +290,10 @@ function Add-OpencodeEntry {
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert bimwright-rvt-* entries')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert bimwright-rvt entry')) {
         $content = $cfg | ConvertTo-Json -Depth 50
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $content
-        Write-Host ("[opencode] wired {0} entries -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
+        Write-Host ("[opencode] wired {0} entry -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
     }
     return $true
 }
@@ -295,16 +316,22 @@ function Add-CodexEntry {
     if ($null -eq $raw) { $raw = '' }
 
     $changed = $false
+    $legacyPattern = '(?ms)^\[mcp_servers\.bimwright-rvt-r\d{2}\].*?(?=^\[|\z)'
+    if ([regex]::IsMatch($raw, $legacyPattern)) {
+        $raw = [regex]::Replace($raw, $legacyPattern, '')
+        $raw = [regex]::Replace($raw, "(\r?\n){3,}", "`n`n")
+        $changed = $true
+    }
 
     foreach ($t in $Targets) {
-        $name = "bimwright-rvt-r$($t.YearTwo)"
+        $name = $t.Name
         $headerLiteral = "[mcp_servers.$name]"
         $commandValue = ConvertTo-TomlString -Value $t.ServerCmd
-        $targetValue = ConvertTo-TomlString -Value $t.Target
+        $argsValue = ConvertTo-TomlStringArray -Values $t.Args
         $desiredBlock = @"
 $headerLiteral
 command = $commandValue
-args = ["--target", $targetValue]
+args = $argsValue
 enabled = true
 "@
 
@@ -329,9 +356,9 @@ enabled = true
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert [mcp_servers.bimwright-rvt-*] blocks')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert [mcp_servers.bimwright-rvt] block')) {
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $raw
-        Write-Host ("[codex] wired bimwright-rvt-* blocks -> {0} (backup: {1})" -f $ConfigPath, $bak)
+        Write-Host ("[codex] wired bimwright-rvt block -> {0} (backup: {1})" -f $ConfigPath, $bak)
     }
     return $true
 }
@@ -361,14 +388,15 @@ function Add-ClaudeEntry {
 
     $desired = @{}
     foreach ($t in $Targets) {
-        $name = "bimwright-rvt-r$($t.YearTwo)"
+        $name = $t.Name
         $desired[$name] = [ordered]@{
             command = $t.ServerCmd
-            args = @('--target', $t.Target)
+            args = @($t.Args)
         }
     }
 
-    $changed = $false
+    $legacyRemoved = Remove-LegacyBimwrightEntries -Map $cfg['mcpServers']
+    $changed = $legacyRemoved -gt 0
     foreach ($k in $desired.Keys) {
         $existingJson = if ($cfg['mcpServers'].ContainsKey($k)) { ($cfg['mcpServers'][$k] | ConvertTo-Json -Depth 20 -Compress) } else { $null }
         $newJson = $desired[$k] | ConvertTo-Json -Depth 20 -Compress
@@ -383,10 +411,10 @@ function Add-ClaudeEntry {
         return $true
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert mcpServers.bimwright-rvt-* entries')) {
+    if ($PSCmdlet.ShouldProcess($ConfigPath, 'Upsert mcpServers.bimwright-rvt entry')) {
         $content = $cfg | ConvertTo-Json -Depth 50
         $bak = Write-ConfigAtomic -Path $ConfigPath -Content $content
-        Write-Host ("[claude] wired {0} entries -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
+        Write-Host ("[claude] wired {0} entry -> {1} (backup: {2})" -f $desired.Count, $ConfigPath, $bak)
     }
     return $true
 }
@@ -533,7 +561,7 @@ if (-not $Uninstall -and $Client -ne 'none') {
             Write-Warning "[wire] no server command available - install from setup ZIP or install Bimwright.Rvt.Server first"
         }
     } else {
-        $targets = Get-BimwrightYearTargets -years $Years -serverCommand $serverCommand
+        $targets = Get-BimwrightClientTargets -years $Years -serverCommand $serverCommand
         if ($targets.Count -eq 0) {
             Write-Warning "[wire] no plugin-supported Revit years (2022-2027) detected - skipping wire"
         } else {

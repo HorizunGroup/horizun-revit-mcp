@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-32%20tools%20%7C%2035%20adaptive-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-175%20tools%20%7C%20178%20adaptive-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -88,7 +88,7 @@ AI agent 让 BIM 用户可以描述意图，而不是手写代码。但只有意
 ToolBaker 是从 agent-assisted workflow 走向个人工具的路径：
 
 1. 使用现有 MCP tools 在 Revit 里 query、create、lint、inspect 或 batch operations。
-2. 当需要更高级的 automation 时，opt in `toolbaker`，启用 adaptive bake，然后在明确 Revit confirmation 后使用 `send_code_to_revit`。
+2. 当需要更高级的 automation 时，直接从默认 tool surface 调用 `send_code_to_revit`。
 3. 如果 adaptive bake 已启用，重复的本地 usage 会记录在 `%LOCALAPPDATA%\Bimwright\` 下。
 4. 重复 pattern 会变成 suggestion，可通过 `list_bake_suggestions` 查看。
 5. 你显式通过 `accept_bake_suggestion` 接受 suggestion，包括 tool name、schema 和 output choice。
@@ -229,20 +229,20 @@ pwsh .\install.ps1 -Uninstall              # 仅卸载 plugin
 
 ### 3. Wire MCP client
 
-在 MCP client config 中为每个 Revit 年份添加一个 entry：
+在 MCP client config 中只添加一个 auto-detect entry：
 
 ```json
 {
   "mcpServers": {
-    "bimwright-rvt-r23": {
+    "bimwright-rvt": {
       "command": "bimwright-rvt",
-      "args": ["--target", "R23"]
+      "args": []
     }
   }
 }
 ```
 
-如果希望通过 `%LOCALAPPDATA%\Bimwright\` 里的 discovery files auto-detect，可以去掉 `--target`，只保留一个 `bimwright-rvt` entry。
+Installer 仍会为所有 detect 到的 Revit 年份部署 plugin；如果多个 Revit 版本同时运行，用 `switch_target` tool 切换连接。
 
 ### OpenCode / Codex scripted wire
 
@@ -306,27 +306,33 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 
 ## Toolsets
 
-非 adaptive surface 包含 32 个 tools，分布在 11 个 toolsets。启用 adaptive bake 后，surface 扩展到 35 个 tools。
+非 adaptive surface 包含 175 个 tools，分布在 19 个 toolsets。启用 adaptive bake 后，surface 扩展到 178 个 tools。
 
-默认启用 toolsets：`query`、`create`、`view`、`meta`、`lint`。
+默认启用 toolsets：`query`、`create`、`view`、`schedule`、`families`、`mep`、`graphics`、`export`、`toolbaker`、`meta`、`lint`、`sheets`、`materials`、`geometry`、`annotation`、`rooms`、`links`。
 
-可选 toolsets：`modify`、`delete`、`annotation`、`export`、`mep`、`toolbaker`。
+可选 toolsets：`modify`、`delete`。
 
-使用 `--toolsets query,create,modify,meta` 或 `--toolsets all` 启用。加上 `--read-only` 会移除 `create`、`modify`、`delete`，无论它们是如何被请求的。
+使用 `--toolsets query,create,modify,meta` 或 `--toolsets all` 启用。加上 `--read-only` 会移除 write-capable toolsets，无论它们是如何被请求的。
 
 | Toolset | Tools | Default |
 |---------|-------|---------|
 | `query` | current view, selected elements, family types, material quantities, model stats, AI element filter | on |
-| `create` | grid, level, room, line-based, point-based, surface-based element | on |
+| `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
 | `view` | create view, sheet layout, place view on sheet | on |
 | `meta` | `show_message`, `switch_target`, `batch_execute`, usage stats | on |
 | `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect | on |
-| `modify` | `operate_element`, `color_elements` | off |
+| `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
+| `modify` | `operate_element`, `color_elements`, parameter/type/workset edits | off |
 | `delete` | `delete_element` | off |
-| `annotation` | `tag_all_rooms`, `tag_all_walls` | off |
-| `export` | `export_room_data` | off |
-| `mep` | `detect_system_elements` | off |
-| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | off |
+| `annotation` | element/category 标注、文字注释、尺寸标注、filled region、detail line、callout、keynote、未标注/未尺寸检查、空 tag 清理 | on |
+| `export` | `export_room_data` | on |
+| `mep` | `detect_system_elements` | on |
+| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
+| `sheets` | sheet 创建、复制、占位符 sheet、列表 sheet、图纸标题栏参数设置、明细表放置、版本修订及关联、图纸重命名/重编号 | on |
+| `materials` | 列表/创建/复制材质，设置外观/身份/结构/热力属性，材质工程量统计，分配材质到图元 | on |
+| `geometry` | 图元包围盒、几何实体信息、测量图元间距、冲突碰撞检测、射线投射、体积和面积分析、图元形心位置、几何复杂度分析 | on |
+| `rooms` | rooms、areas、spaces、边界、洞口、room separator、finishes、自动创建 rooms、area tag | on |
+| `links` | Revit/CAD link 列表、CAD import/link、Revit link load/unload/reload、link elements、坐标、project base point | on |
 
 ### 全部 tools
 
@@ -338,14 +344,29 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 | `query` | `ai_element_filter` | 按 category 和 parameter/operator filter，数值单位为 mm. |
 | `query` | `analyze_model_statistics` | 按 category 统计 element 数量. |
 | `query` | `get_material_quantities` | 某 category 的 area 和 volume 汇总. |
+| `query` | `get_element_details` | Element metadata、location、bounding box、workset、phase、group 和 assembly ids. |
+| `query` | `get_element_parameters` | Instance parameters: storage type、display value、raw value 和 data/spec ids. |
+| `query` | `get_type_parameters` | 从 type ids 或 element ids 读取 type parameters. |
+| `query` | `list_project_parameters` | Project/shared parameter bindings、binding kind 和 categories. |
+| `query` | `get_element_relationships` | Host、group、assembly、owner view、design option、nesting 和 dependents. |
+| `query` | `list_groups` | Group instances with type、attached/detail metadata 和 optional member ids. |
+| `query` | `get_group_members` | Group instance members with category、type、owner view 和 pinned state. |
+| `query` | `list_assemblies` | Assembly instances with type、naming category、member count 和 optional member ids. |
+| `query` | `get_assembly_members` | Assembly instance members with category、type、group 和 workset ids. |
+| `query` | `list_worksets` | Worksets、active workset、edit/open state 和 optional element counts. |
 | `create` | `create_line_based_element` | Wall 或其他 line-based element. |
 | `create` | `create_point_based_element` | Door, window, furniture 或其他 point element. |
 | `create` | `create_surface_based_element` | 从 polyline 创建 floor 或 ceiling. |
 | `create` | `create_level` | 按 mm elevation 创建 level. |
 | `create` | `create_grid` | 按两个点创建 grid line，单位 mm. |
 | `create` | `create_room` | 在 point 创建 room，由 walls 围合. |
+| `create` | `create_group_from_elements` | 从两个或多个 elements 创建 group. |
 | `modify` | `operate_element` | Select, hide, unhide, isolate 或按 IDs set-color. |
 | `modify` | `color_elements` | 按 parameter value 给 category 上色. |
+| `modify` | `set_element_parameter_values` | 批量设置 elements 的 instance parameter. |
+| `modify` | `set_type_parameter_values` | 设置 type ids 或 element-resolved types 的 type parameter. |
+| `modify` | `change_element_type` | 将 elements 切换到兼容的 target type. |
+| `modify` | `assign_elements_to_workset` | 在 workshared model 中把 elements 分配到 user workset. |
 | `delete` | `delete_element` | 按 ID list 删除。除非明确需要，否则保持关闭. |
 | `view` | `create_view` | 创建 floor plan 或 3D view. |
 | `view` | `place_view_on_sheet` | 把 view 放到新 sheet 或现有 sheet 上. |
@@ -354,7 +375,7 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 | `annotation` | `tag_all_walls` | 在 midpoint 打 wall-type tag，跳过已 tag 的 wall. |
 | `annotation` | `tag_all_rooms` | 在 location point 打 room tag，跳过已 tag 的 room. |
 | `mep` | `detect_system_elements` | 从 seed 沿 connectors traverse，返回 system members. |
-| `toolbaker` | `send_code_to_revit` | 明确 opt-in 和 confirmation 后，在 Revit 中运行 ad-hoc C#. |
+| `toolbaker` | `send_code_to_revit` | 从默认 tool surface 在 Revit 中 compile 并运行 ad-hoc C#. |
 | `toolbaker` | `list_baked_tools` | 列出已 accept 的 personal baked tools. |
 | `toolbaker` | `run_baked_tool` | 按名称调用 accepted baked tool. |
 | `toolbaker` | `list_bake_suggestions` | Adaptive bake only: 列出 local suggestions. |
@@ -393,7 +414,7 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 - **Per-session token handshake。** `%LOCALAPPDATA%\Bimwright\` 下的 discovery files 包含 connection info 和 auth token。
 - **Schema validation。** 错误 shape 的 tool call 会在 command handler 运行前被 reject。
 - **Path masking。** 返回给 model 的 error 会 sanitize，避免泄露 absolute path。
-- **ToolBaker opt-in。** Adaptive bake 和 send-code paths 需要明确启用；`send_code_to_revit` 仍需要 Revit-side confirmation。
+- **ToolBaker controls。** `send_code_to_revit` 默认可用。Adaptive bake 仍是 opt-in，只控制 suggestion/logging；`--read-only` 或 `--disable-toolbaker` 会移除 ToolBaker surface。
 - **Local storage。** Usage events、bake database、logs 和 accepted-tool metadata 都在本地 Bimwright storage。
 
 详见 [SECURITY.md](SECURITY.md) 的 threat model 和 vulnerability disclosure 流程。
@@ -410,7 +431,7 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 | Toolsets | `--toolsets query,create` | `BIMWRIGHT_TOOLSETS` | `toolsets` |
 | Read-only | `--read-only` | `BIMWRIGHT_READ_ONLY=1` | `readOnly` |
 | Allow LAN bind | plugin-side only | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
-| Allow ToolBaker when selected | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
+| Allow ToolBaker tools | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
 | Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
 | Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
 

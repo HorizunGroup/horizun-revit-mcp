@@ -102,6 +102,20 @@ namespace Bimwright.Rvt.Plugin.Handlers
 
                 if (r.Success)
                 {
+                    if (TryGetPartialFailureCount(r.Data, out var failedCount))
+                    {
+                        outcome.Results.Add(new
+                        {
+                            index = i,
+                            ok = false,
+                            error = $"Command completed with {failedCount} partial failure(s).",
+                            data = r.Data
+                        });
+                        outcome.AnyFailed = true;
+                        if (!continueOnError) return outcome;
+                        continue;
+                    }
+
                     outcome.Results.Add(new { index = i, ok = true, data = r.Data });
                 }
                 else
@@ -120,6 +134,29 @@ namespace Bimwright.Rvt.Plugin.Handlers
 
         public static string RunBakedToolNotSupportedMessage() =>
             "run_baked_tool cannot be invoked through batch_execute; call run_baked_tool directly.";
+
+        private static bool TryGetPartialFailureCount(object data, out int failedCount)
+        {
+            failedCount = 0;
+            if (data == null)
+                return false;
+
+            try
+            {
+                var obj = data as JObject ?? JObject.FromObject(data);
+                var token = obj["failedCount"];
+                if (token == null || token.Type != JTokenType.Integer)
+                    return false;
+
+                failedCount = token.Value<int>();
+                return failedCount > 0;
+            }
+            catch
+            {
+                failedCount = 0;
+                return false;
+            }
+        }
 
         public class InvokeResult
         {
