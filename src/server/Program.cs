@@ -2165,6 +2165,9 @@ namespace Bimwright.Rvt.Server
             string client_name = null, string address = null,
             string status = null, string issue_date = null)
         {
+            var blocked = ServerState.BlockIfReadOnly("set_project_info");
+            if (blocked != null) return blocked;
+
             try
             {
                 var result = await ToolGateway.SendToRevit("set_project_info", new
@@ -2392,6 +2395,12 @@ namespace Bimwright.Rvt.Server
             double? force_x = null, double? force_y = null, double? force_z = null,
             double? moment_x = null, double? moment_y = null, double? moment_z = null)
         {
+            if (string.Equals(action, "update", StringComparison.OrdinalIgnoreCase))
+            {
+                var blocked = ServerState.BlockIfReadOnly("set_structural_load");
+                if (blocked != null) return blocked;
+            }
+
             try
             {
                 var result = await ToolGateway.SendToRevit("set_structural_load", new
