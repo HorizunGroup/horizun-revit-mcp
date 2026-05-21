@@ -1,4 +1,4 @@
-# Wave 12 - View Templates + Selection Target Implementation Spec
+﻿# Wave 12 - View Templates + Selection Target Implementation Spec
 
 ## Status
 
@@ -864,11 +864,11 @@ Implementation must update the following files when the wave is built:
     and return `JsonConvert.SerializeObject(result, Formatting.Indented)`.
 - `src/server/ToolsetFilter.cs`
   - Add `organization` to `KnownToolsets`, `DefaultOn`, and `WriteCapable`.
-- `tests/Bimwright.Rvt.Tests/ToolsetFilterTests.cs`
+- `tests/RvtMcp.Tests/ToolsetFilterTests.cs`
   - Update hardcoded known toolset count and write-capable expectations.
 - Golden snapshots:
-  - Refresh `tests/Bimwright.Rvt.Tests/Golden/tools-list.json`.
-  - Refresh `tests/Bimwright.Rvt.Tests/Golden/tools-list-adaptive-bake.json`.
+  - Refresh `tests/RvtMcp.Tests/Golden/tools-list.json`.
+  - Refresh `tests/RvtMcp.Tests/Golden/tools-list-adaptive-bake.json`.
 - Public docs after implementation:
   - Update README/tool tables and `CHANGELOG.md` in the implementation PR.
 

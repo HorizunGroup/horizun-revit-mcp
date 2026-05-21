@@ -1,4 +1,4 @@
-# Wave 11 - Shared + Project Parameters Target Implementation Spec
+﻿# Wave 11 - Shared + Project Parameters Target Implementation Spec
 
 ## Status
 
@@ -97,7 +97,7 @@ Out of scope:
   - `sharedParameterFilePath` must be absolute when supplied.
   - If omitted, use `app.Application.SharedParametersFilename`.
   - If both are empty and a creation tool has `createFileIfMissing=true`, use:
-    `%LOCALAPPDATA%\Bimwright\shared-parameters.txt`.
+    `%LOCALAPPDATA%\RvtMcp\shared-parameters.txt`.
   - If the implementation temporarily changes
     `app.Application.SharedParametersFilename`, restore the original value in
     `finally`.
@@ -922,11 +922,11 @@ Implementation must update the following files when the wave is built:
     and return `JsonConvert.SerializeObject(result, Formatting.Indented)`.
 - `src/server/ToolsetFilter.cs`
   - Add `parameters` to `KnownToolsets`, `DefaultOn`, and `WriteCapable`.
-- `tests/Bimwright.Rvt.Tests/ToolsetFilterTests.cs`
+- `tests/RvtMcp.Tests/ToolsetFilterTests.cs`
   - Update hardcoded known toolset count and write-capable expectations.
 - Golden snapshots:
-  - Refresh `tests/Bimwright.Rvt.Tests/Golden/tools-list.json`.
-  - Refresh `tests/Bimwright.Rvt.Tests/Golden/tools-list-adaptive-bake.json`.
+  - Refresh `tests/RvtMcp.Tests/Golden/tools-list.json`.
+  - Refresh `tests/RvtMcp.Tests/Golden/tools-list-adaptive-bake.json`.
 - Public docs after implementation:
   - Update README/tool tables and `CHANGELOG.md` in the implementation PR.
 

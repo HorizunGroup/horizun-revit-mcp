@@ -1,4 +1,4 @@
-# Contributing to Bimwright
+﻿# Contributing to Bimwright
 
 Thanks for your interest. Bimwright is a solo-maintained project shipping its first public release; this guide is the short version. Open an issue before a large PR so we can agree on scope.
 
@@ -19,20 +19,20 @@ The Revit API itself is pulled from [Nice3point.Revit.Api.*](https://www.nuget.o
 ```bash
 git clone https://github.com/bimwright/rvt-mcp.git
 cd rvt-mcp
-dotnet build src/Bimwright.Rvt.sln -c Debug
+dotnet build src/RvtMcp.sln -c Debug
 ```
 
-**Close every running Revit before building.** Plugin DLLs auto-deploy to `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` as part of the build, and Revit holds a file lock on loaded add-ins.
+**Close every running Revit before building.** Plugin DLLs auto-deploy to `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` as part of the build, and Revit holds a file lock on loaded add-ins.
 
 Build output lands in `src/plugin-r<nn>/bin/Debug/<tfm>/` and `src/server/bin/Debug/net8.0/`. The deploy target copies plugin DLLs + the `.addin` manifest into the Revit addins folder so the next Revit launch picks them up.
 
 ### Run tests
 
 ```bash
-dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj
+dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 ```
 
-Tests are pure .NET 8 xUnit, no Revit dependency — they cover `ErrorSanitizer`, `SchemaValidator`, `BimwrightConfig`, `ToolsetFilter`, and `BatchExecutor`. Anything that needs a live Revit document is tested manually.
+Tests are pure .NET 8 xUnit, no Revit dependency — they cover `ErrorSanitizer`, `SchemaValidator`, `RvtMcpConfig`, `ToolsetFilter`, and `BatchExecutor`. Anything that needs a live Revit document is tested manually.
 
 ### Package the plugin ZIPs
 
@@ -40,7 +40,7 @@ Tests are pure .NET 8 xUnit, no Revit dependency — they cover `ErrorSanitizer`
 pwsh scripts/stage-plugin-zip.ps1 -Config Release
 ```
 
-Produces `build/plugin-zip/Bimwright.Rvt.Plugin.R{22..27}.zip`. Run this before cutting a plugin release bundle.
+Produces `build/plugin-zip/RvtMcp.Plugin.R{22..27}.zip`. Run this before cutting a plugin release bundle.
 
 ## Project layout
 
@@ -54,9 +54,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the conceptual model. Quick reference
 | `src/shared/Transport/` | `ITransportServer`, TCP + Named Pipe implementations |
 | `src/shared/Security/` | `AuthToken`, `ErrorSanitizer`, `SecretMasker` |
 | `src/shared/ToolBaker/` | Roslyn-based self-evolution engine |
-| `src/shared/Config/` | `BimwrightConfig` — 3-layer precedence |
+| `src/shared/Config/` | `RvtMcpConfig` — 3-layer precedence |
 | `src/plugin-r<nn>/` | Revit-year shell: `App.cs`, `RibbonSetup.cs`, csproj, `.addin` |
-| `tests/Bimwright.Rvt.Tests/` | xUnit tests (pure .NET 8, no Revit API) |
+| `tests/RvtMcp.Tests/` | xUnit tests (pure .NET 8, no Revit API) |
 | `scripts/` | `stage-plugin-zip.ps1`, `install.ps1` |
 | `.github/workflows/` | CI matrix build |
 
@@ -66,7 +66,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the conceptual model. Quick reference
 2. Register in `src/shared/Infrastructure/CommandDispatcher.cs` constructor: `Register(new Handlers.YourHandler());`.
 3. Add an `[McpServerTool]` method in the appropriate toolset class under `src/server/` (e.g. `QueryTools.cs`, `CreateTools.cs`). Use the 4-part description template: what, when-to-use, params, example.
 4. If the tool mutates model state, put it in `CreateTools` / `ModifyTools` / `DeleteTools` (off by default).
-5. Cover any non-trivial logic with an xUnit test in `tests/Bimwright.Rvt.Tests/`. Extract pure functions where possible — `BatchExecutor.Run` is a good template.
+5. Cover any non-trivial logic with an xUnit test in `tests/RvtMcp.Tests/`. Extract pure functions where possible — `BatchExecutor.Run` is a good template.
 6. Manual smoke test in at least one Revit year before PR.
 
 ## Coding style
@@ -91,12 +91,12 @@ Open a GitHub issue with:
 - Revit version + year.
 - Bimwright server version (`bimwright --version`) and plugin version (check the `.addin` manifest).
 - Reproduction steps — ideally the exact MCP tool call and params.
-- Logs from `%LOCALAPPDATA%\Bimwright\` — but **check for paths you don't want to share** (the sanitizer masks absolute paths in errors sent to the model, but local log files are unredacted).
+- Logs from `%LOCALAPPDATA%\RvtMcp\` — but **check for paths you don't want to share** (the sanitizer masks absolute paths in errors sent to the model, but local log files are unredacted).
 
 ## Testing & drift detection
 
 ### Schema drift
-The canonical tool surface is snapshot to `tests/Bimwright.Rvt.Tests/Golden/tools-list.json`. CI compares each build against this file. A diff fails the build.
+The canonical tool surface is snapshot to `tests/RvtMcp.Tests/Golden/tools-list.json`. CI compares each build against this file. A diff fails the build.
 
 When you intentionally add, rename, or reshape a tool:
 1. Run `UPDATE_SNAPSHOTS=1 dotnet test` locally.

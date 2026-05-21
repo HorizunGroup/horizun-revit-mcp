@@ -1,4 +1,4 @@
-# Security Policy
+﻿# Security Policy
 
 ## Supported Versions
 
@@ -13,7 +13,7 @@ Security updates are provided for the latest minor release series only.
 
 bimwright runs on `127.0.0.1` only. The attack surface is:
 
-- Local processes that can read the discovery file (`%LOCALAPPDATA%\Bimwright\portR22.txt` / `pipeR27.txt`, etc.)
+- Local processes that can read the discovery file (`%LOCALAPPDATA%\RvtMcp\portR22.txt` / `pipeR27.txt`, etc.)
 - Local processes that can connect to the TCP port or Named Pipe
 - Code executed via `send_code_to_revit` or materialized by the ToolBaker engine
 

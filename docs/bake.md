@@ -1,4 +1,4 @@
-# Adaptive Bake
+﻿# Adaptive Bake
 
 Adaptive bake turns repeated local Revit workflows into personal tools only after explicit opt-in and acceptance. It is off by default.
 
@@ -8,7 +8,7 @@ Set the master flag before starting the MCP server:
 
 ```powershell
 $env:BIMWRIGHT_ENABLE_ADAPTIVE_BAKE = "1"
-bimwright-rvt
+rvt-mcp
 ```
 
 Or set JSON config:
@@ -19,7 +19,7 @@ Or set JSON config:
 }
 ```
 
-Config path: `%LOCALAPPDATA%\Bimwright\bimwright.config.json`.
+Config path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`.
 
 `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` takes effect at the next MCP server start. If you change the flag while a Claude Code session is active, restart the MCP connection with disconnect -> reconnect via `/mcp` so `list_bake_suggestions`, `accept_bake_suggestion`, and `dismiss_bake_suggestion` appear.
 
@@ -47,13 +47,13 @@ Even with code caching enabled, long-lived journals and usage logs store redacte
 
 ## Local Storage
 
-All adaptive-bake storage is local to the current Windows user under `%LOCALAPPDATA%\Bimwright\`.
+All adaptive-bake storage is local to the current Windows user under `%LOCALAPPDATA%\RvtMcp\`.
 
 Key files:
 
-- `%LOCALAPPDATA%\Bimwright\usage.jsonl` - append-only local usage events.
-- `%LOCALAPPDATA%\Bimwright\bake.db` - SQLite suggestions and accepted-tool registry.
-- `%LOCALAPPDATA%\Bimwright\bake-audit.jsonl` - local suggestion and lifecycle audit events.
+- `%LOCALAPPDATA%\RvtMcp\usage.jsonl` - append-only local usage events.
+- `%LOCALAPPDATA%\RvtMcp\bake.db` - SQLite suggestions and accepted-tool registry.
+- `%LOCALAPPDATA%\RvtMcp\bake-audit.jsonl` - local suggestion and lifecycle audit events.
 
 The server is the only writer for `bake.db`. The Revit plugin opens `bake.db` read-only, loads accepted tools into memory, and owns the runtime/ribbon surface.
 

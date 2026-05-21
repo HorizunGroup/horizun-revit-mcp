@@ -1,4 +1,4 @@
-<!-- mcp-name: io.github.bimwright/rvt-mcp -->
+﻿<!-- mcp-name: io.github.bimwright/rvt-mcp -->
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/bimwright/.github/master/assets/logos/rvt-mcp.png" alt="rvt-mcp" width="180" />
@@ -55,8 +55,8 @@
 
 它由两部分组成：
 
-- `Bimwright.Rvt.Server`：.NET 8 MCP server，由 Claude、Cursor、Codex、OpenCode、Cline、VS Code Copilot 或其他 stdio MCP client 启动。
-- `Bimwright.Rvt.Plugin`：每个 Revit 年份一个 add-in shell，运行在 Revit 内部，并在 Revit UI thread 上执行命令。
+- `RvtMcp.Server`：.NET 8 MCP server，由 Claude、Cursor、Codex、OpenCode、Cline、VS Code Copilot 或其他 stdio MCP client 启动。
+- `RvtMcp.Plugin`：每个 Revit 年份一个 add-in shell，运行在 Revit 内部，并在 Revit UI thread 上执行命令。
 
 Agent 说 MCP。Server 通过 localhost TCP 或 Named Pipe 和 plugin 通信。Plugin 和 Revit API 通信。
 
@@ -89,7 +89,7 @@ ToolBaker 是从 agent-assisted workflow 走向个人工具的路径：
 
 1. 使用现有 MCP tools 在 Revit 里 query、create、lint、inspect 或 batch operations。
 2. 当需要更高级的 automation 时，直接从默认 tool surface 调用 `send_code_to_revit`。
-3. 如果 adaptive bake 已启用，重复的本地 usage 会记录在 `%LOCALAPPDATA%\Bimwright\` 下。
+3. 如果 adaptive bake 已启用，重复的本地 usage 会记录在 `%LOCALAPPDATA%\RvtMcp\` 下。
 4. 重复 pattern 会变成 suggestion，可通过 `list_bake_suggestions` 查看。
 5. 你显式通过 `accept_bake_suggestion` 接受 suggestion，包括 tool name、schema 和 output choice。
 6. Accepted tools 可以通过 `list_baked_tools` / `run_baked_tool` 调用，也会进入 Revit ribbon runtime cache。
@@ -109,7 +109,7 @@ Adaptive bake 默认关闭。它适合希望用自己的本地使用数据塑造
               | stdio MCP
               v
 +---------------------------+
-| Bimwright.Rvt.Server      |
+| RvtMcp.Server      |
 | .NET 8 / C#               |
 +---------------------------+
               |
@@ -168,8 +168,8 @@ Revit 机器上没有 Node.js sidecar。
 ```text
 rvt-mcp/
 ├── src/
-│   ├── Bimwright.Rvt.sln         # Solution (server + 6 plugin shells)
-│   ├── server/                   # Bimwright.Rvt.Server - .NET 8 global tool, stdio MCP
+│   ├── RvtMcp.sln         # Solution (server + 6 plugin shells)
+│   ├── server/                   # RvtMcp.Server - .NET 8 global tool, stdio MCP
 │   ├── shared/                   # 所有 plugin shell 共享的 source glob
 │   │   ├── Handlers/             # 每个 Revit command handler 一个文件
 │   │   ├── Commands/             # Revit ribbon commands
@@ -202,21 +202,21 @@ rvt-mcp/
 ### 1. Server - .NET tool
 
 ```bash
-dotnet tool install -g Bimwright.Rvt.Server
-bimwright-rvt --help
+dotnet tool install -g RvtMcp.Server
+rvt-mcp --help
 ```
 
-运行 MCP client 的机器需要 .NET 8 SDK。如果 tool 已安装，请运行 `dotnet tool update -g Bimwright.Rvt.Server`。
+运行 MCP client 的机器需要 .NET 8 SDK。如果 tool 已安装，请运行 `dotnet tool update -g RvtMcp.Server`。
 
 ### 2. Plugin - Revit add-in
 
-从 [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest) 下载 plugin installer bundle。Bundle 名为 `bimwright-rvt-plugin-<tag>.zip`，包含 `install.ps1`、`uninstall-all.ps1` 和 6 个按 Revit 年份拆分的 plugin ZIP。
+从 [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest) 下载 plugin installer bundle。Bundle 名为 `rvt-mcp-plugin-<tag>.zip`，包含 `install.ps1`、`uninstall-all.ps1` 和 6 个按 Revit 年份拆分的 plugin ZIP。
 
 ```powershell
 $tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
-$zip = "$env:TEMP\bimwright-rvt-plugin-$tag.zip"
-$dir = "$env:TEMP\bimwright-rvt-plugin-$tag"
-Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/bimwright-rvt-plugin-$tag.zip" -OutFile $zip
+$zip = "$env:TEMP\rvt-mcp-plugin-$tag.zip"
+$dir = "$env:TEMP\rvt-mcp-plugin-$tag"
+Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/rvt-mcp-plugin-$tag.zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath $dir -Force
 Set-Location $dir
 
@@ -225,7 +225,7 @@ pwsh .\install.ps1 -SourceDir .            # 检测所有已安装 Revit 年份
 pwsh .\install.ps1 -Uninstall              # 仅卸载 plugin
 ```
 
-脚本通过 `HKLM:\SOFTWARE\Autodesk\Revit\` 检测已安装 Revit 版本，并把对应 plugin 复制到 `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\`。
+脚本通过 `HKLM:\SOFTWARE\Autodesk\Revit\` 检测已安装 Revit 版本，并把对应 plugin 复制到 `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`。
 
 ### 3. Wire MCP client
 
@@ -234,8 +234,8 @@ pwsh .\install.ps1 -Uninstall              # 仅卸载 plugin
 ```json
 {
   "mcpServers": {
-    "bimwright-rvt": {
-      "command": "bimwright-rvt",
+    "rvt-mcp": {
+      "command": "rvt-mcp",
       "args": []
     }
   }
@@ -415,7 +415,7 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 简短版：你的模型留在你的机器上。
 
 - **默认 loopback。** TCP transport listen 在 `127.0.0.1`；Named Pipe scoped local-machine。
-- **Per-session token handshake。** `%LOCALAPPDATA%\Bimwright\` 下的 discovery files 包含 connection info 和 auth token。
+- **Per-session token handshake。** `%LOCALAPPDATA%\RvtMcp\` 下的 discovery files 包含 connection info 和 auth token。
 - **Schema validation。** 错误 shape 的 tool call 会在 command handler 运行前被 reject。
 - **Path masking。** 返回给 model 的 error 会 sanitize，避免泄露 absolute path。
 - **ToolBaker controls。** `send_code_to_revit` 默认可用。Adaptive bake 仍是 opt-in，只控制 suggestion/logging；`--read-only` 或 `--disable-toolbaker` 会移除 ToolBaker surface。
@@ -439,19 +439,19 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 | Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
 | Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
 
-JSON file path: `%LOCALAPPDATA%\Bimwright\bimwright.config.json`。
+JSON file path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`。
 
 ---
 
 ## Development
 
 ```bash
-dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj
-dotnet build src/server/Bimwright.Rvt.Server.csproj -c Release
-dotnet build src/plugin-r26/Bimwright.Rvt.Plugin.R26.csproj -c Release
+dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
+dotnet build src/server/RvtMcp.Server.csproj -c Release
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
-Plugin projects 在 normal `Build` 后会 auto-deploy，复制到 `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\`。Build plugin 前请关闭 Revit，因为 Revit 会锁住已加载 DLL。
+Plugin projects 在 normal `Build` 后会 auto-deploy，复制到 `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`。Build plugin 前请关闭 Revit，因为 Revit 会锁住已加载 DLL。
 
 为 release stage plugin ZIPs：
 

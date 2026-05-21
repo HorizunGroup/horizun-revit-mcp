@@ -1,4 +1,4 @@
-# Changelog
+﻿# Changelog
 
 ## v0.4.0 - Full Revit tool surface
 
@@ -17,7 +17,7 @@ Tool surface grew from 32 → **249 tools** (default) / **254 tools** (adaptive 
 - Added 8 high-value handlers extending existing toolsets:
   - **Meta (2)**: `set_project_info` (typed fields: name/number/client_name/address/status/issue_date), `purge_unused` (families-only MVP, `dry_run` defaults to true, skips in-place families and instance-referenced symbols).
   - **Lint (1)**: `get_model_warnings_summary` (groups `doc.GetWarnings()` by description, includes example failing element ids).
-  - **View (5)**: `capture_view_image` (sandboxed to `%TEMP%` or `%LOCALAPPDATA%\Bimwright\captures\`), `set_view_crop` (explicit bounds or fit-to-elements with padding), `set_view_scale`, `activate_view`, `show_element_in_view`.
+  - **View (5)**: `capture_view_image` (sandboxed to `%TEMP%` or `%LOCALAPPDATA%\RvtMcp\captures\`), `set_view_crop` (explicit bounds or fit-to-elements with padding), `set_view_scale`, `activate_view`, `show_element_in_view`.
 
 ### Changed — Wave 15 (read-only guard)
 
@@ -42,7 +42,7 @@ Tool surface grew from 32 → **249 tools** (default) / **254 tools** (adaptive 
 
 - Hardened new annotation, rooms, and links handlers around dry-run semantics, ElementId compatibility checks, destructive link scope validation, and transaction commit-status reporting.
 - Made `send_code_to_revit` part of the default ToolBaker surface, without adaptive-bake gating or per-call Revit confirmation.
-- Changed installer client wiring to a single auto-detect `bimwright-rvt` MCP entry while still deploying plugins for every detected Revit year.
+- Changed installer client wiring to a single auto-detect `rvt-mcp` MCP entry while still deploying plugins for every detected Revit year.
 - Added 15 non-schedule Revit data tools: 10 read tools for elements, parameters, groups, assemblies, and worksets, plus 5 write tools for parameters, type changes, worksets, and group creation.
 - Added 10 Revit schedule tools in a new default-on `schedule` toolset: `list_schedules`, `get_schedule_definition`, `get_schedule_data`, `get_schedule_formulas`, `get_schedulable_fields`, `find_schedule_elements`, `create_schedule`, `add_schedule_field`, `update_schedule_field`, `apply_schedule_filter_sort`.
 
@@ -57,13 +57,13 @@ Tool surface grew from 32 → **249 tools** (default) / **254 tools** (adaptive 
 - Added adaptive-bake suggestion lifecycle tools: `list_bake_suggestions`, `accept_bake_suggestion`, and `dismiss_bake_suggestion`.
 - Added accepted-tool indirection through `list_baked_tools` and `run_baked_tool`, including parameter validation and archived-tool guidance.
 - Added Revit ribbon/runtime support for accepted baked tools, backed by a plugin runtime cache.
-- Added local SQLite-backed bake storage (`bake.db`) plus local audit/usage records under `%LOCALAPPDATA%\Bimwright\`.
+- Added local SQLite-backed bake storage (`bake.db`) plus local audit/usage records under `%LOCALAPPDATA%\RvtMcp\`.
 - Added compiler policy, privacy, registry, runtime cache, usage clustering, and ToolBaker handler tests.
 
 ### Changed
 
 - Adaptive bake is opt-in and default off via `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` or `"enableAdaptiveBake": true`.
-- Usage data for adaptive bake is stored locally under `%LOCALAPPDATA%\Bimwright\`.
+- Usage data for adaptive bake is stored locally under `%LOCALAPPDATA%\RvtMcp\`.
 - Accepted baked tools are discovered with `list_baked_tools` and executed with `run_baked_tool name=<tool_name>`.
 - The Revit plugin reads `bake.db` and owns runtime/ribbon loading only; the server is the sole SQLite writer.
 - `send_code_to_revit` is gated behind adaptive bake and continues to require per-call Revit confirmation.
@@ -74,7 +74,7 @@ Tool surface grew from 32 → **249 tools** (default) / **254 tools** (adaptive 
 
 - Fixed baked-tool dispatch bypasses by preventing `run_baked_tool` execution through `batch_execute` and isolating baked commands from core command lookup.
 - Fixed stale cross-version compatibility metadata by refreshing baked-tool registry reads from `bake.db` before list/meta reads.
-- Fixed Revit 2026/2027 accepted-tool startup failures by copying native `e_sqlite3.dll` beside `Bimwright.Rvt.Plugin.dll` during deploy and release staging.
+- Fixed Revit 2026/2027 accepted-tool startup failures by copying native `e_sqlite3.dll` beside `RvtMcp.Plugin.dll` during deploy and release staging.
 - Fixed suggestion refresh hardening: bounded usage replay, capped/deduped suggestions, and guarded adaptive usage capture.
 
 ### Security

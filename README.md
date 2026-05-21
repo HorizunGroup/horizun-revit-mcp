@@ -23,20 +23,20 @@
 
 For a Revit user machine, use the setup ZIP from GitHub Releases. It includes the self-contained MCP server and Revit plugins, so the client machine does **not** need the .NET SDK, NuGet global tools, this source repo, or a local build.
 
-**AI agents:** if a user asks you to install Bimwright on a client machine, download the latest `Bimwright.Rvt.Setup-*-win-x64.zip` release asset and run the installer below. Do **not** clone this repo, build source, install the .NET SDK, or use `dotnet tool install` unless the user explicitly asks for a developer install. See [AGENTS.md](AGENTS.md) for the full agent install protocol.
+**AI agents:** if a user asks you to install Bimwright on a client machine, download the latest `RvtMcp.Setup-*-win-x64.zip` release asset and run the installer below. Do **not** clone this repo, build source, install the .NET SDK, or use `dotnet tool install` unless the user explicitly asks for a developer install. See [AGENTS.md](AGENTS.md) for the full agent install protocol.
 
 ```powershell
 $tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
-$zip = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64.zip"
-$dir = "$env:TEMP\Bimwright.Rvt.Setup-$tag-win-x64"
-Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/Bimwright.Rvt.Setup-$tag-win-x64.zip" -OutFile $zip
+$zip = "$env:TEMP\RvtMcp.Setup-$tag-win-x64.zip"
+$dir = "$env:TEMP\RvtMcp.Setup-$tag-win-x64"
+Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/RvtMcp.Setup-$tag-win-x64.zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath $dir -Force
 
 powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf
 powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
 ```
 
-The installer detects Revit 2022-2027, installs only the matching plugin(s), copies the server under `%LOCALAPPDATA%\Bimwright\rvt\server\<version>\`, and wires installed MCP clients with absolute paths. Use `-Client codex`, `-Client opencode`, `-Client claude`, or `-Client none` to override auto-detection.
+The installer detects Revit 2022-2027, installs only the matching plugin(s), copies the server under `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`, and wires installed MCP clients with absolute paths. Use `-Client codex`, `-Client opencode`, `-Client claude`, or `-Client none` to override auto-detection.
 
 `dwg-mcp` is not part of this RVT setup package; install it separately when it has its own client-ready release.
 
@@ -78,8 +78,8 @@ Personal automation should be personal.
 
 It has two parts:
 
-- `Bimwright.Rvt.Server`: a .NET 8 MCP server launched by Claude, Cursor, Codex, OpenCode, Cline, VS Code Copilot, or another stdio MCP client.
-- `Bimwright.Rvt.Plugin`: a Revit add-in shell for each supported Revit year, running inside Revit and executing commands on the Revit UI thread.
+- `RvtMcp.Server`: a .NET 8 MCP server launched by Claude, Cursor, Codex, OpenCode, Cline, VS Code Copilot, or another stdio MCP client.
+- `RvtMcp.Plugin`: a Revit add-in shell for each supported Revit year, running inside Revit and executing commands on the Revit UI thread.
 
 The agent talks MCP. The server talks to the plugin over localhost TCP or Named Pipe. The plugin talks to the Revit API.
 
@@ -112,7 +112,7 @@ ToolBaker is the path from agent-assisted workflow to personal tool:
 
 1. Use the existing MCP tools to query, create, lint, inspect, or batch operations in Revit.
 2. When advanced automation is needed, call `send_code_to_revit` directly from the default tool surface.
-3. If adaptive bake is enabled, repeated local usage is recorded locally under `%LOCALAPPDATA%\Bimwright\`.
+3. If adaptive bake is enabled, repeated local usage is recorded locally under `%LOCALAPPDATA%\RvtMcp\`.
 4. Repeated patterns become suggestions, visible through `list_bake_suggestions`.
 5. You explicitly accept a suggestion with `accept_bake_suggestion`, including the tool name, schema, and output choice.
 6. Accepted tools become callable through `list_baked_tools` / `run_baked_tool` and available from the Revit ribbon runtime cache.
@@ -132,7 +132,7 @@ Adaptive bake is off by default. It is for users who want their own local usage 
               | stdio MCP
               v
 +---------------------------+
-| Bimwright.Rvt.Server      |
+| RvtMcp.Server      |
 | .NET 8 / C#               |
 +---------------------------+
               |
@@ -191,8 +191,8 @@ Treat it like serious open-source infrastructure: test it on your own environmen
 ```text
 rvt-mcp/
 ├── src/
-│   ├── Bimwright.Rvt.sln         # Solution (server + 6 plugin shells)
-│   ├── server/                   # Bimwright.Rvt.Server - stdio MCP server
+│   ├── RvtMcp.sln         # Solution (server + 6 plugin shells)
+│   ├── server/                   # RvtMcp.Server - stdio MCP server
 │   ├── shared/                   # Source glob shared by every plugin shell
 │   │   ├── Handlers/             # One file per Revit command handler
 │   │   ├── Commands/             # Revit ribbon commands
@@ -222,9 +222,38 @@ Six plugin shells compile from the same `src/shared/` glob. Year-specific `#if` 
 
 ## Install
 
+## Migration from `Bimwright.Rvt.*` (v0.3.0 and earlier)
+
+v0.4.0 renames the codebase from `Bimwright.Rvt.*` to `RvtMcp.*`. The GitHub repo (`bimwright/rvt-mcp`) and brand are unchanged; only file names, package IDs, and folder paths change.
+
+If you have v0.3.0 or earlier installed:
+
+1. **Close all running Revit instances.**
+2. **Run the migration script:**
+   ```powershell
+   pwsh scripts/uninstall-old.ps1
+   ```
+   This removes:
+   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` (plugin DLLs)
+   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright.R<year>.addin` (manifests)
+   - `%LOCALAPPDATA%\Bimwright\rvt\server\` (server install root)
+
+   It **preserves** `%LOCALAPPDATA%\Bimwright\baked\`, `journal\`, `firm-profiles\`, and `*.log` files — these contain user data and are migrated to `%LOCALAPPDATA%\RvtMcp\` on first launch of v0.4.0.
+
+3. **Install v0.4.0:**
+   ```powershell
+   dotnet tool update -g Bimwright.Rvt.Server --version 0.3.0   # ensure clean uninstall first
+   dotnet tool uninstall -g Bimwright.Rvt.Server
+   dotnet tool install -g RvtMcp.Server --version 0.4.0
+   ```
+
+4. **Re-wire your MCP client.** Old MCP entries `bimwright-rvt-r22`..`bimwright-rvt-r27` are auto-removed by `install.ps1`. The new entry is `rvt-mcp` (single, auto-detects Revit version).
+
+The old NuGet package `Bimwright.Rvt.Server` is deprecated at 0.3.0 with a redirect note pointing to `RvtMcp.Server`.
+
 ### Client setup ZIP
 
-Download `Bimwright.Rvt.Setup-v<version>-win-x64.zip` from [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest), extract it, then run:
+Download `RvtMcp.Setup-v<version>-win-x64.zip` from [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest), extract it, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf   # preview files and config edits
@@ -241,7 +270,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client none       # inst
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Years 2024        # force a Revit year if registry detection is unavailable
 ```
 
-The setup ZIP contains a self-contained `bimwright-rvt.exe`, so the client machine does not need `.NET 8 SDK`, `dotnet tool install`, or this repository. Config entries use the absolute installed path, so `%USERPROFILE%\.dotnet\tools` and PATH are not involved. The installer deploys plugins for every detected Revit year, then writes one auto-detect MCP entry named `bimwright-rvt`.
+The setup ZIP contains a self-contained `rvt-mcp.exe`, so the client machine does not need `.NET 8 SDK`, `dotnet tool install`, or this repository. Config entries use the absolute installed path, so `%USERPROFILE%\.dotnet\tools` and PATH are not involved. The installer deploys plugins for every detected Revit year, then writes one auto-detect MCP entry named `rvt-mcp`.
 
 ### Verify
 
@@ -274,7 +303,7 @@ The setup ZIP also includes `uninstall-all.ps1` as an alias for the same full sw
 Developers can still install the server as a NuGet .NET tool and use the plugin-only bundle:
 
 ```powershell
-dotnet tool install -g Bimwright.Rvt.Server
+dotnet tool install -g RvtMcp.Server
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -SourceDir . -Client none
 ```
 
@@ -409,7 +438,7 @@ Runtime behavior can still differ across Revit years because the Revit API chang
 Short version: your model stays on your machine.
 
 - **Loopback by default.** TCP transport listens on `127.0.0.1`; Named Pipe is local-machine scoped.
-- **Per-session token handshake.** Discovery files under `%LOCALAPPDATA%\Bimwright\` carry connection information and auth token.
+- **Per-session token handshake.** Discovery files under `%LOCALAPPDATA%\RvtMcp\` carry connection information and auth token.
 - **Schema validation.** Malformed tool calls are rejected before command handlers run.
 - **Path masking.** Errors returned to the model are sanitized to avoid leaking absolute paths.
 - **ToolBaker controls.** `send_code_to_revit` is available by default. Adaptive bake remains opt-in and only controls suggestion/logging features; `--read-only` or `--disable-toolbaker` removes the ToolBaker surface.
@@ -433,19 +462,19 @@ Three layers, later wins: JSON file, then env vars, then CLI args.
 | Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
 | Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
 
-JSON file path: `%LOCALAPPDATA%\Bimwright\bimwright.config.json`.
+JSON file path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`.
 
 ---
 
 ## Development
 
 ```bash
-dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj
-dotnet build src/server/Bimwright.Rvt.Server.csproj -c Release
-dotnet build src/plugin-r26/Bimwright.Rvt.Plugin.R26.csproj -c Release
+dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
+dotnet build src/server/RvtMcp.Server.csproj -c Release
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
-Plugin projects auto-deploy after normal `Build`, copying into `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\`. Close Revit before building plugin projects because Revit locks loaded DLLs.
+Plugin projects auto-deploy after normal `Build`, copying into `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`. Close Revit before building plugin projects because Revit locks loaded DLLs.
 
 To stage plugin ZIPs for release:
 

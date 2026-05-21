@@ -1,4 +1,4 @@
-# Fresh Install Test — End-to-End Onboarding Verification
+﻿# Fresh Install Test — End-to-End Onboarding Verification
 
 Walk the public install flow on a fresh machine as a first-time user. Goal: verify install-from-zero friction before the first non-dev user files an issue.
 
@@ -45,10 +45,10 @@ Goal: lock test parameters, create the finding-log file, confirm the fresh machi
 Goal: follow the public README instructions exactly — no prior knowledge, no shortcuts, no "I know this part" skips. Log every friction point verbatim.
 
 - [ ] F2-001: Confirm the machine does **not** need developer tooling. Log whether `.NET SDK`, repo clone, NuGet global tool, and source build are absent; absence should not block client install.
-- [ ] F2-002: Download and extract `Bimwright.Rvt.Setup-v<version>-win-x64.zip` from the Release page. Log: was the asset obvious, did the ZIP contain `install.ps1`, `uninstall.ps1`, `server/`, `plugins/`, and `manifest.json`, and how long did download/extract take.
-- [ ] F2-003: Run `install.ps1 -WhatIf`, then `install.ps1` from the setup ZIP. Log: detected Revit years, server install path under `%LOCALAPPDATA%\Bimwright\rvt\server\`, plugin install path, config backup path(s), and any warning.
-- [ ] F2-004: Confirm the MCP client was wired without hand editing. Log the exact config entry and verify the command uses an absolute `bimwright-rvt.exe` path, not `dotnet`, `bimwright-rvt` on PATH, or a repo build path.
-- [ ] F2-005: Open Revit, verify the Bimwright ribbon panel appears without error dialog, verify the "Start MCP" button is clickable and the server starts. Log: any startup error dialogs (screenshots). Discovery file presence at `%LOCALAPPDATA%\Bimwright\` — name + content.
+- [ ] F2-002: Download and extract `RvtMcp.Setup-v<version>-win-x64.zip` from the Release page. Log: was the asset obvious, did the ZIP contain `install.ps1`, `uninstall.ps1`, `server/`, `plugins/`, and `manifest.json`, and how long did download/extract take.
+- [ ] F2-003: Run `install.ps1 -WhatIf`, then `install.ps1` from the setup ZIP. Log: detected Revit years, server install path under `%LOCALAPPDATA%\RvtMcp\rvt\server\`, plugin install path, config backup path(s), and any warning.
+- [ ] F2-004: Confirm the MCP client was wired without hand editing. Log the exact config entry and verify the command uses an absolute `rvt-mcp.exe` path, not `dotnet`, `rvt-mcp` on PATH, or a repo build path.
+- [ ] F2-005: Open Revit, verify the Bimwright ribbon panel appears without error dialog, verify the "Start MCP" button is clickable and the server starts. Log: any startup error dialogs (screenshots). Discovery file presence at `%LOCALAPPDATA%\RvtMcp\` — name + content.
 - [ ] F2-006: Total time from first-click on README to "server running + ribbon visible". Friction-point summary (ranked by severity) appended to the finding-log §F2.
 
 ## Phase F3 — Functional smoke, primary version (3 tasks)

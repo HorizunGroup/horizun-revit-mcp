@@ -1,4 +1,4 @@
-# Bimwright Rvt-MCP — 221-Tool Roadmap
+﻿# RvtMcp-MCP — 221-Tool Roadmap
 
 **Goal**: scale the MCP gateway from the v0.3.0 baseline (~32 tools) to **221 tools** in 15 waves.
 
@@ -339,11 +339,11 @@ For each pending wave:
 1. **Read this file's wave section** + `CLAUDE.md` for conventions.
 2. **Dispatch N parallel sub-agents** (one per tool). Each agent: read `RevitCompat.cs` + nearest sibling handler for reference, write `src/shared/Handlers/<Name>Handler.cs`, verify file exists (test-path + retry 3x). Constraints: no modifications to Program.cs / CommandDispatcher.cs / ToolsetFilter.cs / tests / docs; no `dotnet build`; no sub-spawning.
 3. **Wire up**: add Phase N block to CommandDispatcher; add `<XxxTools>` class with `[McpServerTool]` methods to Program.cs; promote/add toolset in ToolsetFilter.
-4. **Build**: `dotnet build src/Bimwright.Rvt.sln -c Debug` — Revit must be closed (build deploys add-ins). Must report 0 errors on all 6 plugin projects.
+4. **Build**: `dotnet build src/RvtMcp.sln -c Debug` — Revit must be closed (build deploys add-ins). Must report 0 errors on all 6 plugin projects.
 5. **GPT review** via opencode: write `runs/<wave-slug>/prompt-01.md` (use existing wave prompts as templates), dispatch `opencode run --model openai/gpt-5.5 --variant xhigh`, tee output to `output-01.txt`.
 6. **Fix pass**: parse BLOCKER + MAJOR findings, write `prompt-02.md`, dispatch opencode again to apply fixes. Rebuild.
 7. **Commit** when wave is clean: short conventional-commit subject + body listing tools.
-8. After all 11 remaining waves: regenerate `tests/Bimwright.Rvt.Tests/Golden/tools-list.json` via `UPDATE_SNAPSHOTS=1 dotnet test`; update README badges + toolset table + CHANGELOG; tag a release.
+8. After all 11 remaining waves: regenerate `tests/RvtMcp.Tests/Golden/tools-list.json` via `UPDATE_SNAPSHOTS=1 dotnet test`; update README badges + toolset table + CHANGELOG; tag a release.
 
 ## References
 

@@ -1,9 +1,9 @@
-# Rename Bimwright.Rvt → RvtMcp Implementation Plan
+﻿# Rename RvtMcp → RvtMcp Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **This plan is also intended to be handed to `opencode` CLI for implementation under Claude orchestration. See `executing-plans-via-opencode` skill.**
 
-**Goal:** Rename the codebase from `Bimwright.Rvt.*` to `RvtMcp.*` so MCP clients/agents see a name that immediately conveys "Revit MCP", while preserving Bimwright branding in copyright/author metadata and keeping the GitHub repo path `bimwright/rvt-mcp` unchanged.
+**Goal:** Rename the codebase from `RvtMcp.*` to `RvtMcp.*` so MCP clients/agents see a name that immediately conveys "Revit MCP", while preserving Bimwright branding in copyright/author metadata and keeping the GitHub repo path `bimwright/rvt-mcp` unchanged.
 
 **Architecture:** A wide-but-shallow rename. Touches ~200 files but each file changes a fixed set of identifiers. The work is sequenced into 7 waves where each wave produces a buildable, testable state. The risk surface is concentrated in three areas — discovery file paths, deploy folder paths, and the NuGet package id — each of which must be changed atomically with companion code paths and migration shims.
 
@@ -16,16 +16,16 @@
 **Surface area (from `grep` against working tree):**
 
 - ~2,001 occurrences of `bimwright` (case-insensitive) across 200+ files
-- ~1,301 occurrences of `Bimwright.Rvt` specifically
+- ~1,301 occurrences of `RvtMcp` specifically
 - 18+ `.cs` files reference the literal string `"Bimwright"` for `LOCALAPPDATA` path (`Path.Combine(..., "Bimwright")`)
-- 6 `.addin` files reference `Bimwright\Bimwright.Rvt.Plugin.dll`
-- 6 plugin `.csproj` files reference `$(APPDATA)\Autodesk\Revit\Addins\<year>\Bimwright\`
-- 1 solution file + 8 csproj names use `Bimwright.Rvt.*`
+- 6 `.addin` files reference `Bimwright\RvtMcp.Plugin.dll`
+- 6 plugin `.csproj` files reference `$(APPDATA)\Autodesk\Revit\Addins\<year>\RvtMcp\`
+- 1 solution file + 8 csproj names use `RvtMcp.*`
 - 1 GitHub workflow (`.github/workflows/build.yml`) references csproj paths and artifact names
 - 1 `server.json`, 1 `smithery.yaml`, 1 `.mcp.json.example` reference user-facing names
 - 9 doc files (README × 3, ARCHITECTURE, AGENTS, CLAUDE, SECURITY, CONTRIBUTING, CHANGELOG) need updates
 - 20+ files under `docs/` reference `BIMWRIGHT_` env vars and `Bimwright` brand
-- 30+ test files in `tests/Bimwright.Rvt.Tests/` reference `BimwrightConfig` and namespace `Bimwright.Rvt.*`
+- 30+ test files in `tests/RvtMcp.Tests/` reference `RvtMcpConfig` and namespace `RvtMcp.*`
 
 **NuGet status (verified 2026-05-21):**
 
@@ -34,7 +34,7 @@ GET https://api.nuget.org/v3-flatcontainer/bimwright.rvt.server/index.json
 → { "versions": ["0.1.0", "0.2.0", "0.3.0"] }
 ```
 
-- `Bimwright.Rvt.Server` 0.1.0, 0.2.0, 0.3.0 are **published**.
+- `RvtMcp.Server` 0.1.0, 0.2.0, 0.3.0 are **published**.
 - Working tree is at 0.4.0 — **not yet published**.
 - Plan ships the rename **as part of 0.4.0 release**. Old package gets a deprecation notice. New package `RvtMcp.Server` starts at 0.4.0.
 
@@ -43,10 +43,10 @@ GET https://api.nuget.org/v3-flatcontainer/bimwright.rvt.server/index.json
 | Item | Decision |
 |---|---|
 | MCP server registration name | `rvt-mcp` (single entry, no R22-R27 fan-out) |
-| Code identifier prefix | `Bimwright.Rvt.*` → `RvtMcp.*` (full rename) |
+| Code identifier prefix | `RvtMcp.*` → `RvtMcp.*` (full rename) |
 | Brand `Bimwright` | Keep ONLY in csproj `<Authors>`, `<Copyright>`, `<Description>` text. Remove from namespaces, file names, paths, vendor IDs. |
-| AddInId GUIDs | **KEEP unchanged.** Ship `uninstall-old.ps1` to clean legacy `Addins\<year>\Bimwright\` folder. |
-| NuGet | New package `RvtMcp.Server` 0.4.0. Old `Bimwright.Rvt.Server` 0.3.0 deprecated with redirect note in README. |
+| AddInId GUIDs | **KEEP unchanged.** Ship `uninstall-old.ps1` to clean legacy `Addins\<year>\RvtMcp\` folder. |
+| NuGet | New package `RvtMcp.Server` 0.4.0. Old `RvtMcp.Server` 0.3.0 deprecated with redirect note in README. |
 | GitHub repo path | Keep `bimwright/rvt-mcp` — not renaming repo. |
 | Implementation | Plan-then-opencode workflow with per-wave human review. |
 
@@ -57,7 +57,7 @@ GET https://api.nuget.org/v3-flatcontainer/bimwright.rvt.server/index.json
 | `BIMWRIGHT_*` env var prefix | **KEEP unchanged.** No rename, no alias needed. |
 | `<VendorId>bimwright</VendorId>` in `.addin` | **KEEP** `bimwright` as VendorId (publisher segment, not product). |
 | `groupName = "Bimwright"` default in `CreateSharedParameter` | **KEEP** `Bimwright` (Revit persists this into user .rvt files; changing breaks compatibility). |
-| First-launch data migration | **Auto-migrate** `%LOCALAPPDATA%\Bimwright\{baked,journal,firm-profiles,*.log}` → `\RvtMcp\` on first run. |
+| First-launch data migration | **Auto-migrate** `%LOCALAPPDATA%\RvtMcp\{baked,journal,firm-profiles,*.log}` → `\RvtMcp\` on first run. |
 
 ---
 
@@ -65,34 +65,34 @@ GET https://api.nuget.org/v3-flatcontainer/bimwright.rvt.server/index.json
 
 | Category | Old | New |
 |---|---|---|
-| **Namespaces** | `Bimwright.Rvt.Server` | `RvtMcp.Server` |
-|  | `Bimwright.Rvt.Plugin` | `RvtMcp.Plugin` |
-|  | `Bimwright.Rvt.Plugin.Views` | `RvtMcp.Plugin.Views` |
-|  | `Bimwright.Rvt.Plugin.ToolBaker` | `RvtMcp.Plugin.ToolBaker` |
-| **Solution** | `src/Bimwright.Rvt.sln` | `src/RvtMcp.sln` |
-| **Server csproj** | `src/server/Bimwright.Rvt.Server.csproj` | `src/server/RvtMcp.Server.csproj` |
-| **Plugin csproj** (×6) | `src/plugin-rXX/Bimwright.Rvt.Plugin.RXX.csproj` | `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj` |
-| **Test csproj** | `tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj` | `tests/RvtMcp.Tests/RvtMcp.Tests.csproj` |
-| **Test folder** | `tests/Bimwright.Rvt.Tests/` | `tests/RvtMcp.Tests/` |
+| **Namespaces** | `RvtMcp.Server` | `RvtMcp.Server` |
+|  | `RvtMcp.Plugin` | `RvtMcp.Plugin` |
+|  | `RvtMcp.Plugin.Views` | `RvtMcp.Plugin.Views` |
+|  | `RvtMcp.Plugin.ToolBaker` | `RvtMcp.Plugin.ToolBaker` |
+| **Solution** | `src/RvtMcp.sln` | `src/RvtMcp.sln` |
+| **Server csproj** | `src/server/RvtMcp.Server.csproj` | `src/server/RvtMcp.Server.csproj` |
+| **Plugin csproj** (×6) | `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj` | `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj` |
+| **Test csproj** | `tests/RvtMcp.Tests/RvtMcp.Tests.csproj` | `tests/RvtMcp.Tests/RvtMcp.Tests.csproj` |
+| **Test folder** | `tests/RvtMcp.Tests/` | `tests/RvtMcp.Tests/` |
 | **Addin manifest** (×6) | `src/plugin-rXX/Bimwright.RXX.addin` | `src/plugin-rXX/RvtMcp.RXX.addin` |
-| **Plugin output DLL** | `Bimwright.Rvt.Plugin.dll` | `RvtMcp.Plugin.dll` |
-| **Server output exe** | `Bimwright.Rvt.Server.exe` | `RvtMcp.Server.exe` |
-| **NuGet PackageId** | `Bimwright.Rvt.Server` | `RvtMcp.Server` |
-| **ToolCommandName** | `bimwright-rvt` | `rvt-mcp` |
+| **Plugin output DLL** | `RvtMcp.Plugin.dll` | `RvtMcp.Plugin.dll` |
+| **Server output exe** | `RvtMcp.Server.exe` | `RvtMcp.Server.exe` |
+| **NuGet PackageId** | `RvtMcp.Server` | `RvtMcp.Server` |
+| **ToolCommandName** | `rvt-mcp` | `rvt-mcp` |
 | **MSBuild skip flag** | `BimwrightSkipDeploy` | `RvtMcpSkipDeploy` |
-| **MSBuild RootNamespace** (plugin) | `Bimwright.Rvt.Plugin` | `RvtMcp.Plugin` |
-| **MSBuild AssemblyName** (plugin) | `Bimwright.Rvt.Plugin` | `RvtMcp.Plugin` |
-| **MSBuild RootNamespace** (server) | `Bimwright.Rvt.Server` | `RvtMcp.Server` |
-| **MSBuild AssemblyName** (server) | `Bimwright.Rvt.Server` | `RvtMcp.Server` |
-| **Deploy folder** | `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` | `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` |
-| **Discovery folder** | `%LOCALAPPDATA%\Bimwright\` | `%LOCALAPPDATA%\RvtMcp\` |
-| **Server install root** | `%LOCALAPPDATA%\Bimwright\rvt\server\<ver>\` | `%LOCALAPPDATA%\RvtMcp\server\<ver>\` |
-| **C# class `BimwrightConfig`** | `BimwrightConfig` | `RvtMcpConfig` |
-| **C# class `BimwrightConfigTests`** | `BimwrightConfigTests` | `RvtMcpConfigTests` |
-| **C# class `BimwrightConfigAdaptiveBakeTests`** | `BimwrightConfigAdaptiveBakeTests` | `RvtMcpConfigAdaptiveBakeTests` |
+| **MSBuild RootNamespace** (plugin) | `RvtMcp.Plugin` | `RvtMcp.Plugin` |
+| **MSBuild AssemblyName** (plugin) | `RvtMcp.Plugin` | `RvtMcp.Plugin` |
+| **MSBuild RootNamespace** (server) | `RvtMcp.Server` | `RvtMcp.Server` |
+| **MSBuild AssemblyName** (server) | `RvtMcp.Server` | `RvtMcp.Server` |
+| **Deploy folder** | `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` | `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` |
+| **Discovery folder** | `%LOCALAPPDATA%\RvtMcp\` | `%LOCALAPPDATA%\RvtMcp\` |
+| **Server install root** | `%LOCALAPPDATA%\RvtMcp\rvt\server\<ver>\` | `%LOCALAPPDATA%\RvtMcp\server\<ver>\` |
+| **C# class `RvtMcpConfig`** | `RvtMcpConfig` | `RvtMcpConfig` |
+| **C# class `RvtMcpConfigTests`** | `RvtMcpConfigTests` | `RvtMcpConfigTests` |
+| **C# class `RvtMcpConfigAdaptiveBakeTests`** | `RvtMcpConfigAdaptiveBakeTests` | `RvtMcpConfigAdaptiveBakeTests` |
 | **Backup file suffix** (install.ps1) | `*.bimwright.bak` | `*.rvtmcp.bak` |
-| **GH artifact names** | `bimwright-plugin-*`, `bimwright-server-nupkg`, `bimwright-rvt-client-setup` | `rvtmcp-plugin-*`, `rvtmcp-server-nupkg`, `rvtmcp-client-setup` |
-| **Client setup zip** | `Bimwright.Rvt.Setup-*-win-x64.zip` | `RvtMcp.Setup-*-win-x64.zip` |
+| **GH artifact names** | `bimwright-plugin-*`, `bimwright-server-nupkg`, `rvt-mcp-client-setup` | `rvtmcp-plugin-*`, `rvtmcp-server-nupkg`, `rvtmcp-client-setup` |
+| **Client setup zip** | `RvtMcp.Setup-*-win-x64.zip` | `RvtMcp.Setup-*-win-x64.zip` |
 | **Addin Name** (XML) | `<Name>Bimwright</Name>` | `<Name>RvtMcp</Name>` |
 | **Addin VendorDescription** | `<VendorDescription>Revit MCP Gateway</VendorDescription>` | unchanged |
 
@@ -145,12 +145,12 @@ This plan is executed via **opencode CLI driving keystrokes, Claude orchestratin
 
 - [ ] **Step 1: Build the whole solution clean.**
 
-Run: `dotnet build src/Bimwright.Rvt.sln -c Debug /p:BimwrightSkipDeploy=true`
+Run: `dotnet build src/RvtMcp.sln -c Debug /p:BimwrightSkipDeploy=true`
 Expected: Build succeeds. **If build fails, STOP and notify user — the rename cannot start from a broken baseline.**
 
 - [ ] **Step 2: Run all tests.**
 
-Run: `dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj -c Debug --no-build`
+Run: `dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj -c Debug --no-build`
 Expected: All tests pass. **If any fail, STOP and notify user.** Record the passing test count in a scratchpad — we'll re-check this number after Wave 7.
 
 - [ ] **Step 3: Snapshot the test count.**
@@ -186,14 +186,14 @@ Expected: switched to new branch.
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Remove legacy Bimwright RVT plugin installation before/after upgrading to RvtMcp.
+  Remove legacy RvtMcp plugin installation before/after upgrading to RvtMcp.
 
 .DESCRIPTION
   Stub — filled in Wave 6. Cleans up:
-    - %APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\ (legacy plugin folder, all years 2022-2027)
+    - %APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\ (legacy plugin folder, all years 2022-2027)
     - %APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright.R<XX>.addin (legacy manifests)
-    - %LOCALAPPDATA%\Bimwright\rvt\server\* (legacy server install root)
-  Does NOT remove %LOCALAPPDATA%\Bimwright\ entirely — that contains user data
+    - %LOCALAPPDATA%\RvtMcp\rvt\server\* (legacy server install root)
+  Does NOT remove %LOCALAPPDATA%\RvtMcp\ entirely — that contains user data
   (journal, baked tools, logs) that Wave 6 migrates instead.
 #>
 param([switch]$WhatIf)
@@ -203,27 +203,27 @@ Write-Host "uninstall-old.ps1: stub — implementation in Wave 6"
 - [ ] **Step 3: Commit baseline.**
 
 ```bash
-git add docs/superpowers/plans/2026-05-21-rename-bimwright-rvt-to-rvtmcp.md scripts/uninstall-old.ps1
-git commit -m "chore: branch off for Bimwright.Rvt → RvtMcp rename"
+git add docs/superpowers/plans/2026-05-21-rename-rvt-mcp-to-rvtmcp.md scripts/uninstall-old.ps1
+git commit -m "chore: branch off for RvtMcp → RvtMcp rename"
 ```
 
 ---
 
 ## Wave 1: Solution + Project Files
 
-**Goal:** Rename the `.sln` and all 8 `.csproj` files (+ folders/test project). Update `RootNamespace`/`AssemblyName` MSBuild properties. **Do not touch `.cs` code yet** — namespace strings inside files stay `Bimwright.Rvt.*` until Wave 2. Build still passes because MSBuild compiles whatever namespace the `.cs` files declare.
+**Goal:** Rename the `.sln` and all 8 `.csproj` files (+ folders/test project). Update `RootNamespace`/`AssemblyName` MSBuild properties. **Do not touch `.cs` code yet** — namespace strings inside files stay `RvtMcp.*` until Wave 2. Build still passes because MSBuild compiles whatever namespace the `.cs` files declare.
 
 **Files:**
-- Rename: `src/Bimwright.Rvt.sln` → `src/RvtMcp.sln`
-- Rename: `src/server/Bimwright.Rvt.Server.csproj` → `src/server/RvtMcp.Server.csproj`
-- Rename: `src/plugin-r22/Bimwright.Rvt.Plugin.R22.csproj` → `src/plugin-r22/RvtMcp.Plugin.R22.csproj`
-- Rename: `src/plugin-r23/Bimwright.Rvt.Plugin.R23.csproj` → `src/plugin-r23/RvtMcp.Plugin.R23.csproj`
-- Rename: `src/plugin-r24/Bimwright.Rvt.Plugin.R24.csproj` → `src/plugin-r24/RvtMcp.Plugin.R24.csproj`
-- Rename: `src/plugin-r25/Bimwright.Rvt.Plugin.R25.csproj` → `src/plugin-r25/RvtMcp.Plugin.R25.csproj`
-- Rename: `src/plugin-r26/Bimwright.Rvt.Plugin.R26.csproj` → `src/plugin-r26/RvtMcp.Plugin.R26.csproj`
-- Rename: `src/plugin-r27/Bimwright.Rvt.Plugin.R27.csproj` → `src/plugin-r27/RvtMcp.Plugin.R27.csproj`
-- Rename: `tests/Bimwright.Rvt.Tests/` → `tests/RvtMcp.Tests/`
-- Rename: `tests/RvtMcp.Tests/Bimwright.Rvt.Tests.csproj` → `tests/RvtMcp.Tests/RvtMcp.Tests.csproj`
+- Rename: `src/RvtMcp.sln` → `src/RvtMcp.sln`
+- Rename: `src/server/RvtMcp.Server.csproj` → `src/server/RvtMcp.Server.csproj`
+- Rename: `src/plugin-r22/RvtMcp.Plugin.R22.csproj` → `src/plugin-r22/RvtMcp.Plugin.R22.csproj`
+- Rename: `src/plugin-r23/RvtMcp.Plugin.R23.csproj` → `src/plugin-r23/RvtMcp.Plugin.R23.csproj`
+- Rename: `src/plugin-r24/RvtMcp.Plugin.R24.csproj` → `src/plugin-r24/RvtMcp.Plugin.R24.csproj`
+- Rename: `src/plugin-r25/RvtMcp.Plugin.R25.csproj` → `src/plugin-r25/RvtMcp.Plugin.R25.csproj`
+- Rename: `src/plugin-r26/RvtMcp.Plugin.R26.csproj` → `src/plugin-r26/RvtMcp.Plugin.R26.csproj`
+- Rename: `src/plugin-r27/RvtMcp.Plugin.R27.csproj` → `src/plugin-r27/RvtMcp.Plugin.R27.csproj`
+- Rename: `tests/RvtMcp.Tests/` → `tests/RvtMcp.Tests/`
+- Rename: `tests/RvtMcp.Tests/RvtMcp.Tests.csproj` → `tests/RvtMcp.Tests/RvtMcp.Tests.csproj`
 - Modify: `src/RvtMcp.sln` — update Project lines + paths
 - Modify: 6 plugin csproj — update `<RootNamespace>`, `<AssemblyName>`, `<DeployDir>` path, `<DeployFiles>` glob, copy-manifest path, `BimwrightSkipDeploy` → `RvtMcpSkipDeploy`, `<InternalsVisibleTo>`
 - Modify: server csproj — update `<RootNamespace>`, `<AssemblyName>`, `<PackageId>`, `<ToolCommandName>`, `<InternalsVisibleTo>`, shared-Compile Link paths
@@ -233,7 +233,7 @@ git commit -m "chore: branch off for Bimwright.Rvt → RvtMcp rename"
 
 - [ ] **Step 1: Git-rename the solution.**
 
-Run: `git mv src/Bimwright.Rvt.sln src/RvtMcp.sln`
+Run: `git mv src/RvtMcp.sln src/RvtMcp.sln`
 
 - [ ] **Step 2: Update Project lines inside the sln.**
 
@@ -241,22 +241,22 @@ Open `src/RvtMcp.sln` and edit lines 6, 8, 10, 12, 14, 16, 18, 22 (the 8 Project
 
 | Old | New |
 |---|---|
-| `"Bimwright.Rvt.Server"` | `"RvtMcp.Server"` |
-| `server\Bimwright.Rvt.Server.csproj` | `server\RvtMcp.Server.csproj` |
-| `"Bimwright.Rvt.Plugin.R22"` | `"RvtMcp.Plugin.R22"` |
-| `plugin-r22\Bimwright.Rvt.Plugin.R22.csproj` | `plugin-r22\RvtMcp.Plugin.R22.csproj` |
-| `"Bimwright.Rvt.Plugin.R23"` | `"RvtMcp.Plugin.R23"` |
-| `plugin-r23\Bimwright.Rvt.Plugin.R23.csproj` | `plugin-r23\RvtMcp.Plugin.R23.csproj` |
-| `"Bimwright.Rvt.Plugin.R24"` | `"RvtMcp.Plugin.R24"` |
-| `plugin-r24\Bimwright.Rvt.Plugin.R24.csproj` | `plugin-r24\RvtMcp.Plugin.R24.csproj` |
-| `"Bimwright.Rvt.Plugin.R25"` | `"RvtMcp.Plugin.R25"` |
-| `plugin-r25\Bimwright.Rvt.Plugin.R25.csproj` | `plugin-r25\RvtMcp.Plugin.R25.csproj` |
-| `"Bimwright.Rvt.Plugin.R26"` | `"RvtMcp.Plugin.R26"` |
-| `plugin-r26\Bimwright.Rvt.Plugin.R26.csproj` | `plugin-r26\RvtMcp.Plugin.R26.csproj` |
-| `"Bimwright.Rvt.Plugin.R27"` | `"RvtMcp.Plugin.R27"` |
-| `plugin-r27\Bimwright.Rvt.Plugin.R27.csproj` | `plugin-r27\RvtMcp.Plugin.R27.csproj` |
-| `"Bimwright.Rvt.Tests"` | `"RvtMcp.Tests"` |
-| `..\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj` | `..\tests\RvtMcp.Tests\RvtMcp.Tests.csproj` |
+| `"RvtMcp.Server"` | `"RvtMcp.Server"` |
+| `server\RvtMcp.Server.csproj` | `server\RvtMcp.Server.csproj` |
+| `"RvtMcp.Plugin.R22"` | `"RvtMcp.Plugin.R22"` |
+| `plugin-r22\RvtMcp.Plugin.R22.csproj` | `plugin-r22\RvtMcp.Plugin.R22.csproj` |
+| `"RvtMcp.Plugin.R23"` | `"RvtMcp.Plugin.R23"` |
+| `plugin-r23\RvtMcp.Plugin.R23.csproj` | `plugin-r23\RvtMcp.Plugin.R23.csproj` |
+| `"RvtMcp.Plugin.R24"` | `"RvtMcp.Plugin.R24"` |
+| `plugin-r24\RvtMcp.Plugin.R24.csproj` | `plugin-r24\RvtMcp.Plugin.R24.csproj` |
+| `"RvtMcp.Plugin.R25"` | `"RvtMcp.Plugin.R25"` |
+| `plugin-r25\RvtMcp.Plugin.R25.csproj` | `plugin-r25\RvtMcp.Plugin.R25.csproj` |
+| `"RvtMcp.Plugin.R26"` | `"RvtMcp.Plugin.R26"` |
+| `plugin-r26\RvtMcp.Plugin.R26.csproj` | `plugin-r26\RvtMcp.Plugin.R26.csproj` |
+| `"RvtMcp.Plugin.R27"` | `"RvtMcp.Plugin.R27"` |
+| `plugin-r27\RvtMcp.Plugin.R27.csproj` | `plugin-r27\RvtMcp.Plugin.R27.csproj` |
+| `"RvtMcp.Tests"` | `"RvtMcp.Tests"` |
+| `..\tests\RvtMcp.Tests\RvtMcp.Tests.csproj` | `..\tests\RvtMcp.Tests\RvtMcp.Tests.csproj` |
 
 **Do not touch project GUIDs.**
 
@@ -264,14 +264,14 @@ Open `src/RvtMcp.sln` and edit lines 6, 8, 10, 12, 14, 16, 18, 22 (the 8 Project
 
 - [ ] **Step 1: Git-rename.**
 
-Run: `git mv src/server/Bimwright.Rvt.Server.csproj src/server/RvtMcp.Server.csproj`
+Run: `git mv src/server/RvtMcp.Server.csproj src/server/RvtMcp.Server.csproj`
 
 - [ ] **Step 2: Edit RootNamespace and AssemblyName.**
 
 In `src/server/RvtMcp.Server.csproj`:
 ```xml
-<RootNamespace>Bimwright.Rvt.Server</RootNamespace>
-<AssemblyName>Bimwright.Rvt.Server</AssemblyName>
+<RootNamespace>RvtMcp.Server</RootNamespace>
+<AssemblyName>RvtMcp.Server</AssemblyName>
 ```
 becomes
 ```xml
@@ -282,8 +282,8 @@ becomes
 - [ ] **Step 3: Edit NuGet packaging properties.**
 
 ```xml
-<ToolCommandName>bimwright-rvt</ToolCommandName>
-<PackageId>Bimwright.Rvt.Server</PackageId>
+<ToolCommandName>rvt-mcp</ToolCommandName>
+<PackageId>RvtMcp.Server</PackageId>
 ```
 becomes
 ```xml
@@ -296,23 +296,23 @@ Keep `<Authors>`, `<Copyright>`, `<Description>`, `<PackageProjectUrl>`, `<Repos
 - [ ] **Step 4: Edit `<Compile Include>` Link paths for shared files.**
 
 ```xml
-<Compile Include="..\shared\Config\BimwrightConfig.cs" Link="Shared\BimwrightConfig.cs" />
+<Compile Include="..\shared\Config\RvtMcpConfig.cs" Link="Shared\RvtMcpConfig.cs" />
 ```
 becomes
 ```xml
 <Compile Include="..\shared\Config\RvtMcpConfig.cs" Link="Shared\RvtMcpConfig.cs" />
 ```
 
-(The file `BimwrightConfig.cs` itself is renamed in Wave 2 Task 2.3. We update the csproj include here so Wave 2 just needs to rename the file on disk.)
+(The file `RvtMcpConfig.cs` itself is renamed in Wave 2 Task 2.3. We update the csproj include here so Wave 2 just needs to rename the file on disk.)
 
-**IMPORTANT — temporary inconsistency:** between this task and Task 2.3, `RvtMcp.Server.csproj` references `..\shared\Config\RvtMcpConfig.cs` but the file is still at `..\shared\Config\BimwrightConfig.cs`. **Build will fail in Wave 1 verify if this is done before renaming the file.** Therefore: defer this `<Compile>` Link path edit to Wave 2 Task 2.3 Step 3. Strike this step in Wave 1.
+**IMPORTANT — temporary inconsistency:** between this task and Task 2.3, `RvtMcp.Server.csproj` references `..\shared\Config\RvtMcpConfig.cs` but the file is still at `..\shared\Config\RvtMcpConfig.cs`. **Build will fail in Wave 1 verify if this is done before renaming the file.** Therefore: defer this `<Compile>` Link path edit to Wave 2 Task 2.3 Step 3. Strike this step in Wave 1.
 
 **Revised Step 4:** Skip. The `<Compile Include>` shared-file paths get updated in Wave 2 Task 2.3 alongside the file rename.
 
 - [ ] **Step 5: Update `<InternalsVisibleTo>`.**
 
 ```xml
-<InternalsVisibleTo Include="Bimwright.Rvt.Tests" />
+<InternalsVisibleTo Include="RvtMcp.Tests" />
 ```
 becomes
 ```xml
@@ -325,13 +325,13 @@ For **each year XX in {22, 23, 24, 25, 26, 27}**, do all of:
 
 - [ ] **Step 1: Git-rename csproj.**
 
-Run: `git mv src/plugin-rXX/Bimwright.Rvt.Plugin.RXX.csproj src/plugin-rXX/RvtMcp.Plugin.RXX.csproj`
+Run: `git mv src/plugin-rXX/RvtMcp.Plugin.RXX.csproj src/plugin-rXX/RvtMcp.Plugin.RXX.csproj`
 
 - [ ] **Step 2: Edit `<RootNamespace>` and `<AssemblyName>`.**
 
 ```xml
-<RootNamespace>Bimwright.Rvt.Plugin</RootNamespace>
-<AssemblyName>Bimwright.Rvt.Plugin</AssemblyName>
+<RootNamespace>RvtMcp.Plugin</RootNamespace>
+<AssemblyName>RvtMcp.Plugin</AssemblyName>
 ```
 becomes
 ```xml
@@ -393,14 +393,14 @@ becomes
 
 Run:
 ```
-git mv tests/Bimwright.Rvt.Tests tests/RvtMcp.Tests
-git mv tests/RvtMcp.Tests/Bimwright.Rvt.Tests.csproj tests/RvtMcp.Tests/RvtMcp.Tests.csproj
+git mv tests/RvtMcp.Tests tests/RvtMcp.Tests
+git mv tests/RvtMcp.Tests/RvtMcp.Tests.csproj tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 ```
 
 - [ ] **Step 2: Edit `<ProjectReference Include>` in test csproj.**
 
 ```xml
-<ProjectReference Include="..\..\src\server\Bimwright.Rvt.Server.csproj" />
+<ProjectReference Include="..\..\src\server\RvtMcp.Server.csproj" />
 ```
 becomes
 ```xml
@@ -416,11 +416,11 @@ These reference shared source files by path — paths are unchanged; only file C
 - [ ] **Step 1: Build with deploy skipped.**
 
 Run: `dotnet build src/RvtMcp.sln -c Debug /p:RvtMcpSkipDeploy=true`
-Expected: Build **succeeds**. The `.cs` files still declare `namespace Bimwright.Rvt.*` — that's fine; MSBuild only cares about file paths and project names in this wave.
+Expected: Build **succeeds**. The `.cs` files still declare `namespace RvtMcp.*` — that's fine; MSBuild only cares about file paths and project names in this wave.
 
 - [ ] **Step 2: Confirm produced binaries have new names.**
 
-Check that `src/server/bin/Debug/net8.0/RvtMcp.Server.exe` exists (not `Bimwright.Rvt.Server.exe`).
+Check that `src/server/bin/Debug/net8.0/RvtMcp.Server.exe` exists (not `RvtMcp.Server.exe`).
 Check that `src/plugin-r22/bin/Debug/net48/RvtMcp.Plugin.dll` exists.
 
 If old-named binaries remain alongside, run `dotnet clean src/RvtMcp.sln` then re-build. Old-named DLLs from prior builds are stale and must not ship in artifacts.
@@ -428,7 +428,7 @@ If old-named binaries remain alongside, run `dotnet clean src/RvtMcp.sln` then r
 - [ ] **Step 3: Run tests.**
 
 Run: `dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj -c Debug`
-Expected: Same passing count as Wave 0 baseline. Tests still compile because they reference symbols in `Bimwright.Rvt.*` namespaces which haven't been renamed yet — and the test code itself also still says `Bimwright.Rvt.Tests` in its `namespace` declaration.
+Expected: Same passing count as Wave 0 baseline. Tests still compile because they reference symbols in `RvtMcp.*` namespaces which haven't been renamed yet — and the test code itself also still says `RvtMcp.Tests` in its `namespace` declaration.
 
 - [ ] **Step 4: Commit.**
 
@@ -442,14 +442,14 @@ git add src/RvtMcp.sln \
         src/plugin-r26/RvtMcp.Plugin.R26.csproj \
         src/plugin-r27/RvtMcp.Plugin.R27.csproj \
         tests/RvtMcp.Tests/RvtMcp.Tests.csproj
-git rm src/Bimwright.Rvt.sln \
-       src/server/Bimwright.Rvt.Server.csproj \
-       src/plugin-r22/Bimwright.Rvt.Plugin.R22.csproj \
-       src/plugin-r23/Bimwright.Rvt.Plugin.R23.csproj \
-       src/plugin-r24/Bimwright.Rvt.Plugin.R24.csproj \
-       src/plugin-r25/Bimwright.Rvt.Plugin.R25.csproj \
-       src/plugin-r26/Bimwright.Rvt.Plugin.R26.csproj \
-       src/plugin-r27/Bimwright.Rvt.Plugin.R27.csproj
+git rm src/RvtMcp.sln \
+       src/server/RvtMcp.Server.csproj \
+       src/plugin-r22/RvtMcp.Plugin.R22.csproj \
+       src/plugin-r23/RvtMcp.Plugin.R23.csproj \
+       src/plugin-r24/RvtMcp.Plugin.R24.csproj \
+       src/plugin-r25/RvtMcp.Plugin.R25.csproj \
+       src/plugin-r26/RvtMcp.Plugin.R26.csproj \
+       src/plugin-r27/RvtMcp.Plugin.R27.csproj
 git commit -m "refactor(build): rename solution + csproj files to RvtMcp"
 ```
 
@@ -459,7 +459,7 @@ git commit -m "refactor(build): rename solution + csproj files to RvtMcp"
 
 ## Wave 2: Namespace Rename in C# Source
 
-**Goal:** Update every `.cs` file's `namespace` declarations, `using` statements, and type references that mention `Bimwright.Rvt.*` to `RvtMcp.*`. Rename the class `BimwrightConfig` → `RvtMcpConfig` and its file. Build must produce identical functional behavior.
+**Goal:** Update every `.cs` file's `namespace` declarations, `using` statements, and type references that mention `RvtMcp.*` to `RvtMcp.*`. Rename the class `RvtMcpConfig` → `RvtMcpConfig` and its file. Build must produce identical functional behavior.
 
 **Strategy:** Use a scripted bulk replace, then `dotnet build` to catch anything missed.
 
@@ -476,10 +476,10 @@ foreach ($f in $files) {
     $content = Get-Content -Raw -Path $f.FullName -Encoding UTF8
     $orig = $content
     # Order matters: longest-first to avoid double-replacement
-    $content = $content.Replace("Bimwright.Rvt.Server", "RvtMcp.Server")
-    $content = $content.Replace("Bimwright.Rvt.Plugin", "RvtMcp.Plugin")
-    $content = $content.Replace("Bimwright.Rvt.Tests", "RvtMcp.Tests")
-    $content = $content.Replace("Bimwright.Rvt", "RvtMcp")  # catches any remaining (e.g. assembly attribute names)
+    $content = $content.Replace("RvtMcp.Server", "RvtMcp.Server")
+    $content = $content.Replace("RvtMcp.Plugin", "RvtMcp.Plugin")
+    $content = $content.Replace("RvtMcp.Tests", "RvtMcp.Tests")
+    $content = $content.Replace("RvtMcp", "RvtMcp")  # catches any remaining (e.g. assembly attribute names)
     if ($content -ne $orig) {
         Set-Content -Path $f.FullName -Value $content -Encoding UTF8 -NoNewline
         Write-Host "updated: $($f.FullName)"
@@ -489,7 +489,7 @@ foreach ($f in $files) {
 
 Expected: ~100-150 `.cs` files updated.
 
-- [ ] **Step 2: Verify no `Bimwright.Rvt` literal remains in `.cs` files except inside string literals.**
+- [ ] **Step 2: Verify no `RvtMcp` literal remains in `.cs` files except inside string literals.**
 
 Run:
 ```powershell
@@ -500,24 +500,24 @@ Get-ChildItem -Path src,tests -Recurse -Include *.cs -File |
 
 Expected: empty output, OR only matches inside `"…string literals…"` that intentionally reference legacy paths (Wave 6 migration code may need these). Triage each match. If any is a code identifier (not a string), revisit Step 1.
 
-### Task 2.2: Rename `BimwrightConfig` class + file
+### Task 2.2: Rename `RvtMcpConfig` class + file
 
 **Files:**
-- Rename: `src/shared/Config/BimwrightConfig.cs` → `src/shared/Config/RvtMcpConfig.cs`
-- Rename: `tests/RvtMcp.Tests/BimwrightConfigTests.cs` → `tests/RvtMcp.Tests/RvtMcpConfigTests.cs`
-- Rename: `tests/RvtMcp.Tests/BimwrightConfigAdaptiveBakeTests.cs` → `tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs`
+- Rename: `src/shared/Config/RvtMcpConfig.cs` → `src/shared/Config/RvtMcpConfig.cs`
+- Rename: `tests/RvtMcp.Tests/RvtMcpConfigTests.cs` → `tests/RvtMcp.Tests/RvtMcpConfigTests.cs`
+- Rename: `tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs` → `tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs`
 
 - [ ] **Step 1: Git-rename files.**
 
 ```
-git mv src/shared/Config/BimwrightConfig.cs src/shared/Config/RvtMcpConfig.cs
-git mv tests/RvtMcp.Tests/BimwrightConfigTests.cs tests/RvtMcp.Tests/RvtMcpConfigTests.cs
-git mv tests/RvtMcp.Tests/BimwrightConfigAdaptiveBakeTests.cs tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs
+git mv src/shared/Config/RvtMcpConfig.cs src/shared/Config/RvtMcpConfig.cs
+git mv tests/RvtMcp.Tests/RvtMcpConfigTests.cs tests/RvtMcp.Tests/RvtMcpConfigTests.cs
+git mv tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs tests/RvtMcp.Tests/RvtMcpConfigAdaptiveBakeTests.cs
 ```
 
 - [ ] **Step 2: Rename the class identifier.**
 
-In all `.cs` files under `src/` and `tests/`, replace the class identifiers `BimwrightConfig`, `BimwrightConfigTests`, and `BimwrightConfigAdaptiveBakeTests` with their `RvtMcp` equivalents. PowerShell:
+In all `.cs` files under `src/` and `tests/`, replace the class identifiers `RvtMcpConfig`, `RvtMcpConfigTests`, and `RvtMcpConfigAdaptiveBakeTests` with their `RvtMcp` equivalents. PowerShell:
 
 ```powershell
 $root = "D:/Projects/bimwright/rvt-mcp"
@@ -526,9 +526,9 @@ foreach ($f in $files) {
     $content = Get-Content -Raw -Path $f.FullName -Encoding UTF8
     $orig = $content
     # Use word boundary (\b) so we don't do partial replacements
-    $content = $content -replace '\bBimwrightConfig\b', 'RvtMcpConfig'
-    $content = $content -replace '\bBimwrightConfigTests\b', 'RvtMcpConfigTests'
-    $content = $content -replace '\bBimwrightConfigAdaptiveBakeTests\b', 'RvtMcpConfigAdaptiveBakeTests'
+    $content = $content -replace '\bRvtMcpConfig\b', 'RvtMcpConfig'
+    $content = $content -replace '\bRvtMcpConfigTests\b', 'RvtMcpConfigTests'
+    $content = $content -replace '\bRvtMcpConfigAdaptiveBakeTests\b', 'RvtMcpConfigAdaptiveBakeTests'
     if ($content -ne $orig) {
         Set-Content -Path $f.FullName -Value $content -Encoding UTF8 -NoNewline
         Write-Host "updated: $($f.FullName)"
@@ -542,7 +542,7 @@ foreach ($f in $files) {
 In `src/server/RvtMcp.Server.csproj`:
 
 ```xml
-<Compile Include="..\shared\Config\BimwrightConfig.cs" Link="Shared\BimwrightConfig.cs" />
+<Compile Include="..\shared\Config\RvtMcpConfig.cs" Link="Shared\RvtMcpConfig.cs" />
 ```
 becomes
 ```xml
@@ -554,7 +554,7 @@ becomes
 - [ ] **Step 1: Build.**
 
 Run: `dotnet build src/RvtMcp.sln -c Debug /p:RvtMcpSkipDeploy=true`
-Expected: **Succeeds.** If `error CS0234: The type or namespace name 'X' does not exist in the namespace 'Bimwright.Rvt.…'` appears, the bulk replace missed a spot — grep for the symbol and fix.
+Expected: **Succeeds.** If `error CS0234: The type or namespace name 'X' does not exist in the namespace 'RvtMcp.…'` appears, the bulk replace missed a spot — grep for the symbol and fix.
 
 - [ ] **Step 2: Test.**
 
@@ -565,7 +565,7 @@ Expected: Same passing count as baseline.
 
 ```bash
 git add -A src/ tests/
-git commit -m "refactor: rename Bimwright.Rvt.* namespaces and BimwrightConfig class to RvtMcp"
+git commit -m "refactor: rename RvtMcp.* namespaces and RvtMcpConfig class to RvtMcp"
 ```
 
 ---
@@ -592,8 +592,8 @@ In `src/plugin-rXX/RvtMcp.RXX.addin`:
 
 ```xml
 <Name>Bimwright</Name>
-<Assembly>Bimwright\Bimwright.Rvt.Plugin.dll</Assembly>
-<FullClassName>Bimwright.Rvt.Plugin.App</FullClassName>
+<Assembly>Bimwright\RvtMcp.Plugin.dll</Assembly>
+<FullClassName>RvtMcp.Plugin.App</FullClassName>
 <AddInId>{<existing-guid-unchanged>}</AddInId>
 <VendorId>bimwright</VendorId>
 <VendorDescription>Revit MCP Gateway</VendorDescription>
@@ -683,7 +683,7 @@ foreach ($f in $files) {
 
 These appear inside `[McpServerTool]` `Description` strings and `--help` text. Same bulk PowerShell replace would catch them if we replace `"Bimwright\\"` and `"Bimwright."` patterns. Verify by grepping after Step 1.
 
-- [ ] **Step 3: Special case — `BimwrightConfig.cs` (now `RvtMcpConfig.cs`).**
+- [ ] **Step 3: Special case — `RvtMcpConfig.cs` (now `RvtMcpConfig.cs`).**
 
 Already covered by Step 1 (the `"Bimwright"` literal in `Path.Combine(..., "Bimwright", ...)`). Also update the config filename `bimwright.config.json` if Program.cs references it as a CLI argument default — `RvtMcpConfig.Load()` may have its own default path. Check `src/shared/Config/RvtMcpConfig.cs:65-66` and rename:
 
@@ -696,13 +696,13 @@ Path.Combine(
 
 - [ ] **Step 4: Update `CaptureViewImageHandler.cs` description string.**
 
-Line 13 + 98 contain `%LOCALAPPDATA%\Bimwright\captures\` — same find/replace as above.
+Line 13 + 98 contain `%LOCALAPPDATA%\RvtMcp\captures\` — same find/replace as above.
 
 ### Task 3.3: Update `install.ps1`
 
 **File:** `scripts/install.ps1`
 
-This script has ~50 occurrences of `Bimwright` / `bimwright` / `bimwright-rvt`. Most are user-facing names that need to change. A few are inside legacy-detection regex that must KEEP `bimwright-rvt-r\d{2}` so we can detect old entries.
+This script has ~50 occurrences of `Bimwright` / `bimwright` / `rvt-mcp`. Most are user-facing names that need to change. A few are inside legacy-detection regex that must KEEP `rvt-mcp-r\d{2}` so we can detect old entries.
 
 - [ ] **Step 1: Replace function names.**
 
@@ -718,16 +718,16 @@ This script has ~50 occurrences of `Bimwright` / `bimwright` / `bimwright-rvt`. 
 |---|---|
 | `'Bimwright\rvt\server\{0}'` (line 90) | `'RvtMcp\server\{0}'` |
 | `Join-Path $addinsRoot 'Bimwright'` (line 458) | `Join-Path $addinsRoot 'RvtMcp'` |
-| `Find-ServerSourceExe` preferred = `'bimwright-rvt.exe'` | `'rvt-mcp.exe'` |
-| `Find-ServerSourceExe` fallback = `'Bimwright.Rvt.Server.exe'` | `'RvtMcp.Server.exe'` |
+| `Find-ServerSourceExe` preferred = `'rvt-mcp.exe'` | `'rvt-mcp.exe'` |
+| `Find-ServerSourceExe` fallback = `'RvtMcp.Server.exe'` | `'RvtMcp.Server.exe'` |
 | `$addinFile = "Bimwright.R$yearTwo.addin"` (line 456) | `"RvtMcp.R$yearTwo.addin"` |
-| `Bimwright.Rvt.Plugin.R{0}.zip` (line 490) | `RvtMcp.Plugin.R{0}.zip` |
+| `RvtMcp.Plugin.R{0}.zip` (line 490) | `RvtMcp.Plugin.R{0}.zip` |
 
 - [ ] **Step 3: Replace client wire entry names.**
 
 In `Get-RvtMcpClientTargets`:
 ```powershell
-Name = 'bimwright-rvt'
+Name = 'rvt-mcp'
 ```
 becomes
 ```powershell
@@ -736,8 +736,8 @@ Name = 'rvt-mcp'
 
 And in the `Find-ServerSourceExe` last-resort PATH check (line 548-550):
 ```powershell
-if (Get-Command bimwright-rvt -ErrorAction SilentlyContinue) {
-    $serverCommand = 'bimwright-rvt'
+if (Get-Command rvt-mcp -ErrorAction SilentlyContinue) {
+    $serverCommand = 'rvt-mcp'
 }
 ```
 becomes
@@ -749,13 +749,13 @@ if (Get-Command rvt-mcp -ErrorAction SilentlyContinue) {
 
 - [ ] **Step 4: Update legacy-detection regex.**
 
-`Remove-LegacyBimwrightEntries` (line 215) — KEEP regex `'^bimwright-rvt-r\d{2}$'` because it deletes legacy fan-out entries. ADD a second regex for the previous-but-not-yet-legacy entry name:
+`Remove-LegacyBimwrightEntries` (line 215) — KEEP regex `'^rvt-mcp-r\d{2}$'` because it deletes legacy fan-out entries. ADD a second regex for the previous-but-not-yet-legacy entry name:
 
 ```powershell
 function Remove-LegacyBimwrightEntries {
     param([Parameter(Mandatory = $true)][hashtable]$Map)
     $keys = @($Map.Keys | Where-Object {
-        $_ -match '^bimwright-rvt-r\d{2}$' -or $_ -eq 'bimwright-rvt'
+        $_ -match '^rvt-mcp-r\d{2}$' -or $_ -eq 'rvt-mcp'
     })
     foreach ($k in $keys) { $Map.Remove($k) | Out-Null }
     return $keys.Count
@@ -764,11 +764,11 @@ function Remove-LegacyBimwrightEntries {
 
 The codex regex (line 319):
 ```powershell
-$legacyPattern = '(?ms)^\[mcp_servers\.bimwright-rvt-r\d{2}\].*?(?=^\[|\z)'
+$legacyPattern = '(?ms)^\[mcp_servers\.rvt-mcp-r\d{2}\].*?(?=^\[|\z)'
 ```
 becomes
 ```powershell
-$legacyPattern = '(?ms)^\[mcp_servers\.bimwright-rvt(?:-r\d{2})?\].*?(?=^\[|\z)'
+$legacyPattern = '(?ms)^\[mcp_servers\.rvt-mcp(?:-r\d{2})?\].*?(?=^\[|\z)'
 ```
 
 - [ ] **Step 5: Update backup-file suffix.**
@@ -786,11 +786,11 @@ Both occurrences inside `Write-ConfigAtomic`.
 - [ ] **Step 6: Update log/Write-Host strings.**
 
 Replace user-facing strings:
-- `'Install self-contained Bimwright RVT server'` → `'Install self-contained RvtMcp server'`
-- `'Upsert bimwright-rvt entry'` → `'Upsert rvt-mcp entry'`
-- `'Upsert [mcp_servers.bimwright-rvt] block'` → `'Upsert [mcp_servers.rvt-mcp] block'`
-- `'Upsert mcpServers.bimwright-rvt entry'` → `'Upsert mcpServers.rvt-mcp entry'`
-- `'[server] installed'`, `'[opencode] wired … bimwright-rvt'`, etc. — replace `bimwright-rvt` → `rvt-mcp` in all status/log strings
+- `'Install self-contained RvtMcp server'` → `'Install self-contained RvtMcp server'`
+- `'Upsert rvt-mcp entry'` → `'Upsert rvt-mcp entry'`
+- `'Upsert [mcp_servers.rvt-mcp] block'` → `'Upsert [mcp_servers.rvt-mcp] block'`
+- `'Upsert mcpServers.rvt-mcp entry'` → `'Upsert mcpServers.rvt-mcp entry'`
+- `'[server] installed'`, `'[opencode] wired … rvt-mcp'`, etc. — replace `rvt-mcp` → `rvt-mcp` in all status/log strings
 - `.SYNOPSIS` line `'Install or uninstall Bimwright Revit client components.'` → `'Install or uninstall RvtMcp (Revit MCP) client components.'`
 
 ### Task 3.4: Update other scripts
@@ -814,16 +814,16 @@ $scripts = @(
 foreach ($s in $scripts) {
     $p = "D:/Projects/bimwright/rvt-mcp/$s"
     $c = Get-Content -Raw -Path $p
-    $c = $c.Replace('Bimwright.Rvt.Plugin', 'RvtMcp.Plugin')
-    $c = $c.Replace('Bimwright.Rvt.Setup', 'RvtMcp.Setup')
-    $c = $c.Replace('Bimwright.Rvt.Server', 'RvtMcp.Server')
+    $c = $c.Replace('RvtMcp.Plugin', 'RvtMcp.Plugin')
+    $c = $c.Replace('RvtMcp.Setup', 'RvtMcp.Setup')
+    $c = $c.Replace('RvtMcp.Server', 'RvtMcp.Server')
     $c = $c.Replace('Bimwright.R$', 'RvtMcp.R$')   # for $year/$yearTwo interpolation
     $c = $c.Replace('"Bimwright"', '"RvtMcp"')
     $c = $c.Replace("'Bimwright'", "'RvtMcp'")
-    $c = $c.Replace('bimwright-rvt.exe', 'rvt-mcp.exe')
-    $c = $c.Replace('bimwright-rvt', 'rvt-mcp')   # client entry name + tool name (after .exe handled above)
-    $c = $c.Replace('Bimwright RVT', 'RvtMcp')
-    $c = $c.Replace('Bimwright Rvt', 'RvtMcp')
+    $c = $c.Replace('rvt-mcp.exe', 'rvt-mcp.exe')
+    $c = $c.Replace('rvt-mcp', 'rvt-mcp')   # client entry name + tool name (after .exe handled above)
+    $c = $c.Replace('RvtMcp', 'RvtMcp')
+    $c = $c.Replace('RvtMcp', 'RvtMcp')
     $c = $c.Replace('BimwrightSkipDeploy', 'RvtMcpSkipDeploy') # Skip deploy flag in package script
     Set-Content -Path $p -Value $c -Encoding UTF8 -NoNewline
 }
@@ -838,7 +838,7 @@ foreach ($s in $scripts) {
 Select-String -Path scripts/*.ps1 -Pattern 'Bimwright'
 ```
 
-Expected output: only matches inside legacy-detection regex (`bimwright-rvt-r\d{2}`, `bimwright-rvt`) and the `Remove-LegacyBimwrightEntries` function name. Triage each remaining hit.
+Expected output: only matches inside legacy-detection regex (`rvt-mcp-r\d{2}`, `rvt-mcp`) and the `Remove-LegacyBimwrightEntries` function name. Triage each remaining hit.
 
 ### Task 3.5: Verify Wave 3
 
@@ -885,7 +885,7 @@ In `server.json`:
   "packages": [
     {
       "registryType": "nuget",
-      "identifier": "Bimwright.Rvt.Server",
+      "identifier": "RvtMcp.Server",
       "version": "0.4.0",
 ```
 becomes
@@ -913,11 +913,11 @@ In `smithery.yaml`:
 ```yaml
 # Smithery manifest — exposes bimwright to the Smithery.ai MCP directory.
 # ...
-# bimwright ships as a .NET global tool on NuGet (Bimwright.Rvt.Server).
+# bimwright ships as a .NET global tool on NuGet (RvtMcp.Server).
 # ...
-#   dotnet tool install -g Bimwright.Rvt.Server
+#   dotnet tool install -g RvtMcp.Server
 # ...
-#   "command": "bimwright-rvt",
+#   "command": "rvt-mcp",
 ```
 becomes
 ```yaml
@@ -949,9 +949,9 @@ commandFunction: |
 
 Run: `Get-Content D:/Projects/bimwright/rvt-mcp/.mcp.json.example`
 
-- [ ] **Step 2: Update any `bimwright-rvt` entry names and exe paths shown in the example.**
+- [ ] **Step 2: Update any `rvt-mcp` entry names and exe paths shown in the example.**
 
-Replace `"bimwright-rvt"` → `"rvt-mcp"`, `Bimwright.Rvt.Server.exe` → `RvtMcp.Server.exe`, `bimwright-rvt.exe` → `rvt-mcp.exe`.
+Replace `"rvt-mcp"` → `"rvt-mcp"`, `RvtMcp.Server.exe` → `RvtMcp.Server.exe`, `rvt-mcp.exe` → `rvt-mcp.exe`.
 
 ### Task 4.4: GitHub Actions workflow
 
@@ -959,15 +959,15 @@ Replace `"bimwright-rvt"` → `"rvt-mcp"`, `Bimwright.Rvt.Server.exe` → `RvtMc
 
 - [ ] **Step 1: Update csproj paths in matrix.**
 
-Lines 20-41 — replace each `src/plugin-rXX/Bimwright.Rvt.Plugin.RXX.csproj` with `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj`.
+Lines 20-41 — replace each `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj` with `src/plugin-rXX/RvtMcp.Plugin.RXX.csproj`.
 
 - [ ] **Step 2: Update server csproj path.**
 
-Lines 78-84: `src/server/Bimwright.Rvt.Server.csproj` → `src/server/RvtMcp.Server.csproj`.
+Lines 78-84: `src/server/RvtMcp.Server.csproj` → `src/server/RvtMcp.Server.csproj`.
 
 - [ ] **Step 3: Update test csproj path.**
 
-Lines 130-133: `tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj` → `tests/RvtMcp.Tests/RvtMcp.Tests.csproj`. Same for the `TestResults` path on line 140.
+Lines 130-133: `tests/RvtMcp.Tests/RvtMcp.Tests.csproj` → `tests/RvtMcp.Tests/RvtMcp.Tests.csproj`. Same for the `TestResults` path on line 140.
 
 - [ ] **Step 4: Update artifact names.**
 
@@ -975,7 +975,7 @@ Lines 130-133: `tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj` → `tests
 |---|---|
 | `bimwright-plugin-${{ matrix.revit }}` | `rvtmcp-plugin-${{ matrix.revit }}` |
 | `bimwright-server-nupkg` | `rvtmcp-server-nupkg` |
-| `bimwright-rvt-client-setup` | `rvtmcp-client-setup` |
+| `rvt-mcp-client-setup` | `rvtmcp-client-setup` |
 
 - [ ] **Step 5: Update MSBuild flag.**
 
@@ -983,7 +983,7 @@ Lines 130-133: `tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj` → `tests
 
 - [ ] **Step 6: Update setup-zip artifact path.**
 
-Line 115: `build/client-setup/Bimwright.Rvt.Setup-*-win-x64.zip` → `build/client-setup/RvtMcp.Setup-*-win-x64.zip`.
+Line 115: `build/client-setup/RvtMcp.Setup-*-win-x64.zip` → `build/client-setup/RvtMcp.Setup-*-win-x64.zip`.
 
 ### Task 4.5: Verify Wave 4
 
@@ -1039,18 +1039,18 @@ foreach ($d in $docs) {
     if (-not (Test-Path $p)) { continue }
     $c = Get-Content -Raw -Path $p
     $orig = $c
-    $c = $c.Replace('Bimwright.Rvt.Plugin', 'RvtMcp.Plugin')
-    $c = $c.Replace('Bimwright.Rvt.Server', 'RvtMcp.Server')
-    $c = $c.Replace('Bimwright.Rvt.Tests', 'RvtMcp.Tests')
-    $c = $c.Replace('Bimwright.Rvt', 'RvtMcp')
-    $c = $c.Replace('BimwrightConfig', 'RvtMcpConfig')
-    $c = $c.Replace('bimwright-rvt.exe', 'rvt-mcp.exe')
-    $c = $c.Replace('bimwright-rvt', 'rvt-mcp')
-    # %LOCALAPPDATA%\Bimwright\ → %LOCALAPPDATA%\RvtMcp\
-    $c = $c.Replace('%LOCALAPPDATA%\Bimwright\', '%LOCALAPPDATA%\RvtMcp\')
-    $c = $c.Replace('Addins\<year>\Bimwright\', 'Addins\<year>\RvtMcp\')
-    $c = $c.Replace('Addins/<year>/Bimwright/', 'Addins/<year>/RvtMcp/')
-    # Don't touch "Bimwright" as a brand name in prose (e.g., "Bimwright Rvt-MCP" header, copyright)
+    $c = $c.Replace('RvtMcp.Plugin', 'RvtMcp.Plugin')
+    $c = $c.Replace('RvtMcp.Server', 'RvtMcp.Server')
+    $c = $c.Replace('RvtMcp.Tests', 'RvtMcp.Tests')
+    $c = $c.Replace('RvtMcp', 'RvtMcp')
+    $c = $c.Replace('RvtMcpConfig', 'RvtMcpConfig')
+    $c = $c.Replace('rvt-mcp.exe', 'rvt-mcp.exe')
+    $c = $c.Replace('rvt-mcp', 'rvt-mcp')
+    # %LOCALAPPDATA%\RvtMcp\ → %LOCALAPPDATA%\RvtMcp\
+    $c = $c.Replace('%LOCALAPPDATA%\RvtMcp\', '%LOCALAPPDATA%\RvtMcp\')
+    $c = $c.Replace('Addins\<year>\RvtMcp\', 'Addins\<year>\RvtMcp\')
+    $c = $c.Replace('Addins/<year>/RvtMcp/', 'Addins/<year>/RvtMcp/')
+    # Don't touch "Bimwright" as a brand name in prose (e.g., "RvtMcp-MCP" header, copyright)
     # — only path/identifier matches above are replaced.
     if ($c -ne $orig) {
         Set-Content -Path $p -Value $c -Encoding UTF8 -NoNewline
@@ -1076,7 +1076,7 @@ These contain install commands, troubleshooting, and table-of-config that must m
 - [ ] **Step 1: Confirm install instructions are accurate.**
 
 For each README, grep for these and verify the surrounding instruction text still reads correctly:
-- `dotnet tool install` line — must say `RvtMcp.Server` (not `Bimwright.Rvt.Server`)
+- `dotnet tool install` line — must say `RvtMcp.Server` (not `RvtMcp.Server`)
 - `claude mcp add` examples — must use `rvt-mcp` as the server name
 - Plugin install paths — `Addins\<year>\RvtMcp\`
 - Discovery file path — `%LOCALAPPDATA%\RvtMcp\portR22.txt`
@@ -1084,12 +1084,12 @@ For each README, grep for these and verify the surrounding instruction text stil
 
 - [ ] **Step 2: Add migration note to README.md (English) only.**
 
-Insert a `## Migration from Bimwright.Rvt.* (v0.3.0 and earlier)` section near the top of the install section. Body:
+Insert a `## Migration from RvtMcp.* (v0.3.0 and earlier)` section near the top of the install section. Body:
 
 ```markdown
-## Migration from `Bimwright.Rvt.*` (v0.3.0 and earlier)
+## Migration from `RvtMcp.*` (v0.3.0 and earlier)
 
-v0.4.0 renames the codebase from `Bimwright.Rvt.*` to `RvtMcp.*`. The GitHub repo (`bimwright/rvt-mcp`) and brand are unchanged; only file names, package IDs, and folder paths change.
+v0.4.0 renames the codebase from `RvtMcp.*` to `RvtMcp.*`. The GitHub repo (`bimwright/rvt-mcp`) and brand are unchanged; only file names, package IDs, and folder paths change.
 
 If you have v0.3.0 or earlier installed:
 
@@ -1099,22 +1099,22 @@ If you have v0.3.0 or earlier installed:
    pwsh scripts/uninstall-old.ps1
    ```
    This removes:
-   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` (plugin DLLs)
+   - `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` (plugin DLLs)
    - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright.R<year>.addin` (manifests)
-   - `%LOCALAPPDATA%\Bimwright\rvt\server\` (server install root)
+   - `%LOCALAPPDATA%\RvtMcp\rvt\server\` (server install root)
 
-   It **preserves** `%LOCALAPPDATA%\Bimwright\baked\`, `journal\`, `firm-profiles\`, and `*.log` files — these contain user data and are migrated to `%LOCALAPPDATA%\RvtMcp\` on first launch of v0.4.0.
+   It **preserves** `%LOCALAPPDATA%\RvtMcp\baked\`, `journal\`, `firm-profiles\`, and `*.log` files — these contain user data and are migrated to `%LOCALAPPDATA%\RvtMcp\` on first launch of v0.4.0.
 
 3. **Install v0.4.0:**
    ```powershell
-   dotnet tool update -g Bimwright.Rvt.Server --version 0.3.0   # ensure clean uninstall first
-   dotnet tool uninstall -g Bimwright.Rvt.Server
+   dotnet tool update -g RvtMcp.Server --version 0.3.0   # ensure clean uninstall first
+   dotnet tool uninstall -g RvtMcp.Server
    dotnet tool install -g RvtMcp.Server --version 0.4.0
    ```
 
-4. **Re-wire your MCP client.** Old MCP entries `bimwright-rvt-r22`..`bimwright-rvt-r27` are auto-removed by `install.ps1`. The new entry is `rvt-mcp` (single, auto-detects Revit version).
+4. **Re-wire your MCP client.** Old MCP entries `rvt-mcp-r22`..`rvt-mcp-r27` are auto-removed by `install.ps1`. The new entry is `rvt-mcp` (single, auto-detects Revit version).
 
-The old NuGet package `Bimwright.Rvt.Server` is deprecated at 0.3.0 with a redirect note pointing to `RvtMcp.Server`.
+The old NuGet package `RvtMcp.Server` is deprecated at 0.3.0 with a redirect note pointing to `RvtMcp.Server`.
 ```
 
 Equivalent migration notes can be added to vi/zh READMEs if the user wants — defer that decision; **the English version is mandatory** because it's what NuGet users will hit first.
@@ -1123,9 +1123,9 @@ Equivalent migration notes can be added to vi/zh READMEs if the user wants — d
 
 - [ ] **Step 1: Spot-check 3 random doc files for correctness.**
 
-Pick `ARCHITECTURE.md` line 112 area (env var mention), `docs/bake.md` (env var examples), and `README.md` (install instructions). Read with `Read` tool and confirm `BIMWRIGHT_` / `Bimwright.Rvt` references are handled per Task 0.1 decisions.
+Pick `ARCHITECTURE.md` line 112 area (env var mention), `docs/bake.md` (env var examples), and `README.md` (install instructions). Read with `Read` tool and confirm `BIMWRIGHT_` / `RvtMcp` references are handled per Task 0.1 decisions.
 
-- [ ] **Step 2: Verify no stale `Bimwright.Rvt` survives in docs (except in CHANGELOG entries about v0.3.0 and earlier).**
+- [ ] **Step 2: Verify no stale `RvtMcp` survives in docs (except in CHANGELOG entries about v0.3.0 and earlier).**
 
 ```powershell
 Select-String -Path README.md,README.vi.md,README.zh-CN.md,ARCHITECTURE.md,CLAUDE.md,AGENTS.md,SECURITY.md,CONTRIBUTING.md,CHANGELOG.md -Pattern 'Bimwright\.Rvt'
@@ -1138,7 +1138,7 @@ Expected: only matches inside CHANGELOG entries describing past releases (accept
 
 ```bash
 git add README.md README.vi.md README.zh-CN.md ARCHITECTURE.md CLAUDE.md AGENTS.md SECURITY.md CONTRIBUTING.md CHANGELOG.md docs/
-git commit -m "docs: rename Bimwright.Rvt → RvtMcp in README, ARCHITECTURE, CLAUDE, docs/"
+git commit -m "docs: rename RvtMcp → RvtMcp in README, ARCHITECTURE, CLAUDE, docs/"
 ```
 
 ---
@@ -1157,11 +1157,11 @@ git commit -m "docs: rename Bimwright.Rvt → RvtMcp in README, ARCHITECTURE, CL
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  Remove legacy Bimwright.Rvt v0.3.0-and-earlier plugin installation before upgrading to RvtMcp v0.4.0+.
+  Remove legacy RvtMcp v0.3.0-and-earlier plugin installation before upgrading to RvtMcp v0.4.0+.
 
 .DESCRIPTION
   Cleans up addin folders and manifests installed by the legacy `Bimwright` plugin layout.
-  Preserves user data (baked tools, journal, firm profiles, debug logs) in `%LOCALAPPDATA%\Bimwright\`
+  Preserves user data (baked tools, journal, firm profiles, debug logs) in `%LOCALAPPDATA%\RvtMcp\`
   for migration on next launch of v0.4.0+.
 
   Run this BEFORE installing v0.4.0 to avoid Revit loading both legacy + new plugins simultaneously.
@@ -1241,13 +1241,13 @@ if (Test-Path $legacyServerRoot) {
 try {
     $toolList = & dotnet tool list -g 2>&1
     if ($LASTEXITCODE -eq 0 -and $toolList -match 'bimwright\.rvt\.server') {
-        if ($PSCmdlet.ShouldProcess('Bimwright.Rvt.Server', 'Uninstall legacy .NET global tool')) {
-            & dotnet tool uninstall -g Bimwright.Rvt.Server
-            if ($LASTEXITCODE -eq 0) { $removed += 'Bimwright.Rvt.Server (.NET tool)' }
+        if ($PSCmdlet.ShouldProcess('RvtMcp.Server', 'Uninstall legacy .NET global tool')) {
+            & dotnet tool uninstall -g RvtMcp.Server
+            if ($LASTEXITCODE -eq 0) { $removed += 'RvtMcp.Server (.NET tool)' }
         }
     }
 } catch {
-    Write-Warning "Could not uninstall .NET global tool Bimwright.Rvt.Server: $($_.Exception.Message)"
+    Write-Warning "Could not uninstall .NET global tool RvtMcp.Server: $($_.Exception.Message)"
 }
 
 Write-Host ""
@@ -1258,10 +1258,10 @@ if ($skipped.Count -gt 0) {
 }
 Write-Host ""
 Write-Host "PRESERVED user data (will migrate on next RvtMcp launch):"
-Write-Host "  %LOCALAPPDATA%\Bimwright\baked\        (custom baked tools)"
-Write-Host "  %LOCALAPPDATA%\Bimwright\journal\      (session history)"
-Write-Host "  %LOCALAPPDATA%\Bimwright\firm-profiles\ (firm settings)"
-Write-Host "  %LOCALAPPDATA%\Bimwright\*.log         (debug logs)"
+Write-Host "  %LOCALAPPDATA%\RvtMcp\baked\        (custom baked tools)"
+Write-Host "  %LOCALAPPDATA%\RvtMcp\journal\      (session history)"
+Write-Host "  %LOCALAPPDATA%\RvtMcp\firm-profiles\ (firm settings)"
+Write-Host "  %LOCALAPPDATA%\RvtMcp\*.log         (debug logs)"
 ```
 
 ### Task 6.2: First-launch data migration in `RvtMcpConfig` / `App.cs`
@@ -1420,16 +1420,16 @@ Open `CHANGELOG.md` and insert a new entry above the most recent prior entry:
 
 ### Breaking changes
 
-- **Package renamed:** `Bimwright.Rvt.Server` → `RvtMcp.Server`. The old NuGet package is deprecated at v0.3.0. New users install with `dotnet tool install -g RvtMcp.Server`.
-- **Tool command renamed:** `bimwright-rvt` → `rvt-mcp`. After install, the binary on PATH is `rvt-mcp`.
-- **Plugin folder renamed:** `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` → `…\RvtMcp\`. Run `scripts/uninstall-old.ps1` to clean the legacy folder before/after upgrade.
+- **Package renamed:** `RvtMcp.Server` → `RvtMcp.Server`. The old NuGet package is deprecated at v0.3.0. New users install with `dotnet tool install -g RvtMcp.Server`.
+- **Tool command renamed:** `rvt-mcp` → `rvt-mcp`. After install, the binary on PATH is `rvt-mcp`.
+- **Plugin folder renamed:** `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` → `…\RvtMcp\`. Run `scripts/uninstall-old.ps1` to clean the legacy folder before/after upgrade.
 - **Addin manifest renamed:** `Bimwright.R<year>.addin` → `RvtMcp.R<year>.addin`. AddInId GUIDs are preserved so Revit treats this as an upgrade, not a new addin.
-- **Discovery folder renamed:** `%LOCALAPPDATA%\Bimwright\` → `%LOCALAPPDATA%\RvtMcp\`. User data (baked tools, journal, firm-profiles, logs) is auto-migrated on first launch.
-- **MCP client entry renamed:** `bimwright-rvt-r22`..`r27` (or `bimwright-rvt`) → `rvt-mcp`. `install.ps1` removes legacy entries from opencode/codex/claude configs automatically.
+- **Discovery folder renamed:** `%LOCALAPPDATA%\RvtMcp\` → `%LOCALAPPDATA%\RvtMcp\`. User data (baked tools, journal, firm-profiles, logs) is auto-migrated on first launch.
+- **MCP client entry renamed:** `rvt-mcp-r22`..`r27` (or `rvt-mcp`) → `rvt-mcp`. `install.ps1` removes legacy entries from opencode/codex/claude configs automatically.
 
 ### Migration
 
-See README → "Migration from Bimwright.Rvt.* (v0.3.0 and earlier)" for full upgrade steps.
+See README → "Migration from RvtMcp.* (v0.3.0 and earlier)" for full upgrade steps.
 
 ### Unchanged
 
@@ -1500,7 +1500,7 @@ Expected: same passing count as Wave 0 baseline. **If lower, STOP and diagnose.*
 - [ ] **Step 2: Pack NuGet.**
 
 Run: `dotnet pack src/server/RvtMcp.Server.csproj -c Release --output artifacts/`
-Expected: produces `artifacts/RvtMcp.Server.0.4.0.nupkg`. **NOT** `Bimwright.Rvt.Server.0.4.0.nupkg`.
+Expected: produces `artifacts/RvtMcp.Server.0.4.0.nupkg`. **NOT** `RvtMcp.Server.0.4.0.nupkg`.
 
 - [ ] **Step 3: Inspect NuGet metadata.**
 
@@ -1600,7 +1600,7 @@ Stop. Tell the user:
 > *Rename complete. Branch `chore/rename-to-rvtmcp` is ready. Review the diff one more time, then push and open a PR:*
 > ```
 > git push -u origin chore/rename-to-rvtmcp
-> gh pr create --title "Rename Bimwright.Rvt → RvtMcp" --body "See docs/superpowers/plans/2026-05-21-rename-bimwright-rvt-to-rvtmcp.md"
+> gh pr create --title "Rename RvtMcp → RvtMcp" --body "See docs/superpowers/plans/2026-05-21-rename-rvt-mcp-to-rvtmcp.md"
 > ```
 
 Do not push or open the PR — user reviews and ships.
@@ -1610,7 +1610,7 @@ Do not push or open the PR — user reviews and ships.
 These are listed for awareness; create separate tickets/plans:
 
 - Publish `RvtMcp.Server` 0.4.0 to NuGet.
-- Deprecate `Bimwright.Rvt.Server` on NuGet: add `<PackageDescription>` notice pointing to new package; mark all versions as deprecated via `nuget.org` UI.
+- Deprecate `RvtMcp.Server` on NuGet: add `<PackageDescription>` notice pointing to new package; mark all versions as deprecated via `nuget.org` UI.
 - Update Smithery registry entry (if active).
 - Update MCP Registry entry at `io.github.bimwright/rvt-mcp` (if active).
 - Rename GitHub release artifact names to match new naming (next release cycle).
@@ -1624,8 +1624,8 @@ These are listed for awareness; create separate tickets/plans:
 
 - ✅ Solution + 8 csproj renames → Wave 1
 - ✅ `<RootNamespace>`/`<AssemblyName>` updates → Wave 1
-- ✅ Namespace `Bimwright.Rvt.*` → `RvtMcp.*` in code → Wave 2
-- ✅ `BimwrightConfig` class rename → Wave 2
+- ✅ Namespace `RvtMcp.*` → `RvtMcp.*` in code → Wave 2
+- ✅ `RvtMcpConfig` class rename → Wave 2
 - ✅ Addin manifests + GUIDs preserved → Wave 3
 - ✅ Deploy paths `Addins\<year>\RvtMcp\` → Wave 3
 - ✅ Discovery folder `%LOCALAPPDATA%\RvtMcp\` → Wave 3
@@ -1654,7 +1654,7 @@ These are listed for awareness; create separate tickets/plans:
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-05-21-rename-bimwright-rvt-to-rvtmcp.md`.
+Plan complete and saved to `docs/superpowers/plans/2026-05-21-rename-rvt-mcp-to-rvtmcp.md`.
 
 **Per user's earlier choice, execution proceeds via `executing-plans-via-opencode`:**
 

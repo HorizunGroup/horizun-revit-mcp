@@ -1,4 +1,4 @@
-# Bimwright Rvt-MCP 221-Tool Implementation Specs
+﻿# RvtMcp-MCP 221-Tool Implementation Specs
 
 This directory is the implementation companion for `docs/roadmap-221-tools.md`.
 It turns the 15-wave inventory into agent-ready contracts. Each wave file is
@@ -92,8 +92,8 @@ Every implemented wave must update:
 - `src/shared/Infrastructure/CommandDispatcher.cs`
 - `src/server/Program.cs`
 - `src/server/ToolsetFilter.cs`
-- `tests/Bimwright.Rvt.Tests/Golden/tools-list.json`
-- `tests/Bimwright.Rvt.Tests/Golden/tools-list-adaptive-bake.json`
+- `tests/RvtMcp.Tests/Golden/tools-list.json`
+- `tests/RvtMcp.Tests/Golden/tools-list-adaptive-bake.json`
 - README/toolset tables and `CHANGELOG.md` when the public surface changes.
 
 Do not wait until all remaining waves are complete to refresh the golden
@@ -103,8 +103,8 @@ snapshots. Refresh them after each wave so drift is localized.
 
 Minimum gate for each wave:
 
-1. `dotnet build src/Bimwright.Rvt.sln -c Debug`
-2. `dotnet test tests/Bimwright.Rvt.Tests/Bimwright.Rvt.Tests.csproj`
+1. `dotnet build src/RvtMcp.sln -c Debug`
+2. `dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj`
 3. Static review pass focused on BLOCKER and MAJOR issues.
 4. Fix pass for every accepted BLOCKER and MAJOR finding.
 5. Re-run build and the relevant tests.

@@ -1,4 +1,4 @@
-# Wave 13 - Workflow Composites Implementation Spec
+﻿# Wave 13 - Workflow Composites Implementation Spec
 
 ## Status
 
@@ -247,7 +247,7 @@ For write workflows:
 - Every workflow supports dry-run where broad writes or deletes are possible.
 - Step report accurately distinguishes preview, committed, skipped, and failed
   work.
-- `dotnet build src/Bimwright.Rvt.sln -c Debug` succeeds.
+- `dotnet build src/RvtMcp.sln -c Debug` succeeds.
 - Tool snapshot tests are updated and pass.
 
 ## Review Checklist

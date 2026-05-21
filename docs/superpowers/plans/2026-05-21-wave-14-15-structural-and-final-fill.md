@@ -1,4 +1,4 @@
-# Wave 14 & 15 — Structural Deep + Final Fill — Implementation Plan
+﻿# Wave 14 & 15 — Structural Deep + Final Fill — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to execute task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -59,8 +59,8 @@
 | `src/shared/Infrastructure/CommandDispatcher.cs` | Register 18 new handlers |
 | `src/server/Program.cs` | Add `StructuralTools` class + extend `MetaTools`/`LintTools`/`ViewTools` wrappers + set `ServerState.Config` in startup |
 | `src/server/ToolsetFilter.cs` | Add `"structural"` to `KnownToolsets` + `WriteCapable` |
-| `tests/Bimwright.Rvt.Tests/Golden/tools-list.json` | Snapshot regen with new tools |
-| `tests/Bimwright.Rvt.Tests/Golden/tools-list-adaptive-bake.json` | Snapshot regen with new tools |
+| `tests/RvtMcp.Tests/Golden/tools-list.json` | Snapshot regen with new tools |
+| `tests/RvtMcp.Tests/Golden/tools-list-adaptive-bake.json` | Snapshot regen with new tools |
 
 ### Files NOT touched
 
@@ -84,7 +84,7 @@ Expected: empty output (no uncommitted changes). If not clean, stash or commit f
 - [ ] **Step 2: Verify build passes on baseline**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: `Build succeeded. 0 Warning(s) 0 Error(s)` (or only pre-existing warnings).
@@ -93,7 +93,7 @@ Expected: `Build succeeded. 0 Warning(s) 0 Error(s)` (or only pre-existing warni
 - [ ] **Step 3: Verify snapshot test passes on baseline**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: all tests PASS. This is the "green" we will iterate from.
@@ -172,7 +172,7 @@ if (enabled.Contains("structural")) types.Add(typeof(StructuralTools));
 - [ ] **Step 4: Build solution**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: `Build succeeded`. The empty `StructuralTools` class compiles. ToolsetFilter changes do not break anything because no handler is registered yet.
@@ -180,7 +180,7 @@ Expected: `Build succeeded`. The empty `StructuralTools` class compiles. Toolset
 - [ ] **Step 5: Verify snapshot still passes**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: PASS. Adding `structural` to `KnownToolsets` does not break snapshot — `structural` is opt-in, default config does not enable it, so snapshot tool list unchanged.
@@ -213,7 +213,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CreateStructuralColumnHandler : IRevitCommand
     {
@@ -357,7 +357,7 @@ public static async Task<string> CreateStructuralColumn(
 - [ ] **Step 4: Build all 6 plugin csproj + server**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: `Build succeeded. 0 Error(s)`. If errors on `StructuralType.Column`, verify `using Autodesk.Revit.DB.Structure;` is included.
@@ -389,7 +389,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CreateStructuralBeamHandler : IRevitCommand
     {
@@ -526,7 +526,7 @@ public static async Task<string> CreateStructuralBeam(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: `Build succeeded`.
@@ -558,7 +558,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CreateStructuralWallHandler : IRevitCommand
     {
@@ -676,7 +676,7 @@ public static async Task<string> CreateStructuralWall(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -703,7 +703,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CreateFoundationIsolatedHandler : IRevitCommand
     {
@@ -837,7 +837,7 @@ public static async Task<string> CreateFoundationIsolated(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -864,7 +864,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CreateFoundationWallHandler : IRevitCommand
     {
@@ -952,7 +952,7 @@ public static async Task<string> CreateFoundationWall(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: build succeeds across R22-R27. `WallFoundation.Create` and `FoundationType` are available since R2014.
@@ -982,7 +982,7 @@ using Autodesk.Revit.DB.Structure;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class ListRebarHandler : IRevitCommand
     {
@@ -1073,7 +1073,7 @@ public static async Task<string> ListRebar(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: build OK. `Rebar` and `RebarBarType` are stable across R22-R27. If any deprecation warning, note for future cleanup but do not block.
@@ -1102,7 +1102,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class GetStructuralLoadsHandler : IRevitCommand
     {
@@ -1224,7 +1224,7 @@ public static async Task<string> GetStructuralLoads(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -1251,7 +1251,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class SetStructuralLoadHandler : IRevitCommand
     {
@@ -1355,7 +1355,7 @@ public static async Task<string> SetStructuralLoad(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -1382,7 +1382,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class AnalyzeStructuralConnectionsHandler : IRevitCommand
     {
@@ -1470,7 +1470,7 @@ public static async Task<string> AnalyzeStructuralConnections(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -1499,7 +1499,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class TagStructuralFramingHandler : IRevitCommand
     {
@@ -1627,7 +1627,7 @@ public static async Task<string> TagStructuralFraming(
 - [ ] **Step 4: Build (across all 6 plugin csproj)**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 **If R22/R23 fails on `IndependentTag.Create` signature:** Apply the `#if !REVIT2024_OR_GREATER` fallback noted above, then rebuild.
@@ -1644,15 +1644,15 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "feat(structural): add tag_struct
 ### Task 12: Wave 14 snapshot regen + manual verification
 
 **Files:**
-- Modify: `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Golden\tools-list.json`
-- Modify: `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Golden\tools-list-adaptive-bake.json`
+- Modify: `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\Golden\tools-list.json`
+- Modify: `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\Golden\tools-list-adaptive-bake.json`
 
 > **Note:** Default snapshot does NOT enable `structural` (it's opt-in). The snapshot test should still pass without changes. We regenerate to lock-in any incidental ordering/description changes.
 
 - [ ] **Step 1: Run snapshot test to see if any diff**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: PASS (no diff, because default snapshot doesn't include `structural`).
@@ -1660,13 +1660,13 @@ If FAIL: inspect the diff. Should only show new structural tools — but those s
 
 - [ ] **Step 2: Add explicit structural toolset snapshot test**
 
-Open `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\ToolsListSnapshotTests.cs`. Find existing snapshot test method (e.g., `Default_Config_Snapshot`). Add a new sibling test:
+Open `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\ToolsListSnapshotTests.cs`. Find existing snapshot test method (e.g., `Default_Config_Snapshot`). Add a new sibling test:
 
 ```csharp
 [Fact]
 public void Structural_Toolset_Snapshot()
 {
-    var config = new BimwrightConfig { Toolsets = new List<string> { "structural" } };
+    var config = new RvtMcpConfig { Toolsets = new List<string> { "structural" } };
     CompareToolListAgainstGolden(config, "tools-list-structural.json");
 }
 ```
@@ -1677,15 +1677,15 @@ public void Structural_Toolset_Snapshot()
 
 ```powershell
 $env:UPDATE_SNAPSHOTS="1"
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 Remove-Item Env:UPDATE_SNAPSHOTS
 ```
 
-Expected: PASS, new file created at `tests\Bimwright.Rvt.Tests\Golden\tools-list-structural.json` containing all 10 structural tools.
+Expected: PASS, new file created at `tests\RvtMcp.Tests\Golden\tools-list-structural.json` containing all 10 structural tools.
 
 - [ ] **Step 4: Verify regenerated snapshot manually**
 
-Open `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Golden\tools-list-structural.json` and confirm it contains exactly these 10 tool names:
+Open `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\Golden\tools-list-structural.json` and confirm it contains exactly these 10 tool names:
 
 ```
 create_structural_column
@@ -1705,7 +1705,7 @@ If any missing: rebuild + rerun snapshot regen.
 - [ ] **Step 5: Run final snapshot test (now from clean state)**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: PASS (3+ snapshot tests, including new `Structural_Toolset_Snapshot`).
@@ -1737,7 +1737,7 @@ If any item fails, log to `docs/221-tools/wave-14-issues.md` and address before 
 - [ ] **Step 7: Commit snapshots + verification doc**
 
 ```powershell
-git -C D:\Projects\bimwright\rvt-mcp add tests/Bimwright.Rvt.Tests/Golden/ tests/Bimwright.Rvt.Tests/ToolsListSnapshotTests.cs docs/221-tools/wave-14-verification.md
+git -C D:\Projects\bimwright\rvt-mcp add tests/RvtMcp.Tests/Golden/ tests/RvtMcp.Tests/ToolsListSnapshotTests.cs docs/221-tools/wave-14-verification.md
 git -C D:\Projects\bimwright\rvt-mcp commit -m "test(structural): add structural toolset snapshot + manual verification checklist"
 ```
 
@@ -1756,10 +1756,10 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "test(structural): add structural
 File `D:\Projects\bimwright\rvt-mcp\src\server\ServerState.cs`:
 
 ```csharp
-using Bimwright.Rvt.Plugin;
+using RvtMcp.Plugin;
 using Newtonsoft.Json;
 
-namespace Bimwright.Rvt.Server
+namespace RvtMcp.Server
 {
     /// <summary>
     /// Static config accessor shared by all MCP tool wrappers. Set once during startup
@@ -1768,7 +1768,7 @@ namespace Bimwright.Rvt.Server
     /// </summary>
     internal static class ServerState
     {
-        public static BimwrightConfig Config { get; set; }
+        public static RvtMcpConfig Config { get; set; }
 
         public static bool IsReadOnly => Config?.ReadOnlyOrDefault ?? false;
 
@@ -1792,7 +1792,7 @@ namespace Bimwright.Rvt.Server
 
 - [ ] **Step 2: Wire up ServerState.Config in Program.Main**
 
-In `D:\Projects\bimwright\rvt-mcp\src\server\Program.cs`, locate the line that loads config (`var config = BimwrightConfig.Load(args);`, around line 43). Add IMMEDIATELY AFTER it:
+In `D:\Projects\bimwright\rvt-mcp\src\server\Program.cs`, locate the line that loads config (`var config = RvtMcpConfig.Load(args);`, around line 43). Add IMMEDIATELY AFTER it:
 
 ```csharp
 ServerState.Config = config;
@@ -1801,7 +1801,7 @@ ServerState.Config = config;
 - [ ] **Step 3: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 Expected: build succeeds.
@@ -1830,7 +1830,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class SetProjectInfoHandler : IRevitCommand
     {
@@ -1942,7 +1942,7 @@ public static async Task<string> SetProjectInfo(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -1969,7 +1969,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class GetModelWarningsSummaryHandler : IRevitCommand
     {
@@ -2041,7 +2041,7 @@ public static async Task<string> GetModelWarningsSummary(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2070,7 +2070,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class PurgeUnusedHandler : IRevitCommand
     {
@@ -2216,7 +2216,7 @@ public static async Task<string> PurgeUnused(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2233,7 +2233,7 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "feat(meta): add purge_unused han
 **Files:**
 - Create: `D:\Projects\bimwright\rvt-mcp\src\shared\Handlers\CaptureViewImageHandler.cs`
 
-> **Path safety:** output_path must be absolute, fully qualified, not contain `..`, and resolve to either `%TEMP%`, `%LOCALAPPDATA%\Bimwright\captures\`, or a user-configured sandbox directory. UNC paths rejected.
+> **Path safety:** output_path must be absolute, fully qualified, not contain `..`, and resolve to either `%TEMP%`, `%LOCALAPPDATA%\RvtMcp\captures\`, or a user-configured sandbox directory. UNC paths rejected.
 
 - [ ] **Step 1: Create handler file**
 
@@ -2245,7 +2245,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class CaptureViewImageHandler : IRevitCommand
     {
@@ -2382,7 +2382,7 @@ public static async Task<string> CaptureViewImage(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2409,7 +2409,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class SetViewCropHandler : IRevitCommand
     {
@@ -2539,7 +2539,7 @@ public static async Task<string> SetViewCrop(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2564,7 +2564,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class SetViewScaleHandler : IRevitCommand
     {
@@ -2647,7 +2647,7 @@ public static async Task<string> SetViewScale(int scale, long? view_id = null)
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2675,7 +2675,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class ActivateViewHandler : IRevitCommand
     {
@@ -2748,7 +2748,7 @@ public static async Task<string> ActivateView(long? view_id = null, string view_
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2775,7 +2775,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 
-namespace Bimwright.Rvt.Plugin.Handlers
+namespace RvtMcp.Plugin.Handlers
 {
     public class ShowElementInViewHandler : IRevitCommand
     {
@@ -2864,7 +2864,7 @@ public static async Task<string> ShowElementInView(
 - [ ] **Step 4: Build**
 
 ```powershell
-dotnet build D:\Projects\bimwright\rvt-mcp\src\Bimwright.Rvt.sln -c Debug
+dotnet build D:\Projects\bimwright\rvt-mcp\src\RvtMcp.sln -c Debug
 ```
 
 - [ ] **Step 5: Commit**
@@ -2879,8 +2879,8 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "feat(view): add show_element_in_
 ### Task 22: Wave 15 snapshot regen + manual verification
 
 **Files:**
-- Modify: `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Golden\tools-list.json`
-- Modify: `D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Golden\tools-list-adaptive-bake.json`
+- Modify: `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\Golden\tools-list.json`
+- Modify: `D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\Golden\tools-list-adaptive-bake.json`
 - Create: `D:\Projects\bimwright\rvt-mcp\docs\221-tools\wave-15-verification.md`
 
 > **Note:** Unlike W14 (opt-in `structural`), W15 adds tools to `meta`/`lint`/`view` which ARE in `DefaultOn`. So default snapshot WILL diff. Regenerate.
@@ -2888,7 +2888,7 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "feat(view): add show_element_in_
 - [ ] **Step 1: Run snapshot test → expect FAIL with diff for new W15 tools**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: FAIL. Diff should list these 8 new tools (added to default snapshot):
@@ -2909,7 +2909,7 @@ If any tools missing from diff: investigate Program.cs wrapper registration in t
 
 ```powershell
 $env:UPDATE_SNAPSHOTS="1"
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 Remove-Item Env:UPDATE_SNAPSHOTS
 ```
 
@@ -2918,7 +2918,7 @@ Expected: PASS. Golden files updated.
 - [ ] **Step 3: Inspect snapshot diff**
 
 ```powershell
-git -C D:\Projects\bimwright\rvt-mcp diff tests/Bimwright.Rvt.Tests/Golden/tools-list.json
+git -C D:\Projects\bimwright\rvt-mcp diff tests/RvtMcp.Tests/Golden/tools-list.json
 ```
 
 Expected: Only additions (no deletions). All 8 tool names present with correct schemas.
@@ -2926,7 +2926,7 @@ Expected: Only additions (no deletions). All 8 tool names present with correct s
 - [ ] **Step 4: Run snapshot test again to confirm green**
 
 ```powershell
-dotnet test D:\Projects\bimwright\rvt-mcp\tests\Bimwright.Rvt.Tests\Bimwright.Rvt.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
+dotnet test D:\Projects\bimwright\rvt-mcp\tests\RvtMcp.Tests\RvtMcp.Tests.csproj --filter "FullyQualifiedName~ToolsListSnapshotTests"
 ```
 
 Expected: PASS.
@@ -2935,7 +2935,7 @@ Expected: PASS.
 
 ```powershell
 # Start server with --read-only and verify view-write tools refuse
-dotnet run --project D:\Projects\bimwright\rvt-mcp\src\server\Bimwright.Rvt.Server.csproj -- --read-only --target R26 2>&1 | Select-Object -First 5
+dotnet run --project D:\Projects\bimwright\rvt-mcp\src\server\RvtMcp.Server.csproj -- --read-only --target R26 2>&1 | Select-Object -First 5
 ```
 
 (Or use MCP inspector / Claude Code to call `set_view_scale` against the server — expect `{ "error": "read_only_mode" }` response.)
@@ -2973,7 +2973,7 @@ If any item fails, log to docs/221-tools/wave-15-issues.md.
 - [ ] **Step 7: Commit snapshots + verification doc**
 
 ```powershell
-git -C D:\Projects\bimwright\rvt-mcp add tests/Bimwright.Rvt.Tests/Golden/ docs/221-tools/wave-15-verification.md
+git -C D:\Projects\bimwright\rvt-mcp add tests/RvtMcp.Tests/Golden/ docs/221-tools/wave-15-verification.md
 git -C D:\Projects\bimwright\rvt-mcp commit -m "test(wave-15): regen snapshots + add manual verification checklist"
 ```
 
@@ -2982,7 +2982,7 @@ git -C D:\Projects\bimwright\rvt-mcp commit -m "test(wave-15): regen snapshots +
 ## Self-Review Checklist (before merging to main)
 
 - [ ] **Spec coverage:** All 18 tools from `docs/221-tools/wave-14-structural.md` (10 of 12) and `docs/221-tools/wave-15-final-fill.md` (8 of 8) implemented. Rebar tools (2) deferred to Wave 16 with stub doc.
-- [ ] **Build clean:** `dotnet build src/Bimwright.Rvt.sln -c Debug` succeeds across all 6 plugin csproj + server, 0 errors.
+- [ ] **Build clean:** `dotnet build src/RvtMcp.sln -c Debug` succeeds across all 6 plugin csproj + server, 0 errors.
 - [ ] **Snapshot tests pass:** `dotnet test --filter "FullyQualifiedName~ToolsListSnapshotTests"` green. Three snapshot files exist: `tools-list.json`, `tools-list-adaptive-bake.json`, `tools-list-structural.json`.
 - [ ] **CommandDispatcher:** All 18 new handlers registered in constructor. No duplicate names (existing duplicate-check test passes).
 - [ ] **ToolsetFilter:** `structural` in `KnownToolsets` + `WriteCapable`, NOT in `DefaultOn`. `view` unchanged (per-tool guard used instead).

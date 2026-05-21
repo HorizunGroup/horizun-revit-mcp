@@ -1,4 +1,4 @@
-# Aspect #9 — Knowledge Packs
+﻿# Aspect #9 — Knowledge Packs
 
 > **Note:** entity references like `[[C-XX]]` are opaque tags. Mapping maintained in a
 > private research index; not exposed in this repo. Public readers see that
@@ -25,7 +25,7 @@ A knowledge pack = **structured data the server loads at startup that teaches to
 | L-12 | 🟠 | S | Category-taxonomy grouping in README tool-list (17–21 named sections) | [[C-08]] |
 | L-13 | 🟠 | S | Firm-profile JSONs as named-standards layer + `detect_firm_profile` tool | [[C-03]] |
 | L-29 | 🟠 | M | Template-pack pattern (sector + firm + validation + preflight + resolved cache) | [[C-03]] |
-| L-30 | 🟠 | M | Ship first-class `bimwright-rvt-skill/` Claude Code skill folder | [[C-04]] |
+| L-30 | 🟠 | M | Ship first-class `rvt-mcp-skill/` Claude Code skill folder | [[C-04]] |
 
 All 4 are 🟠 moat-extending (not 🔴 table-stakes). No surveyed external implementation ships a complete version — [[C-03]] comes closest with a `template_packs/` + `validation.json` pattern, but targets sheet-set correctness, not spec compliance.
 

@@ -1,4 +1,4 @@
-# Roadmap
+﻿# Roadmap
 
 Rough direction, not a commitment. Dates are intent; scope is firmer.
 
@@ -19,7 +19,7 @@ Compile gate is 6/6; unit coverage is pure .NET; runtime smoke still needs per-R
 - **MCP Resources** — expose model-level context (active doc, current view, selected elements, recent commands) as MCP `resources` alongside tools, so clients with resource support can browse state without spending a tool call.
 - **ToolBaker G1–G4 gaps** — path escaping in generated handlers, per-tool capability sandbox, signed-bake verification, easier re-bake on Revit version bump.
 - **Test project structure** — revisit "option 2" (per-file `Compile Include`). If the test suite is growing, promote `src/shared/` to a real class library so tests reference one project instead of cherry-picking files.
-- **AspNetCore slim-down** — server is currently `Microsoft.NET.Sdk.Web` so the `.nupkg` drags ~40 AspNetCore DLLs even for stdio-only users. Either split `Bimwright.Rvt.Server` (stdio) from `Bimwright.Rvt.Server.Http` (SSE), or conditionally pull in AspNetCore only for the HTTP path.
+- **AspNetCore slim-down** — server is currently `Microsoft.NET.Sdk.Web` so the `.nupkg` drags ~40 AspNetCore DLLs even for stdio-only users. Either split `RvtMcp.Server` (stdio) from `RvtMcp.Server.Http` (SSE), or conditionally pull in AspNetCore only for the HTTP path.
 - **Plugin ZIP size** — strip non-win-x64 entries from `runtimes/` in `scripts/stage-plugin-zip.ps1`. R25+ zips drop from ~16 MB → ~5 MB.
 - **Testing & drift detection (aspect #7)** — _delivered 2026-04-18_ — golden snapshot of the MCP tool surface diffed on every test run; manual Haiku benchmark procedure (`benchmarks/`) with trigger rules and 15% regression threshold; S4 response-size observability hook (passive stderr warning, no enforcement).
 - **View-naming lint (L-05 + L-13)** — _delivered 2026-04-23 (v0.2.1)_ — 3 new read-only tools in a new `lint` toolset (default on): `analyze_view_naming_patterns`, `suggest_view_name_corrections`, `detect_firm_profile`. Firm-profile library scaffolding in place (`docs/firm-profiles/README.md`); no profiles shipped yet.
@@ -51,7 +51,7 @@ Compile gate is 6/6; unit coverage is pure .NET; runtime smoke still needs per-R
 Current v0.3.0 hardening covers launch-day concerns. Deferred:
 
 - **S4 pagination** — tool responses can be large (100-item DTO arrays). No pagination contract yet; client is on its own for chunking.
-- **Signed ToolBaker bakes** — baked tools now persist in server-owned SQLite metadata under `%LOCALAPPDATA%\Bimwright\bake.db`, but accepted bake artifacts are not signed. A malicious same-user process with file-write access to local Bimwright storage could still tamper with local artifacts. Signed-bake verification remains planned hardening work; acceptable for single-user dev, v1.0 territory for shared environments.
+- **Signed ToolBaker bakes** — baked tools now persist in server-owned SQLite metadata under `%LOCALAPPDATA%\RvtMcp\bake.db`, but accepted bake artifacts are not signed. A malicious same-user process with file-write access to local Bimwright storage could still tamper with local artifacts. Signed-bake verification remains planned hardening work; acceptable for single-user dev, v1.0 territory for shared environments.
 - **LAN bind warning** — `BIMWRIGHT_ALLOW_LAN_BIND=1` flips to `0.0.0.0` with only a stderr warning. Consider requiring a second env var or confirming on first run.
 
 If you're running Bimwright in an environment where any of these matter, open an issue — it helps prioritize.
