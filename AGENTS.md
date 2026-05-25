@@ -1,9 +1,9 @@
 ﻿<!-- agents-install-guide -->
 <!-- mcp-name: io.github.bimwright/rvt-mcp -->
 
-# AGENTS.md — Bimwright install guide for AI agents
+# AGENTS.md — rvt-mcp install guide for AI agents
 
-This file is machine-readable install instructions for AI coding agents (Claude Code, Cursor, Cline, VS Code Copilot, Gemini CLI, Antigravity, OpenCode, Codex, and any other stdio MCP client). A user pointed you here because they want Bimwright (a Revit MCP server) wired up without hand-editing config files themselves.
+This file is machine-readable install instructions for AI coding agents (Claude Code, Cursor, Cline, VS Code Copilot, Gemini CLI, Antigravity, OpenCode, Codex, and any other stdio MCP client). A user pointed you here because they want rvt-mcp (a Revit MCP server) wired up without hand-editing config files themselves.
 
 **What you can do:**
 
@@ -21,14 +21,14 @@ This file is machine-readable install instructions for AI coding agents (Claude 
 
 ## Rules for agents
 
-**Read these before touching anything. They exist so Bimwright stays predictable, auditable, and reversible.**
+**Read these before touching anything. They exist so rvt-mcp stays predictable, auditable, and reversible.**
 
 1. **Preview every change.** Use `-WhatIf`, `--dry-run`, or a printed diff before any write. Tell the user the exact file path and the exact change.
 2. **Use the client setup ZIP for client machines.** Do not fall back to `dotnet tool install`, source build, or repo clone unless the user explicitly asks for developer installation.
 3. **Two explicit approval gates — do not collapse without the user saying so:**
    - Before running `install.ps1` without `-WhatIf`.
    - Before editing any MCP host config file outside the setup installer's own preview/apply flow.
-4. **Never bypass the Revit undo stack at runtime.** Bimwright's design guarantee is that every edit is reviewable and reversible. Don't advise users to work around transaction wrapping or disable `batch_execute` safety.
+4. **Never bypass the Revit undo stack at runtime.** rvt-mcp's design guarantee is that every edit is reviewable and reversible. Don't advise users to work around transaction wrapping or disable `batch_execute` safety.
 5. **On any failure, offer rollback.** Config edits are auto-backed up to `<file>.bimwright.bak`. The full stack comes off with the bundled `uninstall.ps1 -Yes`.
 6. **Verify before claiming done.** After wiring, run `tools/list` in the host and confirm the single `rvt-mcp` entry responds, then call `get_current_view_info` with no args.
 
@@ -98,7 +98,7 @@ Most hosts use `{ "mcpServers": { ... } }` with this per-server shape:
 {
   "mcpServers": {
     "rvt-mcp": {
-      "command": "%LOCALAPPDATA%\\Bimwright\\rvt\\server\\<version>\\rvt-mcp.exe",
+      "command": "%LOCALAPPDATA%\\RvtMcp\\rvt\\server\\<version>\\rvt-mcp.exe",
       "args": []
     }
   }
@@ -107,7 +107,7 @@ Most hosts use `{ "mcpServers": { ... } }` with this per-server shape:
 
 When hand-editing, expand `%LOCALAPPDATA%` to the real absolute path. Do not leave environment-variable placeholders in the config unless the host explicitly supports expansion.
 
-Emit exactly one entry. Preserve every non-bimwright entry already in the config — merge, don't replace. If multiple Revit versions are running, use the `switch_target` MCP tool instead of creating separate host entries.
+Emit exactly one entry. Preserve every non-rvt-mcp entry already in the config — merge, don't replace. If multiple Revit versions are running, use the `switch_target` MCP tool instead of creating separate host entries.
 
 Prefer the installer-generated absolute-path entry.
 
@@ -179,7 +179,7 @@ Notes:
   "servers": {
     "rvt-mcp": {
       "type": "stdio",
-      "command": "%LOCALAPPDATA%\\Bimwright\\rvt\\server\\<version>\\rvt-mcp.exe",
+      "command": "%LOCALAPPDATA%\\RvtMcp\\rvt\\server\\<version>\\rvt-mcp.exe",
       "args": []
     }
   }
@@ -267,7 +267,7 @@ If any of these fail, **do not claim the install succeeded.** Go to rollback.
 
 ## Rollback
 
-### Full uninstall (everything Bimwright touched)
+### Full uninstall (everything rvt-mcp touched)
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$dir\uninstall.ps1" -WhatIf    # preview what comes off
@@ -275,7 +275,7 @@ powershell -ExecutionPolicy Bypass -File "$dir\uninstall.ps1" -Yes       # apply
 powershell -ExecutionPolicy Bypass -File "$dir\uninstall.ps1" -KeepLogs  # preserve logs
 ```
 
-Removes: the self-contained server, legacy .NET global tool if present, plugin DLLs for every Revit year, discovery files at `%LOCALAPPDATA%\RvtMcp\`, ToolBaker cache, and bimwright entries in scanned host configs.
+Removes: the self-contained server, legacy .NET global tool if present, plugin DLLs for every Revit year, discovery files at `%LOCALAPPDATA%\RvtMcp\`, ToolBaker cache, and rvt-mcp entries in scanned host configs.
 
 **Scope caveat.** `uninstall.ps1` scans known host configs (OpenCode, Codex, Claude Desktop, Claude Code user-level) but does not scan project-level `.mcp.json` files. If you edited a project `.mcp.json`, restore it from `.bimwright.bak` manually or remove the entries by hand.
 
@@ -298,7 +298,7 @@ Copy-Item 'path\to\config.ext.bimwright.bak' 'path\to\config.ext' -Force
 | Symptom | Cause | Fix |
 |---|---|---|
 | `rvt-mcp.exe` path not found | Setup ZIP was moved or install did not complete. | Re-run `install.ps1 -WhatIf`, then `install.ps1`; restore config from `.bimwright.bak` if needed. |
-| `tools/list` returns 0 entries from bimwright | Host not reloaded, or Revit not running. | Restart host. Launch Revit. Retry. |
+| `tools/list` returns 0 entries from rvt-mcp | Host not reloaded, or Revit not running. | Restart host. Launch Revit. Retry. |
 | `install.ps1` fails with "Revit running" | Revit has plugin DLLs locked. | Close every Revit window, retry. |
 | Host config parse error after edit | Agent wrote invalid JSON/TOML. | Restore from `.bimwright.bak`, retry with a diff preview. |
 | Server starts but no tools show up | Toolset filter hiding them. | Check `--toolsets` / `--read-only` flags on the host config entry. |
@@ -309,6 +309,6 @@ For anything not in this table, open an issue at <https://github.com/bimwright/r
 
 ## Honest scope
 
-Bimwright handles `get_current_view_info`, `analyze_model_statistics`, `batch_execute`, and 25+ other tools across Revit 2022–2027. It does not handle installing Revit, licensing, cloud sync, or any Autodesk account operations. If the user asks for those, point them at <https://www.autodesk.com/support/revit>.
+rvt-mcp handles `get_current_view_info`, `analyze_model_statistics`, `batch_execute`, and 220+ other tools across Revit 2022–2027. It does not handle installing Revit, licensing, cloud sync, or any Autodesk account operations. If the user asks for those, point them at <https://www.autodesk.com/support/revit>.
 
 For extending the tool surface at runtime, see ToolBaker in the main [README.md](README.md).

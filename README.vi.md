@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-175%20tools%20%7C%20178%20adaptive-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -300,13 +300,13 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -SourceDir . -Client none
 
 ## Toolsets
 
-Surface không adaptive có 249 tools trên 22 toolsets. Khi bật adaptive bake, surface mở rộng thành 254 tools. Bật thêm toolset opt-in `structural` được thêm 12 tools (tổng 261 / 266 khi có adaptive bake).
+Toàn bộ surface là **226 tools trên 23 toolsets** (`--toolsets all`). Mặc định mọi toolset đều bật trừ `modify` và `delete`. Khi bật adaptive bake, các accepted baked tool được thêm vào; `--read-only` loại bỏ mọi write-capable toolset.
 
-Toolsets bật mặc định: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`.
+Toolsets bật mặc định: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`.
 
-Toolsets opt-in: `modify`, `delete`, `structural` (12 tools chuyên cho kỹ sư kết cấu — cột, dầm, tường, móng, cốt thép, tải trọng, tag kết cấu).
+Toolsets opt-in (tắt mặc định): `modify`, `delete`. Bật explicit hoặc qua `--toolsets all`.
 
-Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thêm `--read-only` để loại write-capable toolsets dù chúng được request bằng cách nào. Toolset `structural` bật explicit qua `--toolsets structural` hoặc include trong `all`.
+Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thêm `--read-only` để loại write-capable toolsets dù chúng được request bằng cách nào.
 
 | Toolset | Tools | Default |
 |---------|-------|---------|
@@ -330,7 +330,7 @@ Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thê
 | `parameters` | tạo project/shared parameter, binding/unbinding, list/export shared params, set value by GUID | on |
 | `organization` | saved selections (save/load/list/delete), chọn elements, view templates (list/apply/create-from-view/duplicate/delete) | on |
 | `workflows` | clash review, data roundtrip, model audit, naming normalization, room documentation, sheet set, takeoff report, view cleanup | on |
-| `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | **off (opt-in)** |
+| `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | on |
 
 ### Tất cả tools
 

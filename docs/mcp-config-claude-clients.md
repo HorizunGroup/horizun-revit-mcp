@@ -209,12 +209,12 @@ What this changes from the naïve mental model:
 
 **Implication for RvtMcp — addressed in v0.5:**
 
-Pre-v0.5, RvtMcp had this exact failure: 224 tools exposed but Tool Search returned nothing because (a) `instructions` field was empty and (b) tool names like `create_grid`/`capture_view_image` didn't contain "revit". Agents would say "I don't have any Revit tools" despite a healthy connection.
+Pre-v0.5, RvtMcp had this exact failure: 226 tools exposed but Tool Search returned nothing because (a) `instructions` field was empty and (b) tool names like `create_grid`/`capture_view_image` didn't contain "revit". Agents would say "I don't have any Revit tools" despite a healthy connection.
 
 v0.5 ships both fixes:
 
 1. **Server `instructions` populated** at `src/server/Program.cs` `ConfigureMcpServerOptions()` — ~2 KB of keyword-dense text leading with "rvt-mcp — Model Context Protocol gateway for Autodesk Revit 2022-2027" followed by every relevant domain term (wall, door, MEP, duct, pipe, structural, IFC, DWG, etc.) and a per-toolset tool-name index.
-2. **All 224 tools prefixed with `revit_`** — `create_grid` → `revit_create_grid`, `analyze_structural_connections` → `revit_analyze_structural_connections`. Semantic search of "revit X" now lands directly on the right tool.
+2. **All 226 tools prefixed with `revit_`** — `create_grid` → `revit_create_grid`, `analyze_structural_connections` → `revit_analyze_structural_connections`. Semantic search of "revit X" now lands directly on the right tool.
 
 The official doc explicitly recommends:
 
@@ -226,7 +226,7 @@ To verify discovery is working after install:
 You: list every Revit-related MCP tool you have access to
 ```
 
-Claude should list 224 tools all prefixed `mcp__rvt-mcp__revit_*`. If you see fewer than ~50, Tool Search is filtering — check that v0.5+ is installed and the server's `--toolsets` flag isn't narrowing the surface.
+Claude should list 226 tools all prefixed `mcp__rvt-mcp__revit_*`. If you see fewer than ~50, Tool Search is filtering — check that v0.5+ is installed and the server's `--toolsets` flag isn't narrowing the surface.
 
 ### 5.4 Server `instructions` and tool `description` are truncated at 2 KB each
 

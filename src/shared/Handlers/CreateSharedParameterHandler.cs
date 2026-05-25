@@ -22,7 +22,7 @@ namespace RvtMcp.Plugin.Handlers
       ""type"": ""string"",
       ""description"": ""Forge data type id or supported alias such as string, integer, number, length, area, volume, angle, yesno.""
     },
-    ""groupName"": { ""type"": ""string"", ""default"": ""Bimwright"" },
+    ""groupName"": { ""type"": ""string"", ""default"": ""RvtMcp"" },
     ""guid"": {
       ""type"": ""string"",
       ""description"": ""Optional GUID. If omitted, handler generates a new GUID.""
@@ -45,7 +45,7 @@ namespace RvtMcp.Plugin.Handlers
             var request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
             var name = request.Value<string>("name");
             var dataTypeIdInput = request.Value<string>("dataTypeId");
-            var groupName = request.Value<string>("groupName") ?? "Bimwright";
+            var groupName = request.Value<string>("groupName") ?? "RvtMcp";
             var guidInput = request.Value<string>("guid");
             var customPath = request.Value<string>("sharedParameterFilePath");
             var createFileIfMissing = request.Value<bool?>("createFileIfMissing") ?? true;

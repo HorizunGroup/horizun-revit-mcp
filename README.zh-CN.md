@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-175%20tools%20%7C%20178%20adaptive-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -306,13 +306,13 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 
 ## Toolsets
 
-非 adaptive surface 包含 249 个 tools，分布在 22 个 toolsets。启用 adaptive bake 后，surface 扩展到 254 个 tools。启用可选的 `structural` toolset 再增加 12 个 tools（共计 261 / 266 含 adaptive bake）。
+完整 surface 为 **226 个 tools，分布在 23 个 toolsets**（`--toolsets all`）。默认除 `modify` 和 `delete` 外，所有 toolsets 均启用。启用 adaptive bake 后会额外加入 accepted baked tools；`--read-only` 会移除所有 write-capable toolsets。
 
-默认启用 toolsets：`query`、`create`、`view`、`schedule`、`families`、`mep`、`graphics`、`export`、`toolbaker`、`meta`、`lint`、`sheets`、`materials`、`geometry`、`annotation`、`rooms`、`links`、`parameters`、`organization`、`workflows`。
+默认启用 toolsets：`query`、`create`、`view`、`schedule`、`families`、`mep`、`graphics`、`export`、`toolbaker`、`meta`、`lint`、`sheets`、`materials`、`geometry`、`annotation`、`rooms`、`links`、`parameters`、`organization`、`workflows`、`structural`。
 
-可选 toolsets：`modify`、`delete`、`structural`（12 个结构工程专用 tools — 柱、梁、墙、基础、钢筋、荷载、结构构件标记）。
+可选 toolsets（默认关闭）：`modify`、`delete`。需显式启用或通过 `--toolsets all`。
 
-使用 `--toolsets query,create,modify,meta` 或 `--toolsets all` 启用。加上 `--read-only` 会移除 write-capable toolsets，无论它们是如何被请求的。`structural` toolset 通过 `--toolsets structural` 启用，或在 `all` 中包含。
+使用 `--toolsets query,create,modify,meta` 或 `--toolsets all` 启用。加上 `--read-only` 会移除 write-capable toolsets，无论它们是如何被请求的。
 
 | Toolset | Tools | Default |
 |---------|-------|---------|
@@ -336,7 +336,7 @@ pwsh .\uninstall-all.ps1 -KeepLogs
 | `parameters` | 创建 project/shared parameter、binding/unbinding、list/export shared params、按 GUID 设置值 | on |
 | `organization` | saved selections（save/load/list/delete）、选择元素、view templates（list/apply/create-from-view/duplicate/delete） | on |
 | `workflows` | clash review、data roundtrip、model audit、naming normalization、room documentation、sheet set、takeoff report、view cleanup | on |
-| `structural` | structural columns/beams/walls/foundations、rebar set + stirrup、结构荷载、framing tags、连接分析 | **off (opt-in)** |
+| `structural` | structural columns/beams/walls/foundations、rebar set + stirrup、结构荷载、framing tags、连接分析 | on |
 
 ### 全部 tools
 

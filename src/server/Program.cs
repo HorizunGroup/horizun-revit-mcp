@@ -3678,7 +3678,7 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
         }
 
         [McpServerTool(Name = "revit_create_shared_parameter", Destructive = false), System.ComponentModel.Description("Create a shared parameter definition in the shared parameter file.")]
-        public static async Task<string> CreateSharedParameter(string name, string dataTypeId, string groupName = "Bimwright", string guid = "", string sharedParameterFilePath = "", bool createFileIfMissing = true, string description = "", bool visible = true, bool userModifiable = true, bool hideWhenNoValue = false)
+        public static async Task<string> CreateSharedParameter(string name, string dataTypeId, string groupName = "RvtMcp", string guid = "", string sharedParameterFilePath = "", bool createFileIfMissing = true, string description = "", bool visible = true, bool userModifiable = true, bool hideWhenNoValue = false)
         {
             try
             {

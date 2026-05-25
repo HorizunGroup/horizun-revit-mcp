@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-249%20tools%20%7C%20254%20adaptive-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -329,13 +329,13 @@ This path is for development and backward compatibility. Client machines should 
 
 ## Toolsets
 
-The non-adaptive surface contains 249 tools across 22 toolsets. When adaptive bake is enabled, the surface expands to 254 tools. Enabling the opt-in `structural` toolset adds 12 more tools (total 261 / 266 with adaptive bake).
+The full surface is **226 tools across 23 toolsets** (`--toolsets all`). By default every toolset is on except `modify` and `delete`. Adaptive bake, when enabled, adds accepted baked tools on top; `--read-only` strips every write-capable toolset.
 
-Default-on toolsets: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`.
+Default-on toolsets: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`.
 
-Opt-in toolsets: `modify`, `delete`, `structural` (12 structural-engineering tools — columns, beams, walls, foundations, rebar, loads, framing tags).
+Opt-in toolsets (off by default): `modify`, `delete`. Enable explicitly or via `--toolsets all`.
 
-Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--read-only` to strip write-capable toolsets regardless of what was requested. The opt-in `structural` toolset is enabled explicitly via `--toolsets structural` (or include it in your `all` request).
+Enable specific sets with `--toolsets query,create,modify,meta`, or `--toolsets all` for everything. Add `--read-only` to strip write-capable toolsets regardless of what was requested.
 
 | Toolset | Tools | Default |
 |---------|-------|---------|
@@ -359,7 +359,7 @@ Enable with `--toolsets query,create,modify,meta` or `--toolsets all`. Add `--re
 | `parameters` | project/shared parameter creation, binding/unbinding, list/export shared params, set value by GUID | on |
 | `organization` | saved selections (save/load/list/delete), select elements, view templates (list/apply/create-from-view/duplicate/delete) | on |
 | `workflows` | clash review, data roundtrip, model audit, naming normalization, room documentation, sheet set, takeoff report, view cleanup | on |
-| `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | **off (opt-in)** |
+| `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | on |
 
 ### All Tools
 

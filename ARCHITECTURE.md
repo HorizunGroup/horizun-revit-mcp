@@ -56,7 +56,7 @@ Six plugin shells share one source tree. Each csproj glob-includes `src/shared/*
 src/
 ├── server/                # RvtMcp.Server (.NET 8)
 ├── shared/                # Handlers, CommandDispatcher, Transport, Logging, Security, ToolBaker
-│   ├── Handlers/          # 28 tool handlers
+│   ├── Handlers/          # per-command tool handlers
 │   ├── Infrastructure/    # CommandDispatcher, McpEventHandler, SchemaValidator, BatchExecutor
 │   ├── Transport/         # ITransportServer, TcpTransportServer, PipeTransportServer
 │   ├── Security/          # AuthToken, ErrorSanitizer, SecretMasker
