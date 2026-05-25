@@ -34,6 +34,9 @@ CLAUDE.md
 # Agent session notes / local changelog drafts
 .Codex/
 
+# Codebase map stubs (local "Explorer"/codemap tooling — generated scaffolding, filled in locally, not a repo artifact)
+codemap.md
+
 # OS
 Thumbs.db
 Desktop.ini
