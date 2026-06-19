@@ -29,7 +29,10 @@ __temp_research/
 
 # Claude Code
 .claude/
+# Ignore stray/nested CLAUDE.md (local agent notes) but track the repo-root
+# project guide — it is the canonical per-project doc referenced from the family README.
 CLAUDE.md
+!/CLAUDE.md
 
 # Agent session notes / local changelog drafts
 .Codex/
@@ -50,6 +53,16 @@ Desktop.ini
 
 # Research archives (local reference only, not repo artifact)
 docs/research-archive/
+
+# Internal process docs — drafts, plans, specs, brainstorms, reviews, dev-roadmaps.
+# Convention: these belong in .private/. NOT for public release.
+# (docs/roadmap.md and docs/testing/ stay PUBLIC — the READMEs link to them.)
+docs/superpowers/
+docs/design/brainstorm/
+docs/reviews/
+docs/benchmarks/
+docs/221-tools/
+docs/roadmap-221-tools.md
 
 # MCP Registry publisher CLI (downloaded on demand)
 .mcp-publisher/
