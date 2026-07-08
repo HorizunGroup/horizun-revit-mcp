@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
 
 The installer detects Revit 2022-2027, installs only the matching plugin(s), copies the server under `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`, and wires installed MCP clients with absolute paths. Use `-Client codex`, `-Client opencode`, `-Client claude`, or `-Client none` to override auto-detection.
 
-`dwg-mcp` is not part of this RVT setup package; install it separately when it has its own client-ready release.
+`dwg-mcp` is a separate gateway for AutoCAD; install it independently from its own repo.
 
 ---
 
@@ -136,8 +136,8 @@ Adaptive bake is off by default. It is for users who want their own local usage 
 | .NET 8 / C#               |
 +---------------------------+
               |
-              | TCP (R22-R24)
-              | Named Pipe (R25-R27)
+               | TCP (2022–2024)
+               | Named Pipe (2025–2027)
               v
 +---------------------------+
 | Plugin Shell              |
@@ -176,10 +176,10 @@ The version split is explicit at the edge: one thin plugin shell per Revit year,
 
 `rvt-mcp` is usable but still young.
 
-- Compile gate covers Revit R22-R27 plugin shells.
+- Compile gate covers Revit 2022–2027 plugin shells.
 - Unit tests cover pure .NET logic, tool-surface snapshots, ToolBaker storage/policy paths, config, logging, privacy, and batching behavior.
-- Core runtime coverage exists for R23-R26.
-- Accepted ToolBaker list/run/ribbon path has smoke evidence on R22, R26, and R27.
+- Core runtime coverage exists for 2023–2026.
+- Accepted ToolBaker list/run/ribbon path has smoke evidence on 2022, 2026, and 2027.
 - Fresh-machine install testing is tracked in [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md).
 
 Treat it like serious open-source infrastructure: test it on your own environment before trusting it on production models.
@@ -200,12 +200,12 @@ rvt-mcp/
 │   │   ├── Transport/            # TCP + Named Pipe abstraction
 │   │   ├── Infrastructure/       # Dispatcher, schema validation, ExternalEvent marshal
 │   │   └── Security/             # Auth token, redaction, secret masking
-│   ├── plugin-r22/               # Revit 2022 shell - .NET 4.8, TCP
-│   ├── plugin-r23/               # Revit 2023 shell - .NET 4.8, TCP
-│   ├── plugin-r24/               # Revit 2024 shell - .NET 4.8, TCP
-│   ├── plugin-r25/               # Revit 2025 shell - .NET 8, Named Pipe
-│   ├── plugin-r26/               # Revit 2026 shell - .NET 8, Named Pipe
-│   └── plugin-r27/               # Revit 2027 shell - .NET 10, Named Pipe
+│   ├── plugin-2022/              # Revit 2022 shell - .NET 4.8, TCP
+│   ├── plugin-2023/              # Revit 2023 shell - .NET 4.8, TCP
+│   ├── plugin-2024/              # Revit 2024 shell - .NET 4.8, TCP
+│   ├── plugin-2025/              # Revit 2025 shell - .NET 8, Named Pipe
+│   ├── plugin-2026/              # Revit 2026 shell - .NET 8, Named Pipe
+│   └── plugin-2027/              # Revit 2027 shell - .NET 10, Named Pipe
 ├── tests/                        # xUnit, tool snapshots, policy/privacy tests
 ├── benchmarks/                   # Weak-model accuracy harness
 ├── scripts/                      # install, uninstall, plugin ZIP staging
@@ -345,11 +345,13 @@ Enable specific sets with `--toolsets query,create,modify,meta`, or `--toolsets 
 | `meta` | `show_message`, `switch_target`, `batch_execute`, usage stats, set project info, purge unused families | on |
 | `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect, model warnings summary | on |
 | `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
+| `families` | list loaded families, load/unload/replace family, export/list family types, duplicate/rename family type | on |
 | `modify` | `operate_element`, `color_elements`, parameter/type/workset edits | off |
 | `delete` | `delete_element` | off |
 | `annotation` | element/category tagging, text notes, dimensions, filled regions, detail lines, callouts, keynotes, untagged/undimensioned checks, empty-tag cleanup | on |
 | `export` | `export_room_data` | on |
 | `mep` | `detect_system_elements` | on |
+| `graphics` | view filters (create/list/apply/remove), element graphic overrides, category visibility, view phase/visibility | on |
 | `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
 | `sheets` | sheet creation, duplication, placeholder sheets, list sheets, titleblock parameters, place schedule, revisions, sheet renumbering | on |
 | `materials` | list/create/duplicate materials, material appearance/identity/structural/thermal properties, material takeoff, element assignment | on |
@@ -362,6 +364,8 @@ Enable specific sets with `--toolsets query,create,modify,meta`, or `--toolsets 
 | `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | on |
 
 ### All Tools
+
+The table below highlights representative tools; the full surface is 226 across 23 toolsets.
 
 | Toolset | Tool | Description |
 |---|---|---|
@@ -471,7 +475,7 @@ JSON file path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`.
 ```bash
 dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 dotnet build src/server/RvtMcp.Server.csproj -c Release
-dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
+dotnet build src/plugin-2026/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
 Plugin projects auto-deploy after normal `Build`, copying into `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`. Close Revit before building plugin projects because Revit locks loaded DLLs.
