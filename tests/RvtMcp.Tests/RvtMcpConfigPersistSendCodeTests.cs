@@ -102,6 +102,7 @@ namespace RvtMcp.Tests
             var root = JObject.Parse(json);
             Assert.Null(root["persistSendCodeBodies"]);
             Assert.Null(root["persistSendCodeBodiesUntil"]);
+            Assert.True(root.Value<bool>("persistSendCodeBodiesRequiresExplicitEnable"));
         }
 
         [Fact]
@@ -151,6 +152,72 @@ namespace RvtMcp.Tests
             var parsedUntil = DateTimeOffset.Parse(config.PersistSendCodeBodiesUntil);
             var diff = parsedUntil - DateTimeOffset.UtcNow;
             Assert.True(diff.TotalHours > 11 && diff.TotalHours < 13);
+        }
+
+        [Fact]
+        public void Load_Expired_StickyEnvDoesNotRevive()
+        {
+            var until = DateTimeOffset.UtcNow.AddHours(-2);
+            RvtMcpConfig.SavePersistSendCodeBodies(true, until, _tempConfigPath);
+
+            var config = RvtMcpConfig.Load(
+                args: null,
+                configFilePath: _tempConfigPath,
+                envLookup: k => k == RvtMcpConfig.EnvPersistSendCodeBodies ? "1" : null);
+
+            Assert.False(config.IsPersistSendCodeBodiesActive());
+            Assert.True(config.PersistSendCodeBodiesRequiresExplicitEnable);
+
+            var root = JObject.Parse(File.ReadAllText(_tempConfigPath));
+            Assert.Null(root["persistSendCodeBodies"]);
+            Assert.Null(root["persistSendCodeBodiesUntil"]);
+            Assert.True(root.Value<bool>("persistSendCodeBodiesRequiresExplicitEnable"));
+        }
+
+        [Fact]
+        public void Env_DoesNotResetUntil_WhenAlreadyActive()
+        {
+            var until = DateTimeOffset.UtcNow.AddHours(3);
+            RvtMcpConfig.SavePersistSendCodeBodies(true, until, _tempConfigPath);
+            var untilBefore = JObject.Parse(File.ReadAllText(_tempConfigPath))
+                .Value<string>("persistSendCodeBodiesUntil");
+
+            var config = RvtMcpConfig.Load(
+                args: null,
+                configFilePath: _tempConfigPath,
+                envLookup: k =>
+                {
+                    if (k == RvtMcpConfig.EnvPersistSendCodeBodies) return "1";
+                    if (k == RvtMcpConfig.EnvPersistSendCodeBodiesTtl) return "12h";
+                    return null;
+                });
+
+            Assert.True(config.IsPersistSendCodeBodiesActive());
+            var untilAfter = JObject.Parse(File.ReadAllText(_tempConfigPath))
+                .Value<string>("persistSendCodeBodiesUntil");
+            Assert.Equal(untilBefore, untilAfter);
+        }
+
+        [Fact]
+        public void CLI_ReEnable_AfterExpiry_ClearsExplicitGate()
+        {
+            var until = DateTimeOffset.UtcNow.AddHours(-1);
+            RvtMcpConfig.SavePersistSendCodeBodies(true, until, _tempConfigPath);
+            var blocked = RvtMcpConfig.Load(
+                args: null,
+                configFilePath: _tempConfigPath,
+                envLookup: k => k == RvtMcpConfig.EnvPersistSendCodeBodies ? "1" : null);
+            Assert.False(blocked.IsPersistSendCodeBodiesActive());
+
+            var config = RvtMcpConfig.Load(
+                args: new[] { "--persist-send-code-bodies" },
+                configFilePath: _tempConfigPath,
+                envLookup: k => k == RvtMcpConfig.EnvPersistSendCodeBodies ? "1" : null);
+
+            Assert.True(config.IsPersistSendCodeBodiesActive());
+            Assert.True(config.PersistSendCodeBodiesRequiresExplicitEnable != true);
+            var root = JObject.Parse(File.ReadAllText(_tempConfigPath));
+            Assert.Null(root["persistSendCodeBodiesRequiresExplicitEnable"]);
         }
     }
 }

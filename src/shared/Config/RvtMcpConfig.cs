@@ -68,6 +68,13 @@ namespace RvtMcp.Plugin
         [JsonProperty("persistSendCodeBodiesUntil")]
         public string PersistSendCodeBodiesUntil { get; set; }
 
+        /// <summary>
+        /// Set when TTL auto-expires. Sticky env=1 must not re-enable until CLI
+        /// (or an explicit new enable that clears this flag) stamps a fresh Until.
+        /// </summary>
+        [JsonProperty("persistSendCodeBodiesRequiresExplicitEnable")]
+        public bool? PersistSendCodeBodiesRequiresExplicitEnable { get; set; }
+
         public bool ReadOnlyOrDefault              => ReadOnly           ?? DefaultReadOnly;
         public bool AllowLanBindOrDefault          => AllowLanBind       ?? DefaultAllowLanBind;
         public bool EnableToolbakerOrDefault       => EnableToolbaker    ?? DefaultEnableToolbaker;
@@ -105,7 +112,7 @@ namespace RvtMcp.Plugin
             var config = LoadFromJsonFile(path)
                          ?? new RvtMcpConfig();
 
-            // Check expiry on Load
+            // Check expiry on Load — clear and suppress sticky env re-enable.
             if (config.PersistSendCodeBodies == true)
             {
                 var utcNow = DateTimeOffset.UtcNow;
@@ -115,7 +122,8 @@ namespace RvtMcp.Plugin
                 {
                     config.PersistSendCodeBodies = null;
                     config.PersistSendCodeBodiesUntil = null;
-                    ClearPersistSendCodeBodies(path);
+                    config.PersistSendCodeBodiesRequiresExplicitEnable = true;
+                    ClearPersistSendCodeBodies(path, requireExplicitEnable: true);
                 }
             }
 
@@ -181,22 +189,33 @@ namespace RvtMcp.Plugin
                 var val = ParseBool(persistEnv);
                 if (val == true)
                 {
-                    var ttlStr = lookup(EnvPersistSendCodeBodiesTtl);
-                    var ttl = PersistSendCodeTtl.Default;
-                    if (!string.IsNullOrWhiteSpace(ttlStr) && PersistSendCodeTtl.TryParse(ttlStr, out var parsedTtl))
+                    // Already active with a valid Until — do not reset the clock on every Load.
+                    // After TTL expiry, sticky env=1 must not revive without explicit CLI enable.
+                    if (!config.IsPersistSendCodeBodiesActive()
+                        && config.PersistSendCodeBodiesRequiresExplicitEnable != true)
                     {
-                        ttl = PersistSendCodeTtl.Clamp(parsedTtl);
+                        var ttlStr = lookup(EnvPersistSendCodeBodiesTtl);
+                        var ttl = PersistSendCodeTtl.Default;
+                        if (!string.IsNullOrWhiteSpace(ttlStr) && PersistSendCodeTtl.TryParse(ttlStr, out var parsedTtl))
+                        {
+                            var clamped = PersistSendCodeTtl.Clamp(parsedTtl);
+                            if (clamped != parsedTtl)
+                                Console.Error.WriteLine($"[rvt-mcp] persist send_code TTL '{ttlStr}' clamped to {FormatTtl(clamped)} (allowed 1h–2d).");
+                            ttl = clamped;
+                        }
+                        var until = DateTimeOffset.UtcNow.Add(ttl);
+                        config.PersistSendCodeBodies = true;
+                        config.PersistSendCodeBodiesUntil = PersistSendCodeTtl.FormatIsoUntil(until);
+                        config.PersistSendCodeBodiesRequiresExplicitEnable = false;
+                        SavePersistSendCodeBodies(true, until, configFilePath);
                     }
-                    var until = DateTimeOffset.UtcNow.Add(ttl);
-                    config.PersistSendCodeBodies = true;
-                    config.PersistSendCodeBodiesUntil = PersistSendCodeTtl.FormatIsoUntil(until);
-                    SavePersistSendCodeBodies(true, until, configFilePath);
                 }
                 else if (val == false)
                 {
                     config.PersistSendCodeBodies = false;
                     config.PersistSendCodeBodiesUntil = null;
-                    ClearPersistSendCodeBodies(configFilePath);
+                    config.PersistSendCodeBodiesRequiresExplicitEnable = null;
+                    ClearPersistSendCodeBodies(configFilePath, requireExplicitEnable: false);
                 }
             }
         }
@@ -250,6 +269,7 @@ namespace RvtMcp.Plugin
                             var until = DateTimeOffset.UtcNow.Add(ttl);
                             config.PersistSendCodeBodies = true;
                             config.PersistSendCodeBodiesUntil = PersistSendCodeTtl.FormatIsoUntil(until);
+                            config.PersistSendCodeBodiesRequiresExplicitEnable = false;
                             SavePersistSendCodeBodies(true, until, configFilePath);
                         }
                         break;
@@ -260,18 +280,27 @@ namespace RvtMcp.Plugin
                             var ttl = PersistSendCodeTtl.Default;
                             if (PersistSendCodeTtl.TryParse(ttlStr, out var parsedTtl))
                             {
-                                ttl = PersistSendCodeTtl.Clamp(parsedTtl);
+                                var clamped = PersistSendCodeTtl.Clamp(parsedTtl);
+                                if (clamped != parsedTtl)
+                                    Console.Error.WriteLine($"[rvt-mcp] persist send_code TTL '{ttlStr}' clamped to {FormatTtl(clamped)} (allowed 1h–2d).");
+                                ttl = clamped;
+                            }
+                            else
+                            {
+                                Console.Error.WriteLine($"[rvt-mcp] invalid persist send_code TTL '{ttlStr}'; using default {FormatTtl(PersistSendCodeTtl.Default)}.");
                             }
                             var until = DateTimeOffset.UtcNow.Add(ttl);
                             config.PersistSendCodeBodies = true;
                             config.PersistSendCodeBodiesUntil = PersistSendCodeTtl.FormatIsoUntil(until);
+                            config.PersistSendCodeBodiesRequiresExplicitEnable = false;
                             SavePersistSendCodeBodies(true, until, configFilePath);
                         }
                         break;
                     case "--no-persist-send-code-bodies":
                         config.PersistSendCodeBodies = false;
                         config.PersistSendCodeBodiesUntil = null;
-                        ClearPersistSendCodeBodies(configFilePath);
+                        config.PersistSendCodeBodiesRequiresExplicitEnable = null;
+                        ClearPersistSendCodeBodies(configFilePath, requireExplicitEnable: false);
                         break;
                 }
             }
@@ -376,6 +405,7 @@ namespace RvtMcp.Plugin
                 if (enabled && untilUtc.HasValue)
                 {
                     root["persistSendCodeBodiesUntil"] = PersistSendCodeTtl.FormatIsoUntil(untilUtc.Value);
+                    root.Remove("persistSendCodeBodiesRequiresExplicitEnable");
                 }
                 else
                 {
@@ -389,31 +419,56 @@ namespace RvtMcp.Plugin
             }
         }
 
-        public static void ClearPersistSendCodeBodies(string configFilePath = null)
+        public static void ClearPersistSendCodeBodies(string configFilePath = null, bool requireExplicitEnable = false)
         {
             var path = string.IsNullOrWhiteSpace(configFilePath) ? DefaultConfigFilePath : configFilePath;
             try
             {
-                if (!File.Exists(path)) return;
+                if (!File.Exists(path) && !requireExplicitEnable) return;
+
+                var dir = Path.GetDirectoryName(path);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
 
                 JObject root;
-                try
+                if (File.Exists(path))
                 {
-                    root = JObject.Parse(File.ReadAllText(path)) ?? new JObject();
+                    try
+                    {
+                        root = JObject.Parse(File.ReadAllText(path)) ?? new JObject();
+                    }
+                    catch
+                    {
+                        root = new JObject();
+                    }
                 }
-                catch
+                else
                 {
                     root = new JObject();
                 }
 
                 root.Remove("persistSendCodeBodies");
                 root.Remove("persistSendCodeBodiesUntil");
+                if (requireExplicitEnable)
+                    root["persistSendCodeBodiesRequiresExplicitEnable"] = true;
+                else
+                    root.Remove("persistSendCodeBodiesRequiresExplicitEnable");
+
                 File.WriteAllText(path, root.ToString(Formatting.Indented));
             }
             catch
             {
                 // Best-effort
             }
+        }
+
+        private static string FormatTtl(TimeSpan ttl)
+        {
+            if (ttl.TotalDays >= 1 && Math.Abs(ttl.TotalDays - Math.Round(ttl.TotalDays)) < 0.001)
+                return $"{(int)Math.Round(ttl.TotalDays)}d";
+            if (ttl.TotalHours >= 1 && Math.Abs(ttl.TotalHours - Math.Round(ttl.TotalHours)) < 0.001)
+                return $"{(int)Math.Round(ttl.TotalHours)}h";
+            return $"{(int)Math.Round(ttl.TotalMinutes)}m";
         }
     }
 }

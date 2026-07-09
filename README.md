@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-223%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -96,7 +96,7 @@ AI agents make it possible for BIM users to describe intent instead of writing c
 It is designed around four ideas:
 
 - **Local first.** No cloud bridge is required. Revit, the plugin, MCP server, logs, and ToolBaker storage all live on the user's machine.
-- **Reversible by default.** Mutating workflows can run through `batch_execute`, wrapping multiple commands in one Revit `TransactionGroup` so one undo step rolls the batch back.
+- **Reversible by default.** Mutating workflows can run through `revit_batch_execute`, wrapping multiple commands in one Revit `TransactionGroup` so one undo step rolls the batch back.
 - **Progressively exposed.** Toolsets and `--read-only` mode control what the agent can see and do. Weak or narrow agents do not need destructive tools.
 - **Personal over generic.** Adaptive ToolBaker can observe repeated local workflows, propose a personal tool, and make accepted tools available through MCP and the Revit ribbon.
 
@@ -111,11 +111,11 @@ Most Revit automation dies between "good idea" and "usable add-in".
 ToolBaker is the path from agent-assisted workflow to personal tool:
 
 1. Use the existing MCP tools to query, create, lint, inspect, or batch operations in Revit.
-2. When advanced automation is needed, call `send_code_to_revit` directly from the default tool surface.
+2. When advanced automation is needed, call `revit_send_code_to_revit` directly from the default tool surface.
 3. If adaptive bake is enabled, repeated local usage is recorded locally under `%LOCALAPPDATA%\RvtMcp\`.
-4. Repeated patterns become suggestions, visible through `list_bake_suggestions`.
-5. You explicitly accept a suggestion with `accept_bake_suggestion`, including the tool name, schema, and output choice.
-6. Accepted tools become callable through `list_baked_tools` / `run_baked_tool` and available from the Revit ribbon runtime cache.
+4. Repeated patterns become suggestions, visible through `revit_list_bake_suggestions`.
+5. You explicitly accept a suggestion with `revit_accept_bake_suggestion`, including the tool name, schema, and output choice.
+6. Accepted tools become callable through `revit_list_baked_tools` / `revit_run_baked_tool` and available from the Revit ribbon runtime cache.
 
 Adaptive bake is off by default. It is for users who want their own local usage data to shape their own tools.
 
@@ -200,12 +200,12 @@ rvt-mcp/
 │   │   ├── Transport/            # TCP + Named Pipe abstraction
 │   │   ├── Infrastructure/       # Dispatcher, schema validation, ExternalEvent marshal
 │   │   └── Security/             # Auth token, redaction, secret masking
-│   ├── plugin-2022/              # Revit 2022 shell - .NET 4.8, TCP
-│   ├── plugin-2023/              # Revit 2023 shell - .NET 4.8, TCP
-│   ├── plugin-2024/              # Revit 2024 shell - .NET 4.8, TCP
-│   ├── plugin-2025/              # Revit 2025 shell - .NET 8, Named Pipe
-│   ├── plugin-2026/              # Revit 2026 shell - .NET 8, Named Pipe
-│   └── plugin-2027/              # Revit 2027 shell - .NET 10, Named Pipe
+│   ├── plugin-r22/               # Revit 2022 shell - .NET 4.8, TCP
+│   ├── plugin-r23/               # Revit 2023 shell - .NET 4.8, TCP
+│   ├── plugin-r24/               # Revit 2024 shell - .NET 4.8, TCP
+│   ├── plugin-r25/               # Revit 2025 shell - .NET 8, Named Pipe
+│   ├── plugin-r26/               # Revit 2026 shell - .NET 8, Named Pipe
+│   └── plugin-r27/               # Revit 2027 shell - .NET 10, Named Pipe
 ├── tests/                        # xUnit, tool snapshots, policy/privacy tests
 ├── benchmarks/                   # Weak-model accuracy harness
 ├── scripts/                      # install, uninstall, plugin ZIP staging
@@ -277,7 +277,7 @@ The setup ZIP contains a self-contained `rvt-mcp.exe`, so the client machine doe
 1. Open Revit 2022-2027 and a model.
 2. Use the BIMwright ribbon panel to start/toggle the MCP plugin.
 3. In the MCP client, run `tools/list`.
-4. Call `get_current_view_info`.
+4. Call `revit_get_current_view_info`.
 
 Expected response shape:
 
@@ -329,7 +329,7 @@ This path is for development and backward compatibility. Client machines should 
 
 ## Toolsets
 
-The full surface is **226 tools across 23 toolsets** (`--toolsets all`). By default every toolset is on except `modify` and `delete`. Adaptive bake, when enabled, adds accepted baked tools on top; `--read-only` strips every write-capable toolset.
+The full surface is **223 tools across 23 toolsets** (`--toolsets all`) (or **223 tools** when adaptive bake is enabled). By default, the registered surface is **216 tools** (all default-on toolsets, excluding `modify` and `delete`). Adaptive bake, when enabled, adds 3 suggestion-lifecycle tools on top; `--read-only` strips every write-capable toolset.
 
 Default-on toolsets: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`.
 
@@ -342,15 +342,15 @@ Enable specific sets with `--toolsets query,create,modify,meta`, or `--toolsets 
 | `query` | get current view, selected elements, available family types, material quantities, model stats, AI element filter | on |
 | `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
 | `view` | create view, sheet layout, place view on sheet, capture image, set crop/scale, activate view, show element | on |
-| `meta` | `show_message`, `switch_target`, `batch_execute`, usage stats, set project info, purge unused families | on |
+| `meta` | `revit_show_message`, `revit_switch_target`, `revit_batch_execute`, usage stats, set project info, purge unused families | on |
 | `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect, model warnings summary | on |
 | `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
 | `families` | list loaded families, load/unload/replace family, export/list family types, duplicate/rename family type | on |
-| `modify` | `operate_element`, `color_elements`, parameter/type/workset edits | off |
-| `delete` | `delete_element` | off |
+| `modify` | `revit_operate_element`, `revit_color_elements`, parameter/type/workset edits | off |
+| `delete` | `revit_delete_element` | off |
 | `annotation` | element/category tagging, text notes, dimensions, filled regions, detail lines, callouts, keynotes, untagged/undimensioned checks, empty-tag cleanup | on |
-| `export` | `export_room_data` | on |
-| `mep` | `detect_system_elements` | on |
+| `export` | `revit_export_room_data` | on |
+| `mep` | `revit_detect_system_elements` | on |
 | `graphics` | view filters (create/list/apply/remove), element graphic overrides, category visibility, view phase/visibility | on |
 | `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
 | `sheets` | sheet creation, duplication, placeholder sheets, list sheets, titleblock parameters, place schedule, revisions, sheet renumbering | on |
@@ -365,60 +365,60 @@ Enable specific sets with `--toolsets query,create,modify,meta`, or `--toolsets 
 
 ### All Tools
 
-The table below highlights representative tools; the full surface is 226 across 23 toolsets.
+The table below highlights representative tools; the full surface is 223 (226 with adaptive bake) across 23 toolsets.
 
 | Toolset | Tool | Description |
 |---|---|---|
-| `query` | `get_current_view_info` | Active view metadata: type, level, scale, detail level. |
-| `query` | `get_selected_elements` | Currently selected elements with id, name, category, type. |
-| `query` | `get_available_family_types` | Family types in the project, filterable by category. |
-| `query` | `ai_element_filter` | Filter by category and parameter/operator, values in mm. |
-| `query` | `analyze_model_statistics` | Element counts grouped by category. |
-| `query` | `get_material_quantities` | Area and volume totals for a category. |
-| `query` | `get_element_details` | Element metadata, location, bounding box, workset, phase, group, and assembly ids. |
-| `query` | `get_element_parameters` | Instance parameters with storage type, display value, raw value, and data/spec ids. |
-| `query` | `get_type_parameters` | Type parameters from type ids or from element ids. |
-| `query` | `list_project_parameters` | Project/shared parameter bindings, binding kind, and categories. |
-| `query` | `get_element_relationships` | Host, group, assembly, owner view, design option, nesting, and dependents. |
-| `query` | `list_groups` | Group instances with type, attached/detail metadata, and optional member ids. |
-| `query` | `get_group_members` | Members of a group instance with category, type, owner view, and pinned state. |
-| `query` | `list_assemblies` | Assembly instances with type, naming category, member count, and optional member ids. |
-| `query` | `get_assembly_members` | Members of an assembly instance with category, type, group, and workset ids. |
-| `query` | `list_worksets` | Worksets, active workset, edit/open state, and optional element counts. |
-| `create` | `create_line_based_element` | Wall or other line-based element. |
-| `create` | `create_point_based_element` | Door, window, furniture or other point element. |
-| `create` | `create_surface_based_element` | Floor or ceiling from a polyline. |
-| `create` | `create_level` | Level at elevation in mm. |
-| `create` | `create_grid` | Grid line between two points in mm. |
-| `create` | `create_room` | Room at a point, bound by walls. |
-| `create` | `create_group_from_elements` | Create a model/detail group from two or more elements. |
-| `modify` | `operate_element` | Select, hide, unhide, isolate, or set-color on IDs. |
-| `modify` | `color_elements` | Color-code a category by parameter value. |
-| `modify` | `set_element_parameter_values` | Set an instance parameter across multiple elements. |
-| `modify` | `set_type_parameter_values` | Set a type parameter across explicit or element-resolved types. |
-| `modify` | `change_element_type` | Change elements to a target compatible type. |
-| `modify` | `assign_elements_to_workset` | Assign elements to a user workset in a workshared model. |
-| `delete` | `delete_element` | Delete by ID list. Keep off unless explicitly needed. |
-| `view` | `create_view` | Floor plan or 3D view. |
-| `view` | `place_view_on_sheet` | Drop a view onto a new or existing sheet. |
-| `view` | `analyze_sheet_layout` | Title block, viewport positions, and scales in mm. |
-| `export` | `export_room_data` | Rooms with name, number, area, perimeter, level, volume. |
-| `annotation` | `tag_all_walls` | Wall-type tags at midpoint; skips already tagged. |
-| `annotation` | `tag_all_rooms` | Room tags at location point; skips already tagged. |
-| `mep` | `detect_system_elements` | Traverse connectors from a seed and return system members. |
-| `toolbaker` | `send_code_to_revit` | Compile and run ad-hoc C# inside Revit from the default tool surface. |
-| `toolbaker` | `list_baked_tools` | List accepted personal baked tools. |
-| `toolbaker` | `run_baked_tool` | Invoke an accepted baked tool by name. |
-| `toolbaker` | `list_bake_suggestions` | Adaptive bake only: list local suggestions. |
-| `toolbaker` | `accept_bake_suggestion` | Adaptive bake only: accept and apply a local suggestion. |
-| `toolbaker` | `dismiss_bake_suggestion` | Adaptive bake only: snooze or dismiss a local suggestion. |
-| `meta` | `show_message` | TaskDialog inside Revit for connection tests or notifications. |
-| `meta` | `switch_target` | Switch active Revit connection when multiple versions run. |
-| `meta` | `batch_execute` | Run commands atomically in one `TransactionGroup`. |
-| `meta` | `analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
-| `lint` | `analyze_view_naming_patterns` | Infer dominant view-naming pattern and outliers. |
-| `lint` | `suggest_view_name_corrections` | Propose corrected names for view outliers. |
-| `lint` | `detect_firm_profile` | Fingerprint project naming against firm profiles. |
+| `query` | `revit_get_current_view_info` | Active view metadata: type, level, scale, detail level. |
+| `query` | `revit_get_selected_elements` | Currently selected elements with id, name, category, type. |
+| `query` | `revit_get_available_family_types` | Family types in the project, filterable by category. |
+| `query` | `revit_ai_element_filter` | Filter by category and parameter/operator, values in mm. |
+| `query` | `revit_analyze_model_statistics` | Element counts grouped by category. |
+| `query` | `revit_get_material_quantities` | Area and volume totals for a category. |
+| `query` | `revit_get_element_details` | Element metadata, location, bounding box, workset, phase, group, and assembly ids. |
+| `query` | `revit_get_element_parameters` | Instance parameters with storage type, display value, raw value, and data/spec ids. |
+| `query` | `revit_get_type_parameters` | Type parameters from type ids or from element ids. |
+| `query` | `revit_list_project_parameters` | Project/shared parameter bindings, binding kind, and categories. |
+| `query` | `revit_get_element_relationships` | Host, group, assembly, owner view, design option, nesting, and dependents. |
+| `query` | `revit_list_groups` | Group instances with type, attached/detail metadata, and optional member ids. |
+| `query` | `revit_get_group_members` | Members of a group instance with category, type, owner view, and pinned state. |
+| `query` | `revit_list_assemblies` | Assembly instances with type, naming category, member count, and optional member ids. |
+| `query` | `revit_get_assembly_members` | Members of an assembly instance with category, type, group, and workset ids. |
+| `query` | `revit_list_worksets` | Worksets, active workset, edit/open state, and optional element counts. |
+| `create` | `revit_create_line_based_element` | Wall or other line-based element. |
+| `create` | `revit_create_point_based_element` | Door, window, furniture or other point element. |
+| `create` | `revit_create_surface_based_element` | Floor or ceiling from a polyline. |
+| `create` | `revit_create_level` | Level at elevation in mm. |
+| `create` | `revit_create_grid` | Grid line between two points in mm. |
+| `create` | `revit_create_room` | Room at a point, bound by walls. |
+| `create` | `revit_create_group_from_elements` | Create a model/detail group from two or more elements. |
+| `modify` | `revit_operate_element` | Select, hide, unhide, isolate, or set-color on IDs. |
+| `modify` | `revit_color_elements` | Color-code a category by parameter value. |
+| `modify` | `revit_set_element_parameter_values` | Set an instance parameter across multiple elements. |
+| `modify` | `revit_set_type_parameter_values` | Set a type parameter across explicit or element-resolved types. |
+| `modify` | `revit_change_element_type` | Change elements to a target compatible type. |
+| `modify` | `revit_assign_elements_to_workset` | Assign elements to a user workset in a workshared model. |
+| `delete` | `revit_delete_element` | Delete by ID list. Keep off unless explicitly needed. |
+| `view` | `revit_create_view` | Floor plan or 3D view. |
+| `view` | `revit_place_view_on_sheet` | Drop a view onto a new or existing sheet. |
+| `view` | `revit_analyze_sheet_layout` | Title block, viewport positions, and scales in mm. |
+| `export` | `revit_export_room_data` | Rooms with name, number, area, perimeter, level, volume. |
+| `annotation` | `revit_tag_all_walls` | Wall-type tags at midpoint; skips already tagged. |
+| `annotation` | `revit_tag_all_rooms` | Room tags at location point; skips already tagged. |
+| `mep` | `revit_detect_system_elements` | Traverse connectors from a seed and return system members. |
+| `toolbaker` | `revit_send_code_to_revit` | Compile and run ad-hoc C# inside Revit from the default tool surface. |
+| `toolbaker` | `revit_list_baked_tools` | List accepted personal baked tools. |
+| `toolbaker` | `revit_run_baked_tool` | Invoke an accepted baked tool by name. |
+| `toolbaker` | `revit_list_bake_suggestions` | Adaptive bake only: list local suggestions. |
+| `toolbaker` | `revit_accept_bake_suggestion` | Adaptive bake only: accept and apply a local suggestion. |
+| `toolbaker` | `revit_dismiss_bake_suggestion` | Adaptive bake only: snooze or dismiss a local suggestion. |
+| `meta` | `revit_show_message` | TaskDialog inside Revit for connection tests or notifications. |
+| `meta` | `revit_switch_target` | Switch active Revit connection when multiple versions run. |
+| `meta` | `revit_batch_execute` | Run commands atomically in one `TransactionGroup`. |
+| `meta` | `revit_analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
+| `lint` | `revit_analyze_view_naming_patterns` | Infer dominant view-naming pattern and outliers. |
+| `lint` | `revit_suggest_view_name_corrections` | Propose corrected names for view outliers. |
+| `lint` | `revit_detect_firm_profile` | Fingerprint project naming against firm profiles. |
 
 ---
 
@@ -445,7 +445,7 @@ Short version: your model stays on your machine.
 - **Per-session token handshake.** Discovery files under `%LOCALAPPDATA%\RvtMcp\` carry connection information and auth token.
 - **Schema validation.** Malformed tool calls are rejected before command handlers run.
 - **Path masking.** Errors returned to the model are sanitized to avoid leaking absolute paths.
-- **ToolBaker controls.** `send_code_to_revit` is available by default. Adaptive bake remains opt-in and only controls suggestion/logging features; `--read-only` or `--disable-toolbaker` removes the ToolBaker surface.
+- **ToolBaker controls.** `revit_send_code_to_revit` is available by default. Adaptive bake remains opt-in and only controls suggestion/logging features; `--read-only` or `--disable-toolbaker` removes the ToolBaker surface.
 - **Local storage.** Usage events, bake database, logs, and accepted-tool metadata stay under local Bimwright storage.
 
 See [SECURITY.md](SECURITY.md) for disclosure and threat-model details.
@@ -477,7 +477,7 @@ JSON file path: `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`.
 ```bash
 dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 dotnet build src/server/RvtMcp.Server.csproj -c Release
-dotnet build src/plugin-2026/RvtMcp.Plugin.R26.csproj -c Release
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
 Plugin projects auto-deploy after normal `Build`, copying into `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`. Close Revit before building plugin projects because Revit locks loaded DLLs.

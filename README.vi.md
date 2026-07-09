@@ -10,7 +10,7 @@
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-223%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -96,7 +96,7 @@ AI agent giúp BIM user mô tả ý định thay vì tự viết code. Nhưng ch
 Nó được thiết kế quanh bốn ý tưởng:
 
 - **Local first.** Không cần cloud bridge. Revit, plugin, MCP server, logs và ToolBaker storage đều nằm trên máy người dùng.
-- **Reversible by default.** Workflow có chỉnh model có thể chạy qua `batch_execute`, gom nhiều command vào một Revit `TransactionGroup` để một lần undo có thể rollback cả batch.
+- **Reversible by default.** Workflow có chỉnh model có thể chạy qua `revit_batch_execute`, gom nhiều command vào một Revit `TransactionGroup` để một lần undo có thể rollback cả batch.
 - **Progressively exposed.** Toolsets và `--read-only` kiểm soát agent được thấy và được làm gì. Agent yếu hoặc task hẹp không cần nhìn thấy destructive tools.
 - **Personal over generic.** Adaptive ToolBaker có thể quan sát workflow local lặp lại, đề xuất tool cá nhân, và đưa tool đã accept vào MCP lẫn Revit ribbon.
 
@@ -111,11 +111,11 @@ Phần lớn tự động hóa Revit chết ở khoảng giữa "ý tưởng hay
 ToolBaker là đường đi từ workflow có AI agent hỗ trợ đến tool cá nhân:
 
 1. Dùng các MCP tool có sẵn để query, create, lint, inspect hoặc batch operation trong Revit.
-2. Khi cần automation nâng cao, gọi trực tiếp `send_code_to_revit` từ tool surface mặc định.
+2. Khi cần automation nâng cao, gọi trực tiếp `revit_send_code_to_revit` từ tool surface mặc định.
 3. Nếu adaptive bake được bật, usage lặp lại được ghi local dưới `%LOCALAPPDATA%\RvtMcp\`.
-4. Pattern lặp lại trở thành suggestion, xem qua `list_bake_suggestions`.
-5. Bạn chủ động accept suggestion bằng `accept_bake_suggestion`, gồm tên tool, schema và output choice.
-6. Tool đã accept có thể gọi qua `list_baked_tools` / `run_baked_tool` và xuất hiện trong Revit ribbon runtime cache.
+4. Pattern lặp lại trở thành suggestion, xem qua `revit_list_bake_suggestions`.
+5. Bạn chủ động accept suggestion bằng `revit_accept_bake_suggestion`, gồm tên tool, schema và output choice.
+6. Tool đã accept có thể gọi qua `revit_list_baked_tools` / `revit_run_baked_tool` và xuất hiện trong Revit ribbon runtime cache.
 
 Adaptive bake mặc định tắt. Nó dành cho người muốn dữ liệu sử dụng local của mình tự hình thành tool của riêng mình.
 
@@ -200,12 +200,12 @@ rvt-mcp/
 │   │   ├── Transport/            # TCP + Named Pipe abstraction
 │   │   ├── Infrastructure/       # Dispatcher, schema validation, ExternalEvent marshal
 │   │   └── Security/             # Auth token, redaction, secret masking
-│   ├── plugin-2022/              # Revit 2022 shell - .NET 4.8, TCP
-│   ├── plugin-2023/              # Revit 2023 shell - .NET 4.8, TCP
-│   ├── plugin-2024/              # Revit 2024 shell - .NET 4.8, TCP
-│   ├── plugin-2025/              # Revit 2025 shell - .NET 8, Named Pipe
-│   ├── plugin-2026/              # Revit 2026 shell - .NET 8, Named Pipe
-│   └── plugin-2027/              # Revit 2027 shell - .NET 10, Named Pipe
+│   ├── plugin-r22/               # Revit 2022 shell - .NET 4.8, TCP
+│   ├── plugin-r23/               # Revit 2023 shell - .NET 4.8, TCP
+│   ├── plugin-r24/               # Revit 2024 shell - .NET 4.8, TCP
+│   ├── plugin-r25/               # Revit 2025 shell - .NET 8, Named Pipe
+│   ├── plugin-r26/               # Revit 2026 shell - .NET 8, Named Pipe
+│   └── plugin-r27/               # Revit 2027 shell - .NET 10, Named Pipe
 ├── tests/                        # xUnit, tool snapshots, policy/privacy tests
 ├── benchmarks/                   # Weak-model accuracy harness
 ├── scripts/                      # install, uninstall, plugin ZIP staging
@@ -275,9 +275,9 @@ Setup ZIP có sẵn `rvt-mcp.exe` self-contained, nên máy client không cần 
 ### Verify
 
 1. Mở Revit 2022-2027 và một model.
-2. Dùng BIMwright ribbon panel để start/toggle MCP plugin.
+2. Dùng ribbon panel BIMwright để bật/tắt MCP plugin.
 3. Trong MCP client, chạy `tools/list`.
-4. Gọi `get_current_view_info`.
+4. Gọi `revit_get_current_view_info`.
 
 Response mẫu:
 
@@ -329,7 +329,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -SourceDir . -Client none
 
 ## Toolsets
 
-Toàn bộ surface là **226 tools trên 23 toolsets** (`--toolsets all`). Mặc định mọi toolset đều bật trừ `modify` và `delete`. Khi bật adaptive bake, các accepted baked tool được thêm vào; `--read-only` loại bỏ mọi write-capable toolset.
+Toàn bộ surface là **223 tools trên 23 toolsets** (`--toolsets all`) (hoặc **223 tools** khi bật adaptive bake). Mặc định, surface được đăng ký là **216 tools** (mọi toolset mặc định đều bật trừ `modify` và `delete`). Khi bật adaptive bake, 3 suggestion-lifecycle tool được thêm vào; `--read-only` loại bỏ mọi write-capable toolset.
 
 Toolsets bật mặc định: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`.
 
@@ -342,15 +342,15 @@ Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thê
 | `query` | current view, selected elements, family types, material quantities, model stats, AI element filter | on |
 | `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
 | `view` | create view, sheet layout, place view on sheet, capture image, set crop/scale, activate view, show element | on |
-| `meta` | `show_message`, `switch_target`, `batch_execute`, usage stats, set project info, purge unused families | on |
+| `meta` | `revit_show_message`, `revit_switch_target`, `revit_batch_execute`, usage stats, set project info, purge unused families | on |
 | `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect | on |
 | `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
 | `families` | list loaded families, load/unload/replace family, export/list family types, duplicate/rename family type | on |
-| `modify` | `operate_element`, `color_elements`, parameter/type/workset edits | off |
-| `delete` | `delete_element` | off |
+| `modify` | `revit_operate_element`, `revit_color_elements`, parameter/type/workset edits | off |
+| `delete` | `revit_delete_element` | off |
 | `annotation` | tag element/category, text note, dimension, filled region, detail line, callout, keynote, kiểm tra untagged/undimensioned, dọn empty tags | on |
-| `export` | `export_room_data` | on |
-| `mep` | `detect_system_elements` | on |
+| `export` | `revit_export_room_data` | on |
+| `mep` | `revit_detect_system_elements` | on |
 | `graphics` | view filters (create/list/apply/remove), element graphic overrides, category visibility, view phase/visibility | on |
 | `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
 | `sheets` | tạo sheet, duplicate, placeholder sheet, list sheets, titleblock parameters, đặt schedule, revisions, đánh số lại sheet | on |
@@ -367,56 +367,56 @@ Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thê
 
 | Toolset | Tool | Mô tả |
 |---|---|---|
-| `query` | `get_current_view_info` | Metadata của active view: type, level, scale, detail level. |
-| `query` | `get_selected_elements` | Element đang chọn với id, name, category, type. |
-| `query` | `get_available_family_types` | Family types trong project, filter theo category. |
-| `query` | `ai_element_filter` | Filter theo category và parameter/operator, giá trị tính bằng mm. |
-| `query` | `analyze_model_statistics` | Đếm element theo category. |
-| `query` | `get_material_quantities` | Tổng area và volume cho một category. |
-| `query` | `get_element_details` | Metadata, location, bounding box, workset, phase, group và assembly ids. |
-| `query` | `get_element_parameters` | Instance parameters với storage type, display value, raw value và data/spec ids. |
-| `query` | `get_type_parameters` | Type parameters từ type ids hoặc từ element ids. |
-| `query` | `list_project_parameters` | Project/shared parameter bindings, binding kind và categories. |
-| `query` | `get_element_relationships` | Host, group, assembly, owner view, design option, nesting và dependents. |
-| `query` | `list_groups` | Group instances với type, attached/detail metadata và optional member ids. |
-| `query` | `get_group_members` | Members của group instance với category, type, owner view và pinned state. |
-| `query` | `list_assemblies` | Assembly instances với type, naming category, member count và optional member ids. |
-| `query` | `get_assembly_members` | Members của assembly instance với category, type, group và workset ids. |
-| `query` | `list_worksets` | Worksets, active workset, edit/open state và optional element counts. |
-| `create` | `create_line_based_element` | Wall hoặc element theo line. |
-| `create` | `create_point_based_element` | Door, window, furniture hoặc point element khác. |
-| `create` | `create_surface_based_element` | Floor hoặc ceiling từ polyline. |
-| `create` | `create_level` | Level tại elevation tính bằng mm. |
-| `create` | `create_grid` | Grid line giữa hai điểm tính bằng mm. |
-| `create` | `create_room` | Room tại một điểm, được bao bởi wall. |
-| `create` | `create_group_from_elements` | Tạo group từ hai hoặc nhiều elements. |
-| `modify` | `operate_element` | Select, hide, unhide, isolate hoặc set-color theo IDs. |
-| `modify` | `color_elements` | Tô màu category theo parameter value. |
-| `modify` | `set_element_parameter_values` | Set instance parameter cho nhiều elements. |
-| `modify` | `set_type_parameter_values` | Set type parameter cho type ids hoặc types suy ra từ elements. |
-| `modify` | `change_element_type` | Đổi elements sang một target type compatible. |
-| `modify` | `assign_elements_to_workset` | Gán elements vào user workset trong model workshared. |
-| `delete` | `delete_element` | Delete theo danh sách ID. Chỉ bật khi thật sự cần. |
-| `view` | `create_view` | Tạo floor plan hoặc 3D view. |
-| `view` | `place_view_on_sheet` | Đặt view lên sheet mới hoặc sheet có sẵn. |
-| `view` | `analyze_sheet_layout` | Title block, viewport positions và scales tính bằng mm. |
-| `export` | `export_room_data` | Room data: name, number, area, perimeter, level, volume. |
-| `annotation` | `tag_all_walls` | Tag wall-type tại midpoint; bỏ qua wall đã tag. |
-| `annotation` | `tag_all_rooms` | Room tag tại location point; bỏ qua room đã tag. |
-| `mep` | `detect_system_elements` | Traverse connector từ seed và trả về system members. |
-| `toolbaker` | `send_code_to_revit` | Compile và chạy C# ad-hoc trong Revit từ tool surface mặc định. |
-| `toolbaker` | `list_baked_tools` | List personal baked tools đã accept. |
-| `toolbaker` | `run_baked_tool` | Gọi accepted baked tool theo tên. |
-| `toolbaker` | `list_bake_suggestions` | Adaptive bake only: list local suggestions. |
-| `toolbaker` | `accept_bake_suggestion` | Adaptive bake only: accept và apply local suggestion. |
-| `toolbaker` | `dismiss_bake_suggestion` | Adaptive bake only: snooze hoặc dismiss local suggestion. |
-| `meta` | `show_message` | TaskDialog trong Revit để test connection hoặc thông báo. |
-| `meta` | `switch_target` | Đổi Revit connection khi chạy nhiều version. |
-| `meta` | `batch_execute` | Chạy commands atomically trong một `TransactionGroup`. |
-| `meta` | `analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
-| `lint` | `analyze_view_naming_patterns` | Infer dominant view-naming pattern và outliers. |
-| `lint` | `suggest_view_name_corrections` | Đề xuất tên đúng cho view outliers. |
-| `lint` | `detect_firm_profile` | Fingerprint project naming theo firm profiles. |
+| `query` | `revit_get_current_view_info` | Metadata của active view: type, level, scale, detail level. |
+| `query` | `revit_get_selected_elements` | Element đang chọn với id, name, category, type. |
+| `query` | `revit_get_available_family_types` | Family types trong project, filter theo category. |
+| `query` | `revit_ai_element_filter` | Filter theo category và parameter/operator, giá trị tính bằng mm. |
+| `query` | `revit_analyze_model_statistics` | Đếm element theo category. |
+| `query` | `revit_get_material_quantities` | Tổng area và volume cho một category. |
+| `query` | `revit_get_element_details` | Metadata, location, bounding box, workset, phase, group và assembly ids. |
+| `query` | `revit_get_element_parameters` | Instance parameters với storage type, display value, raw value và data/spec ids. |
+| `query` | `revit_get_type_parameters` | Type parameters từ type ids hoặc từ element ids. |
+| `query` | `revit_list_project_parameters` | Project/shared parameter bindings, binding kind và categories. |
+| `query` | `revit_get_element_relationships` | Host, group, assembly, owner view, design option, nesting và dependents. |
+| `query` | `revit_list_groups` | Group instances với type, attached/detail metadata và optional member ids. |
+| `query` | `revit_get_group_members` | Members của group instance với category, type, owner view và pinned state. |
+| `query` | `revit_list_assemblies` | Assembly instances với type, naming category, member count và optional member ids. |
+| `query` | `revit_get_assembly_members` | Members của assembly instance với category, type, group và workset ids. |
+| `query` | `revit_list_worksets` | Worksets, active workset, edit/open state và optional element counts. |
+| `create` | `revit_create_line_based_element` | Wall hoặc element theo line. |
+| `create` | `revit_create_point_based_element` | Door, window, furniture hoặc point element khác. |
+| `create` | `revit_create_surface_based_element` | Floor hoặc ceiling từ polyline. |
+| `create` | `revit_create_level` | Level tại elevation tính bằng mm. |
+| `create` | `revit_create_grid` | Grid line giữa hai điểm tính bằng mm. |
+| `create` | `revit_create_room` | Room tại một điểm, được bao bởi wall. |
+| `create` | `revit_create_group_from_elements` | Tạo group từ hai hoặc nhiều elements. |
+| `modify` | `revit_operate_element` | Select, hide, unhide, isolate hoặc set-color theo IDs. |
+| `modify` | `revit_color_elements` | Tô màu category theo parameter value. |
+| `modify` | `revit_set_element_parameter_values` | Set instance parameter cho nhiều elements. |
+| `modify` | `revit_set_type_parameter_values` | Set type parameter cho type ids hoặc types suy ra từ elements. |
+| `modify` | `revit_change_element_type` | Đổi elements sang một target type compatible. |
+| `modify` | `revit_assign_elements_to_workset` | Gán elements vào user workset trong model workshared. |
+| `delete` | `revit_delete_element` | Delete theo danh sách ID. Chỉ bật khi thật sự cần. |
+| `view` | `revit_create_view` | Tạo floor plan hoặc 3D view. |
+| `view` | `revit_place_view_on_sheet` | Đặt view lên sheet mới hoặc sheet có sẵn. |
+| `view` | `revit_analyze_sheet_layout` | Title block, viewport positions và scales tính bằng mm. |
+| `export` | `revit_export_room_data` | Room data: name, number, area, perimeter, level, volume. |
+| `annotation` | `revit_tag_all_walls` | Tag wall-type tại midpoint; bỏ qua wall đã tag. |
+| `annotation` | `revit_tag_all_rooms` | Room tag tại location point; bỏ qua room đã tag. |
+| `mep` | `revit_detect_system_elements` | Traverse connector từ seed và trả về system members. |
+| `toolbaker` | `revit_send_code_to_revit` | Compile và chạy C# ad-hoc trong Revit từ tool surface mặc định. |
+| `toolbaker` | `revit_list_baked_tools` | List personal baked tools đã accept. |
+| `toolbaker` | `revit_run_baked_tool` | Gọi accepted baked tool theo tên. |
+| `toolbaker` | `revit_list_bake_suggestions` | Adaptive bake only: list local suggestions. |
+| `toolbaker` | `revit_accept_bake_suggestion` | Adaptive bake only: accept và apply local suggestion. |
+| `toolbaker` | `revit_dismiss_bake_suggestion` | Adaptive bake only: snooze hoặc dismiss local suggestion. |
+| `meta` | `revit_show_message` | TaskDialog trong Revit để test connection hoặc thông báo. |
+| `meta` | `revit_switch_target` | Đổi Revit connection khi chạy nhiều version. |
+| `meta` | `revit_batch_execute` | Chạy commands atomically trong một `TransactionGroup`. |
+| `meta` | `revit_analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
+| `lint` | `revit_analyze_view_naming_patterns` | Infer dominant view-naming pattern và outliers. |
+| `lint` | `revit_suggest_view_name_corrections` | Đề xuất tên đúng cho view outliers. |
+| `lint` | `revit_detect_firm_profile` | Fingerprint project naming theo firm profiles. |
 
 ---
 
@@ -443,7 +443,7 @@ Ngắn gọn: model của bạn ở lại trên máy bạn.
 - **Per-session token handshake.** Discovery files dưới `%LOCALAPPDATA%\RvtMcp\` chứa connection info và auth token.
 - **Schema validation.** Tool call sai shape bị reject trước khi command handler chạy.
 - **Path masking.** Error trả về model được sanitize để tránh leak absolute path.
-- **ToolBaker controls.** `send_code_to_revit` có sẵn mặc định. Adaptive bake vẫn là opt-in và chỉ điều khiển suggestion/logging; `--read-only` hoặc `--disable-toolbaker` sẽ bỏ ToolBaker surface.
+- **ToolBaker controls.** `revit_send_code_to_revit` có sẵn mặc định. Adaptive bake vẫn là opt-in và chỉ điều khiển suggestion/logging; `--read-only` hoặc `--disable-toolbaker` sẽ bỏ ToolBaker surface.
 - **Local storage.** Usage events, bake database, logs và accepted-tool metadata nằm trong local Bimwright storage.
 
 Xem [SECURITY.md](SECURITY.md) để biết threat model và cách báo cáo vulnerability.
@@ -464,7 +464,7 @@ Ba lớp, lớp sau thắng lớp trước: JSON file, env vars, CLI args.
 | Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
 | Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
 
-JSON file path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`.
+JSON file path: `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`.
 
 ---
 
@@ -473,7 +473,7 @@ JSON file path: `%LOCALAPPDATA%\RvtMcp\bimwright.config.json`.
 ```bash
 dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
 dotnet build src/server/RvtMcp.Server.csproj -c Release
-dotnet build src/plugin-2026/RvtMcp.Plugin.R26.csproj -c Release
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
 Plugin projects auto-deploy sau normal `Build`, copy vào `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`. Hãy đóng Revit trước khi build plugin vì Revit lock DLL đã load.
