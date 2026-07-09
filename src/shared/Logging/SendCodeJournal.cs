@@ -14,6 +14,19 @@ namespace RvtMcp.Plugin
 
         public static string JournalPath => Path.Combine(RootDir, "send-code-journal.jsonl");
 
+        public static void RunMaintenance(RvtMcpConfig config, DateTimeOffset? now = null)
+        {
+            var utc = now ?? DateTimeOffset.UtcNow;
+            var root = RootDir;
+            try
+            {
+                Directory.CreateDirectory(root);
+            }
+            catch { }
+            var isActive = config != null && config.IsPersistSendCodeBodiesActive(utc);
+            MaybePurge(root, isActive, utc);
+        }
+
         public static bool TryAppend(
             RvtMcpConfig config,
             string sessionId,

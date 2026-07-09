@@ -31,6 +31,13 @@ namespace RvtMcp.Plugin
             _dispatcher = dispatcher;
             _sessionLog = sessionLog;
             _toastNotifier = toastNotifier;
+
+            try
+            {
+                var config = RvtMcpConfig.Load(args: null);
+                SendCodeJournal.RunMaintenance(config);
+            }
+            catch { }
         }
 
         public void Enqueue(PendingRequest request)

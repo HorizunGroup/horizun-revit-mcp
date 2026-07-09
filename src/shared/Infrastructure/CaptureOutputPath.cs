@@ -23,7 +23,8 @@ namespace RvtMcp.Plugin
             if (string.IsNullOrWhiteSpace(path))
                 return "output_path is required after normalization.";
 
-            if (path.Contains("%TEMP%") || path.Contains("%LOCALAPPDATA%"))
+            if (path.IndexOf("%TEMP%", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                path.IndexOf("%LOCALAPPDATA%", StringComparison.OrdinalIgnoreCase) >= 0)
             {
                 var temp = PathAllowlist.TempDirectory;
                 var captures = PathAllowlist.CapturesDirectory;
@@ -32,7 +33,7 @@ namespace RvtMcp.Plugin
                        $"Resolved allowlist roots: %TEMP% is '{temp}', and %LOCALAPPDATA%\\RvtMcp\\captures\\ is '{captures}'.";
             }
 
-            if (path.StartsWith(@"\\", StringComparison.Ordinal)) return "UNC paths are not allowed.";
+            if (path.StartsWith(@"\\", StringComparison.Ordinal) || path.StartsWith("//", StringComparison.Ordinal)) return "UNC paths are not allowed.";
             if (path.Contains("..")) return "output_path cannot contain '..'.";
 
             try

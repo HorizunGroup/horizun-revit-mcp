@@ -126,5 +126,29 @@ namespace RvtMcp.Tests
             var expectedArchive = Path.Combine(_tempDir, "send-code-journal-20260709-120000.jsonl");
             Assert.True(File.Exists(expectedArchive));
         }
+
+        [Fact]
+        public void RunMaintenance_CleansUpOrCreatesMarker_WithoutAppending()
+        {
+            // 1. Create a journal while active
+            SendCodeJournal.TryAppend(_activeConfig, "session1", "var x = 1;", true, 50, null, null);
+            Assert.True(File.Exists(SendCodeJournal.JournalPath));
+
+            // 2. Run maintenance when config is inactive -> should create disabled-at marker, but NOT append any dummy log entry
+            var now = DateTimeOffset.UtcNow;
+            SendCodeJournal.RunMaintenance(_inactiveConfig, now);
+
+            var markerFile = Path.Combine(_tempDir, "send-code-journal.disabled-at");
+            Assert.True(File.Exists(markerFile));
+            
+            // Read lines to check if a new line was appended (should only have the 1 line from step 1)
+            var lines = File.ReadAllLines(SendCodeJournal.JournalPath);
+            Assert.Single(lines);
+
+            // 3. Run maintenance 7.1 days later -> should delete the journal and marker
+            SendCodeJournal.RunMaintenance(_inactiveConfig, now.AddDays(7.1));
+            Assert.False(File.Exists(SendCodeJournal.JournalPath));
+            Assert.False(File.Exists(markerFile));
+        }
     }
 }

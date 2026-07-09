@@ -38,13 +38,22 @@ namespace RvtMcp.Tests
             var err2 = CaptureOutputPath.Validate(@"%LOCALAPPDATA%\RvtMcp\captures\test.png");
             Assert.Contains("unexpanded environment variables", err2);
             Assert.Contains(PathAllowlist.CapturesDirectory, err2);
+
+            var err3 = CaptureOutputPath.Validate(@"%temp%\test.png");
+            Assert.Contains("unexpanded environment variables", err3);
+
+            var err4 = CaptureOutputPath.Validate(@"%LocalAppData%\RvtMcp\captures\test.png");
+            Assert.Contains("unexpanded environment variables", err4);
         }
 
         [Fact]
         public void Validate_UNCPath_Rejected()
         {
-            var err = CaptureOutputPath.Validate(@"\\server\share\test.png");
-            Assert.Equal("UNC paths are not allowed.", err);
+            var err1 = CaptureOutputPath.Validate(@"\\server\share\test.png");
+            Assert.Equal("UNC paths are not allowed.", err1);
+
+            var err2 = CaptureOutputPath.Validate(@"//server/share/test.png");
+            Assert.Equal("UNC paths are not allowed.", err2);
         }
 
         [Fact]

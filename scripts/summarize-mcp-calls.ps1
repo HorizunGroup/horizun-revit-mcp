@@ -12,13 +12,13 @@ if (-not (Test-Path $LogPath)) {
 
 Write-Host "Analyzing local MCP calls from $LogPath..." -ForegroundColor Cyan
 
-$Calls = Get-Content $LogPath | ForEach-Object {
+$Calls = @(Get-Content $LogPath | ForEach-Object {
     try {
         ConvertFrom-Json $_ -ErrorAction Stop
     } catch {
         # Skip malformed lines
     }
-}
+})
 
 if ($Calls.Count -eq 0) {
     Write-Host "No valid calls found."
@@ -26,7 +26,7 @@ if ($Calls.Count -eq 0) {
 }
 
 $TotalCalls = $Calls.Count
-$SuccessCalls = ($Calls | Where-Object { $_.success -eq $true }).Count
+$SuccessCalls = @($Calls | Where-Object { $_.success -eq $true }).Count
 $FailedCalls = $TotalCalls - $SuccessCalls
 $FailRate = ($FailedCalls / $TotalCalls) * 100
 
@@ -43,7 +43,7 @@ $Calls | Group-Object tool | Sort-Object Count -Descending | Select-Object -Firs
     $ToolName = $_.Name
     $Count = $_.Count
     $Pct = ($Count / $TotalCalls) * 100
-    $Failures = ($_.Group | Where-Object { $_.success -eq $false }).Count
+    $Failures = @($_.Group | Where-Object { $_.success -eq $false }).Count
     Write-Host "  - $($ToolName.PadRight(30)): $Count calls ($($Pct.ToString("F1"))%), $Failures failures"
 }
 
