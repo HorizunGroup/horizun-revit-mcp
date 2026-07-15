@@ -1,4 +1,4 @@
-﻿using System.Reflection;
+using System.Reflection;
 using System.Collections.Generic;
 using Autodesk.Revit.UI;
 using RvtMcp.Plugin.ToolBaker;
@@ -51,7 +51,7 @@ namespace RvtMcp.Plugin
             {
                 LargeImage = IconGenerator.Info32,
                 Image = IconGenerator.Info16,
-                ToolTip = "Show MCP status"
+                ToolTip = "Show MCP connection, toast, and bake/privacy flags"
             };
 
             var stack = panel.AddStackedItems(toggleData, historyData, statusData);

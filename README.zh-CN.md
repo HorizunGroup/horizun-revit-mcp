@@ -7,10 +7,14 @@
 <h1 align="center">rvt-mcp</h1>
 
 <p align="center">
+  Autodesk Revit 的 MCP 网关 — 本地 agent 工具，可选个人 bake 循环
+</p>
+
+<p align="center">
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-226%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#tools"><img src="https://img.shields.io/badge/MCP-227%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -19,11 +23,11 @@
 
 ---
 
-## 客户端快速安装（推荐）
+## 安装（推荐）
 
-对于 Revit 用户机器，请使用 GitHub Releases 上的 setup ZIP。它包含 self-contained 的 MCP server 和 Revit plugin，因此客户端机器**不需要** .NET SDK、NuGet global tool、本源码仓库或本地 build。
+已安装 Revit 的机器：从 [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest) 使用 **setup ZIP**。**不需要** .NET SDK、NuGet 全局工具或克隆本仓库。
 
-**AI agent：** 如果用户让你在客户端机器上安装 Bimwright，请下载最新的 `RvtMcp.Setup-*-win-x64.zip` release 资源并运行下面的安装程序。不要 clone 本仓库、build 源码、安装 .NET SDK，或使用 `dotnet tool install`，除非用户明确要求 developer 安装。完整 agent 安装协议见 [AGENTS.md](AGENTS.md)。
+**若你是代用户安装的 AI agent：** 下载最新 `RvtMcp.Setup-*-win-x64.zip` 并运行下方安装程序。除非用户明确要求开发者安装，否则不要 clone/build。Agent 说明见 [AGENTS.md](AGENTS.md)。
 
 ```powershell
 $tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
@@ -32,456 +36,309 @@ $dir = "$env:TEMP\RvtMcp.Setup-$tag-win-x64"
 Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/RvtMcp.Setup-$tag-win-x64.zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath $dir -Force
 
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf   # 预览
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"           # 安装
 ```
 
-安装程序会检测 Revit 2022-2027，只安装匹配的 plugin，把 server 复制到 `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`，并用绝对路径 wire 已安装的 MCP client。可以使用 `-Client codex`、`-Client opencode`、`-Client claude` 或 `-Client none` 覆盖自动检测。
+`install.ps1` 会：
 
-`dwg-mcp` 是一个独立的 AutoCAD gateway，请从它自己的仓库独立安装。
+- 检测 Revit 2022–2027 并安装对应插件
+- 将自包含 server 复制到 `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`
+- 用绝对路径写入已检测到的 MCP 客户端（可用 `-Client codex|opencode|claude|kilo|none` 覆盖）
 
----
+只要某一年？  
+`install.ps1 -Years 2024`
 
-## Revit 自动化不应该止步于“我不会写代码”
+AutoCAD 请用独立的 [dwg-mcp](https://github.com/bimwright/dwg-mcp) — 不同产品、不同安装。
 
-在 AI agent 出现之前，很多 BIM 用户就已经想做同一件事：让 Revit 更快，减少重复点击，并把软件调成真正适合自己工作的样子。
+### 验证是否可用
 
-难点从来不是想法。难点是把想法变成工具。
+1. 打开带模型的 Revit。
+2. 在 ribbon（BIMwright / RvtMcp）上启动 MCP 连接。
+3. 在 MCP 客户端中 list tools，再调用 `revit_get_current_view_info`。
 
-哪怕只是做一个小型 Revit add-in，BIM 从业者通常也要：
-
-- 把 input 和 output 定义到软件能理解的程度。
-- 思考算法、边界情况、parameter、category、filter、单位，以及 Revit API 的限制。
-- 先用 Dynamo prototype，可能再转 Python，最后如果要稳定使用，又要重写成 C#。
-- 把结果打包成 add-in，处理 dependency、安装路径、`.addin` manifest、Revit 版本差异和 ribbon button。
-
-这对学习建筑、结构、机电、算量或 BIM coordination 的人来说太重了。他们不是软件工程师。
-
-过去的选择都很贵，只是贵的方式不同：
-
-- 花几个月甚至几年学到足够维护自己工具的编程能力。
-- 付钱请别人写 custom add-in。
-- 买现成 add-in，然后让自己的 workflow 去适应 vendor 的假设。
-- 因为自动化门槛太高，继续手工做。
-
-`rvt-mcp` 的目标是压缩这个循环。
-
-它给 AI agent 一条安全的本地桥梁进入 Revit，再让重复出现的 workflow 通过 ToolBaker 演化成个人工具。目标不是做一个适合所有人的万能 add-in。Revit 服务的专业、公司、标准和习惯太多，没有一个通用工具能跟上所有人。目标是让每个实践者都能长出适合自己工作方式的工具箱。
-
-个人自动化就应该是个人化的。
-
----
-
-## rvt-mcp 是什么
-
-`rvt-mcp` 是面向 Autodesk Revit 2022-2027 的本地 MCP gateway。
-
-它由两部分组成：
-
-- `RvtMcp.Server`：.NET 8 MCP server，由 Claude、Cursor、Codex、OpenCode、Cline、VS Code Copilot 或其他 stdio MCP client 启动。
-- `RvtMcp.Plugin`：每个 Revit 年份一个 add-in shell，运行在 Revit 内部，并在 Revit UI thread 上执行命令。
-
-Agent 说 MCP。Server 通过 localhost TCP 或 Named Pipe 和 plugin 通信。Plugin 和 Revit API 通信。
-
-你的模型留在你的机器上。
-
----
-
-## 为什么它重要
-
-AI agent 让 BIM 用户可以描述意图，而不是手写代码。但只有意图还不够。Revit 自动化仍然需要一个 runtime，理解 transaction、parameter、单位、selection、model state、version drift、安全和 rollback。
-
-`rvt-mcp` 就是这个 runtime。
-
-它围绕四个原则设计：
-
-- **Local first.** 不需要 cloud bridge。Revit、plugin、MCP server、logs 和 ToolBaker storage 都在用户机器上。
-- **Reversible by default.** 会修改模型的 workflow 可以通过 `revit_batch_execute` 执行，把多个 command 包在一个 Revit `TransactionGroup` 里，一次 undo 可以回滚整个 batch。
-- **Progressively exposed.** Toolsets 和 `--read-only` 控制 agent 能看到什么、能做什么。弱模型或窄任务不需要看到 destructive tools。
-- **Personal over generic.** Adaptive ToolBaker 可以观察重复的本地 workflow，提出个人工具建议，并把 accepted tools 暴露给 MCP 和 Revit ribbon。
-
-这不是 black-box demo，也不是 courseware。它是 Apache-2.0 的公开源码。所有 claim 都应该通过 build、test、运行和读源码来验证。
-
----
-
-## ToolBaker 循环
-
-大多数 Revit 自动化死在“好想法”和“可用 add-in”之间。
-
-ToolBaker 是从 agent-assisted workflow 走向个人工具的路径：
-
-1. 使用现有 MCP tools 在 Revit 里 query、create、lint、inspect 或 batch operations。
-2. 当需要更高级的 automation 时，直接从默认 tool surface 调用 `revit_send_code_to_revit`。
-3. 如果 adaptive bake 已启用，重复的本地 usage 会记录在 `%LOCALAPPDATA%\RvtMcp\` 下。
-4. 重复 pattern 会变成 suggestion，可通过 `revit_list_bake_suggestions` 查看。
-5. 你显式通过 `revit_accept_bake_suggestion` 接受 suggestion，包括 tool name、schema 和 output choice。
-6. Accepted tools 可以通过 `revit_list_baked_tools` / `revit_run_baked_tool` 调用，也会进入 Revit ribbon runtime cache。
-
-Adaptive bake 默认关闭。它适合希望用自己的本地使用数据塑造自己工具的人。
-
----
-
-## 架构
-
-```text
-+---------------------------+
-| AI Client                 |
-| Claude / Cursor / Codex   |
-+---------------------------+
-              |
-              | stdio MCP
-              v
-+---------------------------+
-| RvtMcp.Server      |
-| .NET 8 / C#               |
-+---------------------------+
-              |
-               | TCP (2022–2024)
-               | Named Pipe (2025–2027)
-              v
-+---------------------------+
-| Plugin Shell              |
-| thin add-in per Revit yr  |
-+---------------------------+
-              |
-              | shared command core
-              | from `src/shared/`
-              v
-+---------------------------+
-| ExternalEvent Marshal     |
-| execution -> Revit UI     |
-+---------------------------+
-              |
-              v
-+---------------------------+
-| Revit API                 |
-+---------------------------+
-              |
-              v
-+---------------------------+
-| Model / Transaction /     |
-| Undo                      |
-+---------------------------+
-```
-
-`rvt-mcp` 是完整 C# MCP stack。MCP server、按 Revit 年份拆分的 plugin shells、transport bridge、command handlers、DTO mapping 和 ToolBaker pipeline 都用 C# 编写，并使用官方 MCP C# SDK。
-
-Revit 机器上没有 Node.js sidecar。
-
-版本差异明确放在边界：每个 Revit 年份一个薄 plugin shell，共同 compile `src/shared/`。详见 [ARCHITECTURE.md](ARCHITECTURE.md)，包括 threading、transport、DTO 和 ToolBaker 细节。
-
----
-
-## 当前状态
-
-`rvt-mcp` 可用，但仍然年轻。
-
-- Compile gate 覆盖 Revit 2022–2027 plugin shells。
-- Unit tests 覆盖 pure .NET logic、tool-surface snapshots、ToolBaker storage/policy paths、config、logging、privacy 和 batching behavior。
-- 2023–2026 有 core runtime coverage。
-- Accepted ToolBaker list/run/ribbon path 在 2022、2026、2027 有 smoke evidence。
-- Fresh-machine install testing 在 [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md) 跟踪。
-
-请把它当作严肃的 open-source infrastructure：在自己的环境测试后，再用于 production models。
-
----
-
-## 项目结构
-
-```text
-rvt-mcp/
-├── src/
-│   ├── RvtMcp.sln         # Solution (server + 6 plugin shells)
-│   ├── server/                   # RvtMcp.Server - .NET 8 global tool, stdio MCP
-│   ├── shared/                   # 所有 plugin shell 共享的 source glob
-│   │   ├── Handlers/             # 每个 Revit command handler 一个文件
-│   │   ├── Commands/             # Revit ribbon commands
-│   │   ├── ToolBaker/            # Baked-tool registry/runtime/policy
-│   │   ├── Transport/            # TCP + Named Pipe abstraction
-│   │   ├── Infrastructure/       # Dispatcher, schema validation, ExternalEvent marshal
-│   │   └── Security/             # Auth token, redaction, secret masking
-│   ├── plugin-r22/              # Revit 2022 shell - .NET 4.8, TCP
-│   ├── plugin-r23/              # Revit 2023 shell - .NET 4.8, TCP
-│   ├── plugin-r24/              # Revit 2024 shell - .NET 4.8, TCP
-│   ├── plugin-r25/              # Revit 2025 shell - .NET 8, Named Pipe
-│   ├── plugin-r26/              # Revit 2026 shell - .NET 8, Named Pipe
-│   └── plugin-r27/              # Revit 2027 shell - .NET 10, Named Pipe
-├── tests/                        # xUnit, tool snapshots, policy/privacy tests
-├── benchmarks/                   # Weak-model accuracy harness
-├── scripts/                      # install, uninstall, plugin ZIP staging
-├── docs/                         # Architecture, roadmap, ToolBaker, testing notes
-├── server.json                   # MCP registry manifest
-├── smithery.yaml                 # Smithery directory manifest
-├── AGENTS.md                     # Agent-led install guide for MCP clients
-└── ARCHITECTURE.md               # Runtime architecture deep dive
-```
-
-六个 plugin shells 都从同一份 `src/shared/` compile。按年份的 `#if` 处理 Revit API drift，例如新版本中 `ElementId.IntegerValue` 迁移到 `.Value`。
-
----
-
-## 安装
-
-## 从 `Bimwright.Rvt.*` 迁移（v0.3.0 及更早版本）
-
-v0.4.0 把 codebase 从 `Bimwright.Rvt.*` 重命名为 `RvtMcp.*`。GitHub 仓库（`bimwright/rvt-mcp`）和品牌不变；只有文件名、package ID 和 folder path 改变。
-
-如果你安装了 v0.3.0 或更早版本：
-
-1. **关闭所有正在运行的 Revit 实例。**
-2. **运行迁移脚本：**
-   ```powershell
-   pwsh scripts/uninstall-old.ps1
-   ```
-   这会移除：
-   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\`（plugin DLLs）
-   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright.R<year>.addin`（manifests）
-   - `%LOCALAPPDATA%\Bimwright\rvt\server\`（server install root）
-
-   它会**保留** `%LOCALAPPDATA%\Bimwright\baked\`、`journal\`、`firm-profiles\` 和 `*.log` 文件——这些包含用户数据，会在 v0.4.0 首次启动时迁移到 `%LOCALAPPDATA%\RvtMcp\`。
-
-3. **安装 v0.5.0：**
-   ```powershell
-   dotnet tool update -g Bimwright.Rvt.Server --version 0.3.0   # 先确保干净卸载
-   dotnet tool uninstall -g Bimwright.Rvt.Server
-   dotnet tool install -g RvtMcp.Server --version 0.5.0
-   ```
-
-4. **重新 wire 你的 MCP client。** 旧的 MCP entries `bimwright-rvt-r22`..`bimwright-rvt-r27` 会被 `install.ps1` 自动移除。新的 entry 是 `rvt-mcp`（单一，auto-detect Revit version）。
-
-旧的 NuGet package `Bimwright.Rvt.Server` 在 0.3.0 被废弃，并带有指向 `RvtMcp.Server` 的 redirect note。
-
-### 客户端 setup ZIP
-
-从 [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest) 下载 `RvtMcp.Setup-v<version>-win-x64.zip`，解压后运行：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf   # 预览将要改动的文件和 config
-powershell -ExecutionPolicy Bypass -File .\install.ps1           # 安装 server、plugin 和检测到的 client config entries
-```
-
-常用的安装选项：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client codex      # 只 wire Codex
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client opencode   # 只 wire OpenCode
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client claude     # 如果有对应 config，wire Claude Code/Desktop
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client none       # 只安装文件，不改 MCP client config
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Years 2024        # 如果注册表检测不可用，强制指定 Revit 年份
-```
-
-典型的 MCP client config（使用安装后的绝对路径）：
-
-```json
-{
-  "mcpServers": {
-    "rvt-mcp": {
-      "command": "%LOCALAPPDATA%\\RvtMcp\\rvt\\server\\<version>\\rvt-mcp.exe",
-      "args": []
-    }
-  }
-}
-```
-
-Setup ZIP 内含 self-contained 的 `rvt-mcp.exe`，因此客户端机器不需要 `.NET 8 SDK`、`dotnet tool install` 或本仓库。Config entries 使用已安装的绝对路径，所以不依赖 `%USERPROFILE%\.dotnet\tools` 和 PATH。安装程序为所有检测到的 Revit 年份部署 plugin，然后写入一个名为 `rvt-mcp` 的 auto-detect MCP entry。
-
-### 验证
-
-1. 打开 Revit 2022-2027 和一个 model。
-2. 使用 BIMwright ribbon panel 来 start/toggle MCP plugin。
-3. 在 MCP client 中运行 `tools/list`。
-4. 调用 `revit_get_current_view_info`。
-
-预期 response 形态：
+大致应得到：
 
 ```json
 { "viewName": "Level 1", "viewType": "FloorPlan", "levelName": "Level 1", "scale": 100 }
 ```
 
-在 MCP client 能 list tools 并成功调用 Revit 之前，不要声称安装完成。
+失败则安装未完成 — 先修客户端配置 / 插件加载。
 
 ### 卸载
 
-一次性移除 plugin、self-contained server、可能存在的 legacy .NET global tool、host-config entries、discovery files、logs 和 ToolBaker cache：
+从 setup ZIP（或仓库 scripts）：
 
 ```powershell
+# Setup ZIP:
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -WhatIf
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Yes
+
+# Clone 仓库:
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-all.ps1 -WhatIf
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-all.ps1 -Yes
 ```
 
-Setup ZIP 也包含 `uninstall-all.ps1` 作为同一完整清理的别名。
+移除插件、自包含 server、客户端条目、discovery、日志与 ToolBaker 缓存。
 
-### Developer / legacy 安装
-
-开发者仍可以把 server 作为 NuGet .NET tool 安装，并使用仅-plugin 的 bundle：
+### 开发者安装
 
 ```powershell
 dotnet tool install -g RvtMcp.Server
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -SourceDir . -Client none
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -SourceDir . -Client none
 ```
 
-这条路用于开发和向后兼容。客户端机器应使用 setup ZIP。
+适合改源码。日常 Revit 机请用 setup ZIP。
+
+### 从 `Bimwright.Rvt.*`（v0.3 及更早）迁移
+
+v0.4+ 将包名/目录改为 `RvtMcp.*`（仓库与品牌仍为 bimwright）。
+
+1. 关闭所有 Revit。
+2. `pwsh scripts/uninstall-old.ps1` — 删除旧 `%APPDATA%\…\Bimwright\` 插件与旧 server 根；保留用户 bake/journal，首次启动新版本时迁到 `%LOCALAPPDATA%\RvtMcp\`。
+3. 安装当前 release（上方 setup ZIP，或 `dotnet tool install -g RvtMcp.Server`）。
+4. MCP 客户端入口名为 **`rvt-mcp`**（旧的按年 `bimwright-rvt-r22`… 条目由安装程序移除）。
 
 ---
 
-## 支持的 MCP clients
+## 这是什么
 
-| Client | 状态 | 说明 |
-|--------|------|------|
-| Claude Code CLI | documented | project `.mcp.json` 或 global `~/.claude.json` |
-| Claude Desktop | documented | `%APPDATA%\Claude\claude_desktop_config.json` |
-| OpenCode | scripted | `install.ps1 -Client opencode` |
-| Codex | scripted | `install.ps1 -Client codex` |
-| Cursor | documented | project 或 user `mcp.json` |
-| Cline (VS Code) | documented | Cline MCP settings JSON |
-| VS Code Copilot | documented | native `servers` schema with `type: stdio` |
-| Gemini CLI | documented | `gemini mcp add ...` 或 settings JSON |
-| Antigravity | documented | Gemini/Antigravity MCP config JSON |
+`rvt-mcp` 是 MCP 客户端（Claude、Cursor、Codex、OpenCode 等）与正在运行的 Revit 会话之间的**本地**桥。
 
----
+两个进程：
 
-## Toolsets
+| 组件 | 作用 |
+|------|------|
+| **RvtMcp.Server** | .NET 8 MCP server（stdio）。不引用 Revit — 任意机器可编。 |
+| **RvtMcp.Plugin** | 每个 Revit 年一份瘦 add-in（2022–2027）。在 Revit 内、UI 线程执行。 |
 
-完整 surface 为 **226 个 tools，分布在 23 个 toolsets**（`--toolsets all`）。默认除 `modify` 和 `delete` 外，所有 toolsets 均启用。启用 adaptive bake 后会额外加入 accepted baked tools；`--read-only` 会移除所有 write-capable toolsets。
+Agent → MCP → server → localhost TCP（≤2024）或 Named Pipe（≥2025）→ plugin → Revit API。
 
-默认启用 toolsets：`query`、`create`、`view`、`schedule`、`families`、`mep`、`graphics`、`export`、`toolbaker`、`meta`、`lint`、`sheets`、`materials`、`geometry`、`annotation`、`rooms`、`links`、`parameters`、`organization`、`workflows`、`structural`。
+全部在本机。网关本身不需要云中继。
 
-可选 toolsets（默认关闭）：`modify`、`delete`。需显式启用或通过 `--toolsets all`。
-
-使用 `--toolsets query,create,modify,meta` 或 `--toolsets all` 启用。加上 `--read-only` 会移除 write-capable toolsets，无论它们是如何被请求的。
-
-| Toolset | Tools | Default |
-|---------|-------|---------|
-| `query` | current view, selected elements, family types, material quantities, model stats, AI element filter | on |
-| `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
-| `view` | create view, sheet layout, place view on sheet, capture image, set crop/scale, activate view, show element | on |
-| `meta` | `revit_show_message`, `revit_switch_target`, `revit_batch_execute`, usage stats, set project info, purge unused families | on |
-| `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect | on |
-| `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
-| `families` | list loaded families, load/unload/replace family, export/list family types, duplicate/rename family type | on |
-| `modify` | `revit_operate_element`, `revit_color_elements`, parameter/type/workset edits | off |
-| `delete` | `revit_delete_element` | off |
-| `annotation` | element/category 标注、文字注释、尺寸标注、filled region、detail line、callout、keynote、未标注/未尺寸检查、空 tag 清理 | on |
-| `export` | `revit_export_room_data` | on |
-| `mep` | `revit_detect_system_elements` | on |
-| `graphics` | view filters (create/list/apply/remove), element graphic overrides, category visibility, view phase/visibility | on |
-| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
-| `sheets` | sheet 创建、复制、占位符 sheet、列表 sheet、图纸标题栏参数设置、明细表放置、版本修订及关联、图纸重命名/重编号 | on |
-| `materials` | 列表/创建/复制材质，设置外观/身份/结构/热力属性，材质工程量统计，分配材质到图元 | on |
-| `geometry` | 图元包围盒、几何实体信息、测量图元间距、冲突碰撞检测、射线投射、体积和面积分析、图元形心位置、几何复杂度分析 | on |
-| `rooms` | rooms、areas、spaces、边界、洞口、room separator、finishes、自动创建 rooms、area tag | on |
-| `links` | Revit/CAD link 列表、CAD import/link、Revit link load/unload/reload、link elements、坐标、project base point | on |
-| `parameters` | 创建 project/shared parameter、binding/unbinding、list/export shared params、按 GUID 设置值 | on |
-| `organization` | saved selections（save/load/list/delete）、选择元素、view templates（list/apply/create-from-view/duplicate/delete） | on |
-| `workflows` | clash review、data roundtrip、model audit、naming normalization、room documentation、sheet set、takeoff report、view cleanup | on |
-| `structural` | structural columns/beams/walls/foundations、rebar set + stirrup、结构荷载、framing tags、连接分析 | on |
-
-### 全部 tools
-
-| Toolset | Tool | 描述 |
-|---|---|---|
-| `query` | `revit_get_current_view_info` | Active view metadata: type, level, scale, detail level. |
-| `query` | `revit_get_selected_elements` | 当前选中 elements: id, name, category, type. |
-| `query` | `revit_get_available_family_types` | Project 中的 family types，可按 category filter. |
-| `query` | `revit_ai_element_filter` | 按 category 和 parameter/operator filter，数值单位为 mm. |
-| `query` | `revit_analyze_model_statistics` | 按 category 统计 element 数量. |
-| `query` | `revit_get_material_quantities` | 某 category 的 area 和 volume 汇总. |
-| `query` | `revit_get_element_details` | Element metadata、location、bounding box、workset、phase、group 和 assembly ids. |
-| `query` | `revit_get_element_parameters` | Instance parameters: storage type、display value、raw value 和 data/spec ids. |
-| `query` | `revit_get_type_parameters` | 从 type ids 或 element ids 读取 type parameters. |
-| `query` | `revit_list_project_parameters` | Project/shared parameter bindings、binding kind 和 categories. |
-| `query` | `revit_get_element_relationships` | Host、group、assembly、owner view、design option、nesting 和 dependents. |
-| `query` | `revit_list_groups` | Group instances with type、attached/detail metadata 和 optional member ids. |
-| `query` | `revit_get_group_members` | Group instance members with category、type、owner view 和 pinned state. |
-| `query` | `revit_list_assemblies` | Assembly instances with type、naming category、member count 和 optional member ids. |
-| `query` | `revit_get_assembly_members` | Assembly instance members with category、type、group 和 workset ids. |
-| `query` | `revit_list_worksets` | Worksets、active workset、edit/open state 和 optional element counts. |
-| `create` | `revit_create_line_based_element` | Wall 或其他 line-based element. |
-| `create` | `revit_create_point_based_element` | Door, window, furniture 或其他 point element. |
-| `create` | `revit_create_surface_based_element` | 从 polyline 创建 floor 或 ceiling. |
-| `create` | `revit_create_level` | 按 mm elevation 创建 level. |
-| `create` | `revit_create_grid` | 按两个点创建 grid line，单位 mm. |
-| `create` | `revit_create_room` | 在 point 创建 room，由 walls 围合. |
-| `create` | `revit_create_group_from_elements` | 从两个或多个 elements 创建 group. |
-| `modify` | `revit_operate_element` | Select, hide, unhide, isolate 或按 IDs set-color. |
-| `modify` | `revit_color_elements` | 按 parameter value 给 category 上色. |
-| `modify` | `revit_set_element_parameter_values` | 批量设置 elements 的 instance parameter. |
-| `modify` | `revit_set_type_parameter_values` | 设置 type ids 或 element-resolved types 的 type parameter. |
-| `modify` | `revit_change_element_type` | 将 elements 切换到兼容的 target type. |
-| `modify` | `revit_assign_elements_to_workset` | 在 workshared model 中把 elements 分配到 user workset. |
-| `delete` | `revit_delete_element` | 按 ID list 删除。除非明确需要，否则保持关闭. |
-| `view` | `revit_create_view` | 创建 floor plan 或 3D view. |
-| `view` | `revit_place_view_on_sheet` | 把 view 放到新 sheet 或现有 sheet 上. |
-| `view` | `revit_analyze_sheet_layout` | Title block、viewport positions 和 scales，单位 mm. |
-| `export` | `revit_export_room_data` | Rooms: name, number, area, perimeter, level, volume. |
-| `annotation` | `revit_tag_all_walls` | 在 midpoint 打 wall-type tag，跳过已 tag 的 wall. |
-| `annotation` | `revit_tag_all_rooms` | 在 location point 打 room tag，跳过已 tag 的 room. |
-| `mep` | `revit_detect_system_elements` | 从 seed 沿 connectors traverse，返回 system members. |
-| `toolbaker` | `revit_send_code_to_revit` | 从默认 tool surface 在 Revit 中 compile 并运行 ad-hoc C#. |
-| `toolbaker` | `revit_list_baked_tools` | 列出已 accept 的 personal baked tools. |
-| `toolbaker` | `revit_run_baked_tool` | 按名称调用 accepted baked tool. |
-| `toolbaker` | `revit_list_bake_suggestions` | Adaptive bake only: 列出 local suggestions. |
-| `toolbaker` | `revit_accept_bake_suggestion` | Adaptive bake only: accept 并 apply local suggestion. |
-| `toolbaker` | `revit_dismiss_bake_suggestion` | Adaptive bake only: snooze 或 dismiss local suggestion. |
-| `meta` | `revit_show_message` | Revit 内 TaskDialog，用于 connection test 或通知. |
-| `meta` | `revit_switch_target` | 多个 Revit version 同时运行时切换 connection. |
-| `meta` | `revit_batch_execute` | 在一个 `TransactionGroup` 中 atomically 执行 commands. |
-| `meta` | `revit_analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
-| `lint` | `revit_analyze_view_naming_patterns` | 推断 dominant view-naming pattern 和 outliers. |
-| `lint` | `revit_suggest_view_name_corrections` | 为 view outliers 提出 corrected names. |
-| `lint` | `revit_detect_firm_profile` | 根据 firm profiles fingerprint project naming. |
+没有 Node/TypeScript sidecar。Server、插件、handler、ToolBaker 全是 C#。共享命令在 `src/shared/`；每年一个小 shell，API 漂移用 `#if`。细节：[ARCHITECTURE.md](ARCHITECTURE.md)。
 
 ---
 
-## Supported Revit Versions
+## 为什么存在
 
-| Revit | Target Framework | Transport | 备注 |
-|-------|------------------|-----------|------|
-| 2022 | .NET 4.8 | TCP | Accepted ToolBaker path smoke-tested |
-| 2023 | .NET 4.8 | TCP | Core runtime coverage |
-| 2024 | .NET 4.8 | TCP | Core runtime coverage |
-| 2025 | .NET 8 (`net8.0-windows7.0`) | Named Pipe | Core runtime coverage |
-| 2026 | .NET 8 (`net8.0-windows7.0`) | Named Pipe | Core runtime coverage; accepted ToolBaker path smoke-tested |
-| 2027 | .NET 10 (`net10.0-windows7.0`) | Named Pipe | Accepted ToolBaker path smoke-tested |
+Revit 用户通常清楚要自动化什么。难点是把想法变成可交付软件：学够 C#/Dynamo、对抗 API、打包 add-in、扛住版本升级 — 或者外包、或买只能半匹配办公室流程的固定工具。
 
-不同 Revit 年份的 runtime behavior 仍可能不同，因为 Revit API 会变化。Custom baked C# tools 在跨版本测试前，应视为 version-sensitive。
+Agent 改善了前半段（描述任务、当场试）。它们不会消掉 transaction、单位、选择、worksharing，或「模型刚被搞坏了吗？」。本网关负责：常见工作的 **typed 工具面**、需要时在 Revit 内跑 ad-hoc C# 的 escape hatch，以及把本地重复模式变成个人工具的**可选**路径（ToolBaker）。
+
+不是给每家公司的万能 add-in。办公室各不相同。赌注是：共享运行时，在其上长出*你的*工具。
+
+**范围（坦白）：** 不为每个边角情况都新铸 MCP tool。有 typed 工具就用；否则 `revit_send_code_to_revit`（仅 C#）。项目内 family **管理**有覆盖；完整 Family Editor 创作套件与 Revit Viewer 宿主暂不在范围内 — 见 [docs/roadmap.md](docs/roadmap.md)。
 
 ---
 
-## Security 和 Privacy
+## 一次正常会话
 
-简短版：你的模型留在你的机器上。
+1. 打开带模型的 Revit；插件已连接（ribbon）。
+2. MCP 客户端启动 `rvt-mcp` / 已安装的 server。
+3. Agent 调工具：查询视图/选择、建轴网/房间、图纸、MEP、导出… 工具边界长度单位为 **mm**。
+4. 多次写入一次撤销：`revit_batch_execute`。
+5. 多开 Revit：`revit_list_available_targets` 再 `revit_switch_target`，年份四位数字（`2024`，不是 `R24`）。
 
-- **默认 loopback。** TCP transport listen 在 `127.0.0.1`；Named Pipe scoped local-machine。
-- **Per-session token handshake。** `%LOCALAPPDATA%\RvtMcp\` 下的 discovery files 包含 connection info 和 auth token。
-- **Schema validation。** 错误 shape 的 tool call 会在 command handler 运行前被 reject。
-- **Path masking。** 返回给 model 的 error 会 sanitize，避免泄露 absolute path。
-- **ToolBaker controls。** `revit_send_code_to_revit` 默认可用。Adaptive bake 仍是 opt-in，只控制 suggestion/logging；`--read-only` 或 `--disable-toolbaker` 会移除 ToolBaker surface。
-- **Local storage。** Usage events、bake database、logs 和 accepted-tool metadata 都在本地 Bimwright storage。
+没有合适 typed 工具时：
 
-详见 [SECURITY.md](SECURITY.md) 的 threat model 和 vulnerability disclosure 流程。
+```text
+revit_send_code_to_revit   # C# 正文，在插件内编译执行
+```
+
+该工具默认开启（toolset `toolbaker`）。若不希望 agent 在模型里编译代码，用 `--read-only` 或 `--disable-toolbaker` 关掉。
+
+### ToolBaker（可选）
+
+默认已有：
+
+- `revit_send_code_to_revit`
+- 已 accept 工具的 `revit_list_baked_tools` / `revit_run_baked_tool`
+
+**Adaptive bake**（从 usage 建议新工具）默认**关闭**。开启后，重复模式可出现在 `revit_list_bake_suggestions`；需你显式 accept/dismiss。未 accept 不会自己上 ribbon。
+
+常用开关（亦见 JSON/env — [配置](#配置)）：
+
+| 目标 | 打开什么 |
+|------|----------|
+| 从重复 **typed** 调用学习 | `--enable-adaptive-bake` |
+| 也对 **`send_code`** 正文聚类建议 | 再加 `--cache-send-code-bodies`（已脱敏，仍本地） |
+| 短期磁盘 journal | `persistSendCodeBodies` + TTL（默认隐私：关） |
+
+Bake 在 **Revit 进程内**用 Roslyn 编译 — 终端用户不需要 Visual Studio。细节与隐私：[docs/bake.md](docs/bake.md)。
+
+### Toast（可选）
+
+完成 toast 默认**关闭**。用 ribbon **Toast**、配置里 `enableToast`，或 `BIMWRIGHT_ENABLE_TOAST=1` 打开。只显示**已完成**调用（无进行中 toast）。Capture 成功可在路径 allowlist 内显示缩略图。Ribbon **Status** 也会列出 toast 与 bake/隐私标志，避免靠猜。
 
 ---
 
-## Configuration
+## 架构（短）
 
-三层配置，后者覆盖前者：JSON file、env vars、CLI args。
+```text
+MCP client (stdio)
+    → RvtMcp.Server (.NET 8)
+        → TCP (Revit 2022–2024) 或 Named Pipe (2025–2027)
+            → Plugin shell（按年）
+                → ExternalEvent → Revit API / 事务 / 撤销
+```
 
-| Setting | CLI | Env | JSON key |
-|---------|-----|-----|----------|
-| Target Revit year | `--target 2023` | `BIMWRIGHT_TARGET` | `target` |
+Handler 只返回普通 DTO — 线上不传活的 Revit 对象。
+
+---
+
+## Tools
+
+数量（不含个人 baked 工具）：
+
+| 模式 | Tools | 说明 |
+|------|------:|------|
+| 默认 | **220** | 全部 default-on toolset；**`modify` 与 `delete` 关** |
+| `--toolsets all` | **227** | 加上 `modify` + `delete` |
+| `all` + adaptive bake | **230** | 再加 3 个 suggestion 生命周期工具 |
+
+MCP 名：`revit_*`。server↔plugin 线名：无前缀 snake_case。
+
+**默认开启 toolset：**  
+`query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`, `kei`
+
+**除非显式开启否则关闭：** `modify`, `delete`  
+例：`--toolsets query,view,meta` 或 `--toolsets all`。  
+`--read-only` 去掉所有可写 toolset。
+
+| Toolset | 覆盖 | 默认 |
+|---------|------|------|
+| `query` | 视图、选择、过滤、统计、参数、关系、workset、组/程序集 | on |
+| `create` | 轴网、标高、房间、线/点/面构件、组 | on |
+| `view` | 建视图、图纸布局辅助、截图、裁剪/比例 | on |
+| `meta` | 批处理、多 Revit 目标、项目信息、purge（MVP）、消息 | on |
+| `lint` | 视图命名、firm-profile、警告摘要 | on |
+| `schedule` | 明细表 list/创建、字段、公式、数据 | on |
+| `families` | 加载/卸载、类型、实例、审计、导出 `.rfa`（项目侧） | on |
+| `modify` | 操作/着色、写参数、换类型、workset | off |
+| `delete` | 按 id 删除 | off |
+| `annotation` | 标记、文字、尺寸、填充、keynote、检查 | on |
+| `export` | PDF/DWG/IFC/NWC、房间数据及相关导出 | on |
+| `mep` | 系统、连接件、网络、风口灯具等 | on |
+| `graphics` | 视图过滤器、覆盖、可见性/阶段 | on |
+| `toolbaker` | send_code、list/run baked；adaptive 开才有 suggestion 工具 | on |
+| `sheets` | 图纸、图框、修订、重编号 | on |
+| `materials` | 材质、外观、赋值、提量 | on |
+| `geometry` | 包围盒、测量、碰撞、体积/面积… | on |
+| `rooms` | 房间/面积/空间、装修、分隔 | on |
+| `links` | Revit/CAD 链接、坐标 | on |
+| `parameters` | 项目/共享参数 | on |
+| `organization` | 保存选择、视图样板 | on |
+| `workflows` | 碰撞/审计/图纸/提量类组合流 | on |
+| `structural` | 柱梁基础、钢筋、荷载… | on |
+| `kei` | KEI 项目 SQLite 路径、查询/写入（WAL 安全）、设备导入 | on |
+
+### 代表性工具
+
+不是 200+ schema 全表 — 常用锚点：
+
+| Toolset | Tool | 作用 |
+|---------|------|------|
+| `query` | `revit_get_current_view_info` | 活动视图类型、标高、比例 |
+| `query` | `revit_get_selected_elements` | 当前选择 |
+| `query` | `revit_ai_element_filter` | 类别 + 参数过滤（mm） |
+| `query` | `revit_get_element_details` | 位置、bbox、workset、阶段… |
+| `create` | `revit_create_grid` / `revit_create_level` / `revit_create_room` | 基础布局 |
+| `create` | `revit_create_point_based_element` | 门家具等（type id） |
+| `view` | `revit_capture_view_image` | 栅格截图（路径 allowlist） |
+| `meta` | `revit_batch_execute` | 多个命令一个 `TransactionGroup` |
+| `meta` | `revit_list_available_targets` / `revit_switch_target` | 多 Revit |
+| `families` | `revit_load_family_from_path` | 向项目加载 `.rfa` |
+| `toolbaker` | `revit_send_code_to_revit` | Escape hatch（C#） |
+| `toolbaker` | `revit_list_baked_tools` / `revit_run_baked_tool` | 已 accept 个人工具 |
+| `toolbaker` | `revit_list_bake_suggestions` | 仅 adaptive |
+| `lint` | `revit_analyze_view_naming_patterns` | 命名离群 |
+
+测试中的 golden snapshot 锁定准确 surface；计数与代码冲突时以测试/代码为准。
+
+---
+
+## Supported Revit versions
+
+| Revit | 插件 TFM | 传输 |
+|-------|----------|------|
+| 2022–2024 | .NET Framework 4.8 | TCP |
+| 2025–2026 | .NET 8 (`net8.0-windows7.0`) | Named Pipe |
+| 2027 | .NET 10 (`net10.0-windows7.0`) | Named Pipe |
+
+六个 shell 均可编译。运行时深度仍因年份而异 — bake 与自定义 C# 请在目标年复测。
+
+**宿主：** 仅完整 Revit 桌面版。不支持 Revit Viewer。
+
+---
+
+## 安全与隐私
+
+- 默认本地传输（loopback TCP / 本机 named pipe）。
+- `%LOCALAPPDATA%\RvtMcp\` 下 discovery 含每会话 auth token。
+- 工具参数在 handler 前做 schema 校验。
+- 返回模型的错误经脱敏（减少绝对路径泄露）。
+- `send_code` 可在 Revit 进程跑任意 C# — 强且危险；不可接受时关闭 toolbaker。
+- Adaptive bake、body cache、TTL journal 均为 **opt-in**，落在用户配置目录。默认不把原始 send_code 正文写入长期日志。
+
+更多：[SECURITY.md](SECURITY.md)、[docs/bake.md](docs/bake.md)。
+
+---
+
+## 配置
+
+优先级从高到低：**CLI → env（`BIMWRIGHT_*`）→** `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`。
+
+| 设置 | CLI | Env | JSON |
+|------|-----|-----|------|
+| 目标年份 | `--target 2024` | `BIMWRIGHT_TARGET` | `target` |
 | Toolsets | `--toolsets query,create` | `BIMWRIGHT_TOOLSETS` | `toolsets` |
-| Read-only | `--read-only` | `BIMWRIGHT_READ_ONLY=1` | `readOnly` |
-| Allow LAN bind | plugin-side only | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
-| Allow ToolBaker tools | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
-| Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
-| Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
+| 只读 | `--read-only` | `BIMWRIGHT_READ_ONLY=1` | `readOnly` |
+| LAN 绑定（插件） | — | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
+| ToolBaker 表面 | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
+| Adaptive bake | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
+| 缓存 send_code 正文（bake 聚类） | `--cache-send-code-bodies` / `--no-…` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
+| 持久化 send_code journal | `--persist-send-code-bodies` / `--no-…` | `BIMWRIGHT_PERSIST_SEND_CODE_BODIES=1` | `persistSendCodeBodies` |
+| Journal TTL | `--persist-send-code-bodies-for 4h` | `BIMWRIGHT_PERSIST_SEND_CODE_BODIES_TTL` | `persistSendCodeBodiesUntil` |
+| 完成 toast | ribbon **Toast** | `BIMWRIGHT_ENABLE_TOAST=1` | `enableToast` |
 
-JSON file path: `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`。
+改 server 标志后请重启 MCP 连接，以便客户端拿到新工具列表。
 
 ---
 
-## Development
+## MCP 客户端
+
+| 客户端 | 接线 |
+|--------|------|
+| Claude Code | 项目 `.mcp.json` 或 `~/.claude.json` |
+| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` |
+| OpenCode / Codex / Kilo | `install.ps1 -Client …`（脚本） |
+| Cursor / Cline / VS Code Copilot | 文档中的 JSON 布局 |
+| Gemini CLI / Antigravity | `gemini mcp add` 或 settings JSON |
+
+安装程序自动检测通常足够；手改见 [AGENTS.md](AGENTS.md) 与 `docs/mcp-config-*.md`。
+
+---
+
+## 仓库布局
+
+```text
+rvt-mcp/
+├── src/
+│   ├── RvtMcp.sln
+│   ├── server/            # MCP server
+│   ├── shared/            # Handlers, transport, ToolBaker, toast, …
+│   ├── plugin-r22/ … r27/ # 每年一个 shell
+├── tests/                 # xUnit + golden tool lists
+├── scripts/               # install / uninstall / package
+├── docs/                  # roadmap, bake, testing
+├── AGENTS.md
+└── ARCHITECTURE.md
+```
+
+---
+
+## 开发
 
 ```bash
 dotnet test tests/RvtMcp.Tests/RvtMcp.Tests.csproj
@@ -489,49 +346,47 @@ dotnet build src/server/RvtMcp.Server.csproj -c Release
 dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
-Plugin projects 在 normal `Build` 后会 auto-deploy，复制到 `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`。Build plugin 前请关闭 Revit，因为 Revit 会锁住已加载 DLL。
-
-为 release stage plugin ZIPs：
+构建插件前关闭 Revit（DLL 锁定）。普通 Debug/Release 会部署到 `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`。
 
 ```powershell
 pwsh scripts/stage-plugin-zip.ps1 -Config Release
 ```
 
-详见 [CONTRIBUTING.md](CONTRIBUTING.md)，包括 test strategy、tool-surface snapshot rules 和 contribution notes。
+贡献约定与 snapshot：[CONTRIBUTING.md](CONTRIBUTING.md)。
+
+### 成熟度
+
+可用，但不神化。CI 编六个插件 shell 与 server 测试。运行时覆盖在中间年份更强；生产模型请谨慎，并在*你的* Revit 版本上验证。新机器清单：[docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md)。
 
 ---
 
-## 文档
+## 更多文档
 
-- [AGENTS.md](AGENTS.md) - AI coding agents 的 install 和 MCP client wiring guide。
-- [ARCHITECTURE.md](ARCHITECTURE.md) - process model、transport、threading 和 DTO strategy。
-- [docs/bake.md](docs/bake.md) - adaptive bake、privacy、accepted tools 和 compatibility behavior。
-- [docs/roadmap.md](docs/roadmap.md) - 当前 hardening plan 和 deferred work。
-- [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md) - public install verification checklist。
-- [benchmarks/README.md](benchmarks/README.md) - weak-model benchmark procedure。
+| 文档 | 主题 |
+|------|------|
+| [AGENTS.md](AGENTS.md) | Agent 安装协议 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 进程、传输、DTO 规则 |
+| [docs/bake.md](docs/bake.md) | Adaptive bake 与正文隐私 |
+| [docs/roadmap.md](docs/roadmap.md) | 近期加固与 non-goals |
+| [docs/kei-equipment-import.md](docs/kei-equipment-import.md) | KEI SQLite 工具（默认开启的 `kei` toolset） |
+| [CHANGELOG.md](CHANGELOG.md) | 发布说明 |
 
 ---
 
-## bimwright 家族
+## bimwright
 
-为 AEC 工具链亲手打造的 MCP gateway —— 同一套架构，predictable / auditable / reversible：
+同一套 AEC 宿主风格：
 
-- [**rvt-mcp**](https://github.com/bimwright/rvt-mcp) —— Autodesk® Revit®
-- [**dwg-mcp**](https://github.com/bimwright/dwg-mcp) —— Autodesk® AutoCAD®
-- [**nwd-mcp**](https://github.com/bimwright/nwd-mcp) —— Autodesk® Navisworks®
-- [**ipt-mcp**](https://github.com/bimwright/ipt-mcp) —— Autodesk® Inventor®
-- [**bim-wiki**](https://github.com/bimwright/bim-wiki) —— 越南语优先的 BIM 知识库
+- [rvt-mcp](https://github.com/bimwright/rvt-mcp) — Revit  
+- [dwg-mcp](https://github.com/bimwright/dwg-mcp) — AutoCAD  
+- [nwd-mcp](https://github.com/bimwright/nwd-mcp) — Navisworks  
+- [ipt-mcp](https://github.com/bimwright/ipt-mcp) — Inventor  
+- [bim-wiki](https://github.com/bimwright/bim-wiki) — 越南语优先 BIM 知识库  
 
 ---
 
 ## License
 
-Apache-2.0。见 [LICENSE](LICENSE)。
+Apache-2.0 — [LICENSE](LICENSE)。
 
-Revit 和 Autodesk 是 Autodesk, Inc. 的注册商标。bimwright 是独立 open-source 项目，与 Autodesk, Inc. 无关联、无赞助、无背书。
-
----
-
-<p align="center">
-  一个 <a href="https://github.com/bimwright">bimwright</a> 项目 - 给那些想把工作自动化，而不是贩卖神秘感的人。
-</p>
+Revit 与 Autodesk 为 Autodesk, Inc. 商标。bimwright 为独立开源项目，与 Autodesk 无隶属关系。

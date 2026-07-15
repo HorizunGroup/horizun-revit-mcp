@@ -1,5 +1,26 @@
 ﻿# Changelog
 
+## v0.6.0 - Toast, privacy journal, Status flags, KEI tools, README refresh
+
+### Added
+
+- **MCP activity toast (plugin)** — result-only completion notifications (no in-progress toast). Default **off** (`enableToast` / `BIMWRIGHT_ENABLE_TOAST` / ribbon **Toast**). Capture success can show a path-allowlisted thumbnail; `send_code` results redacted on the toast surface.
+- **Opt-in `send_code` body journal (TTL)** — `persistSendCodeBodies` + `persistSendCodeBodiesUntil` (CLI/env/JSON); plugin writes redacted journal under `%LOCALAPPDATA%\RvtMcp\`.
+- **Capture path UX** — clearer allowlist errors; optional default output under captures.
+- **Status dialog privacy/bake flags** — ribbon **Status** lists toast, ToolBaker, adaptive bake, body cache, and persist journal (read-only snapshot for operators). Unit-tested via `StatusPrivacySection`.
+- **Toolset `kei` (default on)** — `revit_get_active_project_db`, `revit_query_kei_database`, `revit_write_kei_database`, `revit_import_project_equipment` for WAL-safe KEI project SQLite through the Revit process. See `docs/kei-equipment-import.md`.
+
+### Docs
+
+- English README rewritten (human tone); vi / zh-CN / ja ports aligned. Tool counts: default **220**, `--toolsets all` **227**, adaptive **230**.
+- Product close-out notes under `docs/analysis/` (send_code for out-of-scope work; no Python host / Viewer / Family Editor suite this cycle).
+- `docs/roadmap.md` non-goals updated.
+
+### Product posture
+
+- Out-of-typed-tool workflows → **`revit_send_code_to_revit` (C# only)**.
+- **Will not do this cycle:** Python send_code host, Revit Viewer support, Family Editor authoring tool suite (#7).
+
 ## v0.5.0 - Tool Search discoverability + multi-Revit routing (BREAKING)
 
 Two pains addressed in one release:

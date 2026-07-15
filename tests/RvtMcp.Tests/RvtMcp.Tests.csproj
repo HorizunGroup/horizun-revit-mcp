@@ -33,6 +33,8 @@
     <Compile Include="..\..\src\shared\Infrastructure\CaptureOutputPath.cs" Link="Shared\CaptureOutputPath.cs" />
     <Compile Include="..\..\src\shared\Infrastructure\SchemaValidator.cs" Link="Shared\SchemaValidator.cs" />
     <Compile Include="..\..\src\shared\Infrastructure\ResponseSizeGuard.cs" Link="Shared\ResponseSizeGuard.cs" />
+    <Compile Include="..\..\src\shared\Database\KeiSqlGuard.cs" Link="Shared\KeiSqlGuard.cs" />
+    <Compile Include="..\..\src\shared\Config\StatusPrivacySection.cs" Link="Shared\StatusPrivacySection.cs" />
     <Compile Include="..\..\src\shared\Handlers\BatchExecutor.cs" Link="Shared\BatchExecutor.cs" />
     <Compile Include="..\..\src\shared\ToolBaker\BakedToolRegistry.cs" Link="Shared\BakedToolRegistry.cs" />
     <Compile Include="..\..\src\shared\ToolBaker\BakedToolParameterDefaults.cs" Link="Shared\BakedToolParameterDefaults.cs" />

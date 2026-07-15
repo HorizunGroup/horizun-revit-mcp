@@ -1,6 +1,6 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 226,
+  "tool_count": 230,
   "tools": [
     {
       "name": "revit_accept_bake_suggestion",
@@ -3115,6 +3115,15 @@
       }
     },
     {
+      "name": "revit_get_active_project_db",
+      "description_hash": "sha256:8339eaad7fea25706cffe7ea959697c430a6f584b1cb84cc09cc924529603834",
+      "inputSchema": {
+        "properties": {},
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
       "name": "revit_get_assembly_members",
       "description_hash": "sha256:63df0f03f5781171618501421f300c7217b5cbca9cd89bd1edc658921ec22bda",
       "inputSchema": {
@@ -3784,6 +3793,42 @@
         },
         "required": [
           "path"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "revit_import_project_equipment",
+      "description_hash": "sha256:cc57698dfa007c5415d83f71e790bffc7108e9721b3a9c2ba06cd56ccb565ba7",
+      "inputSchema": {
+        "properties": {
+          "busyTimeoutMs": {
+            "description": "",
+            "type": "Int32"
+          },
+          "clearAiExtracted": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "database": {
+            "description": "",
+            "type": "String"
+          },
+          "dryRun": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "items": {
+            "description": "",
+            "type": "String"
+          },
+          "replaceMatching": {
+            "description": "",
+            "type": "Boolean"
+          }
+        },
+        "required": [
+          "items"
         ],
         "type": "object"
       }
@@ -4671,6 +4716,32 @@
           "targets": {
             "description": "",
             "type": "String[]"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "revit_query_kei_database",
+      "description_hash": "sha256:a877e87f4d419bf31faf34d07ee2a0ecc92d9979725a08631bb0f1167c46c6fd",
+      "inputSchema": {
+        "properties": {
+          "database": {
+            "description": "",
+            "type": "String"
+          },
+          "limit": {
+            "description": "",
+            "type": "Int32"
+          },
+          "preset": {
+            "description": "",
+            "type": "String"
+          },
+          "sql": {
+            "description": "",
+            "type": "String"
           }
         },
         "required": [],
@@ -6251,6 +6322,36 @@
           "limit": {
             "description": "",
             "type": "Int32"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "revit_write_kei_database",
+      "description_hash": "sha256:1c04063a38c3a5390fe7aab294d723830077abd4f4fbc34bf6b505f8f7da9fe0",
+      "inputSchema": {
+        "properties": {
+          "busyTimeoutMs": {
+            "description": "",
+            "type": "Int32"
+          },
+          "database": {
+            "description": "",
+            "type": "String"
+          },
+          "dryRun": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "sql": {
+            "description": "",
+            "type": "String"
+          },
+          "statements": {
+            "description": "",
+            "type": "String"
           }
         },
         "required": [],

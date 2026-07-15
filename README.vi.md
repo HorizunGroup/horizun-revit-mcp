@@ -7,10 +7,14 @@
 <h1 align="center">rvt-mcp</h1>
 
 <p align="center">
+  Cổng MCP cho Autodesk Revit — tool local cho agent, bake cá nhân tùy chọn
+</p>
+
+<p align="center">
   <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#toolsets"><img src="https://img.shields.io/badge/MCP-223%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#tools"><img src="https://img.shields.io/badge/MCP-227%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
 <p align="center">
@@ -19,11 +23,11 @@
 
 ---
 
-## Cài nhanh cho client (khuyến nghị)
+## Cài đặt (khuyến nghị)
 
-Với máy người dùng Revit, hãy dùng setup ZIP trên GitHub Releases. Gói này đã có MCP server self-contained và plugin Revit, nên máy client **không cần** .NET SDK, NuGet global tool, source repo hoặc build local.
+Máy đã có Revit: dùng **setup ZIP** từ [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest). **Không** cần .NET SDK, NuGet global tool, hay clone repo này.
 
-**AI agent:** nếu user yêu cầu cài Bimwright trên máy client, hãy tải release asset mới nhất tên `RvtMcp.Setup-*-win-x64.zip` và chạy installer bên dưới. Không clone repo, không build source, không cài .NET SDK, và không dùng `dotnet tool install` trừ khi user yêu cầu cài kiểu developer. Xem [AGENTS.md](AGENTS.md) để biết protocol cài đặt đầy đủ cho agent.
+**Nếu bạn là AI agent cài giúp user:** tải `RvtMcp.Setup-*-win-x64.zip` mới nhất và chạy installer bên dưới. Đừng clone/build trừ khi user yêu cầu bản developer. Chi tiết agent: [AGENTS.md](AGENTS.md).
 
 ```powershell
 $tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
@@ -32,439 +36,305 @@ $dir = "$env:TEMP\RvtMcp.Setup-$tag-win-x64"
 Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/RvtMcp.Setup-$tag-win-x64.zip" -OutFile $zip
 Expand-Archive $zip -DestinationPath $dir -Force
 
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf   # xem trước
+powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"           # cài
 ```
 
-Installer tự detect Revit 2022-2027, chỉ cài plugin tương ứng, copy server vào `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`, và wire MCP client đã có bằng absolute path. Dùng `-Client codex`, `-Client opencode`, `-Client claude`, hoặc `-Client none` nếu muốn chỉ định rõ.
+`install.ps1` làm gì:
 
-`dwg-mcp` là một gateway riêng cho AutoCAD; cài đặt độc lập từ repo riêng của nó.
+- Tìm Revit 2022–2027, cài plugin khớp năm
+- Copy server self-contained vào `%LOCALAPPDATA%\RvtMcp\rvt\server\<version>\`
+- Nối MCP client đã có bằng đường dẫn tuyệt đối (`-Client codex|opencode|claude|kilo|none` để ghi đè)
 
----
+Chỉ một năm Revit?  
+`install.ps1 -Years 2024`
 
-## Tự động hóa Revit không nên dừng ở câu "tôi không biết code"
+AutoCAD: dùng [dwg-mcp](https://github.com/bimwright/dwg-mcp) riêng — product khác, cài riêng.
 
-Trước khi có AI agent, rất nhiều BIM user đã muốn cùng một điều: làm Revit nhanh hơn, bớt click lặp lại, và chỉnh phần mềm theo đúng cách mình làm việc.
+### Kiểm tra đã chạy
 
-Khó khăn không nằm ở ý tưởng. Khó khăn là biến ý tưởng đó thành tool.
+1. Mở Revit với một model.
+2. Bật kết nối MCP trên ribbon (panel BIMwright / RvtMcp).
+3. Từ MCP client: list tools, gọi `revit_get_current_view_info`.
 
-Để làm một Revit add-in nhỏ, người làm BIM thường phải:
-
-- Xác định input và output đủ rõ để phần mềm hiểu được.
-- Nghĩ thuật toán, edge case, parameter, category, filter, đơn vị, và các ràng buộc của Revit API.
-- Prototype bằng Dynamo, có thể chuyển qua Python, rồi cuối cùng viết lại bằng C# nếu muốn workflow ổn định.
-- Đóng gói thành add-in, xử lý dependency, đường dẫn cài đặt, file `.addin`, khác biệt giữa các phiên bản Revit, và ribbon button.
-
-Đó là quá nhiều việc đối với người học kiến trúc, kết cấu, MEP, QS, BIM coordination - chứ không phải software engineering.
-
-Các lựa chọn cũ đều tốn kém theo một cách nào đó:
-
-- Mất nhiều tháng hoặc nhiều năm để học code đủ sâu rồi tự bảo trì tool.
-- Thuê người viết custom add-in.
-- Mua add-in có sẵn rồi chỉnh workflow của mình theo giả định của vendor.
-- Tiếp tục làm thủ công vì đường tự động hóa quá nhiều ma sát.
-
-`rvt-mcp` được tạo ra để rút ngắn vòng lặp đó.
-
-Nó cho AI agent một cây cầu local an toàn để đi vào Revit, rồi để các workflow lặp lại tiến hóa thành tool cá nhân thông qua ToolBaker. Mục tiêu không phải tạo ra một add-in vạn năng cho mọi người. Revit phục vụ quá nhiều bộ môn, công ty, tiêu chuẩn và thói quen để có một tool chung theo nổi tất cả. Mục tiêu là một hệ thống để mỗi người có thể tự nuôi lớn bộ công cụ phù hợp với chính cách làm việc của mình.
-
-Tự động hóa cá nhân thì nên mang tính cá nhân.
-
----
-
-## rvt-mcp là gì
-
-`rvt-mcp` là một MCP gateway local cho Autodesk Revit 2022-2027.
-
-Nó gồm hai phần:
-
-- `RvtMcp.Server`: MCP server .NET 8, được Claude, Cursor, Codex, OpenCode, Cline, VS Code Copilot hoặc MCP client khác launch qua stdio.
-- `RvtMcp.Plugin`: Revit add-in shell cho từng năm Revit, chạy bên trong Revit và thực thi command trên Revit UI thread.
-
-Agent nói chuyện bằng MCP. Server nói chuyện với plugin qua localhost TCP hoặc Named Pipe. Plugin nói chuyện với Revit API.
-
-Model của bạn vẫn nằm trên máy bạn.
-
----
-
-## Vì sao nó quan trọng
-
-AI agent giúp BIM user mô tả ý định thay vì tự viết code. Nhưng chỉ có ý định thì chưa đủ. Tự động hóa Revit vẫn cần một runtime hiểu transaction, parameter, đơn vị, selection, trạng thái model, version drift, an toàn và rollback.
-
-`rvt-mcp` là runtime đó.
-
-Nó được thiết kế quanh bốn ý tưởng:
-
-- **Local first.** Không cần cloud bridge. Revit, plugin, MCP server, logs và ToolBaker storage đều nằm trên máy người dùng.
-- **Reversible by default.** Workflow có chỉnh model có thể chạy qua `revit_batch_execute`, gom nhiều command vào một Revit `TransactionGroup` để một lần undo có thể rollback cả batch.
-- **Progressively exposed.** Toolsets và `--read-only` kiểm soát agent được thấy và được làm gì. Agent yếu hoặc task hẹp không cần nhìn thấy destructive tools.
-- **Personal over generic.** Adaptive ToolBaker có thể quan sát workflow local lặp lại, đề xuất tool cá nhân, và đưa tool đã accept vào MCP lẫn Revit ribbon.
-
-Đây không phải black-box demo và không phải courseware. Đây là mã nguồn Apache-2.0 public. Claim nào cũng nên được kiểm chứng bằng build, test, chạy thử và đọc source.
-
----
-
-## Vòng lặp ToolBaker
-
-Phần lớn tự động hóa Revit chết ở khoảng giữa "ý tưởng hay" và "add-in dùng được".
-
-ToolBaker là đường đi từ workflow có AI agent hỗ trợ đến tool cá nhân:
-
-1. Dùng các MCP tool có sẵn để query, create, lint, inspect hoặc batch operation trong Revit.
-2. Khi cần automation nâng cao, gọi trực tiếp `revit_send_code_to_revit` từ tool surface mặc định.
-3. Nếu adaptive bake được bật, usage lặp lại được ghi local dưới `%LOCALAPPDATA%\RvtMcp\`.
-4. Pattern lặp lại trở thành suggestion, xem qua `revit_list_bake_suggestions`.
-5. Bạn chủ động accept suggestion bằng `revit_accept_bake_suggestion`, gồm tên tool, schema và output choice.
-6. Tool đã accept có thể gọi qua `revit_list_baked_tools` / `revit_run_baked_tool` và xuất hiện trong Revit ribbon runtime cache.
-
-Adaptive bake mặc định tắt. Nó dành cho người muốn dữ liệu sử dụng local của mình tự hình thành tool của riêng mình.
-
----
-
-## Kiến trúc
-
-```text
-+---------------------------+
-| AI Client                 |
-| Claude / Cursor / Codex   |
-+---------------------------+
-              |
-              | stdio MCP
-              v
-+---------------------------+
-| RvtMcp.Server      |
-| .NET 8 / C#               |
-+---------------------------+
-              |
-               | TCP (2022–2024)
-               | Named Pipe (2025–2027)
-              v
-+---------------------------+
-| Plugin Shell              |
-| thin add-in per Revit yr  |
-+---------------------------+
-              |
-              | shared command core
-              | from `src/shared/`
-              v
-+---------------------------+
-| ExternalEvent Marshal     |
-| execution -> Revit UI     |
-+---------------------------+
-              |
-              v
-+---------------------------+
-| Revit API                 |
-+---------------------------+
-              |
-              v
-+---------------------------+
-| Model / Transaction /     |
-| Undo                      |
-+---------------------------+
-```
-
-`rvt-mcp` là full C# MCP stack. MCP server, plugin shell theo từng năm Revit, transport bridge, command handler, DTO mapping và ToolBaker pipeline đều viết bằng C# với MCP C# SDK chính thức.
-
-Không có Node.js sidecar trên máy Revit.
-
-Phần tách version nằm rõ ở rìa: một plugin shell mỏng cho mỗi năm Revit, cùng compile chung `src/shared/`. Xem [ARCHITECTURE.md](ARCHITECTURE.md) để biết chi tiết threading, transport, DTO và ToolBaker.
-
----
-
-## Trạng thái hiện tại
-
-`rvt-mcp` dùng được nhưng vẫn còn trẻ.
-
-- Compile gate bao phủ plugin shell Revit 2022–2027.
-- Unit test bao phủ logic pure .NET, tool-surface snapshot, ToolBaker storage/policy, config, logging, privacy và batch behavior.
-- Core runtime coverage có cho 2023–2026.
-- Accepted ToolBaker list/run/ribbon path có smoke evidence trên 2022, 2026 và 2027.
-- Fresh-machine install testing được theo dõi tại [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md).
-
-Hãy xem nó như hạ tầng open-source nghiêm túc: test trên môi trường của bạn trước khi tin dùng cho production model.
-
----
-
-## Cấu trúc dự án
-
-```text
-rvt-mcp/
-├── src/
-│   ├── RvtMcp.sln         # Solution (server + 6 plugin shells)
-│   ├── server/                   # RvtMcp.Server - stdio MCP server
-│   ├── shared/                   # Source glob dùng chung cho mọi plugin shell
-│   │   ├── Handlers/             # Một file cho mỗi Revit command handler
-│   │   ├── Commands/             # Revit ribbon commands
-│   │   ├── ToolBaker/            # Baked-tool registry/runtime/policy
-│   │   ├── Transport/            # TCP + Named Pipe abstraction
-│   │   ├── Infrastructure/       # Dispatcher, schema validation, ExternalEvent marshal
-│   │   └── Security/             # Auth token, redaction, secret masking
-│   ├── plugin-r22/               # Revit 2022 shell - .NET 4.8, TCP
-│   ├── plugin-r23/               # Revit 2023 shell - .NET 4.8, TCP
-│   ├── plugin-r24/               # Revit 2024 shell - .NET 4.8, TCP
-│   ├── plugin-r25/               # Revit 2025 shell - .NET 8, Named Pipe
-│   ├── plugin-r26/               # Revit 2026 shell - .NET 8, Named Pipe
-│   └── plugin-r27/               # Revit 2027 shell - .NET 10, Named Pipe
-├── tests/                        # xUnit, tool snapshots, policy/privacy tests
-├── benchmarks/                   # Weak-model accuracy harness
-├── scripts/                      # install, uninstall, plugin ZIP staging
-├── docs/                         # Architecture, roadmap, ToolBaker, testing notes
-├── server.json                   # MCP registry manifest
-├── smithery.yaml                 # Smithery directory manifest
-├── AGENTS.md                     # Agent-led install guide cho MCP clients
-└── ARCHITECTURE.md               # Deep dive về runtime architecture
-```
-
-Sáu plugin shell compile từ cùng `src/shared/`. Các `#if` theo năm xử lý Revit API drift như `ElementId.IntegerValue` chuyển sang `.Value` ở các bản mới hơn.
-
----
-
-## Cài đặt
-
-## Migration from `Bimwright.Rvt.*` (v0.3.0 and earlier)
-
-v0.4.0 đổi tên codebase từ `Bimwright.Rvt.*` thành `RvtMcp.*`. GitHub repo (`bimwright/rvt-mcp`) và brand không đổi; chỉ tên file, package ID và folder path thay đổi.
-
-Nếu bạn đã cài v0.3.0 hoặc cũ hơn:
-
-1. **Đóng mọi Revit đang chạy.**
-2. **Chạy migration script:**
-   ```powershell
-   pwsh scripts/uninstall-old.ps1
-   ```
-   Script này xóa:
-   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright\` (plugin DLLs)
-   - `%APPDATA%\Autodesk\Revit\Addins\<year>\Bimwright.R<year>.addin` (manifests)
-   - `%LOCALAPPDATA%\Bimwright\rvt\server\` (server install root)
-
-   Nó **giữ lại** `%LOCALAPPDATA%\Bimwright\baked\`, `journal\`, `firm-profiles\` và `*.log` — những file này chứa user data và được migrate sang `%LOCALAPPDATA%\RvtMcp\` khi v0.4.0 lần đầu chạy.
-
-3. **Cài v0.5.0:**
-   ```powershell
-   dotnet tool update -g Bimwright.Rvt.Server --version 0.3.0   # đảm bảo uninstall sạch trước
-   dotnet tool uninstall -g Bimwright.Rvt.Server
-   dotnet tool install -g RvtMcp.Server --version 0.5.0
-   ```
-
-4. **Re-wire MCP client.** Các MCP entry cũ `bimwright-rvt-r22`..`bimwright-rvt-r27` được `install.ps1` tự xóa. Entry mới là `rvt-mcp` (duy nhất, auto-detect Revit version).
-
-Old NuGet package `Bimwright.Rvt.Server` bị deprecated tại 0.3.0 với redirect note trỏ về `RvtMcp.Server`.
-
-### Setup ZIP cho client
-
-Tải `RvtMcp.Setup-v<version>-win-x64.zip` từ [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest), giải nén, rồi chạy:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -WhatIf   # xem trước file và config sẽ đổi
-powershell -ExecutionPolicy Bypass -File .\install.ps1           # cài server, plugin, và wire client đã detect
-```
-
-Các tùy chọn hay dùng:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client codex      # chỉ wire Codex
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client opencode   # chỉ wire OpenCode
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client claude     # wire Claude Code/Desktop nếu có config
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Client none       # chỉ cài file, không sửa MCP config
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Years 2024        # ép năm Revit nếu registry không detect được
-```
-
-Setup ZIP có sẵn `rvt-mcp.exe` self-contained, nên máy client không cần `.NET 8 SDK`, `dotnet tool install`, hoặc repo này. Config MCP dùng absolute path đã cài, không phụ thuộc `%USERPROFILE%\.dotnet\tools` hay PATH. Installer deploy plugin cho mọi năm Revit detect được, rồi chỉ ghi một MCP entry auto-detect tên `rvt-mcp`.
-
-### Verify
-
-1. Mở Revit 2022-2027 và một model.
-2. Dùng ribbon panel BIMwright để bật/tắt MCP plugin.
-3. Trong MCP client, chạy `tools/list`.
-4. Gọi `revit_get_current_view_info`.
-
-Response mẫu:
+Kỳ vọng dạng:
 
 ```json
 { "viewName": "Level 1", "viewType": "FloorPlan", "levelName": "Level 1", "scale": 100 }
 ```
 
-Đừng xem install là xong nếu MCP client chưa list được tools và gọi Revit thành công.
+Lỗi thì coi như chưa cài xong — sửa config client / load plugin trước.
 
-### Gỡ cài đặt
+### Gỡ cài
 
-Để gỡ plugin, self-contained server, legacy .NET global tool nếu có, host-config entries, discovery files, logs và ToolBaker cache:
+Từ setup ZIP (hoặc script trong repo):
 
 ```powershell
+# Setup ZIP:
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -WhatIf
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Yes
+
+# Clone repo:
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-all.ps1 -WhatIf
+powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-all.ps1 -Yes
 ```
 
-Setup ZIP cũng có `uninstall-all.ps1` như alias cho cùng một full sweep.
+Gỡ plugin, server self-contained, entry client, discovery, log, cache ToolBaker.
 
-### Cài kiểu developer / legacy
-
-Developer vẫn có thể cài server bằng NuGet .NET tool và dùng plugin-only bundle:
+### Cài developer
 
 ```powershell
 dotnet tool install -g RvtMcp.Server
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -SourceDir . -Client none
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -SourceDir . -Client none
 ```
 
-Đường này dành cho development và backward compatibility. Máy client nên dùng setup ZIP.
+Dành khi dev trên source. Máy Revit hàng ngày nên dùng setup ZIP.
+
+### Migration từ `Bimwright.Rvt.*` (v0.3 trở về trước)
+
+v0.4+ đổi package/folder sang `RvtMcp.*` (repo và brand bimwright giữ nguyên).
+
+1. Đóng hết Revit.
+2. `pwsh scripts/uninstall-old.ps1` — xóa plugin cũ `%APPDATA%\…\Bimwright\` và server root cũ; giữ bake/journal user, migrate sang `%LOCALAPPDATA%\RvtMcp\` lần chạy mới đầu.
+3. Cài bản release hiện tại (setup ZIP ở trên, hoặc `dotnet tool install -g RvtMcp.Server`).
+4. MCP client dùng entry **`rvt-mcp`** (entry cũ theo năm `bimwright-rvt-r22`… bị installer gỡ).
 
 ---
 
-## MCP clients được hỗ trợ
+## Đây là gì
 
-| Client | Trạng thái | Ghi chú |
-|--------|------------|---------|
-| Claude Code CLI | documented | project `.mcp.json` hoặc global `~/.claude.json` |
-| Claude Desktop | documented | `%APPDATA%\Claude\claude_desktop_config.json` |
-| OpenCode | scripted | `install.ps1 -Client opencode` |
-| Codex | scripted | `install.ps1 -Client codex` |
-| Cursor | documented | project hoặc user `mcp.json` |
-| Cline (VS Code) | documented | Cline MCP settings JSON |
-| VS Code Copilot | documented | schema `servers` với `type: stdio` |
-| Gemini CLI | documented | `gemini mcp add ...` hoặc settings JSON |
-| Antigravity | documented | Gemini/Antigravity MCP config JSON |
+`rvt-mcp` là cầu **local** giữa MCP client (Claude, Cursor, Codex, OpenCode, …) và một session Revit đang chạy.
 
----
+Hai process:
 
-## Toolsets
+| Thành phần | Vai trò |
+|------------|---------|
+| **RvtMcp.Server** | MCP server .NET 8 trên stdio. Không reference Revit — build được mọi máy. |
+| **RvtMcp.Plugin** | Add-in mỏng theo năm Revit (2022–2027). Chạy trong Revit, thực thi trên UI thread. |
 
-Toàn bộ surface là **223 tools trên 23 toolsets** (`--toolsets all`) (hoặc **223 tools** khi bật adaptive bake). Mặc định, surface được đăng ký là **216 tools** (mọi toolset mặc định đều bật trừ `modify` và `delete`). Khi bật adaptive bake, 3 suggestion-lifecycle tool được thêm vào; `--read-only` loại bỏ mọi write-capable toolset.
+Agent → MCP → server → localhost TCP (≤2024) hoặc Named Pipe (≥2025) → plugin → Revit API.
 
-Toolsets bật mặc định: `query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`.
+Mọi thứ trên máy user. Gateway không bắt buộc cloud relay.
 
-Toolsets opt-in (tắt mặc định): `modify`, `delete`. Bật explicit hoặc qua `--toolsets all`.
-
-Bật bằng `--toolsets query,create,modify,meta` hoặc `--toolsets all`. Thêm `--read-only` để loại write-capable toolsets dù chúng được request bằng cách nào.
-
-| Toolset | Tools | Default |
-|---------|-------|---------|
-| `query` | current view, selected elements, family types, material quantities, model stats, AI element filter | on |
-| `create` | grid, level, room, line-based, point-based, surface-based element, group from elements | on |
-| `view` | create view, sheet layout, place view on sheet, capture image, set crop/scale, activate view, show element | on |
-| `meta` | `revit_show_message`, `revit_switch_target`, `revit_batch_execute`, usage stats, set project info, purge unused families | on |
-| `lint` | view-naming pattern analysis, correction suggestions, firm-profile detect | on |
-| `schedule` | list/inspect, fields/formulas/data/elements, create + add/update field, filter+sort | on |
-| `families` | list loaded families, load/unload/replace family, export/list family types, duplicate/rename family type | on |
-| `modify` | `revit_operate_element`, `revit_color_elements`, parameter/type/workset edits | off |
-| `delete` | `revit_delete_element` | off |
-| `annotation` | tag element/category, text note, dimension, filled region, detail line, callout, keynote, kiểm tra untagged/undimensioned, dọn empty tags | on |
-| `export` | `revit_export_room_data` | on |
-| `mep` | `revit_detect_system_elements` | on |
-| `graphics` | view filters (create/list/apply/remove), element graphic overrides, category visibility, view phase/visibility | on |
-| `toolbaker` | accepted-tool list/run, send-code, adaptive suggestion lifecycle | on |
-| `sheets` | tạo sheet, duplicate, placeholder sheet, list sheets, titleblock parameters, đặt schedule, revisions, đánh số lại sheet | on |
-| `materials` | list/tạo/duplicate material, properties của appearance/identity/structural/thermal, material takeoff, gán vào element | on |
-| `geometry` | bounding box của element, geometry, đo khoảng cách, phát hiện va chạm (clash), raycast, tính volume/area, centroid, độ phức tạp | on |
-| `rooms` | rooms, areas, spaces, boundaries, openings, room separators, finishes, auto-create rooms, tag areas | on |
-| `links` | list Revit/CAD links, import/link CAD, link/unload/reload Revit model, link elements, coordinates, project base point | on |
-| `parameters` | tạo project/shared parameter, binding/unbinding, list/export shared params, set value by GUID | on |
-| `organization` | saved selections (save/load/list/delete), chọn elements, view templates (list/apply/create-from-view/duplicate/delete) | on |
-| `workflows` | clash review, data roundtrip, model audit, naming normalization, room documentation, sheet set, takeoff report, view cleanup | on |
-| `structural` | structural columns/beams/walls/foundations, rebar set + stirrup, structural loads, framing tags, connection analysis | on |
-
-### Tất cả tools
-
-| Toolset | Tool | Mô tả |
-|---|---|---|
-| `query` | `revit_get_current_view_info` | Metadata của active view: type, level, scale, detail level. |
-| `query` | `revit_get_selected_elements` | Element đang chọn với id, name, category, type. |
-| `query` | `revit_get_available_family_types` | Family types trong project, filter theo category. |
-| `query` | `revit_ai_element_filter` | Filter theo category và parameter/operator, giá trị tính bằng mm. |
-| `query` | `revit_analyze_model_statistics` | Đếm element theo category. |
-| `query` | `revit_get_material_quantities` | Tổng area và volume cho một category. |
-| `query` | `revit_get_element_details` | Metadata, location, bounding box, workset, phase, group và assembly ids. |
-| `query` | `revit_get_element_parameters` | Instance parameters với storage type, display value, raw value và data/spec ids. |
-| `query` | `revit_get_type_parameters` | Type parameters từ type ids hoặc từ element ids. |
-| `query` | `revit_list_project_parameters` | Project/shared parameter bindings, binding kind và categories. |
-| `query` | `revit_get_element_relationships` | Host, group, assembly, owner view, design option, nesting và dependents. |
-| `query` | `revit_list_groups` | Group instances với type, attached/detail metadata và optional member ids. |
-| `query` | `revit_get_group_members` | Members của group instance với category, type, owner view và pinned state. |
-| `query` | `revit_list_assemblies` | Assembly instances với type, naming category, member count và optional member ids. |
-| `query` | `revit_get_assembly_members` | Members của assembly instance với category, type, group và workset ids. |
-| `query` | `revit_list_worksets` | Worksets, active workset, edit/open state và optional element counts. |
-| `create` | `revit_create_line_based_element` | Wall hoặc element theo line. |
-| `create` | `revit_create_point_based_element` | Door, window, furniture hoặc point element khác. |
-| `create` | `revit_create_surface_based_element` | Floor hoặc ceiling từ polyline. |
-| `create` | `revit_create_level` | Level tại elevation tính bằng mm. |
-| `create` | `revit_create_grid` | Grid line giữa hai điểm tính bằng mm. |
-| `create` | `revit_create_room` | Room tại một điểm, được bao bởi wall. |
-| `create` | `revit_create_group_from_elements` | Tạo group từ hai hoặc nhiều elements. |
-| `modify` | `revit_operate_element` | Select, hide, unhide, isolate hoặc set-color theo IDs. |
-| `modify` | `revit_color_elements` | Tô màu category theo parameter value. |
-| `modify` | `revit_set_element_parameter_values` | Set instance parameter cho nhiều elements. |
-| `modify` | `revit_set_type_parameter_values` | Set type parameter cho type ids hoặc types suy ra từ elements. |
-| `modify` | `revit_change_element_type` | Đổi elements sang một target type compatible. |
-| `modify` | `revit_assign_elements_to_workset` | Gán elements vào user workset trong model workshared. |
-| `delete` | `revit_delete_element` | Delete theo danh sách ID. Chỉ bật khi thật sự cần. |
-| `view` | `revit_create_view` | Tạo floor plan hoặc 3D view. |
-| `view` | `revit_place_view_on_sheet` | Đặt view lên sheet mới hoặc sheet có sẵn. |
-| `view` | `revit_analyze_sheet_layout` | Title block, viewport positions và scales tính bằng mm. |
-| `export` | `revit_export_room_data` | Room data: name, number, area, perimeter, level, volume. |
-| `annotation` | `revit_tag_all_walls` | Tag wall-type tại midpoint; bỏ qua wall đã tag. |
-| `annotation` | `revit_tag_all_rooms` | Room tag tại location point; bỏ qua room đã tag. |
-| `mep` | `revit_detect_system_elements` | Traverse connector từ seed và trả về system members. |
-| `toolbaker` | `revit_send_code_to_revit` | Compile và chạy C# ad-hoc trong Revit từ tool surface mặc định. |
-| `toolbaker` | `revit_list_baked_tools` | List personal baked tools đã accept. |
-| `toolbaker` | `revit_run_baked_tool` | Gọi accepted baked tool theo tên. |
-| `toolbaker` | `revit_list_bake_suggestions` | Adaptive bake only: list local suggestions. |
-| `toolbaker` | `revit_accept_bake_suggestion` | Adaptive bake only: accept và apply local suggestion. |
-| `toolbaker` | `revit_dismiss_bake_suggestion` | Adaptive bake only: snooze hoặc dismiss local suggestion. |
-| `meta` | `revit_show_message` | TaskDialog trong Revit để test connection hoặc thông báo. |
-| `meta` | `revit_switch_target` | Đổi Revit connection khi chạy nhiều version. |
-| `meta` | `revit_batch_execute` | Chạy commands atomically trong một `TransactionGroup`. |
-| `meta` | `revit_analyze_usage_patterns` | Local usage stats: tool calls, sessions, errors. |
-| `lint` | `revit_analyze_view_naming_patterns` | Infer dominant view-naming pattern và outliers. |
-| `lint` | `revit_suggest_view_name_corrections` | Đề xuất tên đúng cho view outliers. |
-| `lint` | `revit_detect_firm_profile` | Fingerprint project naming theo firm profiles. |
+Không có sidecar Node/TypeScript. Server, plugin, handler, ToolBaker đều C#. Code lệnh dùng chung trong `src/shared/`; mỗi năm là shell nhỏ + `#if` khi API lệch. Chi tiết: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## Supported Revit Versions
+## Vì sao có project này
 
-| Revit | Target Framework | Transport | Ghi chú |
-|-------|------------------|-----------|---------|
-| 2022 | .NET 4.8 | TCP | Accepted ToolBaker path đã smoke-test |
-| 2023 | .NET 4.8 | TCP | Core runtime coverage |
-| 2024 | .NET 4.8 | TCP | Core runtime coverage |
-| 2025 | .NET 8 (`net8.0-windows7.0`) | Named Pipe | Core runtime coverage |
-| 2026 | .NET 8 (`net8.0-windows7.0`) | Named Pipe | Core runtime coverage; accepted ToolBaker path đã smoke-test |
-| 2027 | .NET 10 (`net10.0-windows7.0`) | Named Pipe | Accepted ToolBaker path đã smoke-test |
+Người dùng Revit thường đã biết mình muốn tự động hóa cái gì. Khó là đưa ý tưởng thành phần mềm: học đủ C#/Dynamo, vật lộn API, đóng gói add-in, sống sót qua upgrade — hoặc thuê ngoài, hoặc mua tool cứng chỉ khớp một nửa văn phòng.
 
-Runtime vẫn có thể khác nhau giữa các năm Revit vì Revit API thay đổi. Custom baked C# tools nên được xem là version-sensitive nếu chưa test qua các năm target.
+Agent thay nửa đầu vòng lặp (mô tả việc, thử live). Chúng không xóa transaction, đơn vị, selection, worksharing, hay “vừa phá model chưa?”. Gateway này lo phần đó: **bề mặt tool typed** cho việc thường gặp, escape hatch khi cần C# ad-hoc trong Revit, và đường **tùy chọn** biến pattern local lặp lại thành tool cá nhân (ToolBaker).
+
+Không phải add-in “một cho mọi hãng”. Văn phòng khác nhau. Cược: runtime chung, tool *của bạn* mọc phía trên.
+
+**Phạm vi (thành thật):** không đúc MCP tool mới cho mọi edge case. Có typed tool thì dùng; còn lại `revit_send_code_to_revit` (chỉ C#). Quản lý family **trong project** có; suite authoring Family Editor đầy đủ và host Revit Viewer hiện **ngoài scope** — xem [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
-## Security và Privacy
+## Session thường trông thế nào
 
-Ngắn gọn: model của bạn ở lại trên máy bạn.
+1. Revit mở model; plugin đã connect (ribbon).
+2. MCP client start `rvt-mcp` / server đã cài.
+3. Agent gọi tool: query view/selection, tạo grid/room, sheet, MEP, export, … Độ dài **mm** ở biên tool.
+4. Nhiều write một bước undo: `revit_batch_execute`.
+5. Nhiều Revit: `revit_list_available_targets` rồi `revit_switch_target` với năm 4 chữ số (`2024`, không `R24`).
 
-- **Loopback mặc định.** TCP transport listen trên `127.0.0.1`; Named Pipe scoped local-machine.
-- **Per-session token handshake.** Discovery files dưới `%LOCALAPPDATA%\RvtMcp\` chứa connection info và auth token.
-- **Schema validation.** Tool call sai shape bị reject trước khi command handler chạy.
-- **Path masking.** Error trả về model được sanitize để tránh leak absolute path.
-- **ToolBaker controls.** `revit_send_code_to_revit` có sẵn mặc định. Adaptive bake vẫn là opt-in và chỉ điều khiển suggestion/logging; `--read-only` hoặc `--disable-toolbaker` sẽ bỏ ToolBaker surface.
-- **Local storage.** Usage events, bake database, logs và accepted-tool metadata nằm trong local Bimwright storage.
+Khi không có typed tool phù hợp:
 
-Xem [SECURITY.md](SECURITY.md) để biết threat model và cách báo cáo vulnerability.
+```text
+revit_send_code_to_revit   # body C#, compile + chạy trong plugin
+```
+
+Tool này bật mặc định (toolset `toolbaker`). Tắt bằng `--read-only` hoặc `--disable-toolbaker` nếu không muốn agent compile code trong model.
+
+### ToolBaker (tùy chọn)
+
+Mặc định đã có:
+
+- `revit_send_code_to_revit`
+- `revit_list_baked_tools` / `revit_run_baked_tool` cho tool đã accept trước đó
+
+**Adaptive bake** (gợi ý tool mới từ usage) **tắt** trừ khi bật. Khi bật, pattern lặp có thể hiện qua `revit_list_bake_suggestions`; accept/dismiss do bạn. Không tự lên ribbon nếu chưa accept.
+
+Cờ hay dùng (JSON / env — [Cấu hình](#cấu-hình)):
+
+| Mục tiêu | Bật gì |
+|----------|--------|
+| Học từ lời gọi **typed** lặp | `--enable-adaptive-bake` |
+| Cluster thêm body **`send_code`** | thêm `--cache-send-code-bodies` (đã redact; vẫn local) |
+| Journal disk ngắn hạn body send_code | `persistSendCodeBodies` + TTL (mặc định privacy: tắt) |
+
+Bake compile **trong Revit** qua Roslyn — end user không cần Visual Studio. Chi tiết & privacy: [docs/bake.md](docs/bake.md).
+
+### Toast (tùy chọn)
+
+Toast hoàn thành trong Revit **tắt** mặc định. Bật bằng nút ribbon **Toast**, `enableToast` trong config, hoặc `BIMWRIGHT_ENABLE_TOAST=1`. Chỉ hiện call **đã xong** (không toast “đang chạy”). Capture thành công có thể có thumbnail nếu file trong path allowlist. Ribbon **Status** cũng in toast + cờ bake/privacy để khỏi đoán.
 
 ---
 
-## Configuration
+## Kiến trúc (ngắn)
 
-Ba lớp, lớp sau thắng lớp trước: JSON file, env vars, CLI args.
+```text
+MCP client (stdio)
+    → RvtMcp.Server (.NET 8)
+        → TCP (Revit 2022–2024) hoặc Named Pipe (2025–2027)
+            → Plugin shell (theo năm)
+                → ExternalEvent → Revit API / transaction / undo
+```
 
-| Setting | CLI | Env | JSON key |
-|---------|-----|-----|----------|
-| Target Revit year | `--target 2023` | `BIMWRIGHT_TARGET` | `target` |
+Handler trả DTO thuần — không serialize object Revit sống trên wire.
+
+---
+
+## Tools
+
+Số lượng (chưa tính baked tool cá nhân):
+
+| Mode | Tools | Ghi chú |
+|------|------:|---------|
+| Default | **220** | Mọi toolset default-on; **`modify` và `delete` tắt** |
+| `--toolsets all` | **227** | Thêm `modify` + `delete` |
+| `all` + adaptive bake | **230** | Thêm 3 tool vòng đời suggestion |
+
+Tên MCP: `revit_*`. Tên wire server↔plugin: snake_case không prefix.
+
+**Toolset bật mặc định:**  
+`query`, `create`, `view`, `schedule`, `families`, `mep`, `graphics`, `export`, `toolbaker`, `meta`, `lint`, `sheets`, `materials`, `geometry`, `annotation`, `rooms`, `links`, `parameters`, `organization`, `workflows`, `structural`, `kei`
+
+**Tắt trừ khi bật:** `modify`, `delete`  
+Ví dụ: `--toolsets query,view,meta` hoặc `--toolsets all`.  
+`--read-only` gỡ mọi toolset write-capable.
+
+| Toolset | Phạm vi | Default |
+|---------|---------|---------|
+| `query` | View, selection, filter, stats, param, quan hệ, workset, group/assembly | on |
+| `create` | Grid, level, room, element line/point/surface, group | on |
+| `view` | Tạo view, layout sheet, capture, crop/scale | on |
+| `meta` | Batch, multi-Revit target, project info, purge (MVP), message | on |
+| `lint` | Pattern đặt tên view, firm-profile, tóm tắt warning | on |
+| `schedule` | List/tạo schedule, field, formula, data | on |
+| `families` | Load/unload, type, instance, audit, export `.rfa` (phía project) | on |
+| `modify` | Operate/color, set param, đổi type, gán workset | off |
+| `delete` | Xóa theo id | off |
+| `annotation` | Tag, text, dim, region, keynote, check | on |
+| `export` | PDF/DWG/IFC/NWC, room data, và helper export khác | on |
+| `mep` | System, connector, network, place terminal/fixture, … | on |
+| `graphics` | View filter, override, visibility/phase | on |
+| `toolbaker` | send_code, list/run baked; suggestion chỉ khi adaptive on | on |
+| `sheets` | Sheet, titleblock, revision, renumber | on |
+| `materials` | Material, appearance, gán, takeoff | on |
+| `geometry` | BBox, measure, clash, volume/area, … | on |
+| `rooms` | Room/area/space, finish, separator | on |
+| `links` | Link Revit/CAD, tọa độ | on |
+| `parameters` | Project/shared parameter | on |
+| `organization` | Saved selection, view template | on |
+| `workflows` | Flow ghép clash/audit/sheet/takeoff | on |
+| `structural` | Column, beam, foundation, rebar, load, … | on |
+| `kei` | DB project KEI, query/write SQLite (WAL-safe), import equipment | on |
+
+### Tool đại diện
+
+Không dump 200+ schema — neo agent/người hay dùng:
+
+| Toolset | Tool | Việc |
+|---------|------|------|
+| `query` | `revit_get_current_view_info` | View active: type, level, scale |
+| `query` | `revit_get_selected_elements` | Selection hiện tại |
+| `query` | `revit_ai_element_filter` | Filter category + param (mm) |
+| `query` | `revit_get_element_details` | Location, bbox, workset, phase, … |
+| `create` | `revit_create_grid` / `revit_create_level` / `revit_create_room` | Layout cơ bản |
+| `create` | `revit_create_point_based_element` | Cửa, furniture, … từ type id |
+| `view` | `revit_capture_view_image` | Capture raster (path allowlist) |
+| `meta` | `revit_batch_execute` | Một `TransactionGroup` nhiều lệnh |
+| `meta` | `revit_list_available_targets` / `revit_switch_target` | Multi-Revit |
+| `families` | `revit_load_family_from_path` | Load `.rfa` vào project |
+| `toolbaker` | `revit_send_code_to_revit` | Escape hatch (C#) |
+| `toolbaker` | `revit_list_baked_tools` / `revit_run_baked_tool` | Tool cá nhân đã accept |
+| `toolbaker` | `revit_list_bake_suggestions` | Chỉ adaptive |
+| `lint` | `revit_analyze_view_naming_patterns` | Outlier đặt tên |
+
+Snapshot golden trong test khóa surface; lệch count thì tin test/code.
+
+---
+
+## Supported Revit versions
+
+| Revit | Plugin TFM | Transport |
+|-------|------------|-----------|
+| 2022–2024 | .NET Framework 4.8 | TCP |
+| 2025–2026 | .NET 8 (`net8.0-windows7.0`) | Named Pipe |
+| 2027 | .NET 10 (`net10.0-windows7.0`) | Named Pipe |
+
+Compile matrix 6 shell. Runtime sâu vẫn lệch theo năm — bake và C# custom nên kiểm lại năm bạn quan tâm.
+
+**Host:** chỉ Revit desktop đầy đủ. Revit Viewer **không** hỗ trợ.
+
+---
+
+## Bảo mật và privacy
+
+- Transport local mặc định (loopback TCP / named pipe local).
+- File discovery dưới `%LOCALAPPDATA%\RvtMcp\` có auth token theo session.
+- Argument tool được schema-check trước handler.
+- Lỗi trả về model được sanitize (giảm lộ path).
+- `send_code` chạy C# tùy ý trong process Revit — mạnh và rủi ro; tắt toolbaker nếu không chấp nhận.
+- Adaptive bake, body cache, journal TTL là **opt-in**, nằm dưới profile user. Mặc định không ghi raw send_code body vào log dài hạn.
+
+Thêm: [SECURITY.md](SECURITY.md), [docs/bake.md](docs/bake.md).
+
+---
+
+## Cấu hình
+
+Ưu tiên, cao thắng: **CLI → env (`BIMWRIGHT_*`) →** `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`.
+
+| Setting | CLI | Env | JSON |
+|---------|-----|-----|------|
+| Năm target | `--target 2024` | `BIMWRIGHT_TARGET` | `target` |
 | Toolsets | `--toolsets query,create` | `BIMWRIGHT_TOOLSETS` | `toolsets` |
 | Read-only | `--read-only` | `BIMWRIGHT_READ_ONLY=1` | `readOnly` |
-| Allow LAN bind | plugin-side only | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
-| Allow ToolBaker tools | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
-| Enable adaptive bake suggestions | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
-| Cache send-code bodies | `--cache-send-code-bodies` / `--no-cache-send-code-bodies` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
+| LAN bind (plugin) | — | `BIMWRIGHT_ALLOW_LAN_BIND=1` | `allowLanBind` |
+| ToolBaker surface | `--enable-toolbaker` / `--disable-toolbaker` | `BIMWRIGHT_ENABLE_TOOLBAKER` | `enableToolbaker` |
+| Adaptive bake | `--enable-adaptive-bake` / `--disable-adaptive-bake` | `BIMWRIGHT_ENABLE_ADAPTIVE_BAKE=1` | `enableAdaptiveBake` |
+| Cache body send_code (cluster bake) | `--cache-send-code-bodies` / `--no-…` | `BIMWRIGHT_CACHE_SEND_CODE_BODIES=1` | `cacheSendCodeBodies` |
+| Journal persist send_code | `--persist-send-code-bodies` / `--no-…` | `BIMWRIGHT_PERSIST_SEND_CODE_BODIES=1` | `persistSendCodeBodies` |
+| TTL journal | `--persist-send-code-bodies-for 4h` | `BIMWRIGHT_PERSIST_SEND_CODE_BODIES_TTL` | `persistSendCodeBodiesUntil` |
+| Toast hoàn thành | ribbon **Toast** | `BIMWRIGHT_ENABLE_TOAST=1` | `enableToast` |
 
-JSON file path: `%LOCALAPPDATA%\RvtMcp\rvtmcp.config.json`.
+Đổi cờ server xong: restart kết nối MCP để client nhận tool list mới.
+
+---
+
+## MCP clients
+
+| Client | Wiring |
+|--------|--------|
+| Claude Code | project `.mcp.json` hoặc `~/.claude.json` |
+| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` |
+| OpenCode / Codex / Kilo | `install.ps1 -Client …` (script) |
+| Cursor / Cline / VS Code Copilot | JSON layout đã document |
+| Gemini CLI / Antigravity | `gemini mcp add` hoặc settings JSON |
+
+Installer auto-detect thường đủ; xem [AGENTS.md](AGENTS.md) và `docs/mcp-config-*.md` khi sửa tay.
+
+---
+
+## Repo layout
+
+```text
+rvt-mcp/
+├── src/
+│   ├── RvtMcp.sln
+│   ├── server/            # MCP server
+│   ├── shared/            # Handlers, transport, ToolBaker, toast, …
+│   ├── plugin-r22/ … r27/ # Một shell mỗi năm Revit
+├── tests/                 # xUnit + golden tool lists
+├── scripts/               # install / uninstall / package
+├── docs/                  # roadmap, bake, testing
+├── AGENTS.md
+└── ARCHITECTURE.md
+```
 
 ---
 
@@ -476,49 +346,47 @@ dotnet build src/server/RvtMcp.Server.csproj -c Release
 dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
 ```
 
-Plugin projects auto-deploy sau normal `Build`, copy vào `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\`. Hãy đóng Revit trước khi build plugin vì Revit lock DLL đã load.
-
-Stage plugin ZIPs cho release:
+Đóng Revit trước khi build plugin (DLL lock). Plugin deploy vào `%APPDATA%\Autodesk\Revit\Addins\<year>\RvtMcp\` khi build Debug/Release thường.
 
 ```powershell
 pwsh scripts/stage-plugin-zip.ps1 -Config Release
 ```
 
-Xem [CONTRIBUTING.md](CONTRIBUTING.md) để biết test strategy, tool-surface snapshot rules và contribution notes.
+Quy ước đóng góp / snapshot: [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Độ chín
+
+Dùng được, không thần thánh. CI build 6 shell + test server. Runtime sâu nhất ở năm giữa dải; model production hãy cẩn thận và verify trên *build Revit của bạn*. Checklist máy mới: [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md).
 
 ---
 
-## Tài liệu
+## Tài liệu thêm
 
-- [AGENTS.md](AGENTS.md) - hướng dẫn install và wire MCP client cho AI coding agents.
-- [ARCHITECTURE.md](ARCHITECTURE.md) - process model, transport, threading và DTO strategy.
-- [docs/bake.md](docs/bake.md) - adaptive bake, privacy, accepted tools và compatibility behavior.
-- [docs/roadmap.md](docs/roadmap.md) - hardening plan hiện tại và deferred work.
-- [docs/testing/fresh-install-checklist.md](docs/testing/fresh-install-checklist.md) - checklist verify public install.
-- [benchmarks/README.md](benchmarks/README.md) - weak-model benchmark procedure.
+| Doc | Chủ đề |
+|-----|--------|
+| [AGENTS.md](AGENTS.md) | Protocol cài cho agent |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Process, transport, DTO |
+| [docs/bake.md](docs/bake.md) | Adaptive bake và privacy body |
+| [docs/roadmap.md](docs/roadmap.md) | Hardening gần và non-goal |
+| [docs/kei-equipment-import.md](docs/kei-equipment-import.md) | Tool KEI SQLite (toolset `kei` default-on) |
+| [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ---
 
-## Họ bimwright
+## bimwright
 
-Các MCP gateway hand-forged cho toolchain AEC — cùng một kiến trúc, predictable / auditable / reversible:
+Cùng house style trên các host AEC:
 
-- [**rvt-mcp**](https://github.com/bimwright/rvt-mcp) — Autodesk® Revit®
-- [**dwg-mcp**](https://github.com/bimwright/dwg-mcp) — Autodesk® AutoCAD®
-- [**nwd-mcp**](https://github.com/bimwright/nwd-mcp) — Autodesk® Navisworks®
-- [**ipt-mcp**](https://github.com/bimwright/ipt-mcp) — Autodesk® Inventor®
-- [**bim-wiki**](https://github.com/bimwright/bim-wiki) — Kho kiến thức BIM ưu tiên tiếng Việt
+- [rvt-mcp](https://github.com/bimwright/rvt-mcp) — Revit  
+- [dwg-mcp](https://github.com/bimwright/dwg-mcp) — AutoCAD  
+- [nwd-mcp](https://github.com/bimwright/nwd-mcp) — Navisworks  
+- [ipt-mcp](https://github.com/bimwright/ipt-mcp) — Inventor  
+- [bim-wiki](https://github.com/bimwright/bim-wiki) — Kho BIM ưu tiên tiếng Việt  
 
 ---
 
 ## License
 
-Apache-2.0. Xem [LICENSE](LICENSE).
+Apache-2.0 — [LICENSE](LICENSE).
 
-Revit và Autodesk là thương hiệu đã đăng ký của Autodesk, Inc. bimwright là dự án open-source độc lập, không liên kết, không được tài trợ và không được bảo chứng bởi Autodesk, Inc.
-
----
-
-<p align="center">
-  Một dự án <a href="https://github.com/bimwright">bimwright</a> - dành cho người muốn tự động hóa công việc thay vì bán sự huyền bí.
-</p>
+Revit và Autodesk là trademark của Autodesk, Inc. bimwright độc lập, không liên kết Autodesk.

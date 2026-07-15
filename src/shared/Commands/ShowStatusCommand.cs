@@ -1,4 +1,5 @@
-﻿using Autodesk.Revit.Attributes;
+using System;
+using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 
@@ -21,13 +22,13 @@ namespace RvtMcp.Plugin.Commands
 
             if (!string.IsNullOrWhiteSpace(connectionInfo))
             {
-                if (connectionInfo.StartsWith("TCP:", System.StringComparison.OrdinalIgnoreCase))
+                if (connectionInfo.StartsWith("TCP:", StringComparison.OrdinalIgnoreCase))
                 {
                     connectionKind = "TCP";
                     clipboardValue = connectionInfo.Substring(4);
                     connectionValue = clipboardValue;
                 }
-                else if (connectionInfo.StartsWith("Pipe:", System.StringComparison.OrdinalIgnoreCase))
+                else if (connectionInfo.StartsWith("Pipe:", StringComparison.OrdinalIgnoreCase))
                 {
                     connectionKind = "Named Pipe";
                     clipboardValue = connectionInfo.Substring(5);
@@ -66,6 +67,10 @@ namespace RvtMcp.Plugin.Commands
                     ? $"{copiedLabel} copied to clipboard: {clipboardValue}"
                     : $"Unable to copy {copiedLabel.ToLowerInvariant()} to clipboard. Value: {clipboardValue}";
 
+            // Fresh JSON + env (plugin has no server CLI). Toast uses live ribbon state.
+            var config = RvtMcpConfig.Load();
+            var privacyBlock = StatusPrivacySection.Build(config, App.Instance.ToastEnabled);
+
             var td = new TaskDialog("RvtMcp Status")
             {
                 CommonButtons = TaskDialogCommonButtons.Ok,
@@ -75,6 +80,7 @@ namespace RvtMcp.Plugin.Commands
                     $"Connection value: {connectionValue}\n" +
                     $"Client: {client}\n" +
                     $"Last command time: {lastCmd}\n\n" +
+                    privacyBlock + "\n\n" +
                     copiedMessage,
                 MainIcon = running ? TaskDialogIcon.TaskDialogIconInformation : TaskDialogIcon.TaskDialogIconWarning
             };
