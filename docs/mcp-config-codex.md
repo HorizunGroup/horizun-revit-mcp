@@ -160,7 +160,7 @@ Codex supports per-project config overrides at `<project-root>/.codex/config.tom
 In `~/.codex/config.toml`:
 
 ```toml
-[projects."D:/Projects/bimwright/rvt-mcp"]
+[projects."<repo>/horizun-revit-mcp"]
 trust_level = "trusted"
 ```
 

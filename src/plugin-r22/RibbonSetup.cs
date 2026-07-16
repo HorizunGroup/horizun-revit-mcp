@@ -1,3 +1,5 @@
+// Modified by Horizun (2026) for the Horizun Revit MCP distribution - see CHANGES-HORIZUN.md.
+// Base: bimwright/rvt-mcp (Apache-2.0).
 using System.Reflection;
 using System.Collections.Generic;
 using Autodesk.Revit.UI;

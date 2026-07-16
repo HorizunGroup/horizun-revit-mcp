@@ -1,4 +1,6 @@
-﻿using System.Collections.Generic;
+// Modified by Horizun (2026) for the Horizun Revit MCP distribution - see CHANGES-HORIZUN.md.
+// Base: bimwright/rvt-mcp (Apache-2.0).
+using System.Collections.Generic;
 using RvtMcp.Plugin.ToolBaker;
 
 namespace RvtMcp.Plugin

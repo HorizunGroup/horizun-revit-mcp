@@ -6,12 +6,12 @@ Security updates are provided for the latest minor release series only.
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | ✓         |
+| 0.6.x-horizun | ✓   |
 | < 0.3   | ✗         |
 
 ## Threat Model
 
-bimwright runs on `127.0.0.1` only. The attack surface is:
+Horizun Revit MCP runs on `127.0.0.1` only. The attack surface is:
 
 - Local processes that can read the discovery files (`%LOCALAPPDATA%\RvtMcp\revit-2022.json`..`revit-2027.json`)
 - Local processes that can connect to the TCP port or Named Pipe
@@ -61,7 +61,7 @@ bimwright runs on `127.0.0.1` only. The attack surface is:
 
 Use one of these private channels:
 
-1. **GitHub private vulnerability report** — go to [the Security tab](https://github.com/bimwright/rvt-mcp/security/advisories/new) and submit a new advisory draft. This is the preferred path.
+1. **GitHub private vulnerability report** — go to [the Security tab](https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/security/advisories/new) and submit a new advisory draft. This is the preferred path. If the issue also affects the upstream base, please report it to [bimwright/rvt-mcp](https://github.com/bimwright/rvt-mcp/security) as well.
 2. **Email the maintainer** — contact via the address on the commit history.
 
 Include:

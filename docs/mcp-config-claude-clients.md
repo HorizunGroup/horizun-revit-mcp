@@ -50,10 +50,10 @@ claude mcp add [options] <name> -- <command> [args...]
 
 ```bash
 # Local scope (default): only this project
-claude mcp add rvt-mcp -- "D:/Projects/bimwright/rvt-mcp/src/server/bin/Debug/net8.0/RvtMcp.Server.exe"
+claude mcp add rvt-mcp -- "<repo>/horizun-revit-mcp/src/server/bin/Debug/net8.0/RvtMcp.Server.exe"
 
 # User scope: every project on this machine
-claude mcp add rvt-mcp --scope user -- "D:/Projects/bimwright/rvt-mcp/src/server/bin/Debug/net8.0/RvtMcp.Server.exe"
+claude mcp add rvt-mcp --scope user -- "<repo>/horizun-revit-mcp/src/server/bin/Debug/net8.0/RvtMcp.Server.exe"
 
 # Project scope: write into .mcp.json (commit to repo, team uses it)
 claude mcp add rvt-mcp --scope project -- "%LOCALAPPDATA%\\RvtMcp\\server\\0.4.0\\RvtMcp.Server.exe"

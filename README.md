@@ -1,43 +1,60 @@
-<!-- mcp-name: io.github.bimwright/rvt-mcp -->
+<!-- mcp-name: io.github.pabloalejandrozg-ux/horizun-revit-mcp -->
+
+<h1 align="center">Horizun Revit MCP</h1>
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/bimwright/.github/master/assets/logos/rvt-mcp.png" alt="rvt-mcp" width="180" />
-</p>
-
-<h1 align="center">rvt-mcp</h1>
-
-<p align="center">
-  MCP gateway for Autodesk Revit — local tools for agents, optional personal bake loop
+  Hardened MCP gateway for Autodesk Revit 2022–2027 — built for <em>unattended</em> agent automation:<br/>
+  modal-dialog suppression, async job submit/poll, tolerant JSON contracts, open-any-model.
 </p>
 
 <p align="center">
-  <a href="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml"><img src="https://github.com/bimwright/rvt-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
+  <a href="https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/actions/workflows/build.yml"><img src="https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
-  <a href="#tools"><img src="https://img.shields.io/badge/MCP-227%20tools-6C47FF" alt="MCP tools" /></a>
+  <a href="#tools"><img src="https://img.shields.io/badge/MCP-230%2B%20tools-6C47FF" alt="MCP tools" /></a>
 </p>
 
-<p align="center">
-  English · <a href="README.vi.md">Tiếng Việt</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a>
-</p>
+> **Horizun Revit MCP** is a hardened distribution of
+> [`bimwright/rvt-mcp`](https://github.com/bimwright/rvt-mcp) by Khoa Le (Apache-2.0).
+> The whole work stays Apache-2.0; modifications are documented in
+> [CHANGES-HORIZUN.md](CHANGES-HORIZUN.md) and [NOTICE](NOTICE).
 
 ---
 
-## Install (recommended)
+## The Horizun hardening layer
 
-On a machine that already has Revit, use the **setup ZIP** from [GitHub Releases](https://github.com/bimwright/rvt-mcp/releases/latest). You do **not** need the .NET SDK, NuGet global tools, or a clone of this repo.
+Long agent runs against real Revit models die in predictable ways: a modal dialog freezes the
+pipe, a heavy export outlives the transport timeout, a slightly-wrong JSON type burns a round
+trip, and nothing works until a human opens the model. This layer fixes exactly those, live-tested
+on Revit 2025/2026:
 
-**If you are an AI agent installing for a user:** download the latest `RvtMcp.Setup-*-win-x64.zip` and run the installer below. Do not clone or build unless they asked for a developer setup. Full agent notes: [AGENTS.md](AGENTS.md).
+| | Hardening | What it does |
+|---|---|---|
+| **A** | Modal-dialog suppression | `DialogBoxShowing`/`FailuresProcessing` auto-handled **only while an MCP command runs** (`McpDialogGuard`); your interactive dialogs are untouched. |
+| **B** | Async jobs | Any command with `"async": true` returns a `job_id` in milliseconds; poll `job_status` for the result. `revit_submit_async` + `revit_job_status` tools included. No more 60-second timeout deaths on IFC/NWC exports or sync-to-central. |
+| **C** | Orphan-transaction detection | A handler that leaks an open transaction is detected and logged the instant it returns, instead of silently blocking every later command. |
+| **D** | Tolerant JSON contracts | `"5"` → `5`, `"true"` → `true`, `elementId` → `element_id` — repaired **before** validation, only where the schema is unambiguous (`SchemaCoercion`). |
+| | `open_document` | Open and activate any `.rvt`/`.rfa` from disk (detach/audit options) — agents no longer need a human to open the model first. |
+| | Upstream fixes | `export_ifc` wrapped in a transaction (modern Revit's IFC exporter writes element GUIDs and throws without one). |
+
+---
+
+## Install
+
+Clone and build from source (releases will follow):
 
 ```powershell
-$tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
-$zip = "$env:TEMP\RvtMcp.Setup-$tag-win-x64.zip"
-$dir = "$env:TEMP\RvtMcp.Setup-$tag-win-x64"
-Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/RvtMcp.Setup-$tag-win-x64.zip" -OutFile $zip
-Expand-Archive $zip -DestinationPath $dir -Force
+git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+cd horizun-revit-mcp
 
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1" -WhatIf   # preview
-powershell -ExecutionPolicy Bypass -File "$dir\install.ps1"           # install
+# build the plugins you need (r22..r27 = Revit 2022..2027) and the server
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release
+dotnet build src/server/RvtMcp.Server.csproj -c Release
+
+# stage + install (only the years you want; -Client none = do not touch MCP client configs)
+powershell -ExecutionPolicy Bypass -File .\scripts\stage-plugin-zip.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Years 2026 -Client none -WhatIf   # preview
+powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Years 2026 -Client none           # install
 ```
 
 What `install.ps1` does:
@@ -54,7 +71,7 @@ For AutoCAD, use [dwg-mcp](https://github.com/bimwright/dwg-mcp) separately — 
 ### Check that it works
 
 1. Open Revit with a model.
-2. Start the MCP connection from the ribbon (BIMwright / RvtMcp panel).
+2. Start the MCP connection from the ribbon (Add-Ins → **Horizun MCP** panel).
 3. From the MCP client, list tools, then call `revit_get_current_view_info`.
 
 You should get something like:
@@ -81,29 +98,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\uninstall-all.ps1 -Yes
 
 Removes plugins, self-contained server, client entries, discovery files, logs, and ToolBaker cache.
 
-### Developer install
-
-```powershell
-dotnet tool install -g RvtMcp.Server
-powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1 -SourceDir . -Client none
-```
-
-This is for hacking on the project. Day-to-day Revit machines should stick to the setup ZIP.
-
-### Migrating from `Bimwright.Rvt.*` (v0.3 and earlier)
-
-v0.4+ renamed packages and folders to `RvtMcp.*` (repo name and brand stay bimwright).
-
-1. Close every Revit.
-2. `pwsh scripts/uninstall-old.ps1` — drops old `%APPDATA%\…\Bimwright\` plugins and old server root; keeps user bake/journal data and migrates it to `%LOCALAPPDATA%\RvtMcp\` on first new launch.
-3. Install current release (setup ZIP above, or `dotnet tool install -g RvtMcp.Server`).
-4. Point MCP clients at entry name **`rvt-mcp`** (old per-year `bimwright-rvt-r22`… entries are removed by the installer).
-
 ---
 
 ## What this is
 
-`rvt-mcp` is a **local** bridge between an MCP client (Claude, Cursor, Codex, OpenCode, …) and a running Revit session.
+Horizun Revit MCP is a **local** bridge between an MCP client (Claude, Cursor, Codex, OpenCode, …) and a running Revit session.
 
 Two processes:
 
@@ -135,7 +134,7 @@ It is not a universal add-in for every firm. Offices differ. The bet is: start f
 ## How a normal session looks
 
 1. Revit open with a model; plugin connected (ribbon).
-2. MCP client starts `rvt-mcp` / the installed server.
+2. MCP client starts `horizun-revit-mcp` / the installed server.
 3. Agent uses tools: query view/selection, create grids/rooms, sheets, MEP, export, … Lengths in **mm** at the tool boundary.
 4. Several writes in one undo step: `revit_batch_execute`.
 5. Multiple Revits running: `revit_list_available_targets` then `revit_switch_target` with a four-digit year (`2024`, not `R24`).
@@ -193,9 +192,9 @@ Counts (without counting personal baked tools):
 
 | Mode | Tools | Notes |
 |------|------:|-------|
-| Default | **220** | All default-on toolsets; **`modify` and `delete` off** |
-| `--toolsets all` | **227** | Adds `modify` + `delete` |
-| `all` + adaptive bake | **230** | Adds 3 suggestion-lifecycle tools |
+| Default | **223** | All default-on toolsets; **`modify` and `delete` off** |
+| `--toolsets all` | **230** | Adds `modify` + `delete` |
+| `all` + adaptive bake | **233** | Adds 3 suggestion-lifecycle tools |
 
 Tool names are MCP-facing as `revit_*`. Wire names between server and plugin stay unprefixed snake_case.
 
@@ -323,7 +322,7 @@ Installer auto-detect is usually enough; see [AGENTS.md](AGENTS.md) and `docs/mc
 ## Repo layout
 
 ```text
-rvt-mcp/
+horizun-revit-mcp/
 ├── src/
 │   ├── RvtMcp.sln
 │   ├── server/            # MCP server
@@ -373,20 +372,23 @@ Usable, not sacred. CI builds the six plugin shells and server tests. Runtime co
 
 ---
 
-## bimwright
+## Credits
 
-Same house style across AEC hosts:
+The base of this project is [`rvt-mcp`](https://github.com/bimwright/rvt-mcp) by
+**Khoa Le (bimwright)** — an excellent C#-end-to-end Revit MCP with a single UI-thread
+dispatch pump, centralized schema validation and 225+ handlers. Horizun adds the
+hardening layer on top; both are Apache-2.0. Upstream siblings worth knowing:
+[dwg-mcp](https://github.com/bimwright/dwg-mcp) (AutoCAD),
+[nwd-mcp](https://github.com/bimwright/nwd-mcp) (Navisworks),
+[ipt-mcp](https://github.com/bimwright/ipt-mcp) (Inventor).
 
-- [rvt-mcp](https://github.com/bimwright/rvt-mcp) — Revit  
-- [dwg-mcp](https://github.com/bimwright/dwg-mcp) — AutoCAD  
-- [nwd-mcp](https://github.com/bimwright/nwd-mcp) — Navisworks  
-- [ipt-mcp](https://github.com/bimwright/ipt-mcp) — Inventor  
-- [bim-wiki](https://github.com/bimwright/bim-wiki) — Vietnamese-first BIM notes  
+**Horizun** is a BIM consultancy. This project is maintained independently of the
+upstream author.
 
 ---
 
 ## License
 
-Apache-2.0 — [LICENSE](LICENSE).
+Apache-2.0 — [LICENSE](LICENSE). Attribution and modification notices: [NOTICE](NOTICE), [CHANGES-HORIZUN.md](CHANGES-HORIZUN.md).
 
-Revit and Autodesk are trademarks of Autodesk, Inc. bimwright is independent and not affiliated with Autodesk.
+Revit and Autodesk are trademarks of Autodesk, Inc. Horizun Revit MCP is an independent, unofficial project, not affiliated with or endorsed by Autodesk or the upstream author.

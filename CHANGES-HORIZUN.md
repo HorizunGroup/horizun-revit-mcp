@@ -56,6 +56,19 @@ third-party GPL code is used.
   `revit_submit_async` and `revit_job_status`; server identity rebranded to
   "Horizun Revit MCP" (`horizun-revit-mcp`, 0.6.0-horizun.1).
 
+## Distribution / editorial changes
+- `README.md` rewritten for the Horizun distribution (hardening-layer feature
+  table, build-from-source install, credits); upstream's translated READMEs
+  (`README.ja.md`, `README.vi.md`, `README.zh-CN.md`) removed because they
+  describe the upstream product and would go stale here.
+- `server.json` re-identified as `io.github.pabloalejandrozg-ux/horizun-revit-mcp`
+  (the upstream NuGet package claim was removed — it belongs to the upstream author).
+- `SECURITY.md` / `CONTRIBUTING.md` repointed at this repository (upstream is
+  also credited for shared-code vulnerabilities).
+- New handler `open_document` (open/activate any `.rvt`/`.rfa`, detach/audit) and
+  an upstream bugfix: `export_ifc` now runs inside a committed `Transaction`
+  (modern Revit's IFC exporter writes element GUIDs and throws without one).
+
 ## Validation
 - All six plugins (r22–r27) and the server build clean (0 errors).
 - `SchemaCoercion` — 13/13 assertions on the shipping source, including the

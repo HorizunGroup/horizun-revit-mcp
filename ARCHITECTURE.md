@@ -142,5 +142,5 @@ Hand-rolled parser, no `System.CommandLine` dep. Each field is nullable so "not 
 ## Why this shape
 
 - **Full C#, one stack.** No TypeScript bridge, no Python helper, no IPC format hop. One language across server, plugin, handlers, ToolBaker, tests.
-- **Process split, not thread split.** The server lives outside Revit so it can start before Revit and outlive a plugin crash. Users update the server via `dotnet tool update -g` without touching their add-in.
+- **Process split, not thread split.** The server lives outside Revit so it can start before Revit and outlive a plugin crash. Users update the server by rebuilding from source (or, once Horizun releases are published, from the setup ZIP) without touching their add-in.
 - **Source glob, not shared DLL.** Each plugin shell compiles `src/shared/**` directly so version-specific `#if` branches produce distinct binaries — no runtime version sniffing, no reflection fallback.

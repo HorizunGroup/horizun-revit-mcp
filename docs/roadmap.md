@@ -1,5 +1,11 @@
 ﻿# Roadmap
 
+> **Note (Horizun distribution):** this roadmap is inherited from the upstream
+> `bimwright/rvt-mcp` project and kept for context. Channels it mentions that
+> belong to the upstream (NuGet `dotnet tool`, upstream release ZIPs) do not
+> apply to this distribution. Horizun-specific direction lives in
+> [CHANGES-HORIZUN.md](../CHANGES-HORIZUN.md).
+
 Rough direction, not a commitment. Dates are intent; scope is firmer.
 
 ## v0.3.0 — current (ToolBaker redesign release)

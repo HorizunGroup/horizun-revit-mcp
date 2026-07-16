@@ -89,7 +89,7 @@ Grok CLI (`~/.grok/config.toml`):
 
 ```toml
 [mcp_servers.rvt-mcp]
-command = "D:/Projects/bimwright/rvt-mcp/publish/server-kei/RvtMcp.Server.exe"
+command = "<repo>/horizun-revit-mcp/publish/server-kei/RvtMcp.Server.exe"
 enabled = true
 startup_timeout_sec = 60
 ```

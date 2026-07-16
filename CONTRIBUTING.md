@@ -17,8 +17,8 @@ The Revit API itself is pulled from [Nice3point.Revit.Api.*](https://www.nuget.o
 ### Clone + build
 
 ```bash
-git clone https://github.com/bimwright/rvt-mcp.git
-cd rvt-mcp
+git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+cd horizun-revit-mcp
 dotnet build src/RvtMcp.sln -c Debug
 ```
 
@@ -89,7 +89,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the conceptual model. Quick reference
 Open a GitHub issue with:
 
 - Revit version + year.
-- Bimwright server version (`bimwright --version`) and plugin version (check the `.addin` manifest).
+- Server version and plugin version (check the `.addin` manifest).
 - Reproduction steps — ideally the exact MCP tool call and params.
 - Logs from `%LOCALAPPDATA%\RvtMcp\` — but **check for paths you don't want to share** (the sanitizer masks absolute paths in errors sent to the model, but local log files are unredacted).
 

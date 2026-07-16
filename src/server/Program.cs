@@ -1,3 +1,5 @@
+// Modified by Horizun (2026) for the Horizun Revit MCP distribution - see CHANGES-HORIZUN.md.
+// Base: bimwright/rvt-mcp (Apache-2.0).
 // Usage:
 //   stdio (default):  RvtMcp.Server.exe              — spawned by Claude/GPT/Cursor
 //   HTTP SSE:          RvtMcp.Server.exe --http 8200  — for Ollama/LM Studio/custom
@@ -251,7 +253,7 @@ namespace RvtMcp.Server
                 Description = "Horizun Revit MCP — hardened MCP gateway for Autodesk Revit 2022-2027 " +
                     "(modal-dialog suppression, async job submit/poll, tolerant JSON contracts). " +
                     "A modified distribution of bimwright/rvt-mcp, Apache-2.0.",
-                WebsiteUrl = "https://github.com/bimwright/rvt-mcp"
+                WebsiteUrl = "https://github.com/pabloalejandrozg-ux/horizun-revit-mcp"
             };
             opts.ServerInstructions = ServerInstructionsText;
         }

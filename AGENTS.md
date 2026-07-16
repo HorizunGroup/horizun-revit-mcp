@@ -1,7 +1,14 @@
 ﻿<!-- agents-install-guide -->
-<!-- mcp-name: io.github.bimwright/rvt-mcp -->
+<!-- mcp-name: io.github.pabloalejandrozg-ux/horizun-revit-mcp -->
 
-# AGENTS.md — rvt-mcp install guide for AI agents
+# AGENTS.md — Horizun Revit MCP install guide for AI agents
+
+> **Horizun distribution note:** this repo is a hardened distribution of
+> `bimwright/rvt-mcp`. Horizun has not published setup ZIPs yet, so the
+> supported install path **for this repo today is clone + build** (see
+> README → Install). Where this guide describes the "client setup ZIP" flow,
+> that applies once Horizun releases are published; until then, build from
+> source and use `scripts/install.ps1 -Years <year> -Client none`.
 
 This file is machine-readable install instructions for AI coding agents (Claude Code, Cursor, Cline, VS Code Copilot, Gemini CLI, Antigravity, OpenCode, Codex, and any other stdio MCP client). A user pointed you here because they want rvt-mcp (a Revit MCP server) wired up without hand-editing config files themselves.
 
@@ -15,7 +22,7 @@ This file is machine-readable install instructions for AI coding agents (Claude 
 **What you cannot do:**
 
 - Install Revit, manage Revit licensing, or launch Revit for the first time. If Revit 2022–2027 is not installed, stop and tell the user.
-- Install .NET 8 SDK, clone the repo, restore NuGet packages, or build source for a normal client install. If the client setup ZIP is unavailable, stop and report that the client installer is not available.
+- Install Revit itself or manage licensing. For this distribution, building from source (README → Install) **is** the supported path until Horizun publishes release ZIPs — cloning and building is allowed when the user asked to install this repo.
 
 ---
 
@@ -24,7 +31,7 @@ This file is machine-readable install instructions for AI coding agents (Claude 
 **Read these before touching anything. They exist so rvt-mcp stays predictable, auditable, and reversible.**
 
 1. **Preview every change.** Use `-WhatIf`, `--dry-run`, or a printed diff before any write. Tell the user the exact file path and the exact change.
-2. **Use the client setup ZIP for client machines.** Do not fall back to `dotnet tool install`, source build, or repo clone unless the user explicitly asks for developer installation.
+2. **Prefer the release ZIP once Horizun publishes releases.** Until then, clone + build from this repo is the supported install; never install the upstream's NuGet package or ZIP as a substitute for this distribution.
 3. **Two explicit approval gates — do not collapse without the user saying so:**
    - Before running `install.ps1` without `-WhatIf`.
    - Before editing any MCP host config file outside the setup installer's own preview/apply flow.
@@ -57,11 +64,12 @@ If Revit is not running when the user first tries a tool call, that's fine — t
 ## Step 1 — Download the client setup ZIP
 
 ```powershell
-$tag = (Invoke-RestMethod https://api.github.com/repos/bimwright/rvt-mcp/releases/latest).tag_name
-$zip = "$env:TEMP\RvtMcp.Setup-$tag-win-x64.zip"
-$dir = "$env:TEMP\RvtMcp.Setup-$tag-win-x64"
-Invoke-WebRequest "https://github.com/bimwright/rvt-mcp/releases/download/$tag/RvtMcp.Setup-$tag-win-x64.zip" -OutFile $zip
-Expand-Archive $zip -DestinationPath $dir -Force
+# Horizun releases are not published yet — install from source instead:
+git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+cd horizun-revit-mcp
+dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release   # pick your Revit year(s)
+dotnet build src/server/RvtMcp.Server.csproj -c Release
+powershell -ExecutionPolicy Bypass -File .\scripts\stage-plugin-zip.ps1
 ```
 
 If the setup asset is not present on the release, stop. Do not clone, build, or install the .NET SDK for a client machine.
@@ -303,7 +311,7 @@ Copy-Item 'path\to\config.ext.bimwright.bak' 'path\to\config.ext' -Force
 | Host config parse error after edit | Agent wrote invalid JSON/TOML. | Restore from `.bimwright.bak`, retry with a diff preview. |
 | Server starts but no tools show up | Toolset filter hiding them. | Check `--toolsets` / `--read-only` flags on the host config entry. |
 
-For anything not in this table, open an issue at <https://github.com/bimwright/rvt-mcp/issues> with the host name, Revit year, and the exact error.
+For anything not in this table, open an issue at <https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/issues> with the host name, Revit year, and the exact error.
 
 ---
 

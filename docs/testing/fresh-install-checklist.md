@@ -2,7 +2,7 @@
 
 Walk the public install flow on a fresh machine as a first-time user. Goal: verify install-from-zero friction before the first non-dev user files an issue.
 
-Target: this repo at latest `master` or latest tag, reached purely via README starting from `https://github.com/bimwright/rvt-mcp`.
+Target: this repo at latest `master` or latest tag, reached purely via README starting from `https://github.com/pabloalejandrozg-ux/horizun-revit-mcp`.
 
 ## Scope
 
@@ -28,7 +28,7 @@ Target: this repo at latest `master` or latest tag, reached purely via README st
 | Fresh machine type | Windows 11 VM (Hyper-V or VMware), no dev tools pre-installed | F1-001 |
 | Primary Revit version | Revit 2024 (.NET Framework 4.8, most common install in user base) | F1-002 |
 | Primary MCP client | Claude Code CLI | F1-003 |
-| Starting point for the "user" | `https://github.com/bimwright/rvt-mcp` README only | F1-004 |
+| Starting point for the "user" | `https://github.com/pabloalejandrozg-ux/horizun-revit-mcp` README only | F1-004 |
 | License for Revit on test machine | User has own license / trial on test VM | out-of-scope |
 
 ## Phase F1 — Prep (4 tasks)
@@ -55,7 +55,7 @@ Goal: follow the public README instructions exactly — no prior knowledge, no s
 
 Goal: prove the end-to-end path works, not just that the components installed.
 
-- [ ] F3-001: From Claude CLI on the test machine, run `/mcp` — confirm `bimwright` is listed as a connected server. Log the exact output.
+- [ ] F3-001: From Claude CLI on the test machine, run `/mcp` — confirm `horizun-revit-mcp` is listed as a connected server. Log the exact output.
 - [ ] F3-002: Call `get_current_view_info` with Revit open on a default blank project. Expect DTO `{viewName, viewType, levelName, scale}`. Log exact response. Any error = F-phase bug.
 - [ ] F3-003: Call one more non-trivial handler (suggested: `analyze_model_statistics` on a blank project — expected: empty counts, no errors). Log response. This verifies the broader tool surface, not just the simplest path.
 

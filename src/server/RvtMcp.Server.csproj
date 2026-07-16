@@ -12,13 +12,13 @@
   <PropertyGroup>
     <IsPackable>true</IsPackable>
     <PackAsTool>true</PackAsTool>
-    <ToolCommandName>rvt-mcp</ToolCommandName>
-    <PackageId>RvtMcp.Server</PackageId>
-    <Version>0.6.0</Version>
-    <Authors>Khoa Le</Authors>
-    <Description>MCP gateway for Autodesk Revit 2022-2027 — expose the Revit API as AI-callable tools with progressive disclosure (toolset gating), a Transaction-safe batch_execute, and a ToolBaker self-evolution engine. Pair with the Revit plugin distributed on GitHub Releases.</Description>
-    <PackageProjectUrl>https://github.com/bimwright/rvt-mcp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/bimwright/rvt-mcp</RepositoryUrl>
+    <ToolCommandName>horizun-revit-mcp</ToolCommandName>
+    <PackageId>Horizun.RevitMcp.Server</PackageId>
+    <Version>0.6.0-horizun.1</Version>
+    <Authors>Horizun;Khoa Le</Authors>
+    <Description>Horizun Revit MCP — hardened MCP gateway for Autodesk Revit 2022-2027 (modal-dialog suppression, async job submit/poll, tolerant JSON contracts, open-any-model). Modified distribution of bimwright/rvt-mcp, Apache-2.0.</Description>
+    <PackageProjectUrl>https://github.com/pabloalejandrozg-ux/horizun-revit-mcp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/pabloalejandrozg-ux/horizun-revit-mcp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageTags>mcp;revit;bim;ai</PackageTags>
