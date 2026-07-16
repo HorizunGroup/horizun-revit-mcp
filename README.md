@@ -127,7 +127,7 @@ Agents change the first half of that loop (describe the task, try it live). They
 
 It is not a universal add-in for every firm. Offices differ. The bet is: start from a shared runtime, grow *your* tools on top.
 
-**Scope posture (honest):** we do not mint a new MCP tool for every edge case. Prefer typed tools when they exist; for everything else use `revit_send_code_to_revit` (C# only). Family *project* management is covered; full Family Editor authoring suites and Revit Viewer hosts are out of scope for now — see [docs/roadmap.md](docs/roadmap.md).
+**Scope posture (honest):** we do not mint a new MCP tool for every edge case. Prefer typed tools when they exist; for everything else use `revit_send_code_to_revit` (C# only). Family *project* management is covered; full Family Editor authoring suites and Revit Viewer hosts are out of scope for now.
 
 ---
 
@@ -365,10 +365,9 @@ Usable, not sacred. CI builds the six plugin shells and server tests. Runtime co
 |-----|--------|
 | [AGENTS.md](AGENTS.md) | Agent install protocol |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Processes, transport, DTO rules |
+| [CHANGES-HORIZUN.md](CHANGES-HORIZUN.md) | What Horizun changed, and why |
 | [docs/bake.md](docs/bake.md) | Adaptive bake and body privacy |
-| [docs/roadmap.md](docs/roadmap.md) | Near-term hardening and non-goals |
 | [docs/kei-equipment-import.md](docs/kei-equipment-import.md) | KEI SQLite tools (default-on `kei` toolset) |
-| [CHANGELOG.md](CHANGELOG.md) | Release notes |
 
 ---
 

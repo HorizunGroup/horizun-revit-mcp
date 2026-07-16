@@ -56,6 +56,24 @@ third-party GPL code is used.
   `revit_submit_async` and `revit_job_status`; server identity rebranded to
   "Horizun Revit MCP" (`horizun-revit-mcp`, 0.6.0-horizun.1).
 
+## Removed from this distribution
+These documented the **upstream's own project**, not the shipped product, so they
+are not carried here. None of it is code, and none of it affects attribution —
+the upstream's copyright, LICENSE and NOTICE are retained in full, as Apache-2.0
+requires.
+- `benchmarks/` — the upstream's v0.1.0 baseline run and its prompt template.
+  Baselines are per-build and per-language; ours would have to be established fresh.
+- `docs/analysis/` — the upstream author's internal session logs, backlogs and
+  product-decision closeouts.
+- `docs/roadmap.md` — the upstream's roadmap and distribution channels (NuGet
+  global tool, upstream release ZIPs), none of which apply here.
+- `CHANGELOG.md` — the upstream's release notes, written against its own version
+  line and `BIMWRIGHT_*` environment variables.
+- `CLAUDE.md` — the upstream's internal agent instructions.
+- Vietnamese sample data in `docs/kei-equipment-import.md` translated to English.
+  The `nameVN`/`specsVN` fields stay: they are part of the KEI schema's bilingual
+  contract, not prose.
+
 ## Distribution / editorial changes
 - `README.md` rewritten for the Horizun distribution (hardening-layer feature
   table, build-from-source install, credits); upstream's translated READMEs

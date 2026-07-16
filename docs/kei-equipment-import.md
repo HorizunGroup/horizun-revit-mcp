@@ -25,7 +25,7 @@ these tools**, never by replacing DB files from outside.
 
 ```json
 {
-  "sql": "UPDATE ProjectEquipmentTypes SET Brand = 'ShinMaywa' WHERE ProjectTypeName = '005. Bơm nước thải'",
+  "sql": "UPDATE ProjectEquipmentTypes SET Brand = 'ShinMaywa' WHERE ProjectTypeName = '005. Wastewater pump'",
   "dryRun": false,
   "database": "auto",
   "busyTimeoutMs": 30000
@@ -47,14 +47,13 @@ Or multiple statements in one transaction (`statements` is a JSON **string** at 
 {
   "items": [
     {
-      "projectTypeName": "005. Bơm nước thải",
+      "projectTypeName": "005. Wastewater pump",
       "categoryCode": "Pump",
-      "nameVN": "Bơm nước thải",
       "nameEN": "Wastewater pump",
-      "specsVN": "Lưu lượng: 167 m3/h\nCột áp: 19m\nCông suất: 15kW",
-      "area": "BỂ THU GOM",
+      "specsEN": "Flow rate: 167 m3/h\nHead: 19 m\nPower: 15 kW",
+      "area": "COLLECTION TANK",
       "brand": "ShinMaywa",
-      "unit": "Cái",
+      "unit": "ea",
       "originalTag": "BM-TG",
       "status": "AIExtracted",
       "quantity": 2,
