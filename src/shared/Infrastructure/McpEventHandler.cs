@@ -144,7 +144,30 @@ namespace RvtMcp.Plugin
                         continue;
                     }
 
-                    var result = command.Execute(app, request.ParamsJson);
+                    // Horizun hardening: (A) suppress modal dialogs only while the
+                    // command runs on the UI thread, and (C) detect a leaked/orphaned
+                    // transaction the moment the command returns. The dialog guard
+                    // also auto-dismisses the "transaction discarded" modal that a
+                    // leaked transaction would otherwise raise and freeze the pump.
+                    CommandResult result;
+                    McpDialogGuard.IsMcpExecuting = true;
+                    try
+                    {
+                        result = command.Execute(app, request.ParamsJson);
+                    }
+                    finally
+                    {
+                        McpDialogGuard.IsMcpExecuting = false;
+                        try
+                        {
+                            var sweepDoc = app.ActiveUIDocument?.Document;
+                            if (sweepDoc != null && sweepDoc.IsModifiable)
+                                App.DebugLog($"McpTransaction: command '{request.CommandName}' left a transaction " +
+                                    "OPEN (document still modifiable). Handlers must wrap edits in using(Transaction) " +
+                                    "so a throw auto-rolls-back; a dangling transaction blocks every later command.");
+                        }
+                        catch { }
+                    }
                     sw.Stop();
                     // responseData is the redacted view used ONLY for session log + summary.
                     // The wire response (below) uses result.Data raw so the agent sees real values.

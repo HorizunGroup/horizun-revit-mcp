@@ -1,0 +1,23 @@
+Horizun Revit MCP
+Copyright 2026 Horizun
+
+This product is a modified distribution of "rvt-mcp":
+    Copyright 2026 Khoa Le
+    https://github.com/bimwright/rvt-mcp
+    Licensed under the Apache License, Version 2.0.
+
+The entire work continues to be licensed under the Apache License, Version 2.0
+(see the LICENSE file). All original copyright, patent, trademark, and
+attribution notices from the upstream work are retained.
+
+Modifications by Horizun (2026), per Apache License Section 4(b):
+  - Added a "hardening layer": global modal-dialog suppression scoped to
+    MCP command execution (McpDialogGuard), an async job registry and
+    submit/poll pattern (McpJobRegistry), orphaned-transaction detection in
+    the UI-thread dispatch pump, and JSON key-contract robustness.
+  - New files carry a Horizun header; modified files are noted in
+    CHANGES-HORIZUN.md.
+
+"Revit" is a registered trademark of Autodesk, Inc. This project is an
+independent, unofficial integration and is not endorsed by or affiliated
+with Autodesk.

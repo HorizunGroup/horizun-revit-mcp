@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Events;
 using RvtMcp.Plugin.Views;
@@ -64,6 +64,7 @@ namespace RvtMcp.Plugin
 
             _idlingUpdater = new IdlingUpdater(ribbonResult);
             application.Idling += OnIdling;
+            McpDialogGuard.Subscribe(application); // Horizun: global modal suppression
             DebugLog("OnStartup: END");
 
             return Result.Succeeded;
@@ -72,6 +73,7 @@ namespace RvtMcp.Plugin
         public Result OnShutdown(UIControlledApplication application)
         {
             application.Idling -= OnIdling;
+            McpDialogGuard.Unsubscribe(application); // Horizun
             _historyWindow?.Close();
             _bakeInboxWindow?.Close();
 
