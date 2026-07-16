@@ -61,7 +61,7 @@ Horizun Revit MCP runs on `127.0.0.1` only. The attack surface is:
 
 Use one of these private channels:
 
-1. **GitHub private vulnerability report** — go to [the Security tab](https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/security/advisories/new) and submit a new advisory draft. This is the preferred path. If the issue also affects the upstream base, please report it to [bimwright/rvt-mcp](https://github.com/bimwright/rvt-mcp/security) as well.
+1. **GitHub private vulnerability report** — go to [the Security tab](https://github.com/HorizunGroup/horizun-revit-mcp/security/advisories/new) and submit a new advisory draft. This is the preferred path. If the issue also affects the upstream base, please report it to [bimwright/rvt-mcp](https://github.com/bimwright/rvt-mcp/security) as well.
 2. **Email the maintainer** — contact via the address on the commit history.
 
 Include:

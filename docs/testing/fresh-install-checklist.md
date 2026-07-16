@@ -2,7 +2,7 @@
 
 Walk the public install flow on a fresh machine as a first-time user. Goal: verify install-from-zero friction before the first non-dev user files an issue.
 
-Target: this repo at latest `master` or latest tag, reached purely via README starting from `https://github.com/pabloalejandrozg-ux/horizun-revit-mcp`.
+Target: this repo at latest `master` or latest tag, reached purely via README starting from `https://github.com/HorizunGroup/horizun-revit-mcp`.
 
 ## Scope
 
@@ -28,7 +28,7 @@ Target: this repo at latest `master` or latest tag, reached purely via README st
 | Fresh machine type | Windows 11 VM (Hyper-V or VMware), no dev tools pre-installed | F1-001 |
 | Primary Revit version | Revit 2024 (.NET Framework 4.8, most common install in user base) | F1-002 |
 | Primary MCP client | Claude Code CLI | F1-003 |
-| Starting point for the "user" | `https://github.com/pabloalejandrozg-ux/horizun-revit-mcp` README only | F1-004 |
+| Starting point for the "user" | `https://github.com/HorizunGroup/horizun-revit-mcp` README only | F1-004 |
 | License for Revit on test machine | User has own license / trial on test VM | out-of-scope |
 
 ## Phase F1 — Prep (4 tasks)

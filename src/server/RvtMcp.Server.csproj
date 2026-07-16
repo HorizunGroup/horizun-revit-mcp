@@ -17,8 +17,8 @@
     <Version>0.6.0-horizun.1</Version>
     <Authors>Horizun;Khoa Le</Authors>
     <Description>Horizun Revit MCP — hardened MCP gateway for Autodesk Revit 2022-2027 (modal-dialog suppression, async job submit/poll, tolerant JSON contracts, open-any-model). Modified distribution of bimwright/rvt-mcp, Apache-2.0.</Description>
-    <PackageProjectUrl>https://github.com/pabloalejandrozg-ux/horizun-revit-mcp</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/pabloalejandrozg-ux/horizun-revit-mcp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/HorizunGroup/horizun-revit-mcp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/HorizunGroup/horizun-revit-mcp</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageTags>mcp;revit;bim;ai</PackageTags>

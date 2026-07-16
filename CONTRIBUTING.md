@@ -17,7 +17,7 @@ The Revit API itself is pulled from [Nice3point.Revit.Api.*](https://www.nuget.o
 ### Clone + build
 
 ```bash
-git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+git clone https://github.com/HorizunGroup/horizun-revit-mcp.git
 cd horizun-revit-mcp
 dotnet build src/RvtMcp.sln -c Debug
 ```

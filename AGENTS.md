@@ -1,5 +1,5 @@
 ﻿<!-- agents-install-guide -->
-<!-- mcp-name: io.github.pabloalejandrozg-ux/horizun-revit-mcp -->
+<!-- mcp-name: io.github.HorizunGroup/horizun-revit-mcp -->
 
 # AGENTS.md — Horizun Revit MCP install guide for AI agents
 
@@ -65,7 +65,7 @@ If Revit is not running when the user first tries a tool call, that's fine — t
 
 ```powershell
 # Horizun releases are not published yet — install from source instead:
-git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+git clone https://github.com/HorizunGroup/horizun-revit-mcp.git
 cd horizun-revit-mcp
 dotnet build src/plugin-r26/RvtMcp.Plugin.R26.csproj -c Release   # pick your Revit year(s)
 dotnet build src/server/RvtMcp.Server.csproj -c Release
@@ -311,7 +311,7 @@ Copy-Item 'path\to\config.ext.bimwright.bak' 'path\to\config.ext' -Force
 | Host config parse error after edit | Agent wrote invalid JSON/TOML. | Restore from `.bimwright.bak`, retry with a diff preview. |
 | Server starts but no tools show up | Toolset filter hiding them. | Check `--toolsets` / `--read-only` flags on the host config entry. |
 
-For anything not in this table, open an issue at <https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/issues> with the host name, Revit year, and the exact error.
+For anything not in this table, open an issue at <https://github.com/HorizunGroup/horizun-revit-mcp/issues> with the host name, Revit year, and the exact error.
 
 ---
 

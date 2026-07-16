@@ -1,4 +1,4 @@
-<!-- mcp-name: io.github.pabloalejandrozg-ux/horizun-revit-mcp -->
+<!-- mcp-name: io.github.HorizunGroup/horizun-revit-mcp -->
 
 <h1 align="center">Horizun Revit MCP</h1>
 
@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/actions/workflows/build.yml"><img src="https://github.com/pabloalejandrozg-ux/horizun-revit-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
+  <a href="https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/build.yml"><img src="https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/build.yml/badge.svg" alt="build" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="license" /></a>
   <a href="#supported-revit-versions"><img src="https://img.shields.io/badge/Revit-2022--2027-186BFF" alt="Revit 2022-2027" /></a>
   <a href="#tools"><img src="https://img.shields.io/badge/MCP-230%2B%20tools-6C47FF" alt="MCP tools" /></a>
@@ -44,7 +44,7 @@ on Revit 2025/2026:
 Clone and build from source (releases will follow):
 
 ```powershell
-git clone https://github.com/pabloalejandrozg-ux/horizun-revit-mcp.git
+git clone https://github.com/HorizunGroup/horizun-revit-mcp.git
 cd horizun-revit-mcp
 
 # build the plugins you need (r22..r27 = Revit 2022..2027) and the server
