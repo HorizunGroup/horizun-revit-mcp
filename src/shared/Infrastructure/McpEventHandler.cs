@@ -55,6 +55,11 @@ namespace RvtMcp.Plugin
                 if (request.Tcs.Task.IsCompleted)
                     continue;
 
+                // Horizun hardening (B): if this is an async job, flag it Running the
+                // moment the pump picks it up. No-op for ordinary requests (their Id
+                // is not in the job registry).
+                McpJobRegistry.MarkRunning(request.Id);
+
                 var sw = Stopwatch.StartNew();
                 try
                 {
@@ -99,8 +104,18 @@ namespace RvtMcp.Plugin
                         continue;
                     }
 
+                    // Horizun hardening (D): tolerant-reader coercion. Repair the two
+                    // safe classes of client mistake (numeric/boolean strings, and
+                    // camelCase<->snake_case key drift) BEFORE validating, so the
+                    // handler receives clean, correctly-typed params. The original
+                    // request.ParamsJson is still what gets logged (a truthful record
+                    // of what arrived); effectiveParams is what we validate and run.
+                    var effectiveParams = SchemaCoercion.Coerce(command.ParametersSchema, request.ParamsJson);
+                    if (!ReferenceEquals(effectiveParams, request.ParamsJson))
+                        App.DebugLog($"SchemaCoercion: '{request.CommandName}' params normalized before execution.");
+
                     // S6 strict schema validation — fail fast with error-as-teacher envelope
-                    var validation = SchemaValidator.Validate(command.ParametersSchema, request.ParamsJson);
+                    var validation = SchemaValidator.Validate(command.ParametersSchema, effectiveParams);
                     if (!validation.IsValid)
                     {
                         sw.Stop();
@@ -153,7 +168,7 @@ namespace RvtMcp.Plugin
                     McpDialogGuard.IsMcpExecuting = true;
                     try
                     {
-                        result = command.Execute(app, request.ParamsJson);
+                        result = command.Execute(app, effectiveParams);
                     }
                     finally
                     {

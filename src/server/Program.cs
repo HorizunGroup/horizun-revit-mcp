@@ -245,10 +245,12 @@ namespace RvtMcp.Server
         {
             opts.ServerInfo = new ModelContextProtocol.Protocol.Implementation
             {
-                Name = "rvt-mcp",
-                Title = "Revit MCP",
-                Version = "0.6.0",
-                Description = "Model Context Protocol gateway for Autodesk Revit 2022-2027",
+                Name = "horizun-revit-mcp",
+                Title = "Horizun Revit MCP",
+                Version = "0.6.0-horizun.1",
+                Description = "Horizun Revit MCP — hardened MCP gateway for Autodesk Revit 2022-2027 " +
+                    "(modal-dialog suppression, async job submit/poll, tolerant JSON contracts). " +
+                    "A modified distribution of bimwright/rvt-mcp, Apache-2.0.",
                 WebsiteUrl = "https://github.com/bimwright/rvt-mcp"
             };
             opts.ServerInstructions = ServerInstructionsText;
@@ -259,7 +261,7 @@ namespace RvtMcp.Server
         // signal for queries like "list Revit tools"), then a compact toolset-name index
         // — 2 examples per toolset — so semantic search for individual ops still resolves.
         private const string ServerInstructionsText =
-@"rvt-mcp — MCP gateway for Autodesk Revit 2022-2027. Use whenever user works with .rvt, Revit, BIM, walls, doors, windows, floors, ceilings, roofs, levels, grids, rooms, sheets, schedules, families, views, view templates, view filters, MEP (ducts, pipes, cable trays, conduits, HVAC, lighting, plumbing), structural (columns, beams, foundations, rebar), dimensions, tags, annotations, filled regions, keynotes, worksets, phases, linked models, parameters, materials, IFC, DWG, NWC, PDF.
+@"Horizun Revit MCP — MCP gateway for Autodesk Revit 2022-2027. Use whenever user works with .rvt, Revit, BIM, walls, doors, windows, floors, ceilings, roofs, levels, grids, rooms, sheets, schedules, families, views, view templates, view filters, MEP (ducts, pipes, cable trays, conduits, HVAC, lighting, plumbing), structural (columns, beams, foundations, rebar), dimensions, tags, annotations, filled regions, keynotes, worksets, phases, linked models, parameters, materials, IFC, DWG, NWC, PDF.
 
 Multi-Revit: if >1 Revit may be open, call revit_list_available_targets THEN revit_switch_target. Versions are 4-digit calendar years (2022..2027), NOT R-codes.
 
@@ -507,12 +509,19 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
             }
         }
 
-        public static async Task<JObject> SendToRevit(string command, object parameters = null)
+        public static async Task<JObject> SendToRevit(string command, object parameters = null, bool async = false)
         {
             EnsureConnected();
 
             var id = $"req-{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid().ToString("N").Substring(0, 6)}";
-            var request = JsonConvert.SerializeObject(new { id, command, @params = parameters ?? new { }, token = _token }, RequestJsonSettings);
+            // Horizun hardening (B): when async, add a top-level "async" flag the
+            // plugin's McpAsyncRouter picks up to return a job_id immediately. When
+            // false the wire request is byte-identical to the upstream base, so the
+            // ~225 existing callers are unaffected.
+            object payload = async
+                ? (object)new { id, command, @params = parameters ?? new { }, token = _token, async = true }
+                : new { id, command, @params = parameters ?? new { }, token = _token };
+            var request = JsonConvert.SerializeObject(payload, RequestJsonSettings);
 
             var tcs = new TaskCompletionSource<string>();
             _pending[id] = tcs;
@@ -2142,6 +2151,59 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
                     parameters = new { message, title };
                 }
                 var result = await ToolGateway.SendToRevit("show_message", parameters);
+                return JsonConvert.SerializeObject(result);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "revit_submit_async", Destructive = false, Idempotent = false), System.ComponentModel.Description(
+            "Run a long Revit operation in the background so it can't trip the 60s request timeout. " +
+            "Use for exports (revit_export_ifc, revit_export_dwg, revit_export_navisworks, revit_render_view), sync-to-central, or heavy send_code. " +
+            "Required: tool — the SAME tool name you would call directly (e.g. 'revit_export_ifc'; a leading 'revit_' is optional). " +
+            "Optional: params_json — a JSON object string of that tool's parameters (e.g. '{\"filePath\":\"C:/out/model.ifc\"}'). " +
+            "Returns immediately with {status:'accepted', job_id}. Then poll revit_job_status(job_id) until done==true. " +
+            "The work still runs on Revit's single UI thread — this defers the wait, it does not parallelize Revit.")]
+        public static async Task<string> SubmitAsync(string tool, string params_json = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(tool))
+                    return "Error: 'tool' is required (the command to run async, e.g. 'revit_export_ifc').";
+
+                // Accept either the public tool name ('revit_export_ifc') or the
+                // internal command ('export_ifc'); the plugin speaks the internal name.
+                var command = tool.Trim();
+                if (command.StartsWith("revit_", StringComparison.OrdinalIgnoreCase))
+                    command = command.Substring("revit_".Length);
+                if (string.Equals(command, "submit_async", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(command, "job_status", StringComparison.OrdinalIgnoreCase))
+                    return $"Error: '{tool}' cannot itself be run async.";
+
+                object parameters = null;
+                if (!string.IsNullOrWhiteSpace(params_json))
+                {
+                    try { parameters = JObject.Parse(params_json); }
+                    catch (Exception pe) { return $"Error: params_json is not a valid JSON object: {pe.Message}"; }
+                }
+
+                var result = await ToolGateway.SendToRevit(command, parameters, async: true);
+                return JsonConvert.SerializeObject(result);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        [McpServerTool(Name = "revit_job_status", ReadOnly = true, Idempotent = true), System.ComponentModel.Description(
+            "Poll the status/result of an async Revit job started with revit_submit_async. " +
+            "Required: job_id (from the submit response). " +
+            "Returns {job_id, tool, state ('pending'|'running'|'done'|'error'), done (bool), job_success, result (the tool's data once done), error, created_utc, completed_utc}. " +
+            "Poll every few seconds until done==true, then read 'result' (or 'error' if job_success is false).")]
+        public static async Task<string> JobStatus(string job_id)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(job_id))
+                    return "Error: 'job_id' is required (from the revit_submit_async response).";
+                var result = await ToolGateway.SendToRevit("job_status", new { job_id });
                 return JsonConvert.SerializeObject(result);
             }
             catch (Exception ex) { return $"Error: {ex.Message}"; }

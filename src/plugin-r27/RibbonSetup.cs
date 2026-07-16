@@ -16,7 +16,7 @@ namespace RvtMcp.Plugin
 
     public static class RibbonSetup
     {
-        private const string PanelName = "RvtMcp";
+        private const string PanelName = "Horizun MCP";
         private static readonly HashSet<string> CreatedButtons = new HashSet<string>();
 
         public static RibbonResult Create(UIControlledApplication application, RvtMcpConfig config = null, BakedToolRuntimeCache runtimeCache = null)

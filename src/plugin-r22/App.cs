@@ -108,6 +108,11 @@ namespace RvtMcp.Plugin
                     return;
                 }
 
+                // Horizun hardening (B): route async-submit and job_status polls off
+                // the UI pump — a status check must never wait behind the job it polls.
+                if (McpAsyncRouter.TryRoute(request, tcs, _handler, _externalEvent))
+                    return;
+
                 var pending = new PendingRequest
                 {
                     Id = request.Value<string>("id"),

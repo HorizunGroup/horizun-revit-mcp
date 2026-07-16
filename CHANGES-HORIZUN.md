@@ -26,24 +26,42 @@ third-party GPL code is used.
   `FailuresProcessing` suppression, gated by `IsMcpExecuting` so only MCP
   commands are affected, never the interactive user's dialogs.
 - `src/shared/Infrastructure/McpJobRegistry.cs` — process-wide async job store
-  (foundation for submit→job_id→poll).
+  (submit→job_id→poll backbone).
+- `src/shared/Infrastructure/McpAsyncRouter.cs` — (B) transport-thread router:
+  `job_status` polls are answered straight from the registry (never queued
+  behind the job they poll), and `"async": true` submits return a `job_id`
+  immediately while the real work runs on the UI pump.
+- `src/shared/Infrastructure/SchemaCoercion.cs` — (D) tolerant-reader pass:
+  repairs numeric/boolean strings and camelCase↔snake_case key drift BEFORE
+  validation, conservatively (only where the schema asks for a non-string type,
+  and only when a key match is unambiguous), so a call that was obviously meant
+  to succeed isn't rejected on a round-trip.
 
 ## Modified files
 - `src/shared/Infrastructure/McpEventHandler.cs` — wrap `command.Execute` so
   (A) modal suppression is active only during on-UI-thread execution, and
   (C) a transaction left open by a handler is detected and logged the instant
   the command returns (the dialog guard also auto-dismisses the resulting
-  "transaction discarded" modal instead of freezing the pump).
+  "transaction discarded" modal instead of freezing the pump). Also (B) marks a
+  job `Running` when the pump picks it up, and (D) runs `SchemaCoercion` before
+  validating/executing (the original params are still what gets logged).
 - `src/plugin-r22..r27/App.cs` — subscribe/unsubscribe `McpDialogGuard` next to
-  the existing `Idling` hookup (one line each).
+  the existing `Idling` hookup, and route async/job_status via `McpAsyncRouter`
+  before the normal enqueue path (one line each).
+- `src/plugin-r22..r27/RibbonSetup.cs` — ribbon panel labelled "Horizun MCP".
+- `src/server/Program.cs` — (B) `SendToRevit` carries an optional `async` flag
+  (wire-identical to the base when false); two new `meta` tools
+  `revit_submit_async` and `revit_job_status`; server identity rebranded to
+  "Horizun Revit MCP" (`horizun-revit-mcp`, 0.6.0-horizun.1).
 
-## Roadmap (next increments)
-- (B) Async submit/poll wired through the transport callback + a `job_status`
-  tool (registry already in place).
-- (D) Extend `SchemaValidator` with key aliasing/coercion for robust JSON
-  contracts.
-- Product branding (ribbon tab, package id) and a build/deploy/test pass on
-  Revit 2025/2026.
+## Validation
+- All six plugins (r22–r27) and the server build clean (0 errors).
+- `SchemaCoercion` — 13/13 assertions on the shipping source, including the
+  no-corruption invariants (numeric-looking strings on string fields stay
+  strings; non-parseable values and already-present canonical keys are left
+  untouched).
+- `McpJobRegistry` — 8/8 lifecycle assertions (pending→running→done, error path,
+  no state regression on a completed job, null-safety, bounded prune).
 
 ## Attribution
 Base: **Khoa Le — `bimwright/rvt-mcp`** (Apache-2.0). Hardening layer:
