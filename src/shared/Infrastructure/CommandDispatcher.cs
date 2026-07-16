@@ -13,6 +13,7 @@ namespace RvtMcp.Plugin
         {
             _runtimeCache = runtimeCache;
             Register(new Handlers.ShowMessageHandler());
+            Register(new Handlers.OpenDocumentHandler());
             Register(new Handlers.GetCurrentViewHandler());
             Register(new Handlers.GetSelectedElementsHandler());
             Register(new Handlers.GetFamilyTypesHandler());

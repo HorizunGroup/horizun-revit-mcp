@@ -2156,6 +2156,22 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
             catch (Exception ex) { return $"Error: {ex.Message}"; }
         }
 
+        [McpServerTool(Name = "revit_open_document", Destructive = false, Idempotent = true), System.ComponentModel.Description(
+            "Open a Revit model (.rvt) or family (.rfa) from disk and make it the ACTIVE document. " +
+            "Use before any other tool when the target model is not open in Revit yet. " +
+            "Required: file_path (absolute). Optional: detach (open workshared central detached, preserving worksets), audit. " +
+            "Already-active file is a no-op; already-open file gets a view-change request. " +
+            "Returns {title, path, status ('opened'|'already_active'|'activation_requested')}.")]
+        public static async Task<string> OpenDocument(string file_path, bool detach = false, bool audit = false)
+        {
+            try
+            {
+                var result = await ToolGateway.SendToRevit("open_document", new { file_path, detach, audit });
+                return JsonConvert.SerializeObject(result);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
         [McpServerTool(Name = "revit_submit_async", Destructive = false, Idempotent = false), System.ComponentModel.Description(
             "Run a long Revit operation in the background so it can't trip the 60s request timeout. " +
             "Use for exports (revit_export_ifc, revit_export_dwg, revit_export_navisworks, revit_render_view), sync-to-central, or heavy send_code. " +

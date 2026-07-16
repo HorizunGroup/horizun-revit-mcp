@@ -9,8 +9,13 @@ namespace RvtMcp.Plugin.Handlers
 {
     /// <summary>
     /// Exports the active model to an IFC (Industry Foundation Classes) file using
-    /// IFCExportOptions (available Revit 2022+). No Transaction is required for an
-    /// export operation.
+    /// IFCExportOptions (available Revit 2022+).
+    ///
+    /// Horizun fix: the modern IFC exporter WRITES IFC GUIDs to elements during
+    /// export, so Document.Export throws "Modifying is forbidden because the
+    /// document has no open transaction" unless one is open. The export is wrapped
+    /// in a committed Transaction (matching Revit UI behavior, which persists the
+    /// GUIDs so they stay stable across exports).
     ///
     /// The IFCVersion enum gained/renamed members across Revit 2022-2027, so the
     /// FileVersion assignment is wrapped in try/catch and silently falls back to the
@@ -121,7 +126,12 @@ namespace RvtMcp.Plugin.Handlers
 
             try
             {
-                doc.Export(outputFolder, fileName, opts);
+                using (var tx = new Transaction(doc, "Horizun MCP - IFC Export"))
+                {
+                    tx.Start();
+                    doc.Export(outputFolder, fileName, opts);
+                    tx.Commit();
+                }
             }
             catch (Exception ex)
             {
