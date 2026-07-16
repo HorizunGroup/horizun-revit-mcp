@@ -1,11 +1,11 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <RevitAddIns>
   <AddIn Type="Application">
-    <Name>RvtMcp</Name>
+    <Name>Horizun Revit MCP</Name>
     <Assembly>RvtMcp\RvtMcp.Plugin.dll</Assembly>
     <FullClassName>RvtMcp.Plugin.App</FullClassName>
     <AddInId>{d50b0e16-5a4e-47e6-87ea-fa2890c758e3}</AddInId>
-    <VendorId>bimwright</VendorId>
-    <VendorDescription>Revit MCP Gateway</VendorDescription>
+    <VendorId>horizun</VendorId>
+    <VendorDescription>Horizun - hardened Revit MCP gateway (async jobs, modal suppression)</VendorDescription>
   </AddIn>
 </RevitAddIns>

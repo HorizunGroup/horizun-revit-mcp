@@ -49,6 +49,8 @@ third-party GPL code is used.
   the existing `Idling` hookup, and route async/job_status via `McpAsyncRouter`
   before the normal enqueue path (one line each).
 - `src/plugin-r22..r27/RibbonSetup.cs` — ribbon panel labelled "Horizun MCP".
+- `src/plugin-r22..r27/RvtMcp.*.addin` — add-in manifest Name/VendorId/
+  VendorDescription rebranded to Horizun (AddInId GUID and class refs unchanged).
 - `src/server/Program.cs` — (B) `SendToRevit` carries an optional `async` flag
   (wire-identical to the base when false); two new `meta` tools
   `revit_submit_async` and `revit_job_status`; server identity rebranded to
