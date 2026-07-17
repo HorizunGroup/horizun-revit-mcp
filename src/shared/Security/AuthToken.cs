@@ -23,6 +23,8 @@ namespace RvtMcp.Plugin
             var year = RevitVersion ?? "2022";
             var pid = System.Diagnostics.Process.GetCurrentProcess().Id;
             var json = BuildDiscoveryJson(year, transport: "tcp", port: port, pipeName: null, authToken: _token, pid: pid);
+            _lastDiscoveryJson = json;                       // Horizun: para EnsureDiscoveryFile()
+            _lastDiscoveryFileName = DiscoveryFileName(year);
             WriteDiscoveryFile(DiscoveryFileName(year), json);
         }
 
@@ -32,7 +34,36 @@ namespace RvtMcp.Plugin
             var year = RevitVersion ?? "2027";
             var pid = System.Diagnostics.Process.GetCurrentProcess().Id;
             var json = BuildDiscoveryJson(year, transport: "pipe", port: null, pipeName: pipeName, authToken: _token, pid: pid);
+            _lastDiscoveryJson = json;                       // Horizun: para EnsureDiscoveryFile()
+            _lastDiscoveryFileName = DiscoveryFileName(year);
             WriteDiscoveryFile(DiscoveryFileName(year), json);
+        }
+
+        // Horizun: the discovery file is written once at startup and never checked
+        // again. If anything removes it while Revit runs — antivirus, a temp sweep,
+        // a careless delete — the MCP becomes unreachable and says nothing: the
+        // plugin is healthy, the pipe is listening, and no client can find it. The
+        // only cure was restarting Revit. We keep the last payload and let the
+        // Idling loop put the file back.
+        private static string _lastDiscoveryJson;
+        private static string _lastDiscoveryFileName;
+
+        /// <summary>
+        /// Rewrite the discovery file if it went missing. Cheap (one File.Exists),
+        /// called from the Idling loop. Returns true only when it actually restored
+        /// the file, so the caller can log a restore rather than a heartbeat.
+        /// </summary>
+        public static bool EnsureDiscoveryFile()
+        {
+            if (_lastDiscoveryJson == null || _lastDiscoveryFileName == null) return false;
+            try
+            {
+                var path = Path.Combine(DiscoveryDir(), _lastDiscoveryFileName);
+                if (File.Exists(path)) return false;
+                WriteDiscoveryFile(_lastDiscoveryFileName, _lastDiscoveryJson);
+                return true;
+            }
+            catch { return false; }
         }
 
         /// <summary>
@@ -47,6 +78,8 @@ namespace RvtMcp.Plugin
                 var dir = DiscoveryDir();
                 var filePath = Path.Combine(dir, DiscoveryFileName(RevitVersion));
                 if (File.Exists(filePath)) File.Delete(filePath);
+                _lastDiscoveryJson = null;   // Horizun: shutdown intencional, no lo restaures
+                _lastDiscoveryFileName = null;
             }
             catch { /* best-effort on shutdown path */ }
         }

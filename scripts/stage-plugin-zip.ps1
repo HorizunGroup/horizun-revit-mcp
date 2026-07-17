@@ -80,7 +80,12 @@ foreach ($s in $shells) {
         'SQLitePCLRaw*.dll',
         'Microsoft.CodeAnalysis*.dll',
         'System.Collections.Immutable.dll',   # net48 only, harmless glob-miss on net8/10
-        'System.Reflection.Metadata.dll'      # net48 only
+        'System.Reflection.Metadata.dll',     # net48 only
+        # Horizun: IronPython runtime for horizun_execute_python. Without these the
+        # handler loads and then fails at first call — the DLLs are not optional.
+        'IronPython*.dll',
+        'Microsoft.Scripting*.dll',
+        'Microsoft.Dynamic.dll'
     )
     foreach ($p in $patterns) {
         Get-ChildItem -Path $binDir -Filter $p -File -ErrorAction SilentlyContinue |
@@ -102,6 +107,19 @@ foreach ($s in $shells) {
             # root copy beside RvtMcp.Plugin.dll for Microsoft.Data.Sqlite.
             Copy-Item -Path $nativeSqlite -Destination $destDir -Force
         }
+    }
+
+    # Horizun: IronPython standard library. Shipping it is the whole point:
+    # bridges that omit it force you to hand-roll JSON with string joins.
+    # (ASCII only in this file: it has no BOM, so PowerShell 5.1 reads it as
+    #  CP1252 and a UTF-8 em dash lands as a quote that closes the string.)
+    $libSrc = Get-ChildItem -Path $binDir -Directory -Filter 'lib' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($libSrc) {
+        Copy-Item -Path $libSrc.FullName -Destination (Join-Path $destDir 'lib') -Recurse -Force
+        $libCount = (Get-ChildItem (Join-Path $destDir 'lib') -Recurse -File -ErrorAction SilentlyContinue).Count
+        Write-Host ("       + Python stdlib: {0} files" -f $libCount)
+    } else {
+        Write-Warning "R$year staged WITHOUT the Python stdlib: horizun_execute_python will fail on 'import json'."
     }
 
     # Addin manifest at plugin root.

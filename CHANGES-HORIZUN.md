@@ -36,6 +36,24 @@ third-party GPL code is used.
   validation, conservatively (only where the schema asks for a non-string type,
   and only when a key match is unambiguous), so a call that was obviously meant
   to succeed isn't rejected on a round-trip.
+- `src/shared/Infrastructure/HorizunGuard.cs` — the contract that keeps a handler
+  from reporting work it did not do. `Commit()` throws when Revit answers
+  anything other than `Committed` (Revit rolls a transaction back and returns a
+  status rather than throwing, so `t.Commit();` with the result discarded is a
+  handler that reports success on an empty write — we measured one that claimed
+  758 purged types while nothing was written). `Verify()` compares intended vs.
+  actual counts, `Reconcile()` reports two sources of a quantity side by side
+  instead of picking one, and the unit constants end the ft³-reported-as-m³ class
+  of error. Every rewritten handler is built on this.
+- `src/shared/Handlers/Horizun/HorizunExecutePythonHandler.cs` —
+  `horizun_execute_python`: Python against the live Revit API on the UI thread,
+  with `doc`/`uidoc`/`uiapp`/`app` injected. Two things the IronPython bridges we
+  have used do not do: the **standard library ships** (`import json`, `re`, `csv`,
+  `datetime` all resolve — bridges that omit it force you to hand-roll JSON with
+  string joins), and **it cannot leave a transaction open** (a script that throws
+  inside one is rolled back in a `finally`, instead of poisoning every later
+  command with "Modification of the document is forbidden"). 228 typed tools will
+  never cover the whole API; this does.
 
 ## Modified files
 - `src/shared/Infrastructure/McpEventHandler.cs` — wrap `command.Execute` so
@@ -86,6 +104,17 @@ requires.
 - New handler `open_document` (open/activate any `.rvt`/`.rfa`, detach/audit) and
   an upstream bugfix: `export_ifc` now runs inside a committed `Transaction`
   (modern Revit's IFC exporter writes element GUIDs and throws without one).
+- `src/shared/Security/AuthToken.cs` — the discovery file (`revit-YYYY.json`) was
+  written once at startup and never looked at again, so if anything removed it
+  mid-session — antivirus, a temp sweep, a careless delete — the plugin stayed
+  healthy and listening while every client silently failed to find it, and the
+  only cure was restarting Revit. We hit this ourselves. The last payload is now
+  kept and the Idling loop puts the file back; a deliberate shutdown still clears
+  it so a dead plugin is not resurrected.
+- `src/plugin-r22..r27/*.csproj` — reference `IronPython` + `IronPython.StdLib`
+  3.4.2, and `scripts/stage-plugin-zip.ps1` ships both the runtime DLLs and the
+  640-file stdlib. The staging script warns loudly if the stdlib is ever missing:
+  without it `horizun_execute_python` loads fine and then fails on `import json`.
 
 ## Validation
 - All six plugins (r22–r27) and the server build clean (0 errors).

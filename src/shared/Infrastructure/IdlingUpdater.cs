@@ -18,6 +18,12 @@ namespace RvtMcp.Plugin
 
         public void Update(bool isRunning, ITransportServer transport, McpSessionLog sessionLog, bool toastEnabled)
         {
+            // Horizun: si algo se llevo el discovery file, reponerlo. Sin esto el
+            // plugin sigue vivo y escuchando pero ningun cliente lo encuentra, y el
+            // unico arreglo era reiniciar Revit.
+            if (isRunning && AuthToken.EnsureDiscoveryFile())
+                App.DebugLog("AuthToken: discovery file missing -> restored.");
+
             if (_ribbon == null) return;
 
             var now = DateTime.Now;
