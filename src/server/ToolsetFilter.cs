@@ -19,14 +19,19 @@ namespace RvtMcp.Server
             "query", "create", "modify", "delete", "view",
             "export", "annotation", "mep", "schedule", "families", "graphics", "toolbaker", "meta", "lint",
             "sheets", "materials", "geometry", "rooms", "links", "parameters", "organization", "workflows",
-            "structural", "kei"
+            "structural", "kei",
+            "horizun"
         };
 
         public static readonly string[] DefaultOn =
         {
             "query", "create", "view", "schedule", "families", "mep", "graphics", "export", "toolbaker", "meta", "lint",
             "sheets", "materials", "geometry", "annotation", "rooms", "links", "parameters", "organization", "workflows",
-            "structural", "kei"
+            "structural", "kei",
+            // Horizun: on by default. These tools are the reason this
+            // distribution exists; shipping them off would be shipping a fork of
+            // upstream with extra dead code.
+            "horizun"
         };
 
         public static readonly string[] WriteCapable =
