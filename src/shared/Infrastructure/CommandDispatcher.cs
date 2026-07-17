@@ -26,6 +26,8 @@ namespace RvtMcp.Plugin
             Register(new Handlers.HorizunWriteParamsHandler());
             Register(new Handlers.HorizunDeleteHandler());
             Register(new Handlers.HorizunDocumentSessionHandler());
+            Register(new Handlers.HorizunBindSharedParamHandler());
+            Register(new Handlers.HorizunFamilyApplyHandler());
             Register(new Handlers.GetCurrentViewHandler());
             Register(new Handlers.GetSelectedElementsHandler());
             Register(new Handlers.GetFamilyTypesHandler());

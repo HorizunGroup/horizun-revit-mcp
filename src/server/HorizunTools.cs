@@ -291,6 +291,97 @@ namespace RvtMcp.Server
             catch (Exception ex) { return $"Error: {ex.Message}"; }
         }
 
+        // ---- BIND -------------------------------------------------------------
+
+        [McpServerTool(Name = "horizun_bind_shared_param"),
+         System.ComponentModel.Description(
+            "Bind a shared parameter from an SPF into the project, and prove all three things that go wrong here. " +
+            "PREFER THIS over bind_shared_parameter/create_shared_parameter. " +
+            "(1) ReInsert with only the NEW categories DROPS the already-bound ones and loses their values — this " +
+            "unions them by default and reports the categories that ACTUALLY ended up bound, read back from the model, " +
+            "never the ones you asked for. (2) Right after Insert the API hands back the ExternalDefinition, which has " +
+            "no VariesAcrossGroups — this reaches the real InternalDefinition through an element and re-reads the flag. " +
+            "(3) Without SetAllowVaryBetweenGroups(true), writing different values to instances inside Model Groups " +
+            "raises Revit's DESAGRUPAR modal, which HANGS THE SESSION — and it hangs later, mid-write, far from the " +
+            "cause. If the flag could not be set (e.g. no element carries the parameter yet) that is REPORTED, not " +
+            "swallowed. " +
+            "categories: JSON array of BuiltInCategory names. binding_kind: 'Instance' or 'Type'. " +
+            "group: e.g. 'PG_IDENTITY_DATA'. Run this BEFORE writing per-instance values.")]
+        public static async Task<string> BindSharedParam(
+            string spf_path,
+            string categories,
+            string param_guid = null,
+            string param_name = null,
+            string binding_kind = null,
+            string group = null,
+            bool? merge_existing_categories = null,
+            bool? allow_vary_between_groups = null,
+            string target_document_title = null)
+        {
+            try
+            {
+                var p = new JObject { ["spf_path"] = spf_path, ["categories"] = JArray.Parse(categories) };
+                if (!string.IsNullOrWhiteSpace(param_guid)) p["param_guid"] = param_guid;
+                if (!string.IsNullOrWhiteSpace(param_name)) p["param_name"] = param_name;
+                if (!string.IsNullOrWhiteSpace(binding_kind)) p["binding_kind"] = binding_kind;
+                if (!string.IsNullOrWhiteSpace(group)) p["group"] = group;
+                if (merge_existing_categories.HasValue) p["merge_existing_categories"] = merge_existing_categories.Value;
+                if (allow_vary_between_groups.HasValue) p["allow_vary_between_groups"] = allow_vary_between_groups.Value;
+                if (!string.IsNullOrWhiteSpace(target_document_title)) p["target_document_title"] = target_document_title;
+                var result = await ToolGateway.SendToRevit("horizun_bind_shared_param", p);
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
+        // ---- FAMILY -----------------------------------------------------------
+
+        [McpServerTool(Name = "horizun_family_apply"),
+         System.ComponentModel.Description(
+            "Homologate the ACTIVE family document (.rfa) in one transaction: collapse types down to one named " +
+            "family_name, add missing shared parameters from an SPF, clear identity formulas before writing values " +
+            "(a parameter carrying a formula refuses a value), set values, remove named params, strip vendor junk. " +
+            "It does NOT open the file — rfa_path is a GUARD that must match the open document, because opening a .rfa " +
+            "on the wrong Revit version upgrades it irreversibly. Open it with horizun_document_session first. " +
+            "It saves IN PLACE only: never save-as, never rename, never delete the original. " +
+            "THE GEOMETRY INVARIANT IS ENFORCED, not suggested: the count of Double parameters and the presence of " +
+            "IsCustom are measured before and after, and if either moved the whole transaction ROLLS BACK — a batch " +
+            "cannot continue past a family whose geometry shifted. Every reported value is re-read from the family " +
+            "after the commit; a value that did not read back is a failure, not a warning. Idempotent. " +
+            "shared_params: JSON array of {name, instance, group}. values: JSON object of {param: value}.")]
+        public static async Task<string> FamilyApply(
+            string rfa_path = null,
+            string expected_revit_version = null,
+            string family_name = null,
+            bool? collapse_types = null,
+            string keep_type = null,
+            string spf_path = null,
+            string shared_params = null,
+            string values = null,
+            bool? clear_formulas = null,
+            string remove_params = null,
+            bool? dry_run = null)
+        {
+            try
+            {
+                var p = new JObject();
+                if (!string.IsNullOrWhiteSpace(rfa_path)) p["rfa_path"] = rfa_path;
+                if (!string.IsNullOrWhiteSpace(expected_revit_version)) p["expected_revit_version"] = expected_revit_version;
+                if (!string.IsNullOrWhiteSpace(family_name)) p["family_name"] = family_name;
+                if (collapse_types.HasValue) p["collapse_types"] = collapse_types.Value;
+                if (!string.IsNullOrWhiteSpace(keep_type)) p["keep_type"] = keep_type;
+                if (!string.IsNullOrWhiteSpace(spf_path)) p["spf_path"] = spf_path;
+                if (!string.IsNullOrWhiteSpace(shared_params)) p["shared_params"] = JArray.Parse(shared_params);
+                if (!string.IsNullOrWhiteSpace(values)) p["values"] = JObject.Parse(values);
+                if (clear_formulas.HasValue) p["clear_formulas"] = clear_formulas.Value;
+                if (!string.IsNullOrWhiteSpace(remove_params)) p["remove_params"] = JArray.Parse(remove_params);
+                if (dry_run.HasValue) p["dry_run"] = dry_run.Value;
+                var result = await ToolGateway.SendToRevit("horizun_family_apply", p);
+                return JsonConvert.SerializeObject(result, Formatting.Indented);
+            }
+            catch (Exception ex) { return $"Error: {ex.Message}"; }
+        }
+
         // ---- ESCAPE HATCH -----------------------------------------------------
 
         [McpServerTool(Name = "horizun_execute_python"),
