@@ -21,6 +21,11 @@ namespace RvtMcp.Plugin
             Register(new Handlers.HorizunAuditModelHandler());
             Register(new Handlers.HorizunQuantitiesHandler());
             Register(new Handlers.HorizunClashHandler());
+            // The four verbs Horizun's processes actually reduce to.
+            Register(new Handlers.HorizunModelScanHandler());
+            Register(new Handlers.HorizunWriteParamsHandler());
+            Register(new Handlers.HorizunDeleteHandler());
+            Register(new Handlers.HorizunDocumentSessionHandler());
             Register(new Handlers.GetCurrentViewHandler());
             Register(new Handlers.GetSelectedElementsHandler());
             Register(new Handlers.GetFamilyTypesHandler());
