@@ -17,6 +17,9 @@ namespace RvtMcp.Plugin
             Register(new Handlers.ShowMessageHandler());
             Register(new Handlers.OpenDocumentHandler());
             Register(new Handlers.HorizunExecutePythonHandler());
+            Register(new Handlers.HorizunSetKeynoteHandler());
+            Register(new Handlers.HorizunAuditModelHandler());
+            Register(new Handlers.HorizunQuantitiesHandler());
             Register(new Handlers.GetCurrentViewHandler());
             Register(new Handlers.GetSelectedElementsHandler());
             Register(new Handlers.GetFamilyTypesHandler());
