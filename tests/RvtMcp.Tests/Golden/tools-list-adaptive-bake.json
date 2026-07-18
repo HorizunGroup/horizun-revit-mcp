@@ -1,7 +1,457 @@
 {
   "generated_by": "ToolsListSnapshotTests",
-  "tool_count": 230,
+  "tool_count": 246,
   "tools": [
+    {
+      "name": "horizun_audit_model",
+      "description_hash": "sha256:9c706d425ab371d165ad48b9b515ee32d199326ce401dafdb1a26a0c5e66a5a0",
+      "inputSchema": {
+        "properties": {
+          "top": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_bind_shared_param",
+      "description_hash": "sha256:133b4f9b0c9093e619fbd3fd43d42d0fe3d501ecac04d806f36945cc238d4ee1",
+      "inputSchema": {
+        "properties": {
+          "allow_vary_between_groups": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "binding_kind": {
+            "description": "",
+            "type": "String"
+          },
+          "categories": {
+            "description": "",
+            "type": "String"
+          },
+          "group": {
+            "description": "",
+            "type": "String"
+          },
+          "merge_existing_categories": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "param_guid": {
+            "description": "",
+            "type": "String"
+          },
+          "param_name": {
+            "description": "",
+            "type": "String"
+          },
+          "spf_path": {
+            "description": "",
+            "type": "String"
+          },
+          "target_document_title": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "spf_path",
+          "categories"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_catalog_lookup",
+      "description_hash": "sha256:da98ec2879dd565c7d42d5f97f317fd9cc51ecc1dcea8fd8c004ef164133e765",
+      "inputSchema": {
+        "properties": {
+          "catalog_path": {
+            "description": "",
+            "type": "String"
+          },
+          "codes": {
+            "description": "",
+            "type": "String"
+          },
+          "limit": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "mode": {
+            "description": "",
+            "type": "String"
+          },
+          "term": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "mode",
+          "catalog_path"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_clash",
+      "description_hash": "sha256:af671af6e0a560d8ae801fa1991e4ad2b981cc4aef9a6bc411255dcbbc164ff8",
+      "inputSchema": {
+        "properties": {
+          "categories_a": {
+            "description": "",
+            "type": "String"
+          },
+          "categories_b": {
+            "description": "",
+            "type": "String"
+          },
+          "include_links": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "max_results": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "tolerance_mm": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [
+          "categories_a",
+          "categories_b"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_delete_verified",
+      "description_hash": "sha256:2991ace6be571ba364171e976f4ca6401ba297760e55e388136b341d1de3971a",
+      "inputSchema": {
+        "properties": {
+          "dry_run": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "ids": {
+            "description": "",
+            "type": "String"
+          },
+          "max_passes": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "mode": {
+            "description": "",
+            "type": "String"
+          },
+          "protect_ids": {
+            "description": "",
+            "type": "String"
+          },
+          "transaction_name": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_document_session",
+      "description_hash": "sha256:ea2c2c661ac43eed778d50feb41e8b92aa4ce5d5f4470303f1a252d976ef9730",
+      "inputSchema": {
+        "properties": {
+          "allow_upgrade": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "audit": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "compact": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "detach": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "expected_version": {
+            "description": "",
+            "type": "String"
+          },
+          "file_path": {
+            "description": "",
+            "type": "String"
+          },
+          "force_workshared": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "operation": {
+            "description": "",
+            "type": "String"
+          },
+          "overwrite": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "save_as_path": {
+            "description": "",
+            "type": "String"
+          },
+          "save_on_close": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_excel_write_rows",
+      "description_hash": "sha256:7a4dfecc8b46df52a1202d30836767d2a5cc0dbfc71865a58a581f90c2b0c3bb",
+      "inputSchema": {
+        "properties": {
+          "backup": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "dry_run": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "header_row": {
+            "description": "",
+            "type": "Int32"
+          },
+          "rows": {
+            "description": "",
+            "type": "String"
+          },
+          "sheet": {
+            "description": "",
+            "type": "String"
+          },
+          "workbook_path": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "workbook_path",
+          "sheet",
+          "rows"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_execute_python",
+      "description_hash": "sha256:20e28f810c04fa86f02716d0094868bc8973ecc613de5539ca7d24b2033e6c4e",
+      "inputSchema": {
+        "properties": {
+          "code": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_family_apply",
+      "description_hash": "sha256:1a47fc19a65dc5e431b075b03d2822f516144deea4c74201166a5460351ce648",
+      "inputSchema": {
+        "properties": {
+          "clear_formulas": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "collapse_types": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "dry_run": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "expected_revit_version": {
+            "description": "",
+            "type": "String"
+          },
+          "family_name": {
+            "description": "",
+            "type": "String"
+          },
+          "keep_type": {
+            "description": "",
+            "type": "String"
+          },
+          "remove_params": {
+            "description": "",
+            "type": "String"
+          },
+          "rfa_path": {
+            "description": "",
+            "type": "String"
+          },
+          "shared_params": {
+            "description": "",
+            "type": "String"
+          },
+          "spf_path": {
+            "description": "",
+            "type": "String"
+          },
+          "values": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_model_scan",
+      "description_hash": "sha256:3589e80ed511b99a8a8ec67715877fdfa7dcc1f64bf25c96277d6f5afb64694f",
+      "inputSchema": {
+        "properties": {
+          "sections": {
+            "description": "",
+            "type": "String"
+          },
+          "target_document_title": {
+            "description": "",
+            "type": "String"
+          },
+          "target_parameter": {
+            "description": "",
+            "type": "String"
+          },
+          "top": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [
+          "target_document_title"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_quantities",
+      "description_hash": "sha256:1673bb6a21eb9ab1f7f36bdef3ad9b4f3a7e5b5971870f1d851235a5796e4dd5",
+      "inputSchema": {
+        "properties": {
+          "category": {
+            "description": "",
+            "type": "String"
+          },
+          "detail_level": {
+            "description": "",
+            "type": "String"
+          },
+          "element_ids": {
+            "description": "",
+            "type": "String"
+          },
+          "only_disagreements": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "tolerance_pct": {
+            "description": "",
+            "type": "Nullable`1"
+          }
+        },
+        "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_set_keynote",
+      "description_hash": "sha256:99e490cac62641efbbb6253048f4f87b2c07472675af61b837d51747d650a07b",
+      "inputSchema": {
+        "properties": {
+          "dry_run": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "element_ids": {
+            "description": "",
+            "type": "String"
+          },
+          "keynote": {
+            "description": "",
+            "type": "String"
+          },
+          "scope": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "element_ids",
+          "keynote"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "horizun_write_params_verified",
+      "description_hash": "sha256:7342566c5e7d414e88138c8102a873508762f557052fe268a3b25b280b64434f",
+      "inputSchema": {
+        "properties": {
+          "allow_vary_between_groups": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "dry_run": {
+            "description": "",
+            "type": "Nullable`1"
+          },
+          "on_failure": {
+            "description": "",
+            "type": "String"
+          },
+          "target_document_title": {
+            "description": "",
+            "type": "String"
+          },
+          "transaction_name": {
+            "description": "",
+            "type": "String"
+          },
+          "writes": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "writes"
+        ],
+        "type": "object"
+      }
+    },
     {
       "name": "revit_accept_bake_suggestion",
       "description_hash": "sha256:dc52ef18317faea02b06b410763be06477441fcc5724a99aa98a123d7f375f16",
@@ -3834,6 +4284,22 @@
       }
     },
     {
+      "name": "revit_job_status",
+      "description_hash": "sha256:f3c7d22c4009ec1c6deaa081708ae0a796b9ceaf761e139cb79fa6508d1a9997",
+      "inputSchema": {
+        "properties": {
+          "job_id": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "name": "revit_link_revit_model",
       "description_hash": "sha256:26cc2dde8d2250e882cb9376a35a76a305bb36ba493c8ce6cec0e0e5edd099b9",
       "inputSchema": {
@@ -4491,6 +4957,30 @@
         "required": [
           "elementId1",
           "elementId2"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "name": "revit_open_document",
+      "description_hash": "sha256:b6d3b4e6c9af29cb4142584308071dc06e9e42868484c0b7898bcf59e32082da",
+      "inputSchema": {
+        "properties": {
+          "audit": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "detach": {
+            "description": "",
+            "type": "Boolean"
+          },
+          "file_path": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "file_path"
         ],
         "type": "object"
       }
@@ -5748,6 +6238,26 @@
           }
         },
         "required": [],
+        "type": "object"
+      }
+    },
+    {
+      "name": "revit_submit_async",
+      "description_hash": "sha256:3221fcc80a043be166bd33597d2bfa987c0d7404c6c4d8ef76d964a2e0ccd716",
+      "inputSchema": {
+        "properties": {
+          "params_json": {
+            "description": "",
+            "type": "String"
+          },
+          "tool": {
+            "description": "",
+            "type": "String"
+          }
+        },
+        "required": [
+          "tool"
+        ],
         "type": "object"
       }
     },

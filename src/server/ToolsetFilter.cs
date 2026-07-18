@@ -38,7 +38,12 @@ namespace RvtMcp.Server
         {
             "create", "modify", "delete", "schedule", "families", "mep", "graphics", "export", "toolbaker",
             "sheets", "materials", "annotation", "rooms", "links", "parameters", "organization", "workflows",
-            "structural", "kei"
+            "structural", "kei",
+            // Horizun: the toolset carries write tools (set_keynote, write_params_verified,
+            // delete_verified, bind_shared_param, family_apply, excel_write_rows, document_session
+            // save). It MUST be here so read-only mode strips the whole toolset — a unit test
+            // caught this: without it, read-only mode leaked every horizun write tool.
+            "horizun"
         };
 
         public static HashSet<string> Resolve(RvtMcpConfig config)

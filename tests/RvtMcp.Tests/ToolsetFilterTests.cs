@@ -15,7 +15,7 @@ namespace RvtMcp.Tests
         {
             var set = ToolsetFilter.Resolve(null);
             Assert.Equal(
-                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "kei", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "structural", "toolbaker", "view", "workflows" },
+                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "horizun", "kei", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "structural", "toolbaker", "view", "workflows" },
                 set.OrderBy(s => s).ToArray());
         }
 
@@ -24,7 +24,7 @@ namespace RvtMcp.Tests
         {
             var set = ToolsetFilter.Resolve(new RvtMcpConfig { Toolsets = new List<string>() });
             Assert.Equal(
-                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "kei", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "structural", "toolbaker", "view", "workflows" },
+                new[] { "annotation", "create", "export", "families", "geometry", "graphics", "horizun", "kei", "links", "lint", "materials", "mep", "meta", "organization", "parameters", "query", "rooms", "schedule", "sheets", "structural", "toolbaker", "view", "workflows" },
                 set.OrderBy(s => s).ToArray());
         }
 
@@ -194,9 +194,10 @@ namespace RvtMcp.Tests
         // --- Invariants ---------------------------------------------------
 
         [Fact]
-        public void KnownToolsets_Contains24Entries()
+        public void KnownToolsets_Contains25Entries()
         {
-            Assert.Equal(24, ToolsetFilter.KnownToolsets.Length);
+            // 24 inherited toolsets + "horizun".
+            Assert.Equal(25, ToolsetFilter.KnownToolsets.Length);
         }
 
         [Fact]
