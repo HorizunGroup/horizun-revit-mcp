@@ -137,27 +137,38 @@ namespace RvtMcp.Plugin.Handlers
             });
         }
 
+        // Horizun: convert to the DOCUMENT's display units, not a hardcoded mm.
+        //
+        // This used to multiply by 304.8 (feet->mm) and friends regardless of the
+        // model's actual units. In an imperial model, a caller filtering "Length >
+        // 6" (expecting the 6 inches they see in Revit) had their 6 compared against
+        // a millimetre value — a silently wrong filter that returned confident,
+        // wrong results. Now the value is converted the same way Revit converts it
+        // for display, so the comparison is against the number the user actually
+        // sees. If the doc's format options cannot be read, we say so by returning
+        // the internal (feet-based) value rather than pretending it is mm.
         private static double ConvertToDisplayUnits(Document doc, Parameter param, double internalValue)
         {
             try
             {
                 var specId = param.Definition.GetDataType();
 
-                if (specId == SpecTypeId.Length || specId == SpecTypeId.PipeSize ||
-                    specId == SpecTypeId.DuctSize || specId == SpecTypeId.BarDiameter ||
-                    specId == SpecTypeId.WireDiameter || specId == SpecTypeId.SectionDimension)
-                    return internalValue * 304.8; // feet → mm
-                if (specId == SpecTypeId.Area)
-                    return internalValue * 92903.04; // sq feet → sq mm
-                if (specId == SpecTypeId.Volume)
-                    return internalValue * 28316846.6; // cu feet → cu mm
+                // Angle has no meaningful "document display" story worth special-casing
+                // here; degrees is the least-surprising comparison unit.
                 if (specId == SpecTypeId.Angle)
-                    return internalValue * (180.0 / Math.PI); // radians → degrees
-            }
-            catch { }
+                    return internalValue * (180.0 / Math.PI);
 
-            // Unknown spec type — return raw value
-            return internalValue;
+                var units = doc.GetUnits();
+                var fo = units.GetFormatOptions(specId);
+                var unitTypeId = fo.GetUnitTypeId();
+                return UnitUtils.ConvertFromInternalUnits(internalValue, unitTypeId);
+            }
+            catch
+            {
+                // Could not resolve the document's units for this spec. Return the raw
+                // internal value; do NOT fabricate a mm conversion the model never asked for.
+                return internalValue;
+            }
         }
 
         private static string GetParamValueAsString(Document doc, Parameter param)

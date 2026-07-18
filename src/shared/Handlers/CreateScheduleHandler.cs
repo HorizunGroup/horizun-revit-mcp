@@ -539,7 +539,12 @@ namespace RvtMcp.Plugin.Handlers
                         try { definition.IsItemized = isItemized.Value; } catch { }
                     }
 
-                    tx.Commit();
+                    // Horizun: commit through the guard. A plain tx.Commit() discards the
+                    // status, so a schedule that Revit rolled back (a failure preprocessor,
+                    // a bad field) would still be reported below as created with an id and a
+                    // name. The guard turns that silent rollback into a thrown exception,
+                    // caught below and returned as a failure.
+                    HorizunGuard.Commit(tx, "create schedule");
 
                     return CommandResult.Ok(new
                     {
