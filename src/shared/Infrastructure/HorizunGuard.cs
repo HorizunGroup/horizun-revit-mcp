@@ -79,13 +79,14 @@ namespace RvtMcp.Plugin
         /// </summary>
         public static object Verify(string what, int intended, int actual)
         {
+            var verified = HorizunReconcile.Verified(intended, actual);
             return new
             {
                 what,
                 intended,
                 actual,
-                verified = intended == actual,
-                note = intended == actual
+                verified,
+                note = verified
                     ? null
                     : $"MISMATCH: asked for {intended}, the model reports {actual}. " +
                       "The difference was NOT applied. Do not treat this as done."
@@ -99,10 +100,7 @@ namespace RvtMcp.Plugin
         public static object Reconcile(string quantity, string sourceA, double a,
                                        string sourceB, double b, string unit, double tolerance = 0.01)
         {
-            var biggest = Math.Max(Math.Abs(a), Math.Abs(b));
-            var delta = Math.Abs(a - b);
-            var rel = biggest > 1e-9 ? delta / biggest : 0.0;
-            var agree = rel <= tolerance;
+            var cmp = HorizunReconcile.Compare(a, b, tolerance);
             return new
             {
                 quantity,
@@ -112,24 +110,26 @@ namespace RvtMcp.Plugin
                     new { source = sourceA, value = Math.Round(a, 4) },
                     new { source = sourceB, value = Math.Round(b, 4) }
                 },
-                agree,
-                difference = Math.Round(delta, 4),
-                difference_pct = Math.Round(rel * 100, 1),
-                note = agree
+                agree = cmp.Agree,
+                difference = cmp.Difference,
+                difference_pct = cmp.DifferencePct,
+                note = cmp.Agree
                     ? null
-                    : $"These disagree by {Math.Round(rel * 100, 1)}%. Both are reported on purpose: " +
+                    : $"These disagree by {cmp.DifferencePct}%. Both are reported on purpose: " +
                       "picking one silently is how the wrong number gets billed. Decide which " +
                       "matches your measurement criteria."
             };
         }
 
         // ---- Metric at the boundary. Horizun bills in m3/m2, not cubic feet. ----
-        public const double FT3_TO_M3 = 0.0283168466;
-        public const double FT2_TO_M2 = 0.09290304;
-        public const double FT_TO_M = 0.3048;
+        // Single source in HorizunReconcile (Revit-free, unit-tested); re-exposed here
+        // so existing handlers keep calling HorizunGuard.ToM3 unchanged.
+        public const double FT3_TO_M3 = HorizunReconcile.FT3_TO_M3;
+        public const double FT2_TO_M2 = HorizunReconcile.FT2_TO_M2;
+        public const double FT_TO_M = HorizunReconcile.FT_TO_M;
 
-        public static double ToM3(double cubicFeet) => cubicFeet * FT3_TO_M3;
-        public static double ToM2(double squareFeet) => squareFeet * FT2_TO_M2;
-        public static double ToM(double feet) => feet * FT_TO_M;
+        public static double ToM3(double cubicFeet) => HorizunReconcile.ToM3(cubicFeet);
+        public static double ToM2(double squareFeet) => HorizunReconcile.ToM2(squareFeet);
+        public static double ToM(double feet) => HorizunReconcile.ToM(feet);
     }
 }
