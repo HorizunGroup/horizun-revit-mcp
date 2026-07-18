@@ -318,6 +318,8 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
             if (enabled.Contains("toolbaker") && config?.EnableAdaptiveBakeOrDefault == true)
                 mcp = mcp.WithTools<AdaptiveBakeTools>();
             if (enabled.Contains("horizun"))    mcp = mcp.WithTools<HorizunTools>();
+            if (enabled.Contains("horizun"))    mcp = mcp.WithTools<HorizunCatalogTools>();
+            if (enabled.Contains("horizun"))    mcp = mcp.WithTools<HorizunExcelTools>();
             if (enabled.Contains("meta"))       mcp = mcp.WithTools<MetaTools>();
             if (enabled.Contains("lint"))       mcp = mcp.WithTools<LintTools>();
             if (enabled.Contains("structural")) mcp = mcp.WithTools<StructuralTools>();
@@ -348,6 +350,8 @@ Tools (prefix revit_<verb>_<noun>, lengths in mm):
             if (enabled.Contains("organization")) types.Add(typeof(OrganizationTools));
             if (enabled.Contains("workflows"))    types.Add(typeof(WorkflowsTools));
             if (enabled.Contains("horizun"))    types.Add(typeof(HorizunTools));
+            if (enabled.Contains("horizun"))    types.Add(typeof(HorizunCatalogTools));
+            if (enabled.Contains("horizun"))    types.Add(typeof(HorizunExcelTools));
             if (enabled.Contains("toolbaker"))  types.Add(typeof(ToolbakerTools));
             if (enabled.Contains("toolbaker") && config?.EnableAdaptiveBakeOrDefault == true)
                 types.Add(typeof(AdaptiveBakeTools));
