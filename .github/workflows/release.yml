@@ -1,0 +1,71 @@
+name: release
+
+# Publishes a GitHub Release when a version tag is pushed (v0.6.0-horizun.1, ...).
+# The client-setup ZIP is the whole product: a self-contained win-x64 MCP server,
+# the six Revit plugin shells, install.ps1, and a manifest with file hashes — no
+# .NET SDK needed on the target machine. The server is also published as a .NET
+# tool for `dotnet tool install`.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (defaults to server.json)'
+        required: false
+
+permissions:
+  contents: write   # required for softprops/action-gh-release to create the release
+
+jobs:
+  release:
+    name: build-and-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET (8 + 10 preview)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          dotnet-quality: preview
+
+      # One script builds the self-contained server, all six plugins (with the
+      # IronPython stdlib), and bundles them into the client-setup ZIP + manifest.
+      - name: Build client setup bundle
+        shell: pwsh
+        run: pwsh scripts/package-client-setup.ps1 -Config Release
+
+      # Individual per-Revit plugin ZIPs, for anyone who only wants one shell.
+      - name: Stage per-Revit plugin ZIPs
+        shell: pwsh
+        run: pwsh scripts/stage-plugin-zip.ps1 -Config Release
+
+      # The server as a `dotnet tool` package.
+      - name: Pack server .NET tool
+        shell: pwsh
+        run: |
+          dotnet build src/server/RvtMcp.Server.csproj -c Release /p:RvtMcpSkipDeploy=true
+          dotnet pack  src/server/RvtMcp.Server.csproj -c Release --no-build --output artifacts
+
+      - name: List artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem build/client-setup/*.zip, build/plugin-zip/*.zip, artifacts/*.nupkg -ErrorAction SilentlyContinue |
+            ForEach-Object { "{0,12:N0}  {1}" -f $_.Length, $_.FullName }
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # The client-setup ZIP is the installer; the plugin ZIPs and the nupkg
+          # are for people who want a single shell or the dotnet tool.
+          files: |
+            build/client-setup/RvtMcp.Setup-*-win-x64.zip
+            build/plugin-zip/RvtMcp.Plugin.R*.zip
+            artifacts/*.nupkg
+          generate_release_notes: true
+          body_path: .github/RELEASE_NOTES.md
+          fail_on_unmatched_files: false
