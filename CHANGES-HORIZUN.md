@@ -128,3 +128,25 @@ requires.
 ## Attribution
 Base: **Khoa Le — `bimwright/rvt-mcp`** (Apache-2.0). Hardening layer:
 **Horizun**. Whole work remains Apache-2.0.
+
+## v0.6.1-horizun.1 — the honesty is now tested, not just claimed
+- `LIES.md` — the five measured lies (758 purge, keynote that re-coded 51, 42.7%
+  volume, clash that ignored links, chapter accepted as a leaf), each linked to
+  the guard that catches it and the test that pins it.
+- `HorizunReconcile.cs` — the Revit-free arithmetic behind `horizun_quantities`,
+  split out of `HorizunGuard` so it is unit-testable without Autodesk assemblies.
+  `HorizunGuard` delegates to it; the response JSON is unchanged.
+- `HorizunReconcileTests` (10) + `HorizunCatalogLookupTests` (11) prove the
+  quantities reconciliation (the measured 42.7% gap is flagged, matching sources
+  agree at 0%, `Verified(758,0)`/`Verified(1,8)` are false) and the catalog leaf
+  rule (a 3-segment code that is a parent is refused; a non-existent code is
+  `is_leaf: null`, not `false`; provenance on every response; a missing/empty
+  catalog is a hard error). They run in the existing `tests-xunit` CI job.
+- Fixed two confirmed lies in inherited handlers: `create_schedule` now commits
+  through `HorizunGuard.Commit` (a rolled-back schedule can no longer report an
+  id and a name), and `ai_element_filter` converts to the document's actual
+  display units instead of a hardcoded millimetre (an imperial-model filter no
+  longer compares against the wrong unit in silence).
+- Safety fix caught by a test: the `horizun` toolset carries write tools, so it
+  is now in `WriteCapable` and `--read-only` strips it — previously read-only
+  mode leaked every Horizun write tool.
