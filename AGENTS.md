@@ -38,16 +38,41 @@ Rutas resultantes:
 
 ## Configurar el cliente MCP
 
-```bash
-claude mcp add horizun -- "%LOCALAPPDATA%\Programs\Horizun\MCP\server\horizun-mcp.exe"
-```
+**Usa la ruta EXACTA que imprimió el instalador**, ya expandida para esta
+máquina. No la reescribas con `%LOCALAPPDATA%`: `cmd.exe` expande esa variable y
+**PowerShell no**, así que una config escrita así apunta a un sitio que no
+existe y el cliente falla sin decir por qué.
 
-Para Codex, en `~/.codex/config.toml`:
+```powershell
+# Claude Code
+claude mcp add horizun -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+```
 
 ```toml
+# Codex — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun]
 command = 'C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
+args = []
+startup_timeout_sec = 120
+tool_timeout_sec = 600
 ```
+
+```json
+// Cursor, Cline, Windsurf, Claude Desktop y otros clientes MCP
+{
+  "mcpServers": {
+    "horizun": {
+      "command": "C:\\Users\\<usuario>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
+    }
+  }
+}
+```
+
+Comillas simples en TOML (cadena literal: las barras van tal cual); en JSON hay
+que doblar cada barra. **Sube el tool timeout** si el cliente tiene uno: un
+`model_scan` o una apertura por lote ocupa el hilo de UI de Revit durante
+minutos, y un timeout de 60 s por defecto abandona trabajo que sigue corriendo
+— el puente parece roto cuando solo está ocupado.
 
 ## Primer arranque de Revit — avisa al usuario de esto
 

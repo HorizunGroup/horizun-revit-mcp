@@ -336,14 +336,29 @@ finally {
 Write-Host ""
 Write-Host "[Horizun] installed and verified." -ForegroundColor Green
 Write-Host ""
-Write-Host "Add the MCP server to your client:" -ForegroundColor Cyan
+Write-Host "Add the MCP server to your client. The path below is THIS machine's, already" -ForegroundColor Cyan
+Write-Host "expanded - do not retype it with %LOCALAPPDATA%, which PowerShell does not expand." -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Claude Code:"
 Write-Host "    claude mcp add horizun -- `"$serverExe`""
 Write-Host ""
-Write-Host "  Codex (~/.codex/config.toml):"
+# TOML literal strings (single quotes) take Windows paths as they are; the
+# double-quoted form would need every backslash doubled, and one missed pair is
+# a config that loads with a path pointing nowhere.
+#
+# The timeouts are not decoration. A model scan or a batch open occupies Revit's
+# UI thread for minutes, and a client with a 60-second default gives up on work
+# that is still running - the bridge then looks broken while it is busy.
+Write-Host "  Codex - add to $($env:USERPROFILE)\.codex\config.toml:"
 Write-Host "    [mcp_servers.horizun]"
-Write-Host "    command = `"$($serverExe -replace '\\', '\\')`""
+Write-Host "    command = '$serverExe'"
+Write-Host "    args = []"
+Write-Host "    startup_timeout_sec = 120"
+Write-Host "    tool_timeout_sec = 600"
+Write-Host ""
+Write-Host "  Cursor, Cline, Windsurf, Claude Desktop and other MCP clients - in their"
+Write-Host "  JSON config (mcpServers), using the SAME path:"
+Write-Host "    { `"mcpServers`": { `"horizun`": { `"command`": `"$($serverExe -replace '\\', '\\')`" } } }"
 Write-Host ""
 Write-Host "Then START REVIT and note two things:" -ForegroundColor Cyan
 Write-Host ("  * Revit will show a 'Security - Unsigned Add-In' dialog - this build is unsigned. " +

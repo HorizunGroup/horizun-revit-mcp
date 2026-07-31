@@ -20,40 +20,96 @@ classification, family homologation, pre-delivery QA — live in
 [Horizun Hub](https://horizunhub.com). This repository is the socket; the Hub
 is what plugs into it.
 
-## Install — tell your agent to do it
+## Install
 
-Everything is built from this tree, on your machine, against the Revit you
-already have. **No executable downloads.** Clone the repo and tell Claude Code
-or Codex:
+Everything is built from this repository, on your machine, against the Revit you
+already have. **Nothing is downloaded and run as a binary.**
 
-> Instala este MCP siguiendo AGENTS.md
+**Prerequisites:** Windows, at least one Revit 2023–2027, the
+[.NET SDK 8+](https://dotnet.microsoft.com/download), and **Revit closed** — the
+installer refuses to run while Revit holds the add-in files, and changes nothing
+when it refuses.
 
-The agent reads [AGENTS.md](AGENTS.md) and runs the whole procedure: it checks
-the prerequisites, builds the add-in for every Revit year on the machine (each
-against its own `RevitAPI.dll`), builds the MCP server, installs both, verifies
-every installed binary against what was staged, and tells you how to register
-the server with your client.
+### Let an agent do it
 
-Or run it yourself — same script, same result:
+Paste this into **Claude Code** or **Codex**, in any folder:
 
-```bash
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+AGENTS.md, and follow the install procedure there. When it finishes, register the
+MCP server with yourself using the exact path the installer printed, and tell me
+which version and commit ended up installed.
+```
+
+Both agents pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
+repository (Claude Code also reads `CLAUDE.md`, which imports it). It has the
+prerequisites, the failure modes, and the two surprises worth knowing before the
+first Revit start.
+
+### Or run it yourself
+
+```powershell
+git clone https://github.com/HorizunGroup/horizun-revit-mcp
+cd horizun-revit-mcp
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Prerequisites: Windows, a Revit 2023–2027, the .NET SDK 8+, and **Revit
-closed** (the script refuses otherwise, changing nothing). Then register the
-server:
+It finds every Revit on the machine by its own `RevitAPI.dll`, builds the add-in
+for each of those years and the MCP server, installs both, and reads every
+installed binary back to prove it landed. A build failure changes nothing; a
+failure after that rolls back and tells you the state you are in.
 
-```bash
-claude mcp add horizun -- "%LOCALAPPDATA%\Programs\Horizun\MCP\server\horizun-mcp.exe"
+**The installer prints the exact path to register — use that one.** It is
+already expanded for your machine, which matters: `%LOCALAPPDATA%` is expanded
+by `cmd.exe` and **not** by PowerShell, so a config written with the variable
+silently points nowhere.
+
+```powershell
+# Claude Code
+claude mcp add horizun -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
-On the next Revit start, expect the **"Security - Unsigned Add-In"** dialog and
-choose *Always Load* — see Status below; it returns after every update, and it
-can open on a monitor you are not looking at. Once a document is open, a
-**Horizun Hub** ribbon tab appears; its *Estado del puente* button answers "is
-this working, and which version?" without leaving Revit. From your client,
-`horizun_health` answers the same question with the commit included.
+```toml
+# Codex — %USERPROFILE%\.codex\config.toml
+[mcp_servers.horizun]
+command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
+args = []
+startup_timeout_sec = 120
+tool_timeout_sec = 600
+```
+
+```json
+// Cursor, Cline, Windsurf, Claude Desktop, and other MCP clients
+{
+  "mcpServers": {
+    "horizun": {
+      "command": "C:\\Users\\<YOU>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
+    }
+  }
+}
+```
+
+TOML literal strings (single quotes) take Windows paths as they are; JSON needs
+every backslash doubled. **Raise your client's tool timeout** if it has one: a
+model scan or a batch open holds Revit's UI thread for minutes, and a 60-second
+default gives up on work that is still running — the bridge then looks broken
+while it is merely busy.
+
+### First Revit start
+
+Two things to expect, neither of them a fault:
+
+- Revit shows a **"Security - Unsigned Add-In"** dialog. Choose **Always Load**.
+  This build is unsigned; the dialog **returns after every update** (the
+  decision is remembered per binary), and it can open on a monitor you are not
+  looking at — a Revit that seems stuck on startup with the CPU idle is almost
+  always this dialog hiding.
+- With a document open, a **Horizun Hub** tab appears in the ribbon. Its
+  *Estado del puente* button answers "is this working, and which version?"
+  without leaving Revit.
+
+From your MCP client, `horizun_health` answers the same with the commit
+included. To update later: `git pull`, close Revit, run `install.ps1` again.
 
 ## Architecture
 
