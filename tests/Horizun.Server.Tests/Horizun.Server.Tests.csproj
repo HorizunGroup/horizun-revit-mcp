@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tests for the host-resident catalog leaf resolver. It LINKS the single source
+    file CatalogLookup.cs rather than referencing the server exe, so the pure leaf
+    rule and its sha256 provenance can be proven in isolation — the test build
+    depends only on this file and Newtonsoft.Json, nothing else in the server.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Horizun.Server.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
+    <!-- The concurrency plumbing: one writer, one reply per id, one in-flight
+         registry. Linked for the same reason - it needs neither Revit nor a
+         running server, only a StringWriter. -->
+    <Compile Include="..\..\src\Horizun.Server\Wire.cs" Link="Wire.cs" />
+    <!-- Discovery resolution: which Revit instance a call goes to, and when that
+         question has no single answer. Two Revit 2026 running at once cannot be
+         tested by starting two Revits, so the directory and the liveness probe are
+         injectable and this proves the rules against a temp folder. -->
+    <Compile Include="..\..\src\Horizun.Server\PipeClient.cs" Link="PipeClient.cs" />
+    <!-- PipeClient asks this where the discovery files are. Linked so the server side
+         of the shared-root property is under test with the same source the add-in
+         compiles. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
+    <!-- The add-in's job record, so "the server reads where the add-in writes" can be
+         asserted with the writer that actually ships rather than a stand-in. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" Link="Job.cs" />
+    <!-- The reader those records exist for. It answers WITHOUT touching Revit, so
+         the five states it reports are provable here against real files - which is
+         the only place they can be proved, since four of the five require a Revit
+         that is busy, closing, or gone. -->
+    <Compile Include="..\..\src\Horizun.Server\JobStatus.cs" Link="JobStatus.cs" />
+    <!-- The shared contract, so drift between the two halves is a failing test. -->
+    <Compile Include="..\..\src\Horizun.Contracts\Contract.cs" Link="Contract.cs" />
+    <!-- Which Revit a session is pointed at, and the tool that repoints it. The pair
+         used to be two static fields written one after the other while calls ran on
+         other threads, and the only place that property can be proved is here: it
+         needs concurrency and no Revit at all. Targets.cs comes with the two small
+         things it leans on - the refusal type and the log. -->
+    <Compile Include="..\..\src\Horizun.Server\TargetSelection.cs" Link="TargetSelection.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Targets.cs" Link="Targets.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Errors.cs" Link="Errors.cs" />
+    <!-- The bounded stdin reader. The case it exists for - a payload with no newline
+         in it, larger than memory - can only be proved against a stream that never
+         allocates the payload, which is a test fixture and never a client. -->
+    <Compile Include="..\..\src\Horizun.Server\BoundedLineReader.cs" Link="BoundedLineReader.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

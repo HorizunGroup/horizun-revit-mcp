@@ -1,0 +1,89 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Horizun Core tests — original Horizun code.
+
+    Unit tests for the Revit-FREE honesty arithmetic in Reconcile.cs. That file
+    carries no `using Autodesk.*`, so it is compiled straight INTO this project
+    (a <Compile Include=".."> link) rather than by referencing Horizun.Revit —
+    which pins RevitAPI and targets net8-windows and would drag Revit in.
+
+    Plain net8.0: no Revit, no Windows desktop, runs anywhere `dotnet test` runs.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Revit-free sources under test, linked (not project-referenced) so
+         nothing on the Revit runtime is pulled in. RequestGate is here for the
+         same reason Reconcile is: it decides which caller gets which result, and
+         that decision must be provable without a Revit in the room. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RequestGate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentIdentity.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Measurement.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClashLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\LineReader.cs" />
+    <!-- The async work queue and the job record it writes into. Neither touches
+         Revit - the queue is a Queue<T> behind a lock, the record is a JSONL file -
+         and the at-most-once guarantee they carry is the whole reason run_async is
+         safe to point at a mutation. Both shipped with no test at all. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncQueue.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" />
+    <!-- The single data root both halves resolve. Job.cs asks it where to write, and
+         the property under test is that the SERVER and REVIT reach the same folder
+         even when their %LOCALAPPDATA% differ - which is provable here and nowhere
+         else, because it needs two environments and no Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" />
+    <!-- The other half of at-most-once. AsyncQueue guarantees a QUEUED entry runs
+         once; this decides whether a request that arrived twice becomes one queue
+         entry or two. Neither touches Revit, and the property is only worth having
+         if both hold. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" />
+    <!-- What happens to queued work when Revit will not take it. Denied cannot be
+         produced on demand - it needs a Revit that is shutting down - so this path
+         was reasoned and compiled and never exercised. Behind IWorkRaiser all three
+         answers are ordinary test cases. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncLifecycle.cs" />
+    <!-- The shared contract. It carries no Revit either, and ScriptOutput now takes its
+         size limits from it rather than inventing a second copy of the same number. -->
+    <Compile Include="..\..\src\Horizun.Contracts\Contract.cs" />
+    <!-- Whether a model may be opened. The FACTS need Revit (a file header, a running
+         host) and are gathered in OpenGuard.cs; the RULES are arithmetic over four
+         strings and four booleans, and they lived in two large command files in two
+         versions that had quietly diverged. Split out so the whole table is here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <!-- And whether closing one would throw work away. The tri-state is the point:
+         a real Revit will not produce "IsModified could not be read" on demand, and
+         that is the state the rule has to get right. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CloseDecision.cs" />
+    <!-- How much of a model an answer is about. The READING needs Revit and lives in
+         DocumentVisibility.cs; the arithmetic and every sentence it reports are here,
+         including the state a real Revit will not produce on request - the workset
+         collector throwing, which is reported as incomplete rather than fine. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentVisibilityCoverage.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ScriptOutput serializes with Newtonsoft (the same version the plugin uses, which
+         Revit itself ships). Pinned deliberately: a mismatch here would test a different
+         serializer than the one that runs. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

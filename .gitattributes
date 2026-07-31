@@ -1,0 +1,29 @@
+# Line endings, pinned - because they reached the binary.
+#
+# With no .gitattributes and core.autocrlf=true, the same commit checked out
+# twice produced different bytes: this working copy carried LF, a fresh clone
+# carried CRLF, and Contract.cs alone differed by 658 bytes. The compiled
+# assemblies differed too, which is why a build from a clean clone never matched
+# the deployed one and the acceptance report had to record the difference as
+# unexplained.
+#
+# What it did NOT break, measured rather than assumed: the contract hash is the
+# same from either checkout (978fada188182306705ccb96 from both). Schemas are
+# canonicalised with Formatting.None and every Description literal is a single
+# line, so no newline reaches the hash. A server and an add-in built from
+# differently-normalised checkouts still agree with each other.
+#
+# eol=lf, not eol=crlf: the repository is the source of truth and it is already
+# LF. Windows tooling reads LF; Notepad has since Windows 10.
+* text=auto eol=lf
+
+# Binary, never touched.
+*.rfa  binary
+*.rvt  binary
+*.rte  binary
+*.png  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary
+*.pdb  binary
+*.zip  binary

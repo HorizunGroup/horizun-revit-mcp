@@ -1,0 +1,161 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Horizun Revit plugin. Original Horizun code — no third-party GPL, no derived
+    infrastructure. The Revit API assemblies are referenced but never copied
+    (Private=false); Revit provides them at load time.
+
+    One project, one Revit year at a time via the RevitYear property so the same
+    source compiles across the whole range. The target framework follows the
+    runtime each Revit actually uses, read out of its own RevitAPI.dll rather
+    than assumed:
+
+      2022-2024  .NET Framework 4.8   net48
+      2025-2026  .NET 8               net8.0-windows7.0
+      2027       .NET 10              net10.0-windows
+
+    Roll-forward does NOT save a step here. A .NET 8 library would load on a .NET
+    10 host, but it cannot be COMPILED against Revit 2027: RevitAPI 27 references
+    System.Runtime 10.0.0.0, and referencing an assembly built against a higher
+    framework than your own is error CS1705, at build time. So 2027 gets its own
+    target - the compiler settles it, not a compatibility argument.
+  -->
+  <PropertyGroup>
+    <RevitYear Condition="'$(RevitYear)' == ''">2026</RevitYear>
+    <!-- TargetFramework follows the runtime Revit itself uses for the requested
+         year. Order matters: for 2027 both of the last two conditions are true and
+         the LAST assignment wins, which is the .NET 10 one. -->
+    <TargetFramework Condition="$(RevitYear) &lt;= 2024">net48</TargetFramework>
+    <TargetFramework Condition="$(RevitYear) &gt;= 2025">net8.0-windows7.0</TargetFramework>
+    <TargetFramework Condition="$(RevitYear) &gt;= 2027">net10.0-windows</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Horizun.Revit</AssemblyName>
+    <RootNamespace>Horizun.Revit</RootNamespace>
+    <!-- THE version. The compiler stamps it into the assembly and Core/Build.cs reads
+         it back, so what a user reports and what they are running cannot drift. Bump
+         it here and nowhere else. -->
+    <Version>0.3.3</Version>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <DefineConstants>REVIT$(RevitYear)</DefineConstants>
+    <!-- Library projects don't copy NuGet assemblies to bin by default. IronPython
+         is not shipped by Revit, so its DLLs must land in the output to be deployed
+         alongside the plugin. (Revit ships Newtonsoft.Json; the Revit API refs are
+         Private=false so they are never copied.) -->
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <!-- MSB3277 is MSBuild reporting version conflicts it found while walking
+         RevitAPIUI's dependency graph - Revit's own WPF and UI assemblies, which
+         genuinely disagree with each other inside a Revit installation.
+         It is suppressed here rather than left to be scrolled past, and the
+         justification is specific: we reference RevitAPI and RevitAPIUI with
+         Private=false, so NONE of those assemblies is copied to the output or
+         redistributed. Revit loads its own at runtime from its own folder, where
+         the versions match by construction. Nothing we ship participates in the
+         conflict, so there is nothing to resolve - and a warning that can never be
+         acted on is one that trains people to ignore the ones that can.
+         If this project ever copies a Revit assembly, delete this line first. -->
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
+
+    <!-- PROVENANCE.
+         Two builds of identical source used to produce identical bytes only when
+         they ran in the SAME directory. Built from a fresh clone elsewhere, every
+         hash differed - which the acceptance report recorded as UNEXPLAINED rather
+         than guessed at. It is now measured: the assembly built under hz_clean
+         contains the string "hz_clean", and the one built under horizun-mcp\src
+         contains "horizun-mcp\src". Each binary carries its own build directory.
+
+         Two consequences, and the second is the one that ships. A hash could never
+         prove "this binary came from that commit" - only "this binary was built in
+         that folder". And every add-in handed to a client contained the absolute
+         path of the machine that built it, C:\Users\<name>\... included.
+
+         DeterministicSourcePaths replaces those paths with a fixed token, so the
+         same source produces the same bytes on any machine, in any folder. -->
+    <Deterministic>true</Deterministic>
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
+    <!-- DeterministicSourcePaths needs a SourceRoot to map FROM. SourceLink
+         normally supplies one from git metadata; this project has no SourceLink
+         package, so it is declared below rather than left to fail quietly. -->
+    <EnableSourceLink>false</EnableSourceLink>
+  </PropertyGroup>
+
+  <!-- The root the paths are mapped from. Without this, DeterministicSourcePaths
+       errors out asking for a SourceRoot instead of silently doing nothing, which
+       is the behaviour we want from it. -->
+  <ItemGroup>
+    <!-- NORMALISED. An unnormalised root ("...\src\Horizun.Revit\..\..\") is not a
+         prefix of the document paths the compiler records, so the mapping only
+         partly applies. -->
+    <SourceRoot Include="$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\'))" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <RevitDir>C:\Program Files\Autodesk\Revit $(RevitYear)</RevitDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitDir)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitDir)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- WPF, for the ribbon icons and nothing else. PushButtonData.LargeImage is an
+       ImageSource, so there is no way to give a button an image without it. Revit
+       is a WPF host and already has these loaded, so this costs nothing at run
+       time; Private=false on the net48 side keeps us from shipping copies of
+       assemblies the host owns. Two spellings because the SDK exposes WPF as a
+       property on modern TFMs and as plain references on net48. -->
+  <PropertyGroup Condition="'$(TargetFramework)' != 'net48'">
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <Reference Include="PresentationCore"><Private>false</Private></Reference>
+    <Reference Include="WindowsBase"><Private>false</Private></Reference>
+    <Reference Include="System.Xaml"><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <!-- The ribbon icons, beside the DLL. Loaded by path at run time rather than
+       embedded: a missing icon then degrades to a button with no image instead of
+       taking the tab down with it. -->
+  <ItemGroup>
+    <None Include="Resources\*.png" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- The scripting escape hatch. IronPython is Apache-2.0 (a separate project);
+         StdLib ships the standard library so `import json` works. -->
+    <PackageReference Include="IronPython" Version="3.4.2" />
+    <PackageReference Include="IronPython.StdLib" Version="3.4.2" />
+    <!-- IronPython asks the runtime for the ANSI codepage (1252) while building its
+         engine. .NET Framework has it built in; .NET 5+ does not — the provider ships
+         in this package and must be registered by us. Without it engine creation dies
+         with "No data is available for encoding 1252". Registration is process-global,
+         so it appeared to work whenever some other add-in in the process had already
+         registered it; we no longer depend on that.
+
+         Scoped to net8 ALONE, and NuGet is what decided that rather than a guess:
+         on net10 it raises NU1510 - the framework already provides this - while on
+         net8 it does not, which means net8 genuinely needs it. Removing it from
+         net8 as well would compile, because the reference assemblies resolve; but
+         compiling is not running, and the failure this package prevents is a
+         runtime one inside Revit that kills the IronPython engine. Not a place to
+         act on "it built fine". -->
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0"
+                      Condition="'$(TargetFramework)' == 'net8.0-windows7.0'" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <!-- The single declaration of every command, shared with the other half. -->
+    <Compile Include="..\Horizun.Contracts\Contract.cs" />
+  </ItemGroup>
+</Project>

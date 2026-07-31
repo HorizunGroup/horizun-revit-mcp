@@ -1,0 +1,48 @@
+<Project>
+
+  <!--
+    PROVENANCE, stamped by the build rather than typed by a person.
+
+    The acceptance report already had to record that "the manifest's hash
+    identifies a FILE, not a SOURCE": two builds of one commit could differ, and
+    a matching hash only ever proved two files were the same file. Nothing in a
+    shipped binary said which commit it came from, so the question "what is
+    actually loaded in that Revit?" had no answer better than a version number
+    that changes once a release.
+
+    The commit is read from git at build time and appended to the informational
+    version, which the compiler stamps into the assembly. Core/Build.cs reads it
+    back, and horizun_health reports it - so the answer comes from the running
+    add-in itself, not from whoever remembers what they deployed.
+
+    ContinueOnError: a build from a source archive with no .git must still work.
+    It reports "unknown", which is the truth, and never a stale or invented sha.
+  -->
+  <Target Name="HorizunStampCommit" BeforeTargets="GetAssemblyVersion;CoreCompile">
+    <Exec Command="git rev-parse HEAD"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true"
+          StandardOutputImportance="low"
+          ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_HorizunCommit" />
+      <Output TaskParameter="ExitCode" PropertyName="_HorizunGitExit" />
+    </Exec>
+
+    <!-- Is the working tree clean? A binary built from edited files is NOT that
+         commit, and saying so is the whole point. -->
+    <Exec Command="git status --porcelain"
+          WorkingDirectory="$(MSBuildThisFileDirectory)"
+          ConsoleToMSBuild="true"
+          StandardOutputImportance="low"
+          ContinueOnError="true">
+      <Output TaskParameter="ConsoleOutput" PropertyName="_HorizunDirty" />
+    </Exec>
+
+    <PropertyGroup>
+      <SourceRevisionId Condition="'$(_HorizunGitExit)' == '0' AND '$(_HorizunCommit)' != ''">$(_HorizunCommit.Trim())</SourceRevisionId>
+      <SourceRevisionId Condition="'$(SourceRevisionId)' != '' AND '$(_HorizunDirty)' != ''">$(SourceRevisionId)-dirty</SourceRevisionId>
+      <SourceRevisionId Condition="'$(SourceRevisionId)' == ''">unknown</SourceRevisionId>
+    </PropertyGroup>
+  </Target>
+
+</Project>

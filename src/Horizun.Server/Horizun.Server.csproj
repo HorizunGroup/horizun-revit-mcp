@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Horizun MCP server. A stdio JSON-RPC process that speaks MCP to the client
+    and forwards each tool call to the Revit add-in over its named pipe. Original
+    Horizun code; the only dependency is Newtonsoft.Json (MIT). The MCP wire
+    format is hand-rolled from the open MCP stdio spec, not a third-party SDK.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>horizun-mcp</AssemblyName>
+    <RootNamespace>Horizun.Server</RootNamespace>
+    <!-- Same version as the plugin, and for the same reason: the number the MCP client
+         sees in serverInfo is read from this assembly, never hand-typed. Keep the two
+         csproj values in step - a server and a plugin that disagree is a support call. -->
+    <Version>0.3.3</Version>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!-- Same reason as the plugin: without this the binary carries the absolute
+         path of the folder it was built in, so the same commit built elsewhere
+         produced a different hash and every shipped copy leaked the builder's
+         filesystem layout. Measured, not assumed - see Horizun.Revit.csproj. -->
+    <Deterministic>true</Deterministic>
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
+    <EnableSourceLink>false</EnableSourceLink>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <SourceRoot Include="$(MSBuildThisFileDirectory)..\..\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- One settings reader, shared with the add-in. Linked rather than duplicated so
+         the server cannot drift into advertising a capability the plugin refuses. It
+         carries no using Autodesk.*, so nothing Revit comes with it. -->
+    <Compile Include="..\Horizun.Revit\Core\Settings.cs" />
+    <!-- One answer to "where does Horizun keep its state". Settings, discovery, jobs
+         and both logs used to compute it separately at each end - seven lines that
+         happened to agree, in two processes that can be handed different values of
+         %LOCALAPPDATA%. Linked for the same reason Settings.cs is: the server and the
+         add-in must not be able to disagree about it. -->
+    <Compile Include="..\Horizun.Revit\Core\HorizunPaths.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The single declaration of every command, shared with the other half. -->
+    <Compile Include="..\Horizun.Contracts\Contract.cs" />
+  </ItemGroup>
+</Project>
