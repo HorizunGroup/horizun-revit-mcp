@@ -35,6 +35,7 @@ if (-not $Server) {
 if (-not (Test-Path $Server)) { throw "MCP server not found: $Server" }
 
 $env:HORIZUN_REVIT_YEAR = "$Year"
+$run = [guid]::NewGuid().ToString('N')
 $marker = Join-Path ([IO.Path]::GetTempPath()) ('horizun-queue-cancel-' + [guid]::NewGuid().ToString('N') + '.txt')
 $markerPython = $marker.Replace('\', '/')
 
@@ -57,7 +58,13 @@ function Read-Reply([int]$seconds) {
     while ((Get-Date) -lt $deadline) {
         $task = $proc.StandardOutput.ReadLineAsync()
         $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
-        if (-not $task.Wait($remaining)) { return $null }
+        # Windows PowerShell 5.1 does not reliably wake Task.Wait(timeout) for
+        # redirected StreamReader completions. The same defect once made a valid
+        # query reply look like a bridge timeout in verify-live.ps1.
+        $delay = [Threading.Tasks.Task]::Delay($remaining)
+        $winner = [Threading.Tasks.Task]::WhenAny(
+            [Threading.Tasks.Task[]]@($task, $delay)).Result
+        if (-not [object]::ReferenceEquals($winner, $task)) { return $null }
         $line = $task.Result
         if ($null -eq $line) { return $null }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
@@ -105,9 +112,11 @@ try {
     Write-Host ("-" * 72)
 
     $blocker = @{ code = "import time`ntime.sleep(6)`n__output__ = {'blocker': 'done'}"
-                  target_document = $Document }
+                  target_document = $Document
+                  idempotency_key = "queue-blocker-$run" }
     $cancelled = @{ code = "f = open(r'$markerPython', 'w')`nf.write('RAN')`nf.close()`n__output__ = {'marker_written': True}"
-                    target_document = $Document }
+                    target_document = $Document
+                    idempotency_key = "queue-cancelled-$run" }
 
     # Give the blocker time to reach the UI thread. Everything sent after this
     # point should therefore have at least one request ahead at admission.
@@ -162,7 +171,8 @@ try {
     # Fill all 16 waiting slots while a second blocker owns the UI thread. The
     # seventeenth read must be refused explicitly; accepted work must still drain.
     $capacityBlocker = @{ code = "import time`ntime.sleep(5)`n__output__ = {'capacity_blocker': 'done'}"
-                          target_document = $Document }
+                          target_document = $Document
+                          idempotency_key = "queue-capacity-blocker-$run" }
     Send (Tool-Request 20 'horizun_execute_python' $capacityBlocker)
     Start-Sleep -Milliseconds 1000
     foreach ($id in 21..37) { Send (Tool-Request $id 'horizun_health' @{}) }
