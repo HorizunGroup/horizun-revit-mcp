@@ -174,8 +174,15 @@ namespace Horizun.Revit.Commands
             FilteredElementCollector collector = viewId == null
                 ? new FilteredElementCollector(source)
                 : new FilteredElementCollector(source, viewId);
-            IEnumerable<Element> candidates = collector.Cast<Element>();
-            if (!includeTypes) candidates = candidates.Where(e => !(e is ElementType));
+            // Revit refuses extraction from a collector with no native filter, even
+            // though the LINQ Cast/Where compiles. Apply a real ElementFilter before
+            // iteration. The OR is an explicit pass over types + instances when the
+            // caller requested both.
+            IEnumerable<Element> candidates = includeTypes
+                ? collector.WherePasses(new LogicalOrFilter(
+                    new ElementIsElementTypeFilter(false),
+                    new ElementIsElementTypeFilter(true))).Cast<Element>()
+                : collector.WhereElementIsNotElementType().Cast<Element>();
 
             foreach (Element element in candidates)
             {

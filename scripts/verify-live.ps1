@@ -591,7 +591,8 @@ if ($Document) {
     $probes += @{ Name = 'delete REFUSES a token minted for a different plan'
                   Tool = 'horizun_delete_verified'
                   Args = @{ mode = 'ids'; ids = @(888888888); target_document = $Document
-                            dry_run = $false; confirmation_token = 'hz-0000000000000000000000000000000000' }
+                            dry_run = $false; confirmation_token = 'hz-0000000000000000000000000000000000'
+                            idempotency_key = "live-delete-bad-token-$probeRun" }
                   ExpectError = 'No such confirmation token' }
 
     # The category is a PARAMETER because it has to exist in the model under test.
