@@ -163,6 +163,7 @@ namespace Horizun.Revit.Core
         public static string SettingsPath() => System.IO.Path.Combine(DataRoot(), "settings.json");
         public static string DiscoveryDir() => System.IO.Path.Combine(DataRoot(), "discovery");
         public static string JobsDir() => System.IO.Path.Combine(DataRoot(), "jobs");
+        public static string IdempotencyDir() => System.IO.Path.Combine(DataRoot(), "idempotency");
         public static string LogsDir() => System.IO.Path.Combine(DataRoot(), "logs");
 
         /// <summary>
@@ -189,7 +190,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static void EnsureDirectories()
         {
-            foreach (string d in new[] { DataRoot(), DiscoveryDir(), JobsDir(), LogsDir() })
+            foreach (string d in new[] { DataRoot(), DiscoveryDir(), JobsDir(), IdempotencyDir(), LogsDir() })
             {
                 try { Directory.CreateDirectory(d); } catch { }
             }

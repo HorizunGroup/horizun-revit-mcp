@@ -42,6 +42,31 @@ namespace Horizun.Revit.Core
 
     public static class DocumentGate
     {
+        [ThreadStatic]
+        private static int _atomicPlanDepth;
+
+        /// <summary>
+        /// A confirmed execute_plan owns one outer TransactionGroup. Typed child
+        /// commands retain their document and verification checks, but do not demand
+        /// separate single-use tokens because the outer token binds the whole graph.
+        /// </summary>
+        internal static IDisposable EnterConfirmedAtomicPlan()
+        {
+            _atomicPlanDepth++;
+            return new AtomicPlanScope();
+        }
+
+        private sealed class AtomicPlanScope : IDisposable
+        {
+            private bool _disposed;
+            public void Dispose()
+            {
+                if (_disposed) return;
+                _disposed = true;
+                _atomicPlanDepth = Math.Max(0, _atomicPlanDepth - 1);
+            }
+        }
+
         /// <summary>
         /// Confirmations live for the lifetime of this Revit session, in memory. They are
         /// deliberately NOT persisted: a token that survives a restart is a token that
@@ -174,6 +199,9 @@ namespace Horizun.Revit.Core
         public static CommandResult RequireConfirmation(UIApplication app, GateResult gate, JObject request,
                                                         string commandName, string planHash)
         {
+            if (_atomicPlanDepth > 0)
+                return StillTheSame(app, gate.Fingerprint, commandName);
+
             ConfirmationCheck check = Confirmations.Validate(
                 request?.Value<string>("confirmation_token"), commandName, gate.Fingerprint, planHash);
             if (!check.Ok)

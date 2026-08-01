@@ -18,6 +18,8 @@
 using System;
 using System.Collections.Generic;
 using Autodesk.Revit.UI;
+using Newtonsoft.Json.Linq;
+using Horizun.Contracts;
 
 namespace Horizun.Revit.Core
 {
@@ -29,6 +31,7 @@ namespace Horizun.Revit.Core
         private ExternalEvent _event;
 
         private readonly RequestGate _gate = new RequestGate();
+        private readonly DurableCommandLedger _idempotency = new DurableCommandLedger();
         private bool _preferAsync;
 
         /// <summary>
@@ -73,6 +76,12 @@ namespace Horizun.Revit.Core
         {
             if (command == null) return;
             _commands[command.Name] = command;
+        }
+
+        internal ICommand ResolveCommand(string name)
+        {
+            ICommand command;
+            return name != null && _commands.TryGetValue(name, out command) ? command : null;
         }
 
         public IEnumerable<string> CommandNames => _commands.Keys;
@@ -221,6 +230,7 @@ namespace Horizun.Revit.Core
                 return;
             }
 
+            DurableCommandDecision durableClaim = null;
             try
             {
                 ICommand cmd;
@@ -228,6 +238,54 @@ namespace Horizun.Revit.Core
                 {
                     req.Result = CommandResult.Fail($"Unknown command: '{req.Name}'.");
                     return;
+                }
+
+                JObject request;
+                try { request = string.IsNullOrWhiteSpace(req.ParamsJson) ? new JObject() : JObject.Parse(req.ParamsJson); }
+                catch { request = null; } // the command owns its normal invalid-JSON error
+
+                CommandContract contract = Contract.Find(req.Name);
+                string permissionReason;
+                if (contract != null && !Settings.IsToolAllowed(contract, out permissionReason))
+                {
+                    req.Result = CommandResult.Fail(permissionReason + " Nothing ran.");
+                    return;
+                }
+                if (request != null && RequiresIdempotency(contract, request))
+                {
+                    string key = request.Value<string>("idempotency_key");
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        req.Result = CommandResult.Fail(
+                            "idempotency_key is REQUIRED when '" + req.Name + "' will mutate or change the Revit " +
+                            "session. Generate one UUID for this deliberate operation and keep it unchanged only " +
+                            "when retrying the identical call. Nothing ran.");
+                        return;
+                    }
+
+                    string documentFingerprint = DocumentFingerprintFor(app, contract, request);
+                    string fingerprint = RequestFingerprint.OfOperation(
+                        req.Name, documentFingerprint, request, "idempotency_key", "confirmation_token");
+                    try { durableClaim = _idempotency.Claim(key, req.Name, fingerprint); }
+                    catch (Exception ex)
+                    {
+                        req.Result = CommandResult.Fail(
+                            "Could not establish durable idempotency before '" + req.Name + "': " + ex.Message +
+                            ". Nothing ran; Horizun refuses a mutation whose retry safety could not be recorded.");
+                        return;
+                    }
+
+                    if (durableClaim.Outcome == DurableCommandOutcome.Replay)
+                    {
+                        req.Result = durableClaim.ReplayResult;
+                        StampIdempotency(req.Result, key, "replayed", false, durableClaim.Message);
+                        return;
+                    }
+                    if (!durableClaim.IsFresh)
+                    {
+                        req.Result = CommandResult.Fail(durableClaim.Message);
+                        return;
+                    }
                 }
 
                 // Watch for the whole execution, for every command, without any of them
@@ -252,6 +310,9 @@ namespace Horizun.Revit.Core
                         }
                     }
                 }
+                if (durableClaim != null && durableClaim.IsFresh)
+                    StampIdempotency(req.Result, durableClaim.Key, "executed_once", true,
+                        "The durable claim and result were recorded; an identical retry will replay this answer.");
             }
             catch (Exception ex)
             {
@@ -262,6 +323,20 @@ namespace Horizun.Revit.Core
             }
             finally
             {
+                if (durableClaim != null && durableClaim.IsFresh)
+                {
+                    try { _idempotency.Complete(durableClaim, req.Result); }
+                    catch (Exception ex)
+                    {
+                        // The model may already have changed. Never replace its real result with a
+                        // cheerful success when the durable completion record did not land.
+                        Log.Error("could not durably complete idempotency key for '" + req.Name + "'", ex);
+                        req.Result = CommandResult.Fail(
+                            "The command returned inside Revit, but its durable idempotency completion record could " +
+                            "not be written: " + ex.Message + ". Its outcome is now AMBIGUOUS; do not retry with a " +
+                            "new key until the model has been inspected.");
+                    }
+                }
                 // A result nobody is waiting for is still worth a line in the log: it is
                 // the only record that the work Revit was holding the thread for is done.
                 if (req.Abandoned)
@@ -272,6 +347,66 @@ namespace Horizun.Revit.Core
                 _preferAsync = AsyncQueue.Count > 0;
                 PumpNext();
             }
+        }
+
+        private static bool RequiresIdempotency(CommandContract contract, JObject request)
+        {
+            if (contract == null) return false;
+            switch (contract.Effect)
+            {
+                case ToolEffect.Mutating:
+                    return true;
+                case ToolEffect.MutatingUnlessDryRun:
+                    // All current plan/apply commands default to dry_run=true. Only an
+                    // explicit false crosses the mutation boundary.
+                    return request["dry_run"] != null && request.Value<bool?>("dry_run") == false;
+                case ToolEffect.DocumentSession:
+                    string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
+                    if (operation == "inspect" || string.IsNullOrEmpty(operation)) return false;
+                    if (operation == "close" && request.Value<bool?>("dry_run") == true) return false;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static string DocumentFingerprintFor(UIApplication app, CommandContract contract, JObject request)
+        {
+            // Session operations change which document is active or can close it. Their
+            // target is already in the canonical arguments; binding the fingerprint to
+            // the pre-call active document would make a successful open/close change its
+            // own retry identity and defeat replay after a lost response.
+            if (contract != null &&
+                (contract.Name == "horizun_open_document" || contract.Effect == ToolEffect.DocumentSession))
+                return "(document-session-target-is-in-arguments)";
+
+            try
+            {
+                var doc = app?.ActiveUIDocument?.Document;
+                string year = app?.Application?.VersionNumber;
+                return DocumentGate.IdentityOf(doc, year)?.Fingerprint() ?? "(no-active-document)";
+            }
+            catch { return "(active-document-unreadable)"; }
+        }
+
+        private static void StampIdempotency(CommandResult result, string key, string status, bool executed,
+                                             string note)
+        {
+            if (result == null || !result.Success) return;
+            JObject data = result.Data as JObject;
+            if (data == null && result.Data != null)
+            {
+                data = JToken.FromObject(result.Data) as JObject;
+                if (data != null) result.ReplaceData(data);
+            }
+            if (data == null) return;
+            data["idempotency"] = new JObject
+            {
+                ["key"] = key,
+                ["status"] = status,
+                ["command_executed_in_this_call"] = executed,
+                ["note"] = note
+            };
         }
 
         /// <summary>
@@ -295,7 +430,12 @@ namespace Horizun.Revit.Core
                 if (!_commands.TryGetValue(work.Command, out cmd))
                     result = CommandResult.Fail("Unknown command: '" + work.Command + "'.");
                 else
-                    using (var watch = new Interference(app))
+                {
+                    CommandContract contract = Contract.Find(work.Command);
+                    string permissionReason;
+                    if (contract != null && !Settings.IsToolAllowed(contract, out permissionReason))
+                        result = CommandResult.Fail(permissionReason + " The queued job did not run.");
+                    else using (var watch = new Interference(app))
                     {
                         // The command writes into the record the CALLER was handed. Without
                         // this it opens its own, and the caller polls an id whose
@@ -319,6 +459,7 @@ namespace Horizun.Revit.Core
                             }
                         }
                     }
+                }
             }
             catch (Exception ex)
             {

@@ -291,9 +291,9 @@ namespace Horizun.Revit.Commands
                             "handed the original job_id. Read horizun_job_status for what it did. If you expected " +
                             "new work, you re-used a key.",
                         ["idempotency_scope"] =
-                            "The key is bound to this Revit process (pid " + revitPid + "), the target document, a " +
-                            "SHA-256 of the code, and every other argument. It is held IN MEMORY: if Revit " +
-                            "restarts, this key is forgotten and the same request would run again."
+                            "The command-local claim is bound to this Revit process (pid " + revitPid + "), the " +
+                            "target document, a SHA-256 of the code and every other argument. The dispatcher also " +
+                            "holds the universal durable operation claim used by every mutation."
                     });
                 }
 
@@ -341,8 +341,7 @@ namespace Horizun.Revit.Commands
                         "nothing will be queued a second time. The key is bound to this Revit process (pid " +
                         revitPid + "), the target document, a SHA-256 of the code and every other argument - " +
                         "change any of them and the retry is REFUSED rather than silently treated as this one. " +
-                        "The ledger is in memory: across a Revit restart the key is forgotten and the request " +
-                        "would run again.",
+                        "The dispatcher records this operation durably before it reaches this queue.",
                     ["executed_means"] =
                         "false because NOTHING HAS RUN YET. This reply means the script is queued, not that it " +
                         "worked. Read horizun_job_status for what it did.",
@@ -366,19 +365,6 @@ namespace Horizun.Revit.Commands
                     ["transaction_policy"] = TransactionPolicy
                 });
             }
-
-            // A key on the SYNCHRONOUS path is refused rather than ignored. Ignoring it
-            // would be the worse failure by far: the caller believes its retry is
-            // deduplicated, and it is not - a synchronous run hands its result back over
-            // the wire, so there is no stored answer to replay and a second call is a
-            // second execution. Saying so is the only honest option.
-            if (!string.IsNullOrWhiteSpace(idempotencyKey))
-                return CommandResult.Fail(
-                    "'idempotency_key' was supplied without run_async=true. It is REFUSED rather than ignored: a " +
-                    "synchronous run returns its result over the wire and keeps no stored answer to replay, so " +
-                    "this call cannot be deduplicated and accepting the key would tell you otherwise. Nothing ran. " +
-                    "Either drop the key - and accept that a lost reply means you cannot safely retry - or set " +
-                    "run_async=true, which is the path that carries the guarantee.");
 
             UIDocument uidoc = app.ActiveUIDocument;
             // The GATE's document, not whatever is in front now. They are the same

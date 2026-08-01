@@ -123,6 +123,8 @@ param(
     # artifact anybody will install.
     [switch]$AllowDevServer
 )
+
+$probeRun = [guid]::NewGuid().ToString('N')
 $ErrorActionPreference = 'Stop'
 
 # ---------------------------------------------------------------------------
@@ -292,7 +294,7 @@ $probes = @(
     # the very change that made it necessary - a probe that had gone out of date
     # with the product it checks.
     @{ Name = 'execute_python matches its per-machine switch (enabled: runs; disabled: refuses)'
-       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 6 * 7"; target_document = $Document }
+       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 6 * 7"; target_document = $Document; idempotency_key = "live-python-enabled-$probeRun" }
        Needs = 'Document'
        NotCovered = 'whether execute_python runs or refuses (needs -Document; it requires target_document like every other mutating command)'
        Check = { param($d)
@@ -308,7 +310,7 @@ $probes = @(
     # typed writes can, plus everything they cannot, aimed at whatever window was
     # in front.
     @{ Name = 'execute_python REFUSES without target_document'
-       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 1" }
+       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 1"; idempotency_key = "live-python-no-target-$probeRun" }
        ExpectError = "'target_document' is required" },
 
     # The reply carrying the job_id is the message that gets lost. Without a key,
@@ -318,16 +320,18 @@ $probes = @(
        Args = @{ code = "__output__ = 1"; run_async = $true; target_document = $Document }
        Needs = 'Document'
        NotCovered = 'run_async demanding an idempotency_key (needs -Document)'
-       ExpectError = "'idempotency_key' is required" },
+       ExpectError = 'idempotency_key is REQUIRED' },
 
-    # Accepting and ignoring it would tell the caller its retry was deduplicated
-    # when a second synchronous call is a second execution.
-    @{ Name = 'a key on the SYNCHRONOUS path is refused, not ignored'
+    # The universal dispatcher now persists synchronous results too. The old
+    # command-local refusal made this path impossible once every mutation began
+    # requiring a durable key.
+    @{ Name = 'a key on the SYNCHRONOUS path is accepted and the script runs once'
        Tool = 'horizun_execute_python'
-       Args = @{ code = "__output__ = 1"; target_document = $Document; idempotency_key = 'sync-probe' }
+       Args = @{ code = "__output__ = 1"; target_document = $Document; idempotency_key = "live-python-sync-$probeRun" }
        Needs = 'Document'
-       NotCovered = 'the synchronous path refusing an idempotency_key (needs -Document)'
-       ExpectError = 'without run_async=true' },
+       NotCovered = 'the synchronous path using durable idempotency (needs -Document)'
+       Check = { param($d) $d.executed -eq $true -and $d.output -eq 1 -and
+                            $d.idempotency.status -eq 'executed_once' } },
 
     # Was Check = { $true } with AllowError: it asserted nothing and passed on an
     # error too. What it has to prove is that it describes the SAME Revit this
@@ -348,7 +352,43 @@ $probes = @(
        Tool = 'horizun_get_schedule_data'; Args = @{ schedule_id = 999999999 }
        ExpectError = 'does not identify a native ViewSchedule' },
 
+    @{ Name = 'query_model returns bounded rows, summaries and federated coverage'
+       Tool = 'horizun_query_model'; Args = @{ max_rows = 1; include_links = $true }
+       Check = { param($d)
+                 $d.matched_total -ge $d.returned -and $d.returned -le 1 -and
+                 $null -ne $d.rows -and $null -ne $d.summary -and
+                 $null -ne $d.federated_coverage.coverage_complete } },
+
     # ---- the mutation gate, proven by its refusals. Nothing is written. ----
+    @{ Name = 'create_elements REFUSES without target_document'
+       Tool = 'horizun_create_elements'; Args = @{ elements = @(@{ kind = 'level'; elevation = 0 }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'transform_elements REFUSES without target_document'
+       Tool = 'horizun_transform_elements'; Args = @{ operations = @(@{ operation = 'pin'; element_ids = @(1) }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'manage_views REFUSES without target_document'
+       Tool = 'horizun_manage_views'; Args = @{ actions = @(@{ operation = 'create_3d' }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'annotate REFUSES without target_document'
+       Tool = 'horizun_annotate'; Args = @{ actions = @(@{ operation = 'text'; view_id = 1; text = 'x'; point = @(0,0) }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'execute_plan REFUSES without target_document'
+       Tool = 'horizun_execute_plan'; Args = @{ actions = @(@{ key = 'x'; tool = 'horizun_create_elements'; arguments = @{ elements = @() } }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'export REFUSES without target_document'
+       Tool = 'horizun_export'; Args = @{ format = 'ifc'; output_path = 'C:\horizun-refusal-only.ifc' }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'submit_job refuses a host-only command without queuing it'
+       Tool = 'horizun_submit_job'
+       Args = @{ tool = 'horizun_job_status'; arguments = @{}; idempotency_key = "live-submit-host-only-$probeRun" }
+       ExpectError = 'not an installed Revit command' },
+
     @{ Name = 'create_schedule REFUSES without target_document'
        Tool = 'horizun_create_schedule'; Args = @{ category = 'OST_Walls'; name = 'HZ_REFUSAL_ONLY' }
        ExpectError = "'target_document' is required" },
@@ -379,7 +419,7 @@ $probes = @(
        ExpectError = "'target_document' is required" },
 
     @{ Name = 'save REFUSES without target_document'
-       Tool = 'horizun_save_document'; Args = @{}
+       Tool = 'horizun_save_document'; Args = @{ idempotency_key = "live-save-no-target-$probeRun" }
        ExpectError = "'target_document' is required" }
 )
 
@@ -670,7 +710,7 @@ else {
 if ($OldFile) {
     if (-not (Test-Path $OldFile)) { throw "-OldFile does not exist: $OldFile" }
     $probes += @{ Name = "open_document REFUSES a file saved in another Revit"
-                  Tool = 'horizun_open_document'; Args = @{ path = $OldFile }
+                  Tool = 'horizun_open_document'; Args = @{ path = $OldFile; idempotency_key = "live-open-old-file-$probeRun" }
                   ExpectError = 'REFUS' }
 }
 
@@ -705,9 +745,25 @@ function Read-Rpc([int]$TimeoutMs = 620000) {
     }
 }
 
-Send-Rpc @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2024-11-05'; capabilities=@{}; clientInfo=@{ name='verify-live'; version='1' } } }
-$null = Read-Rpc
+Send-Rpc @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2025-11-25'; capabilities=@{}; clientInfo=@{ name='verify-live'; version='1' } } }
+$initReply = Read-Rpc
+if ($initReply.result.protocolVersion -ne '2025-11-25') {
+    throw "MCP negotiation returned '$($initReply.result.protocolVersion)', expected 2025-11-25"
+}
 Send-Rpc @{ jsonrpc='2.0'; method='notifications/initialized' }
+
+Send-Rpc @{ jsonrpc='2.0'; id=999001; method='tools/list'; params=@{} }
+$listReply = Read-Rpc
+$listed = @($listReply.result.tools)
+$requiredV040 = @('horizun_query_model','horizun_create_elements','horizun_transform_elements',
+                  'horizun_manage_views','horizun_annotate','horizun_execute_plan','horizun_submit_job')
+foreach ($required in $requiredV040) {
+    $tool = $listed | Where-Object { $_.name -eq $required } | Select-Object -First 1
+    if (-not $tool) { throw "tools/list does not advertise required 0.4.0 tool '$required'" }
+    if ($tool.outputSchema.type -ne 'object' -or $null -eq $tool.annotations.idempotentHint) {
+        throw "tool '$required' lacks MCP outputSchema/annotations"
+    }
+}
 
 $byId = @{}
 $id = 1

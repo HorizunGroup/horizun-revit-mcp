@@ -181,6 +181,44 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Initialize_negotiates_old_clients_and_offers_current_protocol_to_unknown_clients()
+        {
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1900-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
+            Assert.Equal("2024-11-05", (string)replies[0]["result"]["protocolVersion"]);
+            Assert.Equal("2025-11-25", (string)replies[1]["result"]["protocolVersion"]);
+        }
+
+        [Fact]
+        public void Listed_tools_publish_modern_schemas_and_behavior_annotations()
+        {
+            var replies = Exchange("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}");
+            JArray tools = replies[0]["result"]["tools"] as JArray;
+            Assert.NotNull(tools);
+            Assert.NotEmpty(tools);
+            foreach (JObject tool in tools)
+            {
+                Assert.Equal("object", (string)tool["outputSchema"]["type"]);
+                Assert.NotNull(tool["annotations"]["readOnlyHint"]);
+                Assert.NotNull(tool["annotations"]["idempotentHint"]);
+                Assert.False(string.IsNullOrWhiteSpace((string)tool["title"]));
+            }
+        }
+
+        [Fact]
+        public void Successful_host_tool_returns_structured_content_and_legacy_text()
+        {
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"horizun_target\",\"arguments\":{}}}");
+            JObject result = replies[0]["result"] as JObject;
+            Assert.NotNull(result?["structuredContent"]);
+            Assert.Equal(JTokenType.Object, result["structuredContent"].Type);
+            Assert.Equal("text", (string)result["content"][0]["type"]);
+            Assert.False((bool)result["isError"]);
+        }
+
+        [Fact]
         public void One_malformed_line_does_not_stop_the_ones_after_it()
         {
             var replies = Exchange(

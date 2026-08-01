@@ -3,6 +3,61 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.4.0 — 2026-08-01
+
+Esta versión cambia el foco de “más comandos” a **operaciones generales,
+componibles y verificables**.
+
+### Superficie BIM general
+
+- `horizun_query_model` consulta host y vínculos cargados con filtros de
+  categoría, familia/tipo/nombre/nivel, parámetros y caja 3D; proyecta campos,
+  agrupa resultados y usa cursores que detectan cambios del modelo.
+- `horizun_create_elements` crea en un solo lote niveles, ejes, muros, pisos,
+  habitaciones, instancias de familia, ductos, tuberías y conduit.
+- `horizun_transform_elements` mueve, copia, rota, fija y cambia tipos;
+  `horizun_manage_views` crea vistas, planos y colocaciones; `horizun_annotate`
+  crea texto, tags y cotas con referencias estables; `horizun_export` produce
+  PDF/DWG/IFC/imagen/CSV y verifica los archivos realmente escritos.
+- `horizun_navigate` devuelve selección, encuadre y apertura de vista a la UI
+  de Revit sin fingir una confirmación visual que la API no expone.
+
+### Composición y trabajos largos
+
+- `horizun_execute_plan` encadena hasta 100 comandos tipados en un
+  `TransactionGroup`. Un paso puede usar un valor exacto anterior mediante
+  `${clave.ruta}`; si cualquier paso falla, se revierte el grafo completo.
+- `horizun_submit_job` abre la cola async a cualquier comando instalado del
+  lado Revit. Devuelve `job_id` de inmediato; `horizun_job_status` distingue
+  queued/running/ok/failed/not_started o muerte del proceso.
+
+### Seguridad e idempotencia
+
+- Toda mutación y cambio de sesión exige una clave de idempotencia **durable**.
+  El claim se escribe antes de ejecutar y el resultado terminal después. Un
+  reintento idéntico tras reiniciar reproduce la respuesta sin ejecutar; una
+  clave reutilizada con otros argumentos se rechaza; un claim cortado por un
+  crash queda `in_doubt` y nunca se repite automáticamente.
+- Perfiles `read_only`, `safe_write` (predeterminado), `full_write` y
+  `unsafe_code`, más `allowed_tools`/`denied_tools`. Python exige a la vez
+  perfil `unsafe_code` y `enable_execute_python=true`.
+- Se corrigió una incompatibilidad introducida durante el endurecimiento:
+  Python síncrono ya acepta —y exige— la clave durable universal.
+
+### MCP y honestidad de resultados
+
+- Negociación MCP hasta `2025-11-25`, conservando compatibilidad con
+  2024-11-05/2025-03-26/2025-06-18. Todas las herramientas anuncian
+  `outputSchema`, título y anotaciones de lectura/destrucción/idempotencia/
+  mundo abierto; las respuestas exitosas llevan `structuredContent` y el JSON
+  serializado en texto para clientes antiguos.
+- Export ya no atribuye archivos ajenos que cambiaron simultáneamente en la
+  carpeta; la plantilla de vista se verifica contra el ID exacto solicitado; la
+  verificación de curvas transformadas tolera la inversión de extremos con la
+  que Revit normaliza geometría equivalente.
+
+El contrato compartido cambió: servidor y add-in 0.4.0 deben desplegarse juntos.
+
 ## v0.3.5 — 2026-08-01
 
 ### Cola FIFO para todas las llamadas de Revit

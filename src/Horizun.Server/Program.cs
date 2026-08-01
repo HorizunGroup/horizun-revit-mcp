@@ -27,6 +27,11 @@ namespace Horizun.Server
         // to be edited in two places is a version that will disagree with itself.
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
+        private const string LatestMcpProtocol = "2025-11-25";
+        private static readonly HashSet<string> SupportedMcpProtocols = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"
+        };
 
         // Which Revit year to target. Empty = the most recently seen Revit.
         private static readonly string TargetYear = Environment.GetEnvironmentVariable("HORIZUN_REVIT_YEAR") ?? "";
@@ -451,9 +456,12 @@ namespace Horizun.Server
             switch (method)
             {
                 case "initialize":
+                    string requestedProtocol = prms?.Value<string>("protocolVersion");
+                    string negotiatedProtocol = requestedProtocol != null && SupportedMcpProtocols.Contains(requestedProtocol)
+                        ? requestedProtocol : LatestMcpProtocol;
                     return new JObject
                     {
-                        ["protocolVersion"] = "2024-11-05",
+                        ["protocolVersion"] = negotiatedProtocol,
                         ["capabilities"] = new JObject { ["tools"] = new JObject() },
                         ["serverInfo"] = new JObject { ["name"] = ServerName, ["version"] = ServerVersion },
                         // The protocol's own slot for "how to use this server". A caller
@@ -550,7 +558,7 @@ namespace Horizun.Server
                 {
                     JObject data = def.Host(args);
                     Log.Info(name + " (host) ok in " + clock.ElapsedMilliseconds + " ms");
-                    return TextResult(data == null ? "null" : data.ToString(Formatting.Indented), false);
+                    return StructuredResult(data);
                 }
                 catch (ToolRefusal refusal)
                 {
@@ -730,7 +738,7 @@ namespace Horizun.Server
         {
             string text = (data == null ? "null" : data.ToString(Formatting.Indented)) + RevitSaidText(said);
             string path = data is JObject obj ? (string)obj["image_path"] : null;
-            if (string.IsNullOrEmpty(path)) return TextResult(text, false);
+            if (string.IsNullOrEmpty(path)) return StructuredResult(data, text);
 
             try
             {
@@ -753,7 +761,8 @@ namespace Horizun.Server
                             ["mimeType"] = mime
                         }
                     },
-                    ["isError"] = false
+                    ["isError"] = false,
+                    ["structuredContent"] = data is JObject ? data.DeepClone() : null
                 };
             }
             catch (Exception ex)
@@ -769,6 +778,16 @@ namespace Horizun.Server
                 ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = text } },
                 ["isError"] = isError
             };
+        }
+
+        private static JObject StructuredResult(JObject data)
+            => StructuredResult((JToken)data, data == null ? "null" : data.ToString(Formatting.Indented));
+
+        private static JObject StructuredResult(JToken data, string text)
+        {
+            JObject result = TextResult(text, false);
+            if (data is JObject) result["structuredContent"] = data.DeepClone();
+            return result;
         }
 
         private static JObject Reply(object id, JToken result)

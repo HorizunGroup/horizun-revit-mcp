@@ -29,6 +29,15 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Contracts
 {
+    public enum ToolEffect
+    {
+        ReadOnly,
+        Mutating,
+        MutatingUnlessDryRun,
+        DocumentSession,
+        ExternalSideEffect
+    }
+
     /// <summary>One command, exactly as both halves must understand it.</summary>
     public sealed class CommandContract
     {
@@ -40,6 +49,13 @@ namespace Horizun.Contracts
 
         public string Description;
         public JObject InputSchema;
+        public JObject OutputSchema;
+
+        /// <summary>
+        /// What invoking the tool can change. Shared by both halves so admission,
+        /// idempotency and the MCP annotations cannot drift into three opinions.
+        /// </summary>
+        public ToolEffect Effect;
     }
 
     public static class Contract
@@ -83,7 +99,7 @@ namespace Horizun.Contracts
         /// </summary>
         public const int MaxScriptTextChars = 256 * 1024;
 
-        public static readonly List<CommandContract> All = new List<CommandContract>{
+        public static readonly List<CommandContract> All = Annotate(new List<CommandContract>{
             new CommandContract
             {
                 Name = "get_document_info",
@@ -238,6 +254,63 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_navigate",
+                Command = "horizun_navigate",
+                Description =
+                    "Hand query results back to the Revit UI: select host elements, clear the selection, ask Revit " +
+                    "to frame elements, or activate a non-template view. Selection and active-view changes are " +
+                    "re-read immediately. Framing has no readable camera acknowledgement in the Revit API, so it " +
+                    "is reported as request_accepted rather than falsely claimed as visually verified.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""select"", ""clear_selection"", ""zoom"", ""select_and_zoom"", ""open_view""] },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 5000, ""items"": { ""type"": ""integer"" }, ""description"": ""Host-document ElementIds for select/zoom. Linked element ids are document-local and cannot be selected without their link-instance identity."" },
+    ""view_id"": { ""type"": ""integer"", ""description"": ""Host-document ViewId for open_view."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_create_elements",
+                Command = "horizun_create_elements",
+                Description =
+                    "Create a heterogeneous batch of common BIM elements in one atomic transaction: levels, grids, " +
+                    "walls, floors, rooms, family instances, ducts, pipes and conduits. Geometry enters in explicit " +
+                    "mm/m/feet units; every referenced type and level resolves before a transaction opens. Dry-run " +
+                    "is the default, apply requires confirmation and idempotency, and every created id is re-read " +
+                    "after commit and checked against the requested element kind.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""elements""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": {
+      ""type"": ""object"", ""required"": [""kind""], ""properties"": {
+        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""room"", ""family_instance"", ""duct"", ""pipe"", ""conduit""] },
+        ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported."" },
+        ""elevation"": { ""type"": ""number"" },
+        ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""profile"": { ""type"": ""array"", ""description"": ""Floor loops; each loop is an array of at least three XYZ points. Revit decides outer/inner semantics."" },
+        ""level_id"": { ""type"": ""integer"" }, ""type_id"": { ""type"": ""integer"" },
+        ""system_type_id"": { ""type"": ""integer"", ""description"": ""Required for duct and pipe."" },
+        ""height"": { ""type"": ""number"" }, ""offset"": { ""type"": ""number"", ""default"": 0 },
+        ""flip"": { ""type"": ""boolean"", ""default"": false }, ""structural"": { ""type"": ""boolean"", ""default"": false },
+        ""structural_type"": { ""type"": ""string"", ""enum"": [""NonStructural"", ""Beam"", ""Brace"", ""Column"", ""Footing""] }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_list_elements",
                 Command = "horizun_list_elements",
                 Description =
@@ -259,6 +332,78 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_query_model",
+                Command = "horizun_query_model",
+                Description =
+                    "Composable, read-only model query across the host and loaded RVT links: filter by categories, " +
+                    "family, type, name, level, parameter predicates and an optional 3D bounding box; choose the " +
+                    "fields returned and receive counts grouped by category, level and source. Results use a " +
+                    "stale-detecting cursor rather than a naked offset, and every unreadable element, unloaded link " +
+                    "or closed workset keeps coverage from being called complete.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""BuiltInCategory tokens or localized Revit category names. Omit for all non-type elements."" },
+    ""family"": { ""type"": ""string"", ""description"": ""Case-insensitive substring."" },
+    ""type"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the type name."" },
+    ""name"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the element name."" },
+    ""level"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the level name."" },
+    ""parameters"": { ""type"": ""array"", ""description"": ""All predicates must match. Names may be BuiltInParameter tokens, shared-parameter GUIDs or display names; an ambiguous display name is unreadable, never guessed."", ""items"": {
+      ""type"": ""object"", ""required"": [""name"", ""operator""], ""properties"": {
+        ""name"": { ""type"": ""string"" },
+        ""operator"": { ""type"": ""string"", ""enum"": [""exists"", ""not_exists"", ""equals"", ""not_equals"", ""contains"", ""starts_with"", ""ends_with"", ""gt"", ""gte"", ""lt"", ""lte""] },
+        ""value"": { ""description"": ""For numeric comparisons, a JSON number is compared to the raw Revit internal-unit value. Strings compare to the stored/displayed text, case-insensitively."" }
+      }, ""additionalProperties"": false
+    }},
+    ""bounding_box"": { ""type"": ""object"", ""required"": [""min"", ""max""], ""properties"": {
+      ""min"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+      ""max"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+      ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" }
+    }, ""additionalProperties"": false },
+    ""scope"": { ""type"": ""string"", ""enum"": [""model"", ""current_view"", ""view""], ""default"": ""model"" },
+    ""view_id"": { ""type"": ""integer"", ""description"": ""Required for scope=view. View scope is host-only; combine links with model scope."" },
+    ""include_links"": { ""type"": ""boolean"", ""default"": true },
+    ""return_parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Specific parameters to project into each row."" },
+    ""include_bounding_box"": { ""type"": ""boolean"", ""default"": false },
+    ""coordinate_units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""include_types"": { ""type"": ""boolean"", ""default"": false },
+    ""cursor"": { ""type"": ""string"", ""description"": ""next_cursor from the previous page. It is refused if the query or result set changed."" },
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_transform_elements",
+                Command = "horizun_transform_elements",
+                Description =
+                    "Apply an atomic batch of move, copy, rotate, pin, unpin or type-change operations to explicit " +
+                    "host ElementIds. Dry-run resolves every target and refuses duplicate targets across operations. " +
+                    "Move/rotate are accepted only for elements whose Location can be sampled and are verified from " +
+                    "fresh post-commit location points; copies, pin state and type ids are likewise re-read.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""operations""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""operations"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
+      ""type"": ""object"", ""required"": [""operation"", ""element_ids""], ""properties"": {
+        ""operation"": { ""type"": ""string"", ""enum"": [""move"", ""copy"", ""rotate"", ""pin"", ""unpin"", ""change_type""] },
+        ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
+        ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""axis_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""axis_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""angle_degrees"": { ""type"": ""number"" }, ""type_id"": { ""type"": ""integer"" }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: transform elements"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_list_schedules",
                 Command = "horizun_list_schedules",
                 Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only.",
@@ -268,6 +413,39 @@ namespace Horizun.Contracts
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 }
   },
   ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_views",
+                Command = "horizun_manage_views",
+                Description =
+                    "Create and compose documentation in one atomic batch: floor plans, isometric 3D views, view " +
+                    "duplicates, template assignment, sheets, viewports and schedule instances. Actions may assign " +
+                    "a key and later actions can reference that created object in the same transaction. Dry-run " +
+                    "validates the dependency graph; apply re-reads every created or changed object after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
+      ""type"": ""object"", ""required"": [""operation""], ""properties"": {
+        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_3d"", ""duplicate_view"", ""apply_template"", ""create_sheet"", ""place_view"", ""place_schedule""] },
+        ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
+        ""name"": { ""type"": ""string"" }, ""number"": { ""type"": ""string"" },
+        ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" },
+        ""source_view_id"": { ""type"": ""integer"" }, ""source_view_key"": { ""type"": ""string"" },
+        ""duplicate_option"": { ""type"": ""string"", ""enum"": [""Duplicate"", ""WithDetailing"", ""AsDependent""], ""default"": ""Duplicate"" },
+        ""view_id"": { ""type"": ""integer"" }, ""view_key"": { ""type"": ""string"" },
+        ""template_view_id"": { ""type"": ""integer"" }, ""title_block_type_id"": { ""type"": ""integer"" },
+        ""sheet_id"": { ""type"": ""integer"" }, ""sheet_key"": { ""type"": ""string"" },
+        ""schedule_id"": { ""type"": ""integer"" }, ""schedule_key"": { ""type"": ""string"" },
+        ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: manage views and sheets"" }
+  }, ""additionalProperties"": false
 }")
             },
             new CommandContract
@@ -286,6 +464,113 @@ namespace Horizun.Contracts
     ""max_columns"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 100, ""default"": 50 }
   },
   ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_export",
+                Command = "horizun_export",
+                Description =
+                    "Export verified deliverables from the active document: combined PDF, one-view DWG, full-model " +
+                    "IFC, one-view image or one native schedule as delimited text/CSV. Dry-run validates paths, " +
+                    "views and overwrite policy without writing; apply requires confirmation and idempotency, then " +
+                    "discovers and re-reads the files actually produced instead of echoing the requested path.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""image"", ""schedule_csv""] },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file for PDF/DWG/IFC/CSV; base path for image export, whose actual generated names are reported."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF: one or more printable views/sheets. DWG/image: exactly one view."" },
+    ""schedule_id"": { ""type"": ""integer"" },
+    ""image_pixels"": { ""type"": ""integer"", ""minimum"": 128, ""maximum"": 8192, ""default"": 2048 },
+    ""overwrite"": { ""type"": ""boolean"", ""default"": false },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_annotate",
+                Command = "horizun_annotate",
+                Description =
+                    "Create text notes, host-element tags and dimensions in an atomic batch. Dimensions consume " +
+                    "Revit stable reference strings rather than guessing faces from element ids. Dry-run resolves " +
+                    "views, types, targets and every reference; apply re-reads text, tagged ids and dimension " +
+                    "reference counts after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 1000, ""items"": {
+      ""type"": ""object"", ""required"": [""operation"", ""view_id""], ""properties"": {
+        ""operation"": { ""type"": ""string"", ""enum"": [""text"", ""tag"", ""dimension""] },
+        ""view_id"": { ""type"": ""integer"" }, ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""text"": { ""type"": ""string"" }, ""text_type_id"": { ""type"": ""integer"" },
+        ""element_id"": { ""type"": ""integer"" }, ""add_leader"": { ""type"": ""boolean"", ""default"": false },
+        ""tag_mode"": { ""type"": ""string"", ""enum"": [""by_category"", ""multi_category"", ""material""], ""default"": ""by_category"" },
+        ""orientation"": { ""type"": ""string"", ""enum"": [""horizontal"", ""vertical""], ""default"": ""horizontal"" },
+        ""line_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""line_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""references"": { ""type"": ""array"", ""minItems"": 2, ""items"": { ""type"": ""string"" } },
+        ""dimension_type_id"": { ""type"": ""integer"" }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: annotate"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_submit_job",
+                Command = "horizun_submit_job",
+                Description =
+                    "Submit any installed Revit-side tool except execute_python or submit_job itself to the bounded " +
+                    "asynchronous queue and return a persistent job_id immediately. The submission is durably " +
+                    "idempotent, queued work alternates fairly with interactive calls, permissions are checked " +
+                    "again when execution begins, and horizun_job_status exposes queued/running/result/failure or " +
+                    "process-death state without waiting for Revit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""tool"", ""arguments""],
+  ""properties"": {
+    ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python and horizun_submit_job are refused."" },
+    ""arguments"": { ""type"": ""object"", ""description"": ""The exact typed arguments, including target_document, dry_run/confirmation_token where that tool requires them."" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_execute_plan",
+                Command = "horizun_execute_plan",
+                Description =
+                    "Compose up to 100 typed Revit write commands into one ordered, atomic plan. Exact result " +
+                    "references such as ${walls.rows.0.element_id} feed created ids into later actions without " +
+                    "string coercion. One dry run and one confirmation authorize the complete graph; apply uses " +
+                    "an outer TransactionGroup, so a failure in any action rolls every action back. Session changes, " +
+                    "exports and arbitrary Python are intentionally excluded because they are not transaction-reversible.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": {
+      ""type"": ""object"", ""required"": [""key"", ""tool"", ""arguments""], ""properties"": {
+        ""key"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""Unique action name used by later ${key.path} references."" },
+        ""tool"": { ""type"": ""string"", ""enum"": [
+          ""horizun_write_params_verified"", ""horizun_delete_verified"", ""horizun_create_schedule"",
+          ""horizun_set_keynote"", ""horizun_family_apply"", ""horizun_bind_shared_param"",
+          ""horizun_create_elements"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
+          ""horizun_split_floor_loops"", ""horizun_split_multilayer_walls"", ""horizun_split_multilayer_slabs"",
+          ""horizun_ungroup_and_mark"", ""horizun_regroup_by_param"", ""horizun_copy_slab_elevations"",
+          ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls""
+        ] },
+        ""arguments"": { ""type"": ""object"", ""description"": ""Arguments for the typed tool. target_document, dry_run, confirmation_token and idempotency_key are controlled by the plan."" }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: atomic plan"" }
+  }, ""additionalProperties"": false
 }")
             },
             new CommandContract
@@ -309,8 +594,8 @@ namespace Horizun.Contracts
                     "Element ids are 64-bit longs in 2024+; wrap ElementId.Value in int() before json.dumps. " +
                     "target_document is REQUIRED and is matched against the ACTIVE document - this command will " +
                     "not switch documents for you, and a script that needs no document cannot run here. " +
-                    "run_async=true returns a job_id immediately for work longer than the request timeout and " +
-                    "additionally REQUIRES idempotency_key. " +
+                    "run_async=true returns a job_id immediately for work longer than the request timeout. " +
+                    "Every execution requires a durable idempotency_key. " +
                     "STILL A PRIVILEGED BYPASS: it has no dry run, no plan and no confirmation token, so unlike " +
                     "the typed write commands nothing rehearses what it will do. Accepted risk, not a satisfied " +
                     "policy - see docs/security-model.md.",
@@ -338,14 +623,10 @@ namespace Horizun.Contracts
                         {
                             ["type"] = "string",
                             ["description"] =
-                                "REQUIRED when run_async is true, and REFUSED otherwise. Any string you can " +
-                                "reproduce on a retry. The reply carrying your job_id is the message that gets " +
-                                "lost, and a caller doing the correct thing after a timeout - sending it again - " +
-                                "would otherwise queue the script a SECOND time. Bound to the Revit process, the " +
-                                "target document, a SHA-256 of the code and every other argument: the same key " +
-                                "with the same request returns the original job_id and queues nothing; the same " +
-                                "key with a different request is refused rather than silently deduplicated. The " +
-                                "ledger is in memory - across a Revit restart the key is forgotten."
+                                "REQUIRED for every execution. Claimed durably before Python runs: the same key " +
+                                "with the identical operation replays its recorded answer without executing, a " +
+                                "different operation under that key is refused, and a claimed operation with no " +
+                                "terminal record after a crash is reported in_doubt instead of repeated."
                         },
                         ["run_async"] = new JObject
                         {
@@ -440,7 +721,7 @@ namespace Horizun.Contracts
       ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A delete aimed at whatever window happens to be in front is a delete aimed at whatever turns up."" },
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is deleted."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false,
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
                    ""description"": ""Resolve every target and parameter and report what WOULD be written. Opens no transaction."" },
     ""allow_vary_between_groups"": { ""type"": ""boolean"", ""default"": true,
                                      ""description"": ""Call SetAllowVaryBetweenGroups(true) on project/shared parameters that do not vary yet. Without it Revit throws a modal at write time in any model with groups, which hangs the bridge. Reported as measured off the InternalDefinition, not assumed."" },
@@ -623,7 +904,7 @@ namespace Horizun.Contracts
       ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A delete aimed at whatever window happens to be in front is a delete aimed at whatever turns up."" },
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is deleted."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Resolve targets and report the blast radius without writing."" }
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Resolve targets and report the blast radius without writing."" }
   }
 }")
             },
@@ -675,7 +956,7 @@ namespace Horizun.Contracts
       ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A delete aimed at whatever window happens to be in front is a delete aimed at whatever turns up."" },
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is deleted."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Resolve everything and report the plan and the before-census. Opens no transaction and saves nothing."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Resolve everything and report the plan and the before-census. Opens no transaction and saves nothing."" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: homologar familia"", ""description"": ""The label of the single undo step this becomes."" }
   }
 }")
@@ -1052,7 +1333,80 @@ namespace Horizun.Contracts
   ""additionalProperties"": false
 }")
             }
-        };
+        });
+
+        /// <summary>
+        /// Attach behavioural metadata and the argument every mutating execution shares.
+        /// Keeping this here means a newly-added mutating command cannot forget to tell
+        /// either the server or the add-in about idempotency.
+        /// </summary>
+        private static List<CommandContract> Annotate(List<CommandContract> all)
+        {
+            var always = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_open_document", "horizun_save_document", "horizun_relinquish_all",
+                "horizun_execute_python", "horizun_submit_job"
+            };
+            var dryRun = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_create_schedule", "horizun_write_params_verified", "horizun_delete_verified",
+                "horizun_create_elements",
+                "horizun_transform_elements",
+                "horizun_manage_views",
+                "horizun_export",
+                "horizun_annotate",
+                "horizun_execute_plan",
+                "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
+                "horizun_split_floor_loops", "horizun_split_multilayer_walls",
+                "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
+                "horizun_regroup_by_param", "horizun_copy_slab_elevations",
+                "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
+                "horizun_rectangularize_walls"
+            };
+            var external = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_capture_view", "horizun_excel_write_rows", "horizun_navigate", "horizun_target"
+            };
+
+            foreach (CommandContract c in all)
+            {
+                c.OutputSchema = new JObject
+                {
+                    ["type"] = "object",
+                    ["additionalProperties"] = true
+                };
+                if (always.Contains(c.Name)) c.Effect = ToolEffect.Mutating;
+                else if (dryRun.Contains(c.Name)) c.Effect = ToolEffect.MutatingUnlessDryRun;
+                else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
+                else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
+                else c.Effect = ToolEffect.ReadOnly;
+
+                if (c.Effect == ToolEffect.Mutating ||
+                    c.Effect == ToolEffect.MutatingUnlessDryRun ||
+                    c.Effect == ToolEffect.DocumentSession)
+                {
+                    JObject properties = c.InputSchema?["properties"] as JObject;
+                    if (properties == null)
+                    {
+                        properties = new JObject();
+                        c.InputSchema["properties"] = properties;
+                    }
+                    if (properties["idempotency_key"] == null)
+                        properties["idempotency_key"] = new JObject
+                        {
+                            ["type"] = "string",
+                            ["minLength"] = 1,
+                            ["maxLength"] = 200,
+                            ["description"] =
+                                "REQUIRED whenever this call will mutate or change the Revit session. A retry " +
+                                "with the same key and identical operation returns the recorded result without " +
+                                "executing twice. Reusing it for different arguments is refused. Generate a new " +
+                                "UUID for each deliberate operation; keep it unchanged only for retries."
+                        };
+                }
+            }
+            return all;
+        }
         /// <summary>
         /// A fingerprint of every contract above: names, forwarding targets, descriptions
         /// and schemas. Two builds with the same hash agree about what every command takes.
@@ -1075,8 +1429,10 @@ namespace Horizun.Contracts
                 sb.Append(c.Name).Append((char)31);
                 sb.Append(c.Command ?? "-").Append((char)31);
                 sb.Append(c.Description ?? "").Append((char)31);
+                sb.Append(c.Effect.ToString()).Append((char)31);
                 // Canonical form, so whitespace in a schema literal is not a contract change.
-                sb.Append(c.InputSchema == null ? "-" : c.InputSchema.ToString(Newtonsoft.Json.Formatting.None));
+                sb.Append(c.InputSchema == null ? "-" : c.InputSchema.ToString(Newtonsoft.Json.Formatting.None)).Append((char)31);
+                sb.Append(c.OutputSchema == null ? "-" : c.OutputSchema.ToString(Newtonsoft.Json.Formatting.None));
                 sb.Append((char)30);
             }
             using (var sha = SHA256.Create())

@@ -19,6 +19,8 @@ namespace Horizun.Server
         public string Command;      // plugin command to forward to (null for a host-resident tool)
         public string Description;
         public JObject InputSchema;
+        public JObject OutputSchema;
+        public Horizun.Contracts.ToolEffect Effect;
 
         // A host-resident tool answers inside the server and never touches Revit. When Host
         // is non-null the server invokes it locally and does NOT forward to the plugin; when
@@ -66,6 +68,8 @@ namespace Horizun.Server
                     Command = c.Command,
                     Description = c.Description,
                     InputSchema = c.InputSchema,
+                    OutputSchema = c.OutputSchema,
+                    Effect = c.Effect,
                     Host = host
                 });
             }
@@ -79,8 +83,9 @@ namespace Horizun.Server
         /// </summary>
         private static bool IsEnabled(ToolDef t)
         {
-            if (t.Name == "horizun_execute_python") return Horizun.Revit.Core.Settings.ExecutePythonEnabled;
-            return true;
+            Horizun.Contracts.CommandContract contract = Horizun.Contracts.Contract.Find(t.Name);
+            string reason;
+            return Horizun.Revit.Core.Settings.IsToolAllowed(contract, out reason);
         }
 
         public static JArray List()
@@ -92,18 +97,54 @@ namespace Horizun.Server
                 arr.Add(new JObject
                 {
                     ["name"] = t.Name,
+                    ["title"] = Title(t.Name),
                     ["description"] = t.Description,
-                    ["inputSchema"] = t.InputSchema
+                    ["inputSchema"] = t.InputSchema,
+                    ["outputSchema"] = t.OutputSchema,
+                    ["annotations"] = Annotations(t)
                 });
             }
             return arr;
         }
 
+        private static string Title(string name)
+        {
+            string raw = name.StartsWith("horizun_", StringComparison.Ordinal) ? name.Substring(8) : name;
+            string[] words = raw.Split('_');
+            for (int i = 0; i < words.Length; i++)
+                if (words[i].Length > 0) words[i] = char.ToUpperInvariant(words[i][0]) + words[i].Substring(1);
+            return string.Join(" ", words);
+        }
+
+        private static JObject Annotations(ToolDef t)
+        {
+            bool readOnly = t.Effect == Horizun.Contracts.ToolEffect.ReadOnly;
+            bool durable = t.Effect == Horizun.Contracts.ToolEffect.Mutating ||
+                           t.Effect == Horizun.Contracts.ToolEffect.MutatingUnlessDryRun ||
+                           t.Effect == Horizun.Contracts.ToolEffect.DocumentSession;
+            bool destructive = t.Name == "horizun_delete_verified" ||
+                               t.Name == "horizun_execute_python" ||
+                               t.Name == "horizun_document_session";
+            bool openWorld = t.Effect == Horizun.Contracts.ToolEffect.ExternalSideEffect ||
+                             t.Effect == Horizun.Contracts.ToolEffect.DocumentSession ||
+                             t.Name == "horizun_open_document" || t.Name == "horizun_export" ||
+                             t.Name == "horizun_execute_python" || t.Name == "horizun_catalog_lookup";
+            return new JObject
+            {
+                ["title"] = Title(t.Name),
+                ["readOnlyHint"] = readOnly,
+                ["destructiveHint"] = destructive,
+                ["idempotentHint"] = readOnly || durable,
+                ["openWorldHint"] = openWorld
+            };
+        }
+
         /// <summary>Why a known tool is not being offered right now, or null if it is.</summary>
         public static string DisabledReason(string toolName)
         {
-            if (toolName == "horizun_execute_python" && !Horizun.Revit.Core.Settings.ExecutePythonEnabled)
-                return Horizun.Revit.Core.Settings.ExecutePythonRefusal();
+            Horizun.Contracts.CommandContract contract = Horizun.Contracts.Contract.Find(toolName);
+            string reason;
+            if (contract != null && !Horizun.Revit.Core.Settings.IsToolAllowed(contract, out reason)) return reason;
             return null;
         }
 

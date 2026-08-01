@@ -3,7 +3,7 @@
 What this bridge can do, who can make it do it, and what is deliberately not
 defended against. Written to be argued with.
 
-Last updated: 2026-07-29.
+Last updated: 2026-08-01.
 
 ---
 
@@ -37,6 +37,21 @@ Two locks rather than one, on purpose: a token is one secret in one file, and if
 it leaks the ACL is what still stands between another session and a command that
 edits a building.
 
+### 2a. Capability profiles
+
+The same `%USERPROFILE%\.horizun\settings.json` is read by the MCP server and
+the add-in on every use. `permission_profile` has four fail-closed values:
+
+- `read_only`: no model mutation or document-session tool is advertised or run.
+- `safe_write` (default): typed, reversible model edits are allowed; opening,
+  saving, relinquishing, document-session changes and exports are refused.
+- `full_write`: the session/file operations above are also allowed.
+- `unsafe_code`: full write plus eligibility for arbitrary Python. Python still
+  needs the independent `enable_execute_python: true` switch.
+
+`allowed_tools` is an optional allowlist and `denied_tools` always wins. A
+malformed profile falls back to `read_only`, never to a more privileged mode.
+
 **What this does NOT defend against:** anything running as the same Windows user.
 A process with that user's rights can read the discovery file, present the token,
 and drive Revit. That is not a gap to be closed at this layer — such a process can
@@ -46,7 +61,8 @@ already read the models directly.
 
 `horizun_execute_python` runs arbitrary Python inside Revit on the UI thread. It
 is **disabled by default** and enabled per machine in
-`%USERPROFILE%\.horizun\settings.json`.
+`%USERPROFILE%\.horizun\settings.json`, with both
+`"permission_profile":"unsafe_code"` and `"enable_execute_python":true`.
 
 Gated in **both halves**: the server does not advertise it and refuses it if
 called anyway; the add-in refuses it independently. The two ship separately, so
@@ -77,13 +93,13 @@ validates the document" was recorded as met on evidence from the seven that did.
 A sentence true of the commands that were checked and false of the surface is
 worse than no sentence, because it reads as a guarantee.
 
-`run_async` additionally requires an `idempotency_key`, bound to the Revit
-process id, the document identity, a SHA-256 of the code and every other
-argument. The reply carrying the `job_id` is precisely the message that goes
-missing, and a client retrying a timeout — the correct thing for a client to do —
-otherwise queued the script a second time. The same key with the same request
-returns the original `job_id` and queues nothing; the same key with a different
-request is **refused**, never silently deduplicated.
+Every Python execution requires an `idempotency_key`. The dispatcher claims it
+durably before the script can run. The same key with the identical operation
+replays the recorded answer; reuse for different arguments is refused. A claim
+without a terminal record after a crash is `in_doubt` and is never executed
+again automatically. `run_async` also binds its command-local queue claim to
+the document, code and remaining arguments so two simultaneous submissions
+cannot create two jobs.
 
 **What is NOT closed, and is accepted deliberately.** `execute_python` has
 
@@ -99,15 +115,16 @@ description now says so where a caller reads it.
 
 The risk is accepted because every one of the seven workflows this bridge exists
 to serve depends on it. The compensating controls are the ones above: off by
-default and gated in both halves, document-scoped, key-bound on the async path,
+default and gated in both halves, document-scoped, durably key-bound on every run,
 size-capped, and audited on every run.
 
-**The ledger is per process.** Keys live in memory in the Revit that issued them,
-like confirmation tokens and for the same reason. Across a Revit restart a key is
-forgotten and the same request would run again. That is not closable by
-persisting it: a key whose job was in flight when the process died has an outcome
-nobody knows, and replaying a mutation on that basis is the failure being
-prevented, not the cure.
+**The mutation ledger is durable.** Before any model/session mutation starts, an
+append-only claim is written under `%USERPROFILE%\.horizun\idempotency`; the
+full terminal result is appended afterward. This survives Revit and MCP-server
+restarts. A torn claim is not guessed: it remains `in_doubt` until a human
+inspects the model. Records can contain returned model data and currently have no
+automatic retention policy; protect and periodically remove that local directory
+according to the project's data-retention rules.
 
 ## 4. Destructive operations
 
@@ -116,11 +133,13 @@ the gate refuses three ways: no match, more than one match, or a match that is n
 the *active* document. It never switches documents to make a call work. That now
 includes `execute_python` — see §3a for what it still does not do.
 
-`horizun_delete_verified` additionally requires a two-step flow. A dry run issues
-a token bound to the command, a fingerprint of the document and a hash of the
-request; execution spends it once, and only while all three still match. The
-fingerprint includes the Revit year, so the same file open in two versions is two
-documents.
+Typed plan/apply tools require a two-step flow. A dry run issues a token bound to
+the command, a fingerprint of the document and a hash of the request; execution
+spends it once, and only while all three still match. `horizun_execute_plan`
+extends that rule over an ordered graph inside one TransactionGroup: only
+transaction-reversible typed commands are accepted and one failure rolls back
+the whole graph. The fingerprint includes the Revit year, so the same file open
+in two versions is two documents.
 
 **Stated limitation.** The token binds the *request*, not the element set the
 rehearsal found. In purge mode the same request can match a different set once the
@@ -150,6 +169,8 @@ wrong session is a correct edit to the wrong model.
   the server waiting, the work continues inside Revit, and the reply says so.
 - Ordinary calls and explicit `run_async` jobs alternate while both queues have
   work, preventing either queue from starving the other.
+- `horizun_submit_job` exposes that bounded async queue to installed typed Revit
+  commands. Permission is checked at submission and again when the job starts.
 
 ## 7. Supply chain
 
@@ -200,3 +221,5 @@ explicit, opt-in step, never a silent side effect.
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
 - No signing (§8).
+- Durable idempotency records may contain result data and have no automatic
+  retention policy (§3a).

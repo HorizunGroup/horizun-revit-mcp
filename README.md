@@ -146,9 +146,11 @@ Horizun.Revit         ← the Revit add-in: pipe transport + UI-thread dispatche
   lie" commit contract; commands live under `Commands/`.
 - **`Horizun.Server`** — the MCP server. Wire format hand-rolled from the open MCP
   spec (no third-party SDK): discovers the pipe, speaks MCP over stdio, forwards
-  to the plugin. Tool schemas live here because `tools/list` must answer with Revit
-  closed. Four tools are **host-resident**: they answer inside the server and
-  never touch Revit.
+  to the plugin. Input/output schemas and behavioral effects live in one shared
+  contract, so `tools/list` can answer with Revit closed without drifting from
+  the add-in. It negotiates MCP through 2025-11-25 and returns both backward-
+  compatible text and `structuredContent`. Four tools are **host-resident**:
+  they answer inside the server and never touch Revit.
 
 ## Tools
 
@@ -174,6 +176,15 @@ In Revit, over the pipe:
 | `horizun_family_apply` | Family edits in one transaction, under a geometry invariant that rolls the whole thing back if it moves. |
 | `horizun_bind_shared_param` | Shared-parameter binding, with `VariesAcrossGroups` measured from the definition, not assumed. |
 | `horizun_list_elements` | Bounded, paginated inventory by category across the host and loaded Revit links, with source model and link instance identity on every row. Unloaded links are reported, not silently skipped. |
+| `horizun_query_model` | Composable query across host and loaded links: category, family/type/name/level, parameter predicates and 3D bounds; selected parameter projection, grouped summaries, coverage and stale-detecting cursors. |
+| `horizun_navigate` | Select, frame or open host views from query results. Linked ids are explicitly refused because they are document-local. |
+| `horizun_create_elements` | Atomic heterogeneous creation of levels, grids, walls, floors, rooms, family instances, ducts, pipes and conduits in explicit units, with type/level resolution before the transaction and post-commit re-read. |
+| `horizun_transform_elements` | Atomic move, copy, rotate, pin/unpin and type changes over explicit ids, verified from fresh locations, copies, pin state and type ids. |
+| `horizun_manage_views` | Dependency-aware creation of plans, 3D views, duplicates, templates, sheets, viewports and schedule placements; aliases let later actions use objects created earlier in the batch. |
+| `horizun_annotate` | Atomic text, tags and dimensions. Dimensions use stable Revit references rather than guessing faces from element ids. |
+| `horizun_export` | Dry-run and verified PDF, DWG, IFC, image and schedule export. Only files matching the requested output family are attributed to the call. Requires `full_write` or `unsafe_code`. |
+| `horizun_execute_plan` | Compose up to 100 typed writes into one ordered TransactionGroup. Later actions can consume exact prior results with `${key.path}`; any failure rolls the complete graph back. |
+| `horizun_submit_job` | Queue any installed Revit-side tool (except Python/the queue itself), return a persistent job id, and poll it without blocking Revit. |
 | `horizun_create_schedule` | Create a native Revit schedule with selected fields and sorting, optionally including linked elements. Defaults to `dry_run: true`, requires a target document and confirmation token, then re-reads the committed schedule. |
 | `horizun_list_schedules` | List native schedules with their actual fields, linked-file setting, itemization and displayed body dimensions. |
 | `horizun_get_schedule_data` | Read the displayed header and body cells of a native schedule with explicit row/column bounds and truncation metadata. |
@@ -208,7 +219,7 @@ There are 16 waiting slots. A successful JSON response includes `bridge_queue`:
 cancellation removes a request only while it is still queued, proving that it
 never ran; once it reaches Revit's UI thread the API cannot interrupt it. A full
 queue applies backpressure explicitly instead of dropping work or growing without
-limit. Ordinary calls and `run_async` jobs alternate when both queues are busy, so
+limit. Ordinary calls and `horizun_submit_job`/`run_async` jobs alternate when both queues are busy, so
 neither can starve the other. Every reply also carries **what Revit raised while
 the command ran** — warnings, errors and modal dialogs — on success and failure.
 
@@ -263,8 +274,13 @@ Working, in production use, and honest about its edges.
 ## Security
 
 `horizun_execute_python` runs arbitrary Python inside Revit with the rights of
-the signed-in user. It is **disabled by default** and must be switched on per
-machine in `%USERPROFILE%\.horizun\settings.json`. There is no network surface:
+the signed-in user. It is **disabled by default** and needs both
+`permission_profile: "unsafe_code"` and `enable_execute_python: true` in
+`%USERPROFILE%\.horizun\settings.json`. The default `safe_write` profile
+allows typed, reversible model edits but refuses opening/saving/relinquishing,
+document-session changes and external export; `full_write` enables those.
+`read_only` hides/refuses model mutations. `allowed_tools` and `denied_tools`
+can narrow any profile. There is no network surface:
 named pipes are not reachable across a network, and the server speaks stdio to
 whatever launched it. The full threat model — what is defended, and what
 deliberately is not — is in [docs/security-model.md](docs/security-model.md),

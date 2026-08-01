@@ -395,6 +395,15 @@ jobs:
       - name: Live verification against a running Revit ${{ matrix.year }}
         shell: pwsh
         run: |
+          # The shipped default is safe_write, which intentionally hides session/file
+          # tools. This release gate explicitly tests those tools, so give this isolated
+          # runner process a throwaway full_write profile rather than altering the
+          # machine owner's real %USERPROFILE%\.horizun settings.
+          $env:HORIZUN_DATA_ROOT = Join-Path $env:RUNNER_TEMP "horizun-live-${{ github.run_id }}-${{ matrix.year }}"
+          New-Item -ItemType Directory -Force $env:HORIZUN_DATA_ROOT | Out-Null
+          '{"permission_profile":"unsafe_code","enable_execute_python":true}' |
+            Set-Content (Join-Path $env:HORIZUN_DATA_ROOT 'settings.json') -Encoding utf8
+
           $doc = Get-Content dist/stage/manifest.json -Raw | ConvertFrom-Json
           $addin = $doc.Plugins | Where-Object { $_.Year -eq ${{ matrix.year }} }
           if (-not $addin) { throw "the manifest has no payload for ${{ matrix.year }}" }

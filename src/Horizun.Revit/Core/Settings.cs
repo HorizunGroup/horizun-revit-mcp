@@ -27,6 +27,8 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
+using System.Collections.Generic;
+using Horizun.Contracts;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
@@ -48,6 +50,55 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static bool ExecutePythonEnabled => ReadBool("enable_execute_python", false);
 
+        /// <summary>read_only | safe_write (default) | full_write | unsafe_code.</summary>
+        public static string PermissionProfile
+        {
+            get
+            {
+                JObject o = Read();
+                string p = (o?.Value<string>("permission_profile") ?? "safe_write").ToLowerInvariant();
+                return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
+                    ? p : "read_only"; // malformed privilege never elevates
+            }
+        }
+
+        public static bool IsToolAllowed(CommandContract contract, out string reason)
+        {
+            reason = null;
+            if (contract == null) { reason = "Unknown tool contract."; return false; }
+            JObject settings = Read();
+            HashSet<string> denied = Strings(settings?["denied_tools"] as JArray);
+            HashSet<string> allowed = Strings(settings?["allowed_tools"] as JArray);
+            if (denied.Contains(contract.Name))
+            { reason = contract.Name + " is disabled by denied_tools in " + Path() + "."; return false; }
+            if (allowed.Count > 0 && !allowed.Contains(contract.Name))
+            { reason = contract.Name + " is outside the allowed_tools allowlist in " + Path() + "."; return false; }
+
+            string profile = PermissionProfile;
+            if (profile == "read_only" &&
+                (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
+                 contract.Effect == ToolEffect.DocumentSession))
+            { reason = contract.Name + " is hidden/refused by permission_profile=read_only in " + Path() + "."; return false; }
+            if (profile == "safe_write" &&
+                (contract.Effect == ToolEffect.DocumentSession ||
+                 contract.Name == "horizun_open_document" || contract.Name == "horizun_save_document" ||
+                 contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export"))
+            {
+                reason = contract.Name + " changes the Revit document session or writes external files and is " +
+                         "hidden/refused by permission_profile=safe_write in " + Path() +
+                         ". Use full_write only on machines authorized for those side effects.";
+                return false;
+            }
+            if (contract.Name == "horizun_execute_python" &&
+                (profile != "unsafe_code" || !ExecutePythonEnabled))
+            {
+                reason = "horizun_execute_python requires BOTH permission_profile=unsafe_code and " +
+                         "enable_execute_python=true in " + Path() + ".";
+                return false;
+            }
+            return true;
+        }
+
         /// <summary>
         /// The sentence to show a caller who asked for a disabled capability: what is off,
         /// where to turn it on, and what turning it on means.
@@ -56,19 +107,35 @@ namespace Horizun.Revit.Core
         {
             return "horizun_execute_python is DISABLED. It runs arbitrary code inside Revit on the UI thread, " +
                    "with the full API and the rights of the signed-in user, so it is not part of the default " +
-                   "surface. To enable it, put {\"enable_execute_python\": true} in " + Path() + " - it is " +
+                   "surface. To enable it, put {\"permission_profile\":\"unsafe_code\"," +
+                   "\"enable_execute_python\":true} in " + Path() + " - it is " +
                    "re-read on every call, so no restart is needed. Prefer a typed command for anything " +
                    "recurring: a typed command can be verified, and this cannot.";
+        }
+
+        private static JObject Read()
+        {
+            try
+            {
+                string p = Path();
+                return File.Exists(p) ? JObject.Parse(File.ReadAllText(p)) : new JObject();
+            }
+            catch { return new JObject(); }
+        }
+
+        private static HashSet<string> Strings(JArray a)
+        {
+            var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (a != null) foreach (JToken t in a)
+                if (t.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)t)) result.Add((string)t);
+            return result;
         }
 
         private static bool ReadBool(string key, bool fallback)
         {
             try
             {
-                string p = Path();
-                if (!File.Exists(p)) return fallback;
-
-                JObject o = JObject.Parse(File.ReadAllText(p));
+                JObject o = Read();
                 JToken t = o[key];
                 if (t == null || t.Type != JTokenType.Boolean) return fallback;
                 return (bool)t;

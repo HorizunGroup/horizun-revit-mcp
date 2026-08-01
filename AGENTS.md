@@ -108,13 +108,16 @@ and run `install.ps1` again.
 
 - **`horizun_health` first, always.** The commands act on the *active* document,
   and health is what tells you which one that is.
-- **One command at a time.** The second is refused with the reason, not queued.
-  Cancelling an MCP request stops your waiting, not the work inside Revit.
+- **One command executes at a time, but concurrent calls are queued.** Up to 16
+  requests wait in bounded FIFO order; the next receives explicit backpressure.
+  Cancelling removes work only before it starts. Use `horizun_submit_job` plus
+  `horizun_job_status` for work that should outlive the MCP request.
 - **The contract**: no command reports work it did not verify. Every typed write
   is re-read from the model after the commit. `horizun_execute_python` is the
   explicit low-level exception and does not provide the typed-command guarantee.
-- **`horizun_execute_python` ships disabled.** It is enabled per machine in
-  `%USERPROFILE%\.horizun\settings.json` with `{"enable_execute_python": true}`.
+- **`horizun_execute_python` ships disabled.** It needs both
+  `{"permission_profile":"unsafe_code","enable_execute_python":true}` in
+  `%USERPROFILE%\.horizun\settings.json`.
   Do not enable it unless the user asks: it is the full Revit API.
 - This bridge is **organisation-neutral by design**: no company's standards or
   catalogues are compiled in. Where a command needs one, it is passed as an
@@ -235,13 +238,16 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 
 - **`horizun_health` primero, siempre.** Los comandos actúan sobre el documento
   *activo*, y health es lo que te dice cuál es.
-- **Un comando a la vez.** El segundo se rechaza con el motivo, no se encola.
-  Cancelar una petición MCP detiene tu espera, no el trabajo dentro de Revit.
+- **Se ejecuta un comando a la vez, pero las llamadas concurrentes se encolan.**
+  Hasta 16 esperan en FIFO acotada; la siguiente recibe backpressure explícito.
+  La cancelación solo elimina trabajo antes de empezar. Usa
+  `horizun_submit_job` y `horizun_job_status` para trabajos largos.
 - **El contrato**: ningún comando reporta trabajo que no verificó. Toda escritura
   tipada se relee del modelo tras el commit. `horizun_execute_python` es la
   excepción explícita de bajo nivel y no ofrece la garantía del comando tipado.
-- **`horizun_execute_python` viene apagado.** Se enciende por máquina en
-  `%USERPROFILE%\.horizun\settings.json` con `{"enable_execute_python": true}`.
+- **`horizun_execute_python` viene apagado.** Exige
+  `{"permission_profile":"unsafe_code","enable_execute_python":true}` en
+  `%USERPROFILE%\.horizun\settings.json`.
   No lo enciendas sin que el usuario lo pida: es la API completa de Revit.
 - Este puente es **neutral por diseño**: no lleva estándares ni catálogos de
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa

@@ -206,6 +206,22 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Fingerprint for durable typed commands. Unlike an async job claim this does
+        /// not include the Revit pid: after a crash, the same operation must find the
+        /// old in-doubt record and REFUSE, not look fresh merely because the pid moved.
+        /// </summary>
+        public static string OfOperation(string command, string documentFingerprint, JObject request,
+                                         params string[] ignore)
+        {
+            var scrubbed = request == null ? new JObject() : (JObject)request.DeepClone();
+            foreach (string f in ignore ?? new string[0]) scrubbed.Remove(f);
+            return Sha256Hex(
+                "command=" + (command ?? "") +
+                "\ndocument=" + (documentFingerprint ?? "(none)") +
+                "\nargs=" + Canonical(scrubbed));
+        }
+
+        /// <summary>
         /// A stable rendering of any JSON value. Members sorted by ordinal name so two
         /// serialisations of one request agree; arrays untouched so two different calls
         /// do not.

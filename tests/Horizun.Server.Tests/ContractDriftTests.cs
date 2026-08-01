@@ -56,6 +56,22 @@ namespace Horizun.Server.Tests
                 Assert.False(string.IsNullOrWhiteSpace(c.Description), c.Name + " has no description");
                 Assert.NotNull(c.InputSchema);
                 Assert.Equal("object", (string)c.InputSchema["type"]);
+                Assert.NotNull(c.OutputSchema);
+                Assert.Equal("object", (string)c.OutputSchema["type"]);
+            }
+        }
+
+        [Fact]
+        public void Every_model_mutation_advertises_the_shared_idempotency_key()
+        {
+            foreach (CommandContract c in Contract.All.Where(c =>
+                c.Effect == ToolEffect.Mutating ||
+                c.Effect == ToolEffect.MutatingUnlessDryRun ||
+                c.Effect == ToolEffect.DocumentSession))
+            {
+                JToken key = c.InputSchema["properties"]?["idempotency_key"];
+                Assert.NotNull(key);
+                Assert.Equal("string", (string)key["type"]);
             }
         }
 
@@ -112,6 +128,21 @@ namespace Horizun.Server.Tests
             Assert.NotNull(properties?["offset"]);
             Assert.Equal(1000, (int)properties["max_rows"]["maximum"]);
             Assert.Contains("Unloaded links", c.Description);
+        }
+
+        [Fact]
+        public void Query_model_exposes_composable_filters_projection_and_stale_cursor()
+        {
+            CommandContract c = Contract.Find("horizun_query_model");
+            Assert.NotNull(c);
+            JToken p = c.InputSchema["properties"];
+            Assert.NotNull(p?["categories"]);
+            Assert.NotNull(p?["parameters"]);
+            Assert.NotNull(p?["bounding_box"]);
+            Assert.NotNull(p?["return_parameters"]);
+            Assert.NotNull(p?["cursor"]);
+            Assert.Equal(500, (int)p["max_rows"]["maximum"]);
+            Assert.Equal(ToolEffect.ReadOnly, c.Effect);
         }
 
         // ---- the hash ----------------------------------------------------------
@@ -197,7 +228,9 @@ namespace Horizun.Server.Tests
                 sb.Append(c.Name).Append((char)31);
                 sb.Append(c.Command ?? "-").Append((char)31);
                 sb.Append(c.Description ?? "").Append((char)31);
-                sb.Append(c.InputSchema == null ? "-" : c.InputSchema.ToString(Newtonsoft.Json.Formatting.None));
+                sb.Append(c.Effect.ToString()).Append((char)31);
+                sb.Append(c.InputSchema == null ? "-" : c.InputSchema.ToString(Newtonsoft.Json.Formatting.None)).Append((char)31);
+                sb.Append(c.OutputSchema == null ? "-" : c.OutputSchema.ToString(Newtonsoft.Json.Formatting.None));
                 sb.Append((char)30);
             }
             using (var sha = System.Security.Cryptography.SHA256.Create())

@@ -127,6 +127,13 @@ namespace Horizun.Revit
             d.Register(new CaptureViewCommand());
             d.Register(new CreateScheduleCommand());
             d.Register(new ListElementsCommand());
+            d.Register(new QueryModelCommand());
+            d.Register(new NavigateCommand());
+            d.Register(new CreateElementsCommand());
+            d.Register(new TransformElementsCommand());
+            d.Register(new ManageViewsCommand());
+            d.Register(new ExportCommand());
+            d.Register(new AnnotateCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());
 
@@ -142,6 +149,9 @@ namespace Horizun.Revit
             d.Register(new EmbedFloorsInToposolidCommand());
             d.Register(new GradeToposolidCommand());
             d.Register(new RectangularizeWallsCommand());
+            // Registered last because it resolves and composes the typed commands above.
+            d.Register(new ExecutePlanCommand(d.ResolveCommand));
+            d.Register(new SubmitJobCommand(d.ResolveCommand));
             // more commands land here as they are ported.
         }
     }

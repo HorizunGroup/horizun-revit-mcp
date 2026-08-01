@@ -138,19 +138,22 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
-        /// A key on the synchronous path cannot be honoured - there is no stored answer
-        /// to replay - so it must be refused. Accepting and ignoring it would tell the
-        /// caller its retry was deduplicated when a second call is a second execution.
+        /// The universal dispatcher now stores synchronous results durably, so the old
+        /// command-local refusal would make synchronous Python impossible: admission
+        /// requires the key and the command would then reject it.
         /// </summary>
         [Fact]
-        public void A_key_on_the_synchronous_path_is_refused_rather_than_ignored()
+        public void Synchronous_python_uses_the_dispatchers_durable_key_instead_of_rejecting_it()
         {
             string text = Source(File_);
-            int refusal = text.IndexOf("'idempotency_key' was supplied without run_async=true", StringComparison.Ordinal);
-            int run = text.IndexOf("source.Execute(scope)", StringComparison.Ordinal);
+            Assert.DoesNotContain("'idempotency_key' was supplied without run_async=true", text);
 
-            Assert.True(refusal >= 0, "a key on the sync path must be refused");
-            Assert.True(refusal < run, "the refusal must come before the script runs");
+            string dispatcher = File.ReadAllText(Path.GetFullPath(
+                Path.Combine(CommandsDir(), "..", "Core", "Dispatcher.cs")));
+            int claim = dispatcher.IndexOf("_idempotency.Claim", StringComparison.Ordinal);
+            int execute = dispatcher.IndexOf("cmd.Execute(app, req.ParamsJson)", StringComparison.Ordinal);
+            Assert.True(claim >= 0 && execute >= 0 && claim < execute,
+                "the durable claim must be established before any command, including Python, runs");
         }
 
         /// <summary>
