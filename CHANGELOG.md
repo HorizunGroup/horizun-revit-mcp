@@ -38,10 +38,10 @@ assumed. Dates are the day the work landed.
   distinguir todavía entre espera FIFO y ejecución. No inventa estado.
 
 - **La concurrencia tiene una prueba viva reproducible.**
-  `scripts/verify-queue-live.ps1` solapa cuatro llamadas contra un Revit real,
-  comprueba las posiciones de admisión y el orden de respuesta, cancela una
-  escritura de marcador todavía en espera y verifica fuera de Revit que el
-  archivo nunca apareció.
+  `scripts/verify-queue-live.ps1` comprueba posiciones de admisión y orden FIFO,
+  cancela una escritura de marcador todavía en espera y verifica fuera de Revit
+  que el archivo nunca apareció. Después ocupa los 16 slots y demuestra que la
+  llamada 17 recibe backpressure mientras las 16 aceptadas terminan normalmente.
 
 ## v0.3.4 — 2026-08-01
 

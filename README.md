@@ -246,9 +246,10 @@ Working, in production use, and honest about its edges.
   own `RevitAPI.dll`.
 - **Verified live** against real models rather than mocks: the full tool
   surface, the upgrade guard refusing a real older-year family, the commit
-  contract's rollback on a geometry change, cancellation measured mid-flight,
-  and `job_status` answering while Revit's UI thread was inside the very
-  command it describes.
+  contract's rollback on a geometry change, bounded FIFO ordering and capacity,
+  cancellation-before-start with an independently checked absent side effect,
+  and `job_status` answering while Revit's UI thread was inside the very command
+  it describes.
 - **Unsigned.** Revit raises its "Security - Unsigned Add-In" dialog on first
   load. Revit normally remembers the decision by add-in identity, but policy or
   trust-store changes can make the prompt return.

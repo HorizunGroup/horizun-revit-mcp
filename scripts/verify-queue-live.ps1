@@ -2,16 +2,19 @@
 <#
   BOUNDED FIFO AND CANCELLATION, AGAINST A REAL REVIT.
 
-  This is deliberately one MCP session with four overlapping tool calls. A slow
+  This is deliberately one MCP session with overlapping tool calls. A slow
   read-only Python body occupies Revit's UI thread; two reads and a second Python
   body enter behind it. The second Python call is then cancelled while waiting.
+  A second phase fills all 16 waiting slots and submits one additional call.
 
   The test proves behavior from observable facts, not only from a success flag:
 
     * accepted reads return bridge_queue with their admission positions;
     * the surviving reads answer in FIFO order;
     * cancellation says the queued call never started; and
-    * the cancelled script's marker file does not exist afterwards.
+    * the cancelled script's marker file does not exist afterwards; and
+    * the seventeenth waiter gets explicit backpressure while all 16 accepted
+      waiters finish normally.
 
   No model transaction is opened and the model is not saved.
 
@@ -74,6 +77,11 @@ function Tool-Data($reply) {
     $text = $reply.result.content[0].text
     if (-not $text) { return $null }
     try { return $text | ConvertFrom-Json } catch { return $null }
+}
+
+function Tool-Text($reply) {
+    if (-not $reply -or -not $reply.result -or -not $reply.result.content) { return '' }
+    return [string]$reply.result.content[0].text
 }
 
 $checks = New-Object System.Collections.Generic.List[object]
@@ -151,6 +159,34 @@ try {
     Check 'the cancelled script produced no marker side effect' (-not (Test-Path $marker)) `
           $(if (Test-Path $marker) { 'marker exists: the cancelled body ran' } else { 'marker absent' })
 
+    # Fill all 16 waiting slots while a second blocker owns the UI thread. The
+    # seventeenth read must be refused explicitly; accepted work must still drain.
+    $capacityBlocker = @{ code = "import time`ntime.sleep(5)`n__output__ = {'capacity_blocker': 'done'}"
+                          target_document = $Document }
+    Send (Tool-Request 20 'horizun_execute_python' $capacityBlocker)
+    Start-Sleep -Milliseconds 1000
+    foreach ($id in 21..37) { Send (Tool-Request $id 'horizun_health' @{}) }
+
+    $capacityReplies = @{}
+    $capacityDeadline = (Get-Date).AddSeconds(45)
+    while ($capacityReplies.Count -lt 18 -and (Get-Date) -lt $capacityDeadline) {
+        $reply = Read-Reply 45
+        if (-not $reply) { break }
+        $rid = [int]$reply.id
+        if ($rid -in 20..37) { $capacityReplies[$rid] = $reply }
+    }
+
+    $fullReplies = @($capacityReplies.Values | Where-Object { (Tool-Text $_) -match 'queue is full' })
+    $acceptedReads = @($capacityReplies.GetEnumerator() | Where-Object {
+        $_.Key -ge 21 -and $_.Key -le 37 -and $_.Value.result.isError -ne $true
+    })
+    Check 'all saturation calls answered' ($capacityReplies.Count -eq 18) `
+          ("received {0} of 18 replies" -f $capacityReplies.Count)
+    Check 'exactly sixteen waiting reads were admitted' ($acceptedReads.Count -eq 16) `
+          ("accepted reads: {0}" -f $acceptedReads.Count)
+    Check 'the seventeenth waiter received explicit backpressure' ($fullReplies.Count -eq 1) `
+          $(if ($fullReplies.Count) { Tool-Text $fullReplies[0] } else { 'no queue-full reply' })
+
     $failed = @($checks | Where-Object { -not $_.ok })
     Write-Host ("-" * 72)
     Write-Host ("  {0} checks, {1} wrong" -f $checks.Count, $failed.Count)
@@ -173,6 +209,11 @@ try {
             }
             cancellation_message = $cancelMessage
             marker_absent = (-not (Test-Path $marker))
+            saturation = [pscustomobject]@{
+                replies = $capacityReplies.Count
+                accepted_waiters = $acceptedReads.Count
+                queue_full_replies = $fullReplies.Count
+            }
             passed = ($failed.Count -eq 0)
         } | ConvertTo-Json -Depth 20 | Out-File -FilePath $Json -Encoding utf8
     }
