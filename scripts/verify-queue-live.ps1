@@ -164,8 +164,8 @@ try {
             revit_year = $Year
             document = $Document
             server_sha256 = (Get-FileHash $Server -Algorithm SHA256).Hash.ToLower()
-            reply_order = @($order)
-            checks = @($checks)
+            reply_order = $order.ToArray()
+            checks = $checks.ToArray()
             queue = [pscustomobject]@{
                 blocker = $blockerData.bridge_queue
                 first_read = $healthData.bridge_queue

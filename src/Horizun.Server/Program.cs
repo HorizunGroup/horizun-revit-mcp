@@ -326,7 +326,14 @@ namespace Horizun.Server
                     {
                         JToken result = CallTool(prms, cts.Token);
                         if (cts.IsCancellationRequested)
-                            reply.TryError(-32800, CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                        {
+                            // Two events race after cancellation: PipeClient may observe
+                            // the token first and throw, or the add-in may remove the FIFO
+                            // entry and return its failure envelope first. Preserve the
+                            // stronger NEVER STARTED proof in either ordering.
+                            string proof = CancellationProof(result);
+                            reply.TryError(-32800, proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                        }
                         else
                             reply.TryReply(result);
                     }
@@ -335,7 +342,7 @@ namespace Horizun.Server
                     {
                         string exact = oce.Message;
                         reply.TryError(-32800,
-                            !string.IsNullOrEmpty(exact) && exact.IndexOf("FIFO queue", StringComparison.OrdinalIgnoreCase) >= 0
+                            IsNeverStartedProof(exact)
                                 ? exact
                                 : CancelledMessage(toolName, clock.ElapsedMilliseconds));
                     }
@@ -375,6 +382,18 @@ namespace Horizun.Server
             "could not prove the request was removed before it started. If the command had already reached Revit, " +
             "it is still running there and will finish - the Revit API offers no way to interrupt a command on its " +
             "UI thread. Do not resend it assuming the model is untouched.";
+
+        private static string CancellationProof(JToken result)
+        {
+            if ((bool?)result?["isError"] != true) return null;
+            string text = (string)result?["content"]?[0]?["text"];
+            return IsNeverStartedProof(text) ? text : null;
+        }
+
+        private static bool IsNeverStartedProof(string text)
+            => !string.IsNullOrEmpty(text) &&
+               (text.IndexOf("FIFO queue", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                text.IndexOf("NEVER STARTED", StringComparison.OrdinalIgnoreCase) >= 0);
 
         /// <summary>
         /// A heartbeat while a call waits for Revit, only when the caller asked for one.

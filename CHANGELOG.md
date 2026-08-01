@@ -13,9 +13,10 @@ assumed. Dates are the day the work landed.
   límite es backpressure deliberado: una cola sin límite convertiría un bucle o
   una tormenta de reintentos en horas de mutaciones futuras aceptadas en silencio.
 
-- **Cada respuesta JSON mide su espera.** `bridge_queue` informa si la llamada
-  tuvo que esperar, cuántas solicitudes tenía delante, milisegundos de espera,
-  capacidad de la cola y tiempo total de espera más ejecución.
+- **Cada respuesta JSON mide su espera.** `bridge_queue.queued` informa si había
+  otra llamada del puente delante al admitirla; `waited_ms` mide además la espera
+  hasta que el hilo UI de Revit quedó disponible. También informa capacidad y
+  tiempo total de espera más ejecución.
 
 - **Cancelar antes de empezar significa que nunca corrió.** El servidor envía
   una orden de control autenticada por una conexión separada; el add-in elimina

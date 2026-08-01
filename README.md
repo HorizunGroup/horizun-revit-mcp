@@ -202,8 +202,9 @@ Host-resident (no Revit needed):
 | `horizun_target` | Which Revit these tools are talking to, and how to change it. Two versions open at once is normal, and the expensive failure is a healthy bridge attached to the wrong instance. |
 
 **One command executes at a time; concurrent calls wait in a bounded FIFO queue.**
-There are 16 waiting slots. A successful JSON response includes `bridge_queue`
-with whether it waited, how many requests were ahead and the measured wait. A
+There are 16 waiting slots. A successful JSON response includes `bridge_queue`:
+`queued` says whether another bridge request was ahead at admission, while
+`waited_ms` also includes time waiting for Revit's UI thread to become available. A
 cancellation removes a request only while it is still queued, proving that it
 never ran; once it reaches Revit's UI thread the API cannot interrupt it. A full
 queue applies backpressure explicitly instead of dropping work or growing without
