@@ -37,5 +37,14 @@ namespace Horizun.Core.Tests
         {
             Assert.Equal("Level 01", JsonObjectKey.Summary("Level 01"));
         }
+
+        [Fact]
+        public void Summary_keys_that_differ_only_by_case_are_combined()
+        {
+            var counts = JsonObjectKey.SummaryCounts(new[] { "Center line", "Center Line", "CENTER LINE" });
+
+            Assert.Single(counts.Properties());
+            Assert.Equal(3, counts.Value<int>("Center line"));
+        }
     }
 }

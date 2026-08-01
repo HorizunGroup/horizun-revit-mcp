@@ -57,10 +57,10 @@ componibles y verificables**.
   que Revit normaliza geometría equivalente.
 
 - Los resúmenes de `horizun_query_model` normalizan nombres vacíos de categoría
-  o nivel como `(blank)`. Aunque una clave JSON vacía es válida, clientes reales
-  como Windows PowerShell 5.1 no pueden materializarla y descartaban la respuesta
-  completa. La prueba viva consulta ahora todas las categorías para cubrir este
-  caso con datos reales.
+  o nivel como `(blank)` y consolidan nombres que solo difieren por mayúsculas.
+  Aunque ambas formas son JSON válido, clientes reales como Windows PowerShell
+  5.1 no pueden materializarlas y descartaban la respuesta completa. La prueba
+  viva consulta ahora todas las categorías para cubrir estos casos con datos reales.
 
 El contrato compartido cambió: servidor y add-in 0.4.0 deben desplegarse juntos.
 
