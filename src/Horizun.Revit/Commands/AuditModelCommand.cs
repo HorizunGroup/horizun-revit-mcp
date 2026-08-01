@@ -473,7 +473,11 @@ namespace Horizun.Revit.Commands
             // numbers differ ("1 of 8" vs "4 of 22", measured 2026-07-30) and both are
             // right - so each summary now names its unit instead of making the reader
             // guess which one is lying.
-            return Finding("links", tally.NotLoaded > 0 || !tally.Complete, types.Count,
+            // `count` is the number of findings, not the population examined.
+            // Returning types.Count here made a healthy model report (for example)
+            // 18 link issues while its own summary correctly said all 18 were loaded.
+            // `total` below already carries the population that was examined.
+            return Finding("links", tally.NotLoaded > 0 || !tally.Complete, tally.NotLoaded,
                 tally.Summary("link type"), items, types.Count);
         }
 

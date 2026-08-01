@@ -397,13 +397,31 @@ $probes = @(
 # ---------------------------------------------------------------------------
 $coverageShape = {
     param($block)
-    $null -ne $block -and
-    $block.PSObject.Properties.Name -contains 'coverage_complete' -and
-    $block.PSObject.Properties.Name -contains 'is_workshared' -and
-    $block.PSObject.Properties.Name -contains 'worksets_total' -and
-    $block.PSObject.Properties.Name -contains 'worksets_open' -and
-    $block.PSObject.Properties.Name -contains 'worksets_closed' -and
-    -not [string]::IsNullOrWhiteSpace($block.note)
+    if ($null -eq $block -or
+        -not ($block.PSObject.Properties.Name -contains 'coverage_complete') -or
+        [string]::IsNullOrWhiteSpace($block.note)) { return $false }
+
+    # A single-document answer reports its workset measurements directly.
+    $single = ($block.PSObject.Properties.Name -contains 'is_workshared') -and
+              ($block.PSObject.Properties.Name -contains 'worksets_total') -and
+              ($block.PSObject.Properties.Name -contains 'worksets_open') -and
+              ($block.PSObject.Properties.Name -contains 'worksets_closed')
+
+    # clash is federated: the host and each loaded link are separate documents,
+    # so flattening their worksets into one count would be meaningless. It reports
+    # one valid single-document block per source plus an aggregate verdict.
+    $federated = ($block.PSObject.Properties.Name -contains 'sources_measured') -and
+                 ($block.PSObject.Properties.Name -contains 'sources_incomplete') -and
+                 ($block.PSObject.Properties.Name -contains 'by_source') -and
+                 [int]$block.sources_measured -eq @($block.by_source).Count -and
+                 @($block.by_source).Count -ge 1
+    if ($federated) {
+        foreach ($source in @($block.by_source)) {
+            if (-not (& $coverageShape $source)) { return $false }
+        }
+    }
+
+    $single -or $federated
 }
 
 
@@ -452,8 +470,11 @@ if ($Document) {
     # 6 of 6 not loaded, scan said not_loaded=6, they agreed exactly, and the probe
     # reported FAIL. It never compared them.
     #
-    # It now compares them: the count audit calls an issue must equal the number
-    # scan calls not loaded, and neither may claim coverage the other denies.
+    # It now compares the verdicts without pretending their units are identical:
+    # audit counts link TYPES and scan counts link INSTANCES. One unloaded type can
+    # have several placed instances, so exact numeric equality would reject two
+    # correct answers. They must agree on whether unloaded links exist and whether
+    # every status was readable.
     $probes += @{ Name = 'audit and scan AGREE about the links'
                   Tool = 'horizun_audit_model'; Args = @{ top = 2 }
                   Check = { param($d)
@@ -462,7 +483,7 @@ if ($Document) {
                             if (-not $script:scanLinks) { return $false }   # the scan probe must have run first
                             $auditNotLoaded = [int]$links[0].count
                             $scanNotLoaded  = [int]$script:scanLinks.rvt_links_not_loaded
-                            ($auditNotLoaded -eq $scanNotLoaded) -and
+                            (($auditNotLoaded -gt 0) -eq ($scanNotLoaded -gt 0)) -and
                             ($links[0].coverage_complete -eq $true) -and
                             ($script:scanLinks.rvt_links_coverage_complete -eq $true) -and
                             ([int]$links[0].elements_unreadable -eq 0) -and
