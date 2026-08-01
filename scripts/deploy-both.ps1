@@ -247,6 +247,9 @@ try {
         })
         Write-Host ("    plugin : {0}" -f $result.Dll)
         if ($result.StdLibPy -gt 0) { Write-Host ("    stdlib : {0} .py files" -f $result.StdLibPy) }
+        # Read back rather than assumed: a recipe-backed tool with no recipe on disk
+        # installs cleanly and fails the first time somebody calls it.
+        if ($result.Recipes -gt 0) { Write-Host ("    recipes: {0} .py files" -f $result.Recipes) }
     }
 
     if (-not $SkipServer) {

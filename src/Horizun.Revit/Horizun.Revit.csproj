@@ -129,6 +129,15 @@
     <None Include="Resources\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- The recipes: the geometry behind the recipe-backed tools, as .py beside the
+       DLL. On disk rather than embedded ON PURPOSE — the sha256 of the file that
+       ran goes out in every reply, and a file the owner can open, read and diff is
+       what makes that number mean something. Recipes and the add-in ship together;
+       a missing one fails its tool with "reinstall", never with a wrong answer. -->
+  <ItemGroup>
+    <None Include="Recipes\*.py" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <!-- The scripting escape hatch. IronPython is Apache-2.0 (a separate project);

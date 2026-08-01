@@ -153,6 +153,20 @@ foreach ($year in 2023, 2024, 2025, 2026, 2027) {
     $res = Join-Path $bin 'Resources'
     if (Test-Path $res) { Copy-Item $res (Join-Path $out 'Resources') -Recurse -Force }
 
+    # The recipes. Unlike an icon, a missing one does not degrade: the tool is still
+    # advertised and still accepted, and it fails when somebody uses it. So this is
+    # not "copy if present" - if the build produced recipes and the payload has none,
+    # that is a broken installer and it stops here.
+    $recipes = Join-Path $bin 'Recipes'
+    if (Test-Path $recipes) {
+        Copy-Item $recipes (Join-Path $out 'Recipes') -Recurse -Force
+        $staged = (Get-ChildItem (Join-Path $out 'Recipes') -Filter *.py -File).Count
+        $built  = (Get-ChildItem $recipes -Filter *.py -File).Count
+        if ($staged -ne $built) {
+            throw "staged $staged of $built recipes for ${year}: the recipe-backed tools would install and then fail at first use"
+        }
+    }
+
     # IronPython is not shipped by Revit; without it the escape hatch dies at load.
     foreach ($needed in 'IronPython.dll', 'Microsoft.Scripting.dll') {
         if (-not (Test-Path (Join-Path $out $needed))) { throw "$needed missing from the $year payload" }

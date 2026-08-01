@@ -120,6 +120,19 @@ namespace Horizun.Revit
             d.Register(new OpenDocumentCommand());
             d.Register(new RelinquishAllCommand());
             d.Register(new CaptureViewCommand());
+
+            // Recipe-backed tools: the Horizun AEC pyRevit buttons, as commands. The
+            // geometry lives in Recipes\*.py; the transaction, the dry run and the
+            // after-the-commit verification live in RecipeCommand. See Recipe.cs.
+            d.Register(new SplitFloorLoopsCommand());
+            d.Register(new SplitMultilayerWallsCommand());
+            d.Register(new SplitMultilayerSlabsCommand());
+            d.Register(new UngroupAndMarkCommand());
+            d.Register(new RegroupByParamCommand());
+            d.Register(new CopySlabElevationsCommand());
+            d.Register(new EmbedFloorsInToposolidCommand());
+            d.Register(new GradeToposolidCommand());
+            d.Register(new RectangularizeWallsCommand());
             // more commands land here as they are ported.
         }
     }

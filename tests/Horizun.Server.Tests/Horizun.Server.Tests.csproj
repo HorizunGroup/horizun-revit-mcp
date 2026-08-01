@@ -58,6 +58,12 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <!-- The recipe-backed tools carry their geometry in Python that ships beside the
+         add-in. A syntax error in one of those files cannot be caught by the C#
+         compiler and would otherwise surface the first time a user calls the tool,
+         inside Revit, on a real model. The same engine that runs them parses them
+         here — which needs no Revit, so CI can do it. -->
+    <PackageReference Include="IronPython" Version="3.4.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />

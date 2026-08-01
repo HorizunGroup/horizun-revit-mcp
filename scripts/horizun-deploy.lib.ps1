@@ -169,6 +169,20 @@ function Install-HorizunPayload {
         Copy-Item $resSrc $resDst -Recurse -Force
     }
 
+    # The recipes: the geometry behind the recipe-backed tools. THE SAME OMISSION AS
+    # THE ICONS ABOVE would be worse here, not milder: a missing icon degrades to a
+    # plain button, while a missing recipe is a tool that is advertised by tools/list,
+    # accepted by the dispatcher, and fails at the moment of use. They are counted and
+    # returned so the deploy REPORTS how many landed rather than assuming any did.
+    $recSrc = Join-Path $Source 'Recipes'
+    $recipeCount = 0
+    if (Test-Path $recSrc) {
+        $recDst = Join-Path $pluginDir 'Recipes'
+        if (Test-Path $recDst) { Remove-Item $recDst -Recurse -Force }
+        Copy-Item $recSrc $recDst -Recurse -Force
+        $recipeCount = (Get-ChildItem $recDst -Filter *.py -File).Count
+    }
+
     Copy-Item $ManifestSource $AddinsRoot -Force
 
     [pscustomobject]@{
@@ -178,6 +192,7 @@ function Install-HorizunPayload {
         Dll       = (Join-Path $pluginDir 'Horizun.Revit.dll')
         Manifest  = (Join-Path $AddinsRoot 'Horizun.addin')
         StdLibPy  = $pyCount
+        Recipes   = $recipeCount
     }
 }
 

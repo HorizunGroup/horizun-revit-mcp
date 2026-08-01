@@ -156,6 +156,20 @@ In Revit, over the pipe:
 | `horizun_set_keynote` | Keynote writes with the blast radius reported first. |
 | `horizun_family_apply` | Family edits in one transaction, under a geometry invariant that rolls the whole thing back if it moves. |
 | `horizun_bind_shared_param` | Shared-parameter binding, with `VariesAcrossGroups` measured from the definition, not assumed. |
+| `horizun_split_floor_loops` | One floor per sketch loop, carrying the height offset onto each. |
+| `horizun_split_multilayer_walls` | One wall per material layer, doors and windows re-hosted on the structural one. **Curved walls are REFUSED, not straightened.** |
+| `horizun_split_multilayer_slabs` | One floor/ceiling per material layer, profile and curves intact. A slab whose hosted families cannot be put back rolls back alone. |
+| `horizun_ungroup_and_mark` | Ungroup, stamping each member with its origin group — checked BEFORE anything is ungrouped, because an ungrouped-and-unmarked model is unrecoverable. |
+| `horizun_regroup_by_param` | The reverse: rebuild the groups from that stamp. Annotation is excluded and reported, rather than failing the whole call. |
+| `horizun_copy_slab_elevations` | Copy a warped floor's surface onto other floors. Names every destination that will LOSE an existing shape before it happens. |
+| `horizun_embed_floors_in_toposolid` | Embed floors into terrain. Slabs touching at the same level merge into one outline; a real step between them does not. |
+| `horizun_grade_toposolid_around_floors` | Offset, breaklines and a constant side slope out to daylight. Stations that never daylight are counted, not faked. |
+| `horizun_rectangularize_walls` | Irregular orthogonal walls into rectangular fragments, from real solid geometry. Refuses curves and non-rectangular openings by name. |
+
+The last nine keep their geometry in Python that ships beside the add-in
+(`src/Horizun.Revit/Recipes/`), while the host owns the transaction, the
+`dry_run`, and the re-read after the commit — see `Core/Recipe.cs`. All nine
+default to `dry_run: true` and require a single-use confirmation token to write.
 
 Host-resident (no Revit needed):
 

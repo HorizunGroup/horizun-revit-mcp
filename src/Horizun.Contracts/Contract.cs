@@ -633,6 +633,234 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_split_floor_loops",
+                Command = "horizun_split_floor_loops",
+                Description = @"Split each multi-loop floor into ONE FLOOR PER LOOP. A slab sketched with several closed loops is a single element, so every schedule, area takeoff and keynote downstream treats those separate slabs as one row, and nothing downstream can fix it. Scope it with element_ids (exactly those), view_id (everything eligible visible there), or neither (the whole model, rarely what you meant). A floor with one loop is REPORTED AS SKIPPED with the reason, never silently ignored, and an id that resolves to nothing or to something that is not a floor comes back in scope.missing_ids / scope.wrong_type_ids. Every loop becomes a floor INCLUDING inner loops, which in a slab with openings are the holes - the plan reports the loop count per floor so you can look first. The original is deleted only once at least one replacement exists, so a loop Revit refused does not take the geometry with it. Unlike the button this was ported from, the height offset from the level is carried onto each new floor and reported. VERIFIED AFTER THE COMMIT: created_present counts new elements re-read from the model and confirmed to be floors, deleted_gone counts originals confirmed absent - never the calls that did not throw. dry_run defaults to TRUE and opens no transaction.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you. A write aimed at whatever window is in front is a write aimed at whatever turns up."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""Exactly these floors. An id that does not exist is reported in scope.missing_ids and one that is not a floor in scope.wrong_type_ids; neither is dropped in silence. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every eligible floor VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns the plan (which floors, how many loops each) and a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope - if either changed, nothing is written."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_split_multilayer_walls",
+                Command = "horizun_split_multilayer_walls",
+                Description = @"Split compound walls into ONE WALL PER MATERIAL LAYER: each layer becomes its own wall at its own offset, doors and windows are re-hosted on the structural layer, and the finish walls are joined to it so Revit cuts their openings. Stacked walls are handled through their members - select any member and the whole stack is processed once. CURVED WALLS ARE REFUSED AND REPORTED, NEVER SPLIT: every offset here is built as a straight Line between the centreline's endpoints, which on an arc wall is the CHORD, so splitting one would move the wall and report success. Refusing is the correct answer until an arc-aware offset exists. A single-layer wall is reported as skipped with its reason, and an id that resolves to nothing or to a non-wall comes back in scope.missing_ids / scope.wrong_type_ids. Revit's 'walls overlap' warning is suppressed because layer walls overlap BY CONSTRUCTION; every other warning reaches you. Originals are UNPINNED before deletion - a pinned delete raises a warning nobody is there to dismiss, and an unanswered warning is a modal that holds Revit's UI thread. would_create is reported as null (not guessed) when a stacked wall is in scope, because its layer count is only knowable per member at apply time. VERIFIED AFTER THE COMMIT: created_present re-reads each new id and confirms it is a Wall, deleted_gone confirms each original is absent. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""Exactly these walls. A stacked-wall MEMBER resolves to its parent stack, and the stack is processed once however many of its members you name. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every eligible wall VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
+    ""origin_group_param"": { ""type"": ""string"",
+      ""description"": ""OPTIONAL, and never assumed: the name of a text INSTANCE parameter whose value is carried from each original wall onto every layer wall it produces (the pyRevit button this was ported from hard-coded one organisation's '_GrupoOrigen'). Omit it and nothing is copied - the count comes back as null, meaning NOT TRACKED, never as 0."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns which walls are eligible, how many layers each has, which were refused and why, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_split_multilayer_slabs",
+                Command = "horizun_split_multilayer_slabs",
+                Description = @"Split compound FLOORS AND CEILINGS into one element per material layer. Each layer keeps the ORIGINAL PROFILE - cloned from the slab's sketch, or read off its face when Revit will not hand over a sketch - and is then moved in Z, so curved edges survive intact (unlike the wall splitter, nothing here is rebuilt from endpoints). Hosted families are re-placed on the layer that can take them, trying the outer face, then the structural layer, then the far face. A slab whose hosted families CANNOT be put back rolls back ALONE, in its own SubTransaction, and is reported by id with the reason - layer slabs without the families they hosted is silent data loss, so it is refused per slab rather than accepted, and the rest of the batch still applies. Originals are unpinned before deletion. A single-layer slab, and one whose profile Revit will not surrender, are both reported as skipped with the reason, never silently ignored. Revit's overlap warning is suppressed because layer slabs share a footprint BY CONSTRUCTION; every other warning reaches you. VERIFIED AFTER THE COMMIT: created_present re-reads each new id and confirms it is a floor or ceiling, deleted_gone confirms each original is absent. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""Exactly these floors or ceilings. An id that resolves to neither comes back in scope.wrong_type_ids. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every eligible floor and ceiling VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
+    ""origin_group_param"": { ""type"": ""string"",
+      ""description"": ""OPTIONAL, and never assumed: the name of a text INSTANCE parameter carried from each original slab onto every layer it produces (the button this was ported from hard-coded one organisation's '_GrupoOrigen'). Omit it and nothing is copied - reported as null, meaning NOT TRACKED, never as 0."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns which slabs are eligible, their layer counts, what was skipped and why, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_ungroup_and_mark",
+                Command = "horizun_ungroup_and_mark",
+                Description = @"Ungroup model groups AND record where every element came from, so the operation is reversible. Ungrouping destroys the only record of which elements belonged together; before the members scatter, each is stamped with the group's name in the text parameter you name, and horizun_regroup_by_param reads that stamp to rebuild the group later. THE STAMP IS CHECKED BEFORE ANYTHING IS UNGROUPED: the button this was ported from ungrouped first and discovered per element that the parameter did not exist, leaving the model ungrouped AND unmarked - unrecoverable, because the membership was already gone. A group where NOT ONE member can carry the parameter is now refused outright with its reason; a group where SOME can is listed with a per-reason 'blockers' count, and those members are ungrouped without a stamp and will not come back. Bind the parameter first with horizun_bind_shared_param if that count is not zero. Optionally draws the group's origin marker (a circle plus rotated X/Y axes) with marker_view_id - the original drew into whatever view was active, which is not a decision a tool called by an agent should make, so it is drawn only into the view you name and skipped entirely when you name none. VERIFIED AFTER THE COMMIT: groups_gone confirms each group is really absent, elements_carrying_the_stamp re-reads the parameter on each element and counts the ones that really hold a value. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document"", ""origin_group_param""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""origin_group_param"": { ""type"": ""string"",
+      ""description"": ""REQUIRED, and never assumed: the TEXT INSTANCE parameter that will hold each element's origin group name. The button this was ported from hard-coded one organisation's '_GrupoOrigen'; Horizun compiles no such convention in. It must be bound to the members' categories - use horizun_bind_shared_param first if it is not."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""Exactly these model groups. An id that is not a model group comes back in scope.wrong_type_ids. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every model group VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and every model group in the model is in scope."" },
+    ""marker_view_id"": { ""type"": ""integer"",
+      ""description"": ""OPTIONAL. Draw each group's origin marker as detail lines in THIS view. Omit and no marker is drawn at all. The view must accept detail curves - a 3D view does not, and the failure is reported per group rather than taking the run down."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns each group, how many members can carry the stamp, which cannot and why, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_regroup_by_param",
+                Command = "horizun_regroup_by_param",
+                Description = @"Rebuild model groups from the stamp horizun_ungroup_and_mark left behind: collect every LOOSE element in the model carrying a value in the named text parameter, group the ones sharing a value, name the group, and clear the stamp so the pair is idempotent. TWO DEFECTS OF THE ORIGINAL BUTTON ARE FIXED HERE. First, it handed EVERY element carrying the parameter to Revit, including annotation - a model group cannot contain a view-specific element, and Revit refuses the WHOLE call with one ArgumentException naming nothing, so a single stray tag made the button fail entirely. View-specific elements, elements with no category, and elements already inside a group are now excluded up front and listed per candidate in 'excluded', so the rest still groups. Second, it cleared the parameter AFTER creating the group; writing a parameter on an element that is already a group member is precisely what raises Revit's group modal, and an unanswered modal holds Revit's UI thread until the caller times out. The stamp is now cleared BEFORE the group is created - same end state, no modal, and a failed grouping rolls the clearing back with it. Group names get a numeric suffix rather than colliding, and both the parameter and the name prefix are arguments, never compiled in. VERIFIED AFTER THE COMMIT: groups_present re-reads each new group, members_confirmed counts the members the model says each one holds, and elements_still_stamped reports any element whose stamp survived. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document"", ""origin_group_param""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""origin_group_param"": { ""type"": ""string"",
+      ""description"": ""REQUIRED, and never assumed: the TEXT INSTANCE parameter holding each element's origin group name - the same one passed to horizun_ungroup_and_mark."" },
+    ""origin_value"": { ""type"": ""string"",
+      ""description"": ""OPTIONAL. Regroup ONLY the elements whose stamp equals this value. Omit and every distinct value found becomes its own group - run a dry run first to see which values exist and how many elements each holds."" },
+    ""group_name_prefix"": { ""type"": ""string"", ""default"": """",
+      ""description"": ""Prepended to the stamp value to form the group name (the original button compiled in 'MOD_'). Defaults to empty: the group is named after the value alone."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns every stamp value found, how many elements each would group, which were excluded and why, the exact group name that would be used, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_copy_slab_elevations",
+                Command = "horizun_copy_slab_elevations",
+                Description = @"Copy the SHAPE of one warped floor onto other floors. Reads the source's triangulated top face and, for each destination, creates slab shape points at three places: the destination's own boundary vertices, wherever the source's split lines cross that boundary, and every source vertex falling inside it - all sampled off the source surface, so the destination lands ON it rather than near it. DESTRUCTIVE, AND SAID SO BEFORE IT HAPPENS: a destination that already carries shape edits has them WIPED (ResetSlabShape) before the new points go on, because two warps cannot be merged. The dry run lists exactly which floors will lose an existing shape, in destinations_whose_shape_will_be_reset - the button this came from did it without a word. THREE DEFECTS OF THAT BUTTON ARE FIXED. It refused any source with four or fewer vertices as 'not warped', which rejects a rectangular slab with one corner raised - the commonest warped slab there is; the source is now judged by whether its shape actually varies (more vertices than its boundary, OR differing vertex elevations, OR non-boundary split lines). It reduced every edge curve to its START POINT, so a curved slab's boundary polygon cut straight across the bulge and points were tested against a shape that is not the slab; curved edges are now tessellated and the affected destinations are named in curved_boundary_note. And one bad destination took the whole batch down; each now runs in its own SubTransaction and rolls back alone. VERIFIED AFTER THE COMMIT: floors_now_warped re-reads each destination's SlabShapeEditor and counts the ones whose vertices really vary in elevation or that really carry split lines - never the DrawPoint calls that did not throw. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document"", ""source_floor_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""source_floor_id"": { ""type"": ""integer"",
+      ""description"": ""REQUIRED. The floor whose shape is copied. It must actually be warped - the run is refused with its vertex count if the slab is flat, unedited and has no split lines. It is never itself a destination, even if you also name it in element_ids."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""The destination floors - exactly these. An id that is not a floor comes back in scope.wrong_type_ids. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every floor VISIBLE IN THIS VIEW becomes a destination. Used only when element_ids is omitted. Omit both and every floor in the model is a destination, which given this tool RESETS existing shapes is rarely what you meant."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns how many points each destination would get, which ones would LOSE an existing shape, which were skipped and why, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_embed_floors_in_toposolid",
+                Command = "horizun_embed_floors_in_toposolid",
+                Description = @"Embed floors INTO a toposolid: the slab's top face ends flush with the terrain and its body goes into the ground. Around each slab it writes three rings of shape points - the boundary and an outer ring at the top-face elevation, and an inner ring one centimetre in at the slab's UNDERSIDE, which is what pulls the terrain down around it - plus split lines along the outer and inner rings. Slabs that TOUCH and sit at the SAME elevation are merged into ONE outline by 2D edge cancellation, so no split line is drawn along a false seam; slabs that touch with a REAL STEP between them are deliberately NOT merged, because that step is a design feature and smoothing it away would be wrong. No solid booleans are used: Revit's kernel fails on slabs meeting edge to edge, which is the case this exists to handle. Arcs are tessellated so rings follow curves, corners are mitred so rectangular slabs stay sharp, and a SLOPED top face is sampled per point off its plane equation so ramps work. Existing toposolid points within 60cm of each outline are DELETED first - without that the triangulation bands. THE TOPOSOLID MUST BE UNAMBIGUOUS: pass toposolid_id, or omit it only when the document holds exactly one (the choice is then reported in toposolid_resolved_by); several and no id is REFUSED with the candidates listed, because reshaping the wrong terrain is not a thing to resolve by guessing. It never iterates SlabShapeCreases - that read crashes Revit on large toposolids - and neither does the verification. VERIFIED AFTER THE COMMIT by RECOMPUTING every ring position independently and asking the model whether a vertex is really there: points_present against points_expected, both deduplicated with the same tolerance. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""The floors to embed - exactly these. They are grouped automatically: touching AND level means one merged outline, a real step means separate outlines. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every floor VISIBLE IN THIS VIEW is embedded. Used only when element_ids is omitted. Omit both and every floor in the model is in scope."" },
+    ""toposolid_id"": { ""type"": ""integer"",
+      ""description"": ""The Toposolid to reshape. May be omitted ONLY when the document holds exactly one, which is then used and reported. With several present and no id, the run is REFUSED and the candidates are listed."" },
+    ""offset_cm"": { ""type"": ""number"", ""default"": 5,
+      ""description"": ""How far OUTSIDE the slab edge the outer ring sits, in centimetres, at the top-face elevation. Must be greater than zero."" },
+    ""spacing_cm"": { ""type"": ""number"", ""default"": 100,
+      ""description"": ""Maximum distance between points along the outline, in centimetres. Corners are always kept exactly; this only subdivides the long edges. Smaller means more points and a closer-following terrain. Must be greater than zero."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns how the slabs grouped, each outline's vertex count, how many points and split lines would be added, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_grade_toposolid_around_floors",
+                Command = "horizun_grade_toposolid_around_floors",
+                Description = @"Grade a toposolid around one or more path slabs, Civil 3D style: a CONSTANT SIDE SLOPE run outward from the path until it meets the existing terrain. Writes the whole thing into the toposolid as shape points and split lines - points along the slab edge at the slab's own top elevation, an inner ring just inside at the slab underside, an outer offset ring with breaklines along it, the DAYLIGHT line where the side slope finally meets existing ground, and intermediate slope points with split lines between the two so the terrain between path and daylight is actually modelled rather than interpolated. Existing toposolid points inside the graded footprint are DELETED first. THE STATIONS THAT NEVER DAYLIGHT ARE REPORTED, NOT FAKED: the search walks outward until the slope's elevation crosses the sampled terrain and gives up at max_search_cm; where it never crosses there is no daylight point and no slope path, and daylight_missing counts exactly those - it is the number worth reading before you accept the result. Per-point failures Revit refused (a point it would not create, a split line it would not take) come back in recipe_reported rather than being swallowed, and points_skipped / split_lines_skipped count them. THE TOPOSOLID MUST BE UNAMBIGUOUS: pass toposolid_id, or omit it only when the document holds exactly one (the choice is reported); several and no id is REFUSED with the candidates listed. VERIFIED AFTER THE COMMIT by RECOMPUTING every position this grading should have produced and asking the model whether a vertex is really there - points_present against points_expected, both deduplicated at the same tolerance. It reads SlabShapeVertices only, never SlabShapeCreases, which crashes Revit on large toposolids. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""The path slabs to grade around - exactly these. A slab whose geometry cannot be read is reported in floors_failed rather than taking the run down. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every floor VISIBLE IN THIS VIEW is graded around. Used only when element_ids is omitted. Omit both and every floor in the model is in scope."" },
+    ""toposolid_id"": { ""type"": ""integer"",
+      ""description"": ""The Toposolid to grade. May be omitted ONLY when the document holds exactly one, which is then used and reported. With several present and no id, the run is REFUSED and the candidates are listed."" },
+    ""offset_cm"": { ""type"": ""number"", ""default"": 5,
+      ""description"": ""How far OUTSIDE the slab edge the offset ring sits, in centimetres, at the top-face elevation. The side slope starts here. Must be greater than zero."" },
+    ""edge_spacing_cm"": { ""type"": ""number"", ""default"": 100,
+      ""description"": ""Maximum distance between sampled points along the slab edge, in centimetres. Must be greater than zero."" },
+    ""slope"": { ""type"": ""string"", ""default"": ""2:1"",
+      ""description"": ""The side slope, in any of the forms the original button took: 'H:V' like '2:1' (two horizontal to one vertical), a percentage like '50%', or a bare horizontal-to-vertical ratio like '2'. Must be greater than zero."" },
+    ""max_search_cm"": { ""type"": ""number"", ""default"": 1000,
+      ""description"": ""How far out, in centimetres, to look for daylight before giving up on a station. Stations that never meet the terrain within this distance are counted in daylight_missing and get NO slope - raise this, or flatten the slope, if that count is not what you want."" },
+    ""slope_spacing_cm"": { ""type"": ""number"", ""default"": 100,
+      ""description"": ""Maximum distance between intermediate points along the side slope, in centimetres. Smaller means the slope face is modelled more finely. Must be greater than zero."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns per slab how many edge, inner and offset points would be created, how many stations daylight and how many do NOT, plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_rectangularize_walls",
+                Command = "horizun_rectangularize_walls",
+                Description = @"Rebuild walls whose elevation profile has been edited into irregular steps as simple RECTANGULAR fragments, read from the wall's real solid geometry. The profile is partitioned into a grid around the openings, each cell becomes its own straight wall, and the doors and windows the original carried are re-hosted onto the fragments that contain them. IT REFUSES RATHER THAN APPROXIMATES, and this is the point of the tool: it works only on straight Basic Walls, and a curved wall, a non-rectangular opening, or any profile it cannot rebuild stably is reported BY NAME with its reason in 'refused' - nothing is guessed at. A wall that is already rectangular is listed in 'already_rectangular' and left alone; that is a correct outcome, not a failure, and it is kept separate from the refusals so the two are never confused. Each wall is rebuilt inside its OWN SubTransaction, so one that defeats the rebuild rolls back alone, is reported in 'errors', and the rest of the batch still applies. Revit's overlap, join and identical-instance warnings are suppressed because rebuilding a wall as fragments raises them by construction; every other warning reaches you. Fragments below a minimum dimension or area are dropped and counted in fragments_skipped_tiny rather than created as slivers. VERIFIED AFTER THE COMMIT: fragments_present re-reads every new id and confirms it is a Wall - a SubTransaction that committed still dies with the outer one, so counting what was built inside it is not evidence. dry_run defaults to TRUE.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"",
+      ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
+      ""description"": ""Exactly these walls. An id that is not a wall comes back in scope.wrong_type_ids. Omit to use view_id."" },
+    ""view_id"": { ""type"": ""integer"",
+      ""description"": ""Every eligible wall VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it runs the full analysis and returns which walls would be replaced and by how many fragments, which are already rectangular, and which are refused and why - plus a single-use confirmation_token."" },
+    ""confirmation_token"": { ""type"": ""string"",
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+  }
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_job_status",
                 Description =
                     "How a long run is going - answered WITHOUT touching Revit. While a long command executes, " +

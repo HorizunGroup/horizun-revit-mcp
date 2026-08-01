@@ -3,6 +3,132 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.3.4 — 2026-07-31
+
+Los botones de pyRevit se vuelven herramientas. **Nueve** de los doce de la
+extensión "Horizun AEC" pasan a ser comandos `horizun_*` de primera clase; dos son
+**imposibles** de portar con lo que hay, y uno se deja fuera a propósito.
+
+**EL CONTRATO SE MOVIÓ** — nueve comandos nuevos —, así que las dos mitades hay
+que actualizarlas juntas.
+
+### Añadido
+
+- **Recetas: el álgebra en Python, la honestidad en C#.** Estas geometrías llevan
+  meses corriendo contra modelos reales; reescribirlas en C# no las haría más
+  correctas, reiniciaría su historial de bugs en cero. Así que el algoritmo se
+  queda en Python (`Recipes\*.py`, junto al DLL) y `Core\Recipe.cs` se queda con
+  todo lo que decide si la respuesta es verdad: la transacción y su
+  `Guard.Commit`, el `dry_run` — que **no abre transacción en absoluto** —, la
+  relectura **después del commit** y un bloque `Guard.Verify` por cantidad
+  contada. Una receta que dice 40 contra un modelo que reporta 37 **falla la
+  llamada**. Una receta no puede abrir su propia transacción: se comprueba en
+  ejecución y en CI. Y no es un rodeo a `enable_execute_python` — ese ajuste
+  regula código que **llega de quien llama**, y aquí no llega nada: el nombre se
+  resuelve contra una carpeta fija, `..` y separadores se rechazan, y el fichero
+  lo instaló el mismo deploy que instaló el DLL. El sha256 de la receta que
+  **realmente** corrió viaja en cada respuesta.
+
+- **Nueve herramientas nuevas**: `horizun_split_floor_loops`,
+  `horizun_split_multilayer_walls`, `horizun_split_multilayer_slabs`,
+  `horizun_ungroup_and_mark`, `horizun_regroup_by_param`,
+  `horizun_copy_slab_elevations`, `horizun_embed_floors_in_toposolid`,
+  `horizun_grade_toposolid_around_floors` y `horizun_rectangularize_walls`.
+  Todas con `dry_run` **por defecto TRUE**, `target_document` obligatorio y token
+  de confirmación de un solo uso.
+
+- **Los dos gigantes se portaron COPIANDO el fuente, no reescribiéndolo.**
+  "Rectangularizar muros" (2.051 líneas) y "Grading TopoSolido" (1.267) se
+  copiaron tal cual y se editaron: cabecera, argumentos en vez de diálogos, la
+  transacción al host y `plan/apply/verify`. La geometría queda **idéntica byte a
+  byte**, que es justo el objetivo — un puerto reescrito reinicia el historial de
+  bugs, y transcribir dos mil líneas a mano lo garantiza. Ambos conservan su `doc`
+  de módulo, que los puntos de entrada enlazan al documento que resolvió el host:
+  es seguro porque el puente corre **un comando a la vez** y rechaza el segundo en
+  vez de encolarlo.
+
+### Arreglado — defectos que traían los botones, no el puerto
+
+Un botón puede permitirse esto porque hay alguien mirando. Una herramienta que
+llama un agente, no.
+
+- **El partidor de muros convertía un muro CURVO en su CUERDA, y reportaba
+  éxito.** `offset_curve()` construía cada capa con `Line.CreateBound` desde los
+  **extremos** de la directriz. En un muro recto es exacto; en uno en arco es la
+  cuerda — el muro se mueve, y nada lo decía. Ahora los muros curvos se
+  **rechazan** en `plan()` con el motivo. Rehacerlos bien es otro algoritmo, y no
+  uno que este puerto tenga derecho a inventar.
+
+- **Se borraban originales PINEADOS.** Revit responde "está intentando eliminar
+  elementos pineados", y un aviso que nadie contesta es un modal que retiene el
+  hilo de UI hasta que quien llama expira. Su propio botón hermano (Separar
+  losas) ya despineaba antes. Ahora lo hacen los tres.
+
+- **Reagrupar barría anotación hacia un Model Group.** Un grupo de modelo no
+  puede contener un elemento view-specific, y Revit rechaza la llamada **entera**
+  con un `ArgumentException` que no nombra a nadie: una sola etiqueta suelta hacía
+  fallar el botón por completo. Ahora se excluyen y se **listan**, y el resto sí
+  se agrupa.
+
+- **Reagrupar limpiaba el parámetro DESPUÉS de agrupar.** Escribir un parámetro en
+  un elemento que ya está dentro de un grupo es justo lo que levanta el modal de
+  grupo. Ahora se limpia **antes**: mismo estado final, sin modal, y si el
+  agrupado falla el host revierte la limpieza con él.
+
+- **Desagrupar descubría demasiado tarde que el parámetro no existía.** Desagrupaba
+  primero y luego intentaba marcar; si el parámetro no estaba, el modelo quedaba
+  desagrupado **y sin marcar** — irrecuperable, porque la pertenencia al grupo ya
+  no existía. Ahora se muestrea a los miembros **antes** de tocar nada.
+
+- **Partir losa perdía el offset de nivel**, dejando cada losa partida en la cota
+  del nivel. Ahora se copia y se reporta.
+
+- **"Adquirir Elevaciones" rechazaba una losa fuente legítimamente alabeada.**
+  Aceptaba la fuente solo si exponía más de cuatro vértices ("no parece tener una
+  forma editada") — pero una losa rectangular con **una esquina levantada** tiene
+  exactamente cuatro vértices y SÍ está alabeada: la losa deformada más común del
+  mundo, rechazada con un mensaje que decía que no lo estaba. Ahora se juzga por si
+  la forma realmente varía: más vértices que su contorno, O cotas distintas entre
+  vértices, O split lines.
+
+- **"Adquirir Elevaciones" reducía cada arista curva a su punto inicial.** Tomaba
+  solo `GetEndPoint(0)` de cada curva del contorno, así que un arco aportaba un
+  punto y el polígono del destino cortaba recto por la panza: los puntos se
+  probaban contra una forma que no es la losa. Ahora las curvas se **teselan**, y
+  los destinos afectados salen nombrados en `curved_boundary_note`.
+
+- **"Adquirir Elevaciones" reseteaba la forma del destino en silencio.** Es la
+  operación correcta (dos alabeos no se fusionan), pero el botón no decía nada. El
+  dry run ahora lista exactamente qué losas van a **perder** su forma existente.
+
+- **Una losa mala ya no tira el lote.** `split_multilayer_slabs` corre cada losa en
+  su propia `SubTransaction`: la que falla revierte **sola**, sin dejar geometría a
+  medias, y se reporta por id.
+
+- **Los instaladores no copiaban `Recipes\`.** Exactamente la omisión que en 0.3.3
+  dejó la cinta sin iconos — pero peor: un icono que falta degrada a botón sin
+  imagen, mientras que una receta que falta es una herramienta que `tools/list`
+  anuncia, el dispatcher acepta y **falla al usarla**. `pack.ps1` ahora **aborta**
+  si el payload no lleva tantas recetas como produjo la compilación, y los deploys
+  reportan cuántas aterrizaron releyéndolas del disco.
+
+### No portado, y por qué
+
+- **"Pases de nivel" y "Revertir Pases" son imposibles con lo entregado.** Ambos
+  scripts son cáscaras: dicen en su propia cabecera que *"toda la lógica vive en
+  la librería compartida `iec_pases` (extension/lib)"*, y ese `lib/` **no viene en
+  el zip** ni está en el disco. No hay nada que auditar ni que portar hasta que
+  aparezca el módulo.
+
+- **"Nivelar TopoSolido" (v1) se deja fuera A PROPÓSITO, y lo dice su propio
+  sucesor.** La cabecera de "Nivelar Topo V2" enumera las "diferencias clave con
+  v1" y entre ellas está la razón: v1 fusiona losas con **booleanas de sólidos**, y
+  *"el kernel booleano de Revit falla con losas que solo se tocan por el borde"* —
+  justo el caso que la herramienta tiene que resolver. V2 lo reemplazó por
+  cancelación de bordes en 2D. Montar la versión que su autor ya había sustituido
+  sería publicar un modo de fallo conocido con una etiqueta `horizun_`. Su
+  capacidad está cubierta por `horizun_embed_floors_in_toposolid`.
+
 ## v0.3.3 — 2026-07-31
 
 La versión que se puede regalar. El puente se prepara para ser público —

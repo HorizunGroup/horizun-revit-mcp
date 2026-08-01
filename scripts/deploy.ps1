@@ -36,6 +36,7 @@ $installed = Install-HorizunPayload `
 Write-Host "[Horizun] deployed to $($installed.AddinsDir)"
 Write-Host "  plugin : $($installed.Dll)"
 if ($installed.StdLibPy -gt 0) { Write-Host "  stdlib : $($installed.PluginDir)\lib ($($installed.StdLibPy) .py files)" }
+if ($installed.Recipes -gt 0) { Write-Host "  recipes: $($installed.PluginDir)\Recipes ($($installed.Recipes) .py files)" }
 Write-Host "  addin  : $($installed.Manifest)"
 
 $prov = Get-HorizunProvenance $installed.Dll
