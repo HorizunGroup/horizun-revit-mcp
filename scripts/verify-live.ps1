@@ -433,6 +433,14 @@ $notCovered = @()
 # Probes that need a named document. Without -Document they are reported as NOT
 # COVERED: pointing them at a guess would pass for the wrong reason.
 if ($Document) {
+    # Document.Close throws for the active UIDocument. This must be refused during
+    # rehearsal, before minting a discard token for an operation Revit cannot do.
+    $probes += @{ Name = 'close REFUSES the active document before issuing a token'
+                  Tool = 'horizun_document_session'
+                  Args = @{ operation = 'close'; target_document = $Document
+                            save_on_close = $false; discard_unsaved = $true; dry_run = $true }
+                  ExpectError = 'ACTIVE document.*no confirmation token was issued or consumed' }
+
     # The block has to be on ALL FOUR of the read-only answers, not on the one
     # somebody remembered. A caller who finds it on model_scan and not on
     # quantities learns to trust a total that carries no coverage at all.

@@ -793,6 +793,24 @@ namespace Horizun.Revit.Commands
             string pick = PickDocument(app, request, out doc, requireExplicitTarget: true);
             if (pick != null) return CommandResult.Fail(pick);
 
+            // Revit's Document.Close cannot close the document that owns the active
+            // UIDocument. Discovering that only after issuing (and consuming) a discard
+            // token makes the rehearsal promise an impossible operation. Refuse before
+            // measuring, issuing a token or attempting any close. The caller can open or
+            // activate another model and then close this one by its explicit target.
+            Document activeForClose = app.ActiveUIDocument?.Document;
+            string closeHostVersion = HostVersion(app);
+            bool targetIsActive = activeForClose != null &&
+                string.Equals(DocumentGate.IdentityOf(activeForClose, closeHostVersion).Fingerprint(),
+                              DocumentGate.IdentityOf(doc, closeHostVersion).Fingerprint(),
+                              StringComparison.Ordinal);
+            if (targetIsActive)
+                return CommandResult.Fail(
+                    "REFUSING TO CLOSE: '" + (SafeTitle(doc) ?? SafePath(doc) ?? "this document") +
+                    "' is the ACTIVE document, and Revit's API cannot close the active document. " +
+                    "Nothing was closed and no confirmation token was issued or consumed. Activate or open " +
+                    "another document first, then call close again with this target_document.");
+
             var path = SafePath(doc);
             var title = SafeTitle(doc);
             bool saveOnClose = request.Value<bool?>("save_on_close") ?? false;
