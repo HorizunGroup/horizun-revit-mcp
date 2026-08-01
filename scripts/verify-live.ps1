@@ -675,16 +675,12 @@ if ($OldFile) {
 }
 
 # ---------------------------------------------------------------------------
-# One MCP session, ONE REQUEST AT A TIME.
+# One MCP session, intentionally sequential.
 #
-# Pipelining every probe at once does not work, and the reason is the design
-# rather than a bug: the bridge admits one Revit command at a time and REFUSES
-# the rest with "one request at a time" instead of queueing them behind a run
-# that may take minutes. Blasting twenty requests therefore produced one answer
-# and nineteen refusals - a correct bridge and a wrong client.
-#
-# So this waits for each reply before sending the next, which is what any caller
-# of this bridge has to do.
+# This broad acceptance suite waits for each reply so failures have one obvious
+# cause and its destructive probes stay in a deliberate order. The bridge itself
+# now accepts concurrent callers into a bounded FIFO queue; queue ordering,
+# backpressure and cancellation-before-start have their own focused live test.
 # ---------------------------------------------------------------------------
 $env:HORIZUN_REVIT_YEAR = "$Year"
 

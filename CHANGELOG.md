@@ -3,6 +3,45 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.3.5 — 2026-08-01
+
+### Cola FIFO para todas las llamadas de Revit
+
+- **Las llamadas concurrentes ya no se rechazan por estar ocupado Revit.** Una
+  operación sigue ejecutándose a la vez —la API de Revit continúa siendo de un
+  solo hilo—, pero hasta 16 solicitudes adicionales esperan en orden FIFO. El
+  límite es backpressure deliberado: una cola sin límite convertiría un bucle o
+  una tormenta de reintentos en horas de mutaciones futuras aceptadas en silencio.
+
+- **Cada respuesta JSON mide su espera.** `bridge_queue` informa si la llamada
+  tuvo que esperar, cuántas solicitudes tenía delante, milisegundos de espera,
+  capacidad de la cola y tiempo total de espera más ejecución.
+
+- **Cancelar antes de empezar significa que nunca corrió.** El servidor envía
+  una orden de control autenticada por una conexión separada; el add-in elimina
+  la solicitud bajo el mismo lock de la cola y despierta a su dueño con
+  `cancelled_before_start`. Si ya entró al hilo de UI, no afirma cancelarla: la
+  API de Revit no puede interrumpir ese trabajo.
+
+- **Sin starvation entre colas.** Las llamadas normales y los trabajos
+  `run_async` alternan cuando ambas colas tienen trabajo. Un flujo continuo de
+  lecturas no puede dejar eternamente esperando una mutación async, ni al revés.
+
+- **Cierre y errores terminales drenan con verdad.** Si Revit se apaga o
+  `ExternalEvent.Raise()` responde que no llegará ningún callback, todas las
+  solicitudes todavía en espera se despiertan como `NEVER STARTED`; no quedan
+  conexiones bloqueadas ni operaciones que puedan arrancar después.
+
+- **El heartbeat dejó de llamar “running” a lo que quizá está en cola.** Ahora
+  dice que espera una respuesta de Revit y que desde el proceso MCP no puede
+  distinguir todavía entre espera FIFO y ejecución. No inventa estado.
+
+- **La concurrencia tiene una prueba viva reproducible.**
+  `scripts/verify-queue-live.ps1` solapa cuatro llamadas contra un Revit real,
+  comprueba las posiciones de admisión y el orden de respuesta, cancela una
+  escritura de marcador todavía en espera y verifica fuera de Revit que el
+  archivo nunca apareció.
+
 ## v0.3.4 — 2026-08-01
 
 Los botones de pyRevit se vuelven herramientas. **Nueve** de los doce de la

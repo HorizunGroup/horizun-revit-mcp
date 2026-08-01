@@ -277,6 +277,7 @@ namespace Horizun.Server
                                    CancellationToken ct = default(CancellationToken))
         {
             ct.ThrowIfCancellationRequested();
+            string wireId = Guid.NewGuid().ToString("N");
 
             using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
             {
@@ -302,7 +303,7 @@ namespace Horizun.Server
 
                 var req = new JObject
                 {
-                    ["id"] = Guid.NewGuid().ToString("N").Substring(0, 8),
+                    ["id"] = wireId,
                     ["command"] = command,
                     ["params"] = args ?? new JObject(),
                     ["token"] = d.Token
@@ -325,14 +326,27 @@ namespace Horizun.Server
                     new[] { ((IAsyncResult)task).AsyncWaitHandle, ct.WaitHandle }, timeoutMs);
 
                 if (waited == WaitHandle.WaitTimeout)
-                    throw new TimeoutException($"No reply from Revit within {timeoutMs} ms.");
+                {
+                    CancelAttempt cancel = TryCancelQueued(d, wireId);
+                    if (cancel.CancelledBeforeStart == true)
+                        throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. The request " +
+                            "was still waiting in Revit's FIFO queue and was removed. It NEVER STARTED: nothing " +
+                            "was executed and nothing was written.");
+                    throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. " +
+                        CancellationUncertainty(command, cancel));
+                }
 
                 if (waited == 1)
+                {
+                    CancelAttempt cancel = TryCancelQueued(d, wireId);
+                    if (cancel.CancelledBeforeStart == true)
+                        throw new OperationCanceledException(
+                            "Cancelled while waiting for Revit to answer '" + command + "'. The request was still " +
+                            "in the FIFO queue and was removed before it started. Nothing was executed or written.", ct);
                     throw new OperationCanceledException(
-                        "Cancelled while waiting for Revit to answer '" + command + "'. This stopped US waiting: " +
-                        "the Revit API cannot interrupt a command already running on its UI thread, so that work " +
-                        "CONTINUES inside Revit and finishes unseen. Do not re-send it assuming nothing happened.",
-                        ct);
+                        "Cancelled while waiting for Revit to answer '" + command + "'. " +
+                        CancellationUncertainty(command, cancel), ct);
+                }
 
                 BoundedLine reply = task.Result;
                 if (reply.Outcome == BoundedLineOutcome.TooLong)
@@ -349,6 +363,64 @@ namespace Horizun.Server
                                           (reply.Bytes > 0 ? " (" + reply.Bytes + " bytes of one had been sent)." : "."));
                 return JObject.Parse(reply.Line);
             }
+        }
+
+        private sealed class CancelAttempt
+        {
+            public bool? CancelledBeforeStart;
+            public string State;
+        }
+
+        /// <summary>
+        /// Cancellation travels over its own pipe connection because the original one is
+        /// blocked waiting for the queued command. This control message never enters
+        /// Revit's UI queue; the pipe server removes the entry under RequestGate's lock.
+        /// </summary>
+        private static CancelAttempt TryCancelQueued(Discovered d, string wireId)
+        {
+            var outcome = new CancelAttempt { CancelledBeforeStart = null, State = "cancel_control_unavailable" };
+            try
+            {
+                using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                {
+                    pipe.Connect(2000);
+                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+                    writer.WriteLine(new JObject
+                    {
+                        ["id"] = "cancel-" + Guid.NewGuid().ToString("N"),
+                        ["command"] = "__horizun_cancel_queued",
+                        ["params"] = new JObject { ["wire_id"] = wireId },
+                        ["token"] = d.Token
+                    }.ToString(Newtonsoft.Json.Formatting.None));
+
+                    var reader = new BoundedLineReader(pipe, 65536);
+                    var task = System.Threading.Tasks.Task.Run(() => reader.ReadLine());
+                    if (!task.Wait(3000)) return outcome;
+                    BoundedLine line = task.Result;
+                    if (line.Outcome != BoundedLineOutcome.Ok) return outcome;
+                    JObject envelope = JObject.Parse(line.Line);
+                    JObject data = envelope["data"] as JObject;
+                    if (data == null) return outcome;
+                    outcome.CancelledBeforeStart = (bool?)data["cancelled_before_start"];
+                    outcome.State = (string)data["state"] ?? "unknown";
+                    return outcome;
+                }
+            }
+            catch { return outcome; }
+        }
+
+        private static string CancellationUncertainty(string command, CancelAttempt cancel)
+        {
+            if (cancel != null && string.Equals(cancel.State, "already_running", StringComparison.Ordinal))
+                return "The command had already started inside Revit. The API cannot interrupt work on its UI " +
+                       "thread, so it CONTINUES and may finish after this caller stops waiting. Do not resend it " +
+                       "assuming nothing happened.";
+            if (cancel != null && string.Equals(cancel.State, "not_found_or_finished", StringComparison.Ordinal))
+                return "The request was no longer waiting: it either finished or had already left the queue. Its " +
+                       "outcome cannot be changed by cancellation. Do not resend it assuming nothing happened.";
+            return "The cancellation control could not prove that the request was removed before start. It may " +
+                   "already be running inside Revit, and running Revit API work cannot be interrupted. Do not " +
+                   "resend it assuming nothing happened.";
         }
     }
 }

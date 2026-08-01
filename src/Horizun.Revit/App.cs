@@ -17,6 +17,7 @@ namespace Horizun.Revit
     public sealed class App : IExternalApplication
     {
         private PipeServer _pipe;
+        private Dispatcher _dispatcher;
         private string _year;
 
         public Result OnStartup(UIControlledApplication app)
@@ -43,19 +44,19 @@ namespace Horizun.Revit
                 try { Ribbon.Build(app); }
                 catch (Exception rex) { Log.Warn("the ribbon tab could not be built: " + rex.Message); }
 
-                var dispatcher = new Dispatcher();
-                RegisterCommands(dispatcher);
-                dispatcher.Initialize();   // ExternalEvent.Create — UI thread, here.
+                _dispatcher = new Dispatcher();
+                RegisterCommands(_dispatcher);
+                _dispatcher.Initialize();   // ExternalEvent.Create — UI thread, here.
 
                 string token = Discovery.NewToken();
-                _pipe = new PipeServer(dispatcher, token);
+                _pipe = new PipeServer(_dispatcher, token);
                 _pipe.Start();
 
                 // Version and command list go in the file: the server is deployed
                 // separately and has no other way to know what this add-in can do.
-                Discovery.Write(_year, _pipe.PipeName, token, Build.Version, dispatcher.CommandNames);
+                Discovery.Write(_year, _pipe.PipeName, token, Build.Version, _dispatcher.CommandNames);
                 Log.Info("started: pipe '" + _pipe.PipeName + "', " +
-                         System.Linq.Enumerable.Count(dispatcher.CommandNames) + " commands, discovery at " +
+                         System.Linq.Enumerable.Count(_dispatcher.CommandNames) + " commands, discovery at " +
                          System.IO.Path.Combine(Discovery.Dir(), Discovery.FileName(_year)));
                 return Result.Succeeded;
             }
@@ -75,6 +76,9 @@ namespace Horizun.Revit
             // are closing the records of what is already there, then drain.
             try { _pipe?.Stop(); } catch { }
 
+            int synchronous = 0;
+            try { synchronous = _dispatcher?.Shutdown() ?? 0; } catch { }
+
             // AsyncQueue.DrainForShutdown() existed, returned the list, and NOTHING
             // CALLED IT. So every job still waiting when Revit closed kept an open
             // record - reported by job_status as the ambiguity it refuses to resolve,
@@ -87,8 +91,9 @@ namespace Horizun.Revit
             try
             {
                 Log.Info("shutdown: pipe stopped, discovery removed" +
-                         (abandoned > 0
-                             ? ", " + abandoned + " queued job(s) closed as not_started - they never ran"
+                         (abandoned + synchronous > 0
+                             ? ", " + synchronous + " queued call(s) and " + abandoned +
+                               " async job(s) closed as not_started - they never ran"
                              : ", nothing was queued"));
             }
             catch { }

@@ -20,9 +20,10 @@
 // serving loop that handled the request inline left every later client stuck in
 // its connect timeout, with nothing to read but "the pipe did not answer".
 //
-// Accepting a connection is not permission to run: the dispatcher admits one
-// command at a time and REFUSES the rest with a description of what is holding
-// the thread. So the second caller now gets a sentence instead of a hang.
+// Accepting a connection is not permission to run in parallel: the dispatcher
+// executes one command at a time and holds later connections in a bounded FIFO
+// queue. Four slots beyond the maximum executing+waiting command count provide
+// headroom for cancellation control traffic under ordinary queue saturation.
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
@@ -110,7 +111,7 @@ namespace Horizun.Revit.Transport
         /// or something wrong; either way it is a small number, and an unbounded thread
         /// per connection is how a stuck client becomes a stuck Revit.
         /// </summary>
-        private const int MaxConcurrentConnections = 8;
+        private const int MaxConcurrentConnections = RequestGate.MaxDepth + 5;
 
         /// <summary>
         /// A request is a command and some ids. The megabytes go the other way. Both
@@ -236,10 +237,22 @@ namespace Horizun.Revit.Transport
                 {
                     reply = Envelope(id, false, null, "No command given.");
                 }
+                else if (string.Equals(command, "__horizun_cancel_queued", StringComparison.Ordinal))
+                {
+                    string target = (string)req["params"]?["wire_id"];
+                    string detail;
+                    bool cancelled = _dispatcher.CancelQueued(target, out detail);
+                    reply = Envelope(id, true, new JObject
+                    {
+                        ["cancelled_before_start"] = cancelled,
+                        ["wire_id"] = target,
+                        ["state"] = detail
+                    }, null);
+                }
                 else
                 {
                     string paramsJson = req["params"] != null ? req["params"].ToString(Formatting.None) : "{}";
-                    CommandResult result = _dispatcher.Invoke(command, paramsJson, _commandTimeoutMs);
+                    CommandResult result = _dispatcher.Invoke(id, command, paramsJson, _commandTimeoutMs);
                     reply = result.Success
                         ? Envelope(id, true, result.Data, null)
                         : Envelope(id, false, null, result.Error);

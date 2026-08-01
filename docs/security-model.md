@@ -138,11 +138,18 @@ wrong session is a correct edit to the wrong model.
 - Requests over 4 MB are refused rather than parsed.
 - The pipe reads one request bounded in size (4 MB) and time (30 s), so a peer
   that connects and says nothing cannot hold a thread.
-- Concurrent pipe connections are capped at 8.
-- One Revit command runs at a time; further requests are refused with a
-  description, not queued.
-- A command that overruns its budget **cannot be stopped**. Cancellation stops
-  the server waiting; the work continues inside Revit, and the reply says so.
+- Concurrent pipe connections are capped at 21: one executing call, up to 16
+  FIFO waiters and four slots of headroom so cancellation control can normally
+  enter even when the command queue is full. A malicious local peer can occupy
+  all 21; cancellation then reports that removal could not be proved.
+- One Revit command runs at a time; up to 16 further requests wait in FIFO order.
+  The seventeenth waiter is refused before execution as explicit backpressure.
+- A queued request can be cancelled over a separate authenticated control
+  connection and is removed under the queue lock. That response proves it never
+  started. A command already executing **cannot be stopped**; cancellation stops
+  the server waiting, the work continues inside Revit, and the reply says so.
+- Ordinary calls and explicit `run_async` jobs alternate while both queues have
+  work, preventing either queue from starving the other.
 
 ## 7. Supply chain
 

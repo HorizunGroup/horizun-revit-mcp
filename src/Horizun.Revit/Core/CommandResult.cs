@@ -31,6 +31,13 @@ namespace Horizun.Revit.Core
         public static CommandResult Ok(object data)
             => new CommandResult { Success = true, Data = data };
 
+        /// <summary>
+        /// Lets the dispatcher normalize an anonymous JSON-serializable payload to a
+        /// JObject before attaching transport metadata. Commands still create results
+        /// through Ok/Fail and cannot change success into failure after the fact.
+        /// </summary>
+        internal void ReplaceData(object data) => Data = data;
+
         public static CommandResult Fail(string error)
             => new CommandResult { Success = false, Error = error };
     }

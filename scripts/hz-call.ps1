@@ -11,10 +11,10 @@
   It is also the harness the workflow runs need: seven skills, each run twice,
   with inputs and outputs hashed. That is not something to drive by hand.
 
-  ONE REQUEST AT A TIME, and it waits for each reply before sending the next -
-  which is what any caller of this bridge has to do. A batch that pipelines gets
-  nineteen "one request at a time" refusals, which is the RequestGate working and
-  the caller wrong. Learned the expensive way; see the acceptance report.
+  This helper sends ONE request and waits for its reply. Separate helper processes
+  may run concurrently: the add-in admits them to its bounded FIFO queue and still
+  executes only one Revit API command at a time. A full queue is refused as explicit
+  backpressure; accepted calls report their measured wait in bridge_queue.
 
     scripts/hz-call.ps1 -Tool horizun_health
     scripts/hz-call.ps1 -Tool horizun_open_document -Arguments '{"path":"C:\\x\\a.rvt"}'

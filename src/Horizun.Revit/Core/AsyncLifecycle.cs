@@ -144,6 +144,18 @@ namespace Horizun.Revit.Core
                 warn);
         }
 
+        /// <summary>
+        /// The shared dispatcher already attempted the ExternalEvent raise and received
+        /// a terminal refusal. Close async records with the same reason used to wake
+        /// synchronous queued callers, without raising a second time.
+        /// </summary>
+        public static int FailEverythingWaiting(string reason, Action<string> warn = null)
+        {
+            if (string.IsNullOrWhiteSpace(reason))
+                reason = "Queued work could not be scheduled. It NEVER STARTED.";
+            return CloseEverythingWaiting(reason, warn);
+        }
+
         private static int CloseEverythingWaiting(string reason, Action<string> warn)
         {
             List<AsyncWork> left = AsyncQueue.DrainForShutdown();

@@ -48,7 +48,11 @@ namespace Horizun.Contracts
         /// The shape of the exchange between server and add-in. Bumped when that shape
         /// changes, not when a tool is added - a new tool is caught by the hash.
         /// </summary>
-        public const int ProtocolVersion = 1;
+        // v2 adds the authenticated __horizun_cancel_queued control message and
+        // bridge_queue execution metadata. An older server cannot safely assume that
+        // cancelling a waiting call removes it before start, so mixed v1/v2 halves are
+        // refused by discovery instead of silently reverting to zombie-start semantics.
+        public const int ProtocolVersion = 2;
 
         /// <summary>
         /// HOW BIG ANYTHING ON THE WIRE MAY GET. Shared, and part of the hash below, for

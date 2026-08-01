@@ -10,12 +10,10 @@
 // back to the blocked caller. ExternalEvent is the documented, supported way to
 // do exactly this (Autodesk's own async-API guidance).
 //
-// One request at a time, and a second one is REFUSED rather than queued: a Revit
-// command cannot be aborted from outside, so a run that already outlived its
-// caller's timeout is still holding the thread, and lining up behind it would
-// only move the hang. RequestGate owns that bookkeeping - and owns the rule that
-// a caller is only ever handed the result of its OWN request. Read it before
-// touching anything here.
+// One request EXECUTES at a time; later callers wait in a bounded FIFO queue.
+// RequestGate owns the queue, per-request completion signals and cancellation
+// before start. Once work reaches the UI thread it is not interruptible, so the
+// distinction between queued and running is a safety boundary, not presentation.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -31,6 +29,7 @@ namespace Horizun.Revit.Core
         private ExternalEvent _event;
 
         private readonly RequestGate _gate = new RequestGate();
+        private bool _preferAsync;
 
         /// <summary>
         /// The ExternalEvent behind IWorkRaiser, which is the ONLY Revit-dependent part
@@ -92,6 +91,9 @@ namespace Horizun.Revit.Core
         /// free instead of meeting an unexplained refusal.
         /// </summary>
         public CommandResult Invoke(string name, string paramsJson, int timeoutMs)
+            => Invoke(null, name, paramsJson, timeoutMs);
+
+        public CommandResult Invoke(string wireId, string name, string paramsJson, int timeoutMs)
         {
             if (name == null || !_commands.ContainsKey(name))
             {
@@ -100,12 +102,15 @@ namespace Horizun.Revit.Core
             }
 
             string refusal;
-            RequestGate.Request req = _gate.Begin(name, paramsJson, out refusal);
+            RequestGate.Request req = _gate.Begin(wireId, name, paramsJson, out refusal);
             if (req == null)
             {
                 Log.Warn($"'{name}' refused: {refusal}");
                 return CommandResult.Fail(refusal);
             }
+
+            if (req.AheadAtAdmission > 0)
+                Log.Info($"'{name}' queued as ticket {req.Ticket} behind {req.AheadAtAdmission} request(s)");
 
             // Only what happened and how long it took. Never the parameters: those
             // carry model content, paths and values, and a log is not the place for
@@ -118,12 +123,26 @@ namespace Horizun.Revit.Core
             // callback is ever coming. Discarding it turned that into a 600-second wait
             // for something that had already been declined, and then a timeout message
             // blaming a modal dialog that was never there.
-            RaiseOutcome raised = Raiser().Raise();
+            RaiseOutcome raised;
+            try { raised = Raiser().Raise(); }
+            catch (Exception ex)
+            {
+                raised = RaiseOutcome.Unknown;
+                Log.Warn("initial ExternalEvent.Raise() threw: " + ex.Message);
+            }
             if (raised != RaiseOutcome.Accepted && raised != RaiseOutcome.Pending)
             {
-                _gate.Abandon(req);
+                // Denied/unknown means this ExternalEvent will not produce a callback.
+                // Wake every ordinary and async waiter now; leaving older entries behind
+                // would turn one definitive refusal into a row of ten-minute timeouts.
+                int failed = _gate.FailQueued(
+                    "Revit refused the shared ExternalEvent before this queued request started. It NEVER RAN.");
+                AsyncPump.FailEverythingWaiting(
+                    "Revit refused the shared ExternalEvent before this queued job started. It NEVER RAN.",
+                    message => Log.Warn(message));
                 clock.Stop();
-                Log.Warn($"'{name}' NOT QUEUED: Revit answered Raise() with {raised}");
+                Log.Warn($"'{name}' NOT QUEUED: Revit answered Raise() with {raised}; " +
+                         $"closed {failed} ordinary waiter(s)");
                 return CommandResult.Fail(
                     $"Revit refused to queue '{name}': Raise() returned {raised}. Nothing was done, and nothing " +
                     "will be - no callback is coming, so this is reported now instead of after the " +
@@ -144,11 +163,35 @@ namespace Horizun.Revit.Core
                     (req.Started
                         ? "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
                           "it does will complete unseen. Nothing else can run until it returns."
-                        : "Revit never started it, so nothing was done."));
+                        : "It was removed from the FIFO queue before Revit started it, so nothing was done."));
             }
 
             clock.Stop();
             CommandResult result = req.Result ?? CommandResult.Fail($"'{name}' produced no result.");
+            long waitedMs = req.StartedUtc == default(DateTime)
+                ? clock.ElapsedMilliseconds
+                : Math.Max(0, (long)(req.StartedUtc - req.QueuedUtc).TotalMilliseconds);
+            Newtonsoft.Json.Linq.JObject data = result.Data as Newtonsoft.Json.Linq.JObject;
+            if (result.Success && data == null && result.Data != null)
+            {
+                // A number of typed commands deliberately return anonymous objects.
+                // Newtonsoft can serialize those directly, but normalizing them here
+                // makes queue telemetry consistent instead of silently omitting it.
+                Newtonsoft.Json.Linq.JToken token = Newtonsoft.Json.Linq.JToken.FromObject(result.Data);
+                data = token as Newtonsoft.Json.Linq.JObject;
+                if (data != null) result.ReplaceData(data);
+            }
+            if (result.Success && data != null && data["bridge_queue"] == null)
+            {
+                data["bridge_queue"] = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["queued"] = req.AheadAtAdmission > 0,
+                    ["ahead_at_admission"] = req.AheadAtAdmission,
+                    ["waited_ms"] = waitedMs,
+                    ["capacity"] = _gate.Capacity,
+                    ["execution_and_wait_ms"] = clock.ElapsedMilliseconds
+                };
+            }
             if (result.Success) Log.Info($"{name} ok in {clock.ElapsedMilliseconds} ms");
             else Log.Warn($"{name} FAILED in {clock.ElapsedMilliseconds} ms: {result.Error}");
             return result;
@@ -157,6 +200,15 @@ namespace Horizun.Revit.Core
         /// <summary>The ExternalEvent callback — runs on Revit's UI thread.</summary>
         public void Execute(UIApplication app)
         {
+            // Fairness between ordinary waiting callers and explicit run_async jobs.
+            // If both queues stay busy, turns alternate; neither can starve the other.
+            if (_preferAsync && AsyncQueue.Count > 0)
+            {
+                _preferAsync = false;
+                RunOneAsync(app);
+                return;
+            }
+
             // Whose request is this? Taking is destructive, so a duplicate raise finds
             // nothing and does nothing - which is what keeps a write from running twice.
             RequestGate.Request req = _gate.Take();
@@ -217,15 +269,8 @@ namespace Horizun.Revit.Core
                              $"result discarded ({(req.Result != null && req.Result.Success ? "it had succeeded" : "it had failed")}). " +
                              "The UI thread is free again.");
                 _gate.Complete(req);
-
-                // A request that QUEUED async work leaves the queue non-empty. Raise
-                // again so the UI thread comes back for it once this reply is on its way,
-                // rather than waiting for whatever the caller happens to ask next.
-                //
-                // This used to log a warning and carry on, which left the entries on a
-                // queue nothing would pump again and their records open forever. The
-                // pump closes them as not_started instead - see AsyncLifecycle.cs.
-                AsyncPump.Pump(Raiser(), Log.Warn);
+                _preferAsync = AsyncQueue.Count > 0;
+                PumpNext();
             }
         }
 
@@ -293,15 +338,47 @@ namespace Horizun.Revit.Core
                 Log.Warn("async " + work.Command + " (" + work.JobId + ") " +
                          (result != null && result.Success ? "ok" : "FAILED") + " in " + clock.ElapsedMilliseconds + " ms");
 
-                // Another one may be waiting behind this. One per raise keeps each job
-                // its own turn on the UI thread instead of one long unbroken block.
-                //
-                // THE ANSWER USED TO BE DISCARDED ENTIRELY - a bare _event.Raise(). So a
-                // refusal here stranded every SUCCESSIVE job silently: the one that just
-                // ran reported its result correctly, and the rest of the batch sat in a
-                // queue nothing would ever pump, with their records open.
-                AsyncPump.Pump(Raiser(), Log.Warn);
+                _preferAsync = false;
+                PumpNext();
             }
+        }
+
+        /// <summary>
+        /// Schedule one more callback when either queue has work. A denied raise closes
+        /// every still-waiting entry as never started; leaving them queued would promise
+        /// executions for a callback Revit has explicitly said will not come.
+        /// </summary>
+        private void PumpNext()
+        {
+            if (!_gate.HasPending && AsyncQueue.Count == 0) return;
+
+            RaiseOutcome outcome;
+            try { outcome = Raiser().Raise(); }
+            catch (Exception ex)
+            {
+                outcome = RaiseOutcome.Unknown;
+                Log.Warn("raising the external event for queued work threw: " + ex.Message);
+            }
+
+            if (outcome == RaiseOutcome.Accepted || outcome == RaiseOutcome.Pending) return;
+
+            string reason = "Revit refused to schedule queued work: Raise() returned " + outcome +
+                            ". It NEVER STARTED; nothing was executed or written. Revit is closing or the " +
+                            "ExternalEvent is no longer available.";
+            int sync = _gate.FailQueued(reason);
+            int async = AsyncPump.FailEverythingWaiting(reason, Log.Warn);
+            Log.Warn("queued work abandoned after Raise()=" + outcome + ": " + sync +
+                     " synchronous request(s), " + async + " async job(s)");
+        }
+
+        public bool CancelQueued(string wireId, out string detail)
+            => _gate.CancelQueued(wireId, out detail);
+
+        public int Shutdown()
+        {
+            string reason = "Revit shut down before this queued command started. It NEVER RAN: nothing was " +
+                            "executed and nothing was written.";
+            return _gate.FailQueued(reason);
         }
 
         public string GetName() => "Horizun.Dispatcher";

@@ -136,7 +136,7 @@ Claude / MCP client
 Horizun.Server        ← the MCP server process; forwards tool calls
       │  (named pipe, token-authed)
 Horizun.Revit         ← the Revit add-in: pipe transport + UI-thread dispatcher
-      │  (ExternalEvent → Revit UI thread)
+      │  (bounded FIFO → ExternalEvent → Revit UI thread)
    Revit API
 ```
 
@@ -201,12 +201,15 @@ Host-resident (no Revit needed):
 | `horizun_excel_write_rows` | Appends rows to `.xlsx` over the OPC package — no COM, no Excel installed. Backs the file up and re-reads every written cell. |
 | `horizun_target` | Which Revit these tools are talking to, and how to change it. Two versions open at once is normal, and the expensive failure is a healthy bridge attached to the wrong instance. |
 
-**One command at a time, and the second one is refused rather than queued.** A
-Revit command cannot be interrupted from outside: when a call times out, the work
-keeps the UI thread. So a later caller is told what is holding it and for how
-long, instead of waiting for a second timeout. Every reply also carries **what
-Revit raised while the command ran** — warnings, errors, and any modal dialog —
-on success and failure alike.
+**One command executes at a time; concurrent calls wait in a bounded FIFO queue.**
+There are 16 waiting slots. A successful JSON response includes `bridge_queue`
+with whether it waited, how many requests were ahead and the measured wait. A
+cancellation removes a request only while it is still queued, proving that it
+never ran; once it reaches Revit's UI thread the API cannot interrupt it. A full
+queue applies backpressure explicitly instead of dropping work or growing without
+limit. Ordinary calls and `run_async` jobs alternate when both queues are busy, so
+neither can starve the other. Every reply also carries **what Revit raised while
+the command ran** — warnings, errors and modal dialogs — on success and failure.
 
 ## Build and test
 
@@ -227,6 +230,7 @@ To check a real Revit — the half of the test story CI cannot reach:
 
 ```bash
 pwsh scripts/verify-live.ps1 -Year 2026 -OldFile <a model saved in another Revit>
+pwsh scripts/verify-queue-live.ps1 -Year 2026 -Document <active model title or path>
 ```
 
 ## Status
@@ -249,9 +253,10 @@ Working, in production use, and honest about its edges.
   trust-store changes can make the prompt return.
 - **Known limits, stated**: `excel_write_rows` appends below an Excel Table
   without expanding the table's range (reported per call); a catalog that is
-  neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling an
-  MCP request stops *you waiting* and does not stop Revit, because the Revit
-  API cannot interrupt work already on its UI thread.
+  neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling a
+  request prevents it only while it is still queued. Once Revit starts the
+  command, cancellation stops *you waiting* but cannot interrupt the Revit API
+  on its UI thread.
 
 ## Security
 

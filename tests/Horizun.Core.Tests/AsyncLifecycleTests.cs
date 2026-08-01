@@ -349,16 +349,19 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void Both_async_pump_sites_go_through_the_pump()
+        public void Both_completion_sites_pump_the_shared_sync_and_async_scheduler()
         {
             string dispatcher = File.ReadAllText(RepoFile("Core", "Dispatcher.cs"));
 
             // Two places finish work on the UI thread and may leave the queue non-empty:
             // the end of a caller's command, and the end of a queued job. Both have to
-            // pump, or a batch stops after its first entry.
-            int pumps = System.Text.RegularExpressions.Regex.Matches(dispatcher, @"AsyncPump\.Pump\(").Count;
+            // pump, or either a normal FIFO batch or a run_async batch stops after
+            // its first entry. PumpNext arbitrates both queues and alternates them.
+            int pumps = System.Text.RegularExpressions.Regex.Matches(dispatcher, @"PumpNext\(\);").Count;
             Assert.True(pumps >= 2,
-                "expected the pump at both the command-completion and async-completion sites, found " + pumps);
+                "expected the shared pump at both the command-completion and async-completion sites, found " + pumps);
+            Assert.Contains("_gate.HasPending", dispatcher);
+            Assert.Contains("AsyncQueue.Count", dispatcher);
         }
     }
 

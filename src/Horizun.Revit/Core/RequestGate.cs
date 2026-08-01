@@ -1,141 +1,137 @@
 // -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
-// Who owns Revit's UI thread, and which reply belongs to which caller.
+// FIFO ownership of Revit's single UI thread.
 //
-// The Revit API runs on one thread and there is NO way to abort a command from
-// outside it. So a command that overruns its caller's patience does not stop: it
-// keeps running while the caller has already given up and moved on. Everything
-// dangerous follows from that one fact.
+// Revit can execute only one API command at a time. That does not require every
+// later caller to fail: it requires a bounded queue in which every request owns
+// its own completion signal, can be taken exactly once, and can be removed while
+// it is still waiting. Once a request starts, the Revit API cannot interrupt it.
 //
-// The rule this file enforces: a caller may only ever be handed the result of
-// the request IT made. Not the previous one, not a duplicate of its own.
+// The queue prevents four silent failures:
 //
-// Three failures are possible without it, and all three are silent:
+//   * STALE WAKE: one caller can never receive another caller's result.
+//   * DOUBLE EXECUTION: duplicate ExternalEvent callbacks cannot take one entry twice.
+//   * ZOMBIE START: a timed-out/cancelled entry is removed before it can run later.
+//   * UNBOUNDED PROMISE: a retry storm cannot queue hours of future model edits.
 //
-//   1. STALE WAKE. Caller A times out. Caller B starts. A's command finishes and
-//      signals "done" - and B, waiting on that same signal, returns A's result as
-//      its own. B is told about work it never asked for, with its own request id
-//      on the envelope, so nothing downstream can tell.
-//
-//   2. DOUBLE EXECUTION. Revit's ExternalEvent is raised once per request, but a
-//      raise that has not fired yet still fires later. If the pending request has
-//      been overwritten in the meantime, the stale raise runs the NEW request -
-//      and then the new raise runs it AGAIN. For a write, that is the same edit
-//      applied twice.
-//
-//   3. ZOMBIE START. A request times out before Revit ever picked it up (Revit was
-//      on a modal). Minutes later the event fires and the abandoned command runs,
-//      against a model the user has since moved on from.
-//
-// The fix is ownership, not locking. Each request is an object with its own
-// completion signal; the UI thread TAKES it (exactly once, or gets nothing); a
-// caller that gives up marks its request abandoned and it can never start. While
-// something is in flight, new work is REFUSED with a description of what is
-// holding the thread - not queued behind it, because queueing behind a run that
-// already blew a ten-minute budget only moves the hang.
-//
-// No `using Autodesk.*` here, on purpose: this is the part that can be tested
-// without Revit, and it is the part that must not be wrong.
+// No Autodesk references here. Sequencing and cancellation are tested without
+// Revit because this is the part that must be correct before the UI thread exists.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 
 namespace Horizun.Revit.Core
 {
     public sealed class RequestGate
     {
-        /// <summary>
-        /// One request, and the only place its result may be written or read. The
-        /// completion signal belongs to the request rather than to the gate, so a
-        /// caller physically cannot be woken by somebody else's command finishing.
-        /// </summary>
+        public const int MaxDepth = 16;
+
         public sealed class Request
         {
             public long Ticket;
+            public string WireId;
             public string Name;
             public string ParamsJson;
+            public DateTime QueuedUtc;
             public DateTime StartedUtc;
+            public int AheadAtAdmission;
 
-            /// <summary>Set by the UI thread, read by the caller that owns this object.</summary>
             public CommandResult Result;
 
             private readonly System.Threading.ManualResetEventSlim _done =
                 new System.Threading.ManualResetEventSlim(false);
 
-            /// <summary>The caller stopped waiting. The work may still be running.</summary>
-            public bool Abandoned;
+            public volatile bool Abandoned;
+            public volatile bool Started;
+            public volatile bool CancelledBeforeStart;
 
-            /// <summary>The UI thread picked this up. False means it never started.</summary>
-            public bool Started;
+            internal LinkedListNode<Request> Node;
 
             public bool Wait(int timeoutMs) => _done.Wait(timeoutMs);
             public void Signal() => _done.Set();
         }
 
         private readonly object _lock = new object();
+        private readonly LinkedList<Request> _pending = new LinkedList<Request>();
+        private readonly int _maxDepth;
         private long _nextTicket;
-
-        // Handed to the UI thread but not yet picked up.
-        private Request _pending;
-
-        // Picked up by the UI thread and not yet finished. Cannot be cancelled.
         private Request _inFlight;
 
-        /// <summary>
-        /// Claim the UI thread. Returns null - with a sentence explaining what is in
-        /// the way - when a previous request still holds it. Never blocks: an honest
-        /// refusal now beats a wait that ends in a second timeout.
-        /// </summary>
+        public RequestGate(int maxDepth = MaxDepth)
+        {
+            if (maxDepth < 1) throw new ArgumentOutOfRangeException("maxDepth");
+            _maxDepth = maxDepth;
+        }
+
+        public int PendingCount { get { lock (_lock) return _pending.Count; } }
+        public int Capacity => _maxDepth;
+        public bool HasPending { get { lock (_lock) return _pending.Count > 0; } }
+
         public Request Begin(string name, string paramsJson, out string refusal)
+            => Begin(null, name, paramsJson, out refusal);
+
+        /// <summary>
+        /// Enqueue a request. Rejection is now backpressure only: malformed/null work
+        /// is handled by the caller, and a valid request is refused here only when the
+        /// bounded queue is full.
+        /// </summary>
+        public Request Begin(string wireId, string name, string paramsJson, out string refusal)
         {
             lock (_lock)
             {
-                Request busy = _inFlight ?? _pending;
-                if (busy != null)
+                if (_pending.Count >= _maxDepth)
                 {
-                    refusal = Describe(busy);
+                    refusal = "Revit's command queue is full: " + _pending.Count + " of " + _maxDepth +
+                              " waiting slots are occupied" +
+                              (_inFlight == null ? "." : " while " + DescribeRunning(_inFlight)) +
+                              " Nothing was queued and nothing ran. Wait for outstanding calls to finish instead " +
+                              "of retrying: retries consume more queue slots and cannot make Revit run in parallel.";
                     return null;
                 }
 
+                int ahead = _pending.Count + (_inFlight == null ? 0 : 1);
                 var r = new Request
                 {
                     Ticket = ++_nextTicket,
+                    WireId = wireId,
                     Name = name,
                     ParamsJson = paramsJson,
-                    StartedUtc = DateTime.UtcNow
+                    QueuedUtc = DateTime.UtcNow,
+                    AheadAtAdmission = ahead
                 };
-                _pending = r;
+                r.Node = _pending.AddLast(r);
                 refusal = null;
                 return r;
             }
         }
 
-        /// <summary>
-        /// Called on Revit's UI thread. Returns the request to run, or null if there is
-        /// nothing to do - which is the normal answer for a duplicate event raise, and
-        /// for a request whose caller gave up before Revit ever got to it. Taking is
-        /// destructive: a request can be taken once and only once.
-        /// </summary>
+        /// <summary>Claim the oldest live entry exactly once.</summary>
         public Request Take()
         {
             lock (_lock)
             {
-                Request r = _pending;
-                _pending = null;
-                if (r != null)
+                // ExternalEvent is not re-entrant, but refusing to manufacture a second
+                // in-flight owner makes that assumption explicit and testable.
+                if (_inFlight != null) return null;
+
+                while (_pending.Count > 0)
                 {
+                    LinkedListNode<Request> node = _pending.First;
+                    _pending.RemoveFirst();
+                    Request r = node.Value;
+                    r.Node = null;
+                    if (r.Abandoned || r.CancelledBeforeStart) continue;
+
                     r.Started = true;
+                    r.StartedUtc = DateTime.UtcNow;
                     _inFlight = r;
+                    return r;
                 }
-                return r;
+                return null;
             }
         }
 
-        /// <summary>
-        /// Called on the UI thread once the request is finished and its Result is set.
-        /// The thread is released BEFORE the caller is woken, so a caller that turns
-        /// around and issues its next command does not meet a gate that still looks busy.
-        /// </summary>
         public void Complete(Request r)
         {
             if (r == null) return;
@@ -147,10 +143,8 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// The caller stopped waiting. If Revit never picked the request up, drop it so
-        /// it can never start later against a model that has moved on. If it is already
-        /// running, it cannot be stopped - mark it, so the next caller is told the truth
-        /// about why the thread is busy instead of a generic "timed out".
+        /// The local pipe worker stopped waiting. Remove work that has not started;
+        /// already-running work is only marked because Revit cannot interrupt it.
         /// </summary>
         public void Abandon(Request r)
         {
@@ -158,37 +152,112 @@ namespace Horizun.Revit.Core
             lock (_lock)
             {
                 r.Abandoned = true;
-                if (_pending == r) _pending = null;
+                if (!r.Started && r.Node != null)
+                {
+                    _pending.Remove(r.Node);
+                    r.Node = null;
+                    r.CancelledBeforeStart = true;
+                }
             }
         }
 
-        /// <summary>What is holding the UI thread right now, or null if nothing is.</summary>
+        /// <summary>
+        /// Cancellation propagated from the MCP server over a separate control
+        /// connection. True means the request was still queued and therefore NEVER RAN.
+        /// False means it is running, finished, or unknown; none of those may be called
+        /// cancelled safely.
+        /// </summary>
+        public bool CancelQueued(string wireId, out string detail)
+        {
+            detail = null;
+            if (string.IsNullOrWhiteSpace(wireId))
+            {
+                detail = "No request id was supplied.";
+                return false;
+            }
+
+            lock (_lock)
+            {
+                LinkedListNode<Request> node = _pending.First;
+                while (node != null)
+                {
+                    LinkedListNode<Request> next = node.Next;
+                    Request r = node.Value;
+                    if (string.Equals(r.WireId, wireId, StringComparison.Ordinal))
+                    {
+                        _pending.Remove(node);
+                        r.Node = null;
+                        r.Abandoned = true;
+                        r.CancelledBeforeStart = true;
+                        r.Result = CommandResult.Fail("Cancelled while waiting in Revit's command queue. It NEVER " +
+                            "STARTED: nothing was executed and nothing was written.");
+                        r.Signal();
+                        detail = "cancelled_before_start";
+                        return true;
+                    }
+                    node = next;
+                }
+
+                if (_inFlight != null && string.Equals(_inFlight.WireId, wireId, StringComparison.Ordinal))
+                {
+                    detail = "already_running";
+                    return false;
+                }
+
+                detail = "not_found_or_finished";
+                return false;
+            }
+        }
+
+        /// <summary>Fail and wake everything that is still waiting during shutdown.</summary>
+        public int FailQueued(string reason)
+        {
+            var wake = new List<Request>();
+            lock (_lock)
+            {
+                while (_pending.Count > 0)
+                {
+                    Request r = _pending.First.Value;
+                    _pending.RemoveFirst();
+                    r.Node = null;
+                    r.CancelledBeforeStart = true;
+                    r.Result = CommandResult.Fail(reason);
+                    wake.Add(r);
+                }
+            }
+            foreach (Request r in wake) r.Signal();
+            return wake.Count;
+        }
+
         public string BusyWith()
         {
             lock (_lock)
             {
-                Request busy = _inFlight ?? _pending;
-                return busy == null ? null : Describe(busy);
+                if (_inFlight != null)
+                    return DescribeRunning(_inFlight) + QueueSuffix(_pending.Count);
+                if (_pending.Count > 0)
+                    return DescribeWaiting(_pending.First.Value) + QueueSuffix(Math.Max(0, _pending.Count - 1));
+                return null;
             }
         }
 
-        private static string Describe(Request busy)
+        private static string QueueSuffix(int waiting)
+            => waiting <= 0 ? "" : " " + waiting + " more request(s) are waiting in FIFO order.";
+
+        private static string DescribeRunning(Request busy)
         {
-            int seconds = (int)Math.Max(0, (DateTime.UtcNow - busy.StartedUtc).TotalSeconds);
-
+            DateTime since = busy.StartedUtc == default(DateTime) ? busy.QueuedUtc : busy.StartedUtc;
+            int seconds = (int)Math.Max(0, (DateTime.UtcNow - since).TotalSeconds);
             if (busy.Abandoned)
-                return "Revit is still inside '" + busy.Name + "', started " + seconds + " s ago. The call that " +
-                       "asked for it already gave up waiting, but the Revit API cannot be interrupted from " +
-                       "outside, so the work continues and this thread is not free. Nothing new can run until it " +
-                       "returns. Watch its progress with horizun_job_status (it reads from disk and does not need " +
-                       "this thread), or wait.";
+                return "Revit is still inside '" + busy.Name + "', started " + seconds + " s ago. Its caller " +
+                       "stopped waiting, but the Revit API cannot interrupt work already on the UI thread.";
+            return "Revit is running '" + busy.Name + "', started " + seconds + " s ago.";
+        }
 
-            if (!busy.Started)
-                return "'" + busy.Name + "' was handed to Revit " + seconds + " s ago and Revit has not started it " +
-                       "yet - usually a modal dialog holding the UI thread. One request at a time.";
-
-            return "Revit is running '" + busy.Name + "', started " + seconds + " s ago. One request at a time: " +
-                   "this one has to finish first.";
+        private static string DescribeWaiting(Request waiting)
+        {
+            int seconds = (int)Math.Max(0, (DateTime.UtcNow - waiting.QueuedUtc).TotalSeconds);
+            return "'" + waiting.Name + "' has waited " + seconds + " s for Revit's UI thread and has not started.";
         }
     }
 }

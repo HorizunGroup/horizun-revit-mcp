@@ -331,9 +331,13 @@ namespace Horizun.Server
                             reply.TryReply(result);
                     }
                     catch (McpError me) { reply.TryError(me.Code, me.Message); }
-                    catch (OperationCanceledException)
+                    catch (OperationCanceledException oce)
                     {
-                        reply.TryError(-32800, CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                        string exact = oce.Message;
+                        reply.TryError(-32800,
+                            !string.IsNullOrEmpty(exact) && exact.IndexOf("FIFO queue", StringComparison.OrdinalIgnoreCase) >= 0
+                                ? exact
+                                : CancelledMessage(toolName, clock.ElapsedMilliseconds));
                     }
                     catch (Exception ex)
                     {
@@ -362,20 +366,20 @@ namespace Horizun.Server
         }
 
         /// <summary>
-        /// What cancellation actually means here, said plainly. The Revit API has no way to
-        /// interrupt a command that is already on its UI thread, so cancelling stops US
-        /// waiting - it does not stop the work.
+        /// Fallback wording when the bridge could not prove a queued request was removed.
+        /// PipeClient supplies a stronger exact message when cancellation wins before start;
+        /// this path must preserve uncertainty for work that may already be on the UI thread.
         /// </summary>
         private static string CancelledMessage(string tool, long ms) =>
             "'" + tool + "' was cancelled after " + ms + " ms. IMPORTANT: this stops this server waiting for it; it " +
-            "does NOT stop the work. If the command had already reached Revit, it is still running there and will " +
-            "finish - the Revit API offers no way to interrupt a command on its UI thread. Whatever it was going to " +
-            "do, it will still do. Use horizun_job_status to watch it, and do not assume the model is untouched.";
+            "could not prove the request was removed before it started. If the command had already reached Revit, " +
+            "it is still running there and will finish - the Revit API offers no way to interrupt a command on its " +
+            "UI thread. Do not resend it assuming the model is untouched.";
 
         /// <summary>
-        /// A heartbeat while a long call runs, only when the caller asked for one. It
-        /// reports elapsed time and no percentage: a fraction nobody measured is a number
-        /// somebody will plan around.
+        /// A heartbeat while a call waits for Revit, only when the caller asked for one.
+        /// It may be queued or executing; the stdio half cannot observe that boundary, so
+        /// it names both instead of calling queued work "running". No invented percentage.
         /// </summary>
         private static IDisposable StartHeartbeat(JToken progressToken, string tool,
                                                   System.Diagnostics.Stopwatch clock, CancellationToken ct)
@@ -395,8 +399,10 @@ namespace Horizun.Server
                         {
                             ["progressToken"] = progressToken.DeepClone(),
                             ["progress"] = clock.ElapsedMilliseconds / 1000,
-                            ["message"] = "'" + tool + "' is still running (" + clock.ElapsedMilliseconds / 1000 +
-                                          " s). No percentage is reported because Revit does not report one."
+                            ["message"] = "'" + tool + "' is still waiting for Revit to answer (" +
+                                          clock.ElapsedMilliseconds / 1000 + " s). It may be waiting in the FIFO " +
+                                          "queue or executing on Revit's UI thread; this side cannot distinguish " +
+                                          "those states. No percentage is reported because Revit does not report one."
                         });
                     }
                 }
@@ -415,7 +421,8 @@ namespace Horizun.Server
             string key = OutboundWriter.Key(rid);
 
             if (_inFlight.Cancel(key))
-                Log.Warn("cancellation accepted for request " + key + " (the work inside Revit continues)");
+                Log.Warn("cancellation accepted for request " + key +
+                         " (queued work will be removed when possible; running Revit work cannot be interrupted)");
             else
                 Log.Warn("cancellation for request " + (key ?? "(no id)") + " matched nothing in flight");
         }
@@ -443,6 +450,10 @@ namespace Horizun.Server
                             "than a false success, and counts come from re-reading the model rather than from " +
                             "calls that did not throw. horizun_execute_python is the explicit low-level escape " +
                             "hatch and does not provide that typed-command guarantee.\n\n" +
+                            "Revit executes one API command at a time. Concurrent calls wait in a bounded FIFO " +
+                            "queue instead of being rejected. A cancellation removes a call only while it is still " +
+                            "queued; work already on Revit's UI thread cannot be interrupted. Successful JSON " +
+                            "answers include bridge_queue with the measured wait.\n\n" +
                             "Call horizun_health FIRST. These commands act on the document that is active right " +
                             "now, and health is what tells you which Revit and which document that is.\n\n" +
                             "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +

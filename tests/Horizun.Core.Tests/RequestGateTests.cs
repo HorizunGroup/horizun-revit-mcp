@@ -1,16 +1,5 @@
 // -----------------------------------------------------------------------------
-// Horizun Core tests - original Horizun code.
-//
-// The three ways a caller could be handed somebody else's work.
-//
-// These are not hypotheticals: every one of them was reachable in the dispatcher
-// before RequestGate existed, and all three were silent - the reply carried the
-// asking caller's own request id, so nothing downstream could tell. They are
-// only reachable AFTER a timeout, which is why they survived every live test
-// against a small model and would have surfaced first on a real one.
-//
-// Revit is not involved and cannot be: that is the point of keeping the
-// sequencing in a file with no `using Autodesk.*`.
+// Horizun Core tests - FIFO ownership of Revit's single UI thread.
 // -----------------------------------------------------------------------------
 using System;
 using Horizun.Revit.Core;
@@ -21,169 +10,185 @@ namespace Horizun.Core.Tests
     public class RequestGateTests
     {
         [Fact]
-        public void Take_consumes_the_request_so_a_duplicate_raise_runs_nothing()
+        public void Later_requests_wait_in_fifo_order_instead_of_being_refused()
         {
-            // DOUBLE EXECUTION. Revit's ExternalEvent can fire again after the request it
-            // was raised for has already been picked up. If the second firing found the
-            // same request still sitting there, the command would run twice - for a write,
-            // the same edit applied twice.
             var gate = new RequestGate();
             string refusal;
-            RequestGate.Request a = gate.Begin("horizun_write_params_verified", "{}", out refusal);
-
-            Assert.NotNull(a);
-            Assert.Null(refusal);
+            var a = gate.Begin("a", "{}", out refusal);
             Assert.Same(a, gate.Take());
-            Assert.Null(gate.Take());          // the duplicate firing finds nothing to do
-        }
 
-        [Fact]
-        public void A_request_abandoned_before_it_starts_never_runs()
-        {
-            // ZOMBIE START. The caller timed out while Revit was stuck on a modal, so the
-            // event had not fired yet. Minutes later it fires - and must find nothing,
-            // rather than run a write against a model the user has moved on from.
-            var gate = new RequestGate();
-            string refusal;
-            RequestGate.Request a = gate.Begin("horizun_delete_verified", "{}", out refusal);
+            var b = gate.Begin("b", "{}", out refusal);
+            var c = gate.Begin("c", "{}", out refusal);
 
-            gate.Abandon(a);
-
-            Assert.Null(gate.Take());
-            Assert.False(a.Started);
-        }
-
-        [Fact]
-        public void A_caller_is_never_woken_by_another_requests_completion()
-        {
-            // STALE WAKE - the worst of the three. A times out; B starts; A finishes and
-            // signals "done"; B returns A's result as its own. Each request now owns its
-            // completion signal, so B cannot be woken by A finishing.
-            var gate = new RequestGate();
-            string refusal;
-
-            RequestGate.Request a = gate.Begin("horizun_model_scan", "{}", out refusal);
-            gate.Take();                       // Revit picked it up
-            gate.Abandon(a);                   // ...and the caller gave up waiting
-
-            // While A still holds the UI thread, B cannot even start.
-            Assert.Null(gate.Begin("get_document_info", "{}", out refusal));
-
-            a.Result = CommandResult.Ok("A's answer");
-            gate.Complete(a);                  // A finally returns
-
-            RequestGate.Request b = gate.Begin("get_document_info", "{}", out refusal);
             Assert.NotNull(b);
-
-            Assert.False(b.Wait(0));           // A's completion did NOT wake B
-            Assert.Null(b.Result);             // and B carries no result but its own
-        }
-
-        [Fact]
-        public void While_a_command_holds_the_thread_new_work_is_refused_not_queued()
-        {
-            var gate = new RequestGate();
-            string refusal;
-
-            RequestGate.Request a = gate.Begin("horizun_model_scan", "{}", out refusal);
-            gate.Take();
-
-            RequestGate.Request b = gate.Begin("horizun_health", "{}", out refusal);
-
-            Assert.Null(b);
-            Assert.Contains("horizun_model_scan", refusal);
-            Assert.Contains("one request at a time", refusal.ToLowerInvariant());
-        }
-
-        [Fact]
-        public void The_refusal_explains_an_abandoned_run_rather_than_repeating_timed_out()
-        {
-            // The second caller's failure has a different cause from the first's, and
-            // saying "timed out" twice hides it: the thread is held by work that cannot
-            // be cancelled, and there is something useful to do about it.
-            var gate = new RequestGate();
-            string refusal;
-
-            RequestGate.Request a = gate.Begin("horizun_family_apply", "{}", out refusal);
-            gate.Take();
-            gate.Abandon(a);
-
-            Assert.Null(gate.Begin("horizun_health", "{}", out refusal));
-            Assert.Contains("horizun_family_apply", refusal);
-            Assert.Contains("gave up waiting", refusal);
-            Assert.Contains("horizun_job_status", refusal);      // what to do instead
-        }
-
-        [Fact]
-        public void A_request_Revit_has_not_picked_up_is_described_as_not_started()
-        {
-            var gate = new RequestGate();
-            string refusal;
-
-            gate.Begin("horizun_quantities", "{}", out refusal);   // never Taken
-
-            Assert.Null(gate.Begin("horizun_health", "{}", out refusal));
-            Assert.Contains("has not started it yet", refusal);
-            Assert.Contains("modal", refusal);
-        }
-
-        [Fact]
-        public void Completing_frees_the_thread_for_the_next_caller()
-        {
-            var gate = new RequestGate();
-            string refusal;
-
-            RequestGate.Request a = gate.Begin("horizun_audit_model", "{}", out refusal);
-            gate.Take();
-            Assert.NotNull(gate.BusyWith());
-
-            a.Result = CommandResult.Ok("done");
-            gate.Complete(a);
-
-            Assert.Null(gate.BusyWith());
-            RequestGate.Request b = gate.Begin("horizun_health", "{}", out refusal);
-            Assert.NotNull(b);
+            Assert.NotNull(c);
             Assert.Null(refusal);
+            Assert.Equal(1, b.AheadAtAdmission);
+            Assert.Equal(2, c.AheadAtAdmission);
+
+            gate.Complete(a);
+            Assert.Same(b, gate.Take());
+            gate.Complete(b);
+            Assert.Same(c, gate.Take());
         }
 
         [Fact]
-        public void An_owner_that_waits_gets_its_own_result_and_only_after_Complete()
+        public void Take_consumes_one_entry_so_duplicate_callbacks_do_not_run_it_twice()
         {
             var gate = new RequestGate();
             string refusal;
+            var a = gate.Begin("a", "{}", out refusal);
 
-            RequestGate.Request a = gate.Begin("get_document_info", "{}", out refusal);
-            RequestGate.Request taken = gate.Take();
+            Assert.Same(a, gate.Take());
+            Assert.Null(gate.Take());
+            gate.Complete(a);
+            Assert.Null(gate.Take());
+        }
 
-            Assert.False(a.Wait(0));           // nothing signalled yet
+        [Fact]
+        public void Abandoning_a_waiting_request_removes_only_that_request()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var a = gate.Begin("a", "{}", out refusal);
+            var b = gate.Begin("b", "{}", out refusal);
+            var c = gate.Begin("c", "{}", out refusal);
 
-            taken.Result = CommandResult.Ok("the document");
-            gate.Complete(taken);
+            gate.Abandon(b);
+
+            Assert.Same(a, gate.Take());
+            gate.Complete(a);
+            Assert.Same(c, gate.Take());
+            Assert.False(b.Started);
+            Assert.True(b.CancelledBeforeStart);
+        }
+
+        [Fact]
+        public void Wire_cancellation_wakes_a_queued_owner_and_proves_it_never_started()
+        {
+            var gate = new RequestGate();
+            string refusal, detail;
+            var running = gate.Begin("wire-a", "a", "{}", out refusal);
+            gate.Take();
+            var waiting = gate.Begin("wire-b", "b", "{}", out refusal);
+
+            Assert.True(gate.CancelQueued("wire-b", out detail));
+            Assert.Equal("cancelled_before_start", detail);
+            Assert.True(waiting.Wait(0));
+            Assert.False(waiting.Started);
+            Assert.True(waiting.CancelledBeforeStart);
+            Assert.False(waiting.Result.Success);
+            Assert.Contains("NEVER STARTED", waiting.Result.Error);
+
+            gate.Complete(running);
+            Assert.Null(gate.Take());
+        }
+
+        [Fact]
+        public void Cancellation_cannot_claim_that_running_work_was_stopped()
+        {
+            var gate = new RequestGate();
+            string refusal, detail;
+            var running = gate.Begin("wire-a", "a", "{}", out refusal);
+            gate.Take();
+
+            Assert.False(gate.CancelQueued("wire-a", out detail));
+            Assert.Equal("already_running", detail);
+            Assert.True(running.Started);
+            Assert.False(running.CancelledBeforeStart);
+        }
+
+        [Fact]
+        public void The_queue_is_bounded_and_refusal_changes_nothing()
+        {
+            var gate = new RequestGate(2);
+            string refusal;
+            Assert.NotNull(gate.Begin("a", "{}", out refusal));
+            Assert.NotNull(gate.Begin("b", "{}", out refusal));
+
+            Assert.Null(gate.Begin("c", "{}", out refusal));
+            Assert.Contains("queue is full", refusal);
+            Assert.Contains("Nothing was queued", refusal);
+            Assert.Equal(2, gate.PendingCount);
+        }
+
+        [Fact]
+        public void A_caller_is_woken_only_by_its_own_completion()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var a = gate.Begin("a", "{}", out refusal);
+            var b = gate.Begin("b", "{}", out refusal);
+            gate.Take();
+
+            a.Result = CommandResult.Ok("A");
+            gate.Complete(a);
 
             Assert.True(a.Wait(0));
-            Assert.Same(taken, a);
-            Assert.True(a.Result.Success);
+            Assert.False(b.Wait(0));
+            Assert.Null(b.Result);
+            Assert.Same(b, gate.Take());
         }
 
         [Fact]
-        public void Tickets_are_distinct_so_two_requests_are_never_the_same_request()
+        public void An_abandoned_running_request_still_owns_the_thread_until_complete()
         {
             var gate = new RequestGate();
             string refusal;
-
-            RequestGate.Request a = gate.Begin("horizun_health", "{}", out refusal);
+            var a = gate.Begin("a", "{}", out refusal);
             gate.Take();
-            gate.Complete(a);
-            RequestGate.Request b = gate.Begin("horizun_health", "{}", out refusal);
+            gate.Abandon(a);
+            var b = gate.Begin("b", "{}", out refusal);
 
-            Assert.NotEqual(a.Ticket, b.Ticket);
-            Assert.NotSame(a, b);
+            Assert.NotNull(b);
+            Assert.Contains("caller stopped waiting", gate.BusyWith());
+            Assert.Null(gate.Take());
+
+            gate.Complete(a);
+            Assert.Same(b, gate.Take());
         }
 
         [Fact]
-        public void An_idle_gate_says_nothing_is_running()
+        public void Shutdown_fails_and_wakes_every_waiting_request_but_not_running_work()
         {
-            Assert.Null(new RequestGate().BusyWith());
+            var gate = new RequestGate();
+            string refusal;
+            var running = gate.Begin("a", "{}", out refusal);
+            gate.Take();
+            var b = gate.Begin("b", "{}", out refusal);
+            var c = gate.Begin("c", "{}", out refusal);
+
+            Assert.Equal(2, gate.FailQueued("Revit shut down; NEVER RAN."));
+            Assert.True(b.Wait(0));
+            Assert.True(c.Wait(0));
+            Assert.Contains("NEVER RAN", b.Result.Error);
+            Assert.False(running.Wait(0));
+        }
+
+        [Fact]
+        public void Tickets_remain_unique_across_queued_and_completed_work()
+        {
+            var gate = new RequestGate();
+            string refusal;
+            var a = gate.Begin("a", "{}", out refusal);
+            var b = gate.Begin("b", "{}", out refusal);
+            gate.Take();
+            gate.Complete(a);
+            gate.Take();
+            gate.Complete(b);
+            var c = gate.Begin("c", "{}", out refusal);
+
+            Assert.NotEqual(a.Ticket, b.Ticket);
+            Assert.NotEqual(b.Ticket, c.Ticket);
+        }
+
+        [Fact]
+        public void Idle_state_is_empty_and_has_no_busy_description()
+        {
+            var gate = new RequestGate();
+            Assert.False(gate.HasPending);
+            Assert.Equal(0, gate.PendingCount);
+            Assert.Null(gate.BusyWith());
         }
     }
 }
