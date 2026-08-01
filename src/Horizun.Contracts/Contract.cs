@@ -209,6 +209,83 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_create_schedule",
+                Command = "horizun_create_schedule",
+                Description =
+                    "Create one native Revit schedule for one category, optionally including elements from loaded RVT links. " +
+                    "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules, commits once, " +
+                    "then re-reads the schedule, fields, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
+                    "the linked elements are included by Revit itself when include_links=true.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""category"", ""name"", ""target_document""],
+  ""properties"": {
+    ""category"": { ""type"": ""string"", ""description"": ""BuiltInCategory token such as OST_Walls, or the Revit category display name."" },
+    ""name"": { ""type"": ""string"", ""description"": ""Name of the new schedule. An existing name is refused, never overwritten."" },
+    ""fields"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Fields to add: localized Revit display names, Count/Family/Type aliases, or BuiltInParameter tokens. Defaults to Count, Family, Type."" },
+    ""include_links"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Set Revit's Include elements in links option."" },
+    ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the requested non-Count fields."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Validate category and scope without opening a transaction."" },
+    ""confirmation_token"": { ""type"": ""string"", ""description"": ""Required when dry_run=false; returned by the exact dry run."" },
+    ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the ACTIVE document to change."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_list_elements",
+                Command = "horizun_list_elements",
+                Description =
+                    "List elements of one category in the active model and loaded RVT links. Totals are exact and independent " +
+                    "of max_rows; every row names its source model and link instance. Unloaded links and read failures are " +
+                    "reported, and host/link workset coverage travels with the result, so an empty result is never presented " +
+                    "as complete when part of the federation was unavailable.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""category""],
+  ""properties"": {
+    ""category"": { ""type"": ""string"", ""description"": ""BuiltInCategory token such as OST_Walls, or the Revit display name."" },
+    ""include_links"": { ""type"": ""boolean"", ""default"": true },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_list_schedules",
+                Command = "horizun_list_schedules",
+                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_get_schedule_data",
+                Command = "horizun_get_schedule_data",
+                Description =
+                    "Read the displayed cells of one native schedule, including rows produced from RVT links. Returns bounded " +
+                    "header and body matrices plus exact dimensions and federated coverage; truncation is explicit. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""schedule_id""],
+  ""properties"": {
+    ""schedule_id"": { ""type"": ""integer"" },
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 },
+    ""max_columns"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 100, ""default"": 50 }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_execute_python",
                 Command = "horizun_execute_python",
                 Description =

@@ -25,8 +25,9 @@ this machine. No executable is downloaded.
 
 - Windows with at least one Revit 2023–2027 installed
   (`C:\Program Files\Autodesk\Revit <year>\RevitAPI.dll` exists).
-- The .NET SDK 8.0+ on PATH (`dotnet --version` answers). Revit ≤ 2024 also
-  needs the .NET Framework 4.8 targeting pack.
+- The .NET SDK on PATH (`dotnet --version` answers): 8.0+ for Revit 2023–2026,
+  and 10.0+ when building for Revit 2027. Revit ≤ 2024 also needs the .NET
+  Framework 4.8 targeting pack.
 - **Revit closed.** The script refuses to run with Revit open and changes
   nothing when it refuses.
 
@@ -88,10 +89,10 @@ when it is merely busy.
 ### First Revit start — tell the user about this
 
 - Revit will show the **"Security - Unsigned Add-In"** dialog (this build is
-  unsigned). They must choose **Always Load**. Two things surprise people: the
-  dialog **returns after every update** (the decision is remembered per binary),
-  and it can open **on another monitor** — a Revit that has been "starting" for
-  minutes with the CPU idle is almost always this dialog hiding.
+  unsigned). They must choose **Always Load**. Revit normally remembers that
+  choice for this add-in's identity, though a trust or policy reset can bring the
+  prompt back. It can open **on another monitor** — a Revit that has been
+  "starting" for minutes with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
   **Estado del puente** button answers "is this working, and which version?"
   without leaving Revit.
@@ -109,8 +110,9 @@ and run `install.ps1` again.
   and health is what tells you which one that is.
 - **One command at a time.** The second is refused with the reason, not queued.
   Cancelling an MCP request stops your waiting, not the work inside Revit.
-- **The contract**: no command reports work it did not verify. Every write is
-  re-read from the model after the commit.
+- **The contract**: no command reports work it did not verify. Every typed write
+  is re-read from the model after the commit. `horizun_execute_python` is the
+  explicit low-level exception and does not provide the typed-command guarantee.
 - **`horizun_execute_python` ships disabled.** It is enabled per machine in
   `%USERPROFILE%\.horizun\settings.json` with `{"enable_execute_python": true}`.
   Do not enable it unless the user asks: it is the full Revit API.
@@ -149,8 +151,9 @@ No se descarga ningún ejecutable.
 
 - Windows con al menos un Revit 2023–2027 instalado
   (`C:\Program Files\Autodesk\Revit <año>\RevitAPI.dll` existe).
-- El SDK de .NET 8.0+ en el PATH (`dotnet --version` responde). Revit ≤ 2024
-  necesita además el targeting pack de .NET Framework 4.8.
+- El SDK de .NET en el PATH (`dotnet --version` responde): 8.0+ para Revit
+  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 necesita además
+  el targeting pack de .NET Framework 4.8.
 - **Revit cerrado.** El script se niega a correr con Revit abierto y no cambia
   nada cuando se niega.
 
@@ -212,10 +215,11 @@ minutos, y un timeout de 60 s por defecto abandona trabajo que sigue corriendo
 ### Primer arranque de Revit — avisa al usuario de esto
 
 - Revit mostrará el diálogo **"Security - Unsigned Add-In"** (este build no va
-  firmado). Hay que elegir **Always Load**. Dos cosas que sorprenden: el diálogo
-  **vuelve tras cada actualización** (la decisión se recuerda por binario), y
-  puede abrirse **en otro monitor** — un Revit que lleva minutos "arrancando"
-  con la CPU quieta casi siempre es este diálogo escondido.
+  firmado). Hay que elegir **Always Load**. Revit normalmente recuerda esa
+  elección por la identidad del add-in, aunque un cambio de política o confianza
+  puede hacer que el aviso vuelva. Puede abrirse **en otro monitor** — un Revit
+  que lleva minutos "arrancando" con la CPU quieta suele tener este diálogo
+  escondido.
 - Con un documento abierto aparece la pestaña **Horizun Hub** en la cinta. Su
   botón **Estado del puente** responde "¿está funcionando y qué versión?" sin
   salir de Revit.
@@ -233,8 +237,9 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   *activo*, y health es lo que te dice cuál es.
 - **Un comando a la vez.** El segundo se rechaza con el motivo, no se encola.
   Cancelar una petición MCP detiene tu espera, no el trabajo dentro de Revit.
-- **El contrato**: ningún comando reporta trabajo que no verificó. Toda
-  escritura se relee del modelo tras el commit.
+- **El contrato**: ningún comando reporta trabajo que no verificó. Toda escritura
+  tipada se relee del modelo tras el commit. `horizun_execute_python` es la
+  excepción explícita de bajo nivel y no ofrece la garantía del comando tipado.
 - **`horizun_execute_python` viene apagado.** Se enciende por máquina en
   `%USERPROFILE%\.horizun\settings.json` con `{"enable_execute_python": true}`.
   No lo enciendas sin que el usuario lo pida: es la API completa de Revit.

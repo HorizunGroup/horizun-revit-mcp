@@ -69,7 +69,7 @@ namespace Horizun.Server.Tests
             {
                 "horizun_delete_verified", "horizun_write_params_verified", "horizun_set_keynote",
                 "horizun_bind_shared_param", "horizun_family_apply", "horizun_save_document",
-                "horizun_relinquish_all",
+                "horizun_relinquish_all", "horizun_create_schedule",
                 // Recipe-backed geometry tools. They delete and recreate elements, which
                 // makes naming the model at least as load-bearing here as anywhere above.
                 "horizun_split_floor_loops", "horizun_split_multilayer_walls",
@@ -86,6 +86,32 @@ namespace Horizun.Server.Tests
                 Assert.True(c.InputSchema["properties"]?["target_document"] != null,
                             name + " does not declare target_document, so nothing tells a caller it is required");
             }
+        }
+
+        [Fact]
+        public void Schedule_creation_exposes_links_fields_and_confirmation()
+        {
+            CommandContract c = Contract.Find("horizun_create_schedule");
+            Assert.NotNull(c);
+            JToken properties = c.InputSchema["properties"];
+            Assert.NotNull(properties?["include_links"]);
+            Assert.NotNull(properties?["fields"]);
+            Assert.NotNull(properties?["dry_run"]);
+            Assert.NotNull(properties?["confirmation_token"]);
+            Assert.True((bool)properties["include_links"]["default"]);
+            Assert.True((bool)properties["dry_run"]["default"]);
+        }
+
+        [Fact]
+        public void Linked_element_inventory_is_bounded_and_declares_coverage()
+        {
+            CommandContract c = Contract.Find("horizun_list_elements");
+            Assert.NotNull(c);
+            JToken properties = c.InputSchema["properties"];
+            Assert.NotNull(properties?["include_links"]);
+            Assert.NotNull(properties?["offset"]);
+            Assert.Equal(1000, (int)properties["max_rows"]["maximum"]);
+            Assert.Contains("Unloaded links", c.Description);
         }
 
         // ---- the hash ----------------------------------------------------------

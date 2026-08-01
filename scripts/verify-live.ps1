@@ -337,7 +337,22 @@ $probes = @(
        Tool = 'get_document_info'; Args = @{}
        Check = { param($d) $d.revit_version -eq "$Year" -and $d.title -and $d.element_count -gt 0 } },
 
+    @{ Name = 'list_schedules returns bounded native definitions and coverage'
+       Tool = 'horizun_list_schedules'; Args = @{ max_rows = 1 }
+       Check = { param($d)
+                 $d.total -ge $d.returned -and $null -ne $d.rows -and
+                 $null -ne $d.host_visibility_coverage.coverage_complete -and
+                 $null -ne $d.linked_models_coverage.coverage_complete } },
+
+    @{ Name = 'get_schedule_data refuses an id that is not a schedule'
+       Tool = 'horizun_get_schedule_data'; Args = @{ schedule_id = 999999999 }
+       ExpectError = 'does not identify a native ViewSchedule' },
+
     # ---- the mutation gate, proven by its refusals. Nothing is written. ----
+    @{ Name = 'create_schedule REFUSES without target_document'
+       Tool = 'horizun_create_schedule'; Args = @{ category = 'OST_Walls'; name = 'HZ_REFUSAL_ONLY' }
+       ExpectError = "'target_document' is required" },
+
     @{ Name = 'delete REFUSES without target_document'
        Tool = 'horizun_delete_verified'; Args = @{ mode = 'ids'; ids = @(999999999) }
        ExpectError = "'target_document' is required" },
@@ -523,6 +538,23 @@ if ($Document) {
                             # A quantity is the answer somebody puts in a budget. It must
                             # never travel without saying how much of the model it is over.
                             (& $coverageShape $d.visibility_coverage) } }
+
+    $probes += @{ Name = 'list_elements reports bounded host/link rows and federated coverage'
+                  Tool = 'horizun_list_elements'
+                  Args = @{ category = $QuantityCategory; include_links = $true; max_rows = 1 }
+                  Check = { param($d)
+                            $d.total -ge $d.returned -and $null -ne $d.rows -and
+                            $null -ne $d.unavailable -and
+                            $null -ne $d.federated_coverage.coverage_complete } }
+
+    $probes += @{ Name = 'create_schedule dry run issues a token without opening a transaction'
+                  Tool = 'horizun_create_schedule'
+                  Args = @{ target_document = $Document; category = $QuantityCategory
+                            name = 'HZ_SCHEDULE_REHEARSAL_ONLY'; fields = @('Count'); dry_run = $true
+                            include_links = $true }
+                  Check = { param($d)
+                            $d.dry_run -eq $true -and $d.confirmation_token -and
+                            $d.transaction_status -eq 'not_started' } }
 }
 else {
     Write-Host "  (no -Document given: the link, quantities and confirmation probes are NOT COVERED)" -ForegroundColor DarkYellow

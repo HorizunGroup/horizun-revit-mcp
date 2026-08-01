@@ -1,6 +1,6 @@
 # Third-party notices
 
-Horizun MCP is proprietary (see [LICENSE](LICENSE)). It **redistributes** the
+Horizun MCP is free and open source under Apache-2.0 (see [LICENSE](LICENSE)). It **redistributes** the
 components below, each under its own licence, and those licences require their
 notices to travel with the files.
 

@@ -120,6 +120,10 @@ namespace Horizun.Revit
             d.Register(new OpenDocumentCommand());
             d.Register(new RelinquishAllCommand());
             d.Register(new CaptureViewCommand());
+            d.Register(new CreateScheduleCommand());
+            d.Register(new ListElementsCommand());
+            d.Register(new ListSchedulesCommand());
+            d.Register(new GetScheduleDataCommand());
 
             // Recipe-backed tools: the Horizun AEC pyRevit buttons, as commands. The
             // geometry lives in Recipes\*.py; the transaction, the dry run and the

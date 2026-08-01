@@ -5,9 +5,10 @@ the [Horizun Hub](https://horizunhub.com) ecosystem.
 
 Point Claude — or any MCP client — at a running Revit and let it read and write
 the model, under one contract: **a command never reports work it did not
-verify.** Every write is re-read from the model after the commit; a silent
+verify.** Every typed write is re-read from the model after the commit; a silent
 rollback becomes an error, not a false success. Counts come from re-reading the
-model, never from counting calls that did not throw.
+model, never from counting calls that did not throw. The deliberately low-level
+`horizun_execute_python` escape hatch is the documented exception.
 
 **What this is.** The bridge: transport, safety guards, and a generic tool
 surface over the Revit API. Organisation-neutral by design — no company's
@@ -22,15 +23,31 @@ is what plugs into it.
 
 ## Install
 
-Everything is built from this repository, on your machine, against the Revit you
-already have. **Nothing is downloaded and run as a binary.**
+### Release installer — recommended
+
+Download `horizun-mcp-<version>-setup.exe` from the
+[latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
+close every Revit window, and run it. The installer detects Revit 2023–2027 and
+deploys a different add-in binary compiled against each installed year's own API.
+It also installs the MCP server and reports exactly which years succeeded. No Git
+or .NET SDK is required for this path.
+
+The release carries `SHA256SUMS.txt` and a complete payload manifest. The current
+build is not signed by a publicly trusted code-signing CA, so Windows/Revit may
+show a publisher warning; verify the SHA-256 before running it.
+
+### Build from source
+
+This path builds everything from the repository, on your machine, against the
+Revit already installed. **Nothing prebuilt is downloaded and run.**
 
 **Prerequisites:** Windows, at least one Revit 2023–2027, the
-[.NET SDK 8+](https://dotnet.microsoft.com/download), and **Revit closed** — the
+[.NET SDK](https://dotnet.microsoft.com/download) (**8+** for Revit 2023–2026;
+**10+** when building for Revit 2027), and **Revit closed** — the
 installer refuses to run while Revit holds the add-in files, and changes nothing
 when it refuses.
 
-### Let an agent do it
+#### Let an agent do it
 
 Paste this into **Claude Code** or **Codex**, in any folder:
 
@@ -46,7 +63,7 @@ repository (Claude Code also reads `CLAUDE.md`, which imports it). It has the
 prerequisites, the failure modes, and the two surprises worth knowing before the
 first Revit start.
 
-### Or run it yourself
+#### Or run it yourself
 
 ```powershell
 git clone https://github.com/HorizunGroup/horizun-revit-mcp
@@ -95,15 +112,15 @@ model scan or a batch open holds Revit's UI thread for minutes, and a 60-second
 default gives up on work that is still running — the bridge then looks broken
 while it is merely busy.
 
-### First Revit start
+#### First Revit start
 
 Two things to expect, neither of them a fault:
 
 - Revit shows a **"Security - Unsigned Add-In"** dialog. Choose **Always Load**.
-  This build is unsigned; the dialog **returns after every update** (the
-  decision is remembered per binary), and it can open on a monitor you are not
-  looking at — a Revit that seems stuck on startup with the CPU idle is almost
-  always this dialog hiding.
+  This build is unsigned. Revit normally remembers that choice for this add-in's
+  identity, but the prompt may return after a trust or policy reset. It can also
+  open on a monitor you are not looking at — a Revit that seems stuck on startup
+  with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
   *Estado del puente* button answers "is this working, and which version?"
   without leaving Revit.
@@ -145,7 +162,7 @@ In Revit, over the pipe:
 | `horizun_save_document` | Save, then prove it: the file's timestamp and size before and after. On a workshared model it says, loudly, that this is not a synchronize. |
 | `horizun_relinquish_all` | Give back everything this user owns, and count what is still owned afterwards rather than assume zero. |
 | `horizun_capture_view` | Export a view and hand the IMAGE back, so the caller can look at the model instead of only reading it. |
-| `horizun_execute_python` | The escape hatch: Python against the whole API on the UI thread, stdlib included, with orphaned-transaction rollback. **Disabled by default**, enabled per machine. |
+| `horizun_execute_python` | The low-level escape hatch: Python against the whole API on the UI thread, stdlib included. **Disabled by default.** It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. |
@@ -156,6 +173,10 @@ In Revit, over the pipe:
 | `horizun_set_keynote` | Keynote writes with the blast radius reported first. |
 | `horizun_family_apply` | Family edits in one transaction, under a geometry invariant that rolls the whole thing back if it moves. |
 | `horizun_bind_shared_param` | Shared-parameter binding, with `VariesAcrossGroups` measured from the definition, not assumed. |
+| `horizun_list_elements` | Bounded, paginated inventory by category across the host and loaded Revit links, with source model and link instance identity on every row. Unloaded links are reported, not silently skipped. |
+| `horizun_create_schedule` | Create a native Revit schedule with selected fields and sorting, optionally including linked elements. Defaults to `dry_run: true`, requires a target document and confirmation token, then re-reads the committed schedule. |
+| `horizun_list_schedules` | List native schedules with their actual fields, linked-file setting, itemization and displayed body dimensions. |
+| `horizun_get_schedule_data` | Read the displayed header and body cells of a native schedule with explicit row/column bounds and truncation metadata. |
 | `horizun_split_floor_loops` | One floor per sketch loop, carrying the height offset onto each. |
 | `horizun_split_multilayer_walls` | One wall per material layer, doors and windows re-hosted on the structural one. **Curved walls are REFUSED, not straightened.** |
 | `horizun_split_multilayer_slabs` | One floor/ceiling per material layer, profile and curves intact. A slab whose hosted families cannot be put back rolls back alone. |
@@ -223,9 +244,9 @@ Working, in production use, and honest about its edges.
   contract's rollback on a geometry change, cancellation measured mid-flight,
   and `job_status` answering while Revit's UI thread was inside the very
   command it describes.
-- **Unsigned.** Revit raises its "Security - Unsigned Add-In" dialog until a
-  certificate is in place, and it reappears after every update — the decision
-  is remembered per binary, not permanently.
+- **Unsigned.** Revit raises its "Security - Unsigned Add-In" dialog on first
+  load. Revit normally remembers the decision by add-in identity, but policy or
+  trust-store changes can make the prompt return.
 - **Known limits, stated**: `excel_write_rows` appends below an Excel Table
   without expanding the table's range (reported per call); a catalog that is
   neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling an

@@ -27,9 +27,9 @@
   What it needs:
 
     * Windows, with at least one Revit 2023-2027 installed.
-    * The .NET SDK (8.0 or later; Revit <= 2024 additionally needs the .NET
-      Framework 4.8 targeting pack, which Visual Studio and most SDK installs
-      include). Checked before anything runs.
+    * The .NET SDK (8.0+ for Revit 2023-2026; 10.0+ for Revit 2027). Revit
+      <= 2024 additionally needs the .NET Framework 4.8 targeting pack, which
+      Visual Studio and most SDK installs include. Checked before anything runs.
     * Revit CLOSED. Revit holds a lock on the add-in DLL it loaded; this
       refuses to run while any Revit is open, and changes nothing.
 
@@ -126,6 +126,19 @@ try {
         }
     }
     else { $Years = $detected }
+
+    # Revit 2027 targets net10.0, while 2023-2026 need an SDK capable of the
+    # net48/net8 targets. Check the selected years before staging anything so a
+    # missing SDK is a precise refusal, not a compiler failure halfway through.
+    $sdkMajors = @(& dotnet --list-sdks | ForEach-Object {
+        if ($_ -match '^\s*(\d+)\.') { [int]$Matches[1] }
+    })
+    $requiredSdkMajor = if ($Years -contains 2027) { 10 } else { 8 }
+    if (-not ($sdkMajors | Where-Object { $_ -ge $requiredSdkMajor })) {
+        throw ("The selected Revit years require .NET SDK $requiredSdkMajor.0 or later, but installed SDK " +
+               "majors are: " + $(if ($sdkMajors.Count -gt 0) { ($sdkMajors | Sort-Object -Unique) -join ', ' } else { 'none' }) +
+               ". Install the SDK from https://dotnet.microsoft.com/download and run this again. Nothing was changed.")
+    }
 
     Write-Host "[Horizun] installing from source for Revit $($Years -join ', ')$(if (-not $SkipServer) { ' + MCP server' })" -ForegroundColor Cyan
 
@@ -362,8 +375,8 @@ Write-Host "    { `"mcpServers`": { `"horizun`": { `"command`": `"$($serverExe -
 Write-Host ""
 Write-Host "Then START REVIT and note two things:" -ForegroundColor Cyan
 Write-Host ("  * Revit will show a 'Security - Unsigned Add-In' dialog - this build is unsigned. " +
-            "Choose 'Always Load'. The dialog RETURNS after every update (the decision is " +
-            "remembered per binary), and it may open on a different monitor.")
+            "Choose 'Always Load'. Revit normally remembers the choice for this add-in identity; " +
+            "a trust or policy reset may bring it back, and it may open on a different monitor.")
 Write-Host "  * A 'Horizun Hub' ribbon tab appears once a document is open; its 'Estado del puente' button answers 'is this working?' without leaving Revit."
 Write-Host ""
 Write-Host "Verify the pairing from your MCP client: call horizun_health. Updating later is:"

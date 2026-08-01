@@ -438,10 +438,11 @@ namespace Horizun.Server
                         // actually needs are not in here and should not be invented.
                         ["instructions"] =
                             "Horizun Revit MCP - the bridge between this client and a running Autodesk Revit.\n\n" +
-                            "The contract: a command never reports work it did not verify. Every write is re-read " +
+                            "The contract: a command never reports work it did not verify. Every typed write is re-read " +
                             "from the model after the commit, so a silent rollback surfaces as an error rather " +
                             "than a false success, and counts come from re-reading the model rather than from " +
-                            "calls that did not throw.\n\n" +
+                            "calls that did not throw. horizun_execute_python is the explicit low-level escape " +
+                            "hatch and does not provide that typed-command guarantee.\n\n" +
                             "Call horizun_health FIRST. These commands act on the document that is active right " +
                             "now, and health is what tells you which Revit and which document that is.\n\n" +
                             "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +

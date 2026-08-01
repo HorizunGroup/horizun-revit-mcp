@@ -3,16 +3,28 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v0.3.4 — 2026-07-31
+## v0.3.4 — 2026-08-01
 
 Los botones de pyRevit se vuelven herramientas. **Nueve** de los doce de la
 extensión "Horizun AEC" pasan a ser comandos `horizun_*` de primera clase; dos son
 **imposibles** de portar con lo que hay, y uno se deja fuera a propósito.
+Además, cuatro comandos cierran el primer flujo nativo de tablas de planificación
+y consulta federada de elementos vinculados.
 
-**EL CONTRATO SE MOVIÓ** — nueve comandos nuevos —, así que las dos mitades hay
+**EL CONTRATO SE MOVIÓ** — trece comandos nuevos —, así que las dos mitades hay
 que actualizarlas juntas.
 
 ### Añadido
+
+- **Tablas de planificación nativas y vínculos.** `horizun_create_schedule`
+  crea una `ViewSchedule` real con campos, orden, itemización e
+  `IncludeLinkedFiles`; empieza en `dry_run`, exige documento objetivo y token,
+  y después del commit relee la tabla y sus campos. `horizun_list_schedules` y
+  `horizun_get_schedule_data` inspeccionan la definición y las celdas que Revit
+  muestra, con límites y truncamiento explícitos. `horizun_list_elements`
+  pagina por categoría a través del anfitrión y los vínculos cargados, conserva
+  el modelo e instancia de origen y reporta los vínculos no cargados en vez de
+  convertirlos en un cero falso.
 
 - **Recetas: el álgebra en Python, la honestidad en C#.** Estas geometrías llevan
   meses corriendo contra modelos reales; reescribirlas en C# no las haría más
