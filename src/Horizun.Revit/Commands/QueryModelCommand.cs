@@ -524,7 +524,8 @@ namespace Horizun.Revit.Commands
         private static JObject Counts(IEnumerable<Row> rows, Func<Row, string> key)
         {
             var o = new JObject();
-            foreach (var group in rows.GroupBy(key).OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+            foreach (var group in rows.GroupBy(r => JsonObjectKey.Summary(key(r)))
+                                      .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
                 o[group.Key] = group.Count();
             return o;
         }

@@ -56,6 +56,12 @@ componibles y verificables**.
   verificación de curvas transformadas tolera la inversión de extremos con la
   que Revit normaliza geometría equivalente.
 
+- Los resúmenes de `horizun_query_model` normalizan nombres vacíos de categoría
+  o nivel como `(blank)`. Aunque una clave JSON vacía es válida, clientes reales
+  como Windows PowerShell 5.1 no pueden materializarla y descartaban la respuesta
+  completa. La prueba viva consulta ahora todas las categorías para cubrir este
+  caso con datos reales.
+
 El contrato compartido cambió: servidor y add-in 0.4.0 deben desplegarse juntos.
 
 ## v0.3.5 — 2026-08-01

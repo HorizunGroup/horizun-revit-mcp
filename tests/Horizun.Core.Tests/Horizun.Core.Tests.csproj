@@ -54,6 +54,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanReferences.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\JsonObjectKey.cs" />
     <!-- What happens to queued work when Revit will not take it. Denied cannot be
          produced on demand - it needs a Revit that is shutting down - so this path
          was reasoned and compiled and never exercised. Behind IWorkRaiser all three

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Horizun.Revit.Core;
 using Xunit;
 
 namespace Horizun.Core.Tests
@@ -20,6 +21,21 @@ namespace Horizun.Core.Tests
             int iteration = source.IndexOf("foreach (Element element in candidates)", collector, StringComparison.Ordinal);
             Assert.True(collector >= 0 && instances > collector && all > collector && iteration > instances && iteration > all,
                 "Revit throws when a FilteredElementCollector is iterated without a native ElementFilter.");
+        }
+
+        [Theory]
+        [InlineData(null)]
+        [InlineData("")]
+        [InlineData("   ")]
+        public void Blank_model_names_never_become_empty_json_object_keys(string value)
+        {
+            Assert.Equal("(blank)", JsonObjectKey.Summary(value));
+        }
+
+        [Fact]
+        public void Meaningful_model_names_are_preserved_verbatim()
+        {
+            Assert.Equal("Level 01", JsonObjectKey.Summary("Level 01"));
         }
     }
 }

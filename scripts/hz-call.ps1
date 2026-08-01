@@ -67,15 +67,34 @@ function ReadReply($seconds) {
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
         $task = $proc.StandardOutput.ReadLineAsync()
-        if (-not $task.Wait([Math]::Max(1000, [int](($deadline - (Get-Date)).TotalMilliseconds)))) { return $null }
+        # Windows PowerShell 5.1 can leave both Task.Wait(timeout) and repeated
+        # IsCompleted polling blind to a redirected StreamReader completion.
+        # Task.WhenAny observes it correctly. Keep exactly one outstanding read
+        # and race it against the remaining deadline.
+        $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
+        $delay = [Threading.Tasks.Task]::Delay($remaining)
+        $winner = [Threading.Tasks.Task]::WhenAny(
+            [Threading.Tasks.Task[]]@($task, $delay)).Result
+        if (-not [object]::ReferenceEquals($winner, $task)) {
+            Write-Verbose "stdout read reached its deadline"
+            return $null
+        }
         $line = $task.Result
+        Write-Verbose ("stdout line: {0} characters" -f $(if ($null -eq $line) { -1 } else { $line.Length }))
         if ($null -eq $line) { return $null }
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        try { $o = $line | ConvertFrom-Json } catch { continue }
+        try { $o = $line | ConvertFrom-Json } catch {
+            Write-Verbose ("stdout was not JSON: {0}" -f $_.Exception.Message)
+            continue
+        }
         # Notifications carry no id. Only a reply to OUR request ends the wait -
         # taking the first line that parses is how a caller ends up reading a
         # progress notification as its answer.
-        if ($null -ne $o.id) { return $o }
+        if ($null -ne $o.id) {
+            Write-Verbose ("received reply id {0}" -f $o.id)
+            return $o
+        }
+        Write-Verbose "ignored notification without id"
     }
     return $null
 }

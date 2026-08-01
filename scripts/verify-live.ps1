@@ -736,9 +736,16 @@ $proc = [System.Diagnostics.Process]::Start($psi)
 
 function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 8 -Compress)); $proc.StandardInput.Flush() }
 function Read-Rpc([int]$TimeoutMs = 620000) {
+    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ($true) {
         $t = $proc.StandardOutput.ReadLineAsync()
-        if (-not $t.Wait($TimeoutMs)) { return $null }
+        # See hz-call.ps1: use WhenAny rather than Task.Wait or IsCompleted
+        # polling for redirected StreamReader reads on Windows PowerShell 5.1.
+        $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
+        $delay = [Threading.Tasks.Task]::Delay($remaining)
+        $winner = [Threading.Tasks.Task]::WhenAny(
+            [Threading.Tasks.Task[]]@($t, $delay)).Result
+        if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
         if (-not $t.Result) { return $null }
         try { $m = $t.Result | ConvertFrom-Json } catch { continue }
         # Progress notifications carry no id and are not anybody's answer.
