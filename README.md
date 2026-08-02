@@ -6,8 +6,6 @@ the [Horizun Hub](https://horizunhub.com) ecosystem.
 > **Official stable release: v0.5.0.** This is the public source repository for
 > Horizun Revit MCP. It contains the complete implementation, typed Revit
 > operations, tests, installation scripts, security model and benchmark evidence.
-> The private `horizun-revit-mcp-legacy` repository is retained only as the
-> historical mirror and release archive.
 
 ## Why Horizun is built to lead the Revit MCP benchmark
 
@@ -23,10 +21,13 @@ Horizun is measured by verified outcomes, not by a raw count of tool names:
 | Honest failure modes | Unsupported or ambiguous inputs are refused with a reason; the bridge never reports success from a call that merely did not throw. |
 
 The benchmark is reproducible from [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
-The v0.5.0 release gate passed **292 core tests + 162 server tests**, a clean
-security-sensitive scan, and live Revit 2026 validation of the family compiler
-including a parametric extrusion, two strong reference planes, a dimension and
-a symbolic line, with the resulting `.rfa` loaded and re-read in the project.
+Public CI passes **292 core tests + 162 server tests**, builds the MCP server with
+warnings treated as errors, audits NuGet dependencies and runs the repository-safe
+part of the sensitive-data scan. Revit-dependent CI jobs require a private
+self-hosted runner and are reported as skipped when it is unavailable. The
+benchmark marks every capability whose current public evidence is still pending
+a live Revit or Power BI fixture; a green hosted-CI check is never presented as
+proof that those live operations ran.
 
 ## Horizun Hub: the ecosystem around the MCP
 
@@ -76,7 +77,24 @@ is what plugs into it.
 
 ## Install
 
-### Release installer — recommended
+### Install with Codex — recommended
+
+Paste this into Codex in any folder:
+
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+AGENTS.md, and follow the install procedure there. When it finishes, register the
+MCP server with yourself using the exact path the installer printed, and tell me
+which version and commit ended up installed.
+```
+
+Codex reads [AGENTS.md](AGENTS.md), checks the prerequisites, builds from this
+public source against each Revit version installed on the machine, installs the
+matching add-in binaries and MCP server, verifies their commit and SHA-256, and
+registers the resulting server path. Revit must be closed. No prebuilt executable
+is downloaded by this path.
+
+### Prebuilt release installer — optional
 
 Download `horizun-mcp-<version>-setup.exe` from the
 [latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
@@ -108,7 +126,7 @@ powershell -ExecutionPolicy Bypass -File $p
 
 Pass `-Version v0.5.0` to pin the official release instead of following `latest`.
 
-### Build from source
+### Build from source manually
 
 This path builds everything from the repository, on your machine, against the
 Revit already installed. **Nothing prebuilt is downloaded and run.**
@@ -118,24 +136,6 @@ Revit already installed. **Nothing prebuilt is downloaded and run.**
 **10+** when building for Revit 2027), and **Revit closed** — the
 installer refuses to run while Revit holds the add-in files, and changes nothing
 when it refuses.
-
-#### Let an agent do it
-
-Paste this into **Claude Code** or **Codex**, in any folder:
-
-```
-Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-AGENTS.md, and follow the install procedure there. When it finishes, register the
-MCP server with yourself using the exact path the installer printed, and tell me
-which version and commit ended up installed.
-```
-
-Both agents pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
-repository (Claude Code also reads `CLAUDE.md`, which imports it). It has the
-prerequisites, the failure modes, and the two surprises worth knowing before the
-first Revit start.
-
-#### Or run it yourself
 
 ```powershell
 git clone https://github.com/HorizunGroup/horizun-revit-mcp
@@ -400,7 +400,15 @@ whatever launched it. The optional `horizun_power_bi_push` tool makes bounded
 outbound HTTPS calls only to fixed Microsoft Entra and `api.powerbi.com`
 endpoints; it accepts no URL or credential in tool arguments. The full threat model — what is defended, and what
 deliberately is not — is in [docs/security-model.md](docs/security-model.md),
-and it is written to be argued with.
+and it is written to be argued with. Report vulnerabilities privately through
+the process in [SECURITY.md](SECURITY.md); do not place client/model data or
+credentials in a public issue.
+
+## Contributing
+
+Focused fixes, tests and documentation improvements are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request; public
+contributions must remain organisation-neutral and contain no project data.
 
 ## License
 

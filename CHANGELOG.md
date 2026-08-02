@@ -3,6 +3,19 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased
+
+- Codex source installation is now the recommended public path; the unsigned
+  prebuilt setup remains an optional, checksum-verified alternative.
+- Public evidence language now distinguishes hosted CI, compiled Revit coverage
+  and retained live fixtures instead of treating a green partial run as a full
+  Revit release gate.
+- Added public security reporting, contribution guidance, Dependabot updates and
+  CodeQL analysis.
+- Clarified that bounded FIFO queueing is intentional: calls may arrive
+  concurrently, while Revit API execution remains strictly one operation at a
+  time.
+
 ## v0.5.0 — 2026-08-01
 
 Esta versión apunta directamente al benchmark de operaciones tipadas,

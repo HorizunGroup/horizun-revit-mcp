@@ -54,7 +54,7 @@ credit for driving the modal editor through screen coordinates. Loaded RFAs and
 project-resident system types are measured separately because they are different
 Revit concepts.
 
-## Horizun source-candidate result
+## Horizun v0.5.0 public implementation result
 
 | Case | Score | Evidence now | Implementation |
 | --- | ---: | --- | --- |
@@ -74,10 +74,11 @@ Revit concepts.
 | D1 | 4 | L/T/S | One setup, checksum, payload manifest, SBOM and verified-release bootstrap. Missing publicly trusted code signature keeps this below 5. |
 | D2 | 5 | B/L | Five independently compiled payloads. |
 
-Current source-candidate total: **74/75**. The only structural point not earned
-is public code signing. Cases marked “L pending” are not called live-verified
-until the release gate runs them; their score describes the implemented contract
-and fail conditions, while the evidence column states the remaining proof.
+Current implementation score: **74/75**. The score measures the public contract,
+implementation and failure guarantees; it is not a claim that every row has live
+evidence. The only structural point not earned is public code signing. Cases
+marked “L pending” are not called live-verified until a release-gate fixture runs
+and its result is retained; the evidence column states that limitation explicitly.
 
 ## Competitor baseline
 
@@ -99,7 +100,7 @@ reply. This rule applies equally to Horizun.
 
 ### Current public-interface comparison
 
-| Capability | Horizun candidate | SAM public repository | Demolinator public repository |
+| Capability | Horizun public repository | SAM public repository | Demolinator public repository |
 | --- | --- | --- | --- |
 | Revit years | 2023–2027, per-year binary | 2024–2027 | 2024–2027 |
 | Typed breadth | Broad batched authoring + specialized QA | Broadest published tool count | Broad 48-tool surface |
@@ -131,6 +132,8 @@ pwsh scripts/verify-queue-live.ps1 -Year 2026 -Document <fixture>
 pwsh scripts/verify-idempotency-live.ps1 -Year 2026 -Document <fixture>
 ```
 
-The release gate must add explicit live fixtures for O1–O6 and X1–X3 before the
-new source candidate is tagged. X4 requires a disposable Power BI push semantic
-model and must never use a production table as its fixture.
+Future release gates should retain explicit live fixtures for O1–O6 and X1–X3
+before assigning those rows evidence grade L. X4 requires a disposable Power BI
+push semantic model and must never use a production table as its fixture. Hosted
+CI intentionally reports these checks as skipped when the private Revit runner is
+not configured.
