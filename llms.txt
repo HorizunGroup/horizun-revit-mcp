@@ -1,0 +1,46 @@
+# Horizun Revit MCP
+
+> Open-source Model Context Protocol (MCP) server and Autodesk Revit add-in for
+> Revit 2023–2027. It connects Codex, Claude, Cursor and other MCP clients to a
+> live Revit session through stdio and a local Revit bridge.
+
+## Canonical links
+
+- Repository: https://github.com/HorizunGroup/horizun-revit-mcp
+- Latest stable release: https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest
+- Installation and Codex setup: https://github.com/HorizunGroup/horizun-revit-mcp#install
+- Complete tool catalogue: https://github.com/HorizunGroup/horizun-revit-mcp#tool-surface
+- Benchmark and competitor methodology: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/BENCHMARK.md
+- Security model: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/security-model.md
+- Family authoring: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/FAMILY-AUTHORING.md
+- Horizun Hub ecosystem: https://horizunhub.com
+
+## What it does
+
+Horizun exposes typed, schema-described Revit operations for model inspection,
+host and loaded-link queries, quantities, schedules, clashes, creation and
+transformation of architectural/structural/MEP elements, views and sheets,
+annotations, family compilation from RFT to RFA, project-resident system-family
+types, exports to PDF/DWG/IFC/NWC/FBX/images/CSV, and direct bounded Power BI
+row ingestion. It also provides Python as an explicitly disabled low-level
+escape hatch.
+
+Typed mutations use dry-run planning where applicable, confirmation gates,
+durable idempotency and post-commit re-reads. Concurrent requests are accepted
+through a bounded FIFO queue, but the Revit API executes one operation at a time.
+Unsupported or ambiguous requests fail with an explicit reason.
+
+## Installation facts
+
+The recommended installation is source-based: ask Codex to clone this repository,
+read `AGENTS.md`, build against the Revit versions installed on the machine,
+install and verify the binaries, then register the exact server path. An optional
+prebuilt Windows setup is available in the stable release with SHA-256,
+manifest and SBOM; it is currently unsigned by a publicly trusted CA.
+
+## Important naming
+
+The protocol is **Model Context Protocol**, not Mobile Context Protocol. Search
+terms include `Horizun Revit MCP`, `Revit MCP server`, `Autodesk Revit MCP`,
+`Model Context Protocol Revit`, `Revit AI automation`, `Revit family authoring
+MCP`, `Revit IFC Navisworks FBX MCP` and `Power BI Revit MCP`.

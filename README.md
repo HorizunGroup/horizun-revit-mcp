@@ -1,7 +1,10 @@
-# Horizun Revit MCP
+# Horizun Revit MCP — Model Context Protocol server for Autodesk Revit
 
-An MCP gateway for Autodesk Revit. **Free and open source, Apache-2.0.** Part of
-the [Horizun Hub](https://horizunhub.com) ecosystem.
+Open-source **Model Context Protocol (MCP) server for Autodesk Revit**. Horizun
+connects Codex, Claude, Cursor and other MCP clients to a running Revit session
+for typed BIM queries, verified model edits, family authoring, exports and Power
+BI workflows. **Free and open source, Apache-2.0.** Part of the [Horizun
+Hub](https://horizunhub.com) ecosystem.
 
 > **Official stable release: v0.5.0.** This is the public source repository for
 > Horizun Revit MCP. It contains the complete implementation, typed Revit
@@ -28,6 +31,11 @@ self-hosted runner and are reported as skipped when it is unavailable. The
 benchmark marks every capability whose current public evidence is still pending
 a live Revit or Power BI fixture; a green hosted-CI check is never presented as
 proof that those live operations ran.
+
+The server metadata is also prepared for the [Official MCP Registry](https://registry.modelcontextprotocol.io/)
+under `io.github.HorizunGroup/horizun-revit-mcp`, and the repository publishes a
+machine-readable [llms.txt](llms.txt) discovery summary for AI systems and
+indexers.
 
 ## Horizun Hub: the ecosystem around the MCP
 
