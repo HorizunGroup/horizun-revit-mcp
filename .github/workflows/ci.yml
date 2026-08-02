@@ -27,9 +27,9 @@ jobs:
   revit-free:
     runs-on: ubuntu-latest    # the Revit-free surface is plain net8.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -82,14 +82,14 @@ jobs:
 
       - name: Publish the client-name scan
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sensitive-scan
           path: artifacts/scan
 
       - name: Publish test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: artifacts/tests
@@ -106,7 +106,7 @@ jobs:
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the add-in for Revit ${{ matrix.year }} against its own RevitAPI
         shell: pwsh
@@ -136,7 +136,7 @@ jobs:
     needs: [revit-free, revit-addin]
     runs-on: [self-hosted, windows, revit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and stage every supported year
         shell: pwsh
@@ -264,7 +264,7 @@ jobs:
           Get-Content 'dist/package-hashes.json' | Write-Host
 
       - name: Publish the installer, manifest and SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horizun-mcp-package
           path: |
@@ -290,7 +290,7 @@ jobs:
       matrix:
         year: [2025, 2026]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # DOWNLOAD THE ARTIFACT. This job used to read dist/ straight off the runner
       # and call it "the packaged artifact". On a self-hosted runner that directory
@@ -300,7 +300,7 @@ jobs:
       # all. The job that exists to prove the SHIPPED package works was testing a
       # directory, and on a good day the two were the same thing.
       - name: Get the package this run built
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: horizun-mcp-package
           path: dist
@@ -430,7 +430,7 @@ jobs:
       # actually needs. Publishing only the green ones is publishing nothing.
       - name: Publish the live-verification results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-verification-${{ matrix.year }}
           path: artifacts/live
