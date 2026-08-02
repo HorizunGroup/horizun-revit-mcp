@@ -27,11 +27,11 @@
 #>
 [CmdletBinding()]
 param(
-    # `horizun`, matching register-client.ps1's default. It was `horizun-next`
-    # until 0.3.0, from the months when this build was the candidate sitting beside
-    # a shipped one - and a checker whose default names an entry the registrar no
-    # longer creates reports "not registered" about a correct install.
-    [string]$Name = 'horizun',
+    # `horizun-revit`, matching register-client.ps1's default. It was `horizun-next`
+    # until 0.3.0, then plain `horizun` until this rename - and a checker whose
+    # default names an entry the registrar no longer creates reports "not
+    # registered" about a correct install.
+    [string]$Name = 'horizun-revit',
     [string]$Json
 )
 $ErrorActionPreference = 'Stop'

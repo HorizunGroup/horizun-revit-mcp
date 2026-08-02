@@ -57,12 +57,12 @@ not exist and the client shows no tools without saying why.
 
 ```powershell
 # Claude Code
-claude mcp add horizun -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+claude mcp add horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
 # Codex — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun]
+[mcp_servers.horizun-revit]
 command = 'C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
 startup_timeout_sec = 120
@@ -73,7 +73,7 @@ tool_timeout_sec = 600
 // Cursor, Cline, Windsurf, Claude Desktop and other MCP clients
 {
   "mcpServers": {
-    "horizun": {
+    "horizun-revit": {
       "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
     }
   }
@@ -186,12 +186,12 @@ existe y el cliente no muestra herramientas sin decir por qué.
 
 ```powershell
 # Claude Code
-claude mcp add horizun -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+claude mcp add horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
 # Codex — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun]
+[mcp_servers.horizun-revit]
 command = 'C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
 startup_timeout_sec = 120
@@ -202,7 +202,7 @@ tool_timeout_sec = 600
 // Cursor, Cline, Windsurf, Claude Desktop y otros clientes MCP
 {
   "mcpServers": {
-    "horizun": {
+    "horizun-revit": {
       "command": "C:\\Users\\<usuario>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
     }
   }

@@ -3,20 +3,22 @@
   Register Horizun in Codex and Claude, IN PARALLEL WITH WHAT IS ALREADY THERE.
 
   The point of this script is what it does NOT do. It adds one entry and touches
-  nothing else: aec-model-bridge, aec-model-bridge-2025, horizun-revit, rvt-mcp
+  nothing else: aec-model-bridge, aec-model-bridge-2025, rvt-mcp, civil3d-mcp
   and every other server stay exactly as they are. A cutover is a decision taken
   with evidence in front of you, not a side effect of installing something.
 
-  It registers under its own name - `horizun` - so it sits beside whatever else is
-  there rather than replacing it. Two entries can point at two different binaries;
-  one entry cannot be in two states.
+  It registers under its own name - `horizun-revit` - so it sits beside whatever
+  else is there rather than replacing it. Two entries can point at two different
+  binaries; one entry cannot be in two states.
 
   THE NAME WAS `horizun-next` UNTIL 0.3.0, from the months when this build was the
-  candidate sitting beside a shipped one. It is the shipped one now, and a default
-  that still says "next" is a default that makes every user's session, every
-  screenshot and every set of instructions disagree with the product's own name.
-  Pass -Name to keep the old entry, or to run two builds side by side - which is
-  what the parameter is for and was never the reason for the default.
+  candidate sitting beside a shipped one, then plain `horizun` from 0.3.0. A name
+  with no product in it reads fine alone but stops meaning anything on a machine
+  that also has civil3d-mcp, navisworks and half a dozen other bridges registered
+  - `horizun-revit` is the one that still says what it is from the client's own
+  server list. Pass -Name to keep an old entry, or to run two builds side by
+  side - which is what the parameter is for and was never the reason for the
+  default.
 
   THE HAZARD THIS EXISTS TO HANDLE. Both clients rewrite their configuration file
   from memory while they run, so an edit made underneath a running client is lost
@@ -37,7 +39,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Name = 'horizun',
+    [string]$Name = 'horizun-revit',
     [ValidateSet('Claude', 'Codex', 'Both')]
     [string]$Client = 'Both',
     [string]$ServerPath,

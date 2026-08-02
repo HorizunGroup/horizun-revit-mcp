@@ -85,9 +85,20 @@ is what plugs into it.
 
 ## Install
 
-### Install with Codex — recommended
+### Install with an agent — recommended
 
-Paste this into Codex in any folder:
+Paste one of these into the agent you already have open, in any folder:
+
+**Claude Code**
+
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+CLAUDE.md, and follow the install procedure there. When it finishes, register the
+MCP server with yourself using the exact path the installer printed, and tell me
+which version and commit ended up installed.
+```
+
+**Codex**
 
 ```
 Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
@@ -96,11 +107,14 @@ MCP server with yourself using the exact path the installer printed, and tell me
 which version and commit ended up installed.
 ```
 
-Codex reads [AGENTS.md](AGENTS.md), checks the prerequisites, builds from this
-public source against each Revit version installed on the machine, installs the
-matching add-in binaries and MCP server, verifies their commit and SHA-256, and
-registers the resulting server path. Revit must be closed. No prebuilt executable
-is downloaded by this path.
+Claude Code reads `CLAUDE.md` (which imports [AGENTS.md](AGENTS.md)); Codex reads
+[AGENTS.md](AGENTS.md) directly. Either way the agent checks the prerequisites,
+builds from this public source against each Revit version installed on the
+machine, installs the matching add-in binaries and MCP server, verifies their
+commit and SHA-256, and registers the resulting server path under the name
+`horizun-revit` — so it reads as what it is next to every other MCP server on
+your machine. Revit must be closed. No prebuilt executable is downloaded by this
+path.
 
 ### Prebuilt release installer — optional
 
@@ -163,12 +177,12 @@ silently points nowhere.
 
 ```powershell
 # Claude Code
-claude mcp add horizun -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+claude mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
 # Codex — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun]
+[mcp_servers.horizun-revit]
 command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
 startup_timeout_sec = 120
@@ -179,7 +193,7 @@ tool_timeout_sec = 600
 // Cursor, Cline, Windsurf, Claude Desktop, and other MCP clients
 {
   "mcpServers": {
-    "horizun": {
+    "horizun-revit": {
       "command": "C:\\Users\\<YOU>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
     }
   }

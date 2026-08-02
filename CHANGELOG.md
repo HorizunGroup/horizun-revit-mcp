@@ -5,6 +5,10 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- The MCP server now registers as `horizun-revit` instead of bare `horizun`, so
+  it still reads as what it is in a client's server list next to civil3d-mcp,
+  navisworks and every other bridge. README and AGENTS.md give Claude Code and
+  Codex the same paste-in install prompt; previously only Codex had one.
 - Codex source installation is now the recommended public path; the unsigned
   prebuilt setup remains an optional, checksum-verified alternative.
 - Public evidence language now distinguishes hosted CI, compiled Revit coverage

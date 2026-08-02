@@ -8,7 +8,7 @@
 
 - Repository: https://github.com/HorizunGroup/horizun-revit-mcp
 - Latest stable release: https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest
-- Installation and Codex setup: https://github.com/HorizunGroup/horizun-revit-mcp#install
+- Installation and agent setup (Claude Code, Codex): https://github.com/HorizunGroup/horizun-revit-mcp#install
 - Complete tool catalogue: https://github.com/HorizunGroup/horizun-revit-mcp#tool-surface
 - Benchmark and competitor methodology: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/BENCHMARK.md
 - Security model: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/security-model.md
