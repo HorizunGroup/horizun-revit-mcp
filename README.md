@@ -102,12 +102,12 @@ silently points nowhere.
 
 ```powershell
 # Claude Code
-claude mcp add horizun -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+claude mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
 # Codex — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun]
+[mcp_servers.horizun-revit]
 command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
 startup_timeout_sec = 120
@@ -118,7 +118,7 @@ tool_timeout_sec = 600
 // Cursor, Cline, Windsurf, Claude Desktop, and other MCP clients
 {
   "mcpServers": {
-    "horizun": {
+    "horizun-revit": {
       "command": "C:\\Users\\<YOU>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
     }
   }

@@ -407,7 +407,7 @@ begin
               'Use the Start-menu shortcut "Configurar Horizun en Codex y Claude" to register both clients safely.' + #13#10 +
               'It keeps timestamped backups and preserves every other MCP entry.' + #13#10#13#10 +
               'Claude CLI alternative:' + #13#10 +
-              'claude mcp add --scope user horizun "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
+              'claude mcp add --scope user horizun-revit "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
              mbInformation, MB_OK);
   end;
 end;

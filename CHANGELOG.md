@@ -3,6 +3,16 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased
+
+- The MCP server now registers as `horizun-revit` instead of bare `horizun`, so
+  it still reads as what it is in a client's server list next to civil3d-mcp,
+  navisworks and every other bridge. Affects `install.ps1`, the installer's
+  final page, `register-client.ps1`/`verify-clients.ps1`'s default `-Name`,
+  and every install doc. An existing registration under the old name is not
+  renamed automatically — remove it and re-add, or pass `-Name horizun` to
+  keep it.
+
 ## v0.5.0 — 2026-08-01
 
 Esta versión apunta directamente al benchmark de operaciones tipadas,
