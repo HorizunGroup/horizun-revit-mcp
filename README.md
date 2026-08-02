@@ -28,6 +28,34 @@ security-sensitive scan, and live Revit 2026 validation of the family compiler
 including a parametric extrusion, two strong reference planes, a dimension and
 a symbolic line, with the resulting `.rfa` loaded and re-read in the project.
 
+## Horizun Hub: the ecosystem around the MCP
+
+[Horizun Hub](https://horizunhub.com) is the product ecosystem from Horizun
+Group. Horizun Revit MCP is its open-source automation and Revit API layer; the
+Hub adds the training, apps, data products and expert workflows that turn the
+bridge into a complete BIM operating system:
+
+- **Apps:** PowerBIM Exporter for Revit, PowerBIM Online, PowerBIM Exporter for
+  Civil 3D, BuildMotion, CopyToExcel and Family Browser.
+- **Academia:** PowerBIM + IA training and the growing course library.
+- **Quantification and 4D/5D:** Revit + Navisworks examples, templates and
+  construction-planning workflows.
+- **Power BI and content:** dashboards, `.pbit` templates, visual assets and
+  data workflows.
+- **IA and automation:** agents, MCP workflows and scripts for standardising
+  families and auditing models.
+- **APS connection:** extraction of Autodesk Construction Cloud data into Power
+  BI workflows.
+- **Expert support:** two hours per month with a Horizun Group BIM expert,
+  delivered through Zoom or Teams.
+- **Learning media:** BIM Para Todos videos and tutorials covering Revit,
+  Power BI, Speckle, Civil 3D and AI.
+
+The MCP remains organisation-neutral: company standards, catalogues and audit
+rules are supplied by the Hub workflows or by the caller, rather than compiled
+into the bridge. See [`docs/HORIZUN-HUB.md`](docs/HORIZUN-HUB.md) for the full
+relationship between the open-source gateway and the Hub ecosystem.
+
 Point Claude — or any MCP client — at a running Revit and let it read and write
 the model, under one contract: **a command never reports work it did not
 verify.** Every typed write is re-read from the model after the commit; a silent
