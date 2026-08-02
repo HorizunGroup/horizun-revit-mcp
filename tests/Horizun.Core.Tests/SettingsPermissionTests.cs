@@ -16,6 +16,19 @@ namespace Horizun.Core.Tests
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_plan"), out _));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_create_family"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_power_bi_push"), out _));
+            });
+        }
+
+        [Fact]
+        public void FullWriteAllowsVerifiedExternalOperations()
+        {
+            WithSettings(@"{""permission_profile"":""full_write""}", () =>
+            {
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_create_family"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_power_bi_push"), out _));
             });
         }
 

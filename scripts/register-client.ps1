@@ -44,16 +44,37 @@ param(
     [switch]$Rollback,
     # Edit even though the client is running. It will probably be overwritten.
     [switch]$Force,
+    # Installer convenience: when Both is requested, operate on whichever of the
+    # two clients actually has a config file. The normal CLI default remains
+    # strict so a misspelled/missing config is not silently ignored.
+    [switch]$SkipMissingClients,
     [switch]$WhatIfOnly,
     [string]$Json
 )
 $ErrorActionPreference = 'Stop'
 
+if ($Name -notmatch '^[A-Za-z0-9_-]{1,64}$') {
+    Write-Host 'Name must contain only ASCII letters, digits, underscore or hyphen (1..64 characters).' -ForegroundColor Red
+    exit 2
+}
+
 $claudeConfig = Join-Path $env:USERPROFILE '.claude.json'
 $codexConfig  = Join-Path $env:USERPROFILE '.codex\config.toml'
 
+if ($Client -eq 'Both' -and $SkipMissingClients) {
+    $hasClaude = Test-Path $claudeConfig
+    $hasCodex = Test-Path $codexConfig
+    if (-not $hasClaude -and -not $hasCodex) {
+        Write-Host 'Neither Claude nor Codex has an existing configuration file. Start the client once, close it, and run this helper again.' -ForegroundColor Red
+        exit 2
+    }
+    if ($hasClaude -and -not $hasCodex) { $Client = 'Claude' }
+    elseif ($hasCodex -and -not $hasClaude) { $Client = 'Codex' }
+}
+
 $actions  = New-Object System.Collections.Generic.List[object]
 $problems = New-Object System.Collections.Generic.List[string]
+$successfulWrites = New-Object System.Collections.Generic.List[object]
 
 function Say($m, $c = 'Gray') { Write-Host "  $m" -ForegroundColor $c }
 function Act($client, $what, $ok, $detail) {
@@ -169,6 +190,7 @@ if ($Client -eq 'Both' -or $Client -eq 'Claude') {
                 }
                 else {
                     Act 'Claude' "added '$Name'; $($existing.Count) existing entries intact; backup $(Split-Path -Leaf $backup)" $true $null
+                    $successfulWrites.Add([pscustomobject]@{ Client = 'Claude'; Path = $claudeConfig; Backup = $backup }) | Out-Null
                 }
             }
         }
@@ -200,7 +222,7 @@ if ($Client -eq 'Both' -or $Client -eq 'Codex') {
                 "# Horizun MCP - added by scripts/register-client.ps1.",
                 "# Registered BESIDE the existing servers, which are untouched.",
                 $header,
-                "command = '$ServerPath'",
+                ('command = ' + (ConvertTo-Json -InputObject ([string]$ServerPath) -Compress)),
                 'args = []',
                 # The scan of a large model and the first call after a cold start
                 # both exceed a short default, and a timeout here reads as a broken
@@ -249,6 +271,7 @@ if ($Client -eq 'Both' -or $Client -eq 'Codex') {
                 }
                 else {
                     Act 'Codex' "added '$Name'; $($othersAfter.Count) server table(s) present; backup $(Split-Path -Leaf $backup)" $true $null
+                    $successfulWrites.Add([pscustomobject]@{ Client = 'Codex'; Path = $codexConfig; Backup = $backup }) | Out-Null
                 }
             }
         }
@@ -274,7 +297,17 @@ if ($Json) {
 }
 
 if ($problems.Count -gt 0) {
-    Write-Host "  Nothing was left half-done: every failed write restored its backup." -ForegroundColor Yellow
+    # A Both request is one user intention. If one client fails after the other
+    # succeeded, restore every successful write so the operation is atomic
+    # across the two configuration files as well as within each individual file.
+    for ($i = $successfulWrites.Count - 1; $i -ge 0; $i--) {
+        $write = $successfulWrites[$i]
+        if ($write.Backup -and (Test-Path -LiteralPath $write.Backup)) {
+            Copy-Item -LiteralPath $write.Backup -Destination $write.Path -Force
+            Say "$($write.Client) restored after another requested client failed" 'Yellow'
+        }
+    }
+    Write-Host "  Nothing was left half-done: failed writes and earlier successful writes were restored." -ForegroundColor Yellow
     exit 1
 }
 

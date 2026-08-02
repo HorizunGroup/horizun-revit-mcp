@@ -15,7 +15,7 @@ namespace Horizun.Revit.Commands
     public sealed class ManageViewsCommand : ICommand
     {
         public string Name => "horizun_manage_views";
-        public string Description => "Create views/sheets and place views/schedules in one verified transaction.";
+        public string Description => "Create plans, sections, elevations, drafting/3D views and sheets in one verified transaction.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -32,7 +32,7 @@ namespace Horizun.Revit.Commands
             if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))
                 return CommandResult.Fail("units must be mm, m or feet.");
 
-            var knownKeys = new HashSet<string>(StringComparer.Ordinal);
+            var knownKeys = new Dictionary<string, Type>(StringComparer.Ordinal);
             var errors = new JArray();
             var plans = new List<JObject>();
             for (int i = 0; i < input.Count; i++)
@@ -43,7 +43,7 @@ namespace Horizun.Revit.Commands
                 else
                 {
                     string key = a.Value<string>("key");
-                    if (!string.IsNullOrWhiteSpace(key)) knownKeys.Add(key);
+                    if (!string.IsNullOrWhiteSpace(key)) knownKeys.Add(key, ResultType(a.Value<string>("operation")));
                     plans.Add(new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key });
                 }
             }
@@ -119,24 +119,50 @@ namespace Horizun.Revit.Commands
             });
         }
 
-        private static string Validate(Document doc, JObject a, HashSet<string> known)
+        private static string Validate(Document doc, JObject a, Dictionary<string, Type> known)
         {
             if (a == null) return "action is not an object";
             string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
             string key = a.Value<string>("key");
-            if (!string.IsNullOrWhiteSpace(key) && known.Contains(key)) return "key '" + key + "' is duplicated";
+            if (!string.IsNullOrWhiteSpace(key) && known.ContainsKey(key)) return "key '" + key + "' is duplicated";
             try
             {
                 switch (op)
                 {
                     case "create_floor_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.FloorPlan); break;
+                    case "create_ceiling_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.CeilingPlan); break;
+                    case "create_structural_plan": Need<Level>(doc, a, "level_id"); OptionalViewFamilyType(doc, a, ViewFamily.StructuralPlan); break;
                     case "create_3d": OptionalViewFamilyType(doc, a, ViewFamily.ThreeDimensional); break;
-                    case "duplicate_view": Reference<View>(doc, a, "source_view_id", "source_view_key", known); break;
+                    case "create_drafting": OptionalViewFamilyType(doc, a, ViewFamily.Drafting); break;
+                    case "create_section": OptionalViewFamilyType(doc, a, ViewFamily.Section); SectionBox(a, 1); break;
+                    case "create_elevation":
+                        OptionalViewFamilyType(doc, a, ViewFamily.Elevation); Need<ViewPlan>(doc, a, "plan_view_id"); Point(a["point"]);
+                        int index = a.Value<int?>("elevation_index") ?? 0;
+                        if (index < 0 || index > 3) throw new ArgumentException("elevation_index must be 0..3");
+                        int markerScale = a.Value<int?>("marker_scale") ?? 100;
+                        if (markerScale < 1 || markerScale > 24000) throw new ArgumentException("marker_scale must be 1..24000");
+                        break;
+                    case "duplicate_view":
+                        Reference<View>(doc, a, "source_view_id", "source_view_key", known);
+                        if (!Enum.TryParse(a.Value<string>("duplicate_option") ?? "Duplicate", true, out ViewDuplicateOption duplicate) ||
+                            !Enum.IsDefined(typeof(ViewDuplicateOption), duplicate))
+                            throw new ArgumentException("duplicate_option is invalid");
+                        if (string.IsNullOrWhiteSpace(a.Value<string>("source_view_key")) &&
+                            !Need<View>(doc, a, "source_view_id").CanViewBeDuplicated(duplicate))
+                            throw new ArgumentException("source_view_id cannot be duplicated with " + duplicate);
+                        break;
                     case "apply_template":
                         Reference<View>(doc, a, "view_id", "view_key", known);
                         View template = Need<View>(doc, a, "template_view_id"); if (!template.IsTemplate) throw new ArgumentException("template_view_id is not a view template"); break;
-                    case "create_sheet": if (a["title_block_type_id"] != null) Need<FamilySymbol>(doc, a, "title_block_type_id"); break;
-                    case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<View>(doc, a, "view_id", "view_key", known); Point(a["point"]); break;
+                    case "create_sheet":
+                        if (a["title_block_type_id"] != null)
+                        {
+                            FamilySymbol title = Need<FamilySymbol>(doc, a, "title_block_type_id");
+                            if (!InCategory(title, BuiltInCategory.OST_TitleBlocks))
+                                throw new ArgumentException("title_block_type_id must identify a title-block FamilySymbol");
+                        }
+                        break;
+                    case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); ReferenceViewportView(doc, a, known); Point(a["point"]); break;
                     case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
                     default: return "unsupported operation '" + op + "'";
                 }
@@ -148,17 +174,35 @@ namespace Horizun.Revit.Commands
         private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)
         {
             string op = a.Value<string>("operation").ToLowerInvariant();
-            if (op == "create_floor_plan")
+            if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
-                Level level = Need<Level>(doc, a, "level_id"); ViewFamilyType type = ResolveVft(doc, a, ViewFamily.FloorPlan);
+                ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
+                    op == "create_ceiling_plan" ? ViewFamily.CeilingPlan : ViewFamily.StructuralPlan;
+                Level level = Need<Level>(doc, a, "level_id"); ViewFamilyType type = ResolveVft(doc, a, family);
                 ViewPlan view = ViewPlan.Create(doc, type.Id, level.Id); SetName(view, a); return view;
             }
             if (op == "create_3d") { View3D view = View3D.CreateIsometric(doc, ResolveVft(doc, a, ViewFamily.ThreeDimensional).Id); SetName(view, a); return view; }
+            if (op == "create_drafting") { ViewDrafting view = ViewDrafting.Create(doc, ResolveVft(doc, a, ViewFamily.Drafting).Id); SetName(view, a); return view; }
+            if (op == "create_section")
+            {
+                ViewSection view = ViewSection.CreateSection(doc, ResolveVft(doc, a, ViewFamily.Section).Id, SectionBox(a, scale));
+                SetName(view, a); return view;
+            }
+            if (op == "create_elevation")
+            {
+                ViewFamilyType type = ResolveVft(doc, a, ViewFamily.Elevation);
+                XYZ elevationPoint = Point(a["point"]) * scale;
+                ElevationMarker marker = ElevationMarker.CreateElevationMarker(doc, type.Id, elevationPoint, a.Value<int?>("marker_scale") ?? 100);
+                ViewSection view = marker.CreateElevation(doc, Need<ViewPlan>(doc, a, "plan_view_id").Id,
+                    a.Value<int?>("elevation_index") ?? 0);
+                SetName(view, a); return view;
+            }
             if (op == "duplicate_view")
             {
                 View source = Resolve<View>(doc, a, "source_view_id", "source_view_key", aliases);
                 ViewDuplicateOption option;
-                if (!Enum.TryParse(a.Value<string>("duplicate_option") ?? "Duplicate", true, out option)) throw new ArgumentException("invalid duplicate_option");
+                if (!Enum.TryParse(a.Value<string>("duplicate_option") ?? "Duplicate", true, out option) ||
+                    !Enum.IsDefined(typeof(ViewDuplicateOption), option)) throw new ArgumentException("invalid duplicate_option");
                 View copy = doc.GetElement(source.Duplicate(option)) as View; SetName(copy, a); return copy;
             }
             if (op == "apply_template")
@@ -187,8 +231,13 @@ namespace Horizun.Revit.Commands
             if (e == null) return false;
             switch (a.Operation.ToLowerInvariant())
             {
-                case "create_floor_plan": return e is ViewPlan;
-                case "create_3d": return e is View3D;
+                case "create_floor_plan": return e is ViewPlan floor && floor.ViewType == ViewType.FloorPlan;
+                case "create_ceiling_plan": return e is ViewPlan ceiling && ceiling.ViewType == ViewType.CeilingPlan;
+                case "create_structural_plan": return e is ViewPlan structural && structural.ViewType == ViewType.EngineeringPlan;
+                case "create_3d": return e is View3D threeD && threeD.ViewType == ViewType.ThreeD;
+                case "create_drafting": return e is ViewDrafting drafting && drafting.ViewType == ViewType.DraftingView;
+                case "create_section": return e is ViewSection section && section.ViewType == ViewType.Section;
+                case "create_elevation": return e is ViewSection elevation && elevation.ViewType == ViewType.Elevation;
                 case "duplicate_view": return e is View;
                 case "apply_template": return e is View && a.TargetId != null && ((View)e).ViewTemplateId == a.TargetId;
                 case "create_sheet": return e is ViewSheet;
@@ -208,6 +257,36 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
         private static void SetName(View view, JObject a) { string name = a.Value<string>("name"); if (!string.IsNullOrWhiteSpace(name)) view.Name = name; }
+        private static BoundingBoxXYZ SectionBox(JObject a, double scale)
+        {
+            XYZ start = Point(a["start"]) * scale;
+            XYZ end = Point(a["end"]) * scale;
+            XYZ horizontal = new XYZ(end.X - start.X, end.Y - start.Y, 0);
+            if (horizontal.GetLength() < 1e-9) throw new ArgumentException("section start/end must define a non-zero horizontal line");
+            if (Math.Abs(end.Z - start.Z) > 1e-6) throw new ArgumentException("section start/end must have the same Z elevation");
+            double bottom = Finite(a.Value<double?>("bottom_offset") ?? -1000, "bottom_offset") * scale;
+            double top = Finite(a.Value<double?>("top_offset") ?? 3000, "top_offset") * scale;
+            double depth = Finite(a.Value<double?>("depth") ?? 5000, "depth") * scale;
+            if (top <= bottom) throw new ArgumentException("top_offset must be greater than bottom_offset");
+            if (depth <= 0) throw new ArgumentException("depth must be positive");
+            XYZ x = horizontal.Normalize();
+            XYZ y = XYZ.BasisZ;
+            XYZ z = x.CrossProduct(y).Normalize();
+            double half = horizontal.GetLength() / 2.0;
+            var box = new BoundingBoxXYZ
+            {
+                Transform = new Transform(Transform.Identity)
+                {
+                    Origin = (start + end) / 2.0,
+                    BasisX = x,
+                    BasisY = y,
+                    BasisZ = z
+                },
+                Min = new XYZ(-half, bottom, 0),
+                Max = new XYZ(half, top, depth)
+            };
+            return box;
+        }
         private static ViewFamilyType ResolveVft(Document doc, JObject a, ViewFamily family) => a["view_family_type_id"] != null
             ? Need<ViewFamilyType>(doc, a, "view_family_type_id")
             : new FilteredElementCollector(doc).OfClass(typeof(ViewFamilyType)).Cast<ViewFamilyType>().FirstOrDefault(x => x.ViewFamily == family)
@@ -215,12 +294,60 @@ namespace Horizun.Revit.Commands
         private static void OptionalViewFamilyType(Document doc, JObject a, ViewFamily family) { ViewFamilyType t = ResolveVft(doc, a, family); if (t.ViewFamily != family) throw new ArgumentException("view_family_type_id is " + t.ViewFamily + ", not " + family); }
         private static T Need<T>(Document doc, JObject a, string field) where T : Element
         { long id = a.Value<long?>(field) ?? -1; if (!Rid.CanRepresent(id) || !(doc.GetElement(Rid.Make(id)) is T value)) throw new ArgumentException(field + " must identify a " + typeof(T).Name); return value; }
-        private static void Reference<T>(Document doc, JObject a, string idField, string keyField, HashSet<string> known) where T : Element
-        { string key = a.Value<string>(keyField); if (!string.IsNullOrWhiteSpace(key)) { if (!known.Contains(key)) throw new ArgumentException(keyField + " references unknown/prior key '" + key + "'"); return; } Need<T>(doc, a, idField); }
+        private static void Reference<T>(Document doc, JObject a, string idField, string keyField, Dictionary<string, Type> known) where T : Element
+        {
+            string key = a.Value<string>(keyField);
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                if (!known.TryGetValue(key, out Type actual)) throw new ArgumentException(keyField + " references unknown/prior key '" + key + "'");
+                if (!typeof(T).IsAssignableFrom(actual))
+                    throw new ArgumentException(keyField + " references key '" + key + "' whose result is " + actual.Name + ", not " + typeof(T).Name);
+                return;
+            }
+            Need<T>(doc, a, idField);
+        }
+        private static void ReferenceViewportView(Document doc, JObject a, Dictionary<string, Type> known)
+        {
+            string key = a.Value<string>("view_key");
+            if (!string.IsNullOrWhiteSpace(key))
+            {
+                if (!known.TryGetValue(key, out Type actual)) throw new ArgumentException("view_key references unknown/prior key '" + key + "'");
+                if (!typeof(View).IsAssignableFrom(actual) || typeof(ViewSchedule).IsAssignableFrom(actual) || typeof(ViewSheet).IsAssignableFrom(actual))
+                    throw new ArgumentException("view_key must resolve to a non-schedule, non-sheet View suitable for a Viewport");
+                return;
+            }
+            View view = Need<View>(doc, a, "view_id");
+            if (view is ViewSchedule) throw new ArgumentException("view_id is a schedule; use place_schedule");
+            if (view is ViewSheet) throw new ArgumentException("view_id is a sheet and cannot be placed in a Viewport");
+        }
         private static T Resolve<T>(Document doc, JObject a, string idField, string keyField, Dictionary<string, ElementId> aliases) where T : Element
         { string key = a.Value<string>(keyField); if (!string.IsNullOrWhiteSpace(key)) { if (!aliases.TryGetValue(key, out ElementId id) || !(doc.GetElement(id) is T byKey)) throw new ArgumentException(keyField + " did not resolve to " + typeof(T).Name); return byKey; } return Need<T>(doc, a, idField); }
-        private static XYZ Point(JToken token) { JArray p = token as JArray; if (p == null || p.Count < 2 || p.Count > 3) throw new ArgumentException("point needs XY or XYZ"); return new XYZ(p[0].Value<double>(), p[1].Value<double>(), p.Count > 2 ? p[2].Value<double>() : 0); }
+        private static XYZ Point(JToken token)
+        {
+            JArray p = token as JArray; if (p == null || p.Count < 2 || p.Count > 3) throw new ArgumentException("point needs XY or XYZ");
+            return new XYZ(Finite(p[0].Value<double>(), "X"), Finite(p[1].Value<double>(), "Y"),
+                Finite(p.Count > 2 ? p[2].Value<double>() : 0, "Z"));
+        }
         private static bool Scale(string u, out double s) { if (u == "feet") { s = 1; return true; } if (u == "m") { s = 1 / 0.3048; return true; } if (u == "mm") { s = 1 / 304.8; return true; } s = 0; return false; }
+        private static double Finite(double value, string field)
+        { if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException(field + " must be finite"); return value; }
+        private static Type ResultType(string operation)
+        {
+            switch ((operation ?? "").ToLowerInvariant())
+            {
+                case "create_floor_plan": case "create_ceiling_plan": case "create_structural_plan": return typeof(ViewPlan);
+                case "create_3d": return typeof(View3D);
+                case "create_drafting": return typeof(ViewDrafting);
+                case "create_section": case "create_elevation": return typeof(ViewSection);
+                case "duplicate_view": case "apply_template": return typeof(View);
+                case "create_sheet": return typeof(ViewSheet);
+                case "place_view": return typeof(Viewport);
+                case "place_schedule": return typeof(ScheduleSheetInstance);
+                default: return typeof(Element);
+            }
+        }
+        private static bool InCategory(Element element, BuiltInCategory category)
+        { return element?.Category != null && Rid.Value(element.Category.Id) == (long)category; }
         private sealed class Applied { public int Index; public string Operation; public ElementId Id, TargetId; }
     }
 }

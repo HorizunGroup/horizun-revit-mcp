@@ -277,8 +277,9 @@ namespace Horizun.Contracts
                 Name = "horizun_create_elements",
                 Command = "horizun_create_elements",
                 Description =
-                    "Create a heterogeneous batch of common BIM elements in one atomic transaction: levels, grids, " +
-                    "walls, floors, rooms, family instances, ducts, pipes and conduits. Geometry enters in explicit " +
+                    "Create a heterogeneous batch of architectural, structural and MEP elements in one atomic transaction: " +
+                    "levels, grids, walls, floors, ceilings, footprint roofs, rooms, family instances, structural framing, " +
+                    "structural columns, ducts, pipes, conduits and cable trays. Geometry enters in explicit " +
                     "mm/m/feet units; every referenced type and level resolves before a transaction opens. Dry-run " +
                     "is the default, apply requires confirmation and idempotency, and every created id is re-read " +
                     "after commit and checked against the requested element kind.",
@@ -289,16 +290,17 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""elements"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": {
       ""type"": ""object"", ""required"": [""kind""], ""properties"": {
-        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""room"", ""family_instance"", ""duct"", ""pipe"", ""conduit""] },
+        ""kind"": { ""type"": ""string"", ""enum"": [""level"", ""grid"", ""wall"", ""floor"", ""ceiling"", ""roof"", ""room"", ""family_instance"", ""structural_framing"", ""structural_column"", ""duct"", ""pipe"", ""conduit"", ""cable_tray""] },
         ""name"": { ""type"": ""string"", ""description"": ""Level/grid name where supported."" },
         ""elevation"": { ""type"": ""number"" },
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
-        ""profile"": { ""type"": ""array"", ""description"": ""Floor loops; each loop is an array of at least three XYZ points. Revit decides outer/inner semantics."" },
+        ""profile"": { ""type"": ""array"", ""description"": ""Floor/ceiling loops, or one roof footprint loop; each loop is an array of at least three XYZ points."" },
         ""level_id"": { ""type"": ""integer"" }, ""type_id"": { ""type"": ""integer"" },
         ""system_type_id"": { ""type"": ""integer"", ""description"": ""Required for duct and pipe."" },
         ""height"": { ""type"": ""number"" }, ""offset"": { ""type"": ""number"", ""default"": 0 },
+        ""slope_degrees"": { ""type"": ""number"", ""minimum"": 0, ""exclusiveMaximum"": 90, ""default"": 0, ""description"": ""Uniform slope on all footprint-roof edges."" },
         ""flip"": { ""type"": ""boolean"", ""default"": false }, ""structural"": { ""type"": ""boolean"", ""default"": false },
         ""structural_type"": { ""type"": ""string"", ""enum"": [""NonStructural"", ""Beam"", ""Brace"", ""Column"", ""Footing""] }
       }, ""additionalProperties"": false
@@ -306,6 +308,166 @@ namespace Horizun.Contracts
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
     ""confirmation_token"": { ""type"": ""string"" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create elements"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_create_family",
+                Command = "horizun_create_family",
+                Description =
+                    "Compile a loadable parametric RFA from an absolute Revit family-template (.rft) path. The typed " +
+                    "specification covers family parameters (length/area/volume/angle/number/integer/yes-no/text/material), " +
+                    "formulas, named types with per-type values, solid or void extrusions/blends/revolutions/sweeps/swept " +
+                    "blends, reference planes, labeled dimensions, symbolic/model lines and point-placed nested RFA " +
+                    "instances with outer-parameter associations, association " +
+                    "of form depth/offset/angle/material/visibility to family parameters, and pipe/duct/electrical/conduit/" +
+                    "cable-tray connectors hosted on a planar face selected by normal with optional size-parameter " +
+                    "associations. Dry-run opens no document. Apply creates one family transaction, re-reads forms, " +
+                    "connectors, parameters and types, saves and verifies the RFA, optionally loads it into the guarded " +
+                    "project and re-reads the loaded Family. System-family types are not RFA files and belong to " +
+                    "horizun_manage_system_types; general in-place-family creation is not exposed by the public Revit API. " +
+                    "Requires full_write because it creates an external file.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""template_path"", ""output_path""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""template_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rft path. The template determines category and hosting behavior."" },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute .rfa destination in an existing directory."" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""parameters"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""name""], ""properties"": {
+        ""name"": { ""type"": ""string"" },
+        ""data_type"": { ""type"": ""string"", ""enum"": [""length"", ""area"", ""volume"", ""angle"", ""number"", ""integer"", ""yesno"", ""text"", ""material""], ""default"": ""text"" },
+        ""group"": { ""type"": ""string"", ""enum"": [""data"", ""identity_data"", ""geometry"", ""materials"", ""general""], ""default"": ""data"" },
+        ""instance"": { ""type"": ""boolean"", ""default"": false },
+        ""formula"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""Optional Revit family formula. Omit to preserve an existing template formula."" }
+      }, ""additionalProperties"": false
+    }},
+    ""types"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""name""], ""properties"": {
+        ""name"": { ""type"": ""string"" },
+        ""values"": { ""type"": ""object"", ""additionalProperties"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } }
+      }, ""additionalProperties"": false
+    }},
+    ""forms"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""kind"", ""profile""], ""properties"": {
+        ""key"": { ""type"": ""string"" },
+        ""kind"": { ""type"": ""string"", ""enum"": [""extrusion"", ""blend"", ""revolution"", ""sweep"", ""swept_blend""] },
+        ""solid"": { ""type"": ""boolean"", ""default"": true },
+        ""plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""] },
+        ""profile"": { ""type"": ""array"", ""description"": ""One or more closed loops; each loop has at least three XYZ points."" },
+        ""top_profile"": { ""type"": ""array"", ""description"": ""Required for blend; currently exactly one loop."" },
+        ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 1000 },
+        ""bottom_offset"": { ""type"": ""number"", ""default"": 0 }, ""top_offset"": { ""type"": ""number"", ""default"": 1000 },
+        ""axis_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""axis_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""path"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 100, ""description"": ""Sweep polyline or single swept-blend segment as XYZ points."" },
+        ""path_plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""], ""default"": ""xz"" },
+        ""profile_location_curve_index"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+        ""profile_plane_location"": { ""type"": ""string"", ""enum"": [""Start"", ""MidPoint"", ""End""], ""default"": ""Start"" },
+        ""start_angle_degrees"": { ""type"": ""number"", ""default"": 0 }, ""end_angle_degrees"": { ""type"": ""number"", ""default"": 360 },
+        ""start_parameter"": { ""type"": ""string"" }, ""end_parameter"": { ""type"": ""string"" },
+        ""material_parameter"": { ""type"": ""string"" }, ""visibility_parameter"": { ""type"": ""string"" }
+      }, ""additionalProperties"": false
+    }},
+    ""connectors"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""host_form_key"", ""kind"", ""face_normal""], ""properties"": {
+        ""key"": { ""type"": ""string"" }, ""host_form_key"": { ""type"": ""string"" },
+        ""kind"": { ""type"": ""string"", ""enum"": [""pipe"", ""duct"", ""electrical"", ""conduit"", ""cable_tray""] },
+        ""face_normal"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""system_type"": { ""type"": ""string"" }, ""profile"": { ""type"": ""string"", ""enum"": [""Round"", ""Rectangular"", ""Oval""] },
+        ""primary"": { ""type"": ""boolean"", ""default"": false },
+        ""diameter_parameter"": { ""type"": ""string"" }, ""width_parameter"": { ""type"": ""string"" }, ""height_parameter"": { ""type"": ""string"" }
+      }, ""additionalProperties"": false
+    }},
+    ""reference_planes"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""bubble_end"", ""free_end"", ""cut_vector""], ""properties"": {
+        ""key"": { ""type"": ""string"" }, ""name"": { ""type"": ""string"" },
+        ""bubble_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""free_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""cut_vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
+      }, ""additionalProperties"": false
+    }},
+    ""dimensions"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""reference_plane_keys"", ""line_start"", ""line_end""], ""properties"": {
+        ""key"": { ""type"": ""string"" },
+        ""reference_plane_keys"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 20, ""items"": { ""type"": ""string"" } },
+        ""line_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""line_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""label_parameter"": { ""type"": ""string"", ""description"": ""Optional declared length parameter used as the family dimension label."" }
+      }, ""additionalProperties"": false
+    }},
+    ""family_lines"": { ""type"": ""array"", ""items"": {
+      ""type"": ""object"", ""required"": [""start"", ""end""], ""properties"": {
+        ""key"": { ""type"": ""string"" }, ""kind"": { ""type"": ""string"", ""enum"": [""symbolic"", ""model""], ""default"": ""symbolic"" },
+        ""plane"": { ""type"": ""string"", ""enum"": [""xy"", ""xz"", ""yz""], ""default"": ""xy"" },
+        ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
+      }, ""additionalProperties"": false
+    }},
+    ""nested_instances"": { ""type"": ""array"", ""maxItems"": 100, ""items"": {
+      ""type"": ""object"", ""required"": [""family_path"", ""type_name"", ""point""], ""properties"": {
+        ""key"": { ""type"": ""string"" },
+        ""family_path"": { ""type"": ""string"", ""description"": ""Absolute existing nested .rfa path."" },
+        ""type_name"": { ""type"": ""string"" },
+        ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""placement"": { ""type"": ""string"", ""enum"": [""model_point"", ""view_point""], ""default"": ""model_point"" },
+        ""rotation_degrees"": { ""type"": ""number"", ""default"": 0 },
+        ""associations"": { ""type"": ""object"", ""description"": ""Nested instance parameter name to declared outer family parameter name."", ""additionalProperties"": { ""type"": ""string"" } }
+      }, ""additionalProperties"": false
+    }},
+    ""overwrite"": { ""type"": ""boolean"", ""default"": false },
+    ""load_into_project"": { ""type"": ""boolean"", ""default"": true },
+    ""overwrite_parameter_values"": { ""type"": ""boolean"", ""default"": false },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: create parametric family"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_system_types",
+                Command = "horizun_manage_system_types",
+                Description =
+                    "Create project-resident system-family types by duplicating explicit source ElementType ids in one " +
+                    "atomic transaction. This covers wall/floor/roof/ceiling and MEP system types as well as other " +
+                    "non-loadable ElementTypes; loadable FamilySymbols are refused because they belong to RFA-family " +
+                    "authoring. Host types can replace their complete homogeneous compound structure with typed exterior-to-" +
+                    "interior layers: function, material, width, wrapping, shell/core boundaries, structural/variable layer " +
+                    "and structural-deck metadata. Parameter keys resolve by BuiltInParameter, shared GUID or one unambiguous exact display " +
+                    "name. Apply re-reads each duplicate's runtime class, name and raw stored values after commit; unit-aware " +
+                    "strings are marked as parsed by Revit rather than falsely claimed as literal-intent verification.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""actions""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"", ""description"": ""Units for compound layer widths."" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
+      ""type"": ""object"", ""required"": [""source_type_id"", ""new_name""], ""properties"": {
+        ""source_type_id"": { ""type"": ""integer"", ""description"": ""A project-resident non-FamilySymbol ElementType."" },
+        ""new_name"": { ""type"": ""string"" },
+        ""values"": { ""type"": ""object"", ""description"": ""Parameter spec to value. Numbers are raw Revit storage; strings use unit-aware SetValueString where applicable."", ""additionalProperties"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } },
+        ""compound_structure"": { ""type"": ""object"", ""description"": ""Optional complete vertically-homogeneous composition for HostObjAttributes types. Layers are ordered exterior to interior."", ""required"": [""layers""], ""properties"": {
+          ""layers"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""function"", ""width""], ""properties"": {
+            ""function"": { ""type"": ""string"", ""enum"": [""Structure"", ""Substrate"", ""Insulation"", ""Finish1"", ""Finish2"", ""Membrane"", ""StructuralDeck""] },
+            ""width"": { ""type"": ""number"", ""minimum"": 0 },
+            ""material_id"": { ""type"": ""integer"", ""default"": -1 },
+            ""wraps"": { ""type"": ""boolean"", ""default"": false },
+            ""deck_profile_id"": { ""type"": ""integer"", ""default"": -1 },
+            ""deck_embedding"": { ""type"": ""string"", ""enum"": [""MergeWithLayerAbove"", ""Standalone""], ""default"": ""Standalone"" }
+          }, ""additionalProperties"": false } },
+          ""exterior_shell_layers"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+          ""interior_shell_layers"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+          ""structural_layer_index"": { ""type"": ""integer"", ""minimum"": -1, ""default"": -1 },
+          ""variable_layer_index"": { ""type"": ""integer"", ""minimum"": -1, ""default"": -1 },
+          ""end_cap"": { ""type"": ""string"", ""enum"": [""None"", ""Exterior"", ""Interior"", ""NoEndCap""], ""default"": ""None"" },
+          ""opening_wrapping"": { ""type"": ""string"", ""enum"": [""None"", ""Exterior"", ""Interior"", ""ExteriorAndInterior""], ""default"": ""None"" }
+        }, ""additionalProperties"": false }
+      }, ""additionalProperties"": false
+    }},
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: manage system family types"" }
   }, ""additionalProperties"": false
 }")
             },
@@ -420,8 +582,9 @@ namespace Horizun.Contracts
                 Name = "horizun_manage_views",
                 Command = "horizun_manage_views",
                 Description =
-                    "Create and compose documentation in one atomic batch: floor plans, isometric 3D views, view " +
-                    "duplicates, template assignment, sheets, viewports and schedule instances. Actions may assign " +
+                    "Create and compose documentation in one atomic batch: floor/ceiling/structural plans, sections, " +
+                    "elevations, drafting and isometric 3D views, view duplicates, template assignment, sheets, " +
+                    "viewports and schedule instances. Actions may assign " +
                     "a key and later actions can reference that created object in the same transaction. Dry-run " +
                     "validates the dependency graph; apply re-reads every created or changed object after commit.",
                 InputSchema = JObject.Parse(@"{
@@ -430,17 +593,23 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_3d"", ""duplicate_view"", ""apply_template"", ""create_sheet"", ""place_view"", ""place_schedule""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""duplicate_view"", ""apply_template"", ""create_sheet"", ""place_view"", ""place_schedule""] },
         ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
         ""name"": { ""type"": ""string"" }, ""number"": { ""type"": ""string"" },
-        ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" },
+        ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" }, ""plan_view_id"": { ""type"": ""integer"" },
         ""source_view_id"": { ""type"": ""integer"" }, ""source_view_key"": { ""type"": ""string"" },
         ""duplicate_option"": { ""type"": ""string"", ""enum"": [""Duplicate"", ""WithDetailing"", ""AsDependent""], ""default"": ""Duplicate"" },
         ""view_id"": { ""type"": ""integer"" }, ""view_key"": { ""type"": ""string"" },
         ""template_view_id"": { ""type"": ""integer"" }, ""title_block_type_id"": { ""type"": ""integer"" },
         ""sheet_id"": { ""type"": ""integer"" }, ""sheet_key"": { ""type"": ""string"" },
         ""schedule_id"": { ""type"": ""integer"" }, ""schedule_key"": { ""type"": ""string"" },
-        ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } }
+        ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+        ""bottom_offset"": { ""type"": ""number"", ""default"": -1000 }, ""top_offset"": { ""type"": ""number"", ""default"": 3000 },
+        ""depth"": { ""type"": ""number"", ""exclusiveMinimum"": 0, ""default"": 5000 },
+        ""elevation_index"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 3, ""default"": 0 },
+        ""marker_scale"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 24000, ""default"": 100 }
       }, ""additionalProperties"": false
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
@@ -471,19 +640,36 @@ namespace Horizun.Contracts
                 Name = "horizun_export",
                 Command = "horizun_export",
                 Description =
-                    "Export verified deliverables from the active document: combined PDF, one-view DWG, full-model " +
-                    "IFC, one-view image or one native schedule as delimited text/CSV. Dry-run validates paths, " +
+                    "Export verified deliverables from the active document: combined PDF, one-view DWG, configurable " +
+                    "IFC, model/view Navisworks NWC, one or more 3D views to FBX, one-view image or one native schedule " +
+                    "as delimited text/CSV. Dry-run validates paths, exporters, " +
                     "views and overwrite policy without writing; apply requires confirmation and idempotency, then " +
                     "discovers and re-reads the files actually produced instead of echoing the requested path.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""image"", ""schedule_csv""] },
-    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file for PDF/DWG/IFC/CSV; base path for image export, whose actual generated names are reported."" },
-    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF: one or more printable views/sheets. DWG/image: exactly one view."" },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv""] },
+    ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.ifc/.nwc/.fbx; an image extension; or .csv/.txt). Image export may create a family of names, all of which are reported."" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF: one or more printable views/sheets. DWG/image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
     ""schedule_id"": { ""type"": ""integer"" },
     ""image_pixels"": { ""type"": ""integer"", ""minimum"": 128, ""maximum"": 8192, ""default"": 2048 },
+    ""ifc_version"": { ""type"": ""string"", ""enum"": [""Default"", ""IFC2x2"", ""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCBCA"", ""IFCCOBIE"", ""IFC4"", ""IFC4DTV"", ""IFC4RV""], ""default"": ""Default"" },
+    ""ifc_filter_view_id"": { ""type"": ""integer"", ""description"": ""Optional non-template view whose visibility filters the IFC export."" },
+    ""ifc_export_base_quantities"": { ""type"": ""boolean"", ""default"": false },
+    ""ifc_split_walls_and_columns"": { ""type"": ""boolean"", ""default"": false },
+    ""ifc_space_boundary_level"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 2, ""default"": 1 },
+    ""nwc_scope"": { ""type"": ""string"", ""enum"": [""model"", ""view""], ""default"": ""model"" },
+    ""nwc_coordinates"": { ""type"": ""string"", ""enum"": [""Shared"", ""Internal""], ""default"": ""Shared"" },
+    ""nwc_parameters"": { ""type"": ""string"", ""enum"": [""All"", ""Elements"", ""None""], ""default"": ""All"" },
+    ""nwc_export_links"": { ""type"": ""boolean"", ""default"": false },
+    ""nwc_export_element_ids"": { ""type"": ""boolean"", ""default"": true },
+    ""nwc_export_room_geometry"": { ""type"": ""boolean"", ""default"": true },
+    ""nwc_export_parts"": { ""type"": ""boolean"", ""default"": false },
+    ""fbx_without_boundary_edges"": { ""type"": ""boolean"", ""default"": false },
+    ""fbx_use_lod"": { ""type"": ""boolean"", ""default"": false },
+    ""fbx_lod"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 15, ""default"": 8 },
+    ""fbx_stop_on_error"": { ""type"": ""boolean"", ""default"": true },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
@@ -559,7 +745,7 @@ namespace Horizun.Contracts
         ""tool"": { ""type"": ""string"", ""enum"": [
           ""horizun_write_params_verified"", ""horizun_delete_verified"", ""horizun_create_schedule"",
           ""horizun_set_keynote"", ""horizun_family_apply"", ""horizun_bind_shared_param"",
-          ""horizun_create_elements"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
+          ""horizun_create_elements"", ""horizun_manage_system_types"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
           ""horizun_split_floor_loops"", ""horizun_split_multilayer_walls"", ""horizun_split_multilayer_slabs"",
           ""horizun_ungroup_and_mark"", ""horizun_regroup_by_param"", ""horizun_copy_slab_elevations"",
           ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls""
@@ -1310,6 +1496,35 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_power_bi_push",
+                Command = null,           // host-resident: fixed Microsoft endpoints, never forwarded to Revit
+                Description =
+                    "Push a bounded batch of primitive rows directly into a Power BI push semantic-model table, " +
+                    "optionally inside a workspace. Dry-run validates the destination and Microsoft service limits " +
+                    "without requesting a token or sending data. Apply accepts credentials ONLY from fixed server " +
+                    "environment variables (short-lived access token or Entra service principal), sends only to " +
+                    "api.powerbi.com, and uses a durable idempotency ledger: an identical retry replays the recorded " +
+                    "answer, while a lost HTTP response becomes in_doubt and is never sent twice automatically. " +
+                    "Requires permission_profile=full_write or unsafe_code.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""dataset_id"", ""table"", ""rows""],
+  ""properties"": {
+    ""workspace_id"": { ""type"": ""string"", ""description"": ""Optional Power BI workspace GUID. Omit for My workspace."" },
+    ""dataset_id"": { ""type"": ""string"", ""description"": ""Push semantic-model/dataset GUID."" },
+    ""table"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 512 },
+    ""rows"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 10000,
+      ""description"": ""Rows whose values are string, number, boolean or null. At most 75 distinct columns and 4000 characters per string."",
+      ""items"": { ""type"": ""object"", ""minProperties"": 1, ""maxProperties"": 75,
+        ""additionalProperties"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] }
+      }
+    },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_target",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
@@ -1351,9 +1566,12 @@ namespace Horizun.Contracts
             {
                 "horizun_create_schedule", "horizun_write_params_verified", "horizun_delete_verified",
                 "horizun_create_elements",
+                "horizun_create_family",
+                "horizun_manage_system_types",
                 "horizun_transform_elements",
                 "horizun_manage_views",
                 "horizun_export",
+                "horizun_power_bi_push",
                 "horizun_annotate",
                 "horizun_execute_plan",
                 "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",

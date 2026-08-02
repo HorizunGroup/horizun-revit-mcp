@@ -39,7 +39,7 @@ param(
     # equivalent; UserProfile resolves to the right one on both. The wordlist is not
     # THERE on the hosted runner either, which is fine and is what -RequireTerms
     # exists to distinguish: absent is reported, not crashed over.
-    [string] $TermsFile = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.horizun/sensitive-terms.txt'),
+    [string] $TermsFile,
 
     # Emit machine-readable findings as well as the human summary.
     [string] $Json,
@@ -50,6 +50,22 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Some sandboxed Windows runners expose neither a profile folder through .NET
+# nor USERPROFILE. Resolve the optional default lazily so the mandatory
+# structural scan can still run instead of failing during parameter binding.
+if ([string]::IsNullOrWhiteSpace($TermsFile)) {
+    $profileRoot = [Environment]::GetFolderPath('UserProfile')
+    if ([string]::IsNullOrWhiteSpace($profileRoot)) { $profileRoot = $env:USERPROFILE }
+    if ([string]::IsNullOrWhiteSpace($profileRoot)) { $profileRoot = $env:HOME }
+
+    if ([string]::IsNullOrWhiteSpace($profileRoot)) {
+        $TermsFile = Join-Path ([System.IO.Path]::GetTempPath()) 'horizun-sensitive-terms.txt'
+    } else {
+        $TermsFile = Join-Path $profileRoot '.horizun/sensitive-terms.txt'
+    }
+}
+
 $repo = Split-Path -Parent $PSScriptRoot
 Push-Location $repo
 try {

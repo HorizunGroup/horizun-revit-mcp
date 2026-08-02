@@ -19,9 +19,10 @@ bounded by anything in this codebase.
 
 ## 2. Who can send a command
 
-Two locks, both local. There is no network surface: named pipes are not reachable
-across a network, and the MCP server speaks stdio to whatever process launched
-it.
+Two locks protect the inbound Revit bridge, both local. There is no inbound
+network listener: named pipes are not reachable across a network, and the MCP
+server speaks stdio to whatever process launched it. The optional Power BI tool
+has a separately bounded outbound HTTPS path described in §3b.
 
 **The pipe ACL.** The listening pipe is created with an explicit DACL granting
 FullControl to the current Windows user and nothing else — no Everyone, no Users,
@@ -125,6 +126,32 @@ restarts. A torn claim is not guessed: it remains `in_doubt` until a human
 inspects the model. Records can contain returned model data and currently have no
 automatic retention policy; protect and periodically remove that local directory
 according to the project's data-retention rules.
+
+### 3b. Bounded outbound Power BI delivery
+
+`horizun_power_bi_push` is the only built-in host operation that sends user data
+over the network. It requires `full_write` or `unsafe_code`. Its destination is
+constructed internally from GUID dataset/workspace identifiers and a table name:
+the data endpoint is always `https://api.powerbi.com`, and service-principal
+authentication always uses `https://login.microsoftonline.com/<tenant-guid>`.
+No URL, access token or client secret is accepted in MCP arguments.
+
+Credentials come only from fixed server environment variables. Request values
+are capped at 10,000 rows, 75 columns, 4,000 characters per string and an 8 MiB
+local payload. Nested objects and arrays are refused. Microsoft error response
+bodies are not echoed or logged because they may contain tenant data.
+
+The operation claims its durable key before token acquisition or upload. A
+successful or definitively rejected HTTP response is recorded; a lost response
+after delivery leaves the key `in_doubt`, and the same key never sends again
+automatically. This prevents a retry from silently duplicating rows, but it does
+not prove whether Microsoft accepted a request whose response was lost. A human
+must inspect the destination before choosing a new key.
+
+**What this does NOT defend against:** an authorized caller deliberately sending
+model or project data to the configured Power BI tenant. `full_write` grants that
+capability. Tenant permissions, data classification and service-principal scope
+remain deployment responsibilities.
 
 ## 4. Destructive operations
 

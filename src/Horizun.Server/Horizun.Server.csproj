@@ -17,7 +17,7 @@
     <!-- Same version as the plugin, and for the same reason: the number the MCP client
          sees in serverInfo is read from this assembly, never hand-typed. Keep the two
          csproj values in step - a server and a plugin that disagree is a support call. -->
-    <Version>0.4.0</Version>
+    <Version>0.5.0-rc.1</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
@@ -48,6 +48,11 @@
          %LOCALAPPDATA%. Linked for the same reason Settings.cs is: the server and the
          add-in must not be able to disagree about it. -->
     <Compile Include="..\Horizun.Revit\Core\HorizunPaths.cs" />
+    <!-- Host-side external mutations use the same append-only, fail-closed
+         idempotency ledger as Revit mutations. -->
+    <Compile Include="..\Horizun.Revit\Core\CommandResult.cs" />
+    <Compile Include="..\Horizun.Revit\Core\Idempotency.cs" />
+    <Compile Include="..\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
   </ItemGroup>
 
   <ItemGroup>

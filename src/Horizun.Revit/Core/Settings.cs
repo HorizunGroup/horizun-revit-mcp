@@ -82,7 +82,8 @@ namespace Horizun.Revit.Core
             if (profile == "safe_write" &&
                 (contract.Effect == ToolEffect.DocumentSession ||
                  contract.Name == "horizun_open_document" || contract.Name == "horizun_save_document" ||
-                 contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export"))
+                 contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export" ||
+                 contract.Name == "horizun_power_bi_push" || contract.Name == "horizun_create_family"))
             {
                 reason = contract.Name + " changes the Revit document session or writes external files and is " +
                          "hidden/refused by permission_profile=safe_write in " + Path() +

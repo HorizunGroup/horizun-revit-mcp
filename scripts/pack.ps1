@@ -104,6 +104,12 @@ Step 'building the MCP server'
 if ($LASTEXITCODE -ne 0) { throw 'server build failed' }
 $serverBin = Join-Path $repo "src\Horizun.Server\bin\$Config\net8.0"
 Copy-Item $serverBin (Join-Path $stage 'server') -Recurse -Force
+$clientTools = Join-Path $stage 'server\client-tools'
+New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
+Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\verify-clients.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
+Step '  staged safe Codex/Claude registration and verification helpers'
 
 # --- The plugin, ONE ARTIFACT PER YEAR. --------------------------------------
 #

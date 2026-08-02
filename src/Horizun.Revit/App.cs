@@ -119,6 +119,8 @@ namespace Horizun.Revit
             d.Register(new ClashCommand());
             d.Register(new SetKeynoteCommand());
             d.Register(new FamilyApplyCommand());
+            d.Register(new CreateFamilyCommand());
+            d.Register(new ManageSystemTypesCommand());
             d.Register(new BindSharedParamCommand());
             d.Register(new HealthCommand());
             d.Register(new SaveDocumentCommand());

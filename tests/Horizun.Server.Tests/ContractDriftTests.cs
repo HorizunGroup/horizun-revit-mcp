@@ -36,7 +36,7 @@ namespace Horizun.Server.Tests
         public void Every_command_can_actually_be_answered()
         {
             // A contract with no plugin command is a host-resident tool, and there are
-            // exactly four. Anything else naming neither would be a tool that exists and
+            // exactly the following set. Anything else naming neither would be a tool that exists and
             // can never reply.
             var hostResident = Contract.All.Where(c => string.IsNullOrEmpty(c.Command))
                                            .Select(c => c.Name)
@@ -44,8 +44,23 @@ namespace Horizun.Server.Tests
                                            .ToList();
 
             Assert.Equal(
-                new[] { "horizun_catalog_lookup", "horizun_excel_write_rows", "horizun_job_status", "horizun_target" },
+                new[] { "horizun_catalog_lookup", "horizun_excel_write_rows", "horizun_job_status", "horizun_power_bi_push", "horizun_target" },
                 hostResident);
+        }
+
+        [Fact]
+        public void Power_bi_contract_never_accepts_credentials_and_is_idempotent()
+        {
+            CommandContract c = Contract.Find("horizun_power_bi_push");
+            Assert.NotNull(c);
+            Assert.Equal(ToolEffect.MutatingUnlessDryRun, c.Effect);
+            JToken properties = c.InputSchema["properties"];
+            Assert.NotNull(properties?["dataset_id"]);
+            Assert.NotNull(properties?["rows"]);
+            Assert.NotNull(properties?["idempotency_key"]);
+            Assert.Null(properties?["access_token"]);
+            Assert.Null(properties?["client_secret"]);
+            Assert.Contains("environment variables", c.Description);
         }
 
         [Fact]
@@ -86,6 +101,7 @@ namespace Horizun.Server.Tests
                 "horizun_delete_verified", "horizun_write_params_verified", "horizun_set_keynote",
                 "horizun_bind_shared_param", "horizun_family_apply", "horizun_save_document",
                 "horizun_relinquish_all", "horizun_create_schedule",
+                "horizun_create_family", "horizun_manage_system_types",
                 // Recipe-backed geometry tools. They delete and recreate elements, which
                 // makes naming the model at least as load-bearing here as anywhere above.
                 "horizun_split_floor_loops", "horizun_split_multilayer_walls",
@@ -143,6 +159,38 @@ namespace Horizun.Server.Tests
             Assert.NotNull(p?["cursor"]);
             Assert.Equal(500, (int)p["max_rows"]["maximum"]);
             Assert.Equal(ToolEffect.ReadOnly, c.Effect);
+        }
+
+        [Fact]
+        public void Benchmark_operations_are_typed_in_the_public_contract()
+        {
+            JToken createKinds = Contract.Find("horizun_create_elements").InputSchema["properties"]?["elements"]?["items"]?["properties"]?["kind"]?["enum"];
+            foreach (string kind in new[] { "ceiling", "roof", "cable_tray", "structural_framing", "structural_column" })
+                Assert.Contains(kind, createKinds.Values<string>());
+
+            JToken viewOps = Contract.Find("horizun_manage_views").InputSchema["properties"]?["actions"]?["items"]?["properties"]?["operation"]?["enum"];
+            foreach (string operation in new[] { "create_ceiling_plan", "create_structural_plan", "create_drafting", "create_section", "create_elevation" })
+                Assert.Contains(operation, viewOps.Values<string>());
+
+            JToken formats = Contract.Find("horizun_export").InputSchema["properties"]?["format"]?["enum"];
+            Assert.Contains("ifc", formats.Values<string>());
+            Assert.Contains("nwc", formats.Values<string>());
+            Assert.Contains("fbx", formats.Values<string>());
+
+            CommandContract family = Contract.Find("horizun_create_family");
+            Assert.NotNull(family);
+            JToken familyProperties = family.InputSchema["properties"];
+            foreach (string property in new[] { "parameters", "types", "forms", "connectors", "reference_planes", "dimensions", "family_lines", "nested_instances" })
+                Assert.NotNull(familyProperties?[property]);
+            JToken familyKinds = familyProperties?["forms"]?["items"]?["properties"]?["kind"]?["enum"];
+            foreach (string kind in new[] { "extrusion", "blend", "revolution", "sweep", "swept_blend" })
+                Assert.Contains(kind, familyKinds.Values<string>());
+            CommandContract systemTypes = Contract.Find("horizun_manage_system_types");
+            Assert.NotNull(systemTypes);
+            JToken compound = systemTypes.InputSchema["properties"]?["actions"]?["items"]?["properties"]?["compound_structure"];
+            Assert.NotNull(compound?["properties"]?["layers"]);
+            Assert.NotNull(compound?["properties"]?["structural_layer_index"]);
+            Assert.NotNull(compound?["properties"]?["opening_wrapping"]);
         }
 
         // ---- the hash ----------------------------------------------------------

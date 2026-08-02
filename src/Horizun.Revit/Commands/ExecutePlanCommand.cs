@@ -18,7 +18,7 @@ namespace Horizun.Revit.Commands
         {
             "horizun_write_params_verified", "horizun_delete_verified", "horizun_create_schedule",
             "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
-            "horizun_create_elements", "horizun_transform_elements", "horizun_manage_views", "horizun_annotate",
+            "horizun_create_elements", "horizun_manage_system_types", "horizun_transform_elements", "horizun_manage_views", "horizun_annotate",
             "horizun_split_floor_loops", "horizun_split_multilayer_walls", "horizun_split_multilayer_slabs",
             "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_copy_slab_elevations",
             "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",

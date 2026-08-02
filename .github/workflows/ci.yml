@@ -162,6 +162,11 @@ jobs:
           $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
           if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
           if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
+          foreach ($helper in 'register-client.ps1','verify-clients.ps1','hz-call.ps1') {
+            if (-not (Test-Path "$stage/server/client-tools/$helper")) {
+              throw "installer client helper is missing: $helper"
+            }
+          }
 
           if ($doc.Plugins.Count -lt 1) { throw "the manifest has no plugin payloads" }
           $seen = @{}

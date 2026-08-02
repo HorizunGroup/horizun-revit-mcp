@@ -18,6 +18,7 @@
   <ItemGroup>
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
+    <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
     <!-- The concurrency plumbing: one writer, one reply per id, one in-flight
          registry. Linked for the same reason - it needs neither Revit nor a
          running server, only a StringWriter. -->
@@ -31,6 +32,9 @@
          of the shared-root property is under test with the same source the add-in
          compiles. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" Link="Idempotency.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" Link="DurableCommandIdempotency.cs" />
     <!-- The add-in's job record, so "the server reads where the add-in writes" can be
          asserted with the writer that actually ships rather than a stand-in. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" Link="Job.cs" />

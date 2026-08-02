@@ -97,6 +97,12 @@ Source: "..\dist\stage\Horizun.addin";  DestDir: "{app}";              Flags: ig
 [Icons]
 Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
+Name: "{group}\Configurar Horizun en Codex y Claude"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
+  WorkingDir: "{app}\server\client-tools"
 
 [Tasks]
 ; OPT-IN, and unchecked by default. An installer that opens a browser nobody
@@ -104,10 +110,19 @@ Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
 ; going to be installed by people who were told it is safe.
 Name: "openhub"; Description: "Ver Horizun Hub - las herramientas y flujos construidos sobre este puente"; \
   Flags: unchecked
+; Explicit and unchecked: client configuration belongs to the user. The helper
+; makes timestamped backups, preserves every other MCP entry and refuses to edit
+; a running Codex/Claude process because those clients can overwrite the file.
+Name: "registerclients"; Description: "Registrar Horizun en Codex y Claude (ciérrelos primero; conserva y respalda los otros MCP)"; \
+  Flags: unchecked
 
 [Run]
 Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
   Flags: shellexec nowait postinstall skipifsilent; Tasks: openhub
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
+  Description: "Registrar Horizun en Codex y Claude"; WorkingDir: "{app}\server\client-tools"; \
+  Flags: postinstall skipifsilent waituntilterminated; Tasks: registerclients
 
 [Code]
 const
@@ -389,8 +404,10 @@ begin
     else
       MsgBox('Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
              'Restart Revit to load it.' + #13#10#13#10 +
-             'To register the MCP server with Claude Code, run:' + #13#10 +
-             'claude mcp add --scope user horizun "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
+              'Use the Start-menu shortcut "Configurar Horizun en Codex y Claude" to register both clients safely.' + #13#10 +
+              'It keeps timestamped backups and preserves every other MCP entry.' + #13#10#13#10 +
+              'Claude CLI alternative:' + #13#10 +
+              'claude mcp add --scope user horizun "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
              mbInformation, MB_OK);
   end;
 end;

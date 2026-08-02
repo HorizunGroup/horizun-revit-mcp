@@ -3,6 +3,68 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.5.0-rc.1 — 2026-08-01
+
+Esta versión apunta directamente al benchmark de operaciones tipadas,
+interoperabilidad, familias y distribución; no suma herramientas por contar.
+
+### Creación BIM y documentación
+
+- `horizun_create_elements` añade cielos rasos, cubiertas por huella con
+  pendiente, bandejas portacables, vigas/arriostramientos y columnas
+  estructurales. Conserva lote heterogéneo atómico, ensayo, confirmación y
+  relectura de clase/tipo estructural.
+- `horizun_manage_views` añade plantas de cielo y estructura, vistas de detalle,
+  secciones y elevaciones; siguen componiéndose con alias dentro de una sola
+  transacción.
+
+### Familias
+
+- Nuevo `horizun_create_family`: compila una familia cargable desde una plantilla
+  RFT con parámetros, fórmulas, tipos y valores por tipo; formas sólidas o vacías
+  de extrusión/blend/revolución/barrido/swept blend; planos de referencia,
+  cotas etiquetadas, líneas simbólicas/de modelo y RFA anidados por punto con
+  propagación de parámetros; asociación paramétrica de
+  offsets, ángulos, material y visibilidad; y conectores de tubería, ducto, electricidad, conduit
+  y bandeja alojados en una cara seleccionada por normal. Guarda y verifica el
+  RFA, puede cargarlo al proyecto y relee la `Family` cargada.
+- Nuevo `horizun_manage_system_types`: duplica y parametriza tipos de sistema
+  residentes en proyecto dentro de una transacción. En tipos host de muro, piso,
+  cubierta y cielo puede reconstruir la composición homogénea completa: capas
+  ordenadas exterior-interior, función, material, espesor, envolvente, límites
+  shell/núcleo, capa estructural/variable y deck. Relee clase, nombre, valores y
+  toda la composición después del commit.
+- Se documenta el límite real: la API pública de Revit no ofrece creación
+  general de familias in-place. No se simula con automatización frágil de UI.
+
+### IFC, Navisworks, FBX y Power BI
+
+- `horizun_export` añade NWC nativo por modelo o vista y FBX de una o varias
+  vistas 3D. IFC expone versión, cantidades base, partición muro/columna,
+  límites espaciales y filtro de vista. Todos atribuyen éxito solo a archivos
+  no vacíos realmente nuevos o modificados.
+- Nuevo `horizun_power_bi_push`: inserción directa en tablas de semantic models
+  push, en My workspace o un workspace. Credenciales solo desde variables de
+  entorno; endpoint fijo de Microsoft; límites 10.000 filas/75 columnas/4.000
+  caracteres; token temporal o service principal de Entra.
+- Power BI comparte la garantía durable de como máximo una vez: un reintento
+  idéntico reproduce la respuesta; una conexión perdida después del envío queda
+  `in_doubt` y no duplica filas automáticamente.
+
+### Instalación y benchmark
+
+- `install-release.ps1` selecciona una release, descarga setup y
+  `SHA256SUMS.txt`, verifica el SHA-256 completo y solo entonces ejecuta el
+  instalador. No necesita Git ni SDK.
+- El setup incluye registrador y verificador para Codex/Claude. La opción es
+  explícita: respalda las configuraciones, conserva los demás MCP y se niega a
+  editar un cliente abierto que pueda sobrescribir el cambio.
+- `docs/BENCHMARK.md` publica casos, puntuación y grados de evidencia. El
+  instalador sigue sin firma de una CA pública; por eso distribución no recibe
+  puntuación perfecta.
+
+El contrato compartido cambió: servidor y add-in 0.5.0-rc.1 deben desplegarse juntos.
+
 ## v0.4.0 — 2026-08-01
 
 Esta versión cambia el foco de “más comandos” a **operaciones generales,

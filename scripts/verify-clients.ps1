@@ -35,6 +35,7 @@ param(
     [string]$Json
 )
 $ErrorActionPreference = 'Stop'
+if ($Name -notmatch '^[A-Za-z0-9_-]{1,64}$') { throw 'Name must contain only ASCII letters, digits, underscore or hyphen (1..64 characters).' }
 $here = $PSScriptRoot
 $call = Join-Path $here 'hz-call.ps1'
 
@@ -60,7 +61,14 @@ if (Test-Path $codexConfig) {
     $i = ($lines | Select-String -Pattern ("^\[mcp_servers\." + [regex]::Escape($Name) + "\]$")).LineNumber
     if ($i) {
         for ($k = $i; $k -lt [Math]::Min($i + 10, $lines.Count); $k++) {
-            if ($lines[$k] -match "^\s*command\s*=\s*['""](.+)['""]\s*$") { $clients['Codex'] = $Matches[1]; break }
+            # New registrations use a TOML basic string encoded like JSON, so
+            # backslashes and quotes are escaped. Decode that string instead of
+            # treating C:\\... as a literal Windows path. Keep support for the
+            # older TOML single-quoted literal form as well.
+            if ($lines[$k] -match '^\s*command\s*=\s*("(?:[^"\\]|\\.)*")\s*$') {
+                $clients['Codex'] = ($Matches[1] | ConvertFrom-Json); break
+            }
+            if ($lines[$k] -match "^\s*command\s*=\s*'([^']*)'\s*$") { $clients['Codex'] = $Matches[1]; break }
             if ($lines[$k].Trim() -match '^\[') { break }
         }
     }

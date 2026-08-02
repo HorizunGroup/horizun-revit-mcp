@@ -26,7 +26,7 @@
 
   Requires: that Revit open with the add-in loaded.
 
-  WHERE THE FIXTURE NAMES COME FROM. Six of the parameters name real things on
+  WHERE THE FIXTURE NAMES COME FROM. The parameters below name real things on
   this machine - a model title, a second model, a shared-parameter file and a
   definition inside it, a category, a file saved by another Revit year. Putting
   them in the repository or in CI variables would publish client and project
@@ -77,6 +77,9 @@ param(
     [string]$QuantityCategory = 'OST_Floors',
     # A real .rvt/.rfa saved in a DIFFERENT Revit version, for the upgrade guard.
     [string]$OldFile,
+    # Any installed .rft. If omitted, the harness searches the Revit content
+    # folder for this year. It is used only by a dry run; no RFA is written.
+    [string]$FamilyTemplate,
 
     # The title of a WORKSHARED document, open in this Revit, with AT LEAST ONE
     # WORKSET CLOSED.
@@ -135,7 +138,7 @@ if (Test-Path $Fixtures) {
     try {
         $fx = Get-Content $Fixtures -Raw | ConvertFrom-Json
         foreach ($name in 'Document','InactiveDocument','SpfPath','SpfParam','QuantityCategory','OldFile',
-                          'ClosedWorksetDocument') {
+                          'FamilyTemplate','ClosedWorksetDocument') {
             $fromFile = $fx.$name
             if ([string]::IsNullOrWhiteSpace($fromFile)) { continue }
             # QuantityCategory has a default, so "was it passed" cannot be read off
@@ -146,6 +149,21 @@ if (Test-Path $Fixtures) {
         }
     }
     catch { Write-Host "WARNING: $Fixtures could not be read as JSON: $($_.Exception.Message)" -ForegroundColor Yellow }
+}
+
+# Family-template names are localized, so do not guess one. Any RFT is enough for
+# the non-writing parser/confirmation rehearsal below; the command deliberately
+# does not open it during dry_run.
+if ([string]::IsNullOrWhiteSpace($FamilyTemplate)) {
+    $templateRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Year)
+    if (Test-Path $templateRoot) {
+        $candidateTemplate = Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue |
+                             Sort-Object FullName | Select-Object -First 1
+        if ($candidateTemplate) {
+            $FamilyTemplate = $candidateTemplate.FullName
+            $fixtureSource['FamilyTemplate'] = 'auto-discovered'
+        }
+    }
 }
 
 # Resolved here, not in the param default: PowerShell 5.1 does not populate
@@ -370,6 +388,15 @@ $probes = @(
 
     @{ Name = 'manage_views REFUSES without target_document'
        Tool = 'horizun_manage_views'; Args = @{ actions = @(@{ operation = 'create_3d' }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'manage_system_types REFUSES without target_document'
+       Tool = 'horizun_manage_system_types'; Args = @{ actions = @(@{ source_type_id = 1; new_name = 'HZ_REFUSAL_ONLY' }) }
+       ExpectError = "'target_document' is required" },
+
+    @{ Name = 'create_family REFUSES without target_document'
+       Tool = 'horizun_create_family'
+       Args = @{ template_path = 'C:\horizun-refusal-only.rft'; output_path = 'C:\horizun-refusal-only.rfa' }
        ExpectError = "'target_document' is required" },
 
     @{ Name = 'annotate REFUSES without target_document'
@@ -625,6 +652,64 @@ if ($Document) {
                   Check = { param($d)
                             $d.dry_run -eq $true -and $d.confirmation_token -and
                             $d.transaction_status -eq 'not_started' } }
+
+    $probes += @{ Name = 'create_elements rehearses a typed architectural batch without a transaction'
+                  Tool = 'horizun_create_elements'
+                  Args = @{ target_document = $Document; units = 'mm'; dry_run = $true
+                            elements = @(@{ kind = 'level'; name = "HZ_DRY_$probeRun"; elevation = 987654 }) }
+                  Check = { param($d)
+                            $d.dry_run -eq $true -and $d.confirmation_token -and
+                            $d.transaction_status -eq 'not_started' -and $d.valid -eq 1 } }
+
+    $probes += @{ Name = 'manage_views rehearses a new drafting view without a transaction'
+                  Tool = 'horizun_manage_views'
+                  Args = @{ target_document = $Document; dry_run = $true
+                            actions = @(@{ operation = 'create_drafting'; name = "HZ_DRY_$probeRun" }) }
+                  Check = { param($d)
+                            $d.dry_run -eq $true -and $d.confirmation_token -and
+                            $d.transaction_status -eq 'not_started' -and $d.valid -eq 1 } }
+
+    if ($ReleaseGate) {
+        if ($FamilyTemplate) {
+            $familyDryOutput = Join-Path $env:TEMP ("horizun-family-dry-{0}.rfa" -f $probeRun)
+            $probes += @{ Name = 'create_family compiles a parametric RFA plan without opening a family document or writing a file'
+                          Tool = 'horizun_create_family'
+                          Args = @{ target_document = $Document; template_path = $FamilyTemplate; output_path = $familyDryOutput
+                                    units = 'mm'; dry_run = $true; load_into_project = $false
+                                    parameters = @(
+                                      @{ name = 'Depth'; data_type = 'length'; group = 'geometry' },
+                                      @{ name = 'Visible'; data_type = 'yesno'; group = 'general' },
+                                      @{ name = 'Material'; data_type = 'material'; group = 'materials' },
+                                      @{ name = 'Diameter'; data_type = 'length'; group = 'geometry' },
+                                      @{ name = 'Width'; data_type = 'length'; group = 'geometry' }
+                                    )
+                                    types = @(@{ name = '600'; values = @{ Depth = 600; Visible = $true; Diameter = 100; Width = 500 } })
+                                    forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 600
+                                                profile = @(@(@(-250,-250,0),@(250,-250,0),@(250,250,0),@(-250,250,0)))
+                                                end_parameter = 'Depth'; material_parameter = 'Material'; visibility_parameter = 'Visible' },
+                                              @{ key = 'swept_body'; kind = 'sweep'; plane = 'xy'; path_plane = 'xz'
+                                                 profile = @(@(@(-50,-50,0),@(50,-50,0),@(50,50,0),@(-50,50,0)))
+                                                 path = @(@(0,0,0),@(0,0,600)); profile_plane_location = 'Start' })
+                                    connectors = @(@{ key = 'pipe_out'; host_form_key = 'body'; kind = 'pipe';
+                                                      face_normal = @(0,0,1); system_type = 'SupplyHydronic';
+                                                      diameter_parameter = 'Diameter'; primary = $true })
+                                    reference_planes = @(
+                                      @{ key = 'left'; name = 'Left'; bubble_end = @(-250,-400,0); free_end = @(-250,400,0); cut_vector = @(0,0,1) },
+                                      @{ key = 'right'; name = 'Right'; bubble_end = @(250,-400,0); free_end = @(250,400,0); cut_vector = @(0,0,1) })
+                                    dimensions = @(@{ key = 'width'; reference_plane_keys = @('left','right');
+                                                     line_start = @(-250,-500,0); line_end = @(250,-500,0); label_parameter = 'Width' })
+                                    family_lines = @(@{ key = 'center'; kind = 'symbolic'; plane = 'xy';
+                                                       start = @(-250,0,0); end = @(250,0,0) }) }
+                          Check = { param($d)
+                                    $d.dry_run -eq $true -and $d.family_kind -eq 'loadable_rfa' -and
+                                    $d.confirmation_token -and $d.forms -eq 2 -and $d.connectors -eq 1 -and
+                                    $d.reference_planes -eq 2 -and $d.dimensions -eq 1 -and $d.family_lines -eq 1 -and
+                                    -not (Test-Path -LiteralPath $familyDryOutput) } }
+        }
+        else {
+            $notCovered += 'create_family parametric rehearsal (needs an installed Revit Family Template or -FamilyTemplate)'
+        }
+    }
 }
 else {
     Write-Host "  (no -Document given: the link, quantities and confirmation probes are NOT COVERED)" -ForegroundColor DarkYellow
@@ -763,13 +848,101 @@ Send-Rpc @{ jsonrpc='2.0'; method='notifications/initialized' }
 Send-Rpc @{ jsonrpc='2.0'; id=999001; method='tools/list'; params=@{} }
 $listReply = Read-Rpc
 $listed = @($listReply.result.tools)
-$requiredV040 = @('horizun_query_model','horizun_create_elements','horizun_transform_elements',
-                  'horizun_manage_views','horizun_annotate','horizun_execute_plan','horizun_submit_job')
-foreach ($required in $requiredV040) {
+$requiredCurrent = @('horizun_query_model','horizun_create_elements','horizun_manage_system_types',
+                     'horizun_transform_elements','horizun_manage_views','horizun_annotate',
+                     'horizun_execute_plan','horizun_submit_job')
+if ($ReleaseGate) { $requiredCurrent += @('horizun_create_family','horizun_export','horizun_power_bi_push') }
+foreach ($required in $requiredCurrent) {
     $tool = $listed | Where-Object { $_.name -eq $required } | Select-Object -First 1
-    if (-not $tool) { throw "tools/list does not advertise required 0.4.0 tool '$required'" }
+    if (-not $tool) { throw "tools/list does not advertise required current-release tool '$required'" }
     if ($tool.outputSchema.type -ne 'object' -or $null -eq $tool.annotations.idempotentHint) {
         throw "tool '$required' lacks MCP outputSchema/annotations"
+    }
+}
+
+# A release is not allowed to advertise the right tool names with stale schemas.
+# These are the high-value capability edges added in this release; checking them
+# on tools/list proves the installed server and add-in agreed on the same contract.
+if ($ReleaseGate) {
+    $createTool = $listed | Where-Object { $_.name -eq 'horizun_create_elements' } | Select-Object -First 1
+    $createKinds = @($createTool.inputSchema.properties.elements.items.properties.kind.enum)
+    $missing = @('ceiling','roof','structural_framing','structural_column','cable_tray' | Where-Object { $_ -notin $createKinds })
+    if ($missing.Count -gt 0) { throw "create_elements schema is missing: $($missing -join ', ')" }
+
+    $viewTool = $listed | Where-Object { $_.name -eq 'horizun_manage_views' } | Select-Object -First 1
+    $viewOps = @($viewTool.inputSchema.properties.actions.items.properties.operation.enum)
+    $missing = @('create_ceiling_plan','create_structural_plan','create_drafting','create_section','create_elevation' |
+                 Where-Object { $_ -notin $viewOps })
+    if ($missing.Count -gt 0) { throw "manage_views schema is missing: $($missing -join ', ')" }
+
+    $exportTool = $listed | Where-Object { $_.name -eq 'horizun_export' } | Select-Object -First 1
+    $formats = @($exportTool.inputSchema.properties.format.enum)
+    $missing = @('ifc','nwc','fbx' | Where-Object { $_ -notin $formats })
+    if ($missing.Count -gt 0) { throw "export schema is missing: $($missing -join ', ')" }
+
+    $familyTool = $listed | Where-Object { $_.name -eq 'horizun_create_family' } | Select-Object -First 1
+    if (-not $familyTool.inputSchema.properties.forms -or -not $familyTool.inputSchema.properties.connectors -or
+        -not $familyTool.inputSchema.properties.parameters -or -not $familyTool.inputSchema.properties.types -or
+        -not $familyTool.inputSchema.properties.reference_planes -or -not $familyTool.inputSchema.properties.dimensions -or
+        -not $familyTool.inputSchema.properties.family_lines -or -not $familyTool.inputSchema.properties.nested_instances) {
+        throw 'create_family schema lacks its parameter/type/form/connector/reference/dimension/line/nested graph'
+    }
+    $familyKinds = @($familyTool.inputSchema.properties.forms.items.properties.kind.enum)
+    $missing = @('extrusion','blend','revolution','sweep','swept_blend' | Where-Object { $_ -notin $familyKinds })
+    if ($missing.Count -gt 0) { throw "create_family form schema is missing: $($missing -join ', ')" }
+    $systemTool = $listed | Where-Object { $_.name -eq 'horizun_manage_system_types' } | Select-Object -First 1
+    $compound = $systemTool.inputSchema.properties.actions.items.properties.compound_structure
+    if (-not $compound.properties.layers -or -not $compound.properties.structural_layer_index -or
+        -not $compound.properties.opening_wrapping) {
+        throw 'manage_system_types schema lacks typed compound structures'
+    }
+    $pbiTool = $listed | Where-Object { $_.name -eq 'horizun_power_bi_push' } | Select-Object -First 1
+    $pbiProperties = @($pbiTool.inputSchema.properties.PSObject.Properties.Name)
+    if ('access_token' -in $pbiProperties -or 'client_secret' -in $pbiProperties) {
+        throw 'power_bi_push exposes a credential in MCP arguments'
+    }
+    foreach ($needed in 'dataset_id','table','rows','dry_run','idempotency_key') {
+        if ($needed -notin $pbiProperties) { throw "power_bi_push schema lacks '$needed'" }
+    }
+
+    $probes += @{ Name = 'Power BI dry run validates a bounded payload without credentials or network delivery'
+                  Tool = 'horizun_power_bi_push'
+                  Args = @{ dataset_id = '11111111-1111-1111-1111-111111111111'; table = 'HorizunLiveDryRun'
+                            rows = @(@{ Probe = $probeRun; Value = 1 }); dry_run = $true }
+                  Check = { param($d)
+                            $d.dry_run -eq $true -and $d.rows_validated -eq 1 -and $d.payload_bytes -gt 0 -and
+                            $d.limits_enforced.rows_per_request -eq 10000 -and
+                            $d.note -match 'No token was requested and no row was sent' } }
+}
+
+# Discover an actual host system type from the named model, then run the typed
+# compound-structure rehearsal against it. A hard-coded ElementId is not a live
+# test; it is a coincidence that breaks as soon as the fixture model changes.
+if ($ReleaseGate -and $Document) {
+    Send-Rpc @{ jsonrpc='2.0'; id=999002; method='tools/call'; params=@{ name='horizun_query_model'; arguments=@{
+        categories=@('OST_Walls','OST_Floors','OST_Roofs','OST_Ceilings'); include_links=$false; include_types=$true; max_rows=500
+    } } }
+    $systemTypeReply = Read-Rpc
+    $systemTypeData = $null
+    if ($systemTypeReply -and -not [bool]$systemTypeReply.result.isError) {
+        try { $systemTypeData = $systemTypeReply.result.content[0].text | ConvertFrom-Json } catch { }
+    }
+    $systemTypeRow = @($systemTypeData.rows | Where-Object { $_.is_element_type -eq $true -and $_.source_kind -eq 'host' } |
+                       Select-Object -First 1)
+    if ($systemTypeRow.Count -eq 1) {
+        $sourceTypeId = [long]$systemTypeRow[0].element_id
+        $probes += @{ Name = 'manage_system_types rehearses a real host type and typed compound layer without a transaction'
+                      Tool = 'horizun_manage_system_types'
+                      Args = @{ target_document = $Document; units = 'mm'; dry_run = $true
+                                actions = @(@{ source_type_id = $sourceTypeId; new_name = "HZ_DRY_$probeRun"
+                                  compound_structure = @{ layers = @(@{ function = 'Structure'; width = 100; material_id = -1 })
+                                                         structural_layer_index = 0 } }) }
+                      Check = { param($d)
+                                $d.dry_run -eq $true -and $d.transaction_status -eq 'not_started' -and
+                                $d.valid -eq 1 -and $d.invalid -eq 0 -and $d.confirmation_token } }
+    }
+    else {
+        $notCovered += 'manage_system_types compound-structure rehearsal (the named fixture has no host Wall/Floor/Roof/Ceiling ElementType)'
     }
 }
 
@@ -1020,6 +1193,7 @@ $report = [pscustomobject]@{
         SpfParam         = -not [string]::IsNullOrWhiteSpace($SpfParam)
         QuantityCategory = -not [string]::IsNullOrWhiteSpace($QuantityCategory)
         OldFile          = -not [string]::IsNullOrWhiteSpace($OldFile)
+        FamilyTemplate   = -not [string]::IsNullOrWhiteSpace($FamilyTemplate)
     }
     summary           = @{
         passed      = $passed

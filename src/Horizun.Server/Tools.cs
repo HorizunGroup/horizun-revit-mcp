@@ -42,6 +42,7 @@ namespace Horizun.Server
                 { "horizun_job_status",       JobStatus.Handle },
                 { "horizun_catalog_lookup",   CatalogLookup.Handle },
                 { "horizun_excel_write_rows", ExcelWriteRows.Handle },
+                { "horizun_power_bi_push",    PowerBiPush.Handle },
                 { "horizun_target",           Targets.Handle }
             };
 
@@ -124,10 +125,14 @@ namespace Horizun.Server
                            t.Effect == Horizun.Contracts.ToolEffect.DocumentSession;
             bool destructive = t.Name == "horizun_delete_verified" ||
                                t.Name == "horizun_execute_python" ||
-                               t.Name == "horizun_document_session";
+                               t.Name == "horizun_document_session" ||
+                               t.Name == "horizun_export" ||
+                               t.Name == "horizun_create_family" ||
+                               t.Name == "horizun_power_bi_push";
             bool openWorld = t.Effect == Horizun.Contracts.ToolEffect.ExternalSideEffect ||
                              t.Effect == Horizun.Contracts.ToolEffect.DocumentSession ||
                              t.Name == "horizun_open_document" || t.Name == "horizun_export" ||
+                             t.Name == "horizun_create_family" || t.Name == "horizun_power_bi_push" ||
                              t.Name == "horizun_execute_python" || t.Name == "horizun_catalog_lookup";
             return new JObject
             {
