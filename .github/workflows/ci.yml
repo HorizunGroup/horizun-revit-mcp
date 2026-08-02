@@ -1,0 +1,463 @@
+# Horizun MCP - continuous integration.
+#
+# THE HONEST BOUNDARY, stated once so nothing below has to hedge.
+#
+# A hosted runner has no Revit, so it has no RevitAPI.dll. The add-in cannot be
+# compiled here for any year, and no amount of CI configuration changes that.
+# Everything that does NOT need Revit is proved here, on every push. Everything
+# that DOES is declared as a job that runs only on a self-hosted runner with
+# Revit installed, and is skipped - visibly - when there is none.
+#
+# A skipped job that says why is worth more than a green tick that covered less
+# than it appeared to.
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Everything provable without Revit. This is the gate for merging.
+  # ---------------------------------------------------------------------------
+  revit-free:
+    runs-on: ubuntu-latest    # the Revit-free surface is plain net8.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # Restore before build, explicitly, so a build failure is a build failure
+      # and a restore failure says so.
+      - name: Restore
+        run: |
+          dotnet restore src/Horizun.Server/Horizun.Server.csproj
+          dotnet restore tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj
+          dotnet restore tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj
+
+      # Warnings as errors HERE and not in the csproj: a developer mid-change
+      # should not be blocked by a warning, and main should not accumulate them.
+      - name: Build the MCP server (warnings are errors)
+        run: dotnet build src/Horizun.Server/Horizun.Server.csproj -c Release --no-restore -warnaserror
+
+      - name: Test - honesty arithmetic, coverage rules, request ownership
+        run: dotnet test tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=core.trx" --results-directory artifacts/tests
+
+      # Named separately because these are the ones that answer "did the two
+      # halves drift" and "can two answers collide on one id" - the failures
+      # that are invisible in a single lumped result line.
+      - name: Test - contract drift, wire protocol, multi-instance discovery
+        run: dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=server.trx" --results-directory artifacts/tests
+
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          set -e
+          for p in src/Horizun.Server/Horizun.Server.csproj tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj; do
+            out=$(dotnet list "$p" package --vulnerable --include-transitive)
+            echo "$out"
+            # The command exits 0 whether or not it found anything, so the text is
+            # the result. A vulnerable package must fail the build, not be logged.
+            echo "$out" | grep -q "has the following vulnerable packages" && { echo "::error::vulnerable packages in $p"; exit 1; }
+          done
+          echo "no vulnerable packages"
+
+      - name: Whitespace and line-ending hygiene
+        run: git diff --check HEAD~1 HEAD || git diff --check $(git hash-object -t tree /dev/null) HEAD
+
+      # Client, project and model names. The STRUCTURAL rules run here and need no
+      # wordlist - a home directory with a real name in it, an e-mail address, a
+      # cloud project path. The NAME check needs the wordlist, which is
+      # deliberately not in this repository (client and project names never enter it), so on a
+      # hosted runner it reports NOT RUN rather than passing quietly. The
+      # self-hosted release gate is where -RequireTerms makes that a failure.
+      - name: Scan for client, project and model names
+        shell: pwsh
+        run: pwsh scripts/scan-sensitive.ps1 -Json artifacts/scan/sensitive.json
+
+      - name: Publish the client-name scan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sensitive-scan
+          path: artifacts/scan
+
+      - name: Publish test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: artifacts/tests
+
+  # ---------------------------------------------------------------------------
+  # The add-in, per Revit year. Needs a machine with Revit; skipped otherwise,
+  # and the skip is the point - it is visible rather than assumed.
+  # ---------------------------------------------------------------------------
+  revit-addin:
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    runs-on: [self-hosted, windows, revit]
+    strategy:
+      fail-fast: false
+      matrix:
+        year: [2023, 2024, 2025, 2026, 2027]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the add-in for Revit ${{ matrix.year }} against its own RevitAPI
+        shell: pwsh
+        run: |
+          dotnet build src/Horizun.Revit/Horizun.Revit.csproj -c Release -p:RevitYear=${{ matrix.year }} -warnaserror
+
+      # The framework is re-read from the produced bytes rather than trusted from
+      # the build log: bin is shared across years and a leftover is invisible.
+      - name: Verify the artifact is the runtime that year hosts
+        shell: pwsh
+        run: |
+          $dll = "src/Horizun.Revit/bin/Release/Horizun.Revit.dll"
+          $t = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($dll))
+          $year = ${{ matrix.year }}
+          $want = if ($year -le 2024) { '.NETFramework,Version=v4.8' }
+                  elseif ($year -ge 2027) { '.NETCoreApp,Version=v10.0' }
+                  else { '.NETCoreApp,Version=v8.0' }
+          if ($t -notlike "*$want*") { throw "Revit $year artifact is not $want" }
+          Write-Host "Revit $year -> $want, sha $((Get-FileHash $dll -Algorithm SHA256).Hash.Substring(0,16))"
+
+  # ---------------------------------------------------------------------------
+  # Packaging: every year built, staged, inventoried, and wrapped. Also needs
+  # Revit (each year is compiled against its own API) plus Inno Setup.
+  # ---------------------------------------------------------------------------
+  package:
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    needs: [revit-free, revit-addin]
+    runs-on: [self-hosted, windows, revit]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and stage every supported year
+        shell: pwsh
+        run: pwsh scripts/pack.ps1 -SkipInstaller
+
+      # The stage is validated on its own, because "pack did not throw" and "the
+      # payload is correct" are different claims.
+      - name: Validate the staged payload
+        shell: pwsh
+        run: |
+          $stage = "dist/stage"
+          $doc = Get-Content "$stage/manifest.json" -Raw | ConvertFrom-Json
+          if ($doc.Schema -ne 2) { throw "expected manifest schema 2, got '$($doc.Schema)'" }
+
+          # A package must name ONE commit, and it must be a commit these binaries
+          # actually are. -dirty means the sha names something else.
+          if (-not $doc.Commit -or $doc.Commit -eq 'unknown') { throw "the manifest names no commit" }
+          if ($doc.Commit.Length -ne 40) { throw "the manifest's commit is not a full sha: $($doc.Commit)" }
+          if (-not $doc.CleanTree) { throw "packaged from a DIRTY tree - the commit in this manifest is not what these binaries are" }
+
+          # The server is half of what gets installed, and the half the manifest
+          # used to omit entirely.
+          $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
+          if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
+          if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
+          foreach ($helper in 'register-client.ps1','verify-clients.ps1','hz-call.ps1') {
+            if (-not (Test-Path "$stage/server/client-tools/$helper")) {
+              throw "installer client helper is missing: $helper"
+            }
+          }
+
+          if ($doc.Plugins.Count -lt 1) { throw "the manifest has no plugin payloads" }
+          $seen = @{}
+          foreach ($e in $doc.Plugins) {
+            $dll = "$stage/plugin/$($e.Year)/Horizun.Revit.dll"
+            if (-not (Test-Path $dll)) { throw "manifest names $($e.Year) but its payload is missing" }
+            $sha = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLower()
+            if ($sha -ne $e.Sha256) { throw "$($e.Year): manifest says $($e.Sha256), file is $sha" }
+            if ($e.Sha256.Length -ne 64) { throw "$($e.Year): truncated hash - a 16-character prefix verifies nothing" }
+            # Two years sharing a hash means one was built against the wrong API -
+            # the exact defect the per-year build exists to remove.
+            if ($seen.ContainsKey($sha)) { throw "$($e.Year) and $($seen[$sha]) are the SAME binary" }
+            $seen[$sha] = $e.Year
+            foreach ($needed in 'IronPython.dll','Newtonsoft.Json.dll') {
+              if (-not (Test-Path "$stage/plugin/$($e.Year)/$needed")) { throw "$($e.Year): $needed missing" }
+            }
+          }
+
+          # All five, or the package silently drops a Revit generation and the
+          # symptom lands on whoever opens that year weeks later.
+          $missing = @(2023,2024,2025,2026,2027 | Where-Object { $_ -notin $doc.Plugins.Year })
+          if ($missing.Count -gt 0) { throw "no payload for $($missing -join ', ') - this runner is missing those Revit versions" }
+
+          Write-Host "validated commit $($doc.Commit), server + $($doc.Plugins.Count) per-year payloads, all distinct, full hashes"
+
+      # The full check, with the wordlist that lives on this runner. -RequireTerms
+      # makes a MISSING wordlist a failure: at a release gate, "the name check did
+      # not run" must not be indistinguishable from "it passed".
+      - name: Scan for client names, with the wordlist (release gate)
+        shell: pwsh
+        run: pwsh scripts/scan-sensitive.ps1 -RequireTerms -Json artifacts/scan/sensitive-release.json
+
+      - name: Inventory what ships (fails on an unidentified licence)
+        shell: pwsh
+        run: pwsh scripts/sbom.ps1
+
+      - name: Compile the installer
+        shell: pwsh
+        run: pwsh scripts/pack.ps1 -InstallerOnly
+
+      # Reported, not enforced: there is no certificate yet, and a gate nobody can
+      # pass is a gate everybody learns to bypass. See docs/security-model.md.
+      - name: Report signing status
+        shell: pwsh
+        run: |
+          $unsigned = @()
+          foreach ($f in Get-ChildItem dist -Recurse -Include *.exe,*.dll -File) {
+            $sig = Get-AuthenticodeSignature $f.FullName
+            if ($sig.Status -ne 'Valid') { $unsigned += "$($f.Name): $($sig.Status)" }
+          }
+          if ($unsigned.Count -gt 0) {
+            Write-Host "::warning::$($unsigned.Count) unsigned or invalidly signed file(s) - expected until a certificate exists"
+            $unsigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+          } else { Write-Host "everything is validly signed" }
+
+      # WHAT THE NEXT JOB MUST BE ABLE TO CHECK IT RECEIVED.
+      #
+      # revit-integration installs this artifact and then verifies everything the
+      # INSTALL produced against manifest.json. Nothing verified that the artifact
+      # it installed was the artifact this job built - and it was not even
+      # downloading it (see that job). An upload that truncates, or a download
+      # that hands back a cached earlier run, would be indistinguishable from a
+      # correct one, and every check downstream would then be measuring a package
+      # nobody built here.
+      #
+      # manifest.json cannot contain its own hash, so the three hashes live beside
+      # it. This is one root of trust, not zero.
+      - name: Record what this package is, so the next job can prove it got it
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter '*setup.exe' -File | Select-Object -First 1
+          if (-not $setup) { throw "no installer was produced" }
+          $files = @{
+            'installer'     = $setup.FullName
+            'sbom.json'     = 'dist/sbom.json'
+            'manifest.json' = 'dist/stage/manifest.json'
+          }
+          $hashes = @{}
+          foreach ($k in $files.Keys) {
+            if (-not (Test-Path $files[$k])) { throw "expected in the package but missing: $($files[$k])" }
+            $hashes[$k] = @{
+              name   = (Split-Path -Leaf $files[$k])
+              sha256 = (Get-FileHash $files[$k] -Algorithm SHA256).Hash.ToLower()
+              size   = (Get-Item $files[$k]).Length
+            }
+          }
+          $doc = Get-Content 'dist/stage/manifest.json' -Raw | ConvertFrom-Json
+          [pscustomobject]@{
+            schema       = 1
+            commit       = $doc.Commit
+            workflow_sha = "${{ github.sha }}"
+            built_utc    = (Get-Date).ToUniversalTime().ToString('o')
+            files        = $hashes
+          } | ConvertTo-Json -Depth 5 | Out-File 'dist/package-hashes.json' -Encoding utf8
+          Get-Content 'dist/package-hashes.json' | Write-Host
+
+      - name: Publish the installer, manifest and SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: horizun-mcp-package
+          path: |
+            dist/*setup.exe
+            dist/sbom.json
+            dist/package-hashes.json
+            dist/stage/manifest.json
+
+  # ---------------------------------------------------------------------------
+  # The integration suite: real commands against a real model. The harness is in
+  # scripts/verify-live.ps1; this job exists so it runs somewhere other than a
+  # developer's memory.
+  # ---------------------------------------------------------------------------
+  revit-integration:
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    needs: package
+    runs-on: [self-hosted, windows, revit]
+    strategy:
+      fail-fast: false
+      # 2025 and 2026 are the two generations in production use. They are
+      # different runtimes (.NET 8 both, but different RevitAPI), and a suite that
+      # only ever ran on one of them proved one of them.
+      matrix:
+        year: [2025, 2026]
+    steps:
+      - uses: actions/checkout@v4
+
+      # DOWNLOAD THE ARTIFACT. This job used to read dist/ straight off the runner
+      # and call it "the packaged artifact". On a self-hosted runner that directory
+      # is whatever the previous job happened to leave in the workspace: an
+      # installer from an earlier run, a dist/ that checkout did not clean, or -
+      # when the package job runs on a different machine from this one - nothing at
+      # all. The job that exists to prove the SHIPPED package works was testing a
+      # directory, and on a good day the two were the same thing.
+      - name: Get the package this run built
+        uses: actions/download-artifact@v4
+        with:
+          name: horizun-mcp-package
+          path: dist
+
+      # AND PROVE IT IS THAT ONE. A download is a network operation; it can hand
+      # back a truncated file or, with a name collision across runs, somebody
+      # else's. Every hash the package job recorded is re-checked here, before the
+      # installer is executed - which is the last moment checking is cheap.
+      - name: Verify the downloaded package is byte-for-byte the one that was built
+        shell: pwsh
+        run: |
+          $hashFile = 'dist/package-hashes.json'
+          if (-not (Test-Path $hashFile)) {
+            throw "the artifact carries no package-hashes.json, so there is no way to tell whether what was downloaded is what was built. Refusing to install it."
+          }
+          $rec = Get-Content $hashFile -Raw | ConvertFrom-Json
+
+          # The artifact must be from THIS run's commit. A cached artifact from an
+          # earlier commit would install cleanly and be verified against its own
+          # manifest, and every check downstream would pass about the wrong build.
+          if ($rec.workflow_sha -ne "${{ github.sha }}") {
+            throw "this artifact was built from ${{ github.sha }}'s workflow? no: it records $($rec.workflow_sha), and this run is ${{ github.sha }}. It is from a different run."
+          }
+
+          $setup = Get-ChildItem dist -Filter '*setup.exe' -File | Select-Object -First 1
+          if (-not $setup) { throw "the downloaded artifact contains no installer" }
+
+          $onDisk = @{
+            'installer'     = $setup.FullName
+            'sbom.json'     = 'dist/sbom.json'
+            'manifest.json' = 'dist/stage/manifest.json'
+          }
+          $wrong = @()
+          foreach ($k in $onDisk.Keys) {
+            $expected = $rec.files.$k
+            if (-not $expected) { $wrong += "$k : the package recorded no hash for it"; continue }
+            if (-not (Test-Path $onDisk[$k])) { $wrong += "$k : missing from the download"; continue }
+            $actual = (Get-FileHash $onDisk[$k] -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $expected.sha256) { $wrong += "$k : $actual, built as $($expected.sha256)" }
+            else { Write-Host "  ok  $k  $($actual.Substring(0,16))..." }
+          }
+          if ($wrong.Count -gt 0) {
+            throw "the downloaded package does not match what was built:`n  - $($wrong -join "`n  - ")"
+          }
+          Write-Host "the package is byte-for-byte the one built from commit $($rec.commit)"
+
+      # THE INSTALLED ARTIFACT, NOT bin/Release.
+      #
+      # This job used to run verify-live with its default -Server, which pointed
+      # at src/.../bin/Release. So the integration suite proved the developer
+      # build worked and said nothing about the package anybody installs - which
+      # is the only build a release is about. verify-live now refuses a
+      # bin/Release path unless told to, and this installs the real thing first.
+      - name: Install the packaged artifact
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist -Filter '*setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw "no installer was produced by the package job" }
+          Write-Host "installing $($setup.Name)"
+          # LOCAL, because that is what the installer stamps - Inno's
+          # GetDateTimeString has no UTC form. The first version of this compared
+          # a local stamp against a UTC clock and rejected a good install as
+          # stale on any machine not on UTC.
+          $startedLocal = Get-Date
+          $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+
+          # BOTH, and neither alone. Inno returns 0 from any install that
+          # COMPLETES - including one where a year failed and was rolled back -
+          # so 0 does not mean fully installed. But a NON-ZERO code means Setup
+          # never completed, and then install-result.txt is whatever the previous
+          # run left behind.
+          #
+          # Measured on 2026-07-30: a silent install exited 1 having deployed
+          # NOTHING, and the four-hour-old result file in {app} still said
+          # fully_installed=yes. The first version of this step read only that
+          # file and would have called it a success.
+          if ($p.ExitCode -ne 0) { throw "Setup did not complete: exit code $($p.ExitCode). Nothing can be concluded from install-result.txt - it is from an earlier run." }
+
+          $result = "$env:LOCALAPPDATA\Programs\Horizun\MCP\install-result.txt"
+          if (-not (Test-Path $result)) { throw "the installer left no install-result.txt" }
+          Get-Content $result | Write-Host
+
+          $text = Get-Content $result -Raw
+          if ($text -notmatch 'installed_local\s*=\s*(\S+ \S+)') { throw "install-result.txt has no installed_local - it predates this installer and its freshness cannot be checked" }
+          $stamp = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
+          if ($stamp -lt $startedLocal.AddMinutes(-5)) { throw "install-result.txt is STALE ($stamp local, this run started $startedLocal local) - it is from an earlier install" }
+          if ($text -notmatch 'fully_installed\s*=\s*yes') { throw "the install was PARTIAL - see install-result.txt above" }
+
+      # The chain, end to end: source commit -> manifest -> stage -> installed.
+      # Hashes prove identity; the commit stamped into each binary proves
+      # provenance. Neither alone answers "is everything installed one clean
+      # commit, and is it the one in the tree".
+      - name: Verify one clean commit from source to what is installed
+        shell: pwsh
+        run: pwsh scripts/verify-release.ps1 -Installed -Json artifacts/live/release-chain.json
+
+      - name: Live verification against a running Revit ${{ matrix.year }}
+        shell: pwsh
+        run: |
+          # The shipped default is safe_write, which intentionally hides session/file
+          # tools. This release gate explicitly tests those tools, so give this isolated
+          # runner process a throwaway full_write profile rather than altering the
+          # machine owner's real %USERPROFILE%\.horizun settings.
+          $env:HORIZUN_DATA_ROOT = Join-Path $env:RUNNER_TEMP "horizun-live-${{ github.run_id }}-${{ matrix.year }}"
+          New-Item -ItemType Directory -Force $env:HORIZUN_DATA_ROOT | Out-Null
+          '{"permission_profile":"unsafe_code","enable_execute_python":true}' |
+            Set-Content (Join-Path $env:HORIZUN_DATA_ROOT 'settings.json') -Encoding utf8
+
+          $doc = Get-Content dist/stage/manifest.json -Raw | ConvertFrom-Json
+          $addin = $doc.Plugins | Where-Object { $_.Year -eq ${{ matrix.year }} }
+          if (-not $addin) { throw "the manifest has no payload for ${{ matrix.year }}" }
+
+          # Fixture names (the model, the second model, the shared-parameter file
+          # and so on) come from a file on the runner, OUTSIDE the repository -
+          # putting them here would publish client and project names. See
+          # the client-name policy. A fixture that is absent makes its probes NOT
+          # COVERED, and -ReleaseGate turns that into exit 3.
+          pwsh scripts/verify-live.ps1 `
+            -Year ${{ matrix.year }} `
+            -ReleaseGate `
+            -ExpectedCommit $doc.Commit `
+            -ExpectedServerSha256 $doc.Server.Sha256 `
+            -ExpectedAddinSha256 $addin.Sha256 `
+            -Json "artifacts/live/live-${{ matrix.year }}.json"
+
+      # always(), because the JSON of a FAILED run is the artifact somebody
+      # actually needs. Publishing only the green ones is publishing nothing.
+      - name: Publish the live-verification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-verification-${{ matrix.year }}
+          path: artifacts/live
+
+  # ---------------------------------------------------------------------------
+  # Says out loud what did not run. Without this, a green run looks complete.
+  # ---------------------------------------------------------------------------
+  coverage-statement:
+    if: ${{ always() }}
+    needs: [revit-free]
+    runs-on: ubuntu-latest
+    steps:
+      - name: What this run did and did not cover
+        run: |
+          echo "Proved here: the MCP server, the honesty arithmetic, coverage rules,"
+          echo "request ownership, the wire protocol, contract drift and multi-instance discovery."
+          echo "Also here: the structural half of the sensitive-name scan. The NAME half needs"
+          echo "a wordlist that is deliberately not in this repository, so on a hosted runner it"
+          echo "reports NOT RUN - which is not the same as passing, and is not printed as if it were."
+          if [ "${{ vars.HAS_REVIT_RUNNER }}" = "true" ]; then
+            echo "Revit jobs: RAN (a self-hosted runner with Revit is configured)."
+            echo "Integration ran against the INSTALLED artifact on Revit 2025 and 2026, with the"
+            echo "commit and full SHA-256 of the server and that year's add-in checked against the"
+            echo "release manifest. NOT COVERED exits 3 under -ReleaseGate."
+          else
+            echo "::warning::Revit jobs were SKIPPED - no self-hosted runner with Revit is configured."
+            echo "NOT covered by this run: the add-in for any year, packaging, the installer,"
+            echo "and every command that touches a model. Those are verified on a developer"
+            echo "machine with Revit, and that verification is not represented by this tick."
+          fi

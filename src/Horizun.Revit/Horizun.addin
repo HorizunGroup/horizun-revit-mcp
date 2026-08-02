@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Horizun MCP Revit add-in manifest. Deployed to
+  %APPDATA%\Autodesk\Revit\Addins\<year>\ ; the assembly lives in the Horizun\
+  subfolder next to it. Uses a stable, Horizun-owned AddInId.
+-->
+<RevitAddIns>
+  <AddIn Type="Application">
+    <Name>Horizun MCP</Name>
+    <Assembly>Horizun\Horizun.Revit.dll</Assembly>
+    <AddInId>b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30</AddInId>
+    <FullClassName>Horizun.Revit.App</FullClassName>
+    <VendorId>HRZN</VendorId>
+    <VendorDescription>Horizun Group</VendorDescription>
+  </AddIn>
+</RevitAddIns>

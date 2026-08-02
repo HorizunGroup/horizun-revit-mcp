@@ -1,0 +1,51 @@
+{
+  "_README": [
+    "Copy this to %USERPROFILE%\\.horizun\\live-fixtures.json and fill it in with REAL",
+    "values for this machine. scripts/verify-live.ps1 reads it; an explicit -Parameter",
+    "always wins over the file.",
+    "",
+    "WHY IT LIVES OUTSIDE THE REPOSITORY. Every value here names something real - a",
+    "model title, a shared-parameter file, a project folder. Committing them, or",
+    "putting them in CI variables, republishes exactly the client and project names",
+    "that this policy exists to keep out. The file the release gate reads",
+    "must not be the file that leaks what it is checking.",
+    "",
+    "A value left blank makes its probes NOT COVERED - named in the output, and under",
+    "-ReleaseGate a non-zero exit. That is the intended behaviour: a guarantee missing",
+    "from the output reads exactly like one that passed."
+  ],
+
+  "_Document": "Title of a model open in the Revit under test. Without it, links, quantities and the whole confirmation flow are NOT COVERED.",
+  "Document": "",
+
+  "_InactiveDocument": "Title of a SECOND model open in the SAME Revit but NOT active. It must really be open and really not active: the probe that used to pass a title matching nothing exercised the no-match path and proved nothing.",
+  "InactiveDocument": "",
+
+  "_SpfPath": "Full path to a real shared-parameter .txt file. Needed for the bind_shared_param rehearsal probe - a rehearsal that refuses because the file is missing proves nothing about whether it stops before the transaction.",
+  "SpfPath": "",
+
+  "_SpfParam": "The name of a definition inside that SPF.",
+  "SpfParam": "",
+
+  "_QuantityCategory": "A category that EXISTS in the model under test. quantities correctly refuses to report zero for an empty category, so a category from a different model leaves the probe unverified.",
+  "QuantityCategory": "OST_Floors",
+
+  "_OldFile": "Full path to a real .rvt or .rfa saved by a DIFFERENT Revit version, for the upgrade guard.",
+  "OldFile": "",
+
+  "_ClosedWorksetDocument": [
+    "Title of a WORKSHARED model, open in the Revit under test, with AT LEAST ONE WORKSET CLOSED.",
+    "",
+    "This is the one condition in the product that cannot be detected from inside the answer it",
+    "corrupts. A closed workset's elements are not in the document, so a scan does not skip them -",
+    "it never sees them - and every count comes back smaller with nothing anywhere reporting a gap.",
+    "'0 imported CAD instances' over a half-loaded model is a true statement about what was loaded,",
+    "presented as a statement about the building.",
+    "",
+    "It cannot be simulated either: whether a workset is open is a property of how the model was",
+    "opened. To produce one, open a workshared model and clear a workset in the Worksets dialog, or",
+    "open it with 'Specify' and leave one unchecked. Any workshared model will do - it does not have",
+    "to be the same one as Document."
+  ],
+  "ClosedWorksetDocument": ""
+}
