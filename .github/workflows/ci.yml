@@ -82,14 +82,14 @@ jobs:
 
       - name: Publish the client-name scan
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sensitive-scan
           path: artifacts/scan
 
       - name: Publish test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-results
           path: artifacts/tests
@@ -264,7 +264,7 @@ jobs:
           Get-Content 'dist/package-hashes.json' | Write-Host
 
       - name: Publish the installer, manifest and SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: horizun-mcp-package
           path: |
@@ -430,7 +430,7 @@ jobs:
       # actually needs. Publishing only the green ones is publishing nothing.
       - name: Publish the live-verification results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-verification-${{ matrix.year }}
           path: artifacts/live
