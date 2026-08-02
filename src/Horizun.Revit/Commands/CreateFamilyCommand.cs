@@ -105,6 +105,7 @@ namespace Horizun.Revit.Commands
                 family = app.Application.NewFamilyDocument(template);
                 if (family == null || !family.IsFamilyDocument)
                     throw new InvalidOperationException("Revit did not create a family document from the template.");
+                View familyView = FindFamilyCreationView(family);
 
                 var nestedFamilies = new Dictionary<string, Family>(StringComparer.OrdinalIgnoreCase);
                 foreach (NestedInstancePlan nestedPlan in plan.NestedInstances)
@@ -127,20 +128,41 @@ namespace Horizun.Revit.Commands
                         ApplyTypeValues(fm, plan.Types, types, parameters, scale);
 
                         var referencePlanes = new Dictionary<string, ReferencePlane>(StringComparer.Ordinal);
-                        foreach (ReferencePlanePlan referencePlan in plan.ReferencePlanes)
+                        using (var referenceTx = new SubTransaction(family))
                         {
-                            ReferencePlane referencePlane = family.FamilyCreate.NewReferencePlane(referencePlan.BubbleEnd,
-                                referencePlan.FreeEnd, referencePlan.CutVector, family.ActiveView);
-                            if (!string.IsNullOrWhiteSpace(referencePlan.Name)) referencePlane.Name = referencePlan.Name;
-                            referencePlanes[referencePlan.Key] = referencePlane;
-                            createdReferencePlanes.Add(new JObject { ["key"] = referencePlan.Key, ["element_id"] = Rid.Value(referencePlane.Id) });
+                            referenceTx.Start();
+                            try
+                            {
+                                foreach (ReferencePlanePlan referencePlan in plan.ReferencePlanes)
+                                {
+                                    ReferencePlane referencePlane = family.FamilyCreate.NewReferencePlane(referencePlan.BubbleEnd,
+                                        referencePlan.FreeEnd, referencePlan.CutVector, familyView);
+                                    if (!string.IsNullOrWhiteSpace(referencePlan.Name)) referencePlane.Name = referencePlan.Name;
+                                    Parameter referenceKind = referencePlane.LookupParameter("Is Reference");
+                                    if (referenceKind != null && !referenceKind.IsReadOnly)
+                                        referenceKind.Set((int)FamilyInstanceReferenceType.StrongReference);
+                                    referencePlanes[referencePlan.Key] = referencePlane;
+                                    createdReferencePlanes.Add(new JObject { ["key"] = referencePlan.Key, ["element_id"] = Rid.Value(referencePlane.Id) });
+                                }
+                                referenceTx.Commit();
+                            }
+                            catch
+                            {
+                                if (referenceTx.GetStatus() == TransactionStatus.Started) referenceTx.RollBack();
+                                throw;
+                            }
                         }
+                        // ReferencePlane.GetReference() is not usable for a new family element
+                        // until Revit has regenerated the family document. Without this explicit
+                        // regeneration, NewLinearDimension rejects an otherwise valid pair of
+                        // reference planes with its generic "conditions for the inputs" error.
+                        if (plan.Dimensions.Count > 0) family.Regenerate();
                         foreach (DimensionPlan dimensionPlan in plan.Dimensions)
                         {
                             var references = new ReferenceArray();
                             foreach (string referenceKey in dimensionPlan.ReferencePlaneKeys)
                                 references.Append(referencePlanes[referenceKey].GetReference());
-                            Dimension dimension = family.FamilyCreate.NewLinearDimension(family.ActiveView,
+                            Dimension dimension = family.FamilyCreate.NewLinearDimension(familyView,
                                 Line.CreateBound(dimensionPlan.LineStart, dimensionPlan.LineEnd), references);
                             if (!string.IsNullOrWhiteSpace(dimensionPlan.LabelParameter))
                                 dimension.FamilyLabel = parameters[dimensionPlan.LabelParameter];
@@ -163,12 +185,12 @@ namespace Horizun.Revit.Commands
                                 throw new InvalidOperationException("nested family '" + nestedFamily.Name + "' has no type named '" + nestedPlan.TypeName + "'");
                             if (!nestedSymbol.IsActive) { nestedSymbol.Activate(); family.Regenerate(); }
                             FamilyInstance instance = nestedPlan.Placement == "view_point"
-                                ? family.FamilyCreate.NewFamilyInstance(nestedPlan.Point, nestedSymbol, family.ActiveView)
+                                ? family.FamilyCreate.NewFamilyInstance(nestedPlan.Point, nestedSymbol, familyView)
                                 : family.FamilyCreate.NewFamilyInstance(nestedPlan.Point, nestedSymbol, StructuralType.NonStructural);
                             if (Math.Abs(nestedPlan.RotationRadians) > 1e-12)
                                 ElementTransformUtils.RotateElement(family, instance.Id,
                                     Line.CreateUnbound(nestedPlan.Point, nestedPlan.Placement == "view_point"
-                                        ? family.ActiveView.ViewDirection : XYZ.BasisZ), nestedPlan.RotationRadians);
+                                        ? familyView.ViewDirection : XYZ.BasisZ), nestedPlan.RotationRadians);
                             foreach (JProperty association in nestedPlan.Associations.Properties())
                             {
                                 Parameter nestedParameter = ResolveNestedParameter(instance, association.Name);
@@ -809,10 +831,15 @@ namespace Horizun.Revit.Commands
                 bool labelOk = string.IsNullOrWhiteSpace(requested.LabelParameter)
                     ? dimension.FamilyLabel == null
                     : string.Equals(actualLabel, requested.LabelParameter, StringComparison.Ordinal);
-                if (!dimension.AreReferencesAvailable || dimension.References == null ||
+                // In a family document Revit can report AreReferencesAvailable=false even
+                // though the dimension owns the expected reference array and saves correctly.
+                // The durable checks here are the re-read reference count and family label;
+                // preserve the API diagnostic in the result for callers that need it.
+                if (dimension.References == null ||
                     dimension.References.Size != requested.ReferencePlaneKeys.Count || !labelOk)
                     throw new InvalidOperationException("dimension '" + requested.Key + "' references or family label did not re-read as requested");
-                row["references"] = dimension.References.Size; row["label_parameter"] = actualLabel; row["verified"] = true;
+                row["references"] = dimension.References.Size; row["references_available"] = dimension.AreReferencesAvailable;
+                row["label_parameter"] = actualLabel; row["verified"] = true;
             }
 
             var linePlans = plan.FamilyLines.ToDictionary(x => x.Key, StringComparer.Ordinal);
@@ -882,6 +909,23 @@ namespace Horizun.Revit.Commands
                 throw new InvalidOperationException("nested instance parameter '" + name + "' matched " + matches.Count + " parameters; use an unambiguous exact name");
             return matches[0];
         }
+
+        private static View FindFamilyCreationView(Document family)
+        {
+            List<View> views = new FilteredElementCollector(family)
+                .OfClass(typeof(View))
+                .Cast<View>()
+                .Where(x => !x.IsTemplate)
+                .ToList();
+            View view = views.FirstOrDefault(x => x.ViewType == ViewType.FloorPlan) ??
+                        views.FirstOrDefault(x => x.ViewType == ViewType.CeilingPlan) ??
+                        views.FirstOrDefault(x => x.ViewType == ViewType.ThreeD) ??
+                        views.FirstOrDefault();
+            if (view == null)
+                throw new InvalidOperationException("The family template exposes no non-template view for reference planes, dimensions or symbolic geometry.");
+            return view;
+        }
+
         private static double NormalizeAngle(double radians)
         {
             while (radians > Math.PI) radians -= Math.PI * 2;

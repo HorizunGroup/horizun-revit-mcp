@@ -53,7 +53,7 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/HorizunGroup/horizun-revit-
 powershell -ExecutionPolicy Bypass -File $p
 ```
 
-Pass `-Version v0.5.0-rc.1` to pin this prerelease instead of following `latest`.
+Pass `-Version v0.5.0` to pin the official release instead of following `latest`.
 
 ### Build from source
 

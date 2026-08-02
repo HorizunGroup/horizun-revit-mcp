@@ -3,7 +3,7 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v0.5.0-rc.1 — 2026-08-01
+## v0.5.0 — 2026-08-01
 
 Esta versión apunta directamente al benchmark de operaciones tipadas,
 interoperabilidad, familias y distribución; no suma herramientas por contar.
@@ -63,7 +63,7 @@ interoperabilidad, familias y distribución; no suma herramientas por contar.
   instalador sigue sin firma de una CA pública; por eso distribución no recibe
   puntuación perfecta.
 
-El contrato compartido cambió: servidor y add-in 0.5.0-rc.1 deben desplegarse juntos.
+El contrato compartido cambió: servidor y add-in 0.5.0 deben desplegarse juntos.
 
 ## v0.4.0 — 2026-08-01
 
