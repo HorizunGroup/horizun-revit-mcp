@@ -27,7 +27,7 @@ jobs:
   revit-free:
     runs-on: ubuntu-latest    # the Revit-free surface is plain net8.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -106,7 +106,7 @@ jobs:
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the add-in for Revit ${{ matrix.year }} against its own RevitAPI
         shell: pwsh
@@ -136,7 +136,7 @@ jobs:
     needs: [revit-free, revit-addin]
     runs-on: [self-hosted, windows, revit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and stage every supported year
         shell: pwsh
@@ -290,7 +290,7 @@ jobs:
       matrix:
         year: [2025, 2026]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # DOWNLOAD THE ARTIFACT. This job used to read dist/ straight off the runner
       # and call it "the packaged artifact". On a self-hosted runner that directory
