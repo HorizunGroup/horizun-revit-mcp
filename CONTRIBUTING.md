@@ -1,0 +1,61 @@
+# Contributing — Horizun Revit MCP
+
+How to work this repo from any machine without stepping on anyone. Read
+[AGENTS.md](AGENTS.md) too — it carries the project rules and loads every
+session.
+
+## The single source of truth is GitHub, not any one PC
+
+`origin` = `https://github.com/pablo-horizun/horizun-revit-mcp-private.git`.
+Your clone has no special status; it is one copy of what is on GitHub.
+
+## One branch per task, a PR into `main`, never a direct commit to `main`
+
+```bash
+git checkout main
+git pull origin main
+git checkout -b epic1/place-sprinklers      # epicN/short-name
+# ...work...
+git add -A && git commit -m "…"
+git push -u origin epic1/place-sprinklers
+# then open a Pull Request into main on GitHub; do not self-merge
+```
+
+Two people on two machines work in parallel this way: each task lives on its own
+branch and `main` only moves through reviewed merges. Committing straight to
+`main` from two places clobbers — that is the failure this rule exists to avoid.
+
+## Build and test before opening a PR
+
+```bash
+dotnet build src/Horizun.Revit/Horizun.Revit.csproj -p:RevitVersion=2026
+dotnet test tests/Horizun.Core.Tests
+```
+
+The add-in compiles against the Revit year installed on the machine. Tests must
+be green before the PR.
+
+## Hard rules
+
+- **The product name is written `Horizun`** — never `HORIZUN`, never `horizun`
+  as a word. Only `horizun_*` tool names and `HORIZUN_*` env vars are lower/upper
+  by design.
+- **The verified contract:** every typed command must re-read the model after the
+  commit — no command reports work it did not verify. Follow the shape of
+  `src/Horizun.Revit/Commands/TransformElementsCommand.cs`.
+- **Do not enable `horizun_execute_python` for the user.** It is the full Revit
+  API and ships disabled on purpose. A person enables it by running
+  `scripts/enable-execute-python.ps1`; never switch it on yourself.
+- Every new typed command that overlaps the escape hatch gets an entry in the
+  `execute_python` typed-overlap guard.
+
+## Where the backlog lives
+
+[docs/BACKLOG.md](docs/BACKLOG.md). Pick a story, branch, PR.
+
+## Knowledge is a DIFFERENT channel
+
+Reusable knowledge — agent memory (`api.md`, `mep.md`, `familias.md`), skills,
+field contributions — does **not** go in this git repo. It flows through the
+Horizun CORE on OneDrive via the `sincronizar` skill. Code → GitHub; knowledge →
+CORE. Keep them separate.
