@@ -10,6 +10,20 @@ Estás en el repositorio de **Horizun Revit MCP**: el puente MCP entre un client
 (Claude Code, Codex, cualquier cliente MCP) y un Autodesk Revit corriendo en esta
 máquina. Parte del ecosistema [Horizun Hub](https://horizunhub.com).
 
+> **The name is written `Horizun`** — capital H, the rest lower case — every time
+> it appears to a user, in any language. Never `HORIZUN`, never `horizun` as a
+> word. It is a brand, not an acronym and not shouting. The only upper-case forms
+> that exist are the tool names (`horizun_*`, always lower case) and the
+> environment-variable prefix (`HORIZUN_REVIT_YEAR` and friends) — those are code
+> identifiers, never how you refer to the product in prose.
+>
+> **El nombre se escribe `Horizun`** — H mayúscula, el resto en minúscula — cada
+> vez que aparece ante un usuario, en cualquier idioma. Nunca `HORIZUN`, nunca
+> `horizun` como palabra. Es una marca, no una sigla ni un grito. Las únicas
+> formas en mayúscula que existen son los nombres de las herramientas (`horizun_*`,
+> siempre en minúscula) y el prefijo de variables de entorno (`HORIZUN_REVIT_YEAR`
+> y demás) — esos son identificadores de código, no cómo te refieres al producto.
+
 ---
 
 ## English
