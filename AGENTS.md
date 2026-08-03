@@ -132,7 +132,11 @@ and run `install.ps1` again.
 - **`horizun_execute_python` ships disabled.** It needs both
   `{"permission_profile":"unsafe_code","enable_execute_python":true}` in
   `%USERPROFILE%\.horizun\settings.json`.
-  Do not enable it unless the user asks: it is the full Revit API.
+  Do not enable it unless the user asks: it is the full Revit API. And do not
+  switch it on yourself — the intended way is for a PERSON to run
+  `scripts/enable-execute-python.ps1`, which prints what to weigh, writes exactly
+  those two keys, preserves other settings, and reverts with `-Disable`. Ask them
+  to run it; then have them restart the MCP client so the tool appears.
 - This bridge is **organisation-neutral by design**: no company's standards or
   catalogues are compiled in. Where a command needs one, it is passed as an
   argument. The delivery workflows built on top live in
@@ -262,7 +266,12 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 - **`horizun_execute_python` viene apagado.** Exige
   `{"permission_profile":"unsafe_code","enable_execute_python":true}` en
   `%USERPROFILE%\.horizun\settings.json`.
-  No lo enciendas sin que el usuario lo pida: es la API completa de Revit.
+  No lo enciendas sin que el usuario lo pida: es la API completa de Revit. Y no lo
+  actives tú: la vía prevista es que una PERSONA corra
+  `scripts/enable-execute-python.ps1`, que muestra qué tener en cuenta, escribe
+  exactamente esas dos claves, conserva el resto de la config y se revierte con
+  `-Disable`. Pídele que lo corra; luego que reinicie el cliente MCP para que la
+  herramienta aparezca.
 - Este puente es **neutral por diseño**: no lleva estándares ni catálogos de
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa
   como argumento. Los flujos de entrega construidos encima viven en
