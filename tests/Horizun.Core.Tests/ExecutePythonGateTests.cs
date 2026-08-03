@@ -204,5 +204,55 @@ namespace Horizun.Core.Tests
                 "DocumentGate.ForMutation, so they write to whatever window is in front: " +
                 string.Join(", ", ungated));
         }
+
+        /// <summary>
+        /// A caller that reaches for execute_python to do exactly what a typed command
+        /// already performs and verifies gets redirected, not a silent unverified
+        /// duplicate. Reported case: a script calling ViewSheet.Create instead of
+        /// horizun_manage_views(create_sheet).
+        /// </summary>
+        [Fact]
+        public void Typed_overlaps_are_refused_before_the_gate_and_before_queueing()
+        {
+            string text = Source(File_);
+
+            int overlapCheck = text.IndexOf("RefuseIfTypedOverlap(code)", StringComparison.Ordinal);
+            int gate = text.IndexOf("DocumentGate.ForMutation", StringComparison.Ordinal);
+            int queue = text.IndexOf("AsyncQueue.TryAdd", StringComparison.Ordinal);
+
+            Assert.True(overlapCheck >= 0, "the typed-overlap check must be called");
+            Assert.True(overlapCheck < gate,
+                "the overlap check must run BEFORE the document gate - a script redirected to a typed command " +
+                "should never reach far enough to touch a document at all.");
+            Assert.True(overlapCheck < queue,
+                "the overlap check must run BEFORE anything is queued, or run_async=true bypasses it.");
+        }
+
+        [Theory]
+        [InlineData("ViewSheet", "Create", "horizun_manage_views")]
+        [InlineData("Viewport", "Create", "horizun_manage_views")]
+        [InlineData("ScheduleSheetInstance", "Create", "horizun_manage_views")]
+        [InlineData("ViewSchedule", "CreateSchedule", "horizun_create_schedule")]
+        [InlineData("ElementTransformUtils", "Move", "horizun_transform_elements")]
+        [InlineData("ElementTransformUtils", "Rotate", "horizun_transform_elements")]
+        [InlineData("ElementTransformUtils", "Mirror", "horizun_transform_elements")]
+        [InlineData("doc", "Delete", "horizun_delete_verified")]
+        public void Each_typed_overlap_names_its_replacement_command(string apiType, string apiMethod, string typedCommand)
+        {
+            string text = Source(File_);
+            int table = text.IndexOf("TypedOverlaps =", StringComparison.Ordinal);
+            Assert.True(table >= 0, "the typed-overlap table moved; this test needs updating");
+
+            // Every entry lives between the table and the refusal method that reads it.
+            int helperEnd = text.IndexOf("private static CommandResult RefuseIfTypedOverlap", StringComparison.Ordinal);
+            string tableText = text.Substring(table, helperEnd - table);
+
+            // The table stores REGEX SOURCE (backslashes and all), not the API call
+            // itself - so this checks for the type/method names appearing near each
+            // other rather than matching the regex literally against its own source.
+            Assert.Contains(apiType, tableText);
+            Assert.Contains(apiMethod, tableText);
+            Assert.Contains(typedCommand, tableText);
+        }
     }
 }
