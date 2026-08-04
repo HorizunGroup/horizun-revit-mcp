@@ -32,18 +32,56 @@ commit and gets an entry in the `execute_python` typed-overlap guard.
 | 1.4 | Family: verified parametric-void mirror/duplicate command | M | 1.0 |
 | 1.5 | Each new command → entry in the `execute_python` overlap guard | S | 1.1–1.4 |
 
-## EPIC 2 — Unified bridge contract *(the platform jump)*
+### Story 1.1 — five live iterations, what is now KNOWN (2026-08-04)
 
-Not one binary — one shared contract that Civil3D/Navisworks/PBI adopt: named
-pipe + token (no TCP ports), verified writes, capability profiles, health,
-discovery. Revit is the reference implementation.
+Not seated yet. Every line below is measured on a real RCI model, and each one
+falsified a theory rather than supporting one — the placement report the command
+now carries is what made that possible.
 
-| ID | Story | Size | Dep |
-|----|-------|------|-----|
-| 2.1 | Write "Horizun Bridge Contract v1" (transport, verified write, health, discovery, profiles) | M | — |
-| 2.2 | Retrofit `civil3d-bridge` to the contract (token+pipe, `*_health`) | L | 2.1 |
-| 2.3 | Unified installer + naming (`horizun-revit` / `-civil3d` / `-navis`) | M | 2.2 |
-| 2.4 | Federated `horizun_health` (one call, status of every bridge) | S | 2.2 |
+| Read | Behaviour | Use it for |
+|---|---|---|
+| `Connector.Origin` (raw or via `GetTransform().OfPoint`) | A family-definition **constant** (-25.4 mm) whatever the aim, before and after a 22.5 m move | `ConnectTo` only — **never** position |
+| `LocationPoint` | Reads the level (-0.0) and does **not** move; `MoveElement` Z is discarded | Nothing, on this family |
+| Bounding box | Tracks reality (the designer's seated heads report z 54,848 mm) | **Measurement** |
+| `Offset from Host` | `Set()` accepted with no exception, **read back 0.0** — reverted on regeneration | Nothing yet — see below |
+
+Two traps this cost, worth remembering:
+
+1. **A broken ruler falsifies a good lever.** Iteration 2 (writing the offset
+   parameter) was reverted because the run "showed" it changed nothing — measured
+   with the connector's own Origin, which *could never* show a change. Re-instating
+   it with a working ruler proved the lever is also broken, but the first rejection
+   was not evidence.
+2. **`Set()` returning without throwing is not a write.** Only the read-back is.
+
+**Next measurement, not next guess:** the designer's own heads carry
+`Host = "Level : Cubierta"` *with* a 4.16 m `Offset from Host`, so that value is
+legal on a level-associated instance. Something about how this command creates the
+instance refuses it. Compare the two instances — placement type, host association,
+`Level`/`Schedule Level`, whether the offset only takes after `ConnectTo` — and
+measure the difference before changing anything.
+
+Connection is unaffected: **37/37** `connected_to_intended_target`. The rollback
+rule held on all five failed runs; the model is untouched after every one.
+
+
+## ~~EPIC 2 — Unified bridge contract~~ *(DROPPED 2026-08-04)*
+
+**Dropped by the owner.** It was the only epic whose work lives in a DIFFERENT
+repository (`civil3d-bridge`), so it could never be finished from here — and a
+shared contract is worth writing only once the reference implementation has
+settled. Epic 1's commands are still being proven against real models.
+
+What was worth keeping from it, moved rather than deleted:
+
+- The transport and verified-write rules it would have specified are already
+  written down and enforced here: `docs/security-model.md`, the confirmation and
+  stale-plan machinery (5.1), and the rollback rule in CONTRIBUTING.
+- Federated health (was 2.4) is a small read-only addition that never needed the
+  contract; if it is wanted it comes back as its own story.
+
+Re-open it deliberately, not by drift: a bridge contract written before this one is
+verified would freeze today's mistakes into three products instead of one.
 
 ## EPIC 3 — Model → data → budget pipeline (+ real time) *(deep-moat vertical)*
 
@@ -209,7 +247,7 @@ BuiltInParameter token or GUID". Language is not a cosmetic axis.
 ---
 
 ## Suggested order
-`5.1 → 5.2/5.3 → 1.1–1.3 fixed → 0.1/5.7 → 5.5 → 4.0/4.1 → 5.4/5.6 → 3.1 → 5.8/5.9/5.10 → 2.x`
+`1.1 seated → 1.2/1.3 → 5.1 wiring → 5.5 → 4.0/4.1 → 5.4 → 3.1 → rest of 5.2/5.8`
 
 Read the previous order as superseded from here down. 5.1 comes first because
 every other guarantee is written on top of "the thing you approved is the thing
