@@ -519,7 +519,10 @@ namespace Horizun.Contracts
                     "family, type, name, level, parameter predicates and an optional 3D bounding box; choose the " +
                     "fields returned and receive counts grouped by category, level and source. Results use a " +
                     "stale-detecting cursor rather than a naked offset, and every unreadable element, unloaded link " +
-                    "or closed workset keeps coverage from being called complete.",
+                    "or closed workset keeps coverage from being called complete. For histograms, pass group_by " +
+                    "(with optional sum_parameters) and receive aggregated groups computed server-side over the " +
+                    "whole matched set in ONE call - no rows, no paging, and every sum reports how many elements " +
+                    "actually contributed to it.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -548,7 +551,9 @@ namespace Horizun.Contracts
     ""coordinate_units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""include_types"": { ""type"": ""boolean"", ""default"": false },
     ""cursor"": { ""type"": ""string"", ""description"": ""next_cursor from the previous page. It is refused if the query or result set changed."" },
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 }
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
+    ""group_by"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""category"", ""level"", ""type"", ""family"", ""source_model"", ""source_kind""] }, ""description"": ""Aggregate instead of listing: returns groups with counts over the WHOLE matched set in one call, no rows and no cursor. 'how many wall types per floor' is group_by:[type,level]."" },
+    ""sum_parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""With group_by: numeric parameters to sum per group. Each sum reports summed/absent/unreadable/non_numeric counts and a complete flag - a sum over part of a group never reads like a sum over all of it."" }
   },
   ""additionalProperties"": false
 }")
