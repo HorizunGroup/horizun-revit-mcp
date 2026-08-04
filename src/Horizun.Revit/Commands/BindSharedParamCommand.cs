@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_bind_shared_param — bind a shared parameter from an SPF, and PROVE the
@@ -142,11 +142,6 @@ namespace Horizun.Revit.Commands
             string bspPlan = DocumentGate.PlanHash(request, "param_guid", "param_name", "categories",
                                                   "binding_kind", "group", "spf_path",
                                                   "merge_existing_categories", "allow_vary_between_groups");
-            if (!bspDryRun)
-            {
-                CommandResult bspRefused = DocumentGate.RequireConfirmation(uiapp, gate, request, Name, bspPlan);
-                if (bspRefused != null) return bspRefused;
-            }
 
             var wantTitle = request.Value<string>("target_document_title");
             if (!string.IsNullOrEmpty(wantTitle))
@@ -320,6 +315,56 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex) { return CommandResult.Fail("Could not build the category set: " + ex.Message + ". Nothing was bound."); }
 
+            // ---- The MATERIALISED plan: which OPERATION, against which existing binding. --
+            // bspPlan above binds the REQUEST - parameter, categories, kind, group, file.
+            // What it cannot see is the model's half of the decision, and for this command
+            // that half decides everything:
+            //
+            //   * INSERT BECAME REINSERT. The rehearsal said "not bound, this will insert".
+            //     If somebody binds the parameter before the token is spent, the same
+            //     request is now a ReInsert - an operation that REPLACES the category list
+            //     and drops values from every category not named. The caller approved an
+            //     insert; they get refused rather than a silent replace.
+            //   * THE EXISTING CATEGORY LIST MOVED. merge=true resolves against it, so the
+            //     final set itself changes with it; merge=false DROPS it, so the caller
+            //     approved dropping a specific list, not whatever it has since become.
+            //     Either way it belongs in the plan.
+            //
+            // ExpectedCascadeCount carries the categories that would LOSE their binding -
+            // the blast radius a person actually weighs before saying yes to a reinsert.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = uiapp?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ExpectedCascadeCount = before.Cats == null
+                    ? 0
+                    : before.Cats.Count(c => !finalCats.ContainsKey(Rid.GetId(c.Id)))
+            };
+            resolvedPlan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "binding:" + defGuid.ToString("d"),
+                Category = "ParameterBinding",
+                TypeName = defName,
+                Action = before.Exists == true ? PlannedAction.Modify : PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                {
+                    { "op", before.Exists == true ? "reinsert" : "insert" },
+                    // Sorted: Revit may enumerate a CategorySet in any order, and that is
+                    // not a change to the binding. Ids, not names - names localise.
+                    { "existing", before.Cats == null
+                        ? (before.CatsMeasured ? "" : "<unmeasured>")
+                        : string.Join(",", before.Cats.Select(c => Rid.GetId(c.Id))
+                                                      .OrderBy(x => x)
+                                                      .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))) },
+                    { "final", string.Join(",", finalCats.Keys.OrderBy(x => x)
+                                                              .Select(x => x.ToString(System.Globalization.CultureInfo.InvariantCulture))) },
+                    { "kind", kind },
+                    { "group", groupSpec ?? "" }
+                }
+            });
+
             // ---- Rehearsal. ----
             //
             // This return was MISSING. dry_run was read, used only to skip the confirmation
@@ -353,11 +398,21 @@ namespace Horizun.Revit.Commands
                         "category bound before and absent from categories_would_bind loses its binding and the values " +
                         "stored in it. Re-run with dry_run=false and the confirmation_token below."
                 };
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(bspDry, gate, Name, bspPlan, true,
-                    "the token binds the REQUEST. existing_categories is reported only when it could be READ - a null " +
-                    "there means unmeasured, never empty.");
+                    "the token binds this OPERATION against this EXISTING binding: if the parameter gets bound or " +
+                    "unbound by somebody else first, or the existing category list moves, the apply is refused as a " +
+                    "stale plan instead of turning your insert into a replace. existing_categories is reported only " +
+                    "when it could be READ - a null there means unmeasured, never empty.");
                 return CommandResult.Ok(bspDry);
             }
+
+            // Recomputed above from this call's own MeasureBinding. The rehearsed plan does
+            // not travel in the token, only its fingerprint, so a stale refusal names the
+            // drift generically - still refused, still nothing bound.
+            CommandResult bspRefused = DocumentGate.RequireConfirmation(uiapp, gate, request, Name, bspPlan,
+                                                                       resolvedPlan, null);
+            if (bspRefused != null) return bspRefused;
 
             // ---- Write. ----
             string op = before.Exists == true ? "reinsert" : "insert";

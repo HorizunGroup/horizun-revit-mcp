@@ -81,13 +81,20 @@ namespace Horizun.Core.Tests
             var offenders = new List<string>();
             foreach (var kv in CommandSources())
             {
-                if (!kv.Value.Contains("RecordResolvedPlan")) continue;
+                // The variable the command records. Asking for THE SAME identifier in the
+                // comparison is the property itself: the plan that was recorded is the plan
+                // that gets compared. The first version instead looked for a hash variable
+                // literally named "planHash", and bind_shared_param - which calls its hash
+                // bspPlan - failed while correctly wired. A guard that enforces a naming
+                // convention while claiming to enforce a mechanism reports the wrong thing.
+                Match rec = Regex.Match(kv.Value,
+                    @"RecordResolvedPlan\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)");
+                if (!rec.Success) continue;
 
-                // The plan-aware overload takes two extra arguments after planHash. Match
-                // the call across line breaks - every wired command wraps it.
+                string planVar = Regex.Escape(rec.Groups[1].Value);
                 bool comparesPlan = Regex.IsMatch(
                     kv.Value,
-                    @"RequireConfirmation\s*\([^;]*?planHash\s*,\s*[\r\n\s]*[A-Za-z_][A-Za-z0-9_]*\s*,",
+                    @"RequireConfirmation\s*\([^;]*?,\s*" + planVar + @"\s*,",
                     RegexOptions.Singleline);
                 if (!comparesPlan) offenders.Add(kv.Key);
             }
