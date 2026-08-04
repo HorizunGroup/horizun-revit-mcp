@@ -27,11 +27,8 @@ namespace Horizun.Server
         // to be edited in two places is a version that will disagree with itself.
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
-        private const string LatestMcpProtocol = "2025-11-25";
-        private static readonly HashSet<string> SupportedMcpProtocols = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"
-        };
+        // The version list and the negotiation rule live in ProtocolNegotiation.cs,
+        // where they are golden-tested - see that file for why 2026-07-28 is absent.
 
         // Which Revit year to target. Empty = the most recently seen Revit.
         private static readonly string TargetYear = Environment.GetEnvironmentVariable("HORIZUN_REVIT_YEAR") ?? "";
@@ -456,9 +453,7 @@ namespace Horizun.Server
             switch (method)
             {
                 case "initialize":
-                    string requestedProtocol = prms?.Value<string>("protocolVersion");
-                    string negotiatedProtocol = requestedProtocol != null && SupportedMcpProtocols.Contains(requestedProtocol)
-                        ? requestedProtocol : LatestMcpProtocol;
+                    string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
                     return new JObject
                     {
                         ["protocolVersion"] = negotiatedProtocol,
