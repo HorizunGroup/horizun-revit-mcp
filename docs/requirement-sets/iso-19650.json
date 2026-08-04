@@ -1,0 +1,46 @@
+{
+  "requirement_set": {
+    "id": "iso-19650-stage-3",
+    "version": "1.0.0",
+    "title": "ISO 19650-2 stage 3 delivery — reference set",
+    "scope": { "categories": ["Walls", "Doors", "Pipes"], "stage": "3" }
+  },
+  "rules": [
+    {
+      "id": "type-naming-grammar",
+      "selector": { "category": "Walls" },
+      "assertion": {
+        "parameter": "Type Name",
+        "operator": "matches",
+        "value": "^[A-Z]{2,4}-[A-Za-z0-9]+-\\d{2,4}$"
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "classification-present",
+      "selector": { "category": "Walls" },
+      "assertion": { "parameter": "Assembly Code", "operator": "not_empty" },
+      "remediation": {
+        "tool": "horizun_write_params_verified",
+        "arguments": { "parameter": "Assembly Code" }
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "stage-3-fire-rating",
+      "selector": { "category": "Walls", "type_name_matches": "^EXT-" },
+      "assertion": { "parameter": "Fire Rating", "operator": "not_empty" },
+      "remediation": {
+        "tool": "horizun_write_params_verified",
+        "arguments": { "parameter": "Fire Rating" }
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "door-fire-rating-numeric",
+      "selector": { "category": "Doors", "parameter_exists": "Fire Rating" },
+      "assertion": { "parameter": "Fire Rating", "operator": "gte", "value": 30 },
+      "severity": "advisory"
+    }
+  ]
+}
