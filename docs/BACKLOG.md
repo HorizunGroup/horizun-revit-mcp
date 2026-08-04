@@ -66,11 +66,85 @@ event → compute the delta → push to a Power BI streaming/push dataset (story
 debounced and run through the async job queue so Revit's UI thread is never
 blocked. For rich DAX models, keep a fresh mirror that PBI DirectQuery's (3.5).
 
+## EPIC 4 — Standards as data *(makes the diagnosis portable)*
+
+The diagnosis already exists. `horizun_model_scan` and `horizun_audit_model`
+measure, and the pre-delivery and model-diagnosis skills score and propose. What
+does not exist is a way to say **which standard** they are measuring against: the
+rules are welded in — Horizun's naming, Prodesa's catalogue, PRODESA CLASS — so a
+new client means rewriting a skill.
+
+So this epic does not add ISO 19650 to the bridge. It turns a standard into an
+**argument**, which is what AGENTS.md already says every command needing one must
+do. Three layers, and the line between them is the whole design:
+
+- **The bridge MEASURES and never judges.** Facts per element, with the
+  distinction it already draws between "does not conform" and "could not be read".
+- **The standard ARRIVES as a versioned artifact** — a *requirement set*:
+  classification system and table, required properties per category and stage,
+  a naming grammar, an export mapping. Passed, never compiled. A standard inside
+  the C# ships as a new binary whenever a clause changes and cannot be diffed per
+  project; as an artifact, one command serves a Colombian NSR job, a UK ISO 19650
+  job with its national annex, and a client EIR that overrides both.
+- **The judgement and the prose live above**, in the agent and in Horizun Hub. The
+  bridge hands back measured evidence **plus the typed command that would fix each
+  finding** (`set_keynote`, `write_params_verified`, `bind_shared_param`,
+  `regroup_by_param`), so a proposal is composed out of measurements rather than
+  written from a guess about the model.
+
+Almost all of it is READ-ONLY, so it does not wait on Epic 1: the write half
+(auto-correcting codes and properties) waits on the rollback rule and the write
+probes, which landed with #9.
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 4.0 ⭐ | `docs/requirement-set.md` — the artifact schema, general enough that ISO 19650, IFC/buildingSMART and COBie are three **documents** rather than three code paths | M | — |
+| 4.1 ⭐ | `horizun_check_requirements`: takes a requirement set, returns per-element measured conformance, never a verdict it did not measure, each finding naming the typed command that would fix it | L | 4.0 |
+| 4.2 | Classification coverage against a supplied table: missing codes, and codes that are not a last-level leaf. Generalises the Prodesa Class audit to OmniClass / Uniclass / IFC class with no code change | M | 4.1 |
+| 4.3 | LOIN / property-set conformance per category and stage: which required properties are absent, per element, with unreadable kept separate from missing | M | 4.1 |
+| 4.4 | IFC mapping completeness BEFORE export: which categories will land as `IfcBuildingElementProxy` and which have no mapping at all — whether the IFC will be usable, which is what buildingSMART conformance actually turns on | M | — |
+| 4.5 | Naming grammar as a supplied pattern (ISO 19650-2 field structure), replacing the naming rules hard-coded in the pre-delivery skill | M | 4.1 |
+| 4.6 | COBie-shaped extraction (Spaces / Types / Components / Systems) that reports what is missing instead of emitting blank cells | L | 4.3 |
+| 4.7 | Guided correction: apply a requirement set's fixes through the existing typed writes, one confirmation per batch | L | 4.1, 1.x fixed |
+
+### The reference standard: all three, as documents, from the start
+
+Decided 2026-08-03. The alternative was to implement one standard first and
+generalise later; this takes the slower first result deliberately, because the
+whole claim of this epic is that a standard is data. Three standards loaded as
+three requirement sets on day one is the only thing that actually proves it — one
+standard first would let a single set of assumptions harden into the schema
+unchallenged, and "generalise it later" is how a compiled-in standard happens by
+accident.
+
+They ask different questions of a model, and that is the point: the schema has to
+carry all three shapes without a branch in the C#.
+
+- **ISO 19650** — naming grammar, information containers, stage-gated LOIN.
+  Strongest for delivery discipline, says nothing about geometry.
+- **IFC / buildingSMART** — class mapping and export conformance. The only one an
+  outside party can verify without opening Revit.
+- **COBie** — handover data completeness. Narrowest, and the easiest to be
+  unambiguously right or wrong about.
+
+So 4.0 is the entry point, not a decision to be made, and the acceptance test for
+it is blunt: **three requirement-set documents, one command, no standard-specific
+code.** If 4.1 needs an `if (standard == …)` anywhere, 4.0 is not finished.
+
+4.4 keeps its independence and can still run first or in parallel — it needs no
+schema — but it is no longer the recommended entry point.
+
 ---
 
 ## Suggested order
-`0.1 → 1.0 → 1.1 → 3.1 → 3.2/3.3 → 3.4 → 2.x`
+`0.1 → 1.1–1.3 fixed → 3.1 → 4.0/4.1 → 3.2/3.3 → 3.4 → 2.x`
 
-Signing opens the market; the sprinkler command proves the typed-command model;
-provenance + drift also unlock real time; the platform jump waits until Epics 1
-and 3 have validated the approach.
+Signing opens the market. Epic 1's three commands are written and reviewed but
+none can currently do its job, so fixing them comes before anything is built on
+top — a standards layer over write paths that do not verify would be judgement
+resting on measurement nobody checked. Provenance unlocks real time. Then the
+requirement-set schema, with all three standards loaded as documents. The platform
+jump waits until Epics 1 and 3 have validated the approach.
+
+Epic 4 is almost entirely read-only, so it can run in parallel with the Epic 1
+fixes; only 4.7 has to wait for them.
