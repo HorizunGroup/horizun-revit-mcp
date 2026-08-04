@@ -43,11 +43,10 @@ garantías que una release debe poder demostrar sobre sí misma.
   mano. Está en CONTRIBUTING como regla dura y en el nivel de escritura como
   probe que recorre cada respuesta y nombra a los infractores.
 
-- **La maquinaria de publicación vuelve al árbol.**
-  `publish/make-public-package.ps1` y `docs/sensitive-data.md` se perdieron al
-  reemplazar main el 2026-08-02 y sobrevivían solo en una rama; restaurados sin
-  cambios. El escaneo de nombres sensibles vuelve a estar limpio sobre los 181
-  archivos trackeados.
+- **La maquinaria de publicación vuelve al árbol privado.** El export por
+  allowlist y la política que implementa se perdieron al reemplazar main el
+  2026-08-02 y sobrevivían solo en una rama; restaurados sin cambios. El escaneo
+  de nombres vuelve a estar limpio sobre todos los archivos trackeados.
 
 - Backlog: Épica 4 — estándares como datos, no compilados. El estándar llega
   como requirement set versionado; el puente mide y nunca juzga; cada hallazgo
