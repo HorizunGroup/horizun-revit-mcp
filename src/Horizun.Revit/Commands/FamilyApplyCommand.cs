@@ -247,11 +247,6 @@ namespace Horizun.Revit.Commands
                                                     "junk_rules", "protected_prefix", "clear_formulas", "save",
                                                     "spf_path", "clear_formulas_on", "expected_revit_version");
 
-            if (!dryRun)
-            {
-                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
-                if (refused != null) return refused;
-            }
             var txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: homologar familia";
 
@@ -286,6 +281,27 @@ namespace Horizun.Revit.Commands
             string why;
             if (!BuildPlan(app, doc, fm, request, familyName, keepTypeName, collapse, clearFormulas, plan, out why))
                 return CommandResult.Fail(why);
+
+            // ---- The MATERIALISED plan: the ROWS this resolved, and what they read now. --
+            // planHash binds the REQUEST, and this command's own rehearsal admitted the
+            // gap: "the token binds the REQUEST, not the parameters this rehearsal
+            // resolved." Three things drift without a character of the request changing,
+            // and each of them makes the approval mean something else:
+            //
+            //   * A VALUE MOVED. `values: {"Width": 3.5}` was approved against a parameter
+            //     that read 2.0. If somebody has since set it to 9.0, the caller is
+            //     overwriting a change they never saw. So each Set row carries what it
+            //     reads NOW, not just what was requested.
+            //   * A PARAMETER OR TYPE APPEARED OR VANISHED. add_shared_params resolves
+            //     against the family as it stands: a parameter already present is a
+            //     no-op, absent it is a write. The rows record which case each one was.
+            //   * THE ACTIVE TYPE CHANGED. This is the one nothing else could catch. Only
+            //     the ACTIVE type is measured for shape - the rehearsal says so, and lists
+            //     which dimensions could be compared. A rehearsal taken with one type
+            //     active approved a shape check of THAT type. That is why it goes in
+            //     ContextFingerprint rather than in Elements: it is not a row being
+            //     written, it is what the verification will be ABOUT.
+            var resolvedPlan = BuildResolvedPlan(app, gate, doc, plan, before);
 
             if (dryRun)
             {
@@ -340,11 +356,23 @@ namespace Horizun.Revit.Commands
                         "it would not be caught, and the run would roll back rather than claim the shape held."
                 };
 
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(dryResult, gate, Name, planHash, true,
-                    "the token binds the REQUEST, not the parameters this rehearsal resolved. Only the ACTIVE family " +
-                    "type is measured for shape; the others are reported as not verified, never as intact.");
+                    "the token binds the resolved ROWS and the value each parameter reads right now, plus WHICH TYPE " +
+                    "was active - so a value somebody else changed, a parameter that appeared or vanished, or a " +
+                    "different active type all refuse the apply as a stale plan. Still true, and unchanged by this: " +
+                    "only the ACTIVE family type is measured for shape; the others are reported as not verified, " +
+                    "never as intact.");
                 return CommandResult.Ok(dryResult);
             }
+
+            // Recomputed above from this call's own read of the family. The rehearsed PLAN
+            // does not travel in the token, only its fingerprint, so a stale refusal names
+            // the drift generically - still refused, still nothing written, and the caller
+            // re-runs the rehearsal to see what moved.
+            CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                    resolvedPlan, null);
+            if (refused != null) return refused;
 
             if (plan.IsEmpty() && plan.HasRefusals())
             {
@@ -700,6 +728,147 @@ namespace Horizun.Revit.Commands
         // =====================================================================
         // The census. Fresh enumeration, every time, straight off the document.
         // =====================================================================
+        /// <summary>
+        /// The resolved plan for this run. One element per row that would be written, so
+        /// create/modify/delete in the reply are the real numbers, plus the ambient state
+        /// the verification depends on in ContextFingerprint.
+        ///
+        /// Synthetic identities ("param:Width", "type:600mm") because a family parameter
+        /// has no UniqueId - there is nothing else to key on, and the name IS the identity
+        /// the request used. Every read is wrapped: measuring must never be what fails.
+        /// </summary>
+        private static ResolvedPlan BuildResolvedPlan(UIApplication app, GateResult gate,
+                                                      Document doc, Plan plan, Census before)
+        {
+            var rp = new ResolvedPlan
+            {
+                Command = "family_apply",
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            try
+            {
+                foreach (TypeDelete t in plan.TypeDeletes.Where(x => x.Error == null))
+                    rp.Elements.Add(Row("type:" + t.Name, PlannedAction.Delete, "op", "delete_type"));
+
+                if (plan.Rename != null && plan.Rename.Error == null && plan.Rename.Needed)
+                {
+                    PlannedElement r = Row("rename", PlannedAction.Modify, "op", "rename_type");
+                    // The rename's own JSON already states from and to; taking it whole
+                    // means this cannot fall out of step with what the rehearsal printed.
+                    r.BeforeValues["rename"] = Canon(plan.Rename.ToJson());
+                    rp.Elements.Add(r);
+                }
+
+                foreach (AddRow a in plan.Adds.Where(x => x.Error == null))
+                {
+                    // A parameter already present is a NO-OP, not a create. Recording it
+                    // anyway is the point: if it disappears before the apply, the same
+                    // request becomes a write, and that is a different plan.
+                    PlannedElement r = Row("param:" + a.Name,
+                                           a.AlreadyPresent ? PlannedAction.Modify : PlannedAction.Create,
+                                           "op", a.AlreadyPresent ? "add_already_present" : "add");
+                    r.BeforeValues["instance"] = a.Instance ? "1" : "0";
+                    r.BeforeValues["group"] = a.GroupSpec ?? "";
+                    rp.Elements.Add(r);
+                }
+
+                foreach (SetRow st in plan.Sets.Where(x => x.Error == null))
+                {
+                    PlannedElement r = Row("param:" + st.Name, PlannedAction.Modify, "op", "set");
+                    // What was asked for AND what is there. The second is what makes an
+                    // overwrite of somebody else's change detectable.
+                    r.BeforeValues["requested"] = st.Requested == null ? "" : Canon(st.Requested);
+                    r.BeforeValues["before"] = st.Before == null ? "" : Canon(st.Before);
+                    r.BeforeValues["storage"] = st.Storage ?? "";
+                    r.BeforeValues["instance"] = st.IsInstance ? "1" : "0";
+                    rp.Elements.Add(r);
+                }
+
+                foreach (ClearRow c in plan.FormulaClears.Where(x => x.Error == null))
+                {
+                    PlannedElement r = Row("formula:" + c.Name, PlannedAction.Modify, "op", "clear_formula");
+                    // Clearing a formula that has since been rewritten deletes different
+                    // work than the one that was approved.
+                    r.BeforeValues["formula_before"] = c.FormulaBefore ?? "";
+                    rp.Elements.Add(r);
+                }
+
+                foreach (RemoveRow rm in plan.Removals.Where(x => x.Error == null && x.WasPresent))
+                {
+                    PlannedElement r = Row("param:" + rm.Name, PlannedAction.Delete, "op", "remove");
+                    // A removal the junk sweep proposed and one the caller named are the
+                    // same deletion with very different provenance, and a caller who
+                    // approved the explicit list did not approve the sweep's guess.
+                    r.BeforeValues["source"] = rm.Source ?? "";
+                    r.BeforeValues["junk_match"] = rm.JunkMatch ?? "";
+                    rp.Elements.Add(r);
+                }
+
+                rp.ContextFingerprint = ContextOf(doc, before);
+            }
+            catch (Exception ex)
+            {
+                // A plan that could not be fully measured must NOT quietly become a
+                // shorter plan that then matches. Poison it so the comparison cannot
+                // succeed, and let the apply refuse as stale.
+                rp.ContextFingerprint = "unmeasurable:" + ex.GetType().Name;
+            }
+            return rp;
+        }
+
+        private static PlannedElement Row(string id, PlannedAction action, string k, string v)
+        {
+            return new PlannedElement
+            {
+                UniqueId = id,
+                Action = action,
+                BeforeValues = new Dictionary<string, string> { { k, v } }
+            };
+        }
+
+        /// <summary>Stable JSON: Formatting.None so whitespace is never the difference.</summary>
+        private static string Canon(JToken t)
+        {
+            try { return t.ToString(Newtonsoft.Json.Formatting.None); } catch { return "<unreadable>"; }
+        }
+
+        /// <summary>
+        /// The ambient state the verification is ABOUT: which type is active (the only one
+        /// whose shape is measured), the dimensions that could be compared, and the two
+        /// census figures the geometry invariant is proven against. All of it can change
+        /// while every requested row stays identical.
+        /// </summary>
+        private static string ContextOf(Document doc, Census before)
+        {
+            var sb = new System.Text.StringBuilder();
+            try
+            {
+                List<GeometrySignature> geo = CaptureGeometry(doc, doc.FamilyManager);
+                sb.Append("active=").Append(geo.Count > 0 ? (geo[0].TypeName ?? "") : "<none>").Append('\n');
+                if (geo.Count > 0)
+                {
+                    // Sorted: Revit may enumerate parameters in any order, and that is not
+                    // a change to the family.
+                    foreach (GeoDimension d in geo[0].Dimensions.OrderBy(x => x.Name, StringComparer.Ordinal))
+                        sb.Append("dim=").Append(d.Name).Append('=')
+                          .Append(d.IsMeasured
+                                  ? System.Math.Round(d.Value.Value, 6).ToString(System.Globalization.CultureInfo.InvariantCulture)
+                                  : "<not measurable>").Append('\n');
+                }
+                sb.Append("types=").Append(geo.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+            }
+            catch (Exception ex) { sb.Append("shape=unreadable:").Append(ex.GetType().Name).Append('\n'); }
+            try
+            {
+                sb.Append("doubles=").Append(before.DoubleCount.ToString(System.Globalization.CultureInfo.InvariantCulture)).Append('\n');
+                sb.Append("iscustom=").Append(before.GeometryFlagPresent ? "1" : "0").Append('\n');
+            }
+            catch (Exception ex) { sb.Append("census=unreadable:").Append(ex.GetType().Name).Append('\n'); }
+            return sb.ToString();
+        }
+
         private class Census
         {
             public int DoubleCount;

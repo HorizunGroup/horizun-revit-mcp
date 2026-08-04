@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Core tests - original Horizun code.
 //
 // The materialised plan. These are the cases a real model will not produce on
@@ -243,6 +243,67 @@ namespace Horizun.Core.Tests
             Assert.True(check.Ok);
             Assert.Contains("REQUEST only", check.Message);
             Assert.Contains("would not have been detected", check.Message);
+        }
+
+        /// <summary>
+        /// ContextFingerprint carries state the plan DEPENDS ON that is not one of the
+        /// elements listed - family_apply's active type being the case it was added for.
+        /// Two plans identical in every row, differing only in what was ambient, are not
+        /// the same plan: the rehearsal approved a check of THAT type's shape.
+        /// </summary>
+        [Fact]
+        public void Ambient_context_is_part_of_the_plan()
+        {
+            ResolvedPlan a = OneElementPlan();
+            ResolvedPlan b = OneElementPlan();
+            a.ContextFingerprint = "active=600mm|dim=Width=1.5";
+            b.ContextFingerprint = "active=900mm|dim=Width=1.5";
+            Assert.NotEqual(a.Fingerprint(), b.Fingerprint());
+        }
+
+        /// <summary>
+        /// A command that has nothing ambient to declare must not be forced to invent a
+        /// value: unset and empty are the same statement, "nothing ambient here". This is
+        /// what lets the field be added to one command without every other command's plan
+        /// having to change shape.
+        /// </summary>
+        [Fact]
+        public void Unset_context_and_empty_context_are_the_same_statement()
+        {
+            ResolvedPlan a = OneElementPlan();
+            ResolvedPlan b = OneElementPlan();
+            a.ContextFingerprint = null;
+            b.ContextFingerprint = "";
+            Assert.Equal(a.Fingerprint(), b.Fingerprint());
+        }
+
+        /// <summary>
+        /// A run that writes no rows can still be a run whose ambient state matters - a
+        /// family_apply where every requested value already matches still measured a
+        /// specific type's shape. An empty element list must not swallow the context.
+        /// </summary>
+        [Fact]
+        public void Context_still_counts_when_the_plan_writes_nothing()
+        {
+            var a = new ResolvedPlan { Command = "family_apply", DocumentKey = "d" };
+            var b = new ResolvedPlan { Command = "family_apply", DocumentKey = "d" };
+            a.ContextFingerprint = "active=600mm";
+            b.ContextFingerprint = "active=900mm";
+            Assert.Empty(a.Elements);
+            Assert.NotEqual(a.Fingerprint(), b.Fingerprint());
+        }
+
+        /// <summary>A minimal plan the context tests can vary one field of.</summary>
+        private static ResolvedPlan OneElementPlan()
+        {
+            var p = new ResolvedPlan { Command = "family_apply", DocumentKey = "doc-1" };
+            p.Elements.Add(new PlannedElement
+            {
+                UniqueId = "param:Width",
+                Action = PlannedAction.Modify,
+                BeforeValues = new Dictionary<string, string> { { "op", "set" } }
+            });
+            return p;
         }
     }
 }

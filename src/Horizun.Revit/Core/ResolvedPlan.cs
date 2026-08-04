@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - the MATERIALISED PLAN. Original Horizun code.
 //
 // WHAT THIS FIXES, in the words the old code used about itself:
@@ -104,6 +104,20 @@ namespace Horizun.Revit.Core
         /// </summary>
         public int ExpectedCascadeCount;
 
+        /// <summary>
+        /// State the plan DEPENDS ON without it being one of the elements listed. Some
+        /// commands are only correct relative to something ambient: family_apply measures
+        /// the shape of the ACTIVE family type and reports the others as not verified, so a
+        /// rehearsal taken with one type active approved a check of THAT type - if the active
+        /// type changes before the apply, the plan is about a different shape even though
+        /// every parameter row is identical.
+        ///
+        /// A free-form canonical string, hashed as-is. Kept OUT of Elements deliberately:
+        /// putting it there would inflate create/modify/delete, and those counts are the
+        /// numbers a person reads before saying yes.
+        /// </summary>
+        public string ContextFingerprint;
+
         public int CreateCount { get { return Count(PlannedAction.Create); } }
         public int ModifyCount { get { return Count(PlannedAction.Modify); } }
         public int DeleteCount { get { return Count(PlannedAction.Delete); } }
@@ -140,6 +154,7 @@ namespace Horizun.Revit.Core
             sb.Append("modify=").Append(ModifyCount.ToString(CultureInfo.InvariantCulture)).Append('\n');
             sb.Append("delete=").Append(DeleteCount.ToString(CultureInfo.InvariantCulture)).Append('\n');
             sb.Append("cascade=").Append(ExpectedCascadeCount.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            sb.Append("ctx=").Append(ContextFingerprint ?? "").Append('\n');
             sb.Append("n=").Append(lines.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
             foreach (string l in lines) sb.Append(l).Append('\n');
 
