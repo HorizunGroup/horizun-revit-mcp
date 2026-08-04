@@ -1,0 +1,63 @@
+name: Proposal
+description: A command, an argument or a behaviour you think should exist.
+labels: ["proposal", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two things about this project that shape what gets accepted, so you are not
+        surprised by the answer:
+
+        **Every typed command re-reads the model after the commit.** A proposal has to
+        say how its result would be *verified*, not only how it would be done. If a
+        result cannot be read back, it does not become a typed command — it stays in the
+        `execute_python` escape hatch, which is a legitimate answer and not a rejection.
+
+        **The bridge is organisation-neutral.** No company's standards, catalogues or
+        naming rules are compiled in. Where a command needs one it is passed at call
+        time. A proposal shaped like "it should apply our naming convention" becomes
+        "it should take a naming convention as an argument".
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: What outcome do you want in the model
+      description: The result, not the mechanism. What is true of the model afterwards that was not before?
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: How you do it today
+      description: By hand, with `execute_python`, with a Dynamo graph, not at all. Include the recipe if you have one that works.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: How would the result be VERIFIED after the commit?
+      description: >
+        The hard question, and the one that decides whether this can be a typed command.
+        What would you re-read from the model to prove it worked — and what would a
+        *wrong* result look like that a naive check would call success?
+    validations:
+      required: true
+
+  - type: textarea
+    id: refusals
+    attributes:
+      label: When should it REFUSE rather than guess?
+      description: >
+        Which inputs are ambiguous enough that acting on them would be worse than
+        stopping? These refusals tend to be the most valuable part of a command.
+
+  - type: input
+    id: evidence
+    attributes:
+      label: Have you run this for real, and on how much?
+      description: >
+        Field evidence changes priority more than anything else here. "786 placed, zero
+        failures, on this Revit year" is a different proposal from an idea.
+      placeholder: "yes — ~200 elements, Revit 2026, metric"
