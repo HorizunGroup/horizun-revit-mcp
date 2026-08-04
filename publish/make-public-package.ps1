@@ -51,7 +51,10 @@ $allowDirs = @('src', 'tests', 'scripts', 'installer', '.github')
 $allowDocs = @('docs\security-model.md', 'docs\live-fixtures.example.json',
                # The release policy is a promise made TO users about channels, SemVer and
                # what 1.0 will mean. A promise kept in the private tree is not a promise.
-               'docs\RELEASE-POLICY.md')
+               'docs\RELEASE-POLICY.md',
+               # The requirement-set schema: people write documents against it, so a
+               # private copy is no schema at all.
+               'docsequirement-set.md')
 $allowRoot = @('CHANGELOG.md', 'THIRD-PARTY-NOTICES.md', '.gitignore', '.gitattributes', 'install.ps1')
 $overlay   = Join-Path $PSScriptRoot 'overlay'   # README, LICENSE, NOTICE, AGENTS.md, CLAUDE.md
 

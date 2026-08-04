@@ -192,7 +192,7 @@ probes, which landed with #9.
 
 | ID | Story | Size | Dep |
 |----|-------|------|-----|
-| 4.0 ⭐ | `docs/requirement-set.md` — the artifact schema, general enough that ISO 19650, IFC/buildingSMART and COBie are three **documents** rather than three code paths | M | — |
+| 4.0 ✅ | **DONE 2026-08-04** — `docs/requirement-set.md`. The artifact schema, general enough that ISO 19650, IFC/buildingSMART and COBie are three **documents** rather than three code paths | M | — |
 | 4.1 ⭐ | `horizun_check_requirements`: takes a requirement set, returns per-element measured conformance, never a verdict it did not measure, each finding naming the typed command that would fix it | L | 4.0 |
 | 4.2 | Classification coverage against a supplied table: missing codes, and codes that are not a last-level leaf. Generalises the existing client-classification audit to OmniClass / Uniclass / IFC class with no code change | M | 4.1 |
 | 4.3 | LOIN / property-set conformance per category and stage: which required properties are absent, per element, with unreadable kept separate from missing | M | 4.1 |
