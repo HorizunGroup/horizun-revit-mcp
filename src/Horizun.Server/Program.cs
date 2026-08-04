@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // A stdio MCP server. It reads newline-delimited JSON-RPC from stdin, answers the
@@ -470,23 +470,7 @@ namespace Horizun.Server
                         // whichever document is active, and that this bridge is
                         // deliberately organisation-neutral, so the standards a delivery
                         // actually needs are not in here and should not be invented.
-                        ["instructions"] =
-                            "Horizun Revit MCP - the bridge between this client and a running Autodesk Revit.\n\n" +
-                            "The contract: a command never reports work it did not verify. Every typed write is re-read " +
-                            "from the model after the commit, so a silent rollback surfaces as an error rather " +
-                            "than a false success, and counts come from re-reading the model rather than from " +
-                            "calls that did not throw. horizun_execute_python is the explicit low-level escape " +
-                            "hatch and does not provide that typed-command guarantee.\n\n" +
-                            "Revit executes one API command at a time. Concurrent calls wait in a bounded FIFO " +
-                            "queue instead of being rejected. A cancellation removes a call only while it is still " +
-                            "queued; work already on Revit's UI thread cannot be interrupted. Successful JSON " +
-                            "answers include bridge_queue with the measured wait.\n\n" +
-                            "Call horizun_health FIRST. These commands act on the document that is active right " +
-                            "now, and health is what tells you which Revit and which document that is.\n\n" +
-                            "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +
-                            "rules are compiled in. Where a command needs one it is passed in at call time. The " +
-                            "delivery workflows built on top of these commands - model audits, classification, " +
-                            "family homologation, pre-delivery QA - live in Horizun Hub: https://horizunhub.com"
+                        ["instructions"] = ServerInstructions.Text
                     };
 
                 case "notifications/initialized":

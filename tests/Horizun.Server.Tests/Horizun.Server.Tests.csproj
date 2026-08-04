@@ -16,6 +16,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- The MCP `instructions` string. Its own file precisely so it can be asserted:
+         it is the only channel the protocol gives a server for telling a client agent
+         how to behave, so trimming it has to fail a test. -->
+    <Compile Include="..\..\src\Horizun.Server\ServerInstructions.cs" Link="ServerInstructions.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />

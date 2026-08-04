@@ -122,6 +122,18 @@ and run `install.ps1` again.
 
 - **`horizun_health` first, always.** The commands act on the *active* document,
   and health is what tells you which one that is.
+- **Understand the objective before the first write, and say it back.** A model is
+  somebody's deliverable. Before the first typed write of a task you must know
+  three things: WHAT outcome is wanted in the model, WHICH elements it applies to,
+  and HOW the result will be recognised as correct. If any of the three is missing
+  or reads two ways, **ask — with options and their trade-offs**, not an open
+  question. Do not treat a missing instruction as permission to choose. One round
+  of questions is cheap; a committed batch aimed at the wrong elements is not.
+  Where the bridge itself cannot tell two readings apart it refuses rather than
+  guesses; hold yourself to the same standard one level up. **And when nobody is
+  at the keyboard** — a scheduled audit, a batch, the verification harness — state
+  the ambiguity and do nothing, because a run that stops to ask has failed as
+  surely as one that guessed.
 - **One command executes at a time, but concurrent calls are queued.** Up to 16
   requests wait in bounded FIFO order; the next receives explicit backpressure.
   Cancelling removes work only before it starts. Use `horizun_submit_job` plus
@@ -256,6 +268,18 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
 
 - **`horizun_health` primero, siempre.** Los comandos actúan sobre el documento
   *activo*, y health es lo que te dice cuál es.
+- **Entiende el objetivo antes de la primera escritura, y devuélvelo dicho.** Un
+  modelo es el entregable de alguien. Antes de la primera escritura tipada de una
+  tarea tienes que saber tres cosas: QUÉ resultado se quiere en el modelo, A QUÉ
+  elementos aplica, y CÓMO se reconocerá que quedó bien. Si falta alguna de las
+  tres o se lee de dos maneras, **pregunta — con opciones y su contrapartida**, no
+  con una pregunta abierta. Que falte una instrucción no es permiso para elegir.
+  Una ronda de preguntas es barata; un lote commiteado sobre los elementos
+  equivocados no. Donde el puente mismo no puede distinguir dos lecturas, se
+  niega en vez de adivinar; sostén ese mismo estándar un nivel más arriba. **Y
+  cuando no hay nadie al teclado** — una auditoría programada, un lote, el harness
+  de verificación — enuncia la ambigüedad y no hagas nada: una corrida que se
+  detiene a preguntar ha fallado igual que una que adivinó.
 - **Se ejecuta un comando a la vez, pero las llamadas concurrentes se encolan.**
   Hasta 16 esperan en FIFO acotada; la siguiente recibe backpressure explícito.
   La cancelación solo elimina trabajo antes de empezar. Usa
