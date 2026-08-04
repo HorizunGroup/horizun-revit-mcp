@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - text, tags and dimensions with explicit references.
 // -----------------------------------------------------------------------------
 using System;
@@ -35,16 +35,59 @@ namespace Horizun.Revit.Commands
             }
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             string hash = DocumentGate.PlanHash(request, "units", "actions");
+
+            // ---- The MATERIALISED plan: the VIEW and TARGET each annotation lands on. ---
+            // hash binds the actions as written. An annotation is ABOUT something: a tag
+            // points at a target element, a dimension hangs off references measured from
+            // one, and everything lands on a view. A tag approved against "Bomba 5" that
+            // gets applied after somebody swaps that element is a label telling a reader
+            // the wrong thing in print - the quietest wrong answer a model can produce.
+            // So each row records the view and the target as resolved now, by identity
+            // and by name, and the dimension's reference count - the number the rehearsal
+            // itself already showed the caller.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Plan planned in plans)
+            {
+                resolvedPlan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = "action:" + planned.Index,
+                    Category = planned.Operation,
+                    Action = PlannedAction.Create,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "view", SafePlanIdName(planned.View) },
+                        { "target", SafePlanIdName(planned.Target) },
+                        { "type", SafePlanIdName(planned.Type) },
+                        { "references", planned.References == null ? "" :
+                              planned.References.Size.ToString(System.Globalization.CultureInfo.InvariantCulture) }
+                    }
+                });
+            }
+
             if (dry)
             {
                 var result = new JObject { ["dry_run"] = true, ["valid"] = plans.Count, ["invalid"] = errors.Count,
                     ["errors"] = errors, ["plan"] = new JArray(plans.Select(p => new JObject { ["index"] = p.Index, ["operation"] = p.Operation, ["references"] = p.References?.Size })) };
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, hash, errors.Count == 0,
-                    errors.Count == 0 ? "the token binds views, geometry, text, targets and stable references" : "no usable token while invalid");
+                    errors.Count == 0
+                        ? "the token binds views, geometry, text, AND the identity of every view and target as " +
+                          "resolved right now - a swapped or renamed target refuses as a stale plan rather than " +
+                          "tagging the wrong element under the approved words."
+                        : "no usable token while invalid");
                 return CommandResult.Ok(result);
             }
             if (errors.Count > 0) return CommandResult.Fail("Invalid annotations; nothing ran: " + errors.ToString(Formatting.None));
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, hash); if (refusal != null) return refusal;
+            // Recomputed by THIS call's own PlanAction resolution.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, hash,
+                                                                     resolvedPlan, null);
+            if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name); if (refusal != null) return refusal;
 
             string txName = request.Value<string>("transaction_name"); if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: annotate";
@@ -118,6 +161,19 @@ namespace Horizun.Revit.Commands
         private static T Need<T>(Document d, JObject a, string f) where T : Element { long id = a.Value<long?>(f) ?? -1; if (!Rid.CanRepresent(id) || !(d.GetElement(Rid.Make(id)) is T e)) throw new ArgumentException(f + " must identify " + typeof(T).Name); return e; }
         private static XYZ Point(JToken t, double s, bool z) { JArray a = t as JArray; if (a == null || a.Count < (z ? 3 : 2) || a.Count > 3) throw new ArgumentException("point/line coordinate has wrong length"); return new XYZ(a[0].Value<double>() * s, a[1].Value<double>() * s, (a.Count > 2 ? a[2].Value<double>() : 0) * s); }
         private static bool Scale(string u, out double s) { if (u == "feet") { s = 1; return true; } if (u == "m") { s = 1 / 0.3048; return true; } if (u == "mm") { s = 1 / 304.8; return true; } s = 0; return false; }
+        /// <summary>
+        /// Identity and name in one guarded read. The name is what the person read when
+        /// they approved; the UniqueId is what makes a swap under the same name visible.
+        /// A plan must never fail while MEASURING, so unreadable stays a value.
+        /// </summary>
+        private static string SafePlanIdName(Element e)
+        {
+            if (e == null) return "";
+            string uid; try { uid = e.UniqueId ?? ""; } catch { uid = "<unreadable>"; }
+            string name; try { name = e.Name ?? ""; } catch { name = "<unreadable>"; }
+            return uid + "|" + name;
+        }
+
         private sealed class Plan { public int Index; public string Operation, Text; public View View; public JObject Input; public double Scale; public XYZ Point; public Element Target, Type; public Line Line; public ReferenceArray References; public ElementId Created; }
     }
 }
