@@ -106,7 +106,17 @@ namespace Horizun.Server
                     ["description"] = t.Description,
                     ["inputSchema"] = t.InputSchema,
                     ["outputSchema"] = t.OutputSchema,
-                    ["annotations"] = Annotations(t)
+                    ["annotations"] = Annotations(t),
+                    // MCP's execution hint: may this tool be run as a long-lived task
+                    // rather than a blocking call. DERIVED, like every other hint, from
+                    // what the contract already knows - never a second list to maintain.
+                    //
+                    // A tool that forwards to Revit can be queued through
+                    // horizun_submit_job, so a client may treat it as a task. A
+                    // host-resident tool answers inside the server in milliseconds and
+                    // submit_job refuses it by its own documented rule, so offering it as
+                    // a task would advertise something that cannot happen.
+                    ["execution"] = new JObject { ["taskSupport"] = TaskSupport(t) }
                 });
             }
             return arr;
@@ -119,6 +129,21 @@ namespace Horizun.Server
             for (int i = 0; i < words.Length; i++)
                 if (words[i].Length > 0) words[i] = char.ToUpperInvariant(words[i][0]) + words[i].Substring(1);
             return string.Join(" ", words);
+        }
+
+        /// <summary>
+        /// "optional" for anything that forwards to Revit - those are exactly the tools
+        /// horizun_submit_job accepts, and a model scan or a batch open genuinely outlives
+        /// a request. "forbidden" for host-resident tools and for the two submit_job
+        /// itself refuses by name, because advertising a task a caller cannot create is
+        /// worse than advertising nothing.
+        /// </summary>
+        private static string TaskSupport(ToolDef t)
+        {
+            bool hostResident = string.IsNullOrEmpty(t.Command);
+            bool refusedByJobs = t.Name == "horizun_execute_python" ||
+                                 t.Name == "horizun_submit_job";
+            return (hostResident || refusedByJobs) ? "forbidden" : "optional";
         }
 
         private static JObject Annotations(ToolDef t)

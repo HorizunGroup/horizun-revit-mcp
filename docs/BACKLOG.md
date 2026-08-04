@@ -282,7 +282,7 @@ review's whole diagnosis came about.
 | 5.5 | **Live certification matrix 2023–2027** published per release: JUnit/HTML report, exact Revit build, fixture hashes, tools covered and not, time and peak memory, sanitised warning log. Dimensions: year × language × units × model kind (non-shared/local/central/detached) × links × size × discipline × outcome (commit/rollback/refusal/crash recovery). Needs public synthetic fixtures | L | 5.1 |
 | 5.6 | **Chunked long operations** with cooperative cancellation, per-turn UI budget (100–250 ms), phase + percentage progress, safe checkpoints between batches, `submit_job` mapped to native MCP tasks. Benchmarks published as *longest continuous UI block*, not just total duration | L | 5.1 |
 | 5.7 | **Sign the installer and binaries**: OV/EV Authenticode over exe/dll/installer/packaged scripts, timestamping, GitHub build attestations, signed SBOM and manifest, verification during install. Certificate trust stays an IT decision (Intune/GPO) — never installed silently | M | 0.1 |
-| 5.8 ◐ | **NEGOTIATION SLICE DONE 2026-08-04** (golden-tested; 2026-07-28 RC guarded by a failing test). Remaining: full adapter, SDK conformance, client matrix, execution.taskSupport. Isolate the protocol behind a `ProtocolAdapter` independent of the Revit domain: conformance tests against the official SDK and MCP Inspector, golden JSON-RPC request/response tests, explicit per-version negotiation, client compatibility matrix, schema deprecation policy. Add `execution.taskSupport`. Do this BEFORE adopting 2026-07-28, which is still RC | M | — |
+| 5.8 ✅ | **NEGOTIATION SLICE DONE 2026-08-04** (golden-tested; 2026-07-28 RC guarded by a failing test). Remaining: full adapter, SDK conformance, client matrix, execution.taskSupport. Isolate the protocol behind a `ProtocolAdapter` independent of the Revit domain: conformance tests against the official SDK and MCP Inspector, golden JSON-RPC request/response tests, explicit per-version negotiation, client compatibility matrix, schema deprecation policy. Add `execution.taskSupport`. Do this BEFORE adopting 2026-07-28, which is still RC | M | — |
 | 5.9 ✅ | **DONE 2026-08-04.** Public governance: issue templates (bug / proposal / compatibility) that demand Revit version+build+language, Horizun version, MCP client, tool, document kind, expected vs observed, sanitised logs. Discussions, public roadmap and milestones, labels, review SLA, a second maintainer with release rights, ADRs | S | — |
 | 5.10 ✅ | **DONE 2026-08-04** — `docs/RELEASE-POLICY.md`. Release channels and the road to 1.0: `stable` (signed + matrix approved), `preview`, `validation-only` (no new binaries). Publish SemVer policy, schema compatibility, deprecation window, config migration, back-version support, and an explicit definition of "production ready" | M | 5.5, 5.7 |
 
@@ -298,6 +298,27 @@ review's whole diagnosis came about.
 - **5.5**: the numbers quoted (48 passed / 11 not covered / 1 unverified on 2026)
   are this repository's own last live run, and they are exactly why a matrix is
   needed rather than a single-machine result.
+
+### 5.8 was already mostly built — the review assumed otherwise (checked 2026-08-04)
+
+The review asked to "isolate the protocol layer behind an adapter". Measured: it is
+already isolated. `ProtocolNegotiation.cs`, `Errors.cs` and `Wire.cs` are separate
+files that compile with no Revit reference and carry **32 tests of their own** (5 + 9
++ 18) covering negotiation across all four supported protocol revisions, the JSON-RPC
+error codes, an unknown method, a request whose id cannot be echoed, a wrong
+`jsonrpc` version, and that listed tools publish modern schemas and annotations. The
+schema-deprecation policy the review also asked for was written the same day into
+`docs/RELEASE-POLICY.md` (two-MINOR window, no field ever repurposed).
+
+What was genuinely missing was one field, now emitted: `execution.taskSupport`,
+derived from the contract rather than from a second list — `optional` for anything
+that forwards to Revit (exactly the set `horizun_submit_job` accepts, and a model scan
+does outlive a request), `forbidden` for host-resident tools and for the two
+`submit_job` refuses by name. Advertising a task a caller cannot create is worse than
+advertising nothing.
+
+Still deliberately NOT done: adopting MCP revision 2026-07-28, which is still RC
+upstream. The isolation that makes adopting it safe is what already exists.
 
 ### Where the review is wrong, or conflicts with a rule already adopted
 
