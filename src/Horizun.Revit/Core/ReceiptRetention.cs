@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - retention and redaction for the operation ledger.
 // Original Horizun code.
 //
@@ -208,6 +208,32 @@ namespace Horizun.Revit.Core
                 else
                     note = "receipt_retention_days is not a whole number of days ('" + days +
                            "'), so records are being KEPT FOREVER. Nothing was deleted.";
+            }
+
+            // The patterns the redactor applies. RedactPatterns existed on the policy
+            // from the start and NOTHING populated it - found by the ledger's own test
+            // leaking a document name straight past a "configured" pattern. A JSON array
+            // ("[\"proyecto-x\", \"cliente\"]") carries several; any other non-empty
+            // text is ONE pattern, taken whole. A value that looks like an array but
+            // does not parse is kept as one pattern too - it will fail to compile in
+            // Redact, which WITHHOLDS rather than leaks, and that is the safe direction
+            // for a string somebody meant as a secret-matcher.
+            string patterns = get("receipt_redact_patterns");
+            if (!string.IsNullOrWhiteSpace(patterns))
+            {
+                bool parsedAsArray = false;
+                if (patterns.TrimStart().StartsWith("[", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        foreach (var tok in Newtonsoft.Json.Linq.JArray.Parse(patterns))
+                            if (tok.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                                policy.RedactPatterns.Add((string)tok);
+                        parsedAsArray = true;
+                    }
+                    catch { }
+                }
+                if (!parsedAsArray) policy.RedactPatterns.Add(patterns);
             }
 
             string cap = get("receipt_max_bytes");

@@ -44,6 +44,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptRetention.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LineReader.cs" />

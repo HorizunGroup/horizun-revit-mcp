@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -216,6 +216,24 @@ namespace Horizun.Revit.Core
             }
             if (result.Success) Log.Info($"{name} ok in {clock.ElapsedMilliseconds} ms");
             else Log.Warn($"{name} FAILED in {clock.ElapsedMilliseconds} ms: {result.Error}");
+
+            // ---- The receipt (5.2). Written from what the reply itself carried, after
+            // the reply is final, and NEVER able to fail the operation it records: the
+            // answer the caller is waiting on outranks the diary. Failures are counted
+            // and surfaced by health rather than swallowed.
+            try
+            {
+                Newtonsoft.Json.Linq.JObject receipt = ReceiptLedger.Build(
+                    name, result.Success, result.Success ? null : result.Error,
+                    result.Data as Newtonsoft.Json.Linq.JObject,
+                    waitedMs, clock.ElapsedMilliseconds,
+                    req.Ticket.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    DateTime.UtcNow);
+                ReceiptLedger.Append(ReceiptLedger.DefaultDirectory(), receipt,
+                                     Settings.RawValue, DateTime.UtcNow);
+            }
+            catch { /* counted inside Append; a diary must never cost an answer */ }
+
             return result;
         }
 

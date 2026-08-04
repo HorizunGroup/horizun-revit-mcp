@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // The few things that must be switched on deliberately.
@@ -116,6 +116,15 @@ namespace Horizun.Revit.Core
                    "add-in re-reads settings on every call, but the MCP client caches the tool list at startup, so " +
                    "restart the client for the tool to appear.) Prefer a typed command for anything recurring: a " +
                    "typed command can be verified, and this cannot.";
+        }
+
+        /// <summary>
+        /// One raw string setting, for callers that take an injected reader (the receipt
+        /// ledger's retention). Guarded like every read of a file the user owns.
+        /// </summary>
+        public static string RawValue(string key)
+        {
+            try { return Read()?.Value<string>(key); } catch { return null; }
         }
 
         private static JObject Read()
