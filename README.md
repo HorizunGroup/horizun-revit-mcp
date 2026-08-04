@@ -6,7 +6,7 @@ for typed BIM queries, verified model edits, family authoring, exports and Power
 BI workflows. **Free and open source, Apache-2.0.** Part of the [Horizun
 Hub](https://horizunhub.com) ecosystem.
 
-> **Official stable release: v0.5.0.** This is the public source repository for
+> **Official stable release: v0.6.0.** This is the public source repository for
 > Horizun Revit MCP. It contains the complete implementation, typed Revit
 > operations, tests, installation scripts, security model and benchmark evidence.
 
@@ -146,7 +146,7 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/HorizunGroup/horizun-revit-
 powershell -ExecutionPolicy Bypass -File $p
 ```
 
-Pass `-Version v0.5.0` to pin the official release instead of following `latest`.
+Pass `-Version v0.6.0` to pin the official release instead of following `latest`.
 
 ### Build from source manually
 

@@ -212,7 +212,7 @@ database on one day; CI re-runs it.
 The largest third-party surface is the 614-file IronPython standard library, and
 nothing in this repository audits it.
 
-## 8. Code signing — a known distribution limitation
+## 8. Code signing — an open release blocker
 
 **Nothing is signed.** The consequences, measured rather than assumed:
 
@@ -235,13 +235,11 @@ signing; a USB token requires a human per signature and breaks CI). Every free
 route was checked and rejected: they either sign with someone else's name, are
 restricted to individuals, or are invisible to Windows.
 
-This is **not hidden and is not treated as proof of trust**. The recommended Codex
-path builds directly from the public source on the user's machine. The optional
-prebuilt installer remains explicitly unsigned, is distributed with SHA-256,
-payload manifest and SBOM, and requires the user to accept the Windows/Revit
-warning. Publicly trusted signing remains the outstanding distribution milestone
-and the reason D1 does not receive a perfect benchmark score. A future Trusted
-Publishers step must be explicit and opt-in because it changes machine trust.
+**This is a release blocker for installing on a machine that is not ours**, and it
+is a decision with a price tag, not an oversight. Writing the Trusted Publishers
+step into the installer is deliberately deferred until there is a real certificate
+to test it against — it changes the machine's trust configuration and must be an
+explicit, opt-in step, never a silent side effect.
 
 ## 9. Known gaps, stated
 

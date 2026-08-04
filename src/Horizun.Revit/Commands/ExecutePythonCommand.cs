@@ -27,6 +27,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
@@ -54,6 +55,11 @@ namespace Horizun.Revit.Commands
             "IT IS STILL A PRIVILEGED BYPASS: unlike the typed commands it has no dry run, no plan and no " +
             "confirmation token, so nothing rehearses what it will do. That is an accepted risk, not a policy it " +
             "satisfies - see docs/security-model.md. " +
+            "REFUSED OUTRIGHT for a handful of calls a typed command already performs and verifies - " +
+            "ViewSheet.Create, Viewport.Create, ScheduleSheetInstance.Create (use horizun_manage_views), " +
+            "ViewSchedule.CreateSchedule (use horizun_create_schedule), ElementTransformUtils.Move/Rotate/" +
+            "MirrorElement (use horizun_transform_elements), doc.Delete (use horizun_delete_verified). Check " +
+            "for a typed command FIRST; this tool exists for what they do not cover. " +
             "doc/uidoc/uiapp/app are injected. Return data by assigning __output__ or with print(); a dict or " +
             "list is serialized to JSON and output_kind reports scalar|structure|text_only, where text_only " +
             "means the structure could NOT be serialized and only its text rendering survived. The standard " +
@@ -151,6 +157,58 @@ namespace Horizun.Revit.Commands
         /// <summary>Scripts above this are refused. A megabyte of source is not a script.</summary>
         private const int MaxScriptChars = 200000;
 
+        /// <summary>
+        /// Direct 1:1 overlaps with a typed command - not an attempt to catch everything
+        /// execute_python can do, only the handful of Revit API calls this codebase
+        /// already performs, verifies and re-reads elsewhere. A caller reaching for the
+        /// unverified escape hatch to do exactly what a checked command already does gets
+        /// redirected instead of a silent, unverified duplicate of that command.
+        /// </summary>
+        private static readonly (Regex Pattern, string TypedCommand, string Hint)[] TypedOverlaps =
+        {
+            (new Regex(@"\bViewSheet\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"create_sheet\" creates a sheet in the same verified batch as everything else that command does."),
+            (new Regex(@"\bViewport\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"place_view\" places a view on a sheet."),
+            (new Regex(@"\bScheduleSheetInstance\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"place_schedule\" places a schedule on a sheet."),
+            (new Regex(@"\bViewSchedule\s*\.\s*CreateSchedule\s*\(", RegexOptions.Compiled),
+             "horizun_create_schedule",
+             "creates a schedule and verifies it, rather than a bare API call this command cannot check."),
+            (new Regex(@"\bElementTransformUtils\s*\.\s*(Move|Rotate|Mirror)Element", RegexOptions.Compiled),
+             "horizun_transform_elements",
+             "moves/rotates/mirrors elements and re-reads their position afterwards."),
+            (new Regex(@"(?<!\w)doc\s*\.\s*Delete\s*\(", RegexOptions.Compiled),
+             "horizun_delete_verified",
+             "deletes elements and confirms they are actually gone afterwards."),
+        };
+
+        /// <summary>
+        /// Null to proceed. A refusal naming the typed command and what it does, so the
+        /// caller is redirected rather than told only "no" - the disabled-by-default
+        /// message already does that job for the whole tool, this does it for the one
+        /// call inside a script that has a checked replacement.
+        /// </summary>
+        private static CommandResult RefuseIfTypedOverlap(string code)
+        {
+            foreach (var overlap in TypedOverlaps)
+            {
+                if (overlap.Pattern.IsMatch(code))
+                {
+                    return CommandResult.Fail(
+                        "This script calls an API that " + overlap.TypedCommand + " already performs and verifies: " +
+                        overlap.Hint + " Use " + overlap.TypedCommand + " for that operation instead - it re-reads " +
+                        "the result after the write, and this command cannot. If the script needs to do more than " +
+                        "that single call, keep the rest and replace only that operation, or state why the typed " +
+                        "command will not do and this refusal can be reconsidered. Nothing ran.");
+                }
+            }
+            return null;
+        }
+
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             // Checked HERE as well as in the server. The two halves ship separately, so a
@@ -182,6 +240,12 @@ namespace Horizun.Revit.Commands
             if (code.Length > MaxScriptChars)
                 return CommandResult.Fail("Script is " + code.Length + " characters, over the " + MaxScriptChars +
                                           " limit. Put it in a file and read it from a short script instead.");
+
+            // Checked before the gate and before anything is queued: a script that only
+            // duplicates a typed command's own API call gets redirected to that command,
+            // not a document to write to.
+            CommandResult overlapRefusal = RefuseIfTypedOverlap(code);
+            if (overlapRefusal != null) return overlapRefusal;
 
             // THE SAME GATE AS EVERY TYPED MUTATION, and it used to be the one command
             // without it.

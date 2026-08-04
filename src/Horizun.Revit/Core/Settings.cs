@@ -108,10 +108,14 @@ namespace Horizun.Revit.Core
         {
             return "horizun_execute_python is DISABLED. It runs arbitrary code inside Revit on the UI thread, " +
                    "with the full API and the rights of the signed-in user, so it is not part of the default " +
-                   "surface. To enable it, put {\"permission_profile\":\"unsafe_code\"," +
-                   "\"enable_execute_python\":true} in " + Path() + " - it is " +
-                   "re-read on every call, so no restart is needed. Prefer a typed command for anything " +
-                   "recurring: a typed command can be verified, and this cannot.";
+                   "surface. THE INTENDED WAY TO ENABLE IT is for a PERSON to run the helper script " +
+                   "scripts/enable-execute-python.ps1 - it prints what to weigh, writes exactly the two keys, " +
+                   "preserves your other settings, and turns it back off with -Disable. Do not switch it on for " +
+                   "the user yourself; ask them to run that script. (What it writes, if you must do it by hand: " +
+                   "{\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true} in " + Path() + ". The " +
+                   "add-in re-reads settings on every call, but the MCP client caches the tool list at startup, so " +
+                   "restart the client for the tool to appear.) Prefer a typed command for anything recurring: a " +
+                   "typed command can be verified, and this cannot.";
         }
 
         private static JObject Read()

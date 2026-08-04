@@ -5,3 +5,11 @@ obj/
 build/
 artifacts/
 dist/
+
+# Python doc-generation tooling and its output — unrelated to the C# MCP source.
+# Kept out of the tree rather than deleted; move them elsewhere if you prefer.
+__pycache__/
+*.pyc
+build_horizun_jr_*.py
+deliverables/
+docx_render/

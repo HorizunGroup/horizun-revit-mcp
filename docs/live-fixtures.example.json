@@ -33,6 +33,48 @@
   "_OldFile": "Full path to a real .rvt or .rfa saved by a DIFFERENT Revit version, for the upgrade guard.",
   "OldFile": "",
 
+  "_WriteDocument": [
+    "Title of a DISPOSABLE model open in the Revit under test, for the -WriteProbes tier.",
+    "",
+    "Every other probe in this harness is non-destructive: the write commands are exercised",
+    "through their refusals and dry runs. That is safe, and it is also why place_sprinklers,",
+    "connect_mep and terminate_riser reached review with their apply paths never once executed.",
+    "Refusals prove the guards. Only a commit proves the command.",
+    "",
+    "So this tier COMMITS. It needs a model nobody minds it writing into, and it never saves:",
+    "make a copy, mark the copy read-only on disk, open it, and name it here. A workshared",
+    "central should be opened DETACHED so nothing can reach the central.",
+    "",
+    "The probes find their own targets by querying the model (pipe types, system types, a level,",
+    "a sprinkler symbol, a vertical pipe), so this is one title rather than a dozen element ids",
+    "that would go stale on the next save."
+  ],
+  "WriteDocument": "",
+
+  "_WriteDocumentDisposable": [
+    "Must be exactly 'yes-this-model-is-disposable'. Anything else, including blank, makes every",
+    "write probe NOT COVERED and nothing is written.",
+    "",
+    "A second, deliberate opt-in on top of -WriteProbes: the switch says what kind of run this is,",
+    "this says the named model is really expendable. One flag is easy to pass by habit; the point",
+    "of two is that the model is named in the same breath as the permission to write into it."
+  ],
+  "WriteDocumentDisposable": "",
+
+  "_VoidFamilyDocument": [
+    "Title of a FAMILY document, open in the Revit under test, containing at least one VOID form",
+    "that cuts a solid. For the family_mirror_void write probe.",
+    "",
+    "A void earns its keep by cutting. The four properties that command verifies - present, still",
+    "a void, cuts the same number of solids as its source, landed where the reflection puts it -",
+    "cannot be checked against a family that has no void, and a family with only solids exercises",
+    "just the refusal. Four families on this machine were checked and none had one.",
+    "",
+    "It takes two minutes to make: new family from any template, one extrusion, a second extrusion",
+    "set to Void that overlaps it, Cut Geometry, save as its own .rfa, open it, name it here."
+  ],
+  "VoidFamilyDocument": "",
+
   "_ClosedWorksetDocument": [
     "Title of a WORKSHARED model, open in the Revit under test, with AT LEAST ONE WORKSET CLOSED.",
     "",
