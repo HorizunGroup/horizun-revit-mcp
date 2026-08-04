@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - verified authoring of project-resident system-family types.
 // -----------------------------------------------------------------------------
 using System;
@@ -73,6 +73,49 @@ namespace Horizun.Revit.Commands
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "units", "actions");
+
+            // ---- The MATERIALISED plan: the SOURCE each duplicate starts from. ----------
+            // planHash binds the REQUEST - the actions as written. The duplicate INHERITS
+            // everything the caller did not override, which is why the source's state is
+            // half of what gets approved and none of it is in the request:
+            //
+            //   * A SOURCE PARAMETER MOVED. Duplicating "Muro 200" and setting two values
+            //     copies every OTHER value as it stands. The rehearsal showed a type with
+            //     45mm insulation; if somebody changes it to 90 before the token is spent,
+            //     the same request mints a different wall. So each parameter the caller is
+            //     ABOUT to override carries what it reads on the source NOW - drift in the
+            //     inherited remainder is deliberately out of scope, and the fingerprint
+            //     covering name + parameters keeps the check honest without freezing the
+            //     whole type.
+            //   * THE SOURCE WAS RENAMED OR SWAPPED. source_type_id is a number; the NAME
+            //     is what the person approved duplicating. A renamed source is a different
+            //     rehearsal.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Plan planned in plans)
+            {
+                var row = new PlannedElement
+                {
+                    UniqueId = SafePlanUniqueId(planned.Source),
+                    Category = planned.Source.GetType().Name,
+                    TypeName = SafePlanName(planned.Source),
+                    Action = PlannedAction.Create,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "new_name", planned.NewName },
+                        { "compound", planned.Compound == null ? "" : Canon(planned.Compound.Summary()) }
+                    }
+                };
+                foreach (Write w in planned.Writes)
+                    row.BeforeValues["param:" + w.Spec] = SafePlanParamNow(planned.Source, w.Spec);
+                resolvedPlan.Elements.Add(row);
+            }
+
             if (dryRun)
             {
                 var result = new JObject
@@ -87,12 +130,22 @@ namespace Horizun.Revit.Commands
                     })),
                     ["note"] = "No type was duplicated and no transaction was opened."
                 };
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
-                    errors.Count == 0 ? "the token binds every source type, new name and requested parameter value" : "no usable token is issued while any action is invalid");
+                    errors.Count == 0
+                        ? "the token binds every source type, new name and requested parameter value, AND the value " +
+                          "each named parameter reads on its source right now - a source renamed or edited under the " +
+                          "rehearsal refuses as a stale plan. Parameters you did not name are inherited as they stand " +
+                          "at apply time and are NOT frozen by this token."
+                        : "no usable token is issued while any action is invalid");
                 return CommandResult.Ok(result);
             }
             if (errors.Count > 0) return CommandResult.Fail("Invalid system-type plan; nothing ran: " + errors.ToString(Formatting.None));
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            // Recomputed by THIS call from the sources as they stand. The rehearsed plan
+            // does not travel in the token, only its fingerprint, so a stale refusal names
+            // the drift generically - still refused, nothing duplicated.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                     resolvedPlan, null);
             if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
@@ -408,6 +461,42 @@ namespace Horizun.Revit.Commands
                 default: return JValue.CreateNull();
             }
         }
+        /// <summary>Identity for the plan, guarded: measuring must never be what fails.</summary>
+        private static string SafePlanUniqueId(Element e)
+        {
+            try { return e == null ? null : e.UniqueId; } catch { return null; }
+        }
+
+        private static string SafePlanName(Element e)
+        {
+            try { return e == null ? null : e.Name; } catch { return "<unreadable>"; }
+        }
+
+        /// <summary>Stable JSON: Formatting.None so whitespace is never the difference.</summary>
+        private static string Canon(JToken t)
+        {
+            try { return t == null ? "" : t.ToString(Formatting.None); } catch { return "<unreadable>"; }
+        }
+
+        /// <summary>
+        /// What the named parameter reads on the SOURCE right now - the value the caller
+        /// saw in the rehearsal and decided to override. AsValueString first so a length
+        /// reads in the document's units the way the person read it; falls back to the raw
+        /// string. "&lt;unreadable&gt;" stays distinct from "": an unreadable value must
+        /// not compare equal to an empty one, or it drifts past the check.
+        /// </summary>
+        private static string SafePlanParamNow(ElementType source, string spec)
+        {
+            try
+            {
+                Parameter q = ResolveParameter(source, spec, out _);
+                if (q == null) return "<unresolved>";
+                try { string v = q.AsValueString(); if (v != null) return v; } catch { }
+                try { return q.AsString() ?? ""; } catch { return "<unreadable>"; }
+            }
+            catch { return "<unreadable>"; }
+        }
+
         private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public ElementId CreatedId; }
         private sealed class Write { public string Spec; public JToken Requested, Expected; public bool ParsedByRevit; }
         private sealed class CompoundPlan
