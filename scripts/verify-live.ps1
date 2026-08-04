@@ -10,10 +10,28 @@
   It reports what it MEASURED. A probe that is not exercised is reported as "not
   covered" rather than quietly counted as working.
 
-  EVERY PROBE HERE IS NON-DESTRUCTIVE. The write commands are exercised through
+  THE DEFAULT TIER IS NON-DESTRUCTIVE. The write commands are exercised through
   their refusals and their dry runs, which is where their guarantees live: a
-  refusal that fires is proof, and it changes nothing. Nothing in this script
+  refusal that fires is proof, and it changes nothing. Nothing in the default run
   writes to a model.
+
+  AND THAT WAS NOT ENOUGH. Three typed commands reached review with 411 green
+  unit tests, zero warnings, and their apply paths never once executed - and not
+  one of them could do its job: heads landed on the project origin, a riser never
+  got past its tee, and a connection that Revit really made was reported as
+  failed. Refusals prove the guards. Dry runs prove the arithmetic. Only a commit
+  proves the command.
+
+  So there is a second tier, behind -WriteProbes, that COMMITS. It runs against a
+  model the fixtures file names as disposable and it never saves. See the
+  WriteDocument fixture. Without the switch and that fixture, every probe in it is
+  NOT COVERED by name - which is the same treatment every other missing guarantee
+  gets here, and the reason this gap was visible at all.
+
+  THE WRITE TIER IS NOT REPEATABLE AGAINST THE SAME OPEN DOCUMENT. Its first run
+  consumes what it needs: once heads are placed on every free stub, a second run
+  correctly reports that no position matches, which reads like a regression and is
+  not one. Close the disposable model without saving and reopen it between runs.
 
   Usage:
     pwsh scripts/verify-live.ps1 -Year 2026
@@ -23,6 +41,9 @@
     # the release gate: every fixture supplied, provenance checked, JSON emitted
     pwsh scripts/verify-live.ps1 -Year 2026 -ReleaseGate `
          -ExpectedCommit <sha> -Json artifacts/live-2026.json
+
+    # the write tier: COMMITS into the model the fixtures file declares disposable
+    pwsh scripts/verify-live.ps1 -Year 2026 -WriteProbes
 
   Requires: that Revit open with the add-in loaded.
 
@@ -124,7 +145,22 @@ param(
     # Permits a server from bin/Release. Off by default: an integration suite run
     # against a developer build proves that build works and says nothing about the
     # artifact anybody will install.
-    [switch]$AllowDevServer
+    [switch]$AllowDevServer,
+
+    # THE WRITE TIER. Off by default, because everything else here changes nothing
+    # and a caller should not discover otherwise by accident. On, the probes below
+    # commit into -WriteDocument and read the result back out of the model.
+    [switch]$WriteProbes,
+
+    # A model the fixtures file declares expendable, plus the declaration itself.
+    # Two separate things on purpose: the switch says what kind of run this is, the
+    # fixture says WHICH model may be written into. Neither implies the other.
+    [string]$WriteDocument,
+    [string]$WriteDocumentDisposable,
+
+    # A family document holding a void that cuts a solid, for the void-mirror
+    # write probe. A family of solids exercises only the refusal.
+    [string]$VoidFamilyDocument
 )
 
 $probeRun = [guid]::NewGuid().ToString('N')
@@ -138,7 +174,8 @@ if (Test-Path $Fixtures) {
     try {
         $fx = Get-Content $Fixtures -Raw | ConvertFrom-Json
         foreach ($name in 'Document','InactiveDocument','SpfPath','SpfParam','QuantityCategory','OldFile',
-                          'FamilyTemplate','ClosedWorksetDocument') {
+                          'FamilyTemplate','ClosedWorksetDocument',
+                          'WriteDocument','WriteDocumentDisposable','VoidFamilyDocument') {
             $fromFile = $fx.$name
             if ([string]::IsNullOrWhiteSpace($fromFile)) { continue }
             # QuantityCategory has a default, so "was it passed" cannot be read off
@@ -956,6 +993,409 @@ foreach ($p in $probes) {
     if ($m) { $byId[[int]$m.id] = $m }
 }
 
+# ---------------------------------------------------------------------------
+# THE WRITE TIER.
+#
+# Sequential, and it has to be: every probe here needs the confirmation token the
+# previous reply issued, so it cannot be pre-batched the way the probes above are.
+# Results are collected now and folded into the same PASS/FAIL/UNVERIFIED/NOT
+# COVERED accounting below, so one run still has one set of exit codes.
+#
+# Each probe COMMITS and then believes only what the command re-read out of the
+# model. A probe that asserts `fully_verified` is asserting the house contract
+# itself: not "the call did not throw" but "the command confirmed its own work".
+# ---------------------------------------------------------------------------
+$writeResults = @()
+$writeAnswers = @()     # every answer this tier got, for the rollback probe below
+
+function Add-Write($name, $tool, $outcome, $detail) {
+    $script:writeResults += @{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = $detail }
+}
+
+# Every brace-balanced JSON object in a string, in the order they appear.
+#
+# A refusal is not "prose then JSON". It is "Error: <sentence> {result}" and then,
+# whenever Revit raised anything, "--- what Revit raised while this ran ---
+# {warnings}". So a substring running to the end of the message is not valid JSON,
+# and the brace that DOES parse to the end is the warnings block, which knows
+# nothing about the transaction. Balanced extraction is the only way to get at the
+# result object, and the result object is where the verdict lives.
+#
+# Quotes and escapes are tracked because element names in this domain contain
+# braces and quotation marks: 'Tee 3" x 1 1/2"' is a real type name in the fixture.
+function Get-JsonObjects([string]$s) {
+    $out = @()
+    for ($i = 0; $i -lt $s.Length; $i++) {
+        if ($s[$i] -ne '{') { continue }
+        $depth = 0; $inStr = $false; $esc = $false
+        for ($k = $i; $k -lt $s.Length; $k++) {
+            $c = $s[$k]
+            if ($esc) { $esc = $false; continue }
+            if ($c -eq '\') { if ($inStr) { $esc = $true }; continue }
+            if ($c -eq '"') { $inStr = -not $inStr; continue }
+            if ($inStr) { continue }
+            if ($c -eq '{') { $depth++ }
+            elseif ($c -eq '}') {
+                $depth--
+                if ($depth -eq 0) { $out += $s.Substring($i, $k - $i + 1); $i = $k; break }
+            }
+        }
+    }
+    return $out
+}
+
+# One tool call. Returns the parsed answer plus whether it was an error, because
+# for this tier an error IS the finding half the time.
+$writeCallId = 900000
+function Invoke-Write($tool, $arguments) {
+    $script:writeCallId++
+    Send-Rpc @{ jsonrpc='2.0'; id=$script:writeCallId; method='tools/call'
+                params=@{ name=$tool; arguments=$arguments } }
+    $m = Read-Rpc
+    if (-not $m) { return @{ replied = $false; isError = $true; text = 'no reply'; data = $null } }
+    $text = $m.result.content[0].text
+    $data = $null
+    if ($text) {
+        try { $data = $text | ConvertFrom-Json }
+        catch {
+            # A refusal reads "Error: <sentence> {json}", and the verdict this tier
+            # cares about most is inside that JSON: transaction_status and
+            # fully_verified on a write that did NOT confirm itself. Parsing only
+            # clean answers would leave the rollback rule below unable to see the
+            # exact cases it exists to catch.
+            #
+            # The first balanced object that carries transaction_status. Not the
+            # first that parses: place_sprinklers quotes every rejected candidate as
+            # an object inside its sentence, and the warnings block at the end parses
+            # perfectly while knowing nothing about the transaction.
+            foreach ($candidateText in (Get-JsonObjects $text)) {
+                try { $candidate = $candidateText | ConvertFrom-Json } catch { continue }
+                if ($null -ne $candidate.transaction_status) { $data = $candidate; break }
+            }
+        }
+    }
+    return @{ replied = $true; isError = [bool]$m.result.isError; text = $text; data = $data }
+}
+
+# Dry run, then apply with the token it issued. Returns the APPLY answer. The two
+# calls are one probe on purpose: a token that cannot be spent is not a guarantee
+# anybody can use.
+function Invoke-WriteApply($tool, $arguments, $keyName) {
+    $dry = $arguments.Clone(); $dry['dry_run'] = $true
+    $d = Invoke-Write $tool $dry
+    if ($d.isError -or -not $d.data -or -not $d.data.confirmation_token) {
+        return @{ stage = 'dry_run'; answer = $d }
+    }
+    $apply = $arguments.Clone()
+    $apply['dry_run'] = $false
+    $apply['confirmation_token'] = $d.data.confirmation_token
+    $apply['idempotency_key'] = ("live-write-{0}-{1}" -f $keyName, $probeRun)
+    return @{ stage = 'apply'; answer = (Invoke-Write $tool $apply); dry = $d }
+}
+
+# Every row of a verification table agreed. An empty table is not agreement:
+# "nothing disagreed" over nothing is the substitution this repository refuses.
+function All-Rows($rows, [scriptblock]$Predicate) {
+    $list = @($rows)
+    if ($list.Count -eq 0) { return $false }
+    foreach ($r in $list) { if (-not (& $Predicate $r)) { return $false } }
+    return $true
+}
+
+$writeGate = $null
+if (-not $WriteProbes) {
+    $writeGate = 'needs -WriteProbes; the default run commits nothing'
+}
+elseif ([string]::IsNullOrWhiteSpace($WriteDocument)) {
+    $writeGate = 'needs -WriteDocument, a model this machine can afford to have written into'
+}
+elseif ($WriteDocumentDisposable -ne 'yes-this-model-is-disposable') {
+    $writeGate = ("-WriteDocument named '{0}' but WriteDocumentDisposable is not " -f $WriteDocument) +
+                 "'yes-this-model-is-disposable'. Nothing was written: naming a model is not the same " +
+                 'as saying it is expendable.'
+}
+
+# The commands act on the ACTIVE document and refuse to switch for you, so which
+# document is in front decides which half of this tier can run at all.
+$activeTitle = $null
+if (-not $writeGate) {
+    $h = Invoke-Write 'horizun_health' @{}
+    if ($h.data) { $activeTitle = ($h.data.open_documents | Where-Object { $_.is_active }).title }
+    if ($activeTitle -ne $WriteDocument) {
+        $writeGate = ("-WriteDocument is '{0}' but the ACTIVE document is '{1}'. These commands act on " -f
+                          $WriteDocument, $activeTitle) +
+                     'the active document and will not switch for you; activate it and re-run.'
+    }
+}
+
+$writeNames = @(
+    @{ N = 'create_elements commits a typed batch and verifies every row from the model'; T = 'horizun_create_elements' }
+    @{ N = 'connect_mep joins two pipes and confirms the joint from the model';           T = 'horizun_connect_mep' }
+    @{ N = 'connect_mep generates a fitting and still confirms the joint';                T = 'horizun_connect_mep' }
+    @{ N = 'terminate_riser builds all five pieces and re-reads each one';                T = 'horizun_terminate_riser' }
+    @{ N = 'place_sprinklers seats every head it placed';                                T = 'horizun_place_sprinklers' }
+    @{ N = 'a typed write that cannot confirm itself does NOT leave the attempt behind';  T = '(contract)' }
+)
+
+if ($writeGate) {
+    foreach ($w in $writeNames) { Add-Write $w.N $w.T 'not_covered' $writeGate }
+    Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' $writeGate
+}
+else {
+    # ---- what this model can offer. Discovered, not hard-coded: element ids do
+    # ---- not survive a save, and a fixture of a dozen of them rots silently.
+    $wDoc = $WriteDocument
+    $lv = Invoke-Write 'horizun_list_elements' @{ category='OST_Levels'; max_rows=5; include_links=$false }
+    $levelId = $null
+    if ($lv.data -and @($lv.data.rows).Count -gt 0) { $levelId = @($lv.data.rows)[0].element_id }
+
+    function First-Type($category, $namePattern) {
+        $q = Invoke-Write 'horizun_query_model' @{ categories=@($category); include_types=$true
+                                                  max_rows=500; include_links=$false }
+        if (-not $q.data) { return $null }
+        $types = @($q.data.rows | Where-Object { $_.is_element_type })
+        if ($namePattern) {
+            $hit = $types | Where-Object { $_.family -match $namePattern -or $_.type -match $namePattern } |
+                   Select-Object -First 1
+            if ($hit) { return $hit.element_id }
+        }
+        if ($types.Count -gt 0) { return $types[0].element_id }
+        return $null
+    }
+
+    $pipeType   = First-Type 'OST_PipeCurves'   $null
+    $pipeSystem = First-Type 'OST_PipingSystem' 'Incendio|Fire'
+    $sprinkler  = First-Type 'OST_Sprinklers'   $null
+    $capType    = First-Type 'OST_PipeFitting'  'Cap|Tap[oó]n'
+    $unionType  = First-Type 'OST_PipeFitting'  'Coupling|Uni[oó]n'
+    $teeType    = First-Type 'OST_PipeFitting'  'Tee'
+    $elbowType  = First-Type 'OST_PipeFitting'  'Elbow|Codo'
+    $valveType  = First-Type 'OST_PipeAccessory' 'Valve|V[aá]lvula'
+
+    # Far from any building, so a probe never lands on top of real geometry. The
+    # model is disposable and never saved, but a fixture that has to be untangled
+    # by hand afterwards stops being reusable.
+    $wx = 500000
+    $wy = 0
+
+    function New-ProbePipe($x1, $y1, $z1, $x2, $y2, $z2, $typeId, $key) {
+        $r = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document = $wDoc; units = 'mm'
+            elements = @(@{ kind='pipe'; start=@($x1,$y1,$z1); end=@($x2,$y2,$z2)
+                            level_id=$levelId; type_id=$typeId; system_type_id=$pipeSystem })
+        } $key
+        return $r
+    }
+
+    if (-not $levelId -or -not $pipeType -or -not $pipeSystem) {
+        $why = ("'{0}' has no usable level, pipe type or piping system type, so no piping probe can be " -f $wDoc) +
+               'staged in it. Name a model with piping content.'
+        foreach ($w in $writeNames[0..4]) { Add-Write $w.N $w.T 'not_covered' $why }
+    }
+    else {
+        # ---- W1: create_elements. Also the fixture the next probes stand on, which
+        # ---- is why its own verification is asserted rather than assumed.
+        $mk = New-ProbePipe $wx $wy 0 ($wx+3000) $wy 0 $pipeType 'mk1'
+        $a = $mk.answer
+        if ($mk.stage -eq 'dry_run') {
+            Add-Write $writeNames[0].N $writeNames[0].T 'unverified' ("the dry run did not issue a token: " + $a.text)
+        }
+        elseif ($a.isError -or -not $a.data) {
+            Add-Write $writeNames[0].N $writeNames[0].T 'fail' $a.text
+            if ($a.data) { $writeAnswers += @{ Name = $writeNames[0].N; Data = $a.data } }
+        }
+        elseif ($a.data.created_verified -eq 1 -and
+                (All-Rows $a.data.rows { param($r) $r.present_after_commit -eq $true -and $r.verified -eq $true })) {
+            Add-Write $writeNames[0].N $writeNames[0].T 'pass' 'committed and re-read'
+            $writeAnswers += @{ Name = $writeNames[0].N; Data = $a.data }
+        }
+        else {
+            Add-Write $writeNames[0].N $writeNames[0].T 'fail' ("created_verified=" + $a.data.created_verified)
+            $writeAnswers += @{ Name = $writeNames[0].N; Data = $a.data }
+        }
+        $pipeA = $null
+        if ($a.data -and @($a.data.rows).Count -gt 0) { $pipeA = @($a.data.rows)[0].element_id }
+
+        # ---- W2: connect_mep, fitting none. A second pipe meeting the first end on.
+        $mk2 = New-ProbePipe ($wx+3000) $wy 0 ($wx+6000) $wy 0 $pipeType 'mk2'
+        $pipeB = $null
+        if ($mk2.answer.data -and @($mk2.answer.data.rows).Count -gt 0) { $pipeB = @($mk2.answer.data.rows)[0].element_id }
+
+        if (-not $pipeA -or -not $pipeB) {
+            Add-Write $writeNames[1].N $writeNames[1].T 'unverified' 'the two probe pipes could not be created'
+        }
+        else {
+            $c = Invoke-WriteApply 'horizun_connect_mep' @{
+                target_document = $wDoc
+                connections = @(@{ from = @{ element_id = $pipeA; axis_hint = '+x' }
+                                   to   = @{ element_id = $pipeB; axis_hint = '-x' } })
+            } 'connect-none'
+            $ca = $c.answer
+            if ($c.stage -eq 'dry_run') {
+                Add-Write $writeNames[1].N $writeNames[1].T 'unverified' ("the dry run planned nothing: " + $ca.text)
+            }
+            else {
+                if ($ca.data) { $writeAnswers += @{ Name = $writeNames[1].N; Data = $ca.data } }
+                if (-not $ca.isError -and $ca.data.fully_verified -eq $true -and
+                    $ca.data.connected -eq 1 -and $ca.data.joined_to_expected_element -eq 1) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'pass' 'joined to the element named, one shared system'
+                }
+                else {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' $ca.text
+                }
+            }
+        }
+
+        # ---- W3: connect_mep with a GENERATED fitting. Separate probe because the
+        # ---- fitting rebuilds the pipes' connectors, and that is exactly where a
+        # ---- post-commit re-read that resolves connectors by their pre-commit
+        # ---- index stops telling the truth.
+        $mk3 = New-ProbePipe ($wx+10000) $wy 0 ($wx+13000) $wy 0 $pipeType 'mk3'
+        $mk4 = New-ProbePipe ($wx+13000) $wy 0 ($wx+13000) ($wy+3000) 0 $pipeType 'mk4'
+        $pipeC = $null; $pipeD = $null
+        if ($mk3.answer.data -and @($mk3.answer.data.rows).Count -gt 0) { $pipeC = @($mk3.answer.data.rows)[0].element_id }
+        if ($mk4.answer.data -and @($mk4.answer.data.rows).Count -gt 0) { $pipeD = @($mk4.answer.data.rows)[0].element_id }
+
+        if (-not $pipeC -or -not $pipeD) {
+            Add-Write $writeNames[2].N $writeNames[2].T 'unverified' 'the perpendicular probe pair could not be created'
+        }
+        else {
+            $e = Invoke-WriteApply 'horizun_connect_mep' @{
+                target_document = $wDoc
+                connections = @(@{ from = @{ element_id = $pipeC; axis_hint = '+x' }
+                                   to   = @{ element_id = $pipeD; axis_hint = '-y' }
+                                   fitting = 'elbow' })
+            } 'connect-elbow'
+            $ea = $e.answer
+            if ($e.stage -eq 'dry_run') {
+                Add-Write $writeNames[2].N $writeNames[2].T 'unverified' ("the dry run planned nothing: " + $ea.text)
+            }
+            else {
+                if ($ea.data) { $writeAnswers += @{ Name = $writeNames[2].N; Data = $ea.data } }
+                if (-not $ea.isError -and $ea.data.fully_verified -eq $true) {
+                    Add-Write $writeNames[2].N $writeNames[2].T 'pass' 'fitting generated and the joint confirmed'
+                }
+                else {
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' $ea.text
+                }
+            }
+        }
+
+        # ---- W4: terminate_riser. A fresh vertical pipe, so its top is free - a
+        # ---- riser already inside a network is correctly refused and proves nothing.
+        if (-not $capType -or -not $unionType -or -not $teeType -or -not $elbowType -or -not $valveType) {
+            Add-Write $writeNames[3].N $writeNames[3].T 'not_covered' (
+                ("'{0}' does not have all five termination families loaded (cap, union/coupling, tee, elbow, " -f $wDoc) +
+                'valve). Nothing is substituted for a missing piece, so the probe cannot be staged.')
+        }
+        else {
+            $mk5 = New-ProbePipe ($wx+20000) $wy 0 ($wx+20000) $wy 4000 $pipeType 'mk5'
+            $riser = $null
+            if ($mk5.answer.data -and @($mk5.answer.data.rows).Count -gt 0) { $riser = @($mk5.answer.data.rows)[0].element_id }
+            if (-not $riser) {
+                Add-Write $writeNames[3].N $writeNames[3].T 'unverified' 'the probe riser could not be created'
+            }
+            else {
+                $t = Invoke-WriteApply 'horizun_terminate_riser' @{
+                    target_document = $wDoc; riser_pipe_id = $riser
+                    reference_elevation_mm = 2000; measured_union_length_mm = 88.9
+                    branch_diameter_mm = 25
+                    cap_type_id = $capType; union_type_id = $unionType; tee_type_id = $teeType
+                    elbow_type_id = $elbowType; valve_type_id = $valveType
+                } 'riser'
+                $ta = $t.answer
+                if ($t.stage -eq 'dry_run') {
+                    Add-Write $writeNames[3].N $writeNames[3].T 'unverified' ("the dry run refused: " + $ta.text)
+                }
+                else {
+                    if ($ta.data) { $writeAnswers += @{ Name = $writeNames[3].N; Data = $ta.data } }
+                    if (-not $ta.isError -and $ta.data.fully_verified -eq $true) {
+                        Add-Write $writeNames[3].N $writeNames[3].T 'pass' 'all five pieces re-read'
+                    }
+                    else {
+                        Add-Write $writeNames[3].N $writeNames[3].T 'fail' $ta.text
+                    }
+                }
+            }
+        }
+
+        # ---- W5: place_sprinklers. The whole point of this command is that a head
+        # ---- is SEATED, not merely present and reporting connected.
+        if (-not $sprinkler) {
+            Add-Write $writeNames[4].N $writeNames[4].T 'not_covered' (
+                ("'{0}' has no Sprinklers family symbol loaded, so no head can be placed in it." -f $wDoc))
+        }
+        else {
+            $s = Invoke-WriteApply 'horizun_place_sprinklers' @{
+                target_document = $wDoc; target_pattern = 'upright'; symbol_id = $sprinkler
+                max_targets = 500; seating_tolerance_mm = 1.0
+            } 'sprinklers'
+            $sa = $s.answer
+            if ($s.stage -eq 'dry_run') {
+                Add-Write $writeNames[4].N $writeNames[4].T 'unverified' ("the dry run found no targets: " + $sa.text)
+            }
+            else {
+                if ($sa.data) { $writeAnswers += @{ Name = $writeNames[4].N; Data = $sa.data } }
+                if (-not $sa.isError -and $sa.data.fully_verified -eq $true -and
+                    (All-Rows $sa.data.rows { param($r) $r.present -eq $true -and $r.connected_to_target -eq $true -and $r.seated -eq $true })) {
+                    Add-Write $writeNames[4].N $writeNames[4].T 'pass' (
+                        "{0} head(s), every one seated" -f $sa.data.placed_and_present)
+                }
+                else {
+                    Add-Write $writeNames[4].N $writeNames[4].T 'fail' $sa.text
+                }
+            }
+        }
+    }
+
+    # ---- W6: THE ROLLBACK RULE, over every answer this tier collected.
+    #
+    # "No command reports work it did not verify" is honoured everywhere. What
+    # happens AFTER a failed verification was not: one command rolls back and
+    # builds nothing, another commits and leaves 37 misplaced heads in the model
+    # with an honest sentence about them. Both are truthful; only one is safe to
+    # retry. So a typed write whose verification fails must not leave the attempt
+    # behind.
+    $offenders = @()
+    foreach ($ans in $writeAnswers) {
+        $d = $ans.Data
+        if ($null -eq $d) { continue }
+        if ($null -eq $d.fully_verified) { continue }
+        if ($d.fully_verified -eq $true) { continue }
+        if ($d.transaction_status -eq 'Committed') {
+            $offenders += ("{0}: fully_verified=false yet transaction_status=Committed" -f $ans.Name)
+        }
+    }
+    if ($writeAnswers.Count -eq 0) {
+        Add-Write $writeNames[5].N $writeNames[5].T 'unverified' 'no write answer carried a verification verdict'
+    }
+    elseif ($offenders.Count -eq 0) {
+        Add-Write $writeNames[5].N $writeNames[5].T 'pass' 'every unconfirmed write rolled back'
+    }
+    else {
+        Add-Write $writeNames[5].N $writeNames[5].T 'fail' ($offenders -join '; ')
+    }
+
+    # ---- W7: family_mirror_void. Its own document, and the bridge will not switch
+    # ---- documents for you, so this runs on the pass where the family is active.
+    if ([string]::IsNullOrWhiteSpace($VoidFamilyDocument)) {
+        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
+            'needs -VoidFamilyDocument, a family document holding a void that cuts a solid; a family of ' +
+            'solids exercises only the refusal')
+    }
+    elseif ($activeTitle -ne $VoidFamilyDocument) {
+        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
+            ("-VoidFamilyDocument is '{0}' but '{1}' is active. Run this once per active document: the " -f
+                 $VoidFamilyDocument, $activeTitle) + 'bridge acts on the front one and refuses to switch.')
+    }
+    else {
+        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
+            'the void form is not discoverable from the typed surface: query_model reports forms without a ' +
+            'category and with no is_void flag, so the id has to come from the fixture. Add a VoidFormId ' +
+            'fixture, or a way to list forms, and this probe can assert the four properties.')
+    }
+}
+
 $proc.StandardInput.Close()
 if (-not $proc.WaitForExit(130000)) { $proc.Kill() }
 
@@ -1096,15 +1536,47 @@ foreach ($p in $probes) {
     else { Note-Fail $p.Name $p.Tool 'the answer did not say what it had to' }
 }
 
+# The write tier ran earlier, because it needed the transport open to spend the
+# tokens its own dry runs issued. Fold it in here so there is one set of counters,
+# one JSON and one exit code for the whole run.
+if ($writeResults.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  write tier (commits into the disposable model, never saves)" -ForegroundColor Cyan
+    foreach ($w in $writeResults) {
+        if ($w.Outcome -ne 'not_covered') { $assertingProbes++ }
+        switch ($w.Outcome) {
+            'pass'        { Note-Pass        $w.Name $w.Tool $w.Detail }
+            'fail'        { Note-Fail        $w.Name $w.Tool $w.Detail }
+            'unverified'  { Note-Unverified  $w.Name $w.Detail $w.Tool }
+            default       { Note-NotCovered  $w.Name $w.Detail $w.Tool }
+        }
+    }
+}
+
 Write-Host ("-" * 70)
 Write-Host ("  {0} passed, {1} failed, {2} UNVERIFIED   (of {3} probes, {4} assert something)" -f `
-            $passed, $failed, $unverified, $probes.Count, $assertingProbes)
+            $passed, $failed, $unverified, ($probes.Count + $writeResults.Count), $assertingProbes)
 if ($unverified -gt 0) {
     Write-Host "  UNVERIFIED is not a pass. These guarantees were NOT established by this run:" -ForegroundColor Yellow
     foreach ($u in $unverifiedDetail) { Write-Host ("    - {0}" -f $u) -ForegroundColor DarkYellow }
 }
 if (-not $Document) {
     $notCovered += 'links, quantities and the whole confirmation flow (needs -Document <title>)'
+}
+
+# The typed-overlap guard lives INSIDE execute_python, so when that tool is not
+# advertised the guard cannot fire and nothing here reaches it. Its only evidence
+# is then the unit tests - which is a fine place for a regex table to be tested,
+# and not the same claim as "the redirect works against a running Revit".
+#
+# This does NOT enable anything. A person enables execute_python by running
+# scripts/enable-execute-python.ps1; a verification harness that switched on the
+# full Revit API to test itself would be a worse bargain than the gap it closes.
+if (-not ($listed | Where-Object { $_.name -eq 'horizun_execute_python' })) {
+    $notCovered += 'the typed-overlap guard redirecting execute_python to the typed commands ' +
+                   '(execute_python is not advertised on this machine, so the guard cannot fire; its only ' +
+                   'evidence is Horizun.Core.Tests. Enable it deliberately with scripts/enable-execute-python.ps1 ' +
+                   'and re-run to cover this)'
 }
 if (-not $OldFile) {
     $notCovered += 'the upgrade guard (needs -OldFile <a file saved by another Revit>)'
@@ -1194,13 +1666,23 @@ $report = [pscustomobject]@{
         QuantityCategory = -not [string]::IsNullOrWhiteSpace($QuantityCategory)
         OldFile          = -not [string]::IsNullOrWhiteSpace($OldFile)
         FamilyTemplate   = -not [string]::IsNullOrWhiteSpace($FamilyTemplate)
+        WriteDocument    = -not [string]::IsNullOrWhiteSpace($WriteDocument)
+        VoidFamilyDocument = -not [string]::IsNullOrWhiteSpace($VoidFamilyDocument)
+    }
+    write_tier        = @{
+        requested  = [bool]$WriteProbes
+        # Null when the tier ran. When it did not, this is the one sentence that
+        # says why - the same reason printed against every probe it skipped.
+        gate       = $writeGate
+        document   = $WriteDocument
+        probes     = $writeResults.Count
     }
     summary           = @{
         passed      = $passed
         failed      = $failed
         unverified  = $unverified
         not_covered = $notCovered.Count
-        probes      = $probes.Count
+        probes      = ($probes.Count + $writeResults.Count)
         asserting   = $assertingProbes
     }
     probes            = $results

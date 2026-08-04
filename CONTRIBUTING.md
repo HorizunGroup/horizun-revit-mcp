@@ -35,6 +35,18 @@ dotnet test tests/Horizun.Core.Tests
 The add-in compiles against the Revit year installed on the machine. Tests must
 be green before the PR.
 
+Green tests are the floor, not the ceiling. If the branch adds or changes a
+command that WRITES, exercise it against a running Revit as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-live.ps1 -Year 2026 -WriteProbes
+```
+
+That tier commits into a model your `%USERPROFILE%\.horizun\live-fixtures.json`
+declares disposable, re-reads the result, and never saves. Without the fixture it
+reports every write probe as NOT COVERED by name rather than passing quietly — see
+[docs/live-fixtures.example.json](docs/live-fixtures.example.json).
+
 ## Hard rules
 
 - **The product name is written `Horizun`** — never `HORIZUN`, never `horizun`
@@ -43,6 +55,17 @@ be green before the PR.
 - **The verified contract:** every typed command must re-read the model after the
   commit — no command reports work it did not verify. Follow the shape of
   `src/Horizun.Revit/Commands/TransformElementsCommand.cs`.
+- **A typed write whose verification fails must ROLL BACK.** Reporting the failure
+  honestly is not enough on its own: a command that commits and then says it could
+  not confirm the result leaves the caller a model to untangle by hand, and it
+  cannot simply be retried. `TerminateRiserCommand` gets this right — it names the
+  stage that failed and builds nothing. A command that deliberately keeps partial
+  work must say so in its description and report exactly what stayed.
+- **A write path is not verified until it has been COMMITTED against a real
+  model.** Green unit tests plus a clean build have already shipped three commands
+  to review that could not do their job: refusals prove the guards, dry runs prove
+  the arithmetic, and neither one executes the Revit half. Add a probe to the write
+  tier of `scripts/verify-live.ps1` (`-WriteProbes`) and run it before the PR.
 - **Do not enable `horizun_execute_python` for the user.** It is the full Revit
   API and ships disabled on purpose. A person enables it by running
   `scripts/enable-execute-python.ps1`; never switch it on yourself.
