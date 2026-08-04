@@ -64,6 +64,18 @@ measure the difference before changing anything.
 Connection is unaffected: **37/37** `connected_to_intended_target`. The rollback
 rule held on all five failed runs; the model is untouched after every one.
 
+**RESUME HERE (saved 2026-08-04):** the comparison experiment is a script, not a
+memory — `scripts/probe-sprinkler-compare.ps1` on `fix/1.1-seat-heads` (tip
+`aeb13c9`). It creates ONE instance that survives (via `create_elements`, which
+verifies presence but not seating), compares it parameter-by-parameter against
+designer-seated head `2802224`, and writes the offset OUTSIDE the placement
+transaction through `write_params_verified`, whose read-back settles whether the
+parameter reverts in general or only inside `place_sprinklers`' transaction.
+Before running: **pre-migrate the fixture once** — open the source model, let
+Revit upgrade it, save that copy, reuse it. Re-upgrading the same model every
+cycle cost a morning of 3–10 minute opens. `scripts/live-cycle.ps1` +
+`scripts/trust-addin.ps1` make the rest of the loop unattended.
+
 
 ## ~~EPIC 2 — Unified bridge contract~~ *(DROPPED 2026-08-04)*
 
