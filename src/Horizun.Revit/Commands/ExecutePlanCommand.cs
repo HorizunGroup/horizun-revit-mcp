@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Compose verified typed commands into one confirmed, atomic Revit operation.
 // -----------------------------------------------------------------------------
 using System;
@@ -95,12 +95,53 @@ namespace Horizun.Revit.Commands
                 }
                 var data = new JObject { ["dry_run"] = true, ["transaction_status"] = "not_started",
                     ["actions"] = rows, ["note"] = "Independent actions were semantically rehearsed. References whose values only exist after creation are resolved during the confirmed atomic execution; any failure then rolls back every action." };
+                DocumentGate.RecordResolvedPlan(GraphPlan(app, gate, rows, actions));
                 DocumentGate.StampConfirmation(data, gate, Name, planHash, true,
-                    "one token authorizes this exact ordered graph; external I/O and arbitrary code are never allowed inside it");
+                    "one token authorizes this exact ordered graph, AND it is bound to what each independent " +
+                    "action's own rehearsal resolved: the apply re-rehearses them (read-only) and refuses as a " +
+                    "stale plan if any resolves differently. Actions that only resolve after a creation are " +
+                    "protected by their own validation inside the group. External I/O and arbitrary code are " +
+                    "never allowed inside a plan.");
                 return CommandResult.Ok(data);
             }
 
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            // ---- The materialised plan, RECOMPUTED: re-rehearse every independent action
+            // read-only before anything runs. Inside the confirmed group the children's
+            // own plan checks degrade to a document-identity check (EnterConfirmedAtomicPlan),
+            // so this is the moment the element-level guarantee is enforced for a graph.
+            // The cost is running each child's dry run twice per apply; the alternative is
+            // an approval that froze the words of the graph and nothing it resolved to.
+            var recheck = new JArray();
+            {
+                var known = new Dictionary<string, JToken>(StringComparer.Ordinal);
+                for (int i = 0; i < actions.Count; i++)
+                {
+                    JObject action = (JObject)actions[i];
+                    string key = action.Value<string>("key");
+                    JObject supplied = (JObject)action["arguments"];
+                    if (PlanReferences.HasReference(supplied))
+                    {
+                        string resolveError;
+                        JToken resolvedArgs = PlanReferences.Resolve(supplied, known, out resolveError);
+                        if (resolveError != null)
+                        {
+                            recheck.Add(new JObject { ["index"] = i, ["key"] = key, ["tool"] = action.Value<string>("tool"),
+                                ["status"] = "deferred_until_execution", ["reason"] = resolveError });
+                            continue;
+                        }
+                        supplied = (JObject)resolvedArgs;
+                    }
+                    JObject childArgs = ChildArguments(supplied, gate, true);
+                    CommandResult again = _resolve(action.Value<string>("tool")).Execute(app, childArgs.ToString(Formatting.None));
+                    recheck.Add(ResultRow(i, key, action.Value<string>("tool"), again, "rehearsed"));
+                    if (!again.Success)
+                        return CommandResult.Fail("Pre-apply rehearsal failed at action '" + key + "': " + again.Error +
+                            ". Nothing ran - the model has moved since this graph was approved.");
+                    known[key] = ToToken(again.Data);
+                }
+            }
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                     GraphPlan(app, gate, recheck, actions), null);
             if (refusal != null) return refusal;
             string groupName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(groupName)) groupName = "Horizun: atomic plan";
@@ -139,6 +180,50 @@ namespace Horizun.Revit.Commands
             }
             return CommandResult.Ok(new JObject { ["transaction_status"] = "Committed", ["transaction_name"] = groupName,
                 ["actions_verified"] = executed.Count, ["actions"] = executed, ["results"] = new JObject(results) });
+        }
+
+        /// <summary>
+        /// The graph's materialised plan, built identically from the rehearsal rows and
+        /// from the pre-apply recheck rows. One element per action; the fact that binds is
+        /// the CHILD's own plan fingerprint where the child materialises one - the same
+        /// mechanism, composed. A child that does not (or a row deferred behind a
+        /// reference) contributes its status instead, so wired and unwired children are
+        /// distinguishable in what the token covers.
+        /// </summary>
+        private static Core.ResolvedPlan GraphPlan(UIApplication app, GateResult gate, JArray rows, JArray actions)
+        {
+            var plan = new Core.ResolvedPlan
+            {
+                Command = "horizun_execute_plan",
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = SafeVersion(app),
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            for (int i = 0; i < rows.Count; i++)
+            {
+                JObject row = rows[i] as JObject;
+                if (row == null) continue;
+                string childFp = null;
+                try { childFp = (string)row["data"]?["plan_resolved"]?["fingerprint"]; } catch { }
+                plan.Elements.Add(new Core.PlannedElement
+                {
+                    UniqueId = "action:" + (row.Value<int?>("index") ?? i),
+                    Category = row.Value<string>("tool"),
+                    Action = Core.PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "key", row.Value<string>("key") ?? "" },
+                        { "child", childFp ?? (row.Value<string>("status") == "deferred_until_execution"
+                                                  ? "deferred" : "no_child_plan") }
+                    }
+                });
+            }
+            return plan;
+        }
+
+        private static string SafeVersion(UIApplication app)
+        {
+            try { return app?.Application?.VersionNumber; } catch { return null; }
         }
 
         private static JObject ChildArguments(JObject source, GateResult gate, bool dryRun)

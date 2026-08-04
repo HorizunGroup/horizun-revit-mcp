@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // The shape every recipe-backed tool has, written once.
@@ -90,9 +90,31 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string planHash = DocumentGate.PlanHash(request, ScopeFields);
+
+            // ---- The materialised plan needs the recipe's own resolution, so on apply a
+            // read-only planning pass runs FIRST and the token is checked against what it
+            // found. Two facts bind, both deliberately coarse:
+            //
+            //   * WHICH ALGORITHM: the recipe file's SHA-256. It lives on disk and can
+            //     change between rehearsal and apply; the caller approved a specific
+            //     version of the transformation.
+            //   * THE APPROVED ARITHMETIC: the intended counts this command itself
+            //     verifies after commit. Those are the numbers the person read. The full
+            //     planned JSON is NOT hashed - a recipe is free to describe its plan in
+            //     prose, and prose that varies between two honest runs would refuse every
+            //     apply. Coarse and stable beats precise and self-refusing.
+            RecipeOutcome rehearsedNow = null;
             if (!dryRun)
             {
-                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+                try { rehearsedNow = Recipe.Run(doc, RecipeName, request, true, TransactionName); }
+                catch (Exception ex)
+                {
+                    return CommandResult.Fail(Name + ": the pre-apply planning pass failed, so what was approved " +
+                        "cannot be compared with what would run now. Nothing was committed: " +
+                        PythonEngine.FormatException(ex));
+                }
+                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                         RecipePlan(gate, app, rehearsedNow), null);
                 if (refused != null) return refused;
             }
 
@@ -142,7 +164,12 @@ namespace Horizun.Revit.Commands
                 result["note"] =
                     "DRY RUN: no transaction was opened and NOTHING was written. 'planned' is what would happen. " +
                     "Call again with dry_run=false and the confirmation_token to apply it.";
-                DocumentGate.StampConfirmation(result, gate, Name, planHash, true);
+                DocumentGate.RecordResolvedPlan(RecipePlan(gate, app, outcome));
+                DocumentGate.StampConfirmation(result, gate, Name, planHash, true,
+                    "the token binds the recipe BY CONTENT (its SHA-256) and the intended counts of this plan - a " +
+                    "recipe file that changed, or a model whose plan now touches different numbers of elements, " +
+                    "refuses as stale. It does not bind per-element identity: the recipe re-resolves its own " +
+                    "targets at apply, and says what it found.");
                 return CommandResult.Ok(result);
             }
 
@@ -178,6 +205,27 @@ namespace Horizun.Revit.Commands
         /// never reported that quantity, and reporting it as 0 would manufacture agreement
         /// with another 0. It comes back as -1 so Guard.Verify sees a mismatch and says so.
         /// </summary>
+        /// <summary>
+        /// The recipe's plan, coarse on purpose: algorithm identity plus the intended
+        /// counts the person approved - exactly the ones Verifications re-reads after
+        /// commit, so the approved numbers and the verified numbers are the same numbers.
+        /// </summary>
+        private Core.ResolvedPlan RecipePlan(Core.GateResult gate, UIApplication app, RecipeOutcome outcome)
+        {
+            string counts = "";
+            foreach (VerifiedCount check in Verifications)
+                counts += check.IntendedKey + "=" + ReadCount(outcome.Planned, check.IntendedKey) + ";";
+            string version; try { version = app?.Application?.VersionNumber; } catch { version = null; }
+            return new Core.ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = version,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ContextFingerprint = "recipe_sha=" + (outcome.RecipeSha256 ?? "<none>") + ";" + counts
+            };
+        }
+
         private static int ReadCount(JToken block, string key)
         {
             JToken value = block?[key];
