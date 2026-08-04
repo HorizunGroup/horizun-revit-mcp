@@ -134,17 +134,92 @@ code.** If 4.1 needs an `if (standard == …)` anywhere, 4.0 is not finished.
 4.4 keeps its independence and can still run first or in parallel — it needs no
 schema — but it is no longer the recommended entry point.
 
+## EPIC 5 — Trust, not surface *(from an external review, verified against the code)*
+
+The surface is wide enough. The next jump is turning technical guarantees into
+**verifiable** trust. An external review proposed ten items; each was checked
+against this tree before being written down, because a review accepted on faith is
+just a longer opinion. Status per item, and the three places the review is wrong
+or in conflict with a rule we already adopted, are recorded below the table.
+
+**Tool freeze:** no new typed commands until 5.1–5.4 land. Epic 1's three
+commands still cannot do their job; adding surface on top of that is how the
+review's whole diagnosis came about.
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 5.1 ⭐ | **Bind the confirmation token to the RESOLVED ELEMENT SET, not the request.** Materialised plan: UniqueIds, before-values, types/levels/hosts, geometry or bbox fingerprint, expected create/modify/delete counts, cascade effects, document fingerprint + Revit version. Re-fingerprint at apply; mismatch returns `stale_plan`. Ordered hash / Merkle for large sets | L | — |
+| 5.2 | Ledger → **operation receipts**: `operation_id`, tool, model + plan + request hashes, user, timings, affected UniqueIds, warnings, verification and transaction outcome. DPAPI at rest, configurable redaction, retention (7/30/90/manual) with a size cap and a purge tool, JSONL export, correlation ids across server/pipe/Revit | M | — |
+| 5.3 | **Derive `destructiveHint`/`openWorldHint` from the contract**, not from hardcoded tool-name lists in `Tools.cs`. A new tool currently gets wrong annotations unless someone remembers to edit two `if` chains — the same welded-in shape Epic 4 exists to remove | S | — |
+| 5.4 | **Human approval inside Revit** (`approval_mode: revit_ui`) for delete/save/export/family-replace/`execute_python`: non-modal panel naming document, tool, change summary, element count, external destinations, irreversible effects. Plus a ribbon-driven temporary unlock for `execute_python` (10–15 min, active document only, revoked on close/switch, optionally script-hash scoped) | L | 5.1 |
+| 5.5 | **Live certification matrix 2023–2027** published per release: JUnit/HTML report, exact Revit build, fixture hashes, tools covered and not, time and peak memory, sanitised warning log. Dimensions: year × language × units × model kind (non-shared/local/central/detached) × links × size × discipline × outcome (commit/rollback/refusal/crash recovery). Needs public synthetic fixtures | L | 5.1 |
+| 5.6 | **Chunked long operations** with cooperative cancellation, per-turn UI budget (100–250 ms), phase + percentage progress, safe checkpoints between batches, `submit_job` mapped to native MCP tasks. Benchmarks published as *longest continuous UI block*, not just total duration | L | 5.1 |
+| 5.7 | **Sign the installer and binaries**: OV/EV Authenticode over exe/dll/installer/packaged scripts, timestamping, GitHub build attestations, signed SBOM and manifest, verification during install. Certificate trust stays an IT decision (Intune/GPO) — never installed silently | M | 0.1 |
+| 5.8 | **Isolate the protocol behind a `ProtocolAdapter`** independent of the Revit domain: conformance tests against the official SDK and MCP Inspector, golden JSON-RPC request/response tests, explicit per-version negotiation, client compatibility matrix, schema deprecation policy. Add `execution.taskSupport`. Do this BEFORE adopting 2026-07-28, which is still RC | M | — |
+| 5.9 | **Public governance**: issue templates (bug / proposal / compatibility) that demand Revit version+build+language, Horizun version, MCP client, tool, document kind, expected vs observed, sanitised logs. Discussions, public roadmap and milestones, labels, review SLA, a second maintainer with release rights, ADRs | S | — |
+| 5.10 | **Release channels and the road to 1.0**: `stable` (signed + matrix approved), `preview`, `validation-only` (no new binaries). Publish SemVer policy, schema compatibility, deprecation window, config migration, back-version support, and an explicit definition of "production ready" | M | 5.5, 5.7 |
+
+### What the review got right, verified in this tree
+
+- **5.1 is genuinely the number-one item.** Confirmed: `ConfirmationStore.PlanHash`
+  hashes only the named *request fields* — the arguments — so a token binds the
+  question, never the answer. A filter that resolves to different elements after
+  the dry run is accepted today.
+- **5.2**: no retention, purge, encryption or redaction exists anywhere in the
+  idempotency store. Confirmed by search.
+- **5.8**: `execution.taskSupport` appears nowhere in the tree. Confirmed.
+- **5.5**: the numbers quoted (48 passed / 11 not covered / 1 unverified on 2026)
+  are this repository's own last live run, and they are exactly why a matrix is
+  needed rather than a single-machine result.
+
+### Where the review is wrong, or conflicts with a rule already adopted
+
+1. **Annotations are already published for every tool** — `Tools.cs` emits all
+   four hints. The review asks for something that exists. The real defect is
+   underneath and it missed it: `destructiveHint` and `openWorldHint` come from
+   hardcoded tool-name lists, so they rot silently. That is 5.3, and it is new.
+2. **Public issues are NOT restricted.** `has_issues=true`, zero open. What is
+   actually missing is templates and triage, which is why 5.9 is scoped to those
+   and dropped to S.
+3. **Chunking (5.6) collides head-on with the rollback rule from 0.6.0.** A Revit
+   transaction cannot span `ExternalEvent` invocations, so "process in chunks"
+   means separate transactions — and a failure then leaves earlier chunks
+   committed, which CONTRIBUTING now forbids. Chunking therefore cannot be a
+   global default: it has to be a **declared per-tool property** ("this batch is
+   safe to apply partially, and here is what a partial application means"), with
+   the receipt from 5.2 recording exactly which chunks committed. Any story that
+   chunks a command without declaring that is a regression, not an improvement.
+4. **`approval_mode: revit_ui` (5.4) would deadlock the unattended paths we just
+   built.** The `-WriteProbes` tier and the release gate run with nobody at the
+   keyboard by design; a panel waiting for a human hangs them. So it must be a
+   permission-profile-level opt-in with a documented exemption for the harness —
+   otherwise turning trust on turns verification off.
+5. **The release-channel confusion (5.10) is already handled in practice**: on
+   2026-08-04 `latest` was deliberately kept on v0.6.0 because v0.6.1 ships no
+   installer, precisely so a script following `latest` keeps working. What is
+   missing is the *written policy*, not the behaviour.
+
+### Evidence the matrix already has, for free
+
+Today's session produced two of 5.5's dimensions unprompted: family-template
+names are localized (a hardcoded English name finds nothing), and in a Spanish
+model `Level` is **ambiguous** on some elements — "2 parameters share it; use a
+BuiltInParameter token or GUID". Language is not a cosmetic axis.
+
 ---
 
 ## Suggested order
-`0.1 → 1.1–1.3 fixed → 3.1 → 4.0/4.1 → 3.2/3.3 → 3.4 → 2.x`
+`5.1 → 5.2/5.3 → 1.1–1.3 fixed → 0.1/5.7 → 5.5 → 4.0/4.1 → 5.4/5.6 → 3.1 → 5.8/5.9/5.10 → 2.x`
 
-Signing opens the market. Epic 1's three commands are written and reviewed but
-none can currently do its job, so fixing them comes before anything is built on
-top — a standards layer over write paths that do not verify would be judgement
-resting on measurement nobody checked. Provenance unlocks real time. Then the
-requirement-set schema, with all three standards loaded as documents. The platform
-jump waits until Epics 1 and 3 have validated the approach.
+Read the previous order as superseded from here down. 5.1 comes first because
+every other guarantee is written on top of "the thing you approved is the thing
+that ran", and that is the one link currently missing. Receipts and honest
+annotations are cheap and unblock auditing. Epic 1's commands still have to work.
+Signing opens the market; the matrix is what makes "verified against real Revit"
+a claim someone else can reproduce.
 
-Epic 4 is almost entirely read-only, so it can run in parallel with the Epic 1
-fixes; only 4.7 has to wait for them.
+A standards layer over write paths that do not verify would be judgement resting
+on measurement nobody checked, so Epic 1's commands are fixed before Epic 4 is
+built on them. Epic 4 is almost entirely read-only and can run in parallel; only
+4.7 has to wait. The platform jump (Epic 2) waits until Epics 1 and 3 have
+validated the approach.
