@@ -3,15 +3,56 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased
+## v0.6.0 — 2026-08-04
 
-- The MCP server now registers as `horizun-revit` instead of bare `horizun`, so
-  it still reads as what it is in a client's server list next to civil3d-mcp,
-  navisworks and every other bridge. Affects `install.ps1`, the installer's
-  final page, `register-client.ps1`/`verify-clients.ps1`'s default `-Name`,
-  and every install doc. An existing registration under the old name is not
-  renamed automatically — remove it and re-add, or pass `-Name horizun` to
-  keep it.
+Endurecimiento, no superficie: cero herramientas nuevas, y en cambio las
+garantías que una release debe poder demostrar sobre sí misma.
+
+- **El servidor MCP se registra como `horizun-revit`**, no `horizun` a secas, para
+  leerse como lo que es en la lista de servidores de un cliente junto a
+  civil3d-mcp, navisworks y el resto de puentes. Afecta a `install.ps1`, a la
+  página final del instalador, al `-Name` por defecto de
+  `register-client.ps1`/`verify-clients.ps1` y a toda la documentación de
+  instalación. Un registro existente con el nombre viejo no se renombra solo:
+  quítalo y vuelve a añadirlo, o pasa `-Name horizun` para conservarlo.
+
+- **Guard de solape tipado en `execute_python`.** Un script que hace exactamente
+  lo que un comando tipado y verificado ya hace es redirigido a ese comando, con
+  la razón: qué comprueba el comando que un script no puede comprobar sobre sí
+  mismo. El escape hatch sigue siendo el escape hatch; deja de ser un duplicado
+  silencioso de lo verificado.
+
+- **Activación de `execute_python` en un paso, hecha para una persona.**
+  `scripts/enable-execute-python.ps1` muestra qué estás aceptando, escribe
+  exactamente las dos claves (`permission_profile` + `enable_execute_python`),
+  conserva el resto de la configuración y se revierte con `-Disable`. Sigue
+  apagado de fábrica y ningún agente debe encenderlo por ti.
+
+- **`verify-live.ps1` gana un nivel de ESCRITURA (`-WriteProbes`).** El nivel por
+  defecto sigue sin tocar nada; el nuevo COMMITEA contra un modelo que el
+  archivo de fixtures declara desechable, relee el resultado del modelo y nunca
+  guarda. Existe porque tres comandos llegaron a review con toda su batería
+  unitaria en verde y ninguno podía hacer su trabajo: las refusals prueban los
+  guards, los dry runs prueban la aritmética, y solo un commit prueba el
+  comando. Con dos llaves independientes (el switch y el fixture), y sin ambas
+  cada probe sale NOT COVERED con su motivo.
+
+- **Regla nueva del contrato: una escritura tipada cuya verificación falla debe
+  REVERTIR.** Reportar el fallo con honestidad no basta: un comando que commitea
+  y luego dice que no pudo confirmar deja al llamador un modelo que desenredar a
+  mano. Está en CONTRIBUTING como regla dura y en el nivel de escritura como
+  probe que recorre cada respuesta y nombra a los infractores.
+
+- **La maquinaria de publicación vuelve al árbol.**
+  `publish/make-public-package.ps1` y `docs/sensitive-data.md` se perdieron al
+  reemplazar main el 2026-08-02 y sobrevivían solo en una rama; restaurados sin
+  cambios. El escaneo de nombres sensibles vuelve a estar limpio sobre los 181
+  archivos trackeados.
+
+- Backlog: Épica 4 — estándares como datos, no compilados. El estándar llega
+  como requirement set versionado; el puente mide y nunca juzga; cada hallazgo
+  nombra el comando tipado que lo arreglaría. ISO 19650, IFC/buildingSMART y
+  COBie entran como tres documentos contra un solo comando, desde el día uno.
 
 ## v0.5.0 — 2026-08-01
 
@@ -541,7 +582,10 @@ that each looked correct alone.
   and set of instructions disagree with the product's own name. `-Name` still
   takes anything, which is what it was always for.
 
-## Unreleased
+## v0.3.0 (previa) — 2026-07-31
+
+*(Esta sección quedó como «Unreleased» cuando se cortó la v0.3.0 y nunca se
+retituló: es el trabajo entre v0.2.0 y v0.3.0, y se publicó con la v0.3.0.)*
 
 ### Added — release and cutover tooling
 

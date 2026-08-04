@@ -36,7 +36,7 @@
     <!-- THE version. The compiler stamps it into the assembly and Core/Build.cs reads
          it back, so what a user reports and what they are running cannot drift. Bump
          it here and nowhere else. -->
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <DefineConstants>REVIT$(RevitYear)</DefineConstants>

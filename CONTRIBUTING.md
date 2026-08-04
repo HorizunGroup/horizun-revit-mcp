@@ -6,8 +6,11 @@ session.
 
 ## The single source of truth is GitHub, not any one PC
 
-`origin` = `https://github.com/pablo-horizun/horizun-revit-mcp-private.git`.
-Your clone has no special status; it is one copy of what is on GitHub.
+`origin` is the team's private GitHub repository — `git remote get-url origin`
+names it on your machine. Your clone has no special status; it is one copy of
+what is on GitHub. (The URL is deliberately not written here: this file is
+tracked, and the sensitive-data scan gates a release on tracked files carrying
+no account or repository names.)
 
 ## One branch per task, a PR into `main`, never a direct commit to `main`
 

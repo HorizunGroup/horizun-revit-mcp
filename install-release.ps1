@@ -5,7 +5,7 @@
 
   Usage:
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1
-    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version v0.5.0
+    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version v0.6.0
 #>
 [CmdletBinding()]
 param(

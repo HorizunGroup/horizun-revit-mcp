@@ -1,7 +1,69 @@
-# Horizun Revit MCP
+# Horizun Revit MCP — Model Context Protocol server for Autodesk Revit
 
-An MCP gateway for Autodesk Revit. **Free and open source, Apache-2.0.** Part of
-the [Horizun Hub](https://horizunhub.com) ecosystem.
+Open-source **Model Context Protocol (MCP) server for Autodesk Revit**. Horizun
+connects Codex, Claude, Cursor and other MCP clients to a running Revit session
+for typed BIM queries, verified model edits, family authoring, exports and Power
+BI workflows. **Free and open source, Apache-2.0.** Part of the [Horizun
+Hub](https://horizunhub.com) ecosystem.
+
+> **Official stable release: v0.6.0.** This is the public source repository for
+> Horizun Revit MCP. It contains the complete implementation, typed Revit
+> operations, tests, installation scripts, security model and benchmark evidence.
+
+## Why Horizun is built to lead the Revit MCP benchmark
+
+Horizun is measured by verified outcomes, not by a raw count of tool names:
+
+| Differentiator | What the public source proves |
+|---|---|
+| Native Revit coverage | Typed creation and editing for architecture, structure, MEP, views, sheets, schedules, families and system-family types. |
+| Family authoring | RFT → RFA compilation with parameters, formulas, types, reference planes, labeled dimensions, symbolic/model lines, nested point instances, solid/void forms and MEP connectors. |
+| Interoperability | Verified PDF, DWG, IFC, Navisworks NWC, multi-view FBX, image and schedule export, plus direct Power BI push ingestion. |
+| Reliability | Dry-run plans, single-use confirmations, durable idempotency, bounded queueing, one Revit API operation at a time and post-commit re-reads. |
+| Federated models | Host and loaded-link inventory, queries, quantities, clashes and schedules with source-model identity and explicit coverage. |
+| Honest failure modes | Unsupported or ambiguous inputs are refused with a reason; the bridge never reports success from a call that merely did not throw. |
+
+The benchmark is reproducible from [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
+Public CI passes **292 core tests + 162 server tests**, builds the MCP server with
+warnings treated as errors, audits NuGet dependencies and runs the repository-safe
+part of the sensitive-data scan. Revit-dependent CI jobs require a private
+self-hosted runner and are reported as skipped when it is unavailable. The
+benchmark marks every capability whose current public evidence is still pending
+a live Revit or Power BI fixture; a green hosted-CI check is never presented as
+proof that those live operations ran.
+
+The server metadata is also prepared for the [Official MCP Registry](https://registry.modelcontextprotocol.io/)
+under `io.github.HorizunGroup/horizun-revit-mcp`, and the repository publishes a
+machine-readable [llms.txt](llms.txt) discovery summary for AI systems and
+indexers.
+
+## Horizun Hub: the ecosystem around the MCP
+
+[Horizun Hub](https://horizunhub.com) is the product ecosystem from Horizun
+Group. Horizun Revit MCP is its open-source automation and Revit API layer; the
+Hub adds the training, apps, data products and expert workflows that turn the
+bridge into a complete BIM operating system:
+
+- **Apps:** PowerBIM Exporter for Revit, PowerBIM Online, PowerBIM Exporter for
+  Civil 3D, BuildMotion, CopyToExcel and Family Browser.
+- **Academia:** PowerBIM + IA training and the growing course library.
+- **Quantification and 4D/5D:** Revit + Navisworks examples, templates and
+  construction-planning workflows.
+- **Power BI and content:** dashboards, `.pbit` templates, visual assets and
+  data workflows.
+- **IA and automation:** agents, MCP workflows and scripts for standardising
+  families and auditing models.
+- **APS connection:** extraction of Autodesk Construction Cloud data into Power
+  BI workflows.
+- **Expert support:** two hours per month with a Horizun Group BIM expert,
+  delivered through Zoom or Teams.
+- **Learning media:** BIM Para Todos videos and tutorials covering Revit,
+  Power BI, Speckle, Civil 3D and AI.
+
+The MCP remains organisation-neutral: company standards, catalogues and audit
+rules are supplied by the Hub workflows or by the caller, rather than compiled
+into the bridge. See [`docs/HORIZUN-HUB.md`](docs/HORIZUN-HUB.md) for the full
+relationship between the open-source gateway and the Hub ecosystem.
 
 Point Claude — or any MCP client — at a running Revit and let it read and write
 the model, under one contract: **a command never reports work it did not
@@ -23,7 +85,38 @@ is what plugs into it.
 
 ## Install
 
-### Release installer — recommended
+### Install with an agent — recommended
+
+Paste one of these into the agent you already have open, in any folder:
+
+**Claude Code**
+
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+CLAUDE.md, and follow the install procedure there. When it finishes, register the
+MCP server with yourself using the exact path the installer printed, and tell me
+which version and commit ended up installed.
+```
+
+**Codex**
+
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+AGENTS.md, and follow the install procedure there. When it finishes, register the
+MCP server with yourself using the exact path the installer printed, and tell me
+which version and commit ended up installed.
+```
+
+Claude Code reads `CLAUDE.md` (which imports [AGENTS.md](AGENTS.md)); Codex reads
+[AGENTS.md](AGENTS.md) directly. Either way the agent checks the prerequisites,
+builds from this public source against each Revit version installed on the
+machine, installs the matching add-in binaries and MCP server, verifies their
+commit and SHA-256, and registers the resulting server path under the name
+`horizun-revit` — so it reads as what it is next to every other MCP server on
+your machine. Revit must be closed. No prebuilt executable is downloaded by this
+path.
+
+### Prebuilt release installer — optional
 
 Download `horizun-mcp-<version>-setup.exe` from the
 [latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
@@ -55,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File $p
 
 Pass `-Version v0.6.0` to pin the official release instead of following `latest`.
 
-### Build from source
+### Build from source manually
 
 This path builds everything from the repository, on your machine, against the
 Revit already installed. **Nothing prebuilt is downloaded and run.**
@@ -65,24 +158,6 @@ Revit already installed. **Nothing prebuilt is downloaded and run.**
 **10+** when building for Revit 2027), and **Revit closed** — the
 installer refuses to run while Revit holds the add-in files, and changes nothing
 when it refuses.
-
-#### Let an agent do it
-
-Paste this into **Claude Code** or **Codex**, in any folder:
-
-```
-Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-AGENTS.md, and follow the install procedure there. When it finishes, register the
-MCP server with yourself using the exact path the installer printed, and tell me
-which version and commit ended up installed.
-```
-
-Both agents pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
-repository (Claude Code also reads `CLAUDE.md`, which imports it). It has the
-prerequisites, the failure modes, and the two surprises worth knowing before the
-first Revit start.
-
-#### Or run it yourself
 
 ```powershell
 git clone https://github.com/HorizunGroup/horizun-revit-mcp
@@ -347,7 +422,15 @@ whatever launched it. The optional `horizun_power_bi_push` tool makes bounded
 outbound HTTPS calls only to fixed Microsoft Entra and `api.powerbi.com`
 endpoints; it accepts no URL or credential in tool arguments. The full threat model — what is defended, and what
 deliberately is not — is in [docs/security-model.md](docs/security-model.md),
-and it is written to be argued with.
+and it is written to be argued with. Report vulnerabilities privately through
+the process in [SECURITY.md](SECURITY.md); do not place client/model data or
+credentials in a public issue.
+
+## Contributing
+
+Focused fixes, tests and documentation improvements are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request; public
+contributions must remain organisation-neutral and contain no project data.
 
 ## License
 

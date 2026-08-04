@@ -28,6 +28,12 @@
   NOT COVERED by name - which is the same treatment every other missing guarantee
   gets here, and the reason this gap was visible at all.
 
+  A -WriteProbes RUN IS ITS OWN RUN. The write tier needs WriteDocument ACTIVE,
+  and every -Document-targeted probe then refuses against the front document -
+  so either point -Document at the disposable model for that run, or accept the
+  main tier reporting refusals. The two tiers green in ONE run needs one model
+  to be both the fixture document and the disposable one.
+
   THE WRITE TIER IS NOT REPEATABLE AGAINST THE SAME OPEN DOCUMENT. Its first run
   consumes what it needs: once heads are placed on every free stub, a second run
   correctly reports that no position matches, which reads like a regression and is
@@ -65,6 +71,7 @@
     1  at least one probe FAILED
     2  at least one probe was UNVERIFIED - its check could not run
     3  something was NOT COVERED - a guarantee this run did not even attempt
+       (exit 3 only under -ReleaseGate; a developer run prints the list and exits 0)
 
   Three is not a lesser two. A guarantee missing from the output reads exactly
   like one that passed, which is why it has its own code rather than a warning.
@@ -359,14 +366,18 @@ $probes = @(
                  -not [string]::IsNullOrWhiteSpace($d.transaction_policy) }
        # When it is switched off the reply is an error, and this is the one probe
        # where that is a correct outcome rather than an unmeasured one.
-       ErrorIsAlsoPass = 'DISABLED' },
+       # Two wordings, one condition: the add-in says 'DISABLED', but the SERVER
+       # gate fires first and says 'requires BOTH permission_profile...' - the
+       # add-in sentence is unreachable when the server refuses to forward. Both
+       # are the switched-off machine answering correctly.
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
 
     # THE COMMAND THAT USED TO BE OUTSIDE THE POLICY. It could do everything the
     # typed writes can, plus everything they cannot, aimed at whatever window was
     # in front.
     @{ Name = 'execute_python REFUSES without target_document'
        Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 1"; idempotency_key = "live-python-no-target-$probeRun" }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|requires BOTH" },
 
     # The reply carrying the job_id is the message that gets lost. Without a key,
     # a client retrying a timeout queues the script a second time.
@@ -375,7 +386,7 @@ $probes = @(
        Args = @{ code = "__output__ = 1"; run_async = $true; target_document = $Document }
        Needs = 'Document'
        NotCovered = 'run_async demanding an idempotency_key (needs -Document)'
-       ExpectError = 'idempotency_key is REQUIRED' },
+       ExpectError = 'idempotency_key is REQUIRED|requires BOTH' },
 
     # The universal dispatcher now persists synchronous results too. The old
     # command-local refusal made this path impossible once every mutation began
@@ -386,7 +397,8 @@ $probes = @(
        Needs = 'Document'
        NotCovered = 'the synchronous path using durable idempotency (needs -Document)'
        Check = { param($d) $d.executed -eq $true -and $d.output -eq 1 -and
-                            $d.idempotency.status -eq 'executed_once' } },
+                            $d.idempotency.status -eq 'executed_once' }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
 
     # Was Check = { $true } with AllowError: it asserted nothing and passed on an
     # error too. What it has to prove is that it describes the SAME Revit this
@@ -1053,7 +1065,22 @@ function Invoke-Write($tool, $arguments) {
                 params=@{ name=$tool; arguments=$arguments } }
     $m = Read-Rpc
     if (-not $m) { return @{ replied = $false; isError = $true; text = 'no reply'; data = $null } }
-    $text = $m.result.content[0].text
+
+    # A JSON-RPC error reply carries no result at all, so reaching into
+    # result.content[0] throws "Cannot index into a null array" and takes the whole
+    # harness down with it - one unadvertised tool ending a run that had already
+    # proven a dozen things. An error reply IS an answer; report it as one.
+    if ($null -eq $m.result) {
+        $why = 'the server returned no result'
+        if ($m.error) { $why = 'JSON-RPC error: ' + $m.error.message }
+        return @{ replied = $true; isError = $true; text = $why; data = $null }
+    }
+    $content = @($m.result.content)
+    if ($content.Count -eq 0 -or $null -eq $content[0]) {
+        return @{ replied = $true; isError = [bool]$m.result.isError
+                  text = 'the reply carried no content'; data = $null }
+    }
+    $text = $content[0].text
     $data = $null
     if ($text) {
         try { $data = $text | ConvertFrom-Json }
@@ -1216,12 +1243,26 @@ else {
         $pipeA = $null
         if ($a.data -and @($a.data.rows).Count -gt 0) { $pipeA = @($a.data.rows)[0].element_id }
 
+
+    # A tool absent from tools/list is a guarantee this build cannot attempt -
+    # NOT COVERED by its own taxonomy, not an UNVERIFIED that reads like a broken
+    # transport. On this repo's main, connect_mep and terminate_riser live in
+    # open PRs, so the tier must say "not published by this build" rather than
+    # dying on (or mislabelling) an Unknown-tool refusal.
+    function Test-ToolPublished([string]$n) {
+        return [bool]($listed | Where-Object { $_.name -eq $n })
+    }
+
         # ---- W2: connect_mep, fitting none. A second pipe meeting the first end on.
         $mk2 = New-ProbePipe ($wx+3000) $wy 0 ($wx+6000) $wy 0 $pipeType 'mk2'
         $pipeB = $null
         if ($mk2.answer.data -and @($mk2.answer.data.rows).Count -gt 0) { $pipeB = @($mk2.answer.data.rows)[0].element_id }
 
-        if (-not $pipeA -or -not $pipeB) {
+        if (-not (Test-ToolPublished 'horizun_connect_mep')) {
+            Add-Write $writeNames[1].N $writeNames[1].T 'not_covered' 'horizun_connect_mep is not published by this build'
+            Add-Write $writeNames[2].N $writeNames[2].T 'not_covered' 'horizun_connect_mep is not published by this build'
+        }
+        elseif (-not $pipeA -or -not $pipeB) {
             Add-Write $writeNames[1].N $writeNames[1].T 'unverified' 'the two probe pipes could not be created'
         }
         else {
@@ -1250,13 +1291,16 @@ else {
         # ---- fitting rebuilds the pipes' connectors, and that is exactly where a
         # ---- post-commit re-read that resolves connectors by their pre-commit
         # ---- index stops telling the truth.
+        if (-not (Test-ToolPublished 'horizun_connect_mep')) { $mk3 = $null } else {
         $mk3 = New-ProbePipe ($wx+10000) $wy 0 ($wx+13000) $wy 0 $pipeType 'mk3'
         $mk4 = New-ProbePipe ($wx+13000) $wy 0 ($wx+13000) ($wy+3000) 0 $pipeType 'mk4'
+        }
         $pipeC = $null; $pipeD = $null
-        if ($mk3.answer.data -and @($mk3.answer.data.rows).Count -gt 0) { $pipeC = @($mk3.answer.data.rows)[0].element_id }
-        if ($mk4.answer.data -and @($mk4.answer.data.rows).Count -gt 0) { $pipeD = @($mk4.answer.data.rows)[0].element_id }
+        if ($mk3 -and $mk3.answer.data -and @($mk3.answer.data.rows).Count -gt 0) { $pipeC = @($mk3.answer.data.rows)[0].element_id }
+        if ($mk3 -and $mk4.answer.data -and @($mk4.answer.data.rows).Count -gt 0) { $pipeD = @($mk4.answer.data.rows)[0].element_id }
 
-        if (-not $pipeC -or -not $pipeD) {
+        if (-not (Test-ToolPublished 'horizun_connect_mep')) { }   # already reported above
+        elseif (-not $pipeC -or -not $pipeD) {
             Add-Write $writeNames[2].N $writeNames[2].T 'unverified' 'the perpendicular probe pair could not be created'
         }
         else {
@@ -1283,7 +1327,10 @@ else {
 
         # ---- W4: terminate_riser. A fresh vertical pipe, so its top is free - a
         # ---- riser already inside a network is correctly refused and proves nothing.
-        if (-not $capType -or -not $unionType -or -not $teeType -or -not $elbowType -or -not $valveType) {
+        if (-not (Test-ToolPublished 'horizun_terminate_riser')) {
+            Add-Write $writeNames[3].N $writeNames[3].T 'not_covered' 'horizun_terminate_riser is not published by this build'
+        }
+        elseif (-not $capType -or -not $unionType -or -not $teeType -or -not $elbowType -or -not $valveType) {
             Add-Write $writeNames[3].N $writeNames[3].T 'not_covered' (
                 ("'{0}' does not have all five termination families loaded (cap, union/coupling, tee, elbow, " -f $wDoc) +
                 'valve). Nothing is substituted for a missing piece, so the probe cannot be staged.')
@@ -1321,7 +1368,10 @@ else {
 
         # ---- W5: place_sprinklers. The whole point of this command is that a head
         # ---- is SEATED, not merely present and reporting connected.
-        if (-not $sprinkler) {
+        if (-not (Test-ToolPublished 'horizun_place_sprinklers')) {
+            Add-Write $writeNames[4].N $writeNames[4].T 'not_covered' 'horizun_place_sprinklers is not published by this build'
+        }
+        elseif (-not $sprinkler) {
             Add-Write $writeNames[4].N $writeNames[4].T 'not_covered' (
                 ("'{0}' has no Sprinklers family symbol loaded, so no head can be placed in it." -f $wDoc))
         }
@@ -1366,11 +1416,18 @@ else {
             $offenders += ("{0}: fully_verified=false yet transaction_status=Committed" -f $ans.Name)
         }
     }
-    if ($writeAnswers.Count -eq 0) {
-        Add-Write $writeNames[5].N $writeNames[5].T 'unverified' 'no write answer carried a verification verdict'
+    # Counting ANSWERS here let the probe pass vacuously: create_elements reports
+    # created_verified rather than fully_verified, so a run where only W1 succeeded
+    # held one answer, zero verdicts - and "no offenders among zero verdicts" was
+    # printed as the rule holding. Count the VERDICTS the rule is actually about.
+    $verdicts = @($writeAnswers | Where-Object { $_.Data -and $null -ne $_.Data.fully_verified })
+    if ($verdicts.Count -eq 0) {
+        Add-Write $writeNames[5].N $writeNames[5].T 'unverified' (
+            'no write answer carried a fully_verified verdict, so the rollback rule was never exercised')
     }
     elseif ($offenders.Count -eq 0) {
-        Add-Write $writeNames[5].N $writeNames[5].T 'pass' 'every unconfirmed write rolled back'
+        Add-Write $writeNames[5].N $writeNames[5].T 'pass' (
+            "every unconfirmed write rolled back ({0} verdict(s) examined)" -f $verdicts.Count)
     }
     else {
         Add-Write $writeNames[5].N $writeNames[5].T 'fail' ($offenders -join '; ')
@@ -1489,8 +1546,19 @@ foreach ($p in $probes) {
     $m = $byId[[int]$p.Id]
     if (-not $m) { Note-Unverified $p.Name "no reply came back for this request id" $p.Tool; continue }
 
-    $text = $m.result.content[0].text
-    $isError = [bool]$m.result.isError
+    # The same hardening the write tier needed: a JSON-RPC error reply carries no
+    # result, and indexing into it killed the entire run - counters, JSON, exit
+    # code and all - on the first unknown tool. An error reply IS an answer.
+    $text = $null; $isError = $true
+    if ($null -eq $m.result) {
+        if ($m.error) { $text = 'JSON-RPC error: ' + $m.error.message }
+        else { $text = 'the server returned no result' }
+    }
+    else {
+        $replyContent = @($m.result.content)
+        if ($replyContent.Count -gt 0 -and $null -ne $replyContent[0]) { $text = $replyContent[0].text }
+        $isError = [bool]$m.result.isError
+    }
 
     if ($p.ExpectError) {
         if ($p.AllowMissingTool -and $m.error) {
@@ -1667,7 +1735,9 @@ $report = [pscustomobject]@{
         OldFile          = -not [string]::IsNullOrWhiteSpace($OldFile)
         FamilyTemplate   = -not [string]::IsNullOrWhiteSpace($FamilyTemplate)
         WriteDocument    = -not [string]::IsNullOrWhiteSpace($WriteDocument)
+        WriteDocumentDisposable = -not [string]::IsNullOrWhiteSpace($WriteDocumentDisposable)
         VoidFamilyDocument = -not [string]::IsNullOrWhiteSpace($VoidFamilyDocument)
+        ClosedWorksetDocument = -not [string]::IsNullOrWhiteSpace($ClosedWorksetDocument)
     }
     write_tier        = @{
         requested  = [bool]$WriteProbes

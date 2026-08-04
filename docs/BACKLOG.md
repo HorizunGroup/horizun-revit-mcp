@@ -71,8 +71,8 @@ blocked. For rich DAX models, keep a fresh mirror that PBI DirectQuery's (3.5).
 The diagnosis already exists. `horizun_model_scan` and `horizun_audit_model`
 measure, and the pre-delivery and model-diagnosis skills score and propose. What
 does not exist is a way to say **which standard** they are measuring against: the
-rules are welded in — Horizun's naming, Prodesa's catalogue, PRODESA CLASS — so a
-new client means rewriting a skill.
+rules are welded in — Horizun's naming conventions, one client's catalogue, one
+client's classification system — so a new client means rewriting a skill.
 
 So this epic does not add ISO 19650 to the bridge. It turns a standard into an
 **argument**, which is what AGENTS.md already says every command needing one must
@@ -100,7 +100,7 @@ probes, which landed with #9.
 |----|-------|------|-----|
 | 4.0 ⭐ | `docs/requirement-set.md` — the artifact schema, general enough that ISO 19650, IFC/buildingSMART and COBie are three **documents** rather than three code paths | M | — |
 | 4.1 ⭐ | `horizun_check_requirements`: takes a requirement set, returns per-element measured conformance, never a verdict it did not measure, each finding naming the typed command that would fix it | L | 4.0 |
-| 4.2 | Classification coverage against a supplied table: missing codes, and codes that are not a last-level leaf. Generalises the Prodesa Class audit to OmniClass / Uniclass / IFC class with no code change | M | 4.1 |
+| 4.2 | Classification coverage against a supplied table: missing codes, and codes that are not a last-level leaf. Generalises the existing client-classification audit to OmniClass / Uniclass / IFC class with no code change | M | 4.1 |
 | 4.3 | LOIN / property-set conformance per category and stage: which required properties are absent, per element, with unreadable kept separate from missing | M | 4.1 |
 | 4.4 | IFC mapping completeness BEFORE export: which categories will land as `IfcBuildingElementProxy` and which have no mapping at all — whether the IFC will be usable, which is what buildingSMART conformance actually turns on | M | — |
 | 4.5 | Naming grammar as a supplied pattern (ISO 19650-2 field structure), replacing the naming rules hard-coded in the pre-delivery skill | M | 4.1 |
