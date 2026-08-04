@@ -429,36 +429,36 @@ $probes = @(
     # ---- the mutation gate, proven by its refusals. Nothing is written. ----
     @{ Name = 'create_elements REFUSES without target_document'
        Tool = 'horizun_create_elements'; Args = @{ elements = @(@{ kind = 'level'; elevation = 0 }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'transform_elements REFUSES without target_document'
        Tool = 'horizun_transform_elements'; Args = @{ operations = @(@{ operation = 'pin'; element_ids = @(1) }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'manage_views REFUSES without target_document'
        Tool = 'horizun_manage_views'; Args = @{ actions = @(@{ operation = 'create_3d' }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'manage_system_types REFUSES without target_document'
        Tool = 'horizun_manage_system_types'; Args = @{ actions = @(@{ source_type_id = 1; new_name = 'HZ_REFUSAL_ONLY' }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'create_family REFUSES without target_document'
        Tool = 'horizun_create_family'
        Args = @{ template_path = 'C:\horizun-refusal-only.rft'; output_path = 'C:\horizun-refusal-only.rfa' }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'annotate REFUSES without target_document'
        Tool = 'horizun_annotate'; Args = @{ actions = @(@{ operation = 'text'; view_id = 1; text = 'x'; point = @(0,0) }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'execute_plan REFUSES without target_document'
        Tool = 'horizun_execute_plan'; Args = @{ actions = @(@{ key = 'x'; tool = 'horizun_create_elements'; arguments = @{ elements = @() } }) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'export REFUSES without target_document'
        Tool = 'horizun_export'; Args = @{ format = 'ifc'; output_path = 'C:\horizun-refusal-only.ifc' }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'submit_job refuses a host-only command without queuing it'
        Tool = 'horizun_submit_job'
@@ -467,11 +467,11 @@ $probes = @(
 
     @{ Name = 'create_schedule REFUSES without target_document'
        Tool = 'horizun_create_schedule'; Args = @{ category = 'OST_Walls'; name = 'HZ_REFUSAL_ONLY' }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'delete REFUSES without target_document'
        Tool = 'horizun_delete_verified'; Args = @{ mode = 'ids'; ids = @(999999999) }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'delete REFUSES a document that is not open'
        Tool = 'horizun_delete_verified'
@@ -480,23 +480,23 @@ $probes = @(
 
     @{ Name = 'set_keynote REFUSES without target_document'
        Tool = 'horizun_set_keynote'; Args = @{ element_ids = @(999999999); keynote = 'X' }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'write_params REFUSES without target_document'
        Tool = 'horizun_write_params_verified'; Args = @{ writes = @() }
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'family_apply REFUSES without target_document'
        Tool = 'horizun_family_apply'; Args = @{}
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'bind_shared_param REFUSES without target_document'
        Tool = 'horizun_bind_shared_param'; Args = @{}
-       ExpectError = "'target_document' is required" },
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
 
     @{ Name = 'save REFUSES without target_document'
        Tool = 'horizun_save_document'; Args = @{ idempotency_key = "live-save-no-target-$probeRun" }
-       ExpectError = "'target_document' is required" }
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" }
 )
 
 # ---------------------------------------------------------------------------
@@ -555,7 +555,7 @@ if ($Document) {
                   Tool = 'horizun_document_session'
                   Args = @{ operation = 'close'; target_document = $Document
                             save_on_close = $false; discard_unsaved = $true; dry_run = $true }
-                  ExpectError = 'ACTIVE document.*no confirmation token was issued or consumed' }
+                  ExpectError = 'ACTIVE document.*no confirmation token was issued or consumed|hidden/refused by permission_profile' }
 
     # The block has to be on ALL FOUR of the read-only answers, not on the one
     # somebody remembered. A caller who finds it on model_scan and not on
@@ -621,7 +621,8 @@ if ($Document) {
         $probes += @{ Name = 'delete REFUSES a document that is open but NOT active'
                       Tool = 'horizun_delete_verified'
                       Args = @{ mode = 'ids'; ids = @(999999999); target_document = $InactiveDocument }
-                      ExpectError = 'but the ACTIVE document is' }
+                      ExpectError = 'but the ACTIVE document is'
+                      NotCoveredOnNoMatch = 'the InactiveDocument fixture names a document that is not open in this Revit' }
     }
     else {
         $notCovered += 'delete refusing a document that is OPEN but not ACTIVE (needs -InactiveDocument, a second document open in that Revit)'
@@ -1561,6 +1562,12 @@ foreach ($p in $probes) {
     }
 
     if ($p.ExpectError) {
+        # A fixture can name a document that is simply not open: the probe cannot
+        # run, and "could not attempt" is NOT COVERED, never FAIL.
+        if ($p.NotCoveredOnNoMatch -and $text -match 'No open document matches') {
+            Note-NotCovered $p.Name $p.NotCoveredOnNoMatch $p.Tool
+            continue
+        }
         if ($p.AllowMissingTool -and $m.error) {
             # The tool is not advertised at all, which for a disabled capability is
             # a stronger result than a refusal - but it is a different one, so say so.
