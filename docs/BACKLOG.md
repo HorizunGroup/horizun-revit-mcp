@@ -147,6 +147,32 @@ of drawing something else or claiming success. That is the product working — a
 refusal is the honest answer to a missing capability. The gap is real; the behaviour
 around it was right.
 
+### The second field report (2026-08-04, evening) — a full session over a 2,616-wall tower
+
+The most valuable review yet, because every number in it was measured against real
+use. What worked is recorded in its own words — the `federated_coverage` block turned
+a would-be wrong answer (2,616 walls reported as the whole tower) into a right one by
+naming `NOT ESTR.rvt` as **NotFound, not Unloaded**, a 2,350-element error that never
+happened. The gaps, as stories:
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 1.8 | **Server-side aggregation** — `group_by: ["type","level"]` with `count` and `sum(param)` on `query_model`/`list_elements`. Measured need: every query in the session ended in group-and-count, none possible server-side; the workaround was query → token overflow → dump to disk → `ConvertFrom-Json` → `Group-Object`, **three times**. A histogram request should be one call, not five paginated calls plus a script. The single biggest missing piece for an agent caller. Parameter on existing tools — not a new tool, no freeze conflict | L | none |
+| 1.9 | **Row payload diet** — measured ~741 chars/row to read three numbers per wall (500 walls = 370,299 chars). Three fixes, smallest first: `parameter_format:"compact"` (`"CURVE_ELEM_LENGTH": 19.357` instead of the 5-field object); a projection parameter to omit identity/federation fields when not wanted; columnar output (header + arrays), which alone cuts ~60% | M | none |
+| 1.10 ✅ | **DELIVERED 2026-08-04 (needs live verification)** — `LevelName` now reads the level wherever the category keeps it: `WALL_BASE_CONSTRAINT`, `FAMILY_BASE_LEVEL_PARAM`, `RBS_START_LEVEL_PARAM`, then the plain params. Same read feeds the `level:` filter, so both the false summary and the useless filter close together; the filter's contract description now says what it matches. Was: **`by_level` states a falsehood for walls** — reports `"(no level)": 2616` with the shape of a fact, when walls carry their level in `WALL_BASE_CONSTRAINT`. For a tool whose contract is *never report what you did not verify*, this is the worst clash in the report: "these elements have no level" is FALSE. Either resolve the base constraint for walls or answer `not_applicable_for_category` — never a false zero. Same fix documents the `level:` filter's wall behaviour in the parameter description (today it takes insider knowledge: a `parameters` predicate on `WALL_BASE_CONSTRAINT` with the exact level name) | M | none |
+| 1.11 ✅ | **DELIVERED 2026-08-04 (needs live verification)** — `bridge_queue` now carries `waited_on`: with nothing ahead in the FIFO, none of the wait was queue — it was Revit not yet idle (warm-up or a modal dialog), and the field says so. Was: **`waited_ms` mislabels warm-up as queueing** — first `horizun_health` measured `waited_ms: 25014` with `queued: false`, `ahead_at_admission: 0`: 25 s waiting in a queue it says it never joined. Subsequent calls 60–900 ms. Name add-in warm-up as its own field instead of counting it as queue wait — a measurement labelled with the wrong cause is the house failure mode | S | none |
+| 1.12 ✅ | **DELIVERED 2026-08-04 (needs live verification)** — `is_revision_schedule` per row, `include_revision_schedules` filter (default true: nobody's count changes under them), and `revision_schedules_in_document` reported even when excluded — ESPECIALLY when excluded. Was: **`list_schedules` noise** — 28 of 49 rows were `<Revision Schedule>`. Add `is_revision` per row and an `include_revision_schedules` filter (default true, so behaviour does not change under anyone) | S | none |
+
+Fixed same day, from the same report: the v0.6.1 tag / `<Version>` 0.6.0 drift (now a
+CI rule: the two projects version together, and a tagged build agrees with its tag),
+and the overstated .NET 4.8 targeting-pack prerequisite in `AGENTS.md` (measured: NuGet
+restore suffices; 2024 compiled clean on a machine without the pack).
+
+**What the report asked us not to touch:** the tool descriptions that explain WHY —
+"the expensive failure is not a dead bridge, it is a healthy one connected to the
+wrong instance" made the reporter call `horizun_target` before making that exact
+mistake with two Revits open. The style is load-bearing; keep writing them that way.
+
 **A pattern, after three of these in one day.** Real use found three gaps the backlog
 had not predicted: no way to open a document (1.6), no drafting geometry (1.7), and a
 rename step that identifies types by name (5.11, from the same session). Gaps found

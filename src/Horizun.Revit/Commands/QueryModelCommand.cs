@@ -556,7 +556,19 @@ namespace Horizun.Revit.Commands
 
         private static string LevelName(Document doc, Element element)
         {
+            // The order is: where the category ACTUALLY keeps its level, most specific
+            // first. Walls carry theirs in WALL_BASE_CONSTRAINT and expose no LEVEL_PARAM
+            // at all - measured in the field 2026-08-04, where by_level answered
+            // '"(no level)": 2616' over a tower of walls: a falsehood with the shape of a
+            // fact, in the summary of a tool whose contract is to never report what it
+            // did not verify. The same read feeds the `level:` filter, which therefore
+            // also did not work for walls without insider knowledge of the constraint
+            // parameter. Base/start constraints are used, not tops: "the level of a wall"
+            // means where it stands, which is also what Revit's own schedules mean by it.
             Parameter p = element.get_Parameter(BuiltInParameter.LEVEL_PARAM) ??
+                          element.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT) ??
+                          element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM) ??
+                          element.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM) ??
                           element.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM) ??
                           element.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
             if (p == null) return null;

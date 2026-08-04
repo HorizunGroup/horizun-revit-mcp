@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — bounded, read-only inspection of native schedules.
 // -----------------------------------------------------------------------------
 using System;
@@ -16,6 +16,17 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_list_schedules";
         public string Description => "List native schedules with their real fields, linked-file setting, itemization and body dimensions. Read-only.";
 
+        /// <summary>
+        /// The API marks these with IsTitleblockRevisionSchedule; guarded because the
+        /// property can throw on odd view states, and a listing must never fail while
+        /// MEASURING what it lists. Unreadable counts as not-revision: the row stays
+        /// visible rather than silently vanishing behind the filter.
+        /// </summary>
+        private static bool IsRevisionSchedule(ViewSchedule s)
+        {
+            try { return s.IsTitleblockRevisionSchedule; } catch { return false; }
+        }
+
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
@@ -25,8 +36,17 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No active Revit document.");
             int maxRows = Math.Max(1, Math.Min(1000, request.Value<int?>("max_rows") ?? 200));
 
+            // Revision schedules are one per titleblock family and they bury the real
+            // list: measured in the field, 28 of 49 rows in one project were
+            // <Revision Schedule>. Excludable, and LABELLED either way - the default
+            // stays "include" so no existing caller's count changes under them.
+            bool includeRevision = request["include_revision_schedules"] == null ||
+                                   request.Value<bool>("include_revision_schedules");
+
             var schedules = new FilteredElementCollector(doc).OfClass(typeof(ViewSchedule)).Cast<ViewSchedule>()
                 .Where(s => !s.IsTemplate).OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            int revisionCount = schedules.Count(IsRevisionSchedule);
+            if (!includeRevision) schedules = schedules.Where(s => !IsRevisionSchedule(s)).ToList();
             var rows = new JArray();
             foreach (ViewSchedule schedule in schedules.Take(maxRows))
             {
@@ -35,6 +55,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["schedule_id"] = Rid.Value(schedule.Id),
                     ["name"] = schedule.Name,
+                    ["is_revision_schedule"] = IsRevisionSchedule(schedule),
                     ["include_links"] = schedule.Definition.IncludeLinkedFiles,
                     ["itemized"] = schedule.Definition.IsItemized,
                     ["fields"] = new JArray(schedule.Definition.GetFieldOrder().Select(id =>
@@ -48,6 +69,11 @@ namespace Horizun.Revit.Commands
                 ["total"] = schedules.Count,
                 ["returned"] = rows.Count,
                 ["truncated"] = rows.Count < schedules.Count,
+                // Reported even when excluded - ESPECIALLY when excluded. A count that
+                // silently shrank because of a filter is how "how many schedules does
+                // this model have" gets answered wrong.
+                ["revision_schedules_in_document"] = revisionCount,
+                ["revision_schedules_included"] = includeRevision,
                 ["host_visibility_coverage"] = DocumentVisibility.Measure(doc).ToJson(),
                 ["linked_models_coverage"] = FederatedVisibility.Measure(doc, true),
                 ["rows"] = rows

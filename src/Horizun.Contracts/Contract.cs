@@ -527,7 +527,7 @@ namespace Horizun.Contracts
     ""family"": { ""type"": ""string"", ""description"": ""Case-insensitive substring."" },
     ""type"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the type name."" },
     ""name"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the element name."" },
-    ""level"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the level name."" },
+    ""level"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the level name. Matches the level the element is ASSOCIATED with, wherever its category keeps it - walls' base constraint, family instances' base level, MEP curves' reference level - not only the plain Level parameter, so it works for walls without knowing about WALL_BASE_CONSTRAINT."" },
     ""parameters"": { ""type"": ""array"", ""description"": ""All predicates must match. Names may be BuiltInParameter tokens, shared-parameter GUIDs or display names; an ambiguous display name is unreadable, never guessed."", ""items"": {
       ""type"": ""object"", ""required"": [""name"", ""operator""], ""properties"": {
         ""name"": { ""type"": ""string"" },
@@ -586,11 +586,12 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_list_schedules",
                 Command = "horizun_list_schedules",
-                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only.",
+                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only. Titleblock revision schedules (one per titleblock family - they can be over half the list) are labelled per row and excludable; the document's revision-schedule count is reported either way.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 }
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 },
+    ""include_revision_schedules"": { ""type"": ""boolean"", ""default"": true, ""description"": ""false hides titleblock revision schedules from rows; revision_schedules_in_document still reports how many exist, so the count never silently shrinks."" }
   },
   ""additionalProperties"": false
 }")

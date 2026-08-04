@@ -197,6 +197,19 @@ namespace Horizun.Revit.Core
                     ["queued"] = req.AheadAtAdmission > 0,
                     ["ahead_at_admission"] = req.AheadAtAdmission,
                     ["waited_ms"] = waitedMs,
+                    // WHAT the wait was. waited_ms is queued-to-started, and that interval
+                    // has two different causes that used to share one number: requests
+                    // ahead in the FIFO, and Revit itself not servicing the ExternalEvent.
+                    // Measured in the field (2026-08-04): a first call after add-in load
+                    // reported waited_ms 25014 with queued=false and ahead_at_admission 0
+                    // - 25 seconds attributed to a queue it was never in. Revit only runs
+                    // external events when idle, and just after start it is not: that is
+                    // warm-up, and with a modal dialog open it is the dialog. The bridge
+                    // cannot tell those two apart from here, so the field names the
+                    // boundary it CAN see: with nothing ahead, none of the wait was queue.
+                    ["waited_on"] = req.AheadAtAdmission > 0
+                        ? "queue_then_revit_ui_thread"
+                        : "revit_ui_thread_only (nothing was ahead; a long wait here is Revit not yet idle - add-in warm-up just after start, or a modal dialog)",
                     ["capacity"] = _gate.Capacity,
                     ["execution_and_wait_ms"] = clock.ElapsedMilliseconds
                 };
