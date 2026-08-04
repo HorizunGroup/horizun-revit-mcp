@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — create a native Revit schedule, including linked models.
 // -----------------------------------------------------------------------------
 using System;
@@ -58,11 +58,34 @@ namespace Horizun.Revit.Commands
                 requestedFields.AddRange(new[] { "Count", "Family", "Type" });
 
             string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized");
-            if (!dryRun)
+
+            // ---- The MATERIALISED plan. One creation, but two ambient facts decide what
+            // it produces, and neither is in the request: WHICH category the name resolved
+            // to (a localized display name is a lookup, not an identity), and the
+            // name-collision check - "no schedule called this exists" is a fact about the
+            // model NOW, and if somebody creates one in between, the polite refusal above
+            // must win over a race. The elevation of the whole check into the plan means
+            // the apply re-runs both resolutions and refuses on drift.
+            var resolvedPlan = new ResolvedPlan
             {
-                CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
-                if (refusal != null) return refusal;
-            }
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            resolvedPlan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "schedule:" + scheduleName,
+                Category = SafePlanCatName(category),
+                Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                {
+                    { "category_id", Rid.Value(category.Id).ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "fields", string.Join(",", requestedFields) },
+                    { "include_links", includeLinks ? "1" : "0" },
+                    { "itemized", itemized ? "1" : "0" }
+                }
+            });
 
             if (dryRun)
             {
@@ -80,10 +103,19 @@ namespace Horizun.Revit.Commands
                         .WhereElementIsNotElementType().GetElementCount(),
                     ["note"] = "Nothing was written. Field availability and linked rows are verified after creation, not guessed from host elements."
                 };
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(rehearsal, gate, Name, planHash, true,
-                    "the token is bound to this category, schedule name, field list and link/itemization settings.");
+                    "the token is bound to this category AS RESOLVED (not just the text you typed), the schedule " +
+                    "name, field list and link/itemization settings. A category text that starts resolving to a " +
+                    "different category refuses as a stale plan.");
                 return CommandResult.Ok(rehearsal);
             }
+
+            // Recomputed by THIS call - including the name-collision refusal above, which
+            // ran again before this line and wins over any race.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                    resolvedPlan, null);
+            if (refusal != null) return refusal;
 
             ElementId createdId;
             var missing = new List<string>();
@@ -197,6 +229,12 @@ namespace Horizun.Revit.Commands
 
             var ids = new HashSet<long>(candidates.Select(candidate => (long)candidate));
             return available.FirstOrDefault(field => ids.Contains(Rid.Value(field.ParameterId)));
+        }
+
+        /// <summary>Guarded: a plan must never fail while MEASURING.</summary>
+        private static string SafePlanCatName(Category c)
+        {
+            try { return c == null ? null : c.Name; } catch { return "<unreadable>"; }
         }
 
         private static Category ResolveCategory(Document doc, string text)
