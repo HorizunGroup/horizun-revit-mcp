@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // The check every mutating command makes before it touches anything.
@@ -197,13 +197,27 @@ namespace Horizun.Revit.Core
         /// by StampConfirmation once the plan is known.
         /// </summary>
         public static CommandResult RequireConfirmation(UIApplication app, GateResult gate, JObject request,
-                                                        string commandName, string planHash)
+                                                        string commandName, string planHash) =>
+            RequireConfirmation(app, gate, request, commandName, planHash, null, null);
+
+        /// <summary>
+        /// The same gate, given the plan RECOMPUTED NOW. `atApply` is the resolved plan as
+        /// this call sees the model; `rehearsed` is what the dry run recorded, when the
+        /// command kept it. Pass nulls from a command that does not materialise its plan yet:
+        /// the check degrades to the request comparison and the answer SAYS so, because a
+        /// guarantee nobody mentions reads exactly like one that held.
+        /// </summary>
+        public static CommandResult RequireConfirmation(UIApplication app, GateResult gate, JObject request,
+                                                        string commandName, string planHash,
+                                                        ResolvedPlan atApply, ResolvedPlan rehearsed)
         {
             if (_atomicPlanDepth > 0)
                 return StillTheSame(app, gate.Fingerprint, commandName);
 
             ConfirmationCheck check = Confirmations.Validate(
-                request?.Value<string>("confirmation_token"), commandName, gate.Fingerprint, planHash);
+                request?.Value<string>("confirmation_token"), commandName, gate.Fingerprint, planHash,
+                atApply?.Fingerprint(),
+                (atApply != null && rehearsed != null) ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
             if (!check.Ok)
                 return CommandResult.Fail(check.Message + " (Nothing was changed.)");
 
@@ -216,6 +230,17 @@ namespace Horizun.Revit.Core
         /// Name the document that was touched, and - on a rehearsal - hand back the key to
         /// this exact plan. Applied to the response whichever path produced it.
         /// </summary>
+        /// <summary>
+        /// The plan a dry run resolved, handed to the next StampConfirmation. A field rather
+        /// than a parameter so that every existing caller keeps compiling: a command is
+        /// taught to materialise its plan by calling RecordResolvedPlan, and one that has not
+        /// been taught yet behaves exactly as before and says so.
+        /// </summary>
+        [ThreadStatic] private static ResolvedPlan _pendingPlan;
+
+        /// <summary>Called by a command's dry run once it knows WHAT it resolved.</summary>
+        public static void RecordResolvedPlan(ResolvedPlan plan) { _pendingPlan = plan; }
+
         public static void StampConfirmation(object data, GateResult gate, string commandName,
                                              string planHash, bool dryRun, string limitNote = null)
         {
@@ -226,13 +251,35 @@ namespace Horizun.Revit.Core
             o["document_fingerprint"] = gate.Identity?.FingerprintDigest();
             if (!dryRun) return;
 
-            Confirmation issued = Confirmations.Issue(commandName, gate.Fingerprint, planHash);
+            Confirmation issued = Confirmations.Issue(commandName, gate.Fingerprint, planHash, null,
+                                                      _pendingPlan?.Fingerprint());
+            if (_pendingPlan != null)
+            {
+                // What was approved, in the answer itself. A count in the reply is what a
+                // person actually reads before saying yes, and it is the same number the
+                // fingerprint is taken over.
+                o["plan_resolved"] = new JObject
+                {
+                    ["elements"] = _pendingPlan.Elements.Count,
+                    ["create"] = _pendingPlan.CreateCount,
+                    ["modify"] = _pendingPlan.ModifyCount,
+                    ["delete"] = _pendingPlan.DeleteCount,
+                    ["expected_cascade"] = _pendingPlan.ExpectedCascadeCount,
+                    ["fingerprint"] = _pendingPlan.Fingerprint()
+                };
+                _pendingPlan = null;
+            }
             o["confirmation_token"] = issued.Token;
             o["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u");
             o["confirmation_note"] =
                 "To execute this, call again with dry_run=false and this confirmation_token. It is SINGLE USE, it " +
                 "expires, and it is bound to this document and this request - if either changes it is refused and " +
                 "nothing is written." +
+                (o["plan_resolved"] != null
+                    ? " It is ALSO bound to the elements resolved above: if the model moves before you spend it, " +
+                      "the apply is refused as a stale plan rather than applied to a different set."
+                    : " NOTE: it is bound to the REQUEST, not to the resolved element set - this command does not " +
+                      "materialise its plan yet, so a model that moves before you spend it would not be detected.") +
                 (limitNote == null ? "" : " STATED LIMIT: " + limitNote);
         }
 

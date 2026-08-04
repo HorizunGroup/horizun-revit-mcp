@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun Core tests — original Horizun code.
@@ -32,6 +32,12 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Measurement.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashLedger.cs" />
+    <!-- The materialised plan: what a dry run RESOLVED, so an apply can tell that the
+         model moved underneath it. Pure arithmetic over strings - the facts need Revit,
+         the fingerprint does not - which is why the cases that matter (a collector
+         re-ordering, a colleague editing the value this run was about to write) are
+         provable here and not against a model somebody has to build first. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LineReader.cs" />
