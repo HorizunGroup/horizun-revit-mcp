@@ -3,6 +3,22 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.6.1 — 2026-08-04
+
+Cortada el mismo día que v0.6.0, sobre ella:
+
+- **El set de requisitos como datos** (`docs/requirement-set.md`): el esquema
+  que hace verificable ISO 19650 / IFC / COBie sin una línea de código por
+  estándar, con su test de aceptación escrito.
+- **`execution.taskSupport`** emitido por herramienta, derivado del contrato —
+  `optional` exactamente para lo que `horizun_submit_job` acepta.
+- **Política de releases** (`docs/RELEASE-POLICY.md`): ventana de deprecación de
+  dos MINOR, ningún campo se reutiliza jamás.
+- **Fe de erratas de este archivo**: los `.csproj` de esta versión salieron
+  diciendo `0.6.0` — la etiqueta y el binario no coincidían. Corregido, y ahora
+  un check de CI compara la etiqueta contra `<Version>` para que no vuelva a
+  pasar en silencio.
+
 ## v0.6.0 — 2026-08-04
 
 Endurecimiento, no superficie: cero herramientas nuevas, y en cambio las

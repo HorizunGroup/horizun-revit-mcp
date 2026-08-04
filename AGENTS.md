@@ -40,8 +40,11 @@ this machine. No executable is downloaded.
 - Windows with at least one Revit 2023–2027 installed
   (`C:\Program Files\Autodesk\Revit <year>\RevitAPI.dll` exists).
 - The .NET SDK on PATH (`dotnet --version` answers): 8.0+ for Revit 2023–2026,
-  and 10.0+ when building for Revit 2027. Revit ≤ 2024 also needs the .NET
-  Framework 4.8 targeting pack.
+  and 10.0+ when building for Revit 2027. Revit ≤ 2024 builds against .NET
+  Framework 4.8 — the SDK-style projects restore the reference assemblies from
+  NuGet, so the Visual Studio targeting pack is NOT required when NuGet restore
+  is available. Verified on a machine without the pack: 2024 compiled with zero
+  warnings. Only a fully offline machine needs the pack itself.
 - **Revit closed.** The script refuses to run with Revit open and changes
   nothing when it refuses.
 
@@ -185,8 +188,12 @@ No se descarga ningún ejecutable.
 - Windows con al menos un Revit 2023–2027 instalado
   (`C:\Program Files\Autodesk\Revit <año>\RevitAPI.dll` existe).
 - El SDK de .NET en el PATH (`dotnet --version` responde): 8.0+ para Revit
-  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 necesita además
-  el targeting pack de .NET Framework 4.8.
+  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 compila contra
+  .NET Framework 4.8 — los proyectos SDK-style restauran los reference
+  assemblies desde NuGet, así que el targeting pack de Visual Studio NO hace
+  falta cuando hay restauración de NuGet disponible. Verificado en una máquina
+  sin el pack: 2024 compiló sin una sola advertencia. Solo una máquina
+  totalmente offline necesita el pack como tal.
 - **Revit cerrado.** El script se niega a correr con Revit abierto y no cambia
   nada cuando se niega.
 

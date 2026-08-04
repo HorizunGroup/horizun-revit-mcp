@@ -15,6 +15,7 @@ name: ci
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
 
 permissions:
@@ -35,6 +36,30 @@ jobs:
 
       # Restore before build, explicitly, so a build failure is a build failure
       # and a restore failure says so.
+      # Found in the field 2026-08-04: a v0.6.1 tag shipped while both .csproj still
+      # said 0.6.0. In a project that stamps commit + SHA-256 into every binary, a
+      # version number that disagrees with its own tag is the one identity nobody
+      # verified. Two rules, cheap to hold: the two projects always agree with each
+      # other, and a tagged build agrees with its tag.
+      - name: Version numbers agree (and match the tag, when there is one)
+        shell: bash
+        run: |
+          revit=$(grep -oP '(?<=<Version>)[^<]+' src/Horizun.Revit/Horizun.Revit.csproj)
+          server=$(grep -oP '(?<=<Version>)[^<]+' src/Horizun.Server/Horizun.Server.csproj)
+          echo "Horizun.Revit=$revit Horizun.Server=$server ref=$GITHUB_REF"
+          if [ "$revit" != "$server" ]; then
+            echo "::error::The add-in says $revit and the server says $server. They ship together; they version together."
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              tag="${GITHUB_REF#refs/tags/v}"
+              if [ "$tag" != "$revit" ]; then
+                echo "::error::Tag v$tag but <Version> is $revit. Bump the .csproj (and the CHANGELOG) before cutting the tag."
+                exit 1
+              fi ;;
+          esac
+
       - name: Restore
         run: |
           dotnet restore src/Horizun.Server/Horizun.Server.csproj
