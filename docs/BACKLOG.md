@@ -121,6 +121,39 @@ doing its job.
 until 5.1–5.4 land, and adding one the same day that rule was written would make the
 rule worth nothing. It is a real gap, it is written down, and it waits.
 
+### The second gap real use found: no 2D drafting geometry
+
+Reported 2026-08-04 by an agent doing electrical documentation: *"the available tool
+does not expose creating `DetailCurve`/`DetailLine` in Revit, so I cannot redraw
+those lines through the current bridge without an external tool or manual
+intervention."*
+
+Verified against the contract: `DetailCurve`, `DetailLine` and `detail_line` appear
+**nowhere**. `horizun_create_elements` publishes 14 kinds — level, grid, wall, floor,
+ceiling, roof, room, family_instance, structural_framing, structural_column, duct,
+pipe, conduit, cable_tray — and none is drafting geometry. `horizun_annotate` covers
+text notes, tags and dimensions, which is annotation, not linework.
+
+So the bridge can model a building and annotate it, and cannot draw a line on a
+sheet. Anything that finishes a drawing — legends, schematic risers, detail
+enhancement, symbols made of lines — stops at the bridge and goes back to a human.
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 1.7 | Detail lines and curves in a view: `detail_line` / `detail_curve` kinds on `create_elements`, view-scoped, with line style passed as an argument (never a compiled-in style list). Verified by re-reading the curve's geometry and its owner view after commit | M | tool freeze lifted |
+
+**Worth noting about the report itself:** the agent said what it could not do instead
+of drawing something else or claiming success. That is the product working — a
+refusal is the honest answer to a missing capability. The gap is real; the behaviour
+around it was right.
+
+**A pattern, after three of these in one day.** Real use found three gaps the backlog
+had not predicted: no way to open a document (1.6), no drafting geometry (1.7), and a
+rename step that identifies types by name (5.11, from the same session). Gaps found
+by use are worth more than gaps predicted by planning — and the freeze should be
+lifted deliberately once 5.1–5.4 land, with these three first in the queue, rather
+than punctured one command at a time whenever somebody hits one.
+
 ## ~~EPIC 2 — Unified bridge contract~~ *(DROPPED 2026-08-04)*
 
 **Dropped by the owner.** It was the only epic whose work lives in a DIFFERENT
