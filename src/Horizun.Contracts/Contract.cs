@@ -56,6 +56,24 @@ namespace Horizun.Contracts
         /// idempotency and the MCP annotations cannot drift into three opinions.
         /// </summary>
         public ToolEffect Effect;
+
+        /// <summary>
+        /// MCP's destructiveHint: this tool can remove or overwrite something a caller
+        /// would not get back. DECLARED HERE, next to Effect, and not in the server.
+        ///
+        /// It used to be a hardcoded list of six tool names inside Tools.cs, three files
+        /// away from where a tool is defined. A tool added without editing that list got
+        /// destructiveHint=false by default - the annotation a client uses to decide
+        /// whether to ask a human first. Silence was the dangerous answer.
+        /// </summary>
+        public bool Destructive;
+
+        /// <summary>
+        /// MCP's openWorldHint: this tool touches something outside the model - the
+        /// filesystem, a network endpoint, the Revit session itself. Same story as
+        /// Destructive: declared with the contract, never inferred three files away.
+        /// </summary>
+        public bool OpenWorld;
     }
 
     public static class Contract
@@ -1586,6 +1604,40 @@ namespace Horizun.Contracts
                 "horizun_capture_view", "horizun_excel_write_rows", "horizun_navigate", "horizun_target"
             };
 
+            // MCP's destructiveHint, where every other classification already lives.
+            // Beyond what Effect implies: a command can be MutatingUnlessDryRun and still
+            // destroy something a caller cannot get back - an export overwrites a file, a
+            // family rebuild replaces geometry, a push replaces a dataset.
+            var destructive = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_delete_verified", "horizun_execute_python", "horizun_document_session",
+                "horizun_export", "horizun_create_family", "horizun_power_bi_push"
+            };
+
+            // MCP's openWorldHint. Effect already covers ExternalSideEffect and
+            // DocumentSession; these are the ones that reach outside the model while being
+            // classified by Effect as ordinary model writes.
+            var openWorld = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_open_document", "horizun_export", "horizun_create_family",
+                "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup"
+            };
+
+            // A name in one of those sets that matches no contract is a rename nobody
+            // finished, and it fails LOUDLY here rather than handing a client a wrong hint
+            // for the tool that was renamed. This is the rot the sets are prone to.
+            var known = new HashSet<string>(StringComparer.Ordinal);
+            foreach (CommandContract c in all) known.Add(c.Name);
+            foreach (string n in destructive)
+                if (!known.Contains(n))
+                    throw new InvalidOperationException(
+                        "destructive names a tool that does not exist: '" + n + "'. Renamed or removed? " +
+                        "Fix the set - a stale entry means the tool it replaced now reports destructiveHint=false.");
+            foreach (string n in openWorld)
+                if (!known.Contains(n))
+                    throw new InvalidOperationException(
+                        "openWorld names a tool that does not exist: '" + n + "'.");
+
             foreach (CommandContract c in all)
             {
                 c.OutputSchema = new JObject
@@ -1598,6 +1650,11 @@ namespace Horizun.Contracts
                 else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
                 else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
                 else c.Effect = ToolEffect.ReadOnly;
+
+                c.Destructive = destructive.Contains(c.Name);
+                c.OpenWorld = openWorld.Contains(c.Name) ||
+                              c.Effect == ToolEffect.ExternalSideEffect ||
+                              c.Effect == ToolEffect.DocumentSession;
 
                 if (c.Effect == ToolEffect.Mutating ||
                     c.Effect == ToolEffect.MutatingUnlessDryRun ||

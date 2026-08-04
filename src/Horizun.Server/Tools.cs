@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // The tool table: the single place that declares which MCP tools exist, the
@@ -21,6 +21,8 @@ namespace Horizun.Server
         public JObject InputSchema;
         public JObject OutputSchema;
         public Horizun.Contracts.ToolEffect Effect;
+        public bool Destructive;
+        public bool OpenWorld;
 
         // A host-resident tool answers inside the server and never touches Revit. When Host
         // is non-null the server invokes it locally and does NOT forward to the plugin; when
@@ -71,6 +73,8 @@ namespace Horizun.Server
                     InputSchema = c.InputSchema,
                     OutputSchema = c.OutputSchema,
                     Effect = c.Effect,
+                    Destructive = c.Destructive,
+                    OpenWorld = c.OpenWorld,
                     Host = host
                 });
             }
@@ -119,28 +123,21 @@ namespace Horizun.Server
 
         private static JObject Annotations(ToolDef t)
         {
+            // Every hint is READ from the contract. The two that used to be hardcoded
+            // lists in this file - destructiveHint and openWorldHint - are declared on the
+            // contract next to Effect, so a tool added without touching this file gets the
+            // hints its own definition asked for instead of the safe-sounding default.
             bool readOnly = t.Effect == Horizun.Contracts.ToolEffect.ReadOnly;
             bool durable = t.Effect == Horizun.Contracts.ToolEffect.Mutating ||
                            t.Effect == Horizun.Contracts.ToolEffect.MutatingUnlessDryRun ||
                            t.Effect == Horizun.Contracts.ToolEffect.DocumentSession;
-            bool destructive = t.Name == "horizun_delete_verified" ||
-                               t.Name == "horizun_execute_python" ||
-                               t.Name == "horizun_document_session" ||
-                               t.Name == "horizun_export" ||
-                               t.Name == "horizun_create_family" ||
-                               t.Name == "horizun_power_bi_push";
-            bool openWorld = t.Effect == Horizun.Contracts.ToolEffect.ExternalSideEffect ||
-                             t.Effect == Horizun.Contracts.ToolEffect.DocumentSession ||
-                             t.Name == "horizun_open_document" || t.Name == "horizun_export" ||
-                             t.Name == "horizun_create_family" || t.Name == "horizun_power_bi_push" ||
-                             t.Name == "horizun_execute_python" || t.Name == "horizun_catalog_lookup";
             return new JObject
             {
                 ["title"] = Title(t.Name),
                 ["readOnlyHint"] = readOnly,
-                ["destructiveHint"] = destructive,
+                ["destructiveHint"] = t.Destructive,
                 ["idempotentHint"] = readOnly || durable,
-                ["openWorldHint"] = openWorld
+                ["openWorldHint"] = t.OpenWorld
             };
         }
 
