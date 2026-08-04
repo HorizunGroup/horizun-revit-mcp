@@ -37,6 +37,11 @@
          the fingerprint does not - which is why the cases that matter (a collector
          re-ordering, a colleague editing the value this run was about to write) are
          provable here and not against a model somebody has to build first. -->
+    <!-- Retention and redaction for the operation ledger. It DELETES somebody's audit
+         trail, so every rule is proved here - including the two that must not happen: a
+         malformed setting read as permission to delete, and a size cap dropping the
+         newest receipt instead of the oldest. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptRetention.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
