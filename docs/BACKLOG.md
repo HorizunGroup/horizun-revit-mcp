@@ -30,7 +30,7 @@ That leaves exactly three honest options, and no fourth:
 |----|-------|------|-----|
 | ~~0.1~~ | ~~Buy an OV cert and sign in CI~~ — **dropped by the owner** | — | — |
 | 0.2 ⭐ | **Self-sign, free**: `New-SelfSignedCertificate` + `Set-AuthenticodeSignature` (both already on Windows), certificate into Trusted Publishers, DLLs signed at install. Ends the dialog **permanently on machines that trust that certificate** — which is the team's own machines. Trust moves to the certificate, so a rebuild no longer re-prompts | M | — |
-| 0.3 | **Stop changing the DLL on the machine you work on**: install a release and do not rebuild there. The dialog only returns when the binary changes — six reinstalls in one morning is a development loop, not daily use | S | — |
+| 0.3 ◐ | **AUTOMATED HALF DONE 2026-08-04** — `install.ps1` now re-signs the fresh binaries automatically when this user's certificate already exists and is trusted (no new trust is ever minted as a side effect; without a cert it prints the one command and WHY it will not run it for you). The human failure this removes: every install re-armed the dialog because re-signing was a separate step people forgot. The practice half stands: on a daily-use machine, install releases, do not rebuild | S | 0.2 |
 | 0.4 | *(only if 0.1 ever revives)* Verify on a CLEAN machine that the dialog is gone — a machine that already trusts the certificate proves nothing | S | 0.1 |
 
 0.2 is the recommendation and it is not the same thing as 0.1: a purchased
@@ -206,7 +206,7 @@ missing is the verified connective tissue.
 
 | ID | Story | Size | Dep |
 |----|-------|------|-----|
-| 3.1 ⭐ | Provenance: every quantity row carries element IDs + `HRZ_COD_PRES` | M | — |
+| 3.1 ◐ | **DELIVERED 2026-08-04 (needs live verification)** — `code_parameter` on `horizun_quantities`, org-neutral as AGENTS.md demands (the parameter NAME is the argument). Every row gains `code` with three non-values kept distinct — `(no such parameter)`, `(empty)`, `(unreadable)` — and a `by_code` rollup whose every sum states how many elements it covers, because a code whose volume summed 3 of its 40 elements is a fragment wearing the code's name, and Excel cannot tell once the number lands. Was: Provenance: every quantity row carries element IDs + `HRZ_COD_PRES` | M | — |
 | 3.2 | Drift detection: diff takeoff vs. last budget, flag changed lines (the 4D value) | M | 3.1 |
 | 3.3 | `horizun_publish_delivery`: model→quantities→Excel→PBI in one idempotent op | M | 3.1 |
 | 3.4 | Event-driven push (`DocumentChanged`→delta→`power_bi_push`, debounced via async queue) — real-time PBI without re-export | L | 3.1, 3.3 |

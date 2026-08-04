@@ -1073,6 +1073,7 @@ namespace Horizun.Contracts
                          ""description"": ""Relative disagreement above which sources are flagged as not agreeing."" },
     ""top"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
                 ""description"": ""Max element rows returned. Totals and coverage are EXACT and independent of this; a shortened list sets truncated=true and rows_matching says how many there were."" },
+    ""code_parameter"": { ""type"": ""string"", ""description"": ""Parameter carrying each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' per row and a by_code rollup whose sums state how many elements they cover."" },
     ""only_disagreements"": { ""type"": ""boolean"", ""default"": false,
                               ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" }
   }

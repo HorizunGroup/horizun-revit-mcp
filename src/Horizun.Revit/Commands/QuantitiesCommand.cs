@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_quantities — volume takeoff that refuses to pick a number for you.
@@ -67,6 +67,8 @@ namespace Horizun.Revit.Commands
                          ""description"": ""Relative disagreement above which sources are flagged as not agreeing."" },
     ""top"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
                 ""description"": ""Max element rows returned. Totals and coverage are EXACT and independent of this; a shortened list sets truncated=true and rows_matching says how many there were."" },
+    ""code_parameter"": { ""type"": ""string"",
+                    ""description"": ""Name of the parameter that carries each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' to every row and a by_code rollup whose sums state how many elements they actually cover."" },
     ""only_disagreements"": { ""type"": ""boolean"", ""default"": false,
                               ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" }
   }
@@ -90,6 +92,8 @@ namespace Horizun.Revit.Commands
             var elements = new List<Element>();
             var failed = new JArray();
 
+            string codeParameter = request.Value<string>("code_parameter");
+            if (string.IsNullOrWhiteSpace(codeParameter)) codeParameter = null;
             var idsToken = request["element_ids"] as JArray;
             if (idsToken != null && idsToken.Count > 0)
             {
@@ -140,6 +144,7 @@ namespace Horizun.Revit.Commands
             var tMat = new SourceTally("material takeoff");
             var pair = new PairTally("Volume parameter", "solid geometry (" + detail + ")");
 
+            var byCode = new Dictionary<string, CodeTally>(StringComparer.Ordinal);
             double tol = tolPct / 100.0;
             int noQuantityAtAll = 0;
             int rowsWanted = 0;
@@ -153,10 +158,33 @@ namespace Horizun.Revit.Commands
                 // An element none of the three sources applies to (a tag, a line) is not a
                 // measurement problem. One that FAILED on every source is, and the two must
                 // not be counted together.
+                // The budget code, when asked for. Read for EVERY element in scope -
+                // including the ones no volume source applies to, because a tag-like
+                // element with a code is still a row somebody's budget references, and a
+                // rollup that quietly skipped it would under-count the code.
+                string code = null;
+                if (codeParameter != null)
+                {
+                    code = ReadCode(doc, e, codeParameter);
+                    CodeTally tally;
+                    if (!byCode.TryGetValue(code, out tally)) byCode[code] = tally = new CodeTally();
+                    tally.Elements++;
+                }
+
                 bool nothingApplies = mParam.State == MeasureState.NotApplicable &&
                                       mGeom.State == MeasureState.NotApplicable &&
                                       mMat.State == MeasureState.NotApplicable;
-                if (nothingApplies) { noQuantityAtAll++; continue; }
+                if (nothingApplies) { noQuantityAtAll++; if (code != null) byCode[code].NoQuantity++; continue; }
+
+                if (code != null)
+                {
+                    CodeTally tally = byCode[code];
+                    // .Value.Value: Measurement.Value is nullable and Measured is the
+                    // state that guarantees it. Throwing on a broken invariant beats
+                    // adding a silent zero to somebody's budget.
+                    if (mGeom.State == MeasureState.Measured) { tally.GeomM3 += mGeom.Value.Value; tally.GeomMeasured++; }
+                    if (mParam.State == MeasureState.Measured) { tally.ParamM3 += mParam.Value.Value; tally.ParamMeasured++; }
+                }
 
                 tParam.Add(mParam);
                 tGeom.Add(mGeom);
@@ -185,7 +213,7 @@ namespace Horizun.Revit.Commands
                 rowsWanted++;
                 if (rows.Count >= top) continue;
 
-                rows.Add(new JObject
+                var row = new JObject
                 {
                     ["element_id"] = e.Id.ToString(),
                     ["name"] = SafeName(e),
@@ -197,7 +225,9 @@ namespace Horizun.Revit.Commands
                     ["reconciliation"] = rec,
                     ["compared"] = compared,
                     ["not_compared_because"] = compared ? null : WhyNotCompared(mParam, mGeom)
-                });
+                };
+                if (code != null) row["code"] = code;
+                rows.Add(row);
             }
 
             // Totals from two sources cover DIFFERENT element sets, so summing each and
@@ -218,9 +248,36 @@ namespace Horizun.Revit.Commands
             // building. See Core/DocumentVisibilityCoverage.cs.
             DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(doc);
 
+            // The by_code rollup: what the budget pipeline joins on. Every sum states
+            // how many elements it actually covers, because a code whose volume summed 3
+            // of its 40 elements is not that code's volume - it is a fragment wearing the
+            // code's name, and Excel cannot tell the difference once the number lands.
+            JObject codeRollup = null;
+            if (codeParameter != null)
+            {
+                codeRollup = new JObject();
+                foreach (var kv in byCode.OrderByDescending(k => k.Value.Elements)
+                                         .ThenBy(k => k.Key, StringComparer.Ordinal).Take(500))
+                {
+                    codeRollup[kv.Key] = new JObject
+                    {
+                        ["elements"] = kv.Value.Elements,
+                        ["no_quantity"] = kv.Value.NoQuantity,
+                        ["volume_geometry_m3"] = kv.Value.GeomM3,
+                        ["volume_geometry_measured"] = kv.Value.GeomMeasured,
+                        ["volume_parameter_m3"] = kv.Value.ParamM3,
+                        ["volume_parameter_measured"] = kv.Value.ParamMeasured,
+                        ["complete"] = kv.Value.GeomMeasured + kv.Value.NoQuantity == kv.Value.Elements
+                    };
+                }
+            }
+
             return CommandResult.Ok(new JObject
             {
                 ["detail_level"] = detail.ToString(),
+                ["code_parameter"] = codeParameter,
+                ["by_code"] = codeRollup,
+                ["by_code_truncated"] = codeRollup != null && byCode.Count > 500,
                 ["visibility_coverage"] = visibility.ToJson(),
                 ["elements_requested"] = elements.Count,
                 ["elements_with_no_such_quantity"] = noQuantityAtAll,
@@ -412,6 +469,37 @@ namespace Horizun.Revit.Commands
                 case "medium": return ViewDetailLevel.Medium;
                 default: return ViewDetailLevel.Fine;
             }
+        }
+
+        private sealed class CodeTally
+        {
+            public int Elements, NoQuantity, GeomMeasured, ParamMeasured;
+            public double GeomM3, ParamM3;
+        }
+
+        /// <summary>
+        /// The element's budget code: instance parameter first, then its type. The three
+        /// non-values stay distinct - "(no such parameter)", "(empty)", "(unreadable)" -
+        /// because a rollup that pooled them would hide exactly the elements a budget
+        /// review needs to see, under a key that looks like a finding.
+        /// </summary>
+        private static string ReadCode(Document doc, Element e, string parameterName)
+        {
+            try
+            {
+                Parameter p = e.LookupParameter(parameterName);
+                if (p == null)
+                {
+                    Element t = doc.GetElement(e.GetTypeId());
+                    p = t == null ? null : t.LookupParameter(parameterName);
+                }
+                if (p == null) return "(no such parameter)";
+                string v;
+                try { v = p.StorageType == StorageType.String ? p.AsString() : p.AsValueString(); }
+                catch { return "(unreadable)"; }
+                return string.IsNullOrWhiteSpace(v) ? "(empty)" : v.Trim();
+            }
+            catch { return "(unreadable)"; }
         }
 
         private static string SafeName(Element e) { try { return e?.Name; } catch { return null; } }

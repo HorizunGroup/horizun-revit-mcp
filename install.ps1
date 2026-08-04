@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Install Horizun Revit MCP on THIS machine, from this source tree.
 
@@ -348,6 +348,38 @@ finally {
 # =============================================================================
 Write-Host ""
 Write-Host "[Horizun] installed and verified." -ForegroundColor Green
+
+# =============================================================================
+# 4b. RE-SIGN, when this machine already trusts its own certificate.
+#
+# Measured 2026-08-04: Revit's "Always Load" is keyed to the BINARY, so every
+# install re-arms the unsigned-add-in dialog for every year - unless the fresh
+# binaries are signed with a certificate this user already trusts. self-sign.ps1
+# creates and trusts that certificate ONCE, as the operator's own deliberate
+# decision; what kept going wrong afterwards was the human step of re-running it
+# after every install. So the install does it, and only in the case that adds no
+# new trust: certificate already present, already trusted. If there is none,
+# nothing is created - a script must not mint a trusted publisher as a side
+# effect of an install.
+# =============================================================================
+$signScript = Join-Path $PSScriptRoot 'scripts\self-sign.ps1'
+$haveCert = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
+    Where-Object { $_.Subject -eq 'CN=Horizun Group (self-signed add-in signing)' }).Count -gt 0
+if ((Test-Path -LiteralPath $signScript) -and $haveCert) {
+    Write-Host ""
+    Write-Host "--- re-signing the fresh binaries (existing certificate; no new trust)" -ForegroundColor Yellow
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $signScript
+    if ($LASTEXITCODE -eq 3) {
+        Write-Host "[Horizun] some files were IN USE and stayed unsigned - close that Revit or MCP client and run scripts\self-sign.ps1 again." -ForegroundColor Yellow
+    } elseif ($LASTEXITCODE -ne 0) {
+        Write-Host "[Horizun] re-signing FAILED (the install itself is fine). Run scripts\self-sign.ps1 by hand to see why." -ForegroundColor Yellow
+    }
+} elseif (-not $haveCert) {
+    Write-Host ""
+    Write-Host "[Horizun] binaries are UNSIGNED: Revit will show the 'Unsigned Add-In' dialog again." -ForegroundColor Yellow
+    Write-Host "          To end that permanently on THIS machine's account:  powershell -ExecutionPolicy Bypass -File .\scripts\self-sign.ps1" -ForegroundColor Yellow
+    Write-Host "          (creates a self-signed cert and trusts it for this user - a deliberate decision, so it is not done for you)" -ForegroundColor DarkYellow
+}
 Write-Host ""
 Write-Host "Add the MCP server to your client. The path below is THIS machine's, already" -ForegroundColor Cyan
 Write-Host "expanded - do not retype it with %LOCALAPPDATA%, which PowerShell does not expand." -ForegroundColor Cyan
@@ -374,9 +406,15 @@ Write-Host "  JSON config (mcpServers), using the SAME path:"
 Write-Host "    { `"mcpServers`": { `"horizun-revit`": { `"command`": `"$($serverExe -replace '\\', '\\')`" } } }"
 Write-Host ""
 Write-Host "Then START REVIT and note two things:" -ForegroundColor Cyan
-Write-Host ("  * Revit will show a 'Security - Unsigned Add-In' dialog - this build is unsigned. " +
-            "Choose 'Always Load'. Revit normally remembers the choice for this add-in identity; " +
-            "a trust or policy reset may bring it back, and it may open on a different monitor.")
+if ($haveCert) {
+    Write-Host ("  * The binaries were re-signed with this machine's trusted certificate, so the " +
+                "'Security - Unsigned Add-In' dialog should NOT appear. If it does, a file was in " +
+                "use during signing - run scripts\self-sign.ps1 again with Revit closed.")
+} else {
+    Write-Host ("  * Revit will show a 'Security - Unsigned Add-In' dialog - this build is unsigned. " +
+                "Choose 'Always Load'. Revit normally remembers the choice for this add-in identity; " +
+                "a trust or policy reset may bring it back, and it may open on a different monitor.")
+}
 Write-Host "  * A 'Horizun Hub' ribbon tab appears once a document is open; its 'Estado del puente' button answers 'is this working?' without leaving Revit."
 Write-Host ""
 Write-Host "Verify the pairing from your MCP client: call horizun_health. Updating later is:"
