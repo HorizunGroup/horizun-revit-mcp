@@ -9,13 +9,35 @@ Read [AGENTS.md](../AGENTS.md) first — it loads the project rules every sessio
 
 ---
 
-## EPIC 0 — Signing & distribution *(unblocks worldwide install)*
+## EPIC 0 — The unsigned-add-in dialog *(purchase dropped 2026-08-04)*
+
+**0.1 is dropped: no certificate is being bought.** That decision stands, and this
+epic is rewritten around it rather than left looking alive.
+
+What was MEASURED on 2026-08-04, because it corrects an earlier wrong conclusion
+in this very file's history: Revit's "Always Load" trust is keyed to the **binary**,
+not to the AddInId. With all 18 add-ins on a machine marked trusted in
+`HKCU\...\Autodesk Revit <year>\CodeSigning`, Revit still prompted for exactly the
+two whose DLL had changed that week and stayed silent for the one untouched since
+June. Perfect correlation with the file date. So `scripts/trust-addin.ps1` is useful
+(it writes the record, `-Report` lists who will prompt, `-Revoke` undoes it) but it
+does **not** end the dialog after a rebuild. Autodesk exposes no switch to disable
+the warning - the Revit key holds nothing but `CodeSigning`.
+
+That leaves exactly three honest options, and no fourth:
 
 | ID | Story | Size | Dep |
 |----|-------|------|-----|
-| 0.1 ⭐ | Buy an OV cert (SSL.com cloud signing) and sign server + add-ins in CI | M | — |
-| 0.2 | Opt-in installer step for Trusted Publishers (drives the dialog to zero) | S | 0.1 |
-| 0.3 | Verify on a clean machine that "Unsigned Add-In" is gone | S | 0.1 |
+| ~~0.1~~ | ~~Buy an OV cert and sign in CI~~ — **dropped by the owner** | — | — |
+| 0.2 ⭐ | **Self-sign, free**: `New-SelfSignedCertificate` + `Set-AuthenticodeSignature` (both already on Windows), certificate into Trusted Publishers, DLLs signed at install. Ends the dialog **permanently on machines that trust that certificate** — which is the team's own machines. Trust moves to the certificate, so a rebuild no longer re-prompts | M | — |
+| 0.3 | **Stop changing the DLL on the machine you work on**: install a release and do not rebuild there. The dialog only returns when the binary changes — six reinstalls in one morning is a development loop, not daily use | S | — |
+| 0.4 | *(only if 0.1 ever revives)* Verify on a CLEAN machine that the dialog is gone — a machine that already trusts the certificate proves nothing | S | 0.1 |
+
+0.2 is the recommendation and it is not the same thing as 0.1: a purchased
+certificate exists so that **other people's** machines trust the build without
+installing anything. Self-signing costs nothing and solves it for ours. Installing a
+certificate into Trusted Publishers means anything signed with it is trusted, so it
+is the operator's decision to make deliberately, not a script's to make quietly.
 
 ## EPIC 1 — Verified commands from field knowledge *(widens the moat)*
 
@@ -76,6 +98,28 @@ Revit upgrade it, save that copy, reuse it. Re-upgrading the same model every
 cycle cost a morning of 3–10 minute opens. `scripts/live-cycle.ps1` +
 `scripts/trust-addin.ps1` make the rest of the loop unattended.
 
+
+### The gap batch work keeps hitting: no way to open a document
+
+Noticed 2026-08-04 from an agent working families: *"there is no command to open
+documents in this build, so it is one instance per family. I close the previous one
+so as not to fill the machine with Revits."* The fact is right — this build
+publishes 42 tools and none of them opens or closes a document — and the workaround
+is the expensive one: killing and relaunching Revit costs minutes per file, which is
+how an afternoon disappears.
+
+The cheap pattern already exists and is proven 5/5 in `scripts/live-cycle.ps1`: one
+live instance, files handed to it by shell, which detaches a workshared central
+without prompting. But that is a script working around the bridge, not the bridge
+doing its job.
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 1.6 | `horizun_document_session`-style open/close, so batch work is ONE instance and many files instead of one instance per file. Turns folder audits, family sweeps and the verification harness from minutes-per-file into seconds | M | tool freeze lifted |
+
+**Held by the Epic 5 tool freeze on purpose.** Epic 5 froze new typed commands
+until 5.1–5.4 land, and adding one the same day that rule was written would make the
+rule worth nothing. It is a real gap, it is written down, and it waits.
 
 ## ~~EPIC 2 — Unified bridge contract~~ *(DROPPED 2026-08-04)*
 
