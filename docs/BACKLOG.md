@@ -184,7 +184,28 @@ than punctured one command at a time whenever somebody hits one.
 
 | ID | Story | Size | Dep |
 |----|-------|------|-----|
-| 5.11 ⭐ | Identify types by ElementId across the before/after shape comparison, so `family_name` can rename the surviving type without the guard firing. A check that cannot find its subject must report `unproven`, never `changed` | S | — |
+| 5.11 ✅ | **DONE 2026-08-05** (`eab6156`, merged to main; not yet deployed). Landed cleaner than the ElementId idea: the comparison receives a map of the renames the command itself PERFORMED (declared only when requested, not created, and the call did not throw), and pairs the before-shape under the after-name. Nothing is guessed — a type that vanishes without a declared rename still reports as removed, and a declared rename does not by itself make the verdict `changed`. Five regression tests, including the delete-hiding-behind-a-rename fear | S | — |
+
+### From a full day of real homologation use — 2026-08-05 (9 Prodesa families, add-in 0.5.0→0.6.1)
+
+Measured in the field, not predicted. Ordered by what cost time or nearly caused a wrong claim.
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 5.12 ⭐ | **`family_apply save:true` must prove its save the way `save_document` does.** Today it reports `file_changed: null, sha256_before/after: null` ("file is being used by another process") on EVERY family — measured 9/9 — while `save_document` hashes the same situation fine (`saved_verified`, `bytes_changed_on_disk`). Port `save_document`'s hashing approach (its file-share mode) into `family_apply`'s save evidence, so the flagship command's proof is not weaker than the plain save's | S | — |
+| 5.13 | **Closing the last document requires a decoy.** `close` correctly refuses the active document (Revit API cannot close it), but the only workaround is opening a document you do not want, three times in one session. Either an `activate` operation on `document_session`, or `close` accepting `activate_other: true` that picks another open document and REPORTS which one it activated | S | — |
+| 5.14 | **`would_change` per row in `family_apply`'s plan.** A parameter already holding the requested value still shows in `params_would_set` and forces every caller to diff `before.value` vs `requested` themselves to avoid presenting a plan that appears to touch things it does not. One boolean per row, computed once, in the one place that already has both values | S | — |
+| 5.15 | **An ACC upload-status command.** Copying into the Desktop Connector folder and hashing proves the LOCAL CACHE, not the cloud: the upload is a later async step that fails under throttling ("Too many people or processes…", ~11-minute circuit breaker) — measured 3 of 8 families silently unuploaded, caught only by a human screenshot. The WAL already answers "does this path have a folderUrn yet?" (external `extract_wal_links.py` proves it); make that a bridge command so publishing to ACC can be verified instead of asserted | M | — |
+| 5.16 | **`other_clients_connected` in `horizun_health`.** Two agents on one machine: Revit 2025 died three times (journal ends mid-activity, no exception — killed from outside) while another agent recompiled and redeployed the add-in underneath the first. The bridge cannot see that another client is attached to the same instance; even an approximate count of concurrent pipe clients in health would have turned three journal autopsies into one line | S | — |
+| 5.17 | **Declare units per field in `geometry_baseline`.** `solid_volume` and `surface_area` read back in ft³/ft² (verified exact against a 15×15×10 cm box), but `bbox_x/y/z` returned 656.17 — neither mm nor feet for that piece. The comparison is unaffected (same-unit before vs after), but the baseline misleads a human reader; name the unit on every dimension, and check whether bbox is even measuring the right extent | S | — |
+| 5.18 | **A guard that measured nothing must not say `unchanged`.** Residual edge of the 5.11 lesson: `GeometryVerdict.Status` returns `unchanged` when both captures are EMPTY — zero types compared reads identically to a clean pass. An empty table is not agreement (the same rule verify-live's `All-Rows` already enforces). Decide the honest word (`unproven`?) and check every consumer before changing the string | S | — |
+
+**Validated by the same session — do not regress:** the refusal to pick between two live
+Revits (`horizun_target`), `execute_python`'s transaction policy (`IsModifiable` enforced,
+4 hand-opened transactions came out clean), `save_as`'s `saved_evidence` prose, idempotency
+keys ("retried without fear all day"), `bridge_queue.waited_on` distinguishing queue from
+busy-UI, the three version guards (`expected_version` / `expected_revit_version` /
+`rfa_path`), and the confirmation-token message naming that `save` binds too.
 
 **Re-measured on v0.6.1, 2026-08-05, with a cleaner reproduction than the first.** The
 request carried NOTHING but `family_name` + `keep_type` — no values, no shared
