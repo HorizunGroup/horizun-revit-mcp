@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - text, tags and dimensions with explicit references.
 // -----------------------------------------------------------------------------
 using System;
@@ -28,10 +28,21 @@ namespace Horizun.Revit.Commands
             double scale; if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale)) return CommandResult.Fail("units must be mm, m or feet.");
 
             var plans = new List<Plan>(); var errors = new JArray();
+            // Every action's outcome, so the fallback is decided once over the whole
+            // batch: one uncovered operation must not grant permission for a request that
+            // also contains input the caller should fix. See FallbackDecision.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < actions.Count; i++)
             {
-                string error = null; Plan p = PlanAction(doc, i, actions[i] as JObject, scale, out error);
-                if (p == null) errors.Add(new JObject { ["index"] = i, ["error"] = error ?? "entry is not an object" }); else plans.Add(p);
+                string error = null, reason = null;
+                Plan p = PlanAction(doc, i, actions[i] as JObject, scale, out error, out reason);
+                if (p == null)
+                {
+                    string message = error ?? "entry is not an object";
+                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                }
+                else plans.Add(p);
             }
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
             string hash = DocumentGate.PlanHash(request, "units", "actions");
@@ -81,9 +92,22 @@ namespace Horizun.Revit.Commands
                           "resolved right now - a swapped or renamed target refuses as a stale plan rather than " +
                           "tagging the wrong element under the approved words."
                         : "no usable token while invalid");
-                return CommandResult.Ok(result);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
+                // is the first call a caller makes; without the block here they got
+                // success=true with invalid rows and no way to tell a capability gap
+                // from a typo except by sending an apply they had no reason to send.
+                return FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             }
-            if (errors.Count > 0) return CommandResult.Fail("Invalid annotations; nothing ran: " + errors.ToString(Formatting.None));
+            if (errors.Count > 0)
+            {
+                // NOTHING RAN - no transaction was opened - so the decision is only about
+                // what failed, and it is made centrally.
+                return FallbackDecision.Refuse(
+                    "Invalid annotations; nothing ran: " + errors.ToString(Formatting.None),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
+            }
             // Recomputed by THIS call's own PlanAction resolution.
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, hash,
                                                                      resolvedPlan, null);
@@ -95,7 +119,21 @@ namespace Horizun.Revit.Commands
             {
                 tx.Start();
                 try { foreach (Plan p in plans) p.Created = Create(doc, p)?.Id; Guard.Commit(tx, txName); }
-                catch (Exception ex) { if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack(); return CommandResult.Fail("Atomic annotation failed: " + ex.Message + ". Everything was rolled back."); }
+                catch (Exception ex)
+                {
+                    // Report what the rollback ACTUALLY did, not the hoped-for prose. If the
+                    // transaction is still open we roll it back and read Revit's status; a value
+                    // other than RolledBack keeps its uncertainty rather than claiming a clean model.
+                    string rolled = "was not attempted (the transaction was not open)";
+                    if (tx.GetStatus() == TransactionStatus.Started)
+                    {
+                        Guard.RollbackResult rb = Guard.RollBack(tx);
+                        rolled = rb.Confirmed
+                            ? "rolled back (Revit reported RolledBack); nothing was retained"
+                            : "is UNCERTAIN: RollBack() returned '" + rb.StatusName + "', not RolledBack - re-read the model before any retry";
+                    }
+                    return CommandResult.Fail("Atomic annotation failed: " + ex.Message + ". The transaction " + rolled + ".");
+                }
             }
             var rows = new JArray(); int verified = 0;
             foreach (Plan p in plans)
@@ -107,9 +145,11 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new JObject { ["transaction_status"] = "Committed", ["annotations_verified"] = verified, ["rows"] = rows });
         }
 
-        private static Plan PlanAction(Document doc, int index, JObject a, double scale, out string error)
+        private static Plan PlanAction(Document doc, int index, JObject a, double scale, out string error,
+                                       out string unsupportedReason)
         {
-            error = null; if (a == null) { error = "entry is not an object"; return null; }
+            error = null; unsupportedReason = null;
+            if (a == null) { error = "entry is not an object"; return null; }
             try
             {
                 string op = (a.Value<string>("operation") ?? "").ToLowerInvariant(); View view = Need<View>(doc, a, "view_id");
@@ -134,10 +174,17 @@ namespace Horizun.Revit.Commands
                     foreach (JToken token in refs) p.References.Append(Reference.ParseFromStableRepresentation(doc, token.Value<string>()));
                     if (a["dimension_type_id"] != null) p.Type = Need<DimensionType>(doc, a, "dimension_type_id");
                 }
-                else throw new ArgumentException("unsupported operation '" + op + "'");
+                else throw new UnsupportedCapability(
+                    "unsupported operation '" + op + "' - horizun_annotate creates text, tags and dimensions " +
+                    "only. Nothing was written.", FallbackSignal.ReasonUnsupportedOperation);
                 return p;
             }
-            catch (Exception ex) { error = ex.Message; return null; }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return null;
+            }
         }
         private static Element Create(Document doc, Plan p)
         {

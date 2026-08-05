@@ -1,14 +1,16 @@
 // -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
-// Direct Python against the Revit API, on the UI thread. The escape hatch: no
-// set of typed tools ever covers the whole API, this does.
+// Direct Python against the Revit API, on the UI thread. The standing fallback:
+// no set of typed tools ever covers the whole API, this does.
 //
-// DISABLED BY DEFAULT. It runs arbitrary code inside Revit with the full API and
-// the rights of the signed-in user. That is right for a developer at their own
-// machine and wrong for a production surface, so it is switched on per machine in
-// settings.json - checked here AND in the server, because the two halves ship
-// separately and neither may be the only gate.
+// ENABLED BY DEFAULT during this early stage: when a typed command cannot cover
+// a request, the client is expected to generate minimal Python and run it here,
+// rather than answer "not supported". It runs arbitrary code inside Revit with
+// the full API and the rights of the signed-in user, so the per-machine switch
+// in settings.json still exists and an explicit OFF is respected - checked here
+// AND in the server, because the two halves ship separately and neither may be
+// the only gate.
 //
 // The standard library ships (IronPython.StdLib), so `import json`, `re`, `csv`,
 // `datetime` resolve - no hand-rolling JSON with string joins.
@@ -27,6 +29,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -42,11 +46,23 @@ namespace Horizun.Revit.Commands
         public string Name => "horizun_execute_python";
 
         public string Description =>
-            "DISABLED BY DEFAULT - runs arbitrary code inside Revit on the UI thread with the full API and the " +
-            "rights of the signed-in user. Enable per machine in %USERPROFILE%\\.horizun\\settings.json. " +
+            "THE EXECUTION FALLBACK - runs arbitrary code inside Revit on the UI thread with the full API and " +
+            "the rights of the signed-in user. Enabled by default; a machine owner can switch it off in " +
+            "%USERPROFILE%\\.horizun\\settings.json and that explicit choice is respected. " +
+            "WHEN TO USE IT: prefer a typed command whenever one fully covers the operation - typed commands " +
+            "rehearse, verify and re-read their work. When no typed capability exists, or a typed command " +
+            "refuses BEFORE writing because the operation/kind/category is outside its contract, generate " +
+            "minimal Python and run it HERE instead of answering 'not supported'. Do NOT fall back here after " +
+            "a typed write FAILED mid-operation - it may have partially written, and a Python retry is a " +
+            "second write, not a recovery; report the real state instead. " +
             "REQUIRES target_document, like every other command that can change a model: it is matched against " +
             "the ACTIVE document and refused if they differ, and this command will not switch documents for you. " +
             "A script that needs no document cannot run here. " +
+            "preflight=true validates WITHOUT executing: permission, document, size, script SHA-256, basic " +
+            "syntax, plus advisory warnings (typed-command overlaps, missing transaction hygiene, no " +
+            "__output__). It cannot prove what arbitrary code will do. When the objective is already " +
+            "unambiguous and preflight passes, CONTINUE to execution in the same task - preflight is a check, " +
+            "not an approval step. " +
             "run_async=true additionally REQUIRES idempotency_key - the reply carrying your job_id is the message " +
             "that gets lost, so a retry needs a way to be recognised as one. The key is bound to the Revit " +
             "process, the target document, a SHA-256 of the code and every other argument: the same key with the " +
@@ -55,12 +71,20 @@ namespace Horizun.Revit.Commands
             "IT IS STILL A PRIVILEGED BYPASS: unlike the typed commands it has no dry run, no plan and no " +
             "confirmation token, so nothing rehearses what it will do. That is an accepted risk, not a policy it " +
             "satisfies - see docs/security-model.md. " +
-            "REFUSED OUTRIGHT for a handful of calls a typed command already performs and verifies - " +
-            "ViewSheet.Create, Viewport.Create, ScheduleSheetInstance.Create (use horizun_manage_views), " +
-            "ViewSchedule.CreateSchedule (use horizun_create_schedule), ElementTransformUtils.Move/Rotate/" +
-            "MirrorElement (use horizun_transform_elements), doc.Delete (use horizun_delete_verified). Check " +
-            "for a typed command FIRST; this tool exists for what they do not cover. " +
-            "doc/uidoc/uiapp/app are injected. Return data by assigning __output__ or with print(); a dict or " +
+            "SCRIPTS THAT ONLY DUPLICATE A TYPED COMMAND get an advisory naming it (ViewSheet.Create / " +
+            "Viewport.Create / ScheduleSheetInstance.Create -> horizun_manage_views, ViewSchedule.CreateSchedule " +
+            "-> horizun_create_schedule, ElementTransformUtils.Move/Rotate/MirrorElement -> " +
+            "horizun_transform_elements, doc.Delete -> horizun_delete_verified). The advisory does not block: " +
+            "a composite script that also needs one of those calls runs fine, and the typed command remains " +
+            "the better tool when it is the WHOLE job. " +
+            "doc/uidoc/uiapp/app are injected. RETURN EVIDENCE, not prints: assign __output__ the structured " +
+            "shape {status: verified|completed_unverified|partial|failed, summary, created_ids, modified_ids, " +
+            "deleted_ids, verification:{checked, evidence:[]}, warnings:[]} and RE-READ what you wrote before " +
+            "claiming verified. WHAT COMES BACK IS SELF-REPORTED, NOT HOST-VERIFIED: your 'verified' is " +
+            "classified as self_reported_verified, because the bridge does not re-read the model after " +
+            "arbitrary code - only typed commands carry that guarantee, and no field on this path may be read " +
+            "as one. A verified claim with no evidence is downgraded to completed_unverified. " +
+            "print() remains as compatibility output. A dict or " +
             "list is serialized to JSON and output_kind reports scalar|structure|text_only, where text_only " +
             "means the structure could NOT be serialized and only its text rendering survived. The standard " +
             "library is available (json, re, csv, datetime, math). " +
@@ -70,7 +94,7 @@ namespace Horizun.Revit.Commands
             "on a transaction opened by other code. What happens instead: Document.IsModifiable is re-read after " +
             "the script, and a document left modifiable makes this command FAIL and says so. Wrap every " +
             "Transaction in try/finally with RollBack in the finally. Prefer a typed command for anything " +
-            "recurring: a typed command can be verified, and this cannot.";
+            "recurring: a typed command is verified BY THE HOST, and this can only ever be self-reported.";
 
         /// <summary>
         /// The rule, carried on EVERY response rather than left in a description
@@ -98,9 +122,17 @@ namespace Horizun.Revit.Commands
         /// Which idempotency keys this Revit session has already accepted for
         /// run_async, and which job each one belongs to.
         ///
-        /// In memory and per process, exactly like DocumentGate.Confirmations and for
-        /// the same reason: a claim that outlived the process would be a claim about
-        /// work whose outcome nobody knows. See Core/Idempotency.cs.
+        /// SUBORDINATE, not the authority. The single cross-process authority for "has this
+        /// key run?" is the dispatcher's DurableCommandLedger, which claims the key on disk
+        /// BEFORE this command is called and REPLAYS a re-sent key after any restart - so a
+        /// retry across a process boundary is answered there and never reaches this ledger.
+        /// This one exists for the race the durable ledger cannot see cheaply: two requests
+        /// carrying ONE key in flight AT ONCE within THIS process, before the durable claim's
+        /// terminal result is recorded. It stops both of them from creating a Job. It is in
+        /// memory and per process on purpose, exactly like DocumentGate.Confirmations: a claim
+        /// that outlived the process would be a claim about work whose outcome nobody knows,
+        /// and that judgement belongs to the durable ledger, not to a stale in-memory copy.
+        /// See Core/Idempotency.cs and Core/DurableCommandIdempotency.cs.
         /// </summary>
         public static readonly IdempotencyLedger AsyncClaims = new IdempotencyLedger();
 
@@ -160,9 +192,11 @@ namespace Horizun.Revit.Commands
         /// <summary>
         /// Direct 1:1 overlaps with a typed command - not an attempt to catch everything
         /// execute_python can do, only the handful of Revit API calls this codebase
-        /// already performs, verifies and re-reads elsewhere. A caller reaching for the
-        /// unverified escape hatch to do exactly what a checked command already does gets
-        /// redirected instead of a silent, unverified duplicate of that command.
+        /// already performs, verifies and re-reads elsewhere. These RECOMMEND, they do
+        /// not block: a composite script legitimately needs one of these calls alongside
+        /// work no typed command covers, and refusing it forced the caller to either
+        /// split one operation across two transactions or give up. The advisory tells a
+        /// caller whose script is ONLY that call where the verified version lives.
         /// </summary>
         private static readonly (Regex Pattern, string TypedCommand, string Hint)[] TypedOverlaps =
         {
@@ -187,26 +221,37 @@ namespace Horizun.Revit.Commands
         };
 
         /// <summary>
-        /// Null to proceed. A refusal naming the typed command and what it does, so the
-        /// caller is redirected rather than told only "no" - the disabled-by-default
-        /// message already does that job for the whole tool, this does it for the one
-        /// call inside a script that has a checked replacement.
+        /// Advisory lines naming the typed command each detected call duplicates. Empty
+        /// when the script touches none of them. This used to be a hard refusal; it is
+        /// deliberately not one any more - the typed command is recommended where it
+        /// covers the WHOLE job, and Python remains available for the composite script,
+        /// the uncovered variant, and the sequence no typed command satisfies.
         /// </summary>
-        private static CommandResult RefuseIfTypedOverlap(string code)
+        private static JArray TypedAlternatives(string code)
         {
+            var advisories = new JArray();
+            // Match against CODE only. A live run advised a script whose sole mention of
+            // ElementTransformUtils.MoveElement was inside a comment - advice that fires
+            // on prose is advice people learn to skip, including when it is right.
+            //
+            // Python's own lexer first (TokenCategorizer is a public DLR hosting service
+            // and lexes WITHOUT executing); the hand scanner when it is unavailable or
+            // the source will not lex. Failing soft is deliberate: an advisory must never
+            // be the reason a run does not happen.
+            string scanned = PythonTokenMask.Mask(GetEngine(), code)
+                             ?? PythonSourceMask.StripCommentsAndStrings(code);
             foreach (var overlap in TypedOverlaps)
             {
-                if (overlap.Pattern.IsMatch(code))
+                if (overlap.Pattern.IsMatch(scanned))
                 {
-                    return CommandResult.Fail(
+                    advisories.Add(
                         "This script calls an API that " + overlap.TypedCommand + " already performs and verifies: " +
-                        overlap.Hint + " Use " + overlap.TypedCommand + " for that operation instead - it re-reads " +
-                        "the result after the write, and this command cannot. If the script needs to do more than " +
-                        "that single call, keep the rest and replace only that operation, or state why the typed " +
-                        "command will not do and this refusal can be reconsidered. Nothing ran.");
+                        overlap.Hint + " If that single call is the WHOLE job, prefer " + overlap.TypedCommand +
+                        " - it re-reads the result after the write. If the script does more than that call, " +
+                        "proceeding here is fine; verify from inside the script and say so in __output__.");
                 }
             }
-            return null;
+            return advisories;
         }
 
         public CommandResult Execute(UIApplication app, string paramsJson)
@@ -223,12 +268,14 @@ namespace Horizun.Revit.Commands
             JObject request;
             string code;
             bool runAsync;
+            bool preflight;
             string idempotencyKey;
             try
             {
                 request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
                 code = request.Value<string>("code");
                 runAsync = request.Value<bool?>("run_async") ?? false;
+                preflight = request.Value<bool?>("preflight") ?? false;
                 idempotencyKey = request.Value<string>("idempotency_key");
             }
             catch (Exception ex)
@@ -239,13 +286,22 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("'code' is required (the Python source to run).");
             if (code.Length > MaxScriptChars)
                 return CommandResult.Fail("Script is " + code.Length + " characters, over the " + MaxScriptChars +
-                                          " limit. Put it in a file and read it from a short script instead.");
+                    " limit. This limit is deliberate and must not be evaded: everything that runs is the source " +
+                    "submitted here - it is hashed as submitted_source_sha256 and bound to the idempotency key. " +
+                    "Reading code from a file at runtime would slip past this limit, that hash and that binding, " +
+                    "so it is not the answer. Reduce the script, or split the work across separate " +
+                    "execute_python calls. Nothing ran.");
+            if (preflight && runAsync)
+                return CommandResult.Fail(
+                    "preflight=true cannot be combined with run_async=true: a preflight executes nothing, so " +
+                    "there is nothing to queue. Preflight synchronously, then submit the real run. Nothing ran.");
 
-            // Checked before the gate and before anything is queued: a script that only
-            // duplicates a typed command's own API call gets redirected to that command,
-            // not a document to write to.
-            CommandResult overlapRefusal = RefuseIfTypedOverlap(code);
-            if (overlapRefusal != null) return overlapRefusal;
+            // Computed before the gate and before anything is queued, and carried on the
+            // response either way: a script that duplicates a typed command's own API
+            // call is TOLD where the verified version lives, and still allowed to run -
+            // the composite script and the uncovered variant are exactly what this
+            // fallback exists for.
+            JArray typedAlternatives = TypedAlternatives(code);
 
             // THE SAME GATE AS EVERY TYPED MUTATION, and it used to be the one command
             // without it.
@@ -262,6 +318,94 @@ namespace Horizun.Revit.Commands
             // it is smaller than an arbitrary write landing in the wrong building.
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
+
+            // ---- preflight: validate everything checkable, execute NOTHING. ----
+            //
+            // Runs AFTER the same gate as the real run, so a preflight that passes has
+            // already proved permission, size and document targeting for real. What it
+            // adds is a compile-only syntax check and advisory warnings. What it CANNOT
+            // do is prove the safety or effect of arbitrary code without running it,
+            // and the response says so instead of implying a rehearsal happened.
+            if (preflight)
+            {
+                var warnings = new JArray();
+                foreach (JToken advisory in typedAlternatives) warnings.Add(advisory);
+
+                if (code.IndexOf("Transaction", StringComparison.Ordinal) >= 0 &&
+                    code.IndexOf("finally", StringComparison.Ordinal) < 0)
+                    warnings.Add(
+                        "The script mentions Transaction but contains no finally block, so an exception between " +
+                        "Start() and Commit() leaves the transaction open and the run is reported as a failure. " +
+                        "Wrap it in try/finally with Commit() or RollBack() in the finally.");
+
+                if (code.IndexOf("__output__", StringComparison.Ordinal) < 0)
+                    warnings.Add(
+                        "The script never assigns __output__, so its result will be classified " +
+                        "completed_unverified - it can succeed but cannot prove it. Assign the structured " +
+                        "evidence shape and re-read what you wrote: " + ScriptEvidence.ContractShape);
+
+                string syntaxError = null;
+                try
+                {
+                    ScriptSource compileOnly = GetEngine().CreateScriptSourceFromString(
+                        code, Microsoft.Scripting.SourceCodeKind.Statements);
+                    compileOnly.Compile(); // parse and compile; nothing executes
+                }
+                catch (Exception ex)
+                {
+                    try { syntaxError = GetEngine().GetService<ExceptionOperations>().FormatException(ex); }
+                    catch { syntaxError = ex.Message; }
+                }
+
+                string scriptSha;
+                using (var sha = SHA256.Create())
+                    scriptSha = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(code)))
+                                            .Replace("-", "").ToLowerInvariant();
+
+                Log.Warn("execute_python PREFLIGHT by '" + SafeUser(app) + "' on '" + SafeTitle(gate.Document) +
+                         "', " + code.Length + " chars, syntax " + (syntaxError == null ? "ok" : "FAILED"));
+
+                return CommandResult.Ok(new JObject
+                {
+                    ["mode"] = "preflight",
+                    ["executed"] = false,
+                    ["would_run"] = syntaxError == null,
+                    ["checks"] = new JObject
+                    {
+                        ["permission"] = "ok",
+                        ["target_document"] = "ok - matches the active document",
+                        ["size"] = code.Length + " of " + MaxScriptChars + " chars",
+                        ["syntax"] = syntaxError == null ? "ok" : "failed"
+                    },
+                    ["syntax_error"] = syntaxError,
+                    // Named for what it actually is. It is the hash of the SOURCE that was
+                    // submitted, and nothing more - not a fingerprint of everything that runs.
+                    ["submitted_source_sha256"] = scriptSha,
+                    // DEPRECATED, and kept working on purpose. The old name claimed to
+                    // identify "the script", which over-promised: it never covered imports,
+                    // exec/eval or a file read at runtime. RELEASE-POLICY forbids removing a
+                    // returned field outright - a renamed field keeps its old name working for
+                    // two MINOR releases - so both travel, with identical values, until then.
+                    ["script_sha256"] = scriptSha,
+                    ["script_sha256_deprecated"] =
+                        "DEPRECATED since 0.7.0, removed no earlier than 0.9.0: use " +
+                        "submitted_source_sha256, which says what the hash actually covers. Both fields carry " +
+                        "the same value today.",
+                    ["submitted_source_sha256_covers"] =
+                        "The SHA-256 of the SUBMITTED source text ONLY. It is NOT a fingerprint of everything that " +
+                        "executes: any modules this script imports, anything it builds and hands to exec() or " +
+                        "eval(), and any file it opens at runtime are OUTSIDE this hash. Treat it as the identity " +
+                        "of what was sent, not of what ran.",
+                    ["warnings"] = warnings,
+                    ["what_preflight_cannot_do"] =
+                        "It proves permission, document targeting, size and that the source parses. It CANNOT " +
+                        "prove the safety or effect of arbitrary code - only running it and re-reading the model " +
+                        "does that. If the objective, document, scope and success criterion are already " +
+                        "unambiguous and this preflight passed, continue to execution in this same task rather " +
+                        "than stopping to ask.",
+                    ["transaction_policy"] = TransactionPolicy
+                });
+            }
 
             // ---- run_async: hand back a job_id and get off the request. ----
             //
@@ -396,6 +540,7 @@ namespace Horizun.Revit.Commands
                     ["mode"] = "async",
                     ["job_id"] = asyncJob.Id,
                     ["status"] = "queued",
+                    ["typed_alternatives"] = typedAlternatives.Count == 0 ? null : typedAlternatives,
                     ["queue_depth"] = AsyncQueue.Count,
                     ["poll_with"] = "horizun_job_status with job_id=" + asyncJob.Id,
                     ["executed"] = false,
@@ -410,22 +555,28 @@ namespace Horizun.Revit.Commands
                         "false because NOTHING HAS RUN YET. This reply means the script is queued, not that it " +
                         "worked. Read horizun_job_status for what it did.",
                     ["at_most_once"] =
-                        "AT MOST ONCE, and here is exactly what that rests on, because it used to say 'exactly " +
-                        "once' and was only half true. (1) The entry is claimed from the queue DESTRUCTIVELY, so " +
-                        "a duplicate raise of the external event finds nothing - that half always held. (2) A " +
-                        "re-sent REQUEST is recognised by its idempotency_key and queues nothing - that half did " +
-                        "not exist, so a client retrying a lost reply produced a second entry, each claimed once, " +
-                        "for two executions. (3) If Revit refuses to schedule the queue, or shuts down first, " +
-                        "this job is closed as not_started rather than left open. WHAT IT DOES NOT COVER: a Revit " +
-                        "restart forgets every key, so a retry across one runs the script again.",
+                        "AT MOST ONCE, on TWO layers with the DURABLE one as the single authority. (1) The entry " +
+                        "is claimed from the queue DESTRUCTIVELY, so a duplicate raise of the external event finds " +
+                        "nothing. (2) IN THIS PROCESS, a re-sent request is recognised by its idempotency_key and " +
+                        "queues nothing - the same job_id comes back. (3) ACROSS PROCESSES, the dispatcher's " +
+                        "durable ledger recorded this key+fingerprint before you got this reply, and it SURVIVES a " +
+                        "Revit or MCP-server restart: a retry after one is intercepted by durable REPLAY before the " +
+                        "script layer is even reached, so it returns this same queued reply and runs NOTHING new. " +
+                        "(4) If Revit refuses to schedule the queue, or shuts down first, this job is closed as " +
+                        "not_started rather than left open. WHAT IT DOES NOT COVER: the CERTAINTY of the original " +
+                        "run's OUTCOME if the process died mid-script. The durable ledger still refuses to re-run " +
+                        "it - a key whose claim has no terminal result stays in_doubt rather than being replayed as " +
+                        "either done or not - so the residual risk is an unknown outcome to inspect, never a second " +
+                        "execution.",
                     ["cancelling_does_not_stop_revit"] =
                         "Cancelling the MCP request, or losing the connection, stops YOU WAITING and nothing else. " +
                         "The Revit API cannot interrupt work on its UI thread, so the script runs to completion " +
                         "either way and its result lands in the job record.",
                     ["if_revit_closes"] =
                         "A job whose record has no finish line either is still running or died with the process. " +
-                        "horizun_job_status reports that ambiguity rather than resolving it, and this queue is NOT " +
-                        "persisted - nothing replays a mutation whose outcome nobody knows.",
+                        "horizun_job_status reports that ambiguity rather than resolving it. The in-memory QUEUE is " +
+                        "not persisted, but the dispatcher's durable idempotency ledger IS: it never replays a " +
+                        "mutation whose outcome is unknown - the key stays in_doubt until a human inspects the model.",
                     ["transaction_policy"] = TransactionPolicy
                 });
             }
@@ -578,6 +729,11 @@ namespace Horizun.Revit.Commands
             // when it cannot be, the reply SAYS the structure was lost.
             ScriptOutputRendering rendered = ScriptOutput.Render(output);
 
+            // What the script CLAIMS, classified without crediting it. The ceiling for
+            // arbitrary code is self_reported_verified - the host never re-reads the
+            // model after Python, so no field here may read as a bridge guarantee.
+            EvidenceReport evidence = ScriptEvidence.Classify(rendered.Value);
+
             return CommandResult.Ok(new
             {
                 mode = "sync",
@@ -585,6 +741,26 @@ namespace Horizun.Revit.Commands
                 output = rendered.Value,
                 output_kind = rendered.Kind,
                 output_note = rendered.Note,
+                evidence_status = evidence.Status,
+                // The status the SCRIPT declared, kept verbatim so classifying it never
+                // destroys information.
+                script_reported_status = evidence.ScriptReportedStatus,
+                // Always false for Python, and stated rather than implied: a client
+                // scanning for a verification signal must find an explicit "no".
+                host_verified = evidence.HostVerified,
+                evidence_summary = evidence.Summary,
+                evidence_structured = evidence.Structured,
+                evidence_warnings = evidence.Warnings,
+                evidence_contract =
+                    "self_reported_verified means the SCRIPT declared verified and attached evidence - the " +
+                    "bridge did NOT re-read the model to confirm it. completed_unverified means it finished " +
+                    "without anything structured to classify (a verified claim with no evidence is downgraded " +
+                    "to this). partial means part happened or part verified. failed is the script's own " +
+                    "failure report. There is no 'verified' state on this path at all: that word is reserved " +
+                    "for typed commands, which the host re-reads after the commit. Recommended __output__ " +
+                    "shape: " + ScriptEvidence.ContractShape,
+                host_verification_note = ScriptEvidence.HostVerificationDisclaimer,
+                typed_alternatives = typedAlternatives.Count == 0 ? null : typedAlternatives,
                 printed = string.IsNullOrEmpty(printed) ? null : printed,
                 // MEASURED after the script, not assumed. False here means Document.
                 // IsModifiable was re-read and came back false; it is reported on the

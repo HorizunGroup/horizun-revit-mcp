@@ -51,6 +51,9 @@
     <!-- Host-side external mutations use the same append-only, fail-closed
          idempotency ledger as Revit mutations. -->
     <Compile Include="..\Horizun.Revit\Core\CommandResult.cs" />
+    <!-- CommandResult carries the machine-readable permission to fall back to Python,
+         so its type travels with it. Revit-free, like everything else linked here. -->
+    <Compile Include="..\Horizun.Revit\Core\FallbackSignal.cs" />
     <Compile Include="..\Horizun.Revit\Core\Idempotency.cs" />
     <Compile Include="..\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
   </ItemGroup>

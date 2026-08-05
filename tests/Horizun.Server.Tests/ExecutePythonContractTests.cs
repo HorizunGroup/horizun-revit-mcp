@@ -79,5 +79,76 @@ namespace Horizun.Server.Tests
             string runAsync = (string)Props()["run_async"]["description"];
             Assert.Contains("idempotency_key", runAsync);
         }
+
+        /// <summary>
+        /// The schema must declare preflight, or a strict client (additionalProperties:
+        /// false) could never send it and the validate-without-executing path would be
+        /// documented but unreachable.
+        /// </summary>
+        [Fact]
+        public void The_schema_declares_preflight_and_says_what_it_cannot_prove()
+        {
+            JObject preflight = (JObject)Props()["preflight"];
+            Assert.NotNull(preflight);
+            Assert.Equal("boolean", (string)preflight["type"]);
+            Assert.False((bool)preflight["default"]);
+
+            string d = (string)preflight["description"];
+            Assert.Contains("WITHOUT executing", d);
+            // The honesty clause: a preflight is not a rehearsal of arbitrary code.
+            Assert.Contains("cannot prove", d);
+            // And it must not become a manual approval gate that stalls the fallback.
+            Assert.Contains("continue to execution", d);
+        }
+
+        /// <summary>
+        /// Since the default flipped, the description is where a client learns the
+        /// fallback policy: typed first, Python when a capability is missing, never
+        /// as a retry of a failed typed write, and evidence over prints.
+        /// </summary>
+        [Fact]
+        public void The_description_states_the_fallback_policy_and_the_evidence_contract()
+        {
+            string d = ExecutePython().Description;
+
+            Assert.Contains("EXECUTION FALLBACK", d);
+            Assert.Contains("Enabled by default", d);
+            Assert.Contains("instead of answering 'not supported'", d);
+            Assert.Contains("second write", d);
+            // The four evidence states, in the description a caller actually reads.
+            Assert.Contains("self_reported_verified|completed_unverified|partial|failed", d);
+            Assert.Contains("downgraded", d);
+        }
+
+        /// <summary>
+        /// The description must not offer "verified" as something this path returns. It
+        /// is the word a client will repeat to a user, and on the Python path there is
+        /// nothing behind it.
+        /// </summary>
+        [Fact]
+        public void The_description_never_offers_verified_as_a_python_result_state()
+        {
+            string d = ExecutePython().Description;
+
+            Assert.Contains("SELF-REPORTED, NOT HOST-VERIFIED", d);
+            Assert.Contains("host_verified is always false", d);
+            Assert.Contains("script_reported_status", d);
+            // The old four-state list, which began with a bare "verified", must be gone.
+            Assert.DoesNotContain("evidence_status is one of verified|", d);
+        }
+
+        /// <summary>
+        /// The fallback must be described as a structured decision, not as a judgement
+        /// call about how an error was phrased.
+        /// </summary>
+        [Fact]
+        public void The_description_points_at_the_structured_fallback_block()
+        {
+            string d = ExecutePython().Description;
+
+            Assert.Contains("fallback.allowed=true", d);
+            Assert.Contains("never on the wording of an error", d);
+            Assert.Contains("allowed=false, means", d);
+        }
     }
 }

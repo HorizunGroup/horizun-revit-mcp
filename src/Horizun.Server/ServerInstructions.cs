@@ -17,8 +17,64 @@ namespace Horizun.Server
                             "The contract: a command never reports work it did not verify. Every typed write is re-read " +
                             "from the model after the commit, so a silent rollback surfaces as an error rather " +
                             "than a false success, and counts come from re-reading the model rather than from " +
-                            "calls that did not throw. horizun_execute_python is the explicit low-level escape " +
-                            "hatch and does not provide that typed-command guarantee.\n\n" +
+                            "calls that did not throw. horizun_execute_python is the explicit low-level fallback " +
+                            "and does not provide that typed-command guarantee AT ALL - which is why scripts run " +
+                            "through it are expected to verify their own work in __output__, and why what comes " +
+                            "back is labelled self-reported rather than verified.\n\n" +
+
+                            "TYPED FIRST, PYTHON AS THE FALLBACK - NOT 'NOT SUPPORTED'. Prefer a typed command " +
+                            "whenever one fully covers the operation: typed commands rehearse, verify and " +
+                            "re-read their work. When no typed capability exists, do not answer 'not " +
+                            "supported': generate minimal Revit Python yourself, call horizun_execute_python " +
+                            "(optionally preflight=true first, then execute in the same task), verify from " +
+                            "inside the script, and report the evidence. The path from intent to result is: " +
+                            "discover with horizun_health, resolve elements/types/views/levels with the query " +
+                            "tools, use a typed command when it covers the whole case, otherwise write and RUN " +
+                            "the Python immediately, re-read what it changed, and return the structured " +
+                            "__output__ evidence.\n\n" +
+
+                            "DECIDE ON THE fallback BLOCK, NOT ON THE WORDING OF AN ERROR. A failed typed call " +
+                            "may carry a structured signal:\n" +
+                            "  \"fallback\": { \"recommended_tool\": \"horizun_execute_python\", " +
+                            "\"allowed\": true, \"reason\": \"unsupported_kind\", \"write_started\": false }\n" +
+                            "IT ARRIVES ON THE FIRST, ORDINARY CALL. dry_run defaults to true, and the rehearsal " +
+                            "publishes the verdict in structuredContent beside its own payload - a SUCCESSFUL " +
+                            "reply with invalid rows still carries it. You never have to send dry_run=false, or " +
+                            "an apply you have no reason to send, to discover that Python is the way. On a typed " +
+                            "REFUSAL the same block arrives in structuredContent and is repeated in the error " +
+                            "text for a human. fallback.allowed" +
+                            "=true is the executable condition: this bridge has no typed capability for what was " +
+                            "asked AND refused before writing anything, so write the Python and run it in this " +
+                            "same task. If the block is ABSENT, or allowed=false, DO NOT fall back to Python - " +
+                            "the failure was a fixable argument, a Revit error, or a write that may have already " +
+                            "landed. Never infer permission from an error message that merely sounds like a " +
+                            "capability gap; the absence of the block is itself the answer.\n\n" +
+
+                            "A MIXED BATCH NEVER GRANTS THE FALLBACK. When a batch contains BOTH an action no " +
+                            "typed command covers AND an action whose arguments are wrong, allowed is false and " +
+                            "reason is 'mixed_capability_and_invalid_input'. You still get capability_gaps: one " +
+                            "row per action with no typed path, carrying its index, reason and recommended " +
+                            "tool. FIX THE INVALID ENTRIES FIRST and resend the typed call; only once the " +
+                            "remaining failures are all capability gaps does the request earn the grant. Do not " +
+                            "read capability_gaps as permission - it is a map, not a licence.\n\n" +
+
+                            "TWO LIMITS ON THAT FALLBACK. (1) write_started=true is never accompanied by " +
+                            "allowed=true, because a typed command that FAILED mid-write may have partially " +
+                            "written, and a Python retry of the same operation is a second write, not a " +
+                            "recovery - report the error and the real state instead, and let the person decide. " +
+                            "(2) When objective, document, scope and success criterion are already unambiguous, " +
+                            "do not stop to ask the user to write or approve the Python - falling back is the " +
+                            "expected behaviour, not an escalation. target_document and the active-document " +
+                            "check apply to Python exactly as to every typed write.\n\n" +
+
+                            "PYTHON RESULTS ARE SELF-REPORTED, NOT HOST-VERIFIED. A typed write is re-read from " +
+                            "the model by this bridge. Arbitrary Python is not, so the strongest state it can " +
+                            "return is self_reported_verified - the script said it checked and attached " +
+                            "evidence, and nothing here confirmed it. The states are " +
+                            "self_reported_verified|completed_unverified|partial|failed; there is no 'verified' " +
+                            "on the Python path, host_verified is always false, and a script that claims " +
+                            "verified without evidence is downgraded to completed_unverified. Report it to the " +
+                            "user in those terms rather than as a verified result.\n\n" +
                             "Revit executes one API command at a time. Concurrent calls wait in a bounded FIFO " +
                             "queue instead of being rejected. A cancellation removes a call only while it is still " +
                             "queued; work already on Revit's UI thread cannot be interrupted. Successful JSON " +

@@ -3,7 +3,7 @@
 What this bridge can do, who can make it do it, and what is deliberately not
 defended against. Written to be argued with.
 
-Last updated: 2026-08-01.
+Last updated: 2026-08-04.
 
 ---
 
@@ -41,17 +41,29 @@ edits a building.
 ### 2a. Capability profiles
 
 The same `%USERPROFILE%\.horizun\settings.json` is read by the MCP server and
-the add-in on every use. `permission_profile` has four fail-closed values:
+the add-in on every use. `permission_profile` has four values:
 
 - `read_only`: no model mutation or document-session tool is advertised or run.
-- `safe_write` (default): typed, reversible model edits are allowed; opening,
+- `safe_write`: typed, reversible model edits are allowed; opening,
   saving, relinquishing, document-session changes and exports are refused.
 - `full_write`: the session/file operations above are also allowed.
-- `unsafe_code`: full write plus eligibility for arbitrary Python. Python still
-  needs the independent `enable_execute_python: true` switch.
+- `unsafe_code` (default): full write plus eligibility for arbitrary Python.
+  Python is additionally controlled by the independent `enable_execute_python`
+  switch, which also defaults to true.
 
-`allowed_tools` is an optional allowlist and `denied_tools` always wins. A
-malformed profile falls back to `read_only`, never to a more privileged mode.
+**The defaults are deliberately the full surface.** During this early stage a
+fresh install — no settings file, or one without these keys — exposes every
+capability including `horizun_execute_python`, because the product decision is
+that the bridge's fallback path must work out of the box. An **explicit** value
+in the file is always respected; the defaults only fill absence.
+
+Three fail-closed rules survive that decision. A `permission_profile` string
+that is present but not one of the four values falls back to `read_only`, never
+to a more privileged mode. A settings file that exists but cannot be parsed
+falls **closed** (`read_only`, Python off): it may be a corrupted explicit
+restriction, and corruption must never convert "I turned this off" into
+"everything is enabled". And `allowed_tools` is an optional allowlist while
+`denied_tools` always wins.
 
 **What this does NOT defend against:** anything running as the same Windows user.
 A process with that user's rights can read the discovery file, present the token,
@@ -61,15 +73,27 @@ already read the models directly.
 ## 3. Arbitrary code execution
 
 `horizun_execute_python` runs arbitrary Python inside Revit on the UI thread. It
-is **disabled by default** and enabled per machine in
-`%USERPROFILE%\.horizun\settings.json`, with both
-`"permission_profile":"unsafe_code"` and `"enable_execute_python":true`.
+is **enabled by default** during this early stage: it is the execution fallback
+the client is expected to use when no typed command covers an operation, so a
+fresh install advertises it. It can be switched off per machine in
+`%USERPROFILE%\.horizun\settings.json` — an explicit
+`"enable_execute_python":false`, or any `permission_profile` below
+`unsafe_code`, disables it and that choice is respected.
 
-Gated in **both halves**: the server does not advertise it and refuses it if
-called anyway; the add-in refuses it independently. The two ship separately, so
-neither may be the only gate — a stale server must not be able to run code on a
-machine whose owner turned it off. Absence is off: a settings file that is
-missing, unreadable or malformed leaves every default at its safe value.
+This default is a real widening of the exposed surface, accepted deliberately:
+an agent that reads untrusted content (a linked DWG, a PDF, an email) and holds
+this tool can be prompt-injected into running code with the signed-in user's
+rights. The compensating controls are the ones below plus the explicit off
+switch; a machine that processes untrusted content or runs unattended should
+turn it off.
+
+Gated in **both halves**: when disabled, the server does not advertise it and
+refuses it if called anyway; the add-in refuses it independently. The two ship
+separately, so neither may be the only gate — a stale server must not be able to
+run code on a machine whose owner turned it off. A settings file that exists but
+is unreadable or malformed falls **closed** (Python off, `read_only`), so a
+corrupted explicit restriction never reads as consent; only genuine absence
+reads as the default-on posture.
 
 Scripts are capped at 200,000 characters, and every run writes an audit line with
 the user, the document, the script length, the duration and the outcome. **Never
@@ -114,10 +138,50 @@ running it. It is a *document-scoped privileged bypass*, which is a different
 sentence from "it complies with the mutation policy", and the tool's own
 description now says so where a caller reads it.
 
+Two honesty mechanisms narrow the gap without closing it. `preflight=true`
+validates permission, document targeting, size, script hash and basic syntax
+without executing, and returns advisory warnings — it proves the request is
+well-formed, **not** that the code is safe, and the response says so. And every
+run's `__output__` is classified against a structured evidence contract.
+
+That classification is deliberately capped. The host does **not** re-read the
+model after arbitrary Python, so it cannot certify anything a script claims; the
+strongest state this path returns is `self_reported_verified`, alongside
+`completed_unverified`, `partial` and `failed`. There is no `verified` state on
+the Python path at all, `host_verified` is always false, and a script claiming
+`verified` without evidence is downgraded to `completed_unverified`. The
+distinction is load-bearing: a typed write's "verified" is a fact the bridge
+re-read, a script's is testimony. An earlier build returned plain `verified` for
+any script that said so and attached a non-empty list, which made
+`{"evidence":["ok"]}` indistinguishable from a real post-commit re-read — the
+contract lying in the one place it exists to protect. A real `verified` for
+Python would need a typed evidence contract (ids and properties the host could
+re-read itself) plus a Revit-side verifier; neither exists, and a generic one is
+not possible.
+
+Neither mechanism is a rehearsal; both only make the report about a run honest.
+
+**The fallback grant is a property of the whole request.** A typed refusal may
+carry a machine-readable `fallback` block, and `allowed: true` requires all of:
+nothing was written, at least one action failed for a structural capability gap,
+and *every* failing action failed for one. A batch mixing an uncovered action
+with an invalid argument is refused the grant and told which indices were gaps —
+otherwise one uncovered entry would license a script around input the caller
+should have fixed. The decision lives in one place (`FallbackDecision`) rather
+than in each command, and every structural refusal in the typed surface is
+classified in a test-enforced inventory as granted, argument-fixable, or
+reachable after a write.
+
 The risk is accepted because every one of the seven workflows this bridge exists
-to serve depends on it. The compensating controls are the ones above: off by
-default and gated in both halves, document-scoped, durably key-bound on every run,
-size-capped, and audited on every run.
+to serve depends on it, and — since the default-on change — because the fallback
+path from "no typed capability" to "run through Python and self-reported" is now
+part of the product's core promise. Note the wording: the Python path is never
+host-verified. What comes back is the script's own testimony
+(`self_reported_verified`, `completed_unverified`, `partial` or `failed`), and
+`host_verified` is always false — the bridge does not re-read the model after a
+Python run the way it does after a typed write. The compensating controls are the ones above:
+gated in both halves with a respected per-machine off switch, document-scoped,
+durably key-bound on every run, size-capped, and audited on every run.
 
 **The mutation ledger is durable.** Before any model/session mutation starts, an
 append-only claim is written under `%USERPROFILE%\.horizun\idempotency`; the
@@ -243,6 +307,9 @@ explicit, opt-in step, never a silent side effect.
 
 ## 9. Known gaps, stated
 
+- Arbitrary Python execution is **enabled by default** (§3). A machine that
+  feeds untrusted content to its MCP client, or runs unattended, should disable
+  it explicitly; the default optimises for capability, not for that deployment.
 - Nothing audits the Python standard library that ships in every payload.
 - The confirmation token binds a request, not a resolved element set (§4).
 - Cancellation cannot stop work already inside Revit (§6).

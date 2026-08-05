@@ -173,9 +173,28 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (group.GetStatus() == TransactionStatus.Started) group.RollBack();
-                    return CommandResult.Fail("Atomic plan failed and EVERY action was rolled back: " + ex.Message +
-                        ". Executed trace (outcomes are diagnostic only; none were retained): " + executed.ToString(Formatting.None));
+                    // The group started (Start() succeeded above, or we would have returned). Roll
+                    // it back ONLY if it is still open, and report the status Revit ACTUALLY
+                    // returned - never the fixed prose "everything was rolled back". If Assimilate
+                    // itself found a silent rollback the group is already closed; we do not call
+                    // RollBack again, but the group's final status still tells us whether the model
+                    // is clean. rollback_confirmed is computed from that final status, so a RollBack
+                    // that returned Error surfaces as UNCERTAIN, not as done.
+                    bool rollbackAttempted = false;
+                    string rollbackStatus = PlanFailure.NotAttempted;
+                    if (group.GetStatus() == TransactionStatus.Started)
+                    {
+                        rollbackAttempted = true;
+                        rollbackStatus = Guard.RollBack(group).StatusName;
+                    }
+                    JObject diag = PlanFailure.Diagnostic(
+                        transactionGroupStarted: true,
+                        transactionGroupStatus: group.GetStatus().ToString(),
+                        rollbackAttempted: rollbackAttempted,
+                        rollbackStatus: rollbackStatus,
+                        executionTrace: executed,
+                        error: ex.Message);
+                    return CommandResult.FailWithDetail(PlanFailure.Message(diag), diag);
                 }
             }
             return CommandResult.Ok(new JObject { ["transaction_status"] = "Committed", ["transaction_name"] = groupName,

@@ -39,12 +39,21 @@ namespace Horizun.Revit.Commands
 
             var plans = new List<Plan>();
             var errors = new JArray();
+            // Every action's outcome, so the FALLBACK decision is made once, centrally,
+            // over the whole batch - a mixed batch must not inherit one entry's
+            // capability gap as permission for the request. See FallbackDecision.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
                 JObject item = input[i] as JObject;
-                string error = null;
-                Plan plan = item == null ? null : PlanItem(doc, i, item, scale, out error);
-                if (plan == null) errors.Add(new JObject { ["index"] = i, ["error"] = item == null ? "entry is not an object" : error });
+                string error = null, reason = null;
+                Plan plan = item == null ? null : PlanItem(doc, i, item, scale, out error, out reason);
+                if (plan == null)
+                {
+                    string message = item == null ? "entry is not an object" : error;
+                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                }
                 else plans.Add(plan);
             }
 
@@ -105,6 +114,13 @@ namespace Horizun.Revit.Commands
                     ["note"] = "Nothing was created and no transaction was opened. Correct every invalid row before apply."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so
+                // this is the first thing a caller sends; without the block here they
+                // got success=true, invalid=1 and no way to tell a capability gap from
+                // a typo except by sending an apply they had no reason to send.
+                CommandResult rehearsal = FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0
                         ? "the token binds this ordered heterogeneous batch, its units, AND what its names resolved " +
@@ -112,10 +128,16 @@ namespace Horizun.Revit.Commands
                           "elevation. A type renamed, a name re-pointed or a level moved before you apply refuses " +
                           "as a stale plan instead of creating something else under the approved words."
                         : "no usable confirmation is issued while any row is invalid");
-                return CommandResult.Ok(result);
+                return rehearsal;
             }
             if (errors.Count > 0)
-                return CommandResult.Fail(errors.Count + " element plan(s) are invalid. Nothing was created: " + errors.ToString(Formatting.None));
+            {
+                string why = errors.Count + " element plan(s) are invalid. Nothing was created: " +
+                             errors.ToString(Formatting.None);
+                // Nothing has been written - no transaction is open at this point - so the
+                // decision is entirely about WHAT failed, and it is made centrally.
+                return FallbackDecision.Refuse(why, FallbackDecision.Decide(outcomes, writeStarted: false));
+            }
             // Recomputed above by this call's own PlanItem resolution. The rehearsed plan
             // does not travel in the token, only its fingerprint, so a stale refusal names
             // the drift generically - still refused, nothing created.
@@ -188,9 +210,10 @@ namespace Horizun.Revit.Commands
             });
         }
 
-        private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error)
+        private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error,
+                                     out string unsupportedReason)
         {
-            error = null;
+            error = null; unsupportedReason = null;
             string kind = (item.Value<string>("kind") ?? "").ToLowerInvariant();
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
@@ -290,12 +313,20 @@ namespace Horizun.Revit.Commands
                         if (!InCategory(p.Type, BuiltInCategory.OST_StructuralColumns))
                             throw new ArgumentException("structural_column type_id must identify a FamilySymbol in OST_StructuralColumns");
                         break;
-                    default: throw new ArgumentException("unsupported kind '" + kind + "'");
+                    default: throw new UnsupportedCapability(
+                        "unsupported kind '" + kind + "' - horizun_create_elements implements a fixed set of " +
+                        "element kinds and this is not one of them. Nothing was created.",
+                        FallbackSignal.ReasonUnsupportedKind);
                 }
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
                 return p;
             }
-            catch (Exception ex) { error = ex.Message; return null; }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return null;
+            }
         }
 
         private static Element Create(Document doc, Plan p)

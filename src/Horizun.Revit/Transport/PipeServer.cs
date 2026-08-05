@@ -193,7 +193,7 @@ namespace Horizun.Revit.Transport
             try
             {
                 var w = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
-                w.WriteLine(Envelope(null, false, null, why).ToString(Formatting.None));
+                w.WriteLine(PipeEnvelope.Of(null, false, null, why).ToString(Formatting.None));
             }
             catch { }
         }
@@ -213,7 +213,7 @@ namespace Horizun.Revit.Transport
                 if (read.Outcome != LineOutcome.Closed)
                 {
                     Log.Warn("pipe: " + read.Outcome + " - " + read.Error);
-                    try { writer.WriteLine(Envelope(null, false, null, read.Error).ToString(Formatting.None)); }
+                    try { writer.WriteLine(PipeEnvelope.Of(null, false, null, read.Error).ToString(Formatting.None)); }
                     catch { }
                 }
                 return;
@@ -231,18 +231,18 @@ namespace Horizun.Revit.Transport
 
                 if (!ConstantTimeEquals(token, _token))
                 {
-                    reply = Envelope(id, false, null, "Auth failed: token missing or wrong.");
+                    reply = PipeEnvelope.Of(id, false, null, "Auth failed: token missing or wrong.");
                 }
                 else if (string.IsNullOrWhiteSpace(command))
                 {
-                    reply = Envelope(id, false, null, "No command given.");
+                    reply = PipeEnvelope.Of(id, false, null, "No command given.");
                 }
                 else if (string.Equals(command, "__horizun_cancel_queued", StringComparison.Ordinal))
                 {
                     string target = (string)req["params"]?["wire_id"];
                     string detail;
                     bool cancelled = _dispatcher.CancelQueued(target, out detail);
-                    reply = Envelope(id, true, new JObject
+                    reply = PipeEnvelope.Of(id, true, new JObject
                     {
                         ["cancelled_before_start"] = cancelled,
                         ["wire_id"] = target,
@@ -253,18 +253,16 @@ namespace Horizun.Revit.Transport
                 {
                     string paramsJson = req["params"] != null ? req["params"].ToString(Formatting.None) : "{}";
                     CommandResult result = _dispatcher.Invoke(id, command, paramsJson, _commandTimeoutMs);
-                    reply = result.Success
-                        ? Envelope(id, true, result.Data, null)
-                        : Envelope(id, false, null, result.Error);
-                    // Travels on success AND on failure: what Revit objected to is usually
-                    // the reason a command failed, and on success it is the part nobody
-                    // would otherwise be told.
-                    if (result.RevitSaid != null) reply["revit_said"] = JToken.FromObject(result.RevitSaid);
+                    // ONE assembly of the wire shape, in PipeEnvelope, so nothing can be
+                    // attached on this path and forgotten on another - and so the tests
+                    // read the JSON that would go down the pipe instead of asserting
+                    // about this file's source text.
+                    reply = PipeEnvelope.Of(id, result);
                 }
             }
             catch (Exception ex)
             {
-                reply = Envelope(id, false, null, "Malformed request: " + ex.Message);
+                reply = PipeEnvelope.Of(id, false, null, "Malformed request: " + ex.Message);
             }
 
             string text = reply.ToString(Formatting.None);
@@ -281,7 +279,7 @@ namespace Horizun.Revit.Transport
             {
                 Log.Warn("pipe: reply for '" + (id ?? "?") + "' was " + bytes + " bytes, over the " +
                          MaxReplyBytes + " limit; refused instead of sent");
-                text = Envelope(id, false,
+                text = PipeEnvelope.Of(id, false,
                     null,
                     "THE COMMAND RAN, and its answer is too large to return: " + bytes + " bytes, over the " +
                     MaxReplyBytes + " byte limit. Whatever it was going to do inside Revit, it did - this is the " +
@@ -291,17 +289,6 @@ namespace Horizun.Revit.Transport
             }
 
             try { writer.WriteLine(text); } catch { }
-        }
-
-        private static JObject Envelope(string id, bool success, object data, string error)
-        {
-            return new JObject
-            {
-                ["id"] = id,
-                ["success"] = success,
-                ["data"] = data == null ? null : JToken.FromObject(data),
-                ["error"] = error
-            };
         }
 
         // Compares two strings without leaking length/content through timing.

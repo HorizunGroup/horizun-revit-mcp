@@ -89,6 +89,19 @@ Step ("commit {0}{1}" -f $commit, $(if ($dirty) { ' (DIRTY)' } else { ' (clean)'
 
 if ($InstallerOnly) {
     if (-not (Test-Path (Join-Path $stage 'plugin'))) { throw "Nothing staged yet - run pack.ps1 -SkipInstaller first." }
+    # VALIDATE BEFORE WRAPPING. The manifest must describe the stage as it is NOW.
+    # If sign.ps1 (or anything) changed a staged byte after the manifest was written
+    # and the manifest was not recomputed, wrapping it would ship an installer whose
+    # payload does not match its own manifest. sign.ps1 recomputes the manifest after
+    # signing; this refuses to build if for any reason it did not.
+    $mismatch = @(Test-HorizunStageMatchesManifest $stage)
+    if ($mismatch.Count -gt 0) {
+        throw ("Refusing to build the installer: the staged payload no longer matches manifest.json. " +
+               "A file was signed or modified after the manifest was written. Re-run sign.ps1 (which " +
+               "recomputes the manifest from the signed stage), or re-stage. Mismatches: " +
+               (($mismatch | Select-Object -First 8) -join '; '))
+    }
+    Step 'validated the staged payload against manifest.json (every hash re-checked)'
     Step 'using the existing staged payload (nothing rebuilt, nothing wiped)'
 }
 else {

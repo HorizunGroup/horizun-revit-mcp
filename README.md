@@ -8,7 +8,10 @@ the model, under one contract: **a command never reports work it did not
 verify.** Every typed write is re-read from the model after the commit; a silent
 rollback becomes an error, not a false success. Counts come from re-reading the
 model, never from counting calls that did not throw. The deliberately low-level
-`horizun_execute_python` escape hatch is the documented exception.
+`horizun_execute_python` fallback is the documented exception: the bridge does
+not re-read the model after arbitrary code, so its results are labelled
+**self-reported** rather than verified, and never presented as the same kind of
+claim a typed write makes.
 
 **What this is.** The bridge: transport, safety guards, and a generic tool
 surface over the Revit API. Organisation-neutral by design — no company's
@@ -183,7 +186,7 @@ In Revit, over the pipe:
 | `horizun_save_document` | Save, then prove it: the file's timestamp and size before and after. On a workshared model it says, loudly, that this is not a synchronize. |
 | `horizun_relinquish_all` | Give back everything this user owns, and count what is still owned afterwards rather than assume zero. |
 | `horizun_capture_view` | Export a view and hand the IMAGE back, so the caller can look at the model instead of only reading it. |
-| `horizun_execute_python` | The low-level escape hatch: Python against the whole API on the UI thread, stdlib included. **Disabled by default.** It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
+| `horizun_execute_python` | The execution fallback: Python against the whole API on the UI thread, stdlib included. **Enabled by default**; an explicit off in `settings.json` is respected. `preflight=true` validates permission, document, size, hash and syntax without executing. Results are **self-reported, not host-verified**: the structured `__output__` contract classifies each run as `self_reported_verified`, `completed_unverified`, `partial` or `failed` — there is no `verified` state on this path, `host_verified` is always false, and a verified claim without evidence is downgraded. It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. |
@@ -335,13 +338,22 @@ Working, in production use, and honest about its edges.
 ## Security
 
 `horizun_execute_python` runs arbitrary Python inside Revit with the rights of
-the signed-in user. It is **disabled by default** and needs both
-`permission_profile: "unsafe_code"` and `enable_execute_python: true` in
-`%USERPROFILE%\.horizun\settings.json`. The default `safe_write` profile
+the signed-in user. It is **enabled by default** during this early stage — a
+fresh install (no `settings.json`, or one without these keys) reads as
+`permission_profile: "unsafe_code"` and `enable_execute_python: true`, so the
+tool is advertised and serves as the execution fallback when no typed command
+covers an operation. An **explicit** choice in
+`%USERPROFILE%\.horizun\settings.json` is always respected: `read_only`,
+`safe_write`, `full_write` or `enable_execute_python: false` switch capability
+off exactly as before, and a settings file that exists but cannot be parsed
+falls **closed** (`read_only`, Python off) so a corrupted explicit restriction
+never reads as consent. The `safe_write` profile
 allows typed, reversible model edits but refuses opening/saving/relinquishing,
 document-session changes and external export; `full_write` enables those.
 `read_only` hides/refuses model mutations. `allowed_tools` and `denied_tools`
-can narrow any profile. There is no inbound network listener:
+can narrow any profile. `scripts/enable-execute-python.ps1` remains as the
+admin tool to re-enable (or restore) an explicitly disabled setup, and turns it
+off with `-Disable`. There is no inbound network listener:
 named pipes are not reachable across a network, and the server speaks stdio to
 whatever launched it. The optional `horizun_power_bi_push` tool makes bounded
 outbound HTTPS calls only to fixed Microsoft Entra and `api.powerbi.com`

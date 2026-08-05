@@ -3,6 +3,204 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.7.0 — 2026-08-05
+
+Dos mitades. La primera es el cambio de dirección de producto de la sección de
+abajo: `horizun_execute_python` pasa de excepción bloqueada a **ruta de ejecución
+de respaldo**, habilitada por defecto. La segunda son las correcciones que salieron
+de auditar esa entrega antes de publicarla — cada una nombrada por el defecto que
+arregla, no por la función que añade.
+
+- **Un rollback fallido ya no se afirma sin comprobarlo.** `horizun_execute_plan`
+  llamaba a `TransactionGroup.RollBack()` y devolvía la frase fija "EVERY action was
+  rolled back" **sin leer el `TransactionStatus` que ese RollBack devuelve**. Un
+  estado distinto de `RolledBack` (`Pending`, `Error`) significa que el modelo quedó
+  en un estado INCIERTO, no limpio, y el mensaje afirmaba lo limpio siempre. Ahora un
+  plan fallido devuelve un diagnóstico estructurado en `structuredContent`:
+  `transaction_group_started`, `transaction_group_status`, `rollback_attempted`,
+  `rollback_status`, `rollback_confirmed` y un `execution_trace` por acción con su
+  índice, key, tool, success y error. `rollback_confirmed` se calcula del estado
+  FINAL del grupo, y sólo `RolledBack` lo concede; cualquier otro conserva su
+  incertidumbre y lo dice en la prosa. Se añadió `Guard.RollBack`, que reporta el
+  estado real en vez de suponerlo, y la misma afirmación falsa se corrigió en
+  `horizun_annotate`.
+
+- **La probe viva del rollback podía dar un falso PASS.** Aprobaba con (hubo error
+  AND el conteo del modelo no cambió) — condiciones que también cumple un rechazo por
+  token stale o por confirmación, donde el TransactionGroup **nunca llegó a empezar**.
+  Ahora exige, como DATOS y no como texto: que el grupo arrancara, que la primera
+  acción se ejecutara con `success=true`, que la segunda fuera alcanzada y fallara,
+  que `rollback_status` sea `RolledBack`, y que el conteo del modelo antes y después
+  coincida. Un rechazo previo al grupo se reporta explícitamente como "prueba
+  validación, no rollback".
+
+- **Firma, manifiesto e instalador dejan de poder mezclarse.** `sign.ps1` firmaba
+  `src/…/bin/…/horizun-mcp.exe` —una copia que nunca se empaqueta— y **nunca firmaba
+  `horizun-mcp.dll`**, que es donde vive el código del servidor (el `.exe` es un
+  apphost). Además el manifiesto se calculaba ANTES de firmar, y firmar cambia los
+  bytes, así que describía archivos que ya no existían; `-InstallerOnly` no lo
+  recalculaba ni lo revisaba. Ahora se firma el **stage** (exe, dll y cada
+  `Horizun.Revit.dll` por año), el manifiesto se **recalcula después de firmar** con
+  hashes, tamaños, estado de firma y thumbprint del firmante, y `pack.ps1
+  -InstallerOnly` **se niega a construir** si algún byte del stage no coincide con el
+  manifiesto. `verify-release.ps1` comprueba además que los binarios propios lleven
+  firma de verdad, de un solo certificado, y que el firmante en disco sea el que el
+  manifiesto declara.
+
+- **`script_sha256` se renombra a `submitted_source_sha256`** (respuesta de
+  `preflight`). El nombre viejo prometía identificar "el script" y no cubría imports,
+  `exec`/`eval` ni un archivo leído en tiempo de ejecución; el campo nuevo lo declara
+  explícitamente en `submitted_source_sha256_covers`. **`script_sha256` sigue
+  presente con el mismo valor**, depreciado según la política de esta versión: se
+  mantiene dos releases MINOR y no se retira antes de 0.9.0.
+
+- **El rechazo por tamaño deja de enseñar a evadirlo.** Un script por encima del
+  límite recomendaba "ponlo en un archivo y léelo desde un script corto" — lo que
+  evade el límite, el hash del código enviado y su vínculo con la clave de
+  idempotencia a la vez. Ahora dice por qué el límite existe y propone reducir o
+  partir el trabajo.
+
+- **La contradicción de idempotencia async, resuelta.** La respuesta de `run_async`
+  afirmaba que "un reinicio olvida cada clave, así que un reintento vuelve a ejecutar
+  el script", cuando el dispatcher ya usa un ledger DURABLE que reclama la clave en
+  disco antes de ejecutar y **reproduce** la respuesta tras un reinicio. La autoridad
+  única es ese ledger; el ledger en memoria queda documentado como capa subordinada
+  para la carrera intra-proceso. Una clave cuyo resultado terminal nunca se escribió
+  queda `in_doubt` y no se vuelve a ejecutar: el riesgo residual es un resultado que
+  hay que inspeccionar, nunca una segunda ejecución.
+
+- **Ningún atajo para conceder el fallback.** Se eliminó `CommandResult.FailUnsupported`,
+  fábrica pública que concedía el permiso sin pasar por la decisión central ni ver el
+  resto del lote. Las razones de incapacidad pasan a ser un **conjunto cerrado**
+  validado en `FallbackSignal.Allowed` y en `UnsupportedCapability`: una razón
+  inventada falla en el sitio del throw en vez de viajar como un string que ningún
+  cliente puede discriminar.
+
+- **Un fixture declarado y jamás consumido es un defecto.** `VoidFamilyDocument`
+  aparecía como parámetro, en `fixtures_present` y en el JSON de ejemplo, pero su
+  único consumidor (`family_mirror_void`) estaba retirado: anunciaba una cobertura
+  inexistente. Se eliminó, y un test nuevo falla si cualquier fixture declarado deja
+  de ser consumido por una probe.
+
+- **`docs/security-model.md` ya no llama "verified" a Python.** Decía que el camino
+  de respaldo terminaba "executed and verified in Python"; la ruta Python no es
+  host-verificada nunca.
+
+### Verificación de esta versión
+
+Estáticos: 454 tests de Core y 234 de Server en verde, y seis compilaciones
+(servidor más el add-in para Revit 2023–2027) con 0 advertencias y 0 errores. La
+cadena `pack → sign → manifiesto → instalador → verify-release` se ejecutó completa
+y sus comprobaciones de firma e integridad pasan.
+
+**Lo que NO se verificó en vivo, dicho aquí porque callarlo sería el defecto que esta
+versión corrige:** el tier de escritura contra un Revit real (`-WriteProbes`), la
+probe de rollback con su traza estructurada, y las cinco probes de workset cerrado.
+Se corren sobre fixtures desechables y quedan pendientes; hasta que existan, esta
+versión no reclama "0 FAIL / 0 UNVERIFIED" en vivo.
+
+---
+
+Cambio de dirección de producto: `horizun_execute_python` pasa de excepción
+bloqueada a **ruta de ejecución de respaldo**, habilitada por defecto.
+
+- **Los valores por defecto son la superficie completa.** Sin `settings.json`, o
+  con uno que no traiga esas claves, se lee `permission_profile=unsafe_code` y
+  `enable_execute_python=true`: una instalación nueva anuncia Python en
+  `tools/list`. Una elección **explícita** (`read_only`, `safe_write`,
+  `full_write`, `enable_execute_python=false`) se respeta siempre — los defaults
+  solo llenan la ausencia. Y se conserva una asimetría deliberada: un archivo que
+  existe pero **no parsea** cae CERRADO (`read_only`, Python apagado), porque
+  puede ser una restricción explícita corrupta y un byte dañado no debe convertir
+  "esto lo apagué" en "todo está encendido".
+
+- **Política de fallback automático**, escrita donde un cliente la lee: en las
+  `instructions` del servidor y en la descripción de la herramienta. Tipado
+  primero cuando cubra el caso completo; cuando no exista capacidad tipada, o una
+  herramienta tipada se niegue **antes de escribir**, el LLM genera Python mínimo
+  y lo EJECUTA en lugar de responder "no soportado". Dos límites duros: nunca
+  tras una escritura tipada que falló a mitad (pudo escribir parcialmente — un
+  reintento es una segunda escritura), y no detenerse a pedir aprobación cuando
+  objetivo, documento, alcance y criterio de éxito ya son inequívocos.
+
+- **El veto por solape tipado pasa a ser un aviso.** Un script que llama a una
+  API que un comando tipado ya hace y verifica recibe `typed_alternatives`
+  nombrando el comando, y **corre igual**. El veto obligaba a partir una
+  operación compuesta en dos transacciones o a rendirse; la recomendación
+  conserva el valor sin el bloqueo.
+
+- **Contrato de evidencia en `__output__`, autorreportado y no acreditado.** El
+  host **no** relee el modelo tras código arbitrario, así que no puede certificar
+  nada que un script afirme: el estado más fuerte de esta ruta es
+  `self_reported_verified`, junto a `completed_unverified`, `partial` y `failed`.
+  **En la ruta Python no existe `verified`**, `host_verified` siempre es false, y
+  un `status: verified` sin `verification.evidence` se degrada a
+  `completed_unverified` diciendo por qué. `script_reported_status` conserva lo
+  que declaró el script. La distinción es la que sostiene el contrato de
+  honestidad: el "verified" de una escritura tipada es un hecho que el puente
+  releyó; el de un script es testimonio. Una versión anterior devolvía `verified`
+  a secas para cualquier script que lo dijera y adjuntara una lista no vacía, lo
+  que hacía `{"evidence":["ok"]}` indistinguible de una relectura real.
+  `print()` sigue funcionando como compatibilidad. Plantilla y recetas en
+  [`docs/python-fallback-recipes.md`](docs/python-fallback-recipes.md).
+
+- **El fallback es decidible por máquina, no por redacción.** Un rechazo tipado
+  previo a escribir puede traer un bloque estructurado —
+  `fallback: {recommended_tool, allowed, reason, write_started}` — en
+  `structuredContent` y repetido en el texto del error. `allowed: true` solo se
+  emite cuando ninguna capacidad tipada cubre lo pedido **y** no se escribió nada;
+  el invariante `allowed=true ⇒ write_started=false` se valida en el constructor,
+  no se confía. Sin bloque, o con `allowed: false`, el cliente no debe caer a
+  Python. La incapacidad viaja como tipo (`UnsupportedCapability`) para sobrevivir
+  al catch que aplana todo lo demás a un string. Cubre hoy `horizun_create_elements`
+  (kind), `horizun_annotate`, `horizun_transform_elements` y `horizun_manage_views`
+  (operation).
+
+- **El aviso de solape tipado se enmascara con el lexer de Python.** Un
+  `# ElementTransformUtils.MoveElement` en un comentario generaba un aviso falso.
+  Ahora se tokeniza con `TokenCategorizer` —servicio público del DLR que **lexa
+  sin ejecutar**— y se blanquean comentarios y literales; el escáner a mano queda
+  como respaldo si el tokenizer no está disponible o la fuente no lexa (falla
+  suave: un aviso nunca puede impedir una corrida). **Límite documentado:** un
+  f-string es un solo token de cadena, así que una llamada dentro de `f"{...}"`
+  también se enmascara y no genera aviso — dirección conservadora y fijada en los
+  tests. Sigue siendo aviso, no bloqueo.
+
+- **Un lote mixto ya no concede el fallback.** Antes bastaba con que UNA acción
+  fuera una incapacidad para que toda la solicitud devolviera `allowed: true`,
+  aunque otra acción del mismo lote tuviera argumentos inválidos — permiso cierto
+  de una entrada, publicado para la llamada entera. Ahora la decisión es una pieza
+  pura y central (`FallbackDecision`) que exige las tres condiciones: nada escrito,
+  al menos una incapacidad, y que **todos** los fallos sean incapacidades. El lote
+  mixto recibe `allowed: false` con `reason: mixed_capability_and_invalid_input`
+  más `capability_gaps` por índice: un mapa, no una licencia.
+
+- **Auditoría de incapacidades tipadas con inventario probado.** Cada rechazo
+  estructural de `src/Horizun.Revit/Commands` está clasificado como concedido,
+  argumento corregible o posterior a escritura, con su razón escrita; un escáner
+  falla si aparece uno sin clasificar, si una fila queda obsoleta, o si un comando
+  sin fila concedida empieza a emitir fallback.
+
+- **Transporte probado como valores, no como texto fuente.** El ensamblado del
+  sobre del pipe (`PipeEnvelope`) y del resultado MCP (`McpResult`) se extrajeron
+  para que las pruebas construyan un `CommandResult` y lean el JSON que llegaría
+  al cliente. Una señal perdida en serialización es indistinguible de una que
+  nunca se concedió, y el cliente deja de caer a Python en silencio.
+
+- **`preflight=true`**: valida permiso, documento objetivo, tamaño, SHA-256 del
+  script y sintaxis **sin ejecutar**, y devuelve advertencias detectables. No
+  gasta clave de idempotencia (no muta) y no se combina con `run_async`. Declara
+  explícitamente lo que no puede: demostrar la seguridad o el efecto de código
+  arbitrario.
+
+- **`enable-execute-python.ps1` sigue existiendo como herramienta de
+  administración** — re-habilita o restaura una instalación apagada
+  explícitamente, y apaga con `-Disable`. Ya no es el único modo de activarlo.
+
+- **Riesgo aceptado, dicho en `docs/security-model.md`**: el default amplía la
+  superficie expuesta. Una máquina que procese contenido no confiable o corra
+  desatendida debería apagarlo explícitamente.
+
 ## v0.6.1 — 2026-08-04
 
 Cortada el mismo día que v0.6.0, sobre ella:

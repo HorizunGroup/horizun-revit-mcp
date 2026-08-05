@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - views and sheets as one dependency-aware atomic batch.
 // -----------------------------------------------------------------------------
 using System;
@@ -35,11 +35,19 @@ namespace Horizun.Revit.Commands
             var knownKeys = new Dictionary<string, Type>(StringComparer.Ordinal);
             var errors = new JArray();
             var plans = new List<JObject>();
+            // Every action's outcome, so the fallback is decided once over the whole
+            // batch rather than granted because one entry was uncovered.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
                 JObject a = input[i] as JObject;
-                string error = Validate(doc, a, knownKeys);
-                if (error != null) errors.Add(new JObject { ["index"] = i, ["error"] = error });
+                string reason = null;
+                string error = Validate(doc, a, knownKeys, out reason);
+                if (error != null)
+                {
+                    errors.Add(new JObject { ["index"] = i, ["error"] = error });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = error, UnsupportedReason = reason });
+                }
                 else
                 {
                     string key = a.Value<string>("key");
@@ -107,9 +115,18 @@ namespace Horizun.Revit.Commands
                           "right now, by identity and by name - a template edited into a different template, a " +
                           "renamed source view or a swapped titleblock refuses as a stale plan."
                         : "no usable token is issued while an action is invalid");
-                return CommandResult.Ok(result);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
+                // is the first call a caller makes; without the block here they got
+                // success=true with invalid rows and no way to tell a capability gap
+                // from a typo except by sending an apply they had no reason to send.
+                return FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             }
-            if (errors.Count > 0) return CommandResult.Fail("Invalid action graph; nothing ran: " + errors.ToString(Formatting.None));
+            if (errors.Count > 0)
+                return FallbackDecision.Refuse(
+                    "Invalid action graph; nothing ran: " + errors.ToString(Formatting.None),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             // Recomputed by THIS call's own resolution of the same references.
             CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
                                                                      resolvedPlan, null);
@@ -198,8 +215,10 @@ namespace Horizun.Revit.Commands
             catch { return "<unreadable>"; }
         }
 
-        private static string Validate(Document doc, JObject a, Dictionary<string, Type> known)
+        private static string Validate(Document doc, JObject a, Dictionary<string, Type> known,
+                                       out string unsupportedReason)
         {
+            unsupportedReason = null;
             if (a == null) return "action is not an object";
             string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
             string key = a.Value<string>("key");
@@ -243,11 +262,20 @@ namespace Horizun.Revit.Commands
                         break;
                     case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); ReferenceViewportView(doc, a, known); Point(a["point"]); break;
                     case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
-                    default: return "unsupported operation '" + op + "'";
+                    default:
+                        // A capability gap, not a fixable argument: this command implements a
+                        // fixed set of documentation operations and this is not one of them.
+                        unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
+                        return "unsupported operation '" + op + "' - horizun_manage_views implements a fixed " +
+                               "set of view, sheet and viewport operations. Nothing was written.";
                 }
                 return null;
             }
-            catch (Exception ex) { return ex.Message; }
+            catch (Exception ex)
+            {
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return ex.Message;
+            }
         }
 
         private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)

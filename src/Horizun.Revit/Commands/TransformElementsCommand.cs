@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - generic transforms with post-commit location verification.
 // -----------------------------------------------------------------------------
 using System;
@@ -36,11 +36,19 @@ namespace Horizun.Revit.Commands
             var plans = new List<Plan>();
             var errors = new JArray();
             var claimed = new HashSet<long>();
+            // Every action's outcome, so the fallback is decided once over the whole
+            // batch rather than granted because one entry was uncovered.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
-                string error = null;
-                Plan plan = PlanOperation(doc, i, input[i] as JObject, scale, claimed, out error);
-                if (plan == null) errors.Add(new JObject { ["index"] = i, ["error"] = error ?? "entry is not an object" });
+                string error = null, reason = null;
+                Plan plan = PlanOperation(doc, i, input[i] as JObject, scale, claimed, out error, out reason);
+                if (plan == null)
+                {
+                    string message = error ?? "entry is not an object";
+                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                }
                 else plans.Add(plan);
             }
 
@@ -108,9 +116,18 @@ namespace Horizun.Revit.Commands
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0 ? "the token binds the ordered operations, targets, vectors, axes and types" :
                     "no usable confirmation is issued while any operation is invalid");
-                return CommandResult.Ok(result);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
+                // is the first call a caller makes; without the block here they got
+                // success=true with invalid rows and no way to tell a capability gap
+                // from a typo except by sending an apply they had no reason to send.
+                return FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             }
-            if (errors.Count > 0) return CommandResult.Fail("Invalid operations; nothing ran: " + errors.ToString(Formatting.None));
+            if (errors.Count > 0)
+                return FallbackDecision.Refuse(
+                    "Invalid operations; nothing ran: " + errors.ToString(Formatting.None),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             // The rehearsed fingerprint travels in the token; the rehearsed PLAN does not,
             // so a stale refusal names the drift generically rather than per element.
             // Still refused, still nothing written.
@@ -156,15 +173,18 @@ namespace Horizun.Revit.Commands
         }
 
         private static Plan PlanOperation(Document doc, int index, JObject o, double scale, HashSet<long> claimed,
-                                          out string error)
+                                          out string error, out string unsupportedReason)
         {
-            error = null;
+            error = null; unsupportedReason = null;
             if (o == null) { error = "entry is not an object"; return null; }
             try
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" && op != "change_type")
-                    throw new ArgumentException("unsupported operation '" + op + "'");
+                    throw new UnsupportedCapability(
+                        "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
+                        "rotate, pin, unpin and change_type only. Nothing was written.",
+                        FallbackSignal.ReasonUnsupportedOperation);
                 JArray ids = o["element_ids"] as JArray;
                 if (ids == null || ids.Count == 0 || ids.Count > 2000) throw new ArgumentException("element_ids must contain 1..2000 ids");
                 var p = new Plan { Index = index, Operation = op, Ids = new List<ElementId>(), Samples = new Dictionary<long, List<XYZ>>() };
@@ -206,7 +226,12 @@ namespace Horizun.Revit.Commands
                 p.Summary = new JObject { ["index"] = index, ["operation"] = op, ["targets"] = p.Ids.Count, ["verifiable"] = true };
                 return p;
             }
-            catch (Exception ex) { error = ex.Message; return null; }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return null;
+            }
         }
 
         private static void Apply(Document doc, Plan p)

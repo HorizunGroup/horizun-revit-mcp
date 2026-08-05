@@ -261,3 +261,172 @@ function Get-HorizunPayloadListing([string]$Root) {
         StdLibDigest = $stdlibDigest
     }
 }
+
+# ---------------------------------------------------------------------------
+# SIGNING AND MANIFEST INTEGRITY. Three functions the release flow needs so the
+# same arithmetic that signs and manifests a stage is the one that validates it.
+#
+# The defect these exist to fix: the manifest used to be written during the build
+# (pack -SkipInstaller) BEFORE sign.ps1 ran. Signing a PE file changes its bytes,
+# so every hash in the manifest then described the UNSIGNED file, while the
+# installer wrapped the SIGNED one. -InstallerOnly rebuilt nothing and re-checked
+# nothing, so it shipped a manifest that did not describe its own payload. The fix
+# is to RECOMPUTE the manifest after signing (Update-HorizunManifestToStage) and
+# to REFUSE to build an installer whose stage no longer matches its manifest
+# (Test-HorizunStageMatchesManifest).
+# ---------------------------------------------------------------------------
+
+# Whether a PE file carries an Authenticode signature, and by whom. SIGNED is about
+# the presence of a signer certificate, NOT about trust: a self-signed certificate
+# reports Status 'UnknownError' ("not trusted by the trust provider") yet the file
+# IS signed. Trust is the machine owner's separate decision; this reports both so
+# neither is confused for the other.
+function Get-HorizunSignatureInfo([string]$Path) {
+    if (-not (Test-Path $Path)) { return [pscustomobject]@{ Signed = $false; Status = 'missing'; Thumbprint = $null; Subject = $null } }
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    [pscustomobject]@{
+        Signed     = [bool]$sig.SignerCertificate
+        Status     = "$($sig.Status)"
+        Thumbprint = $(if ($sig.SignerCertificate) { $sig.SignerCertificate.Thumbprint } else { $null })
+        Subject    = $(if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { $null })
+        Timestamped = [bool]$sig.TimeStamperCertificate
+    }
+}
+
+# The own binaries a release signs and stakes its identity on: the server apphost,
+# the server's real code (horizun-mcp.dll), and one Horizun.Revit.dll per year.
+# Third-party DLLs (Newtonsoft, IronPython) are signed by their publishers and are
+# not ours to re-sign, so they are not in this list.
+function Get-HorizunOwnBinaries([string]$Stage) {
+    $own = @()
+    foreach ($n in 'horizun-mcp.exe', 'horizun-mcp.dll') {
+        $p = Join-Path $Stage "server\$n"
+        if (Test-Path $p) { $own += $p }
+    }
+    foreach ($dll in Get-ChildItem (Join-Path $Stage 'plugin') -Filter 'Horizun.Revit.dll' -Recurse -File -ErrorAction SilentlyContinue) {
+        $own += $dll.FullName
+    }
+    $own
+}
+
+<#
+  Re-hash every file the manifest references, from the stage as it is NOW, and
+  return each disagreement as a string. An empty result means the stage is
+  byte-for-byte what the manifest says. Used by -InstallerOnly before it builds
+  and by verify-release, so a file signed or altered AFTER the manifest was
+  written is caught rather than shipped.
+#>
+function Test-HorizunStageMatchesManifest([string]$Stage) {
+    $manifestPath = Join-Path $Stage 'manifest.json'
+    if (-not (Test-Path $manifestPath)) { return @("no manifest at $manifestPath") }
+    $doc = Get-Content $manifestPath -Raw | ConvertFrom-Json
+    $bad = @()
+
+    # The server apphost.
+    $serverFile = Join-Path $Stage ($doc.Server.File -replace '/', '\')
+    if (-not (Test-Path $serverFile)) { $bad += "server missing: $($doc.Server.File)" }
+    elseif ((Get-HorizunFileHash $serverFile) -ne $doc.Server.Sha256) {
+        $bad += "server $($doc.Server.File): $((Get-HorizunFileHash $serverFile)) vs manifest $($doc.Server.Sha256)"
+    }
+
+    # The whole server directory (horizun-mcp.dll, Newtonsoft, the runtimeconfig...).
+    $serverDir = Join-Path $Stage 'server'
+    foreach ($p in @($doc.Server.Payload)) {
+        $onDisk = Join-Path $serverDir ($p.Path -replace '/', '\')
+        if (-not (Test-Path $onDisk)) { $bad += "server payload missing: $($p.Path)"; continue }
+        if ((Get-HorizunFileHash $onDisk) -ne $p.Sha256) { $bad += "server payload $($p.Path): changed since the manifest" }
+    }
+
+    # Every year's plugin dll and its whole payload.
+    foreach ($entry in @($doc.Plugins)) {
+        $pluginDir = Join-Path $Stage "plugin\$($entry.Year)"
+        $dll = Join-Path $pluginDir 'Horizun.Revit.dll'
+        if (-not (Test-Path $dll)) { $bad += "plugin $($entry.Year) missing"; continue }
+        if ((Get-HorizunFileHash $dll) -ne $entry.Sha256) {
+            $bad += "plugin $($entry.Year) Horizun.Revit.dll: $((Get-HorizunFileHash $dll)) vs manifest $($entry.Sha256)"
+        }
+        foreach ($p in @($entry.Payload)) {
+            $onDisk = Join-Path $pluginDir ($p.Path -replace '/', '\')
+            if (-not (Test-Path $onDisk)) { $bad += "plugin $($entry.Year) payload missing: $($p.Path)"; continue }
+            if ((Get-HorizunFileHash $onDisk) -ne $p.Sha256) { $bad += "plugin $($entry.Year) payload $($p.Path): changed since the manifest" }
+        }
+    }
+
+    # The .addin, if the manifest recorded it.
+    if ($doc.AddinManifest) {
+        $addin = Join-Path $Stage 'Horizun.addin'
+        if (-not (Test-Path $addin)) { $bad += 'Horizun.addin missing from the stage' }
+        elseif ((Get-HorizunFileHash $addin) -ne $doc.AddinManifest.Sha256) { $bad += 'Horizun.addin: changed since the manifest' }
+    }
+
+    $bad
+}
+
+<#
+  Recompute the manifest from the stage AS IT IS NOW, preserving the provenance
+  fields the build wrote (commit, clean-tree, product versions) and refreshing
+  every hash, size and payload listing so they describe the CURRENT bytes - the
+  signed ones, when this runs after sign.ps1. It also records a Signature block:
+  whether every own binary is signed, by whom, and each file's signature status.
+
+  This is what makes "sign, then manifest" true instead of "manifest, then sign".
+#>
+function Update-HorizunManifestToStage([string]$Stage) {
+    $manifestPath = Join-Path $Stage 'manifest.json'
+    if (-not (Test-Path $manifestPath)) { throw "no manifest at $manifestPath - run pack.ps1 -SkipInstaller first" }
+    $doc = Get-Content $manifestPath -Raw | ConvertFrom-Json
+
+    # Server: apphost hash+size, and the whole directory listing.
+    $serverFile = Join-Path $Stage ($doc.Server.File -replace '/', '\')
+    if (Test-Path $serverFile) {
+        $doc.Server.Sha256 = Get-HorizunFileHash $serverFile
+        $doc.Server | Add-Member -Force NoteProperty Size ((Get-Item $serverFile).Length)
+        $doc.Server.Payload = (Get-HorizunPayloadListing (Join-Path $Stage 'server')).Files
+    }
+
+    # Each plugin: dll hash+size, file count, and the whole payload + stdlib digest.
+    foreach ($entry in @($doc.Plugins)) {
+        $pluginDir = Join-Path $Stage "plugin\$($entry.Year)"
+        $dll = Join-Path $pluginDir 'Horizun.Revit.dll'
+        if (-not (Test-Path $dll)) { continue }
+        $entry.Sha256 = Get-HorizunFileHash $dll
+        $entry | Add-Member -Force NoteProperty Size ((Get-Item $dll).Length)
+        $listing = Get-HorizunPayloadListing $pluginDir
+        $entry.Payload = $listing.Files
+        $entry | Add-Member -Force NoteProperty StdLibFiles $listing.StdLibFiles
+        $entry | Add-Member -Force NoteProperty StdLibDigest $listing.StdLibDigest
+        $entry | Add-Member -Force NoteProperty Files ((Get-ChildItem $pluginDir -Recurse -File).Count)
+    }
+
+    # The .addin.
+    if ($doc.AddinManifest) {
+        $addin = Join-Path $Stage 'Horizun.addin'
+        if (Test-Path $addin) { $doc.AddinManifest.Sha256 = Get-HorizunFileHash $addin }
+    }
+
+    # The signature block: what is signed, and by whom.
+    $own = Get-HorizunOwnBinaries $Stage
+    $sigFiles = @()
+    $allSigned = $own.Count -gt 0
+    $thumb = $null; $subject = $null
+    foreach ($p in $own) {
+        $info = Get-HorizunSignatureInfo $p
+        if (-not $info.Signed) { $allSigned = $false }
+        elseif (-not $thumb) { $thumb = $info.Thumbprint; $subject = $info.Subject }
+        $sigFiles += [pscustomobject]@{
+            File = ($p.Substring($Stage.Length).TrimStart('\') -replace '\\', '/')
+            Signed = $info.Signed; Status = $info.Status; Thumbprint = $info.Thumbprint; Timestamped = $info.Timestamped
+        }
+    }
+    $doc | Add-Member -Force NoteProperty Signed $allSigned
+    $doc | Add-Member -Force NoteProperty Signature ([pscustomobject]@{
+        Signed = $allSigned
+        SignerThumbprint = $thumb
+        SignerSubject = $subject
+        Files = $sigFiles
+        RecomputedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    })
+
+    $doc | ConvertTo-Json -Depth 6 | Out-File $manifestPath -Encoding utf8
+    $doc
+}

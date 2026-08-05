@@ -142,16 +142,38 @@ and run `install.ps1` again.
   Cancelling removes work only before it starts. Use `horizun_submit_job` plus
   `horizun_job_status` for work that should outlive the MCP request.
 - **The contract**: no command reports work it did not verify. Every typed write
-  is re-read from the model after the commit. `horizun_execute_python` is the
-  explicit low-level exception and does not provide the typed-command guarantee.
-- **`horizun_execute_python` ships disabled.** It needs both
-  `{"permission_profile":"unsafe_code","enable_execute_python":true}` in
-  `%USERPROFILE%\.horizun\settings.json`.
-  Do not enable it unless the user asks: it is the full Revit API. And do not
-  switch it on yourself — the intended way is for a PERSON to run
-  `scripts/enable-execute-python.ps1`, which prints what to weigh, writes exactly
-  those two keys, preserves other settings, and reverts with `-Disable`. Ask them
-  to run it; then have them restart the MCP client so the tool appears.
+  is re-read from the model after the commit. `horizun_execute_python` does not
+  provide that guarantee **at all**, which is why scripts run through it verify
+  their own work in the structured `__output__` and why what comes back is
+  labelled self-reported: the states are `self_reported_verified`,
+  `completed_unverified`, `partial`, `failed`. There is no `verified` on the
+  Python path and `host_verified` is always false — report it to the user as the
+  script's testimony, not as the bridge's finding.
+- **Typed first, Python as the fallback — never "not supported".** Prefer a typed
+  command whenever one fully covers the operation. When none exists, or a failed
+  typed call returns `fallback.allowed: true` — its machine-readable signal that
+  no typed capability covers the request *and* nothing was written — generate
+  minimal Revit Python and run it through `horizun_execute_python` (optionally
+  `preflight=true` first, then execute in the same task). **Decide on that block,
+  never on the wording of an error**: no block, or `allowed: false`, means do not
+  fall back. **It arrives on the first, ordinary call** — `dry_run` defaults to
+  true and the rehearsal publishes the verdict in `structuredContent` beside its
+  own payload, so a successful reply with invalid rows still carries it; you
+  never need to send `dry_run: false` to find out. `write_started: true` never accompanies `allowed: true`, because a
+  typed write that failed mid-operation may have partially written and a Python
+  retry would be a second write. **A mixed batch never grants the fallback**: if
+  one action is uncovered and another has bad arguments, `allowed` is false and
+  you get `capability_gaps` naming the uncovered indices — fix the invalid
+  entries and resend the typed call first. `target_document` plus the
+  active-document check apply to Python exactly as to every typed write.
+- **`horizun_execute_python` is enabled by default** during this early stage:
+  a fresh install exposes it, and it is the expected fallback path. A machine
+  owner can switch it off — an explicit `enable_execute_python=false` or a
+  profile below `unsafe_code` in `%USERPROFILE%\.horizun\settings.json` is
+  always respected, and you must not edit that file to reverse it. The admin
+  script `scripts/enable-execute-python.ps1` re-enables (or restores) an
+  explicitly disabled setup and reverts with `-Disable`; after a change,
+  restart the MCP client so the tool list refreshes.
 - This bridge is **organisation-neutral by design**: no company's standards or
   catalogues are compiled in. Where a command needs one, it is passed as an
   argument. The delivery workflows built on top live in
@@ -292,17 +314,40 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   La cancelación solo elimina trabajo antes de empezar. Usa
   `horizun_submit_job` y `horizun_job_status` para trabajos largos.
 - **El contrato**: ningún comando reporta trabajo que no verificó. Toda escritura
-  tipada se relee del modelo tras el commit. `horizun_execute_python` es la
-  excepción explícita de bajo nivel y no ofrece la garantía del comando tipado.
-- **`horizun_execute_python` viene apagado.** Exige
-  `{"permission_profile":"unsafe_code","enable_execute_python":true}` en
-  `%USERPROFILE%\.horizun\settings.json`.
-  No lo enciendas sin que el usuario lo pida: es la API completa de Revit. Y no lo
-  actives tú: la vía prevista es que una PERSONA corra
-  `scripts/enable-execute-python.ps1`, que muestra qué tener en cuenta, escribe
-  exactamente esas dos claves, conserva el resto de la config y se revierte con
-  `-Disable`. Pídele que lo corra; luego que reinicie el cliente MCP para que la
-  herramienta aparezca.
+  tipada se relee del modelo tras el commit. `horizun_execute_python` **no ofrece
+  esa garantía en absoluto**, y por eso los scripts verifican su propio trabajo en
+  el `__output__` estructurado y lo que vuelve se etiqueta como autorreportado:
+  los estados son `self_reported_verified`, `completed_unverified`, `partial`,
+  `failed`. En la ruta Python no existe `verified` y `host_verified` siempre es
+  false — repórtalo al usuario como testimonio del script, no como hallazgo del
+  puente.
+- **Tipado primero, Python como respaldo — nunca "no soportado".** Prefiere un
+  comando tipado cuando cubra la operación completa. Cuando no exista, o una
+  llamada tipada fallida devuelva `fallback.allowed: true` — su señal legible por
+  máquina de que ninguna capacidad tipada cubre lo pedido *y* no se escribió nada
+  — genera el Python de Revit mínimo y córrelo con `horizun_execute_python` (si
+  quieres, `preflight=true` primero y ejecuta en la misma tarea). **Decide por ese
+  bloque, nunca por cómo esté redactado un error**: sin bloque, o con
+  `allowed: false`, no caigas a Python. **Llega en la primera llamada normal** —
+  `dry_run` viene en true y el ensayo publica el veredicto en `structuredContent`
+  junto a su propio payload, así que una respuesta exitosa con filas inválidas
+  también lo trae; nunca hace falta mandar `dry_run: false` para enterarte. `write_started: true` nunca acompaña a
+  `allowed: true`, porque una escritura tipada que falló a mitad pudo escribir
+  parcialmente y un reintento en Python sería una segunda escritura.
+  **Un lote mixto nunca concede el fallback**: si una acción no está cubierta y
+  otra trae argumentos malos, `allowed` es false y llegan `capability_gaps` con
+  los índices no cubiertos — corrige primero las entradas inválidas y reenvía la
+  llamada tipada. `target_document` más el control de documento activo aplican a
+  Python igual que a toda escritura tipada.
+- **`horizun_execute_python` viene habilitado por defecto** en esta etapa
+  temprana: una instalación nueva lo expone y es la ruta de respaldo esperada.
+  El dueño de la máquina puede apagarlo — un `enable_execute_python=false`
+  explícito o un perfil por debajo de `unsafe_code` en
+  `%USERPROFILE%\.horizun\settings.json` siempre se respeta, y no debes editar
+  ese archivo para revertirlo. El script de administración
+  `scripts/enable-execute-python.ps1` re-habilita (o restaura) una configuración
+  apagada explícitamente y se revierte con `-Disable`; tras un cambio, reinicia
+  el cliente MCP para que la lista de herramientas se refresque.
 - Este puente es **neutral por diseño**: no lleva estándares ni catálogos de
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa
   como argumento. Los flujos de entrega construidos encima viven en

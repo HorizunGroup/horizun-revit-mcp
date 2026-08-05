@@ -790,9 +790,30 @@ namespace Horizun.Contracts
                 Name = "horizun_execute_python",
                 Command = "horizun_execute_python",
                 Description =
-                    "Run Python directly against the Revit API on the UI thread. doc/uidoc/uiapp/app are injected. " +
-                    "Return data by assigning __output__ or with print(). The standard library is available " +
-                    "(json, re, csv, datetime, math). " +
+                    "Run Python directly against the Revit API on the UI thread - THE EXECUTION FALLBACK for " +
+                    "everything the typed commands do not cover. Enabled by default; an owner's explicit OFF in " +
+                    "settings.json is respected. POLICY: prefer a typed command when it fully covers the " +
+                    "operation. When none exists, or a failed typed call returns fallback.allowed=true - its " +
+                    "machine-readable signal that no typed capability covers the request AND nothing was " +
+                    "written - generate minimal Python and run it here instead of answering 'not supported'. " +
+                    "Decide on that block, never on the wording of an error: no block, or allowed=false, means " +
+                    "DO NOT fall back. NEVER fall back here after a typed write FAILED mid-operation - it may " +
+                    "have partially written, and a Python retry is a second write; report the real state " +
+                    "instead. doc/uidoc/uiapp/app are injected. " +
+                    "RETURN EVIDENCE: assign __output__ the structured shape {status: " +
+                    "verified|completed_unverified|partial|failed, summary, created_ids, modified_ids, " +
+                    "deleted_ids, verification:{checked, evidence:[]}, warnings:[]} and RE-READ what you wrote " +
+                    "before claiming verified. WHAT COMES BACK IS SELF-REPORTED, NOT HOST-VERIFIED: the bridge " +
+                    "does not re-read the model after arbitrary code, so evidence_status is one of " +
+                    "self_reported_verified|completed_unverified|partial|failed - there is no 'verified' on " +
+                    "this path, host_verified is always false, and a verified claim without evidence is " +
+                    "downgraded to completed_unverified. script_reported_status carries what your script " +
+                    "declared. print() remains as compatibility output. " +
+                    "preflight=true validates permission, document, size, script hash and basic syntax WITHOUT " +
+                    "executing, and returns advisory warnings; it cannot prove what arbitrary code will do. " +
+                    "When the objective is unambiguous and preflight passes, continue to execution in the same " +
+                    "task. Scripts that only duplicate a typed command get an advisory naming it, not a " +
+                    "refusal. The standard library is available (json, re, csv, datetime, math). " +
                     "TRANSACTIONS ARE YOURS TO CLOSE, and this is the one thing to read before using it. NOTHING " +
                     "here rolls back a transaction your script opened - the Revit API offers no handle on a " +
                     "transaction opened by other code, so no amount of error handling on this side can reach it. " +
@@ -807,7 +828,8 @@ namespace Horizun.Contracts
                     "target_document is REQUIRED and is matched against the ACTIVE document - this command will " +
                     "not switch documents for you, and a script that needs no document cannot run here. " +
                     "run_async=true returns a job_id immediately for work longer than the request timeout. " +
-                    "Every execution requires a durable idempotency_key. " +
+                    "Every execution requires a durable idempotency_key; a preflight executes nothing and " +
+                    "needs none. " +
                     "STILL A PRIVILEGED BYPASS: it has no dry run, no plan and no confirmation token, so unlike " +
                     "the typed write commands nothing rehearses what it will do. Accepted risk, not a satisfied " +
                     "policy - see docs/security-model.md.",
@@ -835,10 +857,23 @@ namespace Horizun.Contracts
                         {
                             ["type"] = "string",
                             ["description"] =
-                                "REQUIRED for every execution. Claimed durably before Python runs: the same key " +
+                                "REQUIRED for every execution; not needed (and not claimed) for preflight=true, " +
+                                "which executes nothing. Claimed durably before Python runs: the same key " +
                                 "with the identical operation replays its recorded answer without executing, a " +
                                 "different operation under that key is refused, and a claimed operation with no " +
                                 "terminal record after a crash is reported in_doubt instead of repeated."
+                        },
+                        ["preflight"] = new JObject
+                        {
+                            ["type"] = "boolean",
+                            ["default"] = false,
+                            ["description"] =
+                                "Validate WITHOUT executing: permission, target document, size, script SHA-256 " +
+                                "and basic syntax, plus advisory warnings (typed-command overlaps, missing " +
+                                "transaction hygiene, missing __output__). It cannot prove the safety or effect " +
+                                "of arbitrary code. Not combinable with run_async. When the objective is already " +
+                                "unambiguous and the preflight passes, continue to execution in the same task - " +
+                                "this is a check, not an approval step."
                         },
                         ["run_async"] = new JObject
                         {

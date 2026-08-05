@@ -386,6 +386,11 @@ namespace Horizun.Revit.Core
             switch (contract.Effect)
             {
                 case ToolEffect.Mutating:
+                    // A Python preflight validates and compiles but executes nothing, so
+                    // like a dry run it never crosses the mutation boundary and needs no
+                    // durable key. Only an explicit preflight=true is exempt.
+                    if (contract.Name == "horizun_execute_python" &&
+                        request.Value<bool?>("preflight") == true) return false;
                     return true;
                 case ToolEffect.MutatingUnlessDryRun:
                     // All current plan/apply commands default to dry_run=true. Only an

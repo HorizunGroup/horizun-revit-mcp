@@ -682,10 +682,16 @@ namespace Horizun.Server
             if (ok)
             {
                 JToken data = reply["data"];
-                return WithImageIfAny(data, reply["revit_said"]);
+                return WithImageIfAny(data, reply["revit_said"],
+                                      reply["fallback"] as JObject,
+                                      reply["capability_gaps"] as JArray);
             }
             // A failure carries what Revit objected to as well: that is usually the reason.
-            return TextResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]), true);
+            // It may ALSO carry the machine-readable fallback signal, and that one has to
+            // survive as structure: a client deciding whether to write Python must branch
+            // on a field, not parse this English.
+            return ErrorResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]),
+                               reply["fallback"] as JObject, reply["capability_gaps"] as JArray);
         }
 
         /// <summary>
@@ -713,11 +719,17 @@ namespace Horizun.Server
                    said.ToString(Formatting.Indented);
         }
 
-        private static JObject WithImageIfAny(JToken data, JToken said = null)
+        private static JObject WithImageIfAny(JToken data, JToken said = null,
+                                              JObject fallback = null, JArray capabilityGaps = null)
         {
             string text = (data == null ? "null" : data.ToString(Formatting.Indented)) + RevitSaidText(said);
             string path = data is JObject obj ? (string)obj["image_path"] : null;
-            if (string.IsNullOrEmpty(path)) return StructuredResult(data, text);
+            // THE SUCCESS PATH CARRIES THE VERDICT TOO. A rehearsal is a SUCCESS that
+            // found a capability gap, and this is the function the forwarder actually
+            // calls - McpResult.FromPluginReply is used by the tests, and testing a
+            // helper the production path does not call is how this shipped unnoticed.
+            if (string.IsNullOrEmpty(path))
+                return McpResult.Structured(data, text, fallback, capabilityGaps);
 
             try
             {
@@ -750,24 +762,22 @@ namespace Horizun.Server
             }
         }
 
-        private static JObject TextResult(string text, bool isError)
-        {
-            return new JObject
-            {
-                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = text } },
-                ["isError"] = isError
-            };
-        }
+        private static JObject TextResult(string text, bool isError) => McpResult.Text(text, isError);
+
+        /// <summary>
+        /// A failure that may carry the fallback signal. The text keeps the human reason;
+        /// the signal ALSO travels as structuredContent, because a client that has to read
+        /// prose to decide whether it may generate Python is exactly the fragile arrangement
+        /// the signal exists to replace. No fallback block means an ordinary text error,
+        /// byte for byte as before.
+        /// </summary>
+        private static JObject ErrorResult(string text, JObject fallback, JArray capabilityGaps)
+            => McpResult.Error(text, fallback, capabilityGaps);
 
         private static JObject StructuredResult(JObject data)
             => StructuredResult((JToken)data, data == null ? "null" : data.ToString(Formatting.Indented));
 
-        private static JObject StructuredResult(JToken data, string text)
-        {
-            JObject result = TextResult(text, false);
-            if (data is JObject) result["structuredContent"] = data.DeepClone();
-            return result;
-        }
+        private static JObject StructuredResult(JToken data, string text) => McpResult.Structured(data, text);
 
         private static JObject Reply(object id, JToken result)
             => new JObject { ["jsonrpc"] = "2.0", ["id"] = id == null ? null : JToken.FromObject(id), ["result"] = result };

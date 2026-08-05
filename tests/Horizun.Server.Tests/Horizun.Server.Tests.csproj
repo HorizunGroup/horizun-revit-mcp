@@ -40,6 +40,23 @@
          compiles. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
+    <!-- CommandResult now carries the fallback signal, so its type comes with it. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FallbackSignal.cs" Link="FallbackSignal.cs" />
+    <!-- The transport hop, as the shipped code rather than a copy: PipeEnvelope is what
+         the add-in writes to the pipe and McpResult is what the server hands the client.
+         A structured signal dropped between them looks exactly like one that was never
+         granted, so the claim has to be made against values, not source text. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FallbackDecision.cs" Link="FallbackDecision.cs" />
+    <!-- The atomic-plan rollback diagnostic: a failed plan carries it as structure, and
+         McpResult spreads it into structuredContent. Tested as the shipped code. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanFailure.cs" Link="PlanFailure.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Transport\PipeEnvelope.cs" Link="PipeEnvelope.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpResult.cs" Link="McpResult.cs" />
+    <!-- The typed-overlap advisory masked by Python's OWN lexer. It needs a real
+         IronPython engine, which this project already has for the recipe syntax check,
+         and it is the path the command actually takes - the hand scanner is only the
+         fallback and is proved separately in Horizun.Core.Tests. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonTokenMask.cs" Link="PythonTokenMask.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" Link="Idempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" Link="DurableCommandIdempotency.cs" />
     <!-- The add-in's job record, so "the server reads where the add-in writes" can be
@@ -64,6 +81,12 @@
          in it, larger than memory - can only be proved against a stream that never
          allocates the payload, which is a test fixture and never a client. -->
     <Compile Include="..\..\src\Horizun.Server\BoundedLineReader.cs" Link="BoundedLineReader.cs" />
+    <!-- The tool table itself, plus the settings it filters on. tools/list is what a
+         client sees at startup, and "Python is advertised on a fresh install" is a
+         property of that pair - provable only by building the same list the server
+         answers with, from the same Settings the add-in reads. -->
+    <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
   </ItemGroup>
 

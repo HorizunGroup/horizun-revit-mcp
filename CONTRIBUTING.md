@@ -69,11 +69,14 @@ reports every write probe as NOT COVERED by name rather than passing quietly —
   to review that could not do their job: refusals prove the guards, dry runs prove
   the arithmetic, and neither one executes the Revit half. Add a probe to the write
   tier of `scripts/verify-live.ps1` (`-WriteProbes`) and run it before the PR.
-- **Do not enable `horizun_execute_python` for the user.** It is the full Revit
-  API and ships disabled on purpose. A person enables it by running
-  `scripts/enable-execute-python.ps1`; never switch it on yourself.
-- Every new typed command that overlaps the escape hatch gets an entry in the
-  `execute_python` typed-overlap guard.
+- **Respect an explicit `horizun_execute_python` off-switch.** The tool is
+  enabled by default and serves as the execution fallback, but a machine whose
+  owner disabled it (`enable_execute_python=false` or a profile below
+  `unsafe_code`) made a deliberate choice — never edit their `settings.json` to
+  reverse it. The owner re-enables it with `scripts/enable-execute-python.ps1`.
+- Every new typed command that overlaps `execute_python` gets an entry in its
+  typed-overlap **advisory** table — the advisory recommends the verified typed
+  command; it does not block the script.
 
 ## Where the backlog lives
 
