@@ -1,4 +1,4 @@
-﻿{
+{
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.HorizunGroup/horizun-revit-mcp",
   "title": "Horizun Revit MCP",
