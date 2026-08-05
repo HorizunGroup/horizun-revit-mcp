@@ -104,6 +104,35 @@ namespace Horizun.Revit.Core
                    "any retry: " + error;
         }
 
+        /// <summary>
+        /// The honest one-line account of a SINGLE transaction's rollback, for the ordinary
+        /// commands that own one Transaction rather than a graph.
+        ///
+        /// THE DEFECT THIS EXISTS TO FIX, in nine places at once. Every one of them read:
+        ///
+        ///     if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+        ///     return CommandResult.Fail("... was rolled back; nothing was written: " + ex.Message);
+        ///
+        /// The status RollBack() returns was discarded and the clean case asserted anyway -
+        /// the same lie ExecutePlan told, spelled nine more times. One sentence, built here,
+        /// so the wording cannot drift apart again and can be proved without Revit.
+        ///
+        /// `nothingKept` is the command's own words for what did not survive ("nothing was
+        /// written", "nothing was purged"), and it is only ever stated when the rollback is
+        /// CONFIRMED.
+        /// </summary>
+        public static string SingleTransactionOutcome(bool attempted, string statusName, string nothingKept)
+        {
+            if (!attempted)
+                return "The transaction was not open, so no rollback was attempted and " + nothingKept + ".";
+
+            if (IsConfirmedRollback(statusName))
+                return "The transaction rolled back (Revit reported " + ConfirmedStatus + "), so " + nothingKept + ".";
+
+            return "The rollback is UNCERTAIN: RollBack() returned '" + statusName + "', not " + ConfirmedStatus +
+                   ". DO NOT assume " + nothingKept + " - re-read the real state of the model before any retry.";
+        }
+
         private static bool Bool(JObject o, string key)
             => o != null && o[key] != null && o[key].Type == JTokenType.Boolean && (bool)o[key];
     }

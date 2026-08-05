@@ -81,6 +81,9 @@ namespace Horizun.Revit.Core
         /// <summary>Roll a transaction group back and REPORT the status Revit returned - do not assume it.</summary>
         public static RollbackResult RollBack(TransactionGroup g) => new RollbackResult(g.RollBack());
 
+        /// <summary>Same for a SubTransaction - the per-item rollback inside a batch.</summary>
+        public static RollbackResult RollBack(SubTransaction t) => new RollbackResult(t.RollBack());
+
         /// <summary>
         /// Verify a write actually landed: compare what we asked for against what the
         /// model reports now. Returns a block the caller must include in its response —

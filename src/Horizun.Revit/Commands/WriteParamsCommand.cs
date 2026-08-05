@@ -417,11 +417,16 @@ namespace Horizun.Revit.Commands
 
                     if (mode == "atomic" && failedNow > 0)
                     {
-                        tx.RollBack();
-                        txStatus = "RolledBack";
+                        // MEASURED, not asserted. This used to roll back and then set txStatus
+                        // to the rolled-back name as a literal - the one field a caller reads to
+                        // learn what happened to the transaction was a constant, true by
+                        // construction whatever Revit actually did with it.
+                        Guard.RollbackResult rb = Guard.RollBack(tx);
+                        txStatus = rb.StatusName;
                         txNote = "on_failure='atomic' and " + failedNow + " of " + rows.Count + " row(s) failed, so the " +
-                                 "WHOLE batch was rolled back. Nothing was written — including the rows that worked. " +
-                                 "This is the default because a half-coded model is worse than an uncoded one. " +
+                                 "WHOLE batch was rolled back rather than keeping the rows that worked. " +
+                                 PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "nothing was written") +
+                                 " This is the default because a half-coded model is worse than an uncoded one. " +
                                  "Fix the failing rows, or re-run with on_failure='best_effort' to keep the ones that land.";
                     }
                     else
@@ -440,7 +445,7 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Ok(new JObject
                     {
                         ["mode"] = mode,
-                        ["transaction_status"] = "RolledBack",
+                        ["transaction_status"] = ex.Status.ToString(),
                         ["transaction_name"] = txName,
                         ["document"] = SafeTitle(doc),
                         ["requested"] = rows.Count,
@@ -458,8 +463,10 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
-                    return CommandResult.Fail("Write batch failed and was rolled back; nothing was written: " + ex.Message);
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.HasStarted()) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
+                    return CommandResult.Fail("Write batch failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was written"));
                 }
             }
 

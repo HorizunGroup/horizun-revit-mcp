@@ -13,6 +13,9 @@
 // model it did not see. The PipeEnvelope test proves the structured diagnostic
 // actually reaches the wire instead of being flattened into the error string.
 // -----------------------------------------------------------------------------
+using System;
+using System.Collections.Generic;
+using System.IO;
 using Horizun.Revit.Core;
 using Horizun.Revit.Transport;
 using Newtonsoft.Json.Linq;
@@ -132,6 +135,100 @@ namespace Horizun.Core.Tests
             JObject reply = PipeEnvelope.Of("id-2", CommandResult.Fail("just a plain error"));
             Assert.False((bool)reply["success"]);
             Assert.Null(reply["detail"]);
+        }
+
+        // ---- the single-transaction sentence, used by nine ordinary commands --------
+
+        [Fact]
+        public void A_confirmed_single_rollback_may_state_what_did_not_survive()
+        {
+            string s = PlanFailure.SingleTransactionOutcome(true, "RolledBack", "nothing was written");
+            Assert.Contains("rolled back", s);
+            Assert.Contains("nothing was written", s);
+            Assert.DoesNotContain("UNCERTAIN", s);
+        }
+
+        [Theory]
+        [InlineData("Pending")]
+        [InlineData("Error")]
+        [InlineData("Committed")]
+        public void An_unconfirmed_single_rollback_never_claims_the_model_is_clean(string status)
+        {
+            string s = PlanFailure.SingleTransactionOutcome(true, status, "nothing was written");
+
+            Assert.Contains("UNCERTAIN", s);
+            Assert.Contains(status, s);
+            Assert.Contains("re-read", s);
+            // THE POINT: the reassuring clause must not appear as a claim. It may only be
+            // named as the thing NOT to assume.
+            Assert.Contains("DO NOT assume nothing was written", s);
+        }
+
+        [Fact]
+        public void A_transaction_that_was_never_open_is_not_a_rollback()
+        {
+            string s = PlanFailure.SingleTransactionOutcome(false, PlanFailure.NotAttempted, "nothing was purged");
+            Assert.Contains("not open", s);
+            Assert.Contains("no rollback was attempted", s);
+            Assert.DoesNotContain("UNCERTAIN", s);
+        }
+
+        // ---- the guard that stops this from coming back a twelfth time -------------
+
+        private static string CommandsDir()
+        {
+            var d = new DirectoryInfo(AppContext.BaseDirectory);
+            while (d != null && !Directory.Exists(Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands")))
+                d = d.Parent;
+            Assert.True(d != null, "Could not locate src/Horizun.Revit/Commands");
+            return Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands");
+        }
+
+        /// <summary>
+        /// THE DEFECT, MEASURED: eleven commands called RollBack() and threw away the
+        /// TransactionStatus it returns, then asserted the clean case in prose. Two were
+        /// fixed and nine survived, because nothing was watching. Now something is: a bare
+        /// `.RollBack()` in a command is the shape of the lie, and Guard.RollBack - which
+        /// returns the status - is the only sanctioned call.
+        /// </summary>
+        [Fact]
+        public void No_command_discards_the_status_that_RollBack_returns()
+        {
+            var offenders = new List<string>();
+            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
+            {
+                string text = File.ReadAllText(path);
+                // "x.RollBack()" with empty parens is the raw call. Guard.RollBack(tx) has
+                // an argument, so it never matches this.
+                if (text.Contains(".RollBack()")) offenders.Add(Path.GetFileName(path));
+            }
+
+            Assert.True(offenders.Count == 0,
+                "These commands call RollBack() directly and cannot see what it returned: " +
+                string.Join(", ", offenders) + ". A status other than RolledBack means the model is in an " +
+                "UNCERTAIN state, not a clean one. Use Guard.RollBack and report through " +
+                "PlanFailure.SingleTransactionOutcome.");
+        }
+
+        /// <summary>
+        /// A transaction status must be MEASURED. WriteParams set txStatus = "RolledBack" as
+        /// a literal right after rolling back, so the one field a caller reads to learn what
+        /// happened was true by construction whatever Revit did.
+        /// </summary>
+        [Fact]
+        public void No_command_hard_codes_a_rolled_back_status()
+        {
+            var offenders = new List<string>();
+            foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
+            {
+                string text = File.ReadAllText(path);
+                if (text.Contains("= \"" + PlanFailure.ConfirmedStatus + "\""))
+                    offenders.Add(Path.GetFileName(path));
+            }
+
+            Assert.True(offenders.Count == 0,
+                "These commands assign the literal \"" + PlanFailure.ConfirmedStatus + "\" to a status field: " +
+                string.Join(", ", offenders) + ". Read it from Guard.RollBack instead - a constant is not a measurement.");
         }
     }
 }

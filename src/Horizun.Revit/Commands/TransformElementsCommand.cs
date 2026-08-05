@@ -149,8 +149,10 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
-                    return CommandResult.Fail("Atomic transform failed: " + ex.Message + ". The transaction was rolled back.");
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
+                    return CommandResult.Fail("Atomic transform failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was transformed"));
                 }
             }
 

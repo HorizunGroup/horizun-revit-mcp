@@ -552,8 +552,9 @@ namespace Horizun.Revit.Commands
 
                     if (rollbackReason != null)
                     {
-                        tx.RollBack();
-                        txStatus = "RolledBack";
+                        // MEASURED. The status a caller reads must come from Revit, not from a
+                        // literal that is true by construction.
+                        txStatus = Guard.RollBack(tx).StatusName;
                     }
                     else
                     {
@@ -572,10 +573,12 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.HasStarted()) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
                     return CommandResult.Fail(
-                        "The homologation failed and was rolled back; the family is untouched and was not saved: " +
-                        ex.Message);
+                        "The homologation failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb,
+                            "the family is untouched and was not saved"));
                 }
             }
 

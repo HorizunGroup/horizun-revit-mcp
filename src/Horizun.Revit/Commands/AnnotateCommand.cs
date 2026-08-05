@@ -124,15 +124,10 @@ namespace Horizun.Revit.Commands
                     // Report what the rollback ACTUALLY did, not the hoped-for prose. If the
                     // transaction is still open we roll it back and read Revit's status; a value
                     // other than RolledBack keeps its uncertainty rather than claiming a clean model.
-                    string rolled = "was not attempted (the transaction was not open)";
-                    if (tx.GetStatus() == TransactionStatus.Started)
-                    {
-                        Guard.RollbackResult rb = Guard.RollBack(tx);
-                        rolled = rb.Confirmed
-                            ? "rolled back (Revit reported RolledBack); nothing was retained"
-                            : "is UNCERTAIN: RollBack() returned '" + rb.StatusName + "', not RolledBack - re-read the model before any retry";
-                    }
-                    return CommandResult.Fail("Atomic annotation failed: " + ex.Message + ". The transaction " + rolled + ".");
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
+                    return CommandResult.Fail("Atomic annotation failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was annotated"));
                 }
             }
             var rows = new JArray(); int verified = 0;

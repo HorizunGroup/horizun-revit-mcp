@@ -183,7 +183,7 @@ namespace Horizun.Revit.Commands
                             }
                             catch
                             {
-                                if (referenceTx.GetStatus() == TransactionStatus.Started) referenceTx.RollBack();
+                                if (referenceTx.GetStatus() == TransactionStatus.Started) Guard.RollBack(referenceTx);
                                 throw;
                             }
                         }
@@ -261,7 +261,7 @@ namespace Horizun.Revit.Commands
                     }
                     catch
                     {
-                        if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                        if (tx.GetStatus() == TransactionStatus.Started) Guard.RollBack(tx);
                         throw;
                     }
                 }
