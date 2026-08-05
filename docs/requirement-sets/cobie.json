@@ -1,0 +1,48 @@
+{
+  "requirement_set": {
+    "id": "cobie-handover",
+    "version": "1.0.0",
+    "title": "COBie handover completeness — reference set",
+    "scope": { "categories": ["Rooms", "Mechanical Equipment"] }
+  },
+  "rules": [
+    {
+      "id": "space-name",
+      "selector": { "category": "Rooms" },
+      "assertion": { "parameter": "Name", "operator": "not_empty" },
+      "severity": "blocking"
+    },
+    {
+      "id": "space-number",
+      "selector": { "category": "Rooms" },
+      "assertion": { "parameter": "Number", "operator": "not_empty" },
+      "severity": "blocking"
+    },
+    {
+      "id": "type-manufacturer",
+      "selector": { "category": "Mechanical Equipment" },
+      "assertion": { "parameter": "Manufacturer", "operator": "not_empty" },
+      "remediation": {
+        "tool": "horizun_write_params_verified",
+        "arguments": { "parameter": "Manufacturer" }
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "type-model",
+      "selector": { "category": "Mechanical Equipment" },
+      "assertion": { "parameter": "Model", "operator": "not_empty" },
+      "remediation": {
+        "tool": "horizun_write_params_verified",
+        "arguments": { "parameter": "Model" }
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "component-mark",
+      "selector": { "category": "Mechanical Equipment" },
+      "assertion": { "parameter": "Mark", "operator": "not_empty" },
+      "severity": "advisory"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "requirement_set": {
+    "id": "ifc-buildingsmart-mapping",
+    "version": "1.0.0",
+    "title": "IFC / buildingSMART class-mapping completeness — reference set",
+    "scope": { "categories": ["Walls", "Doors", "Pipes", "Ducts"] }
+  },
+  "rules": [
+    {
+      "id": "walls-have-ifc-mapping",
+      "selector": { "category": "Walls" },
+      "assertion": { "parameter": "IfcExportAs", "operator": "exists" },
+      "severity": "blocking"
+    },
+    {
+      "id": "walls-not-proxy",
+      "selector": { "category": "Walls", "parameter_exists": "IfcExportAs" },
+      "assertion": {
+        "parameter": "IfcExportAs",
+        "operator": "not_equals",
+        "value": "IfcBuildingElementProxy"
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "pipes-not-proxy",
+      "selector": { "category": "Pipes", "parameter_exists": "IfcExportAs" },
+      "assertion": {
+        "parameter": "IfcExportAs",
+        "operator": "not_equals",
+        "value": "IfcBuildingElementProxy"
+      },
+      "severity": "blocking"
+    },
+    {
+      "id": "doors-mapped-to-door",
+      "selector": { "category": "Doors", "parameter_exists": "IfcExportAs" },
+      "assertion": {
+        "parameter": "IfcExportAs",
+        "operator": "in_list",
+        "value": ["IfcDoor", "IfcDoorType", "IfcDoorStandardCase"]
+      },
+      "severity": "advisory"
+    }
+  ]
+}
