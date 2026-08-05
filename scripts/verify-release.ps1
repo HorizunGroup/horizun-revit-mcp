@@ -178,6 +178,57 @@ $dupes = $stagedHashes.GetEnumerator() | Group-Object Value | Where-Object { $_.
 Check 'every staged add-in is a DISTINCT binary' ($dupes.Count -eq 0) `
       (($dupes | ForEach-Object { 'years ' + (($_.Group | ForEach-Object { $_.Key }) -join ' and ') + ' are identical' }) -join '; ')
 
+# --- signatures of our OWN binaries ------------------------------------------
+#
+# A release stakes its identity on the server (apphost AND horizun-mcp.dll, its
+# real code) and each Horizun.Revit.dll being signed BY US. Third-party DLLs are
+# signed by their publishers and not re-signed. The manifest was recomputed AFTER
+# signing, so its hashes already describe the signed bytes - the staged-hash
+# checks above therefore prove "signed bytes, not a stale hash". This section adds
+# the other half: the files must actually CARRY a signature, by ONE certificate,
+# and the manifest must not merely claim it.
+#
+# No manifest signature block means the stage was never signed (or was re-staged
+# after signing) - which is not a shippable release, so it is WRONG here rather
+# than skipped.
+$own = @(Get-HorizunOwnBinaries $Stage)
+Check 'the manifest was recomputed after signing (it carries a signature block)' ([bool]$doc.Signature) `
+      'no Signature block in manifest.json: the payload was never signed, or was re-staged after signing'
+
+if ($doc.Signature) {
+    Check 'the manifest declares every own binary signed' ([bool]$doc.Signed) `
+          'manifest.Signed is false - at least one own binary is unsigned'
+
+    $unsigned = @(); $thumbs = @()
+    foreach ($p in $own) {
+        $info = Get-HorizunSignatureInfo $p
+        if (-not $info.Signed) { $unsigned += (Split-Path $p -Leaf) }
+        elseif ($info.Thumbprint) { $thumbs += $info.Thumbprint }
+    }
+    Check ('every staged own binary carries a signature (' + $own.Count + ' checked)') ($unsigned.Count -eq 0) `
+          ('unsigned on disk: ' + ($unsigned -join ', ') + ' - the manifest cannot claim a signature the bytes do not carry')
+
+    $distinctThumbs = @($thumbs | Select-Object -Unique)
+    Check 'all own binaries are signed by ONE certificate (no mixed signers)' ($distinctThumbs.Count -le 1) `
+          ('signer thumbprints seen: ' + ($distinctThumbs -join ', '))
+
+    # The manifest's recorded signer must be the one actually on the files, so a
+    # signature block cannot be copied from an earlier, differently-signed release.
+    if ($doc.Signature.SignerThumbprint -and $distinctThumbs.Count -eq 1) {
+        Check 'the signer on disk is the signer the manifest records' `
+              ($distinctThumbs[0] -eq $doc.Signature.SignerThumbprint) `
+              ("on disk {0}, manifest {1}" -f $distinctThumbs[0], $doc.Signature.SignerThumbprint)
+    }
+}
+
+# --- no mixing: the stage matches its manifest, by the SAME function the -----
+# --- installer build uses to gate itself. Belt and braces with the per-file --
+# --- checks above, but it is the exact call -InstallerOnly makes, so a green --
+# --- verify-release means -InstallerOnly will not refuse. ---------------------
+$mixing = @(Test-HorizunStageMatchesManifest $Stage)
+Check 'the whole stage matches manifest.json (no signed/unsigned mixing)' ($mixing.Count -eq 0) `
+      (($mixing | Select-Object -First 6) -join '; ')
+
 # --- the installer -----------------------------------------------------------
 if (-not $Installer) {
     $Installer = (Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -ErrorAction SilentlyContinue |

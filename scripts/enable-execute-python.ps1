@@ -1,20 +1,24 @@
 #Requires -Version 5.1
 <#
-  Turn horizun_execute_python ON (or OFF) — the deliberate, human step.
+  Administer horizun_execute_python: restore it ON, or turn it OFF.
 
   execute_python runs arbitrary code inside Revit with the full API and the
-  rights of the signed-in user. It ships DISABLED for a reason, and it is meant
-  to be switched on by a PERSON who has read what that means — never by the agent
-  driving the bridge, and never as a silent default. This script is that step: it
-  prints what to weigh, asks once, and only then writes the two flags the two
-  halves check.
+  rights of the signed-in user. It is ENABLED BY DEFAULT — a machine with no
+  settings.json, or one without these keys, already exposes it — so this script
+  is NOT the activation step it used to be. It exists for administration:
 
-  WHY A SCRIPT AND NOT "edit settings.json". The gate needs BOTH
-  "permission_profile":"unsafe_code" AND "enable_execute_python":true, in
-  %USERPROFILE%\.horizun\settings.json — and an agent asked to "enable it" tends
-  to fumble that by hand (inventing a confirmation it does not have, or writing a
-  path %LOCALAPPDATA% never expands). This writes exactly the two keys, PRESERVES
-  every other setting already in the file, and backs the file up first.
+    - RE-ENABLE / RESTORE a machine where somebody explicitly disabled it
+      (enable_execute_python=false, or a profile below unsafe_code).
+    - DISABLE it deliberately with -Disable, which is the switch the defaults
+      respect: an explicit false always wins over the default-on posture.
+
+  WHY A SCRIPT AND NOT "edit settings.json". The gate reads BOTH
+  "permission_profile" AND "enable_execute_python" from
+  %USERPROFILE%\.horizun\settings.json — and editing that file by hand tends to
+  go wrong (a malformed file falls CLOSED, disabling everything; a path with
+  %LOCALAPPDATA% never expands under PowerShell). This writes exactly the two
+  keys, PRESERVES every other setting already in the file, and backs the file
+  up first.
 
   IT SURVIVES UPDATES. settings.json lives under %USERPROFILE%\.horizun\, which
   install.ps1 never touches. Enable it once and re-running the installer leaves it
@@ -24,9 +28,9 @@
   the gate itself. The MCP SERVER decides whether to advertise the tool when it
   starts, so RESTART YOUR MCP CLIENT once for the tool to appear or disappear.
 
-    scripts/enable-execute-python.ps1              # show the warning, ask, enable
-    scripts/enable-execute-python.ps1 -Yes         # enable without the prompt (automation)
-    scripts/enable-execute-python.ps1 -Disable     # turn it back off
+    scripts/enable-execute-python.ps1              # show the warning, ask, re-enable/restore
+    scripts/enable-execute-python.ps1 -Yes         # re-enable without the prompt (automation)
+    scripts/enable-execute-python.ps1 -Disable     # turn it off (the explicit switch the defaults respect)
     scripts/enable-execute-python.ps1 -WhatIfOnly  # show the change, write nothing
 
   Exit codes:  0 done   1 refused or failed   2 could not run
@@ -85,24 +89,27 @@ if (Test-Path $settingsPath) {
     }
 }
 
-$currentProfile = if ($settings.Contains('permission_profile')) { [string]$settings['permission_profile'] } else { '(unset -> safe_write default)' }
-$currentEnabled = if ($settings.Contains('enable_execute_python')) { [bool]$settings['enable_execute_python'] } else { $false }
+$currentProfile = if ($settings.Contains('permission_profile')) { [string]$settings['permission_profile'] } else { '(unset -> unsafe_code default)' }
+$currentEnabled = if ($settings.Contains('enable_execute_python')) { [bool]$settings['enable_execute_python'] } else { $true }
 
-# ---- The warning: what to weigh BEFORE it is on. ----------------------------
+# ---- The warning: what to weigh BEFORE restoring it. ------------------------
 if (-not $Disable) {
     Write-Host ''
-    Write-Host '  You are about to enable horizun_execute_python (advanced / unsafe code).' -ForegroundColor Yellow
+    Write-Host '  You are about to re-enable horizun_execute_python (advanced / unsafe code).' -ForegroundColor Yellow
     Write-Host ''
-    Write-Host '  It runs ARBITRARY CODE inside Revit with the full API and your Windows rights.'
-    Write-Host '  Before you continue, weigh this:'
+    Write-Host '  It is enabled by default on a fresh install; if it is off on this machine,'
+    Write-Host '  somebody chose that. It runs ARBITRARY CODE inside Revit with the full API'
+    Write-Host '  and your Windows rights. Before you continue, weigh this:'
     Write-Host ''
     Write-Host '   - TRUSTED CLIENTS AND PROMPTS ONLY. An agent that reads untrusted content' -ForegroundColor Gray
     Write-Host '     (a client''s model, a linked DWG, a PDF, an email) can be fed injected' -ForegroundColor Gray
     Write-Host '     instructions and run them with these rights.' -ForegroundColor Gray
-    Write-Host '   - NO VERIFICATION. Unlike the typed commands, this does not re-read the model' -ForegroundColor Gray
-    Write-Host '     or rehearse what it will do. A wrong script can lose work silently.' -ForegroundColor Gray
-    Write-Host '   - LAST RESORT. For anything recurring use a typed command: it can be verified,' -ForegroundColor Gray
-    Write-Host '     this cannot.' -ForegroundColor Gray
+    Write-Host '   - LIMITED VERIFICATION. Unlike the typed commands, nothing rehearses what a' -ForegroundColor Gray
+    Write-Host '     script will do. Scripts are expected to verify their own work through the' -ForegroundColor Gray
+    Write-Host '     structured __output__ evidence contract, but a wrong script can still lose' -ForegroundColor Gray
+    Write-Host '     work silently.' -ForegroundColor Gray
+    Write-Host '   - TYPED COMMANDS FIRST. Python is the fallback for what they do not cover;' -ForegroundColor Gray
+    Write-Host '     for anything recurring a typed command is still the verified path.' -ForegroundColor Gray
     Write-Host '   - REVERSIBLE. Turn it back off any time with:  this script -Disable' -ForegroundColor Gray
     Write-Host ''
     Write-Host "  File:    $settingsPath"

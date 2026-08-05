@@ -113,12 +113,19 @@ and run `install.ps1` again.
   Cancelling removes work only before it starts. Use `horizun_submit_job` plus
   `horizun_job_status` for work that should outlive the MCP request.
 - **The contract**: no command reports work it did not verify. Every typed write
-  is re-read from the model after the commit. `horizun_execute_python` is the
-  explicit low-level exception and does not provide the typed-command guarantee.
-- **`horizun_execute_python` ships disabled.** It needs both
-  `{"permission_profile":"unsafe_code","enable_execute_python":true}` in
-  `%USERPROFILE%\.horizun\settings.json`.
-  Do not enable it unless the user asks: it is the full Revit API.
+  is re-read from the model after the commit. `horizun_execute_python` does not
+  provide that guarantee by itself; scripts run through it are expected to
+  verify their own work and report it in the structured `__output__`
+  (`status: verified|completed_unverified|partial|failed`).
+- **Typed first, Python as the fallback — never "not supported".** When no typed
+  command covers an operation, or one refuses **before writing** because it is
+  outside its contract, generate minimal Revit Python and run it through
+  `horizun_execute_python` (optionally `preflight=true` first). Never fall back
+  to Python after a typed write failed mid-operation — report the real state.
+- **`horizun_execute_python` is enabled by default.** A machine owner can switch
+  it off (`enable_execute_python=false` or a profile below `unsafe_code` in
+  `%USERPROFILE%\.horizun\settings.json`); that explicit choice is always
+  respected — never edit that file to reverse it.
 - This bridge is **organisation-neutral by design**: no company's standards or
   catalogues are compiled in. Where a command needs one, it is passed as an
   argument. The delivery workflows built on top live in
@@ -243,12 +250,19 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   La cancelación solo elimina trabajo antes de empezar. Usa
   `horizun_submit_job` y `horizun_job_status` para trabajos largos.
 - **El contrato**: ningún comando reporta trabajo que no verificó. Toda escritura
-  tipada se relee del modelo tras el commit. `horizun_execute_python` es la
-  excepción explícita de bajo nivel y no ofrece la garantía del comando tipado.
-- **`horizun_execute_python` viene apagado.** Exige
-  `{"permission_profile":"unsafe_code","enable_execute_python":true}` en
-  `%USERPROFILE%\.horizun\settings.json`.
-  No lo enciendas sin que el usuario lo pida: es la API completa de Revit.
+  tipada se relee del modelo tras el commit. `horizun_execute_python` no ofrece
+  esa garantía por sí solo; los scripts que corren por ahí deben verificar su
+  propio trabajo y reportarlo en el `__output__` estructurado
+  (`status: verified|completed_unverified|partial|failed`).
+- **Tipado primero, Python como respaldo — nunca "no soportado".** Cuando ningún
+  comando tipado cubra una operación, o uno se niegue **antes de escribir** por
+  quedar fuera de su contrato, genera el Python de Revit mínimo y córrelo con
+  `horizun_execute_python` (si quieres, `preflight=true` primero). Nunca caigas a
+  Python tras una escritura tipada que falló a mitad — informa el estado real.
+- **`horizun_execute_python` viene habilitado por defecto.** El dueño de la
+  máquina puede apagarlo (`enable_execute_python=false` o un perfil por debajo
+  de `unsafe_code` en `%USERPROFILE%\.horizun\settings.json`); esa elección
+  explícita siempre se respeta — nunca edites ese archivo para revertirla.
 - Este puente es **neutral por diseño**: no lleva estándares ni catálogos de
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa
   como argumento. Los flujos de entrega construidos encima viven en

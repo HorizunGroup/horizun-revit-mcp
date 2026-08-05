@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
   Live verification against a REAL Revit.
 
@@ -163,11 +163,7 @@ param(
     # Two separate things on purpose: the switch says what kind of run this is, the
     # fixture says WHICH model may be written into. Neither implies the other.
     [string]$WriteDocument,
-    [string]$WriteDocumentDisposable,
-
-    # A family document holding a void that cuts a solid, for the void-mirror
-    # write probe. A family of solids exercises only the refusal.
-    [string]$VoidFamilyDocument
+    [string]$WriteDocumentDisposable
 )
 
 $probeRun = [guid]::NewGuid().ToString('N')
@@ -182,7 +178,7 @@ if (Test-Path $Fixtures) {
         $fx = Get-Content $Fixtures -Raw | ConvertFrom-Json
         foreach ($name in 'Document','InactiveDocument','SpfPath','SpfParam','QuantityCategory','OldFile',
                           'FamilyTemplate','ClosedWorksetDocument',
-                          'WriteDocument','WriteDocumentDisposable','VoidFamilyDocument') {
+                          'WriteDocument','WriteDocumentDisposable') {
             $fromFile = $fx.$name
             if ([string]::IsNullOrWhiteSpace($fromFile)) { continue }
             # QuantityCategory has a default, so "was it passed" cannot be read off
@@ -371,6 +367,204 @@ $probes = @(
        # add-in sentence is unreachable when the server refuses to forward. Both
        # are the switched-off machine answering correctly.
        ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # PREFLIGHT EXECUTES NOTHING, and the only way to prove that is to preflight a
+    # script whose execution would be visible and then see that it was not. This
+    # one would throw on execution; a reply that says would_run=true with no error
+    # is the proof that the source was compiled and never run. It also needs no
+    # idempotency_key, which is the other half of "this is not a mutation".
+    @{ Name = 'preflight validates and compiles WITHOUT executing'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = "raise Exception('this must never run')"; target_document = $Document; preflight = $true }
+       Needs = 'Document'
+       NotCovered = 'the execute_python preflight path (needs -Document)'
+       Check = { param($d)
+                 $d.mode -eq 'preflight' -and $d.executed -eq $false -and
+                 # It parses (raise is valid Python), so the syntax check passes and
+                 # nothing ran - an executed script would have errored the call.
+                 $d.would_run -eq $true -and $d.checks.syntax -eq 'ok' -and
+                 -not [string]::IsNullOrWhiteSpace($d.script_sha256) -and
+                 -not [string]::IsNullOrWhiteSpace($d.what_preflight_cannot_do) }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # And a preflight REPORTS a syntax error rather than discovering it mid-write.
+    @{ Name = 'preflight reports a syntax error instead of running into it'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = "def broken(:"; target_document = $Document; preflight = $true }
+       Needs = 'Document'
+       NotCovered = 'preflight catching a syntax error before execution (needs -Document)'
+       Check = { param($d)
+                 $d.executed -eq $false -and $d.would_run -eq $false -and
+                 $d.checks.syntax -eq 'failed' -and -not [string]::IsNullOrWhiteSpace($d.syntax_error) }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # THE EVIDENCE CONTRACT, against a real script. A claim of verified with no
+    # evidence must come back DOWNGRADED - the rule that keeps an unverified Python
+    # run from reading like a verified typed write.
+    @{ Name = 'a verified claim with no evidence is downgraded to completed_unverified'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = "__output__ = {'status': 'verified', 'summary': 'trust me'}"
+                 target_document = $Document; idempotency_key = "live-python-evidence-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the __output__ evidence downgrade (needs -Document)'
+       Check = { param($d) $d.executed -eq $true -and $d.evidence_status -eq 'completed_unverified' -and
+                            $d.script_reported_status -eq 'verified' -and
+                            @($d.evidence_warnings).Count -gt 0 }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # And the CEILING for arbitrary code: a claim WITH evidence is kept, but only as
+    # self_reported_verified. The host never re-reads the model after Python, so this
+    # path must never produce the word a typed write earns - and host_verified says so
+    # in a field rather than leaving a reader to infer it.
+    @{ Name = 'a verified claim carrying evidence is capped at self_reported_verified'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = "__output__ = {'status': 'verified', 'summary': 'read the title', " +
+                        "'verification': {'checked': True, 'evidence': [doc.Title]}}"
+                 target_document = $Document; idempotency_key = "live-python-evidence-ok-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the self-reported evidence ceiling (needs -Document)'
+       Check = { param($d) $d.executed -eq $true -and
+                            $d.evidence_status -eq 'self_reported_verified' -and
+                            $d.evidence_structured -eq $true -and
+                            $d.script_reported_status -eq 'verified' -and
+                            $d.host_verified -eq $false }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # The typed overlap ADVISES and no longer blocks: a REAL call to one of those
+    # APIs still runs, and carries the advisory beside its result. It is a real call
+    # inside a rolled-back transaction, so the model is untouched - the earlier
+    # version of this probe used a COMMENT, which passed by confirming the very
+    # false positive the masking was added to remove.
+    @{ Name = 'a typed-overlap advisory is reported without blocking a real call'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = @'
+from Autodesk.Revit.DB import Transaction, ElementTransformUtils, XYZ
+t = Transaction(doc, "horizun live probe: advisory only")
+t.Start()
+try:
+    # A real ElementTransformUtils.MoveElement call site, never reached: the guard
+    # is false. The advisory must fire on the CODE being present, and the
+    # transaction is rolled back regardless so the model is untouched.
+    if False:
+        ElementTransformUtils.MoveElement(doc, None, XYZ(0, 0, 0))
+finally:
+    t.RollBack()
+__output__ = {"status": "completed_unverified", "summary": "advisory probe; nothing written"}
+'@
+                 target_document = $Document; idempotency_key = "live-python-advisory-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the typed-overlap advisory being advisory (needs -Document)'
+       Check = { param($d) $d.executed -eq $true -and
+                            $d.transaction_left_open -eq $false -and
+                            @($d.typed_alternatives).Count -gt 0 }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # ...and the false positive that started this: prose must NOT advise. Same shape
+    # as the probe above with the call demoted to a comment and a string.
+    @{ Name = 'a comment or string mentioning a typed API raises NO advisory'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = "# mentions ElementTransformUtils.MoveElement in a comment only`n" +
+                        "note = 'and doc.Delete( in a string'`n" +
+                        "__output__ = {'status': 'completed_unverified', 'summary': 'prose only'}"
+                 target_document = $Document; idempotency_key = "live-python-no-advisory-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the advisory ignoring comments and strings (needs -Document)'
+       # "no advisories" arrives as an ABSENT field, and @($null).Count is 1 in
+       # PowerShell, not 0 - so the null has to be tested first or this probe fails
+       # against a correct answer. Measured: it did.
+       Check = { param($d) $d.executed -eq $true -and
+                            ($null -eq $d.typed_alternatives -or @($d.typed_alternatives).Count -eq 0) }
+       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+
+    # THE FALLBACK SIGNAL, from a real typed refusal. An unsupported kind is a
+    # capability gap decided BEFORE any transaction, so the reply must carry
+    # allowed=true with write_started=false - the condition a client branches on.
+    @{ Name = 'an unsupported kind grants the Python fallback as structured data'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document; dry_run = $false
+                 idempotency_key = "live-fallback-unsupported-$probeRun"
+                 elements = @( @{ kind = 'sprinkler_head' } ) }
+       Needs = 'Document'
+       NotCovered = 'the structured fallback signal on a capability gap (needs -Document)'
+       ExpectError = 'unsupported kind'
+       # The grant itself, not just the refusal: allowed=true with nothing written.
+       ExpectErrorContains = '"allowed": true' },
+
+    # THE DEFAULT PATH. dry_run is OMITTED, which is what an agent actually sends
+    # first. This used to come back success=true, invalid=1 and no verdict at all:
+    # the decision existed only on the apply path, so a caller had to already
+    # suspect Python to discover that Python was the answer. The earlier probe hid
+    # it by forcing dry_run=false - it tested where the code worked.
+    @{ Name = 'the DEFAULT rehearsal (no dry_run) publishes the fallback grant'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document
+                 elements = @( @{ kind = 'sprinkler_head' } ) }
+       Needs = 'Document'
+       NotCovered = 'the fallback on the default dry-run path (needs -Document)'
+       UseStructured = $true
+       Check = { param($s)
+                 $s.dry_run -eq $true -and $s.invalid -eq 1 -and
+                 $null -ne $s.fallback -and $s.fallback.allowed -eq $true -and
+                 $s.fallback.write_started -eq $false -and
+                 $s.fallback.reason -eq 'unsupported_kind' -and
+                 $s.fallback.recommended_tool -eq 'horizun_execute_python' -and
+                 @($s.capability_gaps).Count -eq 1 -and @($s.capability_gaps)[0].index -eq 0 } },
+
+    # The mixed batch from the SAME default route. Otherwise the only way to learn a
+    # batch is mixed would be to send an apply.
+    @{ Name = 'the DEFAULT rehearsal blocks a mixed batch and still names the gap'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document
+                 elements = @( @{ kind = 'sprinkler_head' }, @{ kind = 'wall' } ) }
+       Needs = 'Document'
+       NotCovered = 'the mixed-batch refusal on the default path (needs -Document)'
+       UseStructured = $true
+       Check = { param($s)
+                 $s.dry_run -eq $true -and
+                 $null -ne $s.fallback -and $s.fallback.allowed -eq $false -and
+                 $s.fallback.reason -eq 'mixed_capability_and_invalid_input' -and
+                 @($s.capability_gaps).Count -eq 1 -and @($s.capability_gaps)[0].index -eq 0 } },
+
+    # ...and a rehearsal whose only failure is fixable must publish NOTHING. Absence
+    # is the answer; a block here would send a client to script around its own typo.
+    @{ Name = 'the DEFAULT rehearsal with only a fixable error publishes no block'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document
+                 elements = @( @{ kind = 'wall' } ) }
+       Needs = 'Document'
+       NotCovered = 'the absence of a fallback on the default path (needs -Document)'
+       UseStructured = $true
+       Check = { param($s)
+                 $s.dry_run -eq $true -and $s.invalid -eq 1 -and
+                 $null -eq $s.fallback -and $null -eq $s.capability_gaps } },
+
+    # THE MIXED BATCH, live. One entry names a kind with no typed path and another
+    # is simply wrong. The old code answered allowed=true for the whole request -
+    # telling a client to go write a script while the request still held input it
+    # should fix. It must now refuse the grant and still name the gap.
+    @{ Name = 'a mixed batch REFUSES the fallback and still names the capability gap'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document; dry_run = $false
+                 idempotency_key = "live-fallback-mixed-$probeRun"
+                 elements = @( @{ kind = 'sprinkler_head' },
+                               @{ kind = 'wall' } ) }   # wall with no geometry: fixable
+       Needs = 'Document'
+       NotCovered = 'the mixed-batch fallback refusal (needs -Document)'
+       ExpectError = 'invalid'
+       ExpectErrorContains = 'mixed_capability_and_invalid_input' },
+
+    # An ordinary argument error must carry NO fallback block at all: absence is the
+    # answer a client reads, and a block here would send it to write Python around
+    # its own typo.
+    @{ Name = 'an ordinary argument error carries no fallback block'
+       Tool = 'horizun_create_elements'
+       Args = @{ target_document = $Document; dry_run = $false
+                 idempotency_key = "live-fallback-argument-$probeRun"
+                 elements = @( @{ kind = 'wall' } ) }
+       Needs = 'Document'
+       NotCovered = 'the absence of a fallback on an argument error (needs -Document)'
+       ExpectError = 'invalid'
+       ExpectErrorLacks = '--- fallback ---' },
 
     # THE COMMAND THAT USED TO BE OUTSIDE THE POLICY. It could do everything the
     # typed writes can, plus everything they cannot, aimed at whatever window was
@@ -1025,6 +1219,55 @@ function Add-Write($name, $tool, $outcome, $detail) {
     $script:writeResults += @{ Name = $name; Tool = $tool; Outcome = $outcome; Detail = $detail }
 }
 
+# ---------------------------------------------------------------------------
+# RETIRED PROBES. Tools this suite used to cover that this VERSION no longer
+# publishes.
+#
+# Deleting them would quietly shrink the story: a guarantee that used to be
+# checked and now is not reads, in a diff, exactly like a guarantee that never
+# existed. Leaving them as NOT COVERED was worse - they sat in the denominator
+# of the current version's coverage and in the operator's list of gaps, implying
+# a fixture was missing when nothing was missing at all.
+#
+# So they are recorded here with what they covered and what replaced them,
+# reported in their own section, and counted in NEITHER the coverage denominator
+# nor the gap list. The retirement is a fact about the surface, not a hole in it.
+# ---------------------------------------------------------------------------
+$RetiredProbes = @(
+    @{ Tool = 'horizun_connect_mep'
+       Probes = @('connect_mep joins two pipes and confirms the joint from the model',
+                  'connect_mep generates a fitting and still confirms the joint')
+       Retired = '0.6.x (not published by this build)'
+       Covered = 'joining two MEP curves end to end, with and without a generated fitting, and confirming the joint by re-reading the connectors from the model.'
+       Replacement = 'No typed replacement in this version. MEP connection is reachable through horizun_execute_python, whose result is self-reported rather than host-verified.' }
+
+    @{ Tool = 'horizun_terminate_riser'
+       Probes = @('terminate_riser builds all five pieces and re-reads each one')
+       Retired = '0.6.x (not published by this build)'
+       Covered = 'building a five-piece riser termination in one transaction and re-reading every piece after the commit.'
+       Replacement = 'No typed replacement. horizun_create_elements covers plain pipe creation; the composed termination is a Python fallback case.' }
+
+    @{ Tool = 'horizun_place_sprinklers'
+       Probes = @('place_sprinklers seats every head it placed')
+       Retired = '0.6.x (not published by this build)'
+       Covered = 'placing sprinkler heads on free pipe stubs and proving each one SEATED within tolerance rather than merely existing - the case whose failure was measured on 2026-08-04 (37 placed, 0 seated, rolled back).'
+       Replacement = 'No typed replacement. horizun_create_elements places family instances but does not check seating.' }
+
+    @{ Tool = 'horizun_family_mirror_void'
+       Probes = @('family_mirror_void copies a void that still cuts')
+       Retired = '0.6.x (not published by this build)'
+       Covered = 'mirroring a void inside a family and confirming the copy still cut its solid.'
+       Replacement = 'horizun_create_family authors voids directly; the mirror-and-still-cuts case has no typed probe in this version.' }
+)
+
+$retiredRows = @()
+foreach ($r in $RetiredProbes) {
+    foreach ($n in $r.Probes) {
+        $retiredRows += @{ Name = $n; Tool = $r.Tool; Retired = $r.Retired
+                           Covered = $r.Covered; Replacement = $r.Replacement }
+    }
+}
+
 # Every brace-balanced JSON object in a string, in the order they appear.
 #
 # A refusal is not "prose then JSON". It is "Error: <sentence> {result}" and then,
@@ -1102,7 +1345,8 @@ function Invoke-Write($tool, $arguments) {
             }
         }
     }
-    return @{ replied = $true; isError = [bool]$m.result.isError; text = $text; data = $data }
+    return @{ replied = $true; isError = [bool]$m.result.isError; text = $text; data = $data
+              structured = $m.result.structuredContent }
 }
 
 # Dry run, then apply with the token it issued. Returns the APPLY answer. The two
@@ -1158,16 +1402,15 @@ if (-not $writeGate) {
 
 $writeNames = @(
     @{ N = 'create_elements commits a typed batch and verifies every row from the model'; T = 'horizun_create_elements' }
-    @{ N = 'connect_mep joins two pipes and confirms the joint from the model';           T = 'horizun_connect_mep' }
-    @{ N = 'connect_mep generates a fitting and still confirms the joint';                T = 'horizun_connect_mep' }
-    @{ N = 'terminate_riser builds all five pieces and re-reads each one';                T = 'horizun_terminate_riser' }
-    @{ N = 'place_sprinklers seats every head it placed';                                T = 'horizun_place_sprinklers' }
-    @{ N = 'a typed write that cannot confirm itself does NOT leave the attempt behind';  T = '(contract)' }
+    # The rollback guarantee, on a CURRENT tool. It used to be inferred from
+    # whichever retired command happened to fail its own verification, which meant
+    # it went unproven the moment those commands left the surface. Now it is
+    # provoked deliberately - see W6.
+    @{ N = 'execute_plan rolls the WHOLE graph back when a later action fails';           T = 'horizun_execute_plan' }
 )
 
 if ($writeGate) {
     foreach ($w in $writeNames) { Add-Write $w.N $w.T 'not_covered' $writeGate }
-    Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' $writeGate
 }
 else {
     # ---- what this model can offer. Discovered, not hard-coded: element ids do
@@ -1254,203 +1497,135 @@ else {
         return [bool]($listed | Where-Object { $_.name -eq $n })
     }
 
-        # ---- W2: connect_mep, fitting none. A second pipe meeting the first end on.
-        $mk2 = New-ProbePipe ($wx+3000) $wy 0 ($wx+6000) $wy 0 $pipeType 'mk2'
-        $pipeB = $null
-        if ($mk2.answer.data -and @($mk2.answer.data.rows).Count -gt 0) { $pipeB = @($mk2.answer.data.rows)[0].element_id }
+        # ---- W2: THE ROLLBACK RULE, provoked on a CURRENT tool.
+        #
+        # "No command reports work it did not verify" is honoured everywhere. What
+        # happens AFTER a failure was the part with no live evidence: one command
+        # rolls back and builds nothing, another commits and leaves the attempt in
+        # the model with an honest sentence about it. Both are truthful; only one is
+        # safe to retry.
+        #
+        # This used to be inferred - scan whatever answers the tier happened to
+        # collect for a fully_verified=false that had committed anyway. That went
+        # UNVERIFIED the moment the commands it leaned on left the surface, because
+        # it was watching for a failure rather than causing one.
+        #
+        # So it is PROVOKED. horizun_execute_plan composes typed writes into one
+        # TransactionGroup and documents that any failure rolls the complete graph
+        # back. The plan below is a valid PIPE followed by an action that cannot
+        # succeed, and the assertion is made against the MODEL: the pipe count before
+        # and after must be identical.
+        #
+        # It was anchored on walls first and went UNVERIFIED on the real fixture -
+        # HZ_WRITE is an HVAC model and offers no wall type. Anchoring a probe on a
+        # category the fixture does not have is the probe's bug, not the product's,
+        # and pipes are what this tier already discovers for everything else.
+        $pipeCountBefore = $null
+        $cw = Invoke-Write 'horizun_query_model' @{ categories=@('OST_PipeCurves'); include_links=$false
+                                                    max_rows=1; group_by=@('category') }
+        if ($cw.data -and @($cw.data.groups).Count -gt 0) { $pipeCountBefore = @($cw.data.groups)[0].count }
 
-        if (-not (Test-ToolPublished 'horizun_connect_mep')) {
-            Add-Write $writeNames[1].N $writeNames[1].T 'not_covered' 'horizun_connect_mep is not published by this build'
-            Add-Write $writeNames[2].N $writeNames[2].T 'not_covered' 'horizun_connect_mep is not published by this build'
-        }
-        elseif (-not $pipeA -or -not $pipeB) {
-            Add-Write $writeNames[1].N $writeNames[1].T 'unverified' 'the two probe pipes could not be created'
+        if ($null -eq $pipeCountBefore -or -not $levelId -or -not $pipeType -or -not $pipeSystem) {
+            Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                'could not read a pipe count, a level, a pipe type or a piping system from this fixture, so ' +
+                'the rollback could not be provoked against a known before-state')
         }
         else {
-            $c = Invoke-WriteApply 'horizun_connect_mep' @{
-                target_document = $wDoc
-                connections = @(@{ from = @{ element_id = $pipeA; axis_hint = '+x' }
-                                   to   = @{ element_id = $pipeB; axis_hint = '-x' } })
-            } 'connect-none'
-            $ca = $c.answer
-            if ($c.stage -eq 'dry_run') {
-                Add-Write $writeNames[1].N $writeNames[1].T 'unverified' ("the dry run planned nothing: " + $ca.text)
+            # Second action fails deterministically: change_type to an id that is a
+            # LEVEL, which horizun_transform_elements must refuse. Nothing about the
+            # refusal depends on model content, so this is reproducible.
+            $planActions = @(
+                @{ key='w'; tool='horizun_create_elements'
+                   arguments=@{ units='mm'
+                                elements=@(@{ kind='pipe'; start=@($wx,($wy+4000),0); end=@(($wx+3000),($wy+4000),0)
+                                              level_id=$levelId; type_id=$pipeType; system_type_id=$pipeSystem }) } }
+                @{ key='boom'; tool='horizun_transform_elements'
+                   arguments=@{ units='mm'
+                                operations=@(@{ operation='change_type'; element_ids=@($levelId); type_id=$levelId }) } }
+            )
+            $rb = Invoke-WriteApply 'horizun_execute_plan' @{
+                target_document = $wDoc; actions = $planActions } 'rollback'
+
+            $ra = $rb.answer
+            if ($rb.stage -eq 'dry_run') {
+                # The graph was refused before it could run. That proves validation,
+                # not rollback, and must not be reported as the latter.
+                Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                    'the plan was refused during rehearsal, so nothing was committed and nothing was rolled ' +
+                    'back: ' + $ra.text)
             }
             else {
-                if ($ca.data) { $writeAnswers += @{ Name = $writeNames[1].N; Data = $ca.data } }
-                if (-not $ca.isError -and $ca.data.fully_verified -eq $true -and
-                    $ca.data.connected -eq 1 -and $ca.data.joined_to_expected_element -eq 1) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'pass' 'joined to the element named, one shared system'
+                # Re-read the MODEL, not the answer. A command insisting it rolled
+                # back is exactly the claim under test.
+                $cwAfter = Invoke-Write 'horizun_query_model' @{ categories=@('OST_PipeCurves'); include_links=$false
+                                                                 max_rows=1; group_by=@('category') }
+                $pipeCountAfter = $null
+                if ($cwAfter.data -and @($cwAfter.data.groups).Count -gt 0) {
+                    $pipeCountAfter = @($cwAfter.data.groups)[0].count
+                }
+
+                # THE STRUCTURED DIAGNOSTIC, not the sentence. The old probe passed on
+                # (isError AND count unchanged), which a stale-token or confirmation
+                # refusal ALSO satisfies without a rollback ever happening. Now the plan
+                # must PROVE, as data in structuredContent, that: the TransactionGroup
+                # started; the valid first action ('w') executed and returned success;
+                # the invalid second ('boom') was REACHED and returned failure; and the
+                # rollback landed with status RolledBack. The model residue check stays
+                # on top of that, so both the group's own account and the model agree.
+                $s = $ra.structured
+                $trace = @()
+                if ($s -and $s.execution_trace) { $trace = @($s.execution_trace) }
+                $wRow    = $trace | Where-Object { $_.key -eq 'w' }    | Select-Object -First 1
+                $boomRow = $trace | Where-Object { $_.key -eq 'boom' } | Select-Object -First 1
+
+                if ($null -eq $pipeCountAfter) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                        'the pipe count could not be re-read after the plan, so residue could not be ruled out')
+                }
+                elseif (-not $ra.isError) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        'the plan REPORTED SUCCESS although its second action cannot succeed. Either the ' +
+                        'failure was not provoked (fix this probe) or a failing action was accepted.')
+                }
+                elseif ($null -eq $s -or $null -eq $s.transaction_group_started) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                        'the failed plan carried no structured rollback diagnostic, so a rollback that reached ' +
+                        'the TransactionGroup could not be told from a refusal that never did')
+                }
+                elseif ($s.transaction_group_started -ne $true) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        'the plan failed BEFORE the TransactionGroup started, so this proves validation, not ' +
+                        'rollback. A pre-group refusal must never count as rollback tested.')
+                }
+                elseif ($null -eq $wRow -or $wRow.success -ne $true) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        "the valid first action 'w' did not execute with success=true in the trace, so the " +
+                        'rollback was not exercised on a graph that had actually written something')
+                }
+                elseif ($null -eq $boomRow -or $boomRow.success -ne $false) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        "the failing action 'boom' was not reached with success=false, so the failure was not " +
+                        'provoked inside the group')
+                }
+                elseif ($s.rollback_status -ne 'RolledBack' -or $s.rollback_confirmed -ne $true) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        ("the plan did not confirm a rollback: rollback_status='{0}', rollback_confirmed='{1}'. " -f
+                             $s.rollback_status, $s.rollback_confirmed) +
+                        "Anything other than 'RolledBack' leaves the model state uncertain and must not pass.")
+                }
+                elseif ($pipeCountAfter -ne $pipeCountBefore) {
+                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                        ("RESIDUE: {0} pipe(s) before the failed plan, {1} after. The first action stayed " -f
+                             $pipeCountBefore, $pipeCountAfter) +
+                        'applied even though the group reported RolledBack - the model and the group disagree.')
                 }
                 else {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' $ca.text
+                    Add-Write $writeNames[1].N $writeNames[1].T 'pass' (
+                        ("group started; 'w' committed and 'boom' failed inside it; rollback_status=RolledBack; " +
+                         "pipe count unchanged at {0} - the group's account and the model agree." -f $pipeCountBefore))
                 }
             }
         }
-
-        # ---- W3: connect_mep with a GENERATED fitting. Separate probe because the
-        # ---- fitting rebuilds the pipes' connectors, and that is exactly where a
-        # ---- post-commit re-read that resolves connectors by their pre-commit
-        # ---- index stops telling the truth.
-        if (-not (Test-ToolPublished 'horizun_connect_mep')) { $mk3 = $null } else {
-        $mk3 = New-ProbePipe ($wx+10000) $wy 0 ($wx+13000) $wy 0 $pipeType 'mk3'
-        $mk4 = New-ProbePipe ($wx+13000) $wy 0 ($wx+13000) ($wy+3000) 0 $pipeType 'mk4'
-        }
-        $pipeC = $null; $pipeD = $null
-        if ($mk3 -and $mk3.answer.data -and @($mk3.answer.data.rows).Count -gt 0) { $pipeC = @($mk3.answer.data.rows)[0].element_id }
-        if ($mk3 -and $mk4.answer.data -and @($mk4.answer.data.rows).Count -gt 0) { $pipeD = @($mk4.answer.data.rows)[0].element_id }
-
-        if (-not (Test-ToolPublished 'horizun_connect_mep')) { }   # already reported above
-        elseif (-not $pipeC -or -not $pipeD) {
-            Add-Write $writeNames[2].N $writeNames[2].T 'unverified' 'the perpendicular probe pair could not be created'
-        }
-        else {
-            $e = Invoke-WriteApply 'horizun_connect_mep' @{
-                target_document = $wDoc
-                connections = @(@{ from = @{ element_id = $pipeC; axis_hint = '+x' }
-                                   to   = @{ element_id = $pipeD; axis_hint = '-y' }
-                                   fitting = 'elbow' })
-            } 'connect-elbow'
-            $ea = $e.answer
-            if ($e.stage -eq 'dry_run') {
-                Add-Write $writeNames[2].N $writeNames[2].T 'unverified' ("the dry run planned nothing: " + $ea.text)
-            }
-            else {
-                if ($ea.data) { $writeAnswers += @{ Name = $writeNames[2].N; Data = $ea.data } }
-                if (-not $ea.isError -and $ea.data.fully_verified -eq $true) {
-                    Add-Write $writeNames[2].N $writeNames[2].T 'pass' 'fitting generated and the joint confirmed'
-                }
-                else {
-                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' $ea.text
-                }
-            }
-        }
-
-        # ---- W4: terminate_riser. A fresh vertical pipe, so its top is free - a
-        # ---- riser already inside a network is correctly refused and proves nothing.
-        if (-not (Test-ToolPublished 'horizun_terminate_riser')) {
-            Add-Write $writeNames[3].N $writeNames[3].T 'not_covered' 'horizun_terminate_riser is not published by this build'
-        }
-        elseif (-not $capType -or -not $unionType -or -not $teeType -or -not $elbowType -or -not $valveType) {
-            Add-Write $writeNames[3].N $writeNames[3].T 'not_covered' (
-                ("'{0}' does not have all five termination families loaded (cap, union/coupling, tee, elbow, " -f $wDoc) +
-                'valve). Nothing is substituted for a missing piece, so the probe cannot be staged.')
-        }
-        else {
-            $mk5 = New-ProbePipe ($wx+20000) $wy 0 ($wx+20000) $wy 4000 $pipeType 'mk5'
-            $riser = $null
-            if ($mk5.answer.data -and @($mk5.answer.data.rows).Count -gt 0) { $riser = @($mk5.answer.data.rows)[0].element_id }
-            if (-not $riser) {
-                Add-Write $writeNames[3].N $writeNames[3].T 'unverified' 'the probe riser could not be created'
-            }
-            else {
-                $t = Invoke-WriteApply 'horizun_terminate_riser' @{
-                    target_document = $wDoc; riser_pipe_id = $riser
-                    reference_elevation_mm = 2000; measured_union_length_mm = 88.9
-                    branch_diameter_mm = 25
-                    cap_type_id = $capType; union_type_id = $unionType; tee_type_id = $teeType
-                    elbow_type_id = $elbowType; valve_type_id = $valveType
-                } 'riser'
-                $ta = $t.answer
-                if ($t.stage -eq 'dry_run') {
-                    Add-Write $writeNames[3].N $writeNames[3].T 'unverified' ("the dry run refused: " + $ta.text)
-                }
-                else {
-                    if ($ta.data) { $writeAnswers += @{ Name = $writeNames[3].N; Data = $ta.data } }
-                    if (-not $ta.isError -and $ta.data.fully_verified -eq $true) {
-                        Add-Write $writeNames[3].N $writeNames[3].T 'pass' 'all five pieces re-read'
-                    }
-                    else {
-                        Add-Write $writeNames[3].N $writeNames[3].T 'fail' $ta.text
-                    }
-                }
-            }
-        }
-
-        # ---- W5: place_sprinklers. The whole point of this command is that a head
-        # ---- is SEATED, not merely present and reporting connected.
-        if (-not (Test-ToolPublished 'horizun_place_sprinklers')) {
-            Add-Write $writeNames[4].N $writeNames[4].T 'not_covered' 'horizun_place_sprinklers is not published by this build'
-        }
-        elseif (-not $sprinkler) {
-            Add-Write $writeNames[4].N $writeNames[4].T 'not_covered' (
-                ("'{0}' has no Sprinklers family symbol loaded, so no head can be placed in it." -f $wDoc))
-        }
-        else {
-            $s = Invoke-WriteApply 'horizun_place_sprinklers' @{
-                target_document = $wDoc; target_pattern = 'upright'; symbol_id = $sprinkler
-                max_targets = 500; seating_tolerance_mm = 1.0
-            } 'sprinklers'
-            $sa = $s.answer
-            if ($s.stage -eq 'dry_run') {
-                Add-Write $writeNames[4].N $writeNames[4].T 'unverified' ("the dry run found no targets: " + $sa.text)
-            }
-            else {
-                if ($sa.data) { $writeAnswers += @{ Name = $writeNames[4].N; Data = $sa.data } }
-                if (-not $sa.isError -and $sa.data.fully_verified -eq $true -and
-                    (All-Rows $sa.data.rows { param($r) $r.present -eq $true -and $r.connected_to_target -eq $true -and $r.seated -eq $true })) {
-                    Add-Write $writeNames[4].N $writeNames[4].T 'pass' (
-                        "{0} head(s), every one seated" -f $sa.data.placed_and_present)
-                }
-                else {
-                    Add-Write $writeNames[4].N $writeNames[4].T 'fail' $sa.text
-                }
-            }
-        }
-    }
-
-    # ---- W6: THE ROLLBACK RULE, over every answer this tier collected.
-    #
-    # "No command reports work it did not verify" is honoured everywhere. What
-    # happens AFTER a failed verification was not: one command rolls back and
-    # builds nothing, another commits and leaves 37 misplaced heads in the model
-    # with an honest sentence about them. Both are truthful; only one is safe to
-    # retry. So a typed write whose verification fails must not leave the attempt
-    # behind.
-    $offenders = @()
-    foreach ($ans in $writeAnswers) {
-        $d = $ans.Data
-        if ($null -eq $d) { continue }
-        if ($null -eq $d.fully_verified) { continue }
-        if ($d.fully_verified -eq $true) { continue }
-        if ($d.transaction_status -eq 'Committed') {
-            $offenders += ("{0}: fully_verified=false yet transaction_status=Committed" -f $ans.Name)
-        }
-    }
-    # Counting ANSWERS here let the probe pass vacuously: create_elements reports
-    # created_verified rather than fully_verified, so a run where only W1 succeeded
-    # held one answer, zero verdicts - and "no offenders among zero verdicts" was
-    # printed as the rule holding. Count the VERDICTS the rule is actually about.
-    $verdicts = @($writeAnswers | Where-Object { $_.Data -and $null -ne $_.Data.fully_verified })
-    if ($verdicts.Count -eq 0) {
-        Add-Write $writeNames[5].N $writeNames[5].T 'unverified' (
-            'no write answer carried a fully_verified verdict, so the rollback rule was never exercised')
-    }
-    elseif ($offenders.Count -eq 0) {
-        Add-Write $writeNames[5].N $writeNames[5].T 'pass' (
-            "every unconfirmed write rolled back ({0} verdict(s) examined)" -f $verdicts.Count)
-    }
-    else {
-        Add-Write $writeNames[5].N $writeNames[5].T 'fail' ($offenders -join '; ')
-    }
-
-    # ---- W7: family_mirror_void. Its own document, and the bridge will not switch
-    # ---- documents for you, so this runs on the pass where the family is active.
-    if ([string]::IsNullOrWhiteSpace($VoidFamilyDocument)) {
-        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
-            'needs -VoidFamilyDocument, a family document holding a void that cuts a solid; a family of ' +
-            'solids exercises only the refusal')
-    }
-    elseif ($activeTitle -ne $VoidFamilyDocument) {
-        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
-            ("-VoidFamilyDocument is '{0}' but '{1}' is active. Run this once per active document: the " -f
-                 $VoidFamilyDocument, $activeTitle) + 'bridge acts on the front one and refuses to switch.')
-    }
-    else {
-        Add-Write 'family_mirror_void copies a void that still cuts' 'horizun_family_mirror_void' 'not_covered' (
-            'the void form is not discoverable from the typed surface: query_model reports forms without a ' +
-            'category and with no is_void flag, so the id has to come from the fixture. Add a VoidFormId ' +
-            'fixture, or a way to list forms, and this probe can assert the four properties.')
     }
 }
 
@@ -1559,6 +1734,9 @@ foreach ($p in $probes) {
         $replyContent = @($m.result.content)
         if ($replyContent.Count -gt 0 -and $null -ne $replyContent[0]) { $text = $replyContent[0].text }
         $isError = [bool]$m.result.isError
+        # What a program branches on. Kept separate from the text on purpose: a probe
+        # about a structured signal must read the structure, not a rendering of it.
+        $structured = $m.result.structuredContent
     }
 
     if ($p.ExpectError) {
@@ -1575,7 +1753,19 @@ foreach ($p in $probes) {
             continue
         }
         if ($isError -and $text -match $p.ExpectError) {
-            Note-Pass $p.Name $p.Tool $null
+            # A refusal can be right about the message and wrong about what rides
+            # beside it. ExpectErrorContains / ExpectErrorLacks assert the STRUCTURE
+            # in the reply - above all the fallback block, whose absence is as
+            # load-bearing as its presence.
+            $missing = $p.ExpectErrorContains -and ($text -notlike ('*' + $p.ExpectErrorContains + '*'))
+            $present = $p.ExpectErrorLacks    -and ($text -like    ('*' + $p.ExpectErrorLacks    + '*'))
+            if ($missing) {
+                Note-Fail $p.Name $p.Tool ("the refusal fired but did not carry '{0}'" -f $p.ExpectErrorContains)
+            } elseif ($present) {
+                Note-Fail $p.Name $p.Tool ("the refusal carried '{0}', which it must not" -f $p.ExpectErrorLacks)
+            } else {
+                Note-Pass $p.Name $p.Tool $null
+            }
         } else {
             $got = if ($text) { ($text -replace "`n", ' ').Substring(0, [Math]::Min(200, $text.Length)) } else { '(no text)' }
             Note-Fail $p.Name $p.Tool ("expected a refusal matching '{0}', got: {1}" -f $p.ExpectError, $got)
@@ -1607,8 +1797,49 @@ foreach ($p in $probes) {
 
     if (-not $p.Check) { Note-Unverified $p.Name "this probe asserts nothing - it calls the tool and looks at neither the answer nor an error" $p.Tool; continue }
 
+    # A probe about structuredContent gets structuredContent. Without this it would
+    # have to re-parse the text, which is exactly the fragile reading the structured
+    # signal exists to replace.
+    if ($p.UseStructured) {
+        if ($null -eq $structured) {
+            Note-Unverified $p.Name "the reply carried no structuredContent, so the structured check never ran" $p.Tool
+            continue
+        }
+        if (& $p.Check $structured) { Note-Pass $p.Name $p.Tool 'read from structuredContent' }
+        else { Note-Fail $p.Name $p.Tool 'structuredContent did not carry what it had to' }
+        continue
+    }
+
     if (& $p.Check $data) { Note-Pass $p.Name $p.Tool $null }
     else { Note-Fail $p.Name $p.Tool 'the answer did not say what it had to' }
+}
+
+# ---------------------------------------------------------------------------
+# AN ACTIVE PROBE MAY NOT NAME A TOOL THIS BUILD DOES NOT PUBLISH.
+#
+# That is how the four retired probes rotted: they kept running, kept answering
+# "not published by this build", and kept counting as gaps for a version whose
+# surface had simply moved on. Either a probe is about a published tool, or it
+# belongs in $RetiredProbes with its history. There is no third state where it
+# quietly drags the numbers down.
+# ---------------------------------------------------------------------------
+$publishedNames = @($listed | ForEach-Object { $_.name })
+$danglingProbes = @()
+foreach ($p in $probes) {
+    if (-not $p.Tool -or $p.Tool -eq '(contract)') { continue }
+    if ($publishedNames -notcontains $p.Tool) { $danglingProbes += ("{0} -> {1}" -f $p.Name, $p.Tool) }
+}
+foreach ($w in $writeResults) {
+    if (-not $w.Tool -or $w.Tool -eq '(contract)') { continue }
+    if ($publishedNames -notcontains $w.Tool) { $danglingProbes += ("{0} -> {1}" -f $w.Name, $w.Tool) }
+}
+if ($danglingProbes.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  ACTIVE PROBES NAME TOOLS THIS BUILD DOES NOT PUBLISH:" -ForegroundColor Red
+    foreach ($d in $danglingProbes) { Write-Host ("    - {0}" -f $d) -ForegroundColor Red }
+    Write-Host ("  Move them to `$RetiredProbes with their reason and replacement, or fix the tool name. " +
+                "A probe that answers 'not published' is not coverage.") -ForegroundColor Red
+    $failed += $danglingProbes.Count
 }
 
 # The write tier ran earlier, because it needed the transport open to spend the
@@ -1628,9 +1859,29 @@ if ($writeResults.Count -gt 0) {
     }
 }
 
+# ---------------------------------------------------------------------------
+# RETIRED, reported in its own section and in NEITHER the coverage denominator
+# nor the gap list. A tool this version does not publish is a fact about the
+# surface; printing it as NOT COVERED implied a fixture was missing and put a
+# permanent floor under the gap count.
+# ---------------------------------------------------------------------------
+if ($retiredRows.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  retired (covered a tool this version no longer publishes - not a gap)" -ForegroundColor DarkGray
+    foreach ($r in $retiredRows) {
+        Write-Host ("  RETIRED  {0}" -f $r.Name) -ForegroundColor DarkGray
+        Write-Host ("           tool {0}, retired {1}" -f $r.Tool, $r.Retired) -ForegroundColor DarkGray
+        Write-Host ("           covered: {0}" -f $r.Covered) -ForegroundColor DarkGray
+        Write-Host ("           now: {0}" -f $r.Replacement) -ForegroundColor DarkGray
+    }
+}
+
 Write-Host ("-" * 70)
 Write-Host ("  {0} passed, {1} failed, {2} UNVERIFIED   (of {3} probes, {4} assert something)" -f `
             $passed, $failed, $unverified, ($probes.Count + $writeResults.Count), $assertingProbes)
+if ($retiredRows.Count -gt 0) {
+    Write-Host ("  {0} retired probe(s), excluded from the counts above" -f $retiredRows.Count) -ForegroundColor DarkGray
+}
 if ($unverified -gt 0) {
     Write-Host "  UNVERIFIED is not a pass. These guarantees were NOT established by this run:" -ForegroundColor Yellow
     foreach ($u in $unverifiedDetail) { Write-Host ("    - {0}" -f $u) -ForegroundColor DarkYellow }
@@ -1639,19 +1890,20 @@ if (-not $Document) {
     $notCovered += 'links, quantities and the whole confirmation flow (needs -Document <title>)'
 }
 
-# The typed-overlap guard lives INSIDE execute_python, so when that tool is not
-# advertised the guard cannot fire and nothing here reaches it. Its only evidence
-# is then the unit tests - which is a fine place for a regex table to be tested,
-# and not the same claim as "the redirect works against a running Revit".
+# The typed-overlap advisory, the preflight and the evidence classification all
+# live INSIDE execute_python, so when that tool is not advertised none of them can
+# fire and nothing here reaches them. Their only evidence is then the unit tests -
+# a fine place for a regex table and a JToken classifier, and not the same claim
+# as "it behaves this way against a running Revit".
 #
-# This does NOT enable anything. A person enables execute_python by running
-# scripts/enable-execute-python.ps1; a verification harness that switched on the
-# full Revit API to test itself would be a worse bargain than the gap it closes.
+# execute_python is enabled by DEFAULT, so this branch means the machine's owner
+# switched it off. This harness does not reverse that: it reports the gap. The
+# owner re-enables with scripts/enable-execute-python.ps1 and re-runs.
 if (-not ($listed | Where-Object { $_.name -eq 'horizun_execute_python' })) {
-    $notCovered += 'the typed-overlap guard redirecting execute_python to the typed commands ' +
-                   '(execute_python is not advertised on this machine, so the guard cannot fire; its only ' +
-                   'evidence is Horizun.Core.Tests. Enable it deliberately with scripts/enable-execute-python.ps1 ' +
-                   'and re-run to cover this)'
+    $notCovered += 'the execute_python fallback surface - the typed-overlap advisory, preflight, and the ' +
+                   '__output__ evidence classification (execute_python is switched off on this machine, so ' +
+                   'none of them can fire; their only evidence is Horizun.Core.Tests. Re-enable deliberately ' +
+                   'with scripts/enable-execute-python.ps1 and re-run to cover this)'
 }
 if (-not $OldFile) {
     $notCovered += 'the upgrade guard (needs -OldFile <a file saved by another Revit>)'
@@ -1743,7 +1995,6 @@ $report = [pscustomobject]@{
         FamilyTemplate   = -not [string]::IsNullOrWhiteSpace($FamilyTemplate)
         WriteDocument    = -not [string]::IsNullOrWhiteSpace($WriteDocument)
         WriteDocumentDisposable = -not [string]::IsNullOrWhiteSpace($WriteDocumentDisposable)
-        VoidFamilyDocument = -not [string]::IsNullOrWhiteSpace($VoidFamilyDocument)
         ClosedWorksetDocument = -not [string]::IsNullOrWhiteSpace($ClosedWorksetDocument)
     }
     write_tier        = @{

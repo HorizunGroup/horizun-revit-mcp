@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -197,12 +197,43 @@ namespace Horizun.Revit.Core
                     ["queued"] = req.AheadAtAdmission > 0,
                     ["ahead_at_admission"] = req.AheadAtAdmission,
                     ["waited_ms"] = waitedMs,
+                    // WHAT the wait was. waited_ms is queued-to-started, and that interval
+                    // has two different causes that used to share one number: requests
+                    // ahead in the FIFO, and Revit itself not servicing the ExternalEvent.
+                    // Measured in the field (2026-08-04): a first call after add-in load
+                    // reported waited_ms 25014 with queued=false and ahead_at_admission 0
+                    // - 25 seconds attributed to a queue it was never in. Revit only runs
+                    // external events when idle, and just after start it is not: that is
+                    // warm-up, and with a modal dialog open it is the dialog. The bridge
+                    // cannot tell those two apart from here, so the field names the
+                    // boundary it CAN see: with nothing ahead, none of the wait was queue.
+                    ["waited_on"] = req.AheadAtAdmission > 0
+                        ? "queue_then_revit_ui_thread"
+                        : "revit_ui_thread_only (nothing was ahead; a long wait here is Revit not yet idle - add-in warm-up just after start, or a modal dialog)",
                     ["capacity"] = _gate.Capacity,
                     ["execution_and_wait_ms"] = clock.ElapsedMilliseconds
                 };
             }
             if (result.Success) Log.Info($"{name} ok in {clock.ElapsedMilliseconds} ms");
             else Log.Warn($"{name} FAILED in {clock.ElapsedMilliseconds} ms: {result.Error}");
+
+            // ---- The receipt (5.2). Written from what the reply itself carried, after
+            // the reply is final, and NEVER able to fail the operation it records: the
+            // answer the caller is waiting on outranks the diary. Failures are counted
+            // and surfaced by health rather than swallowed.
+            try
+            {
+                Newtonsoft.Json.Linq.JObject receipt = ReceiptLedger.Build(
+                    name, result.Success, result.Success ? null : result.Error,
+                    result.Data as Newtonsoft.Json.Linq.JObject,
+                    waitedMs, clock.ElapsedMilliseconds,
+                    req.Ticket.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    DateTime.UtcNow);
+                ReceiptLedger.Append(ReceiptLedger.DefaultDirectory(), receipt,
+                                     Settings.RawValue, DateTime.UtcNow);
+            }
+            catch { /* counted inside Append; a diary must never cost an answer */ }
+
             return result;
         }
 
@@ -355,6 +386,11 @@ namespace Horizun.Revit.Core
             switch (contract.Effect)
             {
                 case ToolEffect.Mutating:
+                    // A Python preflight validates and compiles but executes nothing, so
+                    // like a dry run it never crosses the mutation boundary and needs no
+                    // durable key. Only an explicit preflight=true is exempt.
+                    if (contract.Name == "horizun_execute_python" &&
+                        request.Value<bool?>("preflight") == true) return false;
                     return true;
                 case ToolEffect.MutatingUnlessDryRun:
                     // All current plan/apply commands default to dry_run=true. Only an

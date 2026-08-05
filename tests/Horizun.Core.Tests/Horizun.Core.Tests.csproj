@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun Core tests — original Horizun code.
@@ -30,8 +30,40 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentIdentity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
+    <!-- The classification of a script's own success claim. The one rule it enforces -
+         a "verified" claim without evidence is downgraded, never believed - is pure
+         arithmetic over a JToken, so it is proved here, without a Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptEvidence.cs" />
+    <!-- The machine-readable permission to fall back to Python, and the exception that
+         carries a capability gap through the catch that flattens everything else to a
+         string. Both Revit-free, and the invariant worth proving here is the one whose
+         violation is expensive: allowed=true never travels with write_started=true. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FallbackSignal.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\UnsupportedCapability.cs" />
+    <!-- The one place the batch rule lives. It was four copies, and the mixed-batch
+         defect shipped in all four; this is the piece whose behaviour is proved
+         exhaustively so the commands only have to call it. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FallbackDecision.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanFailure.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Transport\PipeEnvelope.cs" />
+    <!-- Comment/string masking for the typed-overlap advisory. A live run advised a
+         script whose only mention of the API was in a comment. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceMask.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Measurement.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashLedger.cs" />
+    <!-- The materialised plan: what a dry run RESOLVED, so an apply can tell that the
+         model moved underneath it. Pure arithmetic over strings - the facts need Revit,
+         the fingerprint does not - which is why the cases that matter (a collector
+         re-ordering, a colleague editing the value this run was about to write) are
+         provable here and not against a model somebody has to build first. -->
+    <!-- Retention and redaction for the operation ledger. It DELETES somebody's audit
+         trail, so every rule is proved here - including the two that must not happen: a
+         malformed setting read as permission to delete, and a size cap dropping the
+         newest receipt instead of the oldest. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptRetention.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LineReader.cs" />

@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - exports verified against the filesystem after Revit returns.
 // -----------------------------------------------------------------------------
 using System;
@@ -111,6 +111,51 @@ namespace Horizun.Revit.Commands
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error");
+            // ---- The MATERIALISED plan: the SOURCES and the DESTINATION as they stand. --
+            // An export publishes the model outward, and two ambient facts shape what
+            // lands on disk: WHICH views/schedule the ids resolve to - a renamed or
+            // re-cropped view exports different content under the same id - and the
+            // overwrite decision, which was taken against files that existed at rehearsal
+            // time. A file that appears at the destination after a no-overwrite rehearsal
+            // makes the same request destroy data it promised not to touch; the plan
+            // carries that file-existence fact so the apply refuses instead.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (View v in views)
+            {
+                resolvedPlan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafePlanUid(v),
+                    Category = "view",
+                    TypeName = SafePlanName(v),
+                    Action = PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string> { { "role", "export_source" } }
+                });
+            }
+            if (schedule != null)
+            {
+                resolvedPlan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafePlanUid(schedule),
+                    Category = "schedule",
+                    TypeName = SafePlanName(schedule),
+                    Action = PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string> { { "role", "export_source" } }
+                });
+            }
+            // Not an element, but ambient state the approval depends on: which candidate
+            // files already exist. Sorted for stability; existence only, not size or time
+            // - an export target being rewritten by its own previous run must not read as
+            // drift.
+            resolvedPlan.ContextFingerprint = "existing=" + string.Join(",",
+                existing.Where(File.Exists).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)) +
+                ";overwrite=" + (overwrite ? "1" : "0");
+
             if (dryRun)
             {
                 var result = new JObject
@@ -121,14 +166,20 @@ namespace Horizun.Revit.Commands
                     ["exporter_available"] = exporterAvailable,
                     ["note"] = "Nothing was exported and no file was created."
                 };
+                if (exporterAvailable) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, exporterAvailable,
-                    exporterAvailable ? "the token binds format, destination, selected views/schedule, export options and overwrite policy" :
-                    "no usable token is issued because the optional Navisworks exporter is not installed");
+                    exporterAvailable
+                        ? "the token binds format, destination, options, the IDENTITY of every selected view and " +
+                          "schedule as resolved now, and which destination files already exist - a source renamed or " +
+                          "a file that appears under a no-overwrite approval refuses as a stale plan."
+                        : "no usable token is issued because the optional Navisworks exporter is not installed");
                 return CommandResult.Ok(result);
             }
             if (!exporterAvailable)
                 return CommandResult.Fail("The optional Autodesk Navisworks NWC exporter is not installed for this Revit version.");
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            // Recomputed by THIS call, including the file-existence context.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                     resolvedPlan, null);
             if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
@@ -232,6 +283,17 @@ namespace Horizun.Revit.Commands
             }
             return views;
         }
+        /// <summary>Guarded reads: a plan must never fail while MEASURING.</summary>
+        private static string SafePlanUid(Element e)
+        {
+            try { return e == null ? null : e.UniqueId; } catch { return null; }
+        }
+
+        private static string SafePlanName(Element e)
+        {
+            try { return e == null ? null : e.Name; } catch { return "<unreadable>"; }
+        }
+
         private static List<string> CandidateFiles(string format, string output)
         {
             string folder = System.IO.Path.GetDirectoryName(output);

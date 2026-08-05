@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // The few things that must be switched on deliberately.
@@ -22,8 +22,17 @@
 // effect on the next call instead of the next Revit restart. That matters most
 // for the one setting that exists today: arbitrary code execution.
 //
-// Absence is OFF. A file that cannot be read, parsed, or found leaves every
-// setting at its default, and every default here is the safe one.
+// THE DEFAULTS ARE THE FULL SURFACE. During this early stage the product decision
+// is that a fresh install exposes everything, including horizun_execute_python:
+// an absent file, or a file without these keys, reads as permission_profile=
+// unsafe_code and enable_execute_python=true. An EXPLICIT choice in the file -
+// read_only, safe_write, full_write, or enable_execute_python=false - is always
+// respected.
+//
+// One asymmetry is deliberate: a file that EXISTS but cannot be parsed falls
+// CLOSED (read_only, Python off), not open. The owner may have written an
+// explicit restriction into that file, and a corrupted byte must never convert
+// "I turned this off" into "everything is enabled".
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
@@ -41,22 +50,39 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Is horizun_execute_python allowed to run? Default FALSE.
+        /// Is horizun_execute_python allowed to run? Default TRUE.
         ///
-        /// It runs arbitrary code inside Revit, on the UI thread, with full API access and
-        /// the rights of the signed-in user. Nothing about that is wrong for a developer
-        /// at their own machine and nothing about it belongs in a production surface, so
-        /// it is off until somebody says otherwise in a file they own.
+        /// It runs arbitrary code inside Revit, on the UI thread, with full API access
+        /// and the rights of the signed-in user. During this early stage it ships as the
+        /// standing fallback for whatever the typed commands do not cover, so an absent
+        /// file or an absent key means ON. An explicit enable_execute_python=false in
+        /// the file is always respected, and a file that exists but cannot be parsed
+        /// falls CLOSED - a corrupted explicit refusal must never read as consent.
         /// </summary>
-        public static bool ExecutePythonEnabled => ReadBool("enable_execute_python", false);
+        public static bool ExecutePythonEnabled
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                if (state == FileState.Malformed) return false;
+                JToken t = o?["enable_execute_python"];
+                if (t == null || t.Type != JTokenType.Boolean) return true;
+                return (bool)t;
+            }
+        }
 
-        /// <summary>read_only | safe_write (default) | full_write | unsafe_code.</summary>
+        /// <summary>read_only | safe_write | full_write | unsafe_code (default).</summary>
         public static string PermissionProfile
         {
             get
             {
-                JObject o = Read();
-                string p = (o?.Value<string>("permission_profile") ?? "safe_write").ToLowerInvariant();
+                FileState state;
+                JObject o = Read(out state);
+                if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
+                string p = o?.Value<string>("permission_profile");
+                if (string.IsNullOrWhiteSpace(p)) return "unsafe_code"; // absent key: the default-on posture
+                p = p.ToLowerInvariant();
                 return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
                     ? p : "read_only"; // malformed privilege never elevates
             }
@@ -94,38 +120,65 @@ namespace Horizun.Revit.Core
                 (profile != "unsafe_code" || !ExecutePythonEnabled))
             {
                 reason = "horizun_execute_python requires BOTH permission_profile=unsafe_code and " +
-                         "enable_execute_python=true in " + Path() + ".";
+                         "enable_execute_python=true. Both DEFAULT to enabled, so this machine's " + Path() +
+                         " restricts one of them (or is malformed, which falls closed). That explicit " +
+                         "choice is respected; only the machine's owner reverses it.";
                 return false;
             }
             return true;
         }
 
         /// <summary>
-        /// The sentence to show a caller who asked for a disabled capability: what is off,
-        /// where to turn it on, and what turning it on means.
+        /// The sentence to show a caller who asked for a capability this machine has
+        /// switched off: what is off, why it is off, and where the owner turns it back on.
         /// </summary>
         public static string ExecutePythonRefusal()
         {
-            return "horizun_execute_python is DISABLED. It runs arbitrary code inside Revit on the UI thread, " +
-                   "with the full API and the rights of the signed-in user, so it is not part of the default " +
-                   "surface. THE INTENDED WAY TO ENABLE IT is for a PERSON to run the helper script " +
-                   "scripts/enable-execute-python.ps1 - it prints what to weigh, writes exactly the two keys, " +
-                   "preserves your other settings, and turns it back off with -Disable. Do not switch it on for " +
-                   "the user yourself; ask them to run that script. (What it writes, if you must do it by hand: " +
-                   "{\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true} in " + Path() + ". The " +
-                   "add-in re-reads settings on every call, but the MCP client caches the tool list at startup, so " +
-                   "restart the client for the tool to appear.) Prefer a typed command for anything recurring: a " +
-                   "typed command can be verified, and this cannot.";
+            return "horizun_execute_python is DISABLED ON THIS MACHINE. It is enabled by default, so this state " +
+                   "is a deliberate choice recorded in " + Path() + " (an explicit enable_execute_python=false " +
+                   "or a permission_profile below unsafe_code), or that file exists but could not be parsed - " +
+                   "a malformed settings file falls closed rather than open. Respect the choice: do not edit the " +
+                   "file yourself. If the MACHINE'S OWNER wants it back, they can run " +
+                   "scripts/enable-execute-python.ps1, which restores exactly the two keys " +
+                   "({\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true}) while preserving " +
+                   "every other setting, and reverts with -Disable. The add-in re-reads settings on every call, " +
+                   "but the MCP client caches the tool list at startup, so restart the client for the tool to " +
+                   "appear. Meanwhile, use the typed commands: they cover most operations and verify their work.";
         }
 
-        private static JObject Read()
+        /// <summary>
+        /// One raw string setting, for callers that take an injected reader (the receipt
+        /// ledger's retention). Guarded like every read of a file the user owns.
+        /// </summary>
+        public static string RawValue(string key)
+        {
+            try { return Read()?.Value<string>(key); } catch { return null; }
+        }
+
+        /// <summary>
+        /// Three states, because two of them look identical and must not act identical:
+        /// an ABSENT file means "the owner never chose" and the defaults apply, while a
+        /// MALFORMED file may be a corrupted explicit choice and everything falls closed.
+        /// </summary>
+        private enum FileState { Absent, Readable, Malformed }
+
+        private static JObject Read(out FileState state)
         {
             try
             {
                 string p = Path();
-                return File.Exists(p) ? JObject.Parse(File.ReadAllText(p)) : new JObject();
+                if (!File.Exists(p)) { state = FileState.Absent; return new JObject(); }
+                JObject o = JObject.Parse(File.ReadAllText(p));
+                state = FileState.Readable;
+                return o;
             }
-            catch { return new JObject(); }
+            catch { state = FileState.Malformed; return new JObject(); }
+        }
+
+        private static JObject Read()
+        {
+            FileState ignored;
+            return Read(out ignored);
         }
 
         private static HashSet<string> Strings(JArray a)
@@ -134,23 +187,6 @@ namespace Horizun.Revit.Core
             if (a != null) foreach (JToken t in a)
                 if (t.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)t)) result.Add((string)t);
             return result;
-        }
-
-        private static bool ReadBool(string key, bool fallback)
-        {
-            try
-            {
-                JObject o = Read();
-                JToken t = o[key];
-                if (t == null || t.Type != JTokenType.Boolean) return fallback;
-                return (bool)t;
-            }
-            catch
-            {
-                // An unreadable or malformed settings file must not enable anything. The
-                // safe default is the one that survives a mistake in this file.
-                return fallback;
-            }
         }
     }
 }

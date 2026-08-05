@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_set_keynote — replaces apply_keynote_to_element.
@@ -100,12 +100,6 @@ namespace Horizun.Revit.Commands
             // cosmetic option is one callers learn to work around.
             string planHash = DocumentGate.PlanHash(request, "element_ids", "keynote", "scope");
 
-            if (!dryRun)
-            {
-                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
-                if (refused != null) return refused;
-            }
-
             var failed = new JArray();
             var ids = new List<long>();
             foreach (var tok in idsToken)
@@ -178,6 +172,51 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            // ---- The MATERIALISED plan: the TYPES this actually resolved to, and what
+            // they say right now. ----
+            // planHash binds the REQUEST - the ids, the keynote, the scope. The paragraph
+            // this command already prints in its rehearsal admits what that cannot cover:
+            // "the token binds the REQUEST, not the set of types this rehearsal resolved."
+            // Here that gap closes. Two drifts matter and only a re-read finds either:
+            //
+            //   * SOMEBODY ELSE RE-CODED THE TYPE between the rehearsal and the apply.
+            //     The caller approved replacing "" - or "22.11.31" - and would be
+            //     overwriting a colleague's classification instead. The keynote itself is
+            //     therefore part of the plan, not just the target's identity.
+            //   * A NEW INSTANCE OF THE TYPE APPEARED, so the blast radius the caller
+            //     accepted has grown. That rides in ExpectedCascadeCount, which exists for
+            //     exactly this: an effect BEYOND the elements listed.
+            //
+            // Built identically on both paths, so the rehearsal's fingerprint travels in
+            // the token and the apply recomputes it.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ExpectedCascadeCount = byTarget.Sum(t => t.Collateral)
+            };
+            foreach (WritePlan t in byTarget)
+            {
+                resolvedPlan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafePlanUniqueId(t.Target),
+                    Category = t.Target?.Category == null ? null : t.Target.Category.Name,
+                    TypeName = SafeName(t.Target),
+                    Action = PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        // The value being replaced. This is the whole point.
+                        { "keynote", SafePlanCurrent(t) },
+                        { "parameter", t.Parameter?.Definition == null ? "" : t.Parameter.Definition.Name },
+                        // instance vs type is a different write with a different blast
+                        // radius, so a plan that resolved one must not satisfy the other.
+                        { "writes_to", t.IsTypeLevel ? "type" : "instance" }
+                    }
+                });
+            }
+
             if (dryRun)
             {
                 var dryResult = new JObject
@@ -194,11 +233,21 @@ namespace Horizun.Revit.Commands
                     ["total_elements_affected"] = byTarget.Sum(p => p.IsTypeLevel ? InstancesOfType(doc, p.Target.Id).Count : 1),
                     ["note"] = "Nothing was written. Re-run with dry_run=false and the confirmation_token below."
                 };
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(dryResult, gate, Name, planHash, true,
-                    "the token binds the REQUEST, not the set of types this rehearsal resolved. If the model gains " +
-                    "an instance of one of these types before you execute, it is re-coded too.");
+                    "the token binds the TYPES this rehearsal resolved and the keynote each one carries right now, " +
+                    "plus how many elements you did not name would be re-coded. If somebody re-codes one of these " +
+                    "types, or the model gains an instance of one, the apply is refused as a stale plan rather than " +
+                    "overwriting work you never saw.");
                 return CommandResult.Ok(dryResult);
             }
+
+            // The rehearsed PLAN does not travel in the token, only its fingerprint, so a
+            // stale refusal names the drift generically. Still refused, still nothing
+            // written - and the caller re-runs the rehearsal to see what moved.
+            CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                    resolvedPlan, null);
+            if (refused != null) return refused;
 
             // ---- Write. ----
             var written = new JArray();
@@ -474,6 +523,27 @@ namespace Horizun.Revit.Commands
         // whole session, so a cache that outlived a request would answer the next
         // one from a model that has since changed. Cleared on entry to Execute.
         private Dictionary<ElementId, List<ElementId>> _census;
+
+        /// <summary>Identity for the plan, guarded: measuring must never be what fails.</summary>
+        private static string SafePlanUniqueId(Element e)
+        {
+            try { return e == null ? null : e.UniqueId; } catch { return null; }
+        }
+
+        /// <summary>
+        /// The keynote as it reads NOW. Distinguishes "" (empty, the normal starting
+        /// state) from an unreadable parameter, because collapsing those two would let an
+        /// unreadable value drift silently past the comparison.
+        /// </summary>
+        private static string SafePlanCurrent(WritePlan t)
+        {
+            try
+            {
+                if (t == null || t.Parameter == null) return "<unreadable>";
+                return t.Parameter.AsString() ?? "";
+            }
+            catch { return "<unreadable>"; }
+        }
 
         private List<ElementId> InstancesOfType(Document doc, ElementId typeId)
         {

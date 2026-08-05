@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_write_params_verified — the WRITE verb, shared by all five processes.
@@ -165,11 +165,10 @@ namespace Horizun.Revit.Commands
             string planHash = DocumentGate.PlanHash(request, "writes", "on_failure",
                                                     "allow_vary_between_groups");
 
-            if (!dryRun)
-            {
-                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
-                if (refused != null) return refused;
-            }
+            // The confirmation is validated AFTER the resolve loop below, not here: the
+            // stale-plan check needs the plan recomputed NOW, and a plan cannot be compared
+            // before it exists. Nothing writes before that check runs - resolution is
+            // read-only by construction (no transaction is open).
 
             bool allowVary = request["allow_vary_between_groups"] == null || request.Value<bool>("allow_vary_between_groups");
             var txName = request.Value<string>("transaction_name");
@@ -239,8 +238,53 @@ namespace Horizun.Revit.Commands
             var planned = rows.Where(r => r.Error == null).ToList();
             int unresolved = rows.Count - planned.Count;
 
+            // ---- The MATERIALISED plan: what this request resolves to, right now. ----
+            // Built identically on the dry run and on the apply, which is the whole point:
+            // the dry run's fingerprint rides in the token, the apply recomputes it, and a
+            // model that moved in between is refused as stale instead of written to.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Row r in planned)
+            {
+                resolvedPlan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafeUniqueId(r.Target),
+                    Category = r.Target?.Category?.Name,
+                    TypeName = r.TargetName,
+                    Action = PlannedAction.Modify,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        // The BEFORE value is the fact this plan depends on: an apply whose
+                        // target was edited by somebody else between rehearsal and now must
+                        // read as a different plan, or this command overwrites a change
+                        // nobody in this conversation ever saw.
+                        { r.ParamSpec ?? "", r.Before == null ? null : r.Before.ToString(Newtonsoft.Json.Formatting.None) }
+                    }
+                });
+                // A type-level write reaches instances the caller never named; that reach is
+                // part of what was approved.
+                resolvedPlan.ExpectedCascadeCount += r.Collateral;
+            }
+
+            if (!dryRun)
+            {
+                // Rehearsed fingerprint travels inside the token; DescribeDrift needs the
+                // rehearsed PLAN, which did not travel. The refusal therefore names the
+                // drift generically when only the fingerprints disagree - still refused,
+                // still stale, just without the per-element diff.
+                CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                         resolvedPlan, null);
+                if (refused != null) return refused;
+            }
+
             if (dryRun)
             {
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 var wouldReach = ReachedBy(doc, planned);
                 var dryResult = new JObject
                 {
@@ -268,7 +312,8 @@ namespace Horizun.Revit.Commands
                                "Re-run with dry_run=false and the confirmation_token below."
                 };
                 DocumentGate.StampConfirmation(dryResult, gate, Name, planHash, true,
-                    "the token binds the REQUEST, not the elements this rehearsal resolved. elements_that_would_change " +
+                    "the token ALSO binds the elements this rehearsal resolved and their current values - a model " +
+                    "that moves before you spend it is refused as a stale plan. elements_that_would_change " +
                     "is a LOWER BOUND when census_unreadable_elements is above zero.");
                 return CommandResult.Ok(dryResult);
             }
@@ -1387,6 +1432,16 @@ namespace Horizun.Revit.Commands
         }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }
+        /// <summary>
+        /// The UniqueId, or null when Revit will not give one. Null is honest here: the
+        /// element still renders into the plan by its other facts, and a throwing getter
+        /// must not turn a read-only resolve pass into a failure.
+        /// </summary>
+        private static string SafeUniqueId(Element e)
+        {
+            try { return e?.UniqueId; } catch { return null; }
+        }
+
         private static string SafeName(Element e) { try { return e?.Name; } catch { return null; } }
         private static string SafeDefName(Parameter p) { try { return p.Definition?.Name; } catch { return "(name unreadable)"; } }
         private static bool? SafeReadOnly(Parameter p) { try { return p.IsReadOnly; } catch { return null; } }

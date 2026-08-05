@@ -1,0 +1,76 @@
+name: Compatibility report
+description: It works on one Revit year, language, unit system or model kind and not on another.
+labels: ["compatibility", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are the most valuable reports this project can receive, and the hardest for
+        us to produce ourselves: the add-in compiles against each Revit year's own API,
+        and no single machine covers every combination. A report that names **the
+        combination that works and the one that does not** is worth more than a stack
+        trace.
+
+        Sanitise model titles, paths and parameter values before pasting.
+
+  - type: input
+    id: works
+    attributes:
+      label: The combination where it WORKS
+      description: Year+build · language · units · document kind. Write "never tried" if you only have the broken one.
+      placeholder: "2026.4 · English · Metric · local of a central"
+    validations:
+      required: true
+
+  - type: input
+    id: fails
+    attributes:
+      label: The combination where it FAILS
+      placeholder: "2024.3 · Español · Imperial · detached"
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Which tool
+      placeholder: "horizun_create_family"
+    validations:
+      required: true
+
+  - type: textarea
+    id: difference
+    attributes:
+      label: How the two answers differ
+      description: >
+        Paste both replies if you have them. A refusal that fires on one year and not
+        another usually names the API call that behaves differently, which is the whole
+        finding.
+      render: json
+    validations:
+      required: true
+
+  - type: dropdown
+    id: axis
+    attributes:
+      label: Which axis do you believe is responsible
+      description: A guess is fine and it is genuinely useful — you can see both sides, we cannot.
+      options:
+        - Revit year / API change
+        - Interface language (localized names, ambiguous parameters)
+        - Units (metric vs imperial)
+        - Worksharing / document kind
+        - Model size
+        - Loaded content (families, routing preferences)
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: content
+    attributes:
+      label: Loaded content that might matter
+      description: >
+        Whether the model has pipe-fitting families and routing preferences configured
+        changes what Revit does with the same API call — a connection can succeed with a
+        generated coupling in one model and stay bare in another.

@@ -40,6 +40,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'horizun-deploy.lib.ps1')
+$stage = Join-Path $repo 'dist\stage'
 
 if (-not $PfxPath -and -not $Thumbprint) {
     throw "Give either -PfxPath (a .pfx file) or -Thumbprint (a certificate already installed). Nothing was signed."
@@ -52,15 +54,26 @@ if (-not $PfxPath -and -not $Thumbprint) {
 $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match 'x64' } | Sort-Object FullName -Descending | Select-Object -First 1
 
-# Our own assemblies and the installer. Third-party DLLs (IronPython, Newtonsoft)
-# are already signed by their publishers and are not re-signed here: replacing
-# someone else's signature with ours would misstate who produced them.
-$targets = @()
-$targets += Get-ChildItem (Join-Path $repo "src\Horizun.Server\bin\$Config\net8.0") -Filter 'horizun-mcp.exe' -ErrorAction SilentlyContinue
-$targets += Get-ChildItem (Join-Path $repo 'dist\stage\plugin') -Filter 'Horizun.Revit.dll' -Recurse -ErrorAction SilentlyContinue
-$targets += Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -ErrorAction SilentlyContinue
+# Our own assemblies and the installer, FROM THE STAGE - the bytes that actually
+# get packaged, not a bin copy that never ships. This was the defect: it signed
+# src\...\bin\...\horizun-mcp.exe (never packaged) and never signed
+# horizun-mcp.dll at all (the apphost is a launcher; the server's CODE is the
+# dll). Third-party DLLs (IronPython, Newtonsoft) are signed by their publishers
+# and are not re-signed here: replacing someone else's signature with ours would
+# misstate who produced them.
+# Only staged own binaries that are NOT already signed. This matters on the SECOND
+# pass: after pack -InstallerOnly wraps the signed payload, re-signing that payload
+# would produce fresh bytes (a new timestamp) that no longer match what is inside
+# the installer just built. So the payload is signed once, on the first pass; the
+# second pass finds it already signed, skips it, and signs only the setup.exe.
+$staged = @(Get-HorizunOwnBinaries $stage) | Where-Object { $_ -and -not (Get-HorizunSignatureInfo $_).Signed } | ForEach-Object { Get-Item $_ }
+$setup  = @(Get-ChildItem (Join-Path $repo 'dist') -Filter '*setup.exe' -File -ErrorAction SilentlyContinue)
+$targets = @($staged) + @($setup)
+$signedStagedPayload = $staged.Count -gt 0
 
-if (-not $targets) { throw "Nothing to sign - run scripts/pack.ps1 first." }
+if (-not $targets) {
+    throw "Nothing to sign - run scripts/pack.ps1 -SkipInstaller first (no staged own binaries, and no setup.exe in dist)."
+}
 
 if ($signtool) {
     $args = @('sign', '/fd', 'SHA256', '/tr', $TimestampUrl, '/td', 'SHA256')
@@ -114,6 +127,22 @@ else {
         Write-Host ("  timestamped by: {0}" -f $(if ($check.TimeStamperCertificate) { ($check.TimeStamperCertificate.Subject -split ',')[0] } else { 'NOBODY' }))
         if ($check.Status -eq 'NotSigned') { throw "Signing produced nothing on $($t.FullName)." }
     }
+}
+
+# SIGN, THEN MANIFEST. Signing changed the bytes of every own binary, so the
+# manifest the build wrote now describes files that no longer exist on disk. Recompute
+# it from the SIGNED stage, recording the new hashes and a signature block. Without
+# this, -InstallerOnly and verify-release both refuse the stage (correctly) because
+# its hashes describe the unsigned files.
+if ($signedStagedPayload -and (Test-Path (Join-Path $stage 'manifest.json'))) {
+    Write-Host ""
+    Write-Host "[sign] recomputing manifest.json from the signed stage" -ForegroundColor Cyan
+    $doc = Update-HorizunManifestToStage $stage
+    Write-Host ("  manifest signed={0}, signer {1}" -f $doc.Signed,
+                $(if ($doc.Signature.SignerSubject) { ($doc.Signature.SignerSubject -split ',')[0] } else { 'NONE' }))
+    $mismatch = @(Test-HorizunStageMatchesManifest $stage)
+    if ($mismatch.Count -gt 0) { throw "manifest still does not match the stage after recompute: $($mismatch -join '; ')" }
+    Write-Host "  stage now matches manifest (all hashes re-verified)" -ForegroundColor Green
 }
 
 Write-Host ""

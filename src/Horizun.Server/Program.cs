@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // A stdio MCP server. It reads newline-delimited JSON-RPC from stdin, answers the
@@ -27,11 +27,8 @@ namespace Horizun.Server
         // to be edited in two places is a version that will disagree with itself.
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
-        private const string LatestMcpProtocol = "2025-11-25";
-        private static readonly HashSet<string> SupportedMcpProtocols = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"
-        };
+        // The version list and the negotiation rule live in ProtocolNegotiation.cs,
+        // where they are golden-tested - see that file for why 2026-07-28 is absent.
 
         // Which Revit year to target. Empty = the most recently seen Revit.
         private static readonly string TargetYear = Environment.GetEnvironmentVariable("HORIZUN_REVIT_YEAR") ?? "";
@@ -456,9 +453,7 @@ namespace Horizun.Server
             switch (method)
             {
                 case "initialize":
-                    string requestedProtocol = prms?.Value<string>("protocolVersion");
-                    string negotiatedProtocol = requestedProtocol != null && SupportedMcpProtocols.Contains(requestedProtocol)
-                        ? requestedProtocol : LatestMcpProtocol;
+                    string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
                     return new JObject
                     {
                         ["protocolVersion"] = negotiatedProtocol,
@@ -470,23 +465,7 @@ namespace Horizun.Server
                         // whichever document is active, and that this bridge is
                         // deliberately organisation-neutral, so the standards a delivery
                         // actually needs are not in here and should not be invented.
-                        ["instructions"] =
-                            "Horizun Revit MCP - the bridge between this client and a running Autodesk Revit.\n\n" +
-                            "The contract: a command never reports work it did not verify. Every typed write is re-read " +
-                            "from the model after the commit, so a silent rollback surfaces as an error rather " +
-                            "than a false success, and counts come from re-reading the model rather than from " +
-                            "calls that did not throw. horizun_execute_python is the explicit low-level escape " +
-                            "hatch and does not provide that typed-command guarantee.\n\n" +
-                            "Revit executes one API command at a time. Concurrent calls wait in a bounded FIFO " +
-                            "queue instead of being rejected. A cancellation removes a call only while it is still " +
-                            "queued; work already on Revit's UI thread cannot be interrupted. Successful JSON " +
-                            "answers include bridge_queue with the measured wait.\n\n" +
-                            "Call horizun_health FIRST. These commands act on the document that is active right " +
-                            "now, and health is what tells you which Revit and which document that is.\n\n" +
-                            "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +
-                            "rules are compiled in. Where a command needs one it is passed in at call time. The " +
-                            "delivery workflows built on top of these commands - model audits, classification, " +
-                            "family homologation, pre-delivery QA - live in Horizun Hub: https://horizunhub.com"
+                        ["instructions"] = ServerInstructions.Text
                     };
 
                 case "notifications/initialized":
@@ -703,10 +682,16 @@ namespace Horizun.Server
             if (ok)
             {
                 JToken data = reply["data"];
-                return WithImageIfAny(data, reply["revit_said"]);
+                return WithImageIfAny(data, reply["revit_said"],
+                                      reply["fallback"] as JObject,
+                                      reply["capability_gaps"] as JArray);
             }
             // A failure carries what Revit objected to as well: that is usually the reason.
-            return TextResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]), true);
+            // It may ALSO carry the machine-readable fallback signal, and that one has to
+            // survive as structure: a client deciding whether to write Python must branch
+            // on a field, not parse this English.
+            return ErrorResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]),
+                               reply["fallback"] as JObject, reply["capability_gaps"] as JArray);
         }
 
         /// <summary>
@@ -734,11 +719,17 @@ namespace Horizun.Server
                    said.ToString(Formatting.Indented);
         }
 
-        private static JObject WithImageIfAny(JToken data, JToken said = null)
+        private static JObject WithImageIfAny(JToken data, JToken said = null,
+                                              JObject fallback = null, JArray capabilityGaps = null)
         {
             string text = (data == null ? "null" : data.ToString(Formatting.Indented)) + RevitSaidText(said);
             string path = data is JObject obj ? (string)obj["image_path"] : null;
-            if (string.IsNullOrEmpty(path)) return StructuredResult(data, text);
+            // THE SUCCESS PATH CARRIES THE VERDICT TOO. A rehearsal is a SUCCESS that
+            // found a capability gap, and this is the function the forwarder actually
+            // calls - McpResult.FromPluginReply is used by the tests, and testing a
+            // helper the production path does not call is how this shipped unnoticed.
+            if (string.IsNullOrEmpty(path))
+                return McpResult.Structured(data, text, fallback, capabilityGaps);
 
             try
             {
@@ -771,24 +762,22 @@ namespace Horizun.Server
             }
         }
 
-        private static JObject TextResult(string text, bool isError)
-        {
-            return new JObject
-            {
-                ["content"] = new JArray { new JObject { ["type"] = "text", ["text"] = text } },
-                ["isError"] = isError
-            };
-        }
+        private static JObject TextResult(string text, bool isError) => McpResult.Text(text, isError);
+
+        /// <summary>
+        /// A failure that may carry the fallback signal. The text keeps the human reason;
+        /// the signal ALSO travels as structuredContent, because a client that has to read
+        /// prose to decide whether it may generate Python is exactly the fragile arrangement
+        /// the signal exists to replace. No fallback block means an ordinary text error,
+        /// byte for byte as before.
+        /// </summary>
+        private static JObject ErrorResult(string text, JObject fallback, JArray capabilityGaps)
+            => McpResult.Error(text, fallback, capabilityGaps);
 
         private static JObject StructuredResult(JObject data)
             => StructuredResult((JToken)data, data == null ? "null" : data.ToString(Formatting.Indented));
 
-        private static JObject StructuredResult(JToken data, string text)
-        {
-            JObject result = TextResult(text, false);
-            if (data is JObject) result["structuredContent"] = data.DeepClone();
-            return result;
-        }
+        private static JObject StructuredResult(JToken data, string text) => McpResult.Structured(data, text);
 
         private static JObject Reply(object id, JToken result)
             => new JObject { ["jsonrpc"] = "2.0", ["id"] = id == null ? null : JToken.FromObject(id), ["result"] = result };

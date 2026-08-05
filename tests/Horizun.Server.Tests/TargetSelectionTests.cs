@@ -252,6 +252,18 @@ namespace Horizun.Server.Tests
         ///
         /// Against the two-field version this fails: the window between the two writes is
         /// small, but a million reads find it.
+        ///
+        /// THE SEED GOES FIRST, and it used to go last. Automatic - pid null, year null -
+        /// is a perfectly legitimate state: it is what the server starts in, and what
+        /// IsAutomatic exists to describe. Seeding AFTER the readers launched let them
+        /// observe it before the first write and report 5750 "targets nobody chose", which
+        /// is a state somebody very much did choose by not choosing. It passed on Windows
+        /// for months because the writer happened to win the start-up race there, and
+        /// failed on Linux CI twice in one evening because it does not.
+        ///
+        /// This is only a test defect - the production side was never in question. A target
+        /// is one immutable object published by a single Volatile.Write, so a reader cannot
+        /// see a half-built one, which is precisely what this test is here to keep true.
         /// </summary>
         [Fact]
         public async Task A_reader_never_sees_a_target_that_was_never_chosen()
@@ -259,6 +271,11 @@ namespace Horizun.Server.Tests
             var stop = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             var torn = new ConcurrentBag<string>();
             long reads = 0;
+            long sawInstance = 0, sawYear = 0;
+
+            // Past Automatic BEFORE anybody reads, so every observation below is of a
+            // target that really was published, and the assertion can stay strict.
+            PipeClient.Target = TargetSelection.ByYear("2026");
 
             var writer = Task.Run(() =>
             {
@@ -283,17 +300,35 @@ namespace Horizun.Server.Tests
 
                         bool isTheInstance = t.Pid == 4242 && t.Year == null;
                         bool isTheYear = t.Year == "2026" && t.Pid == null;
-                        if (!isTheInstance && !isTheYear)
-                            torn.Add("pid=" + (t.Pid?.ToString() ?? "null") + " year=" + (t.Year ?? "null"));
+                        if (isTheInstance) Interlocked.Increment(ref sawInstance);
+                        else if (isTheYear) Interlocked.Increment(ref sawYear);
+                        else torn.Add("pid=" + (t.Pid?.ToString() ?? "null") + " year=" + (t.Year ?? "null"));
                     }
                 });
 
-            PipeClient.Target = TargetSelection.ByYear("2026");
             await Task.WhenAll(readers);
             await writer;
 
+            // Put the process back how it was found. Parallelism.cs serialises the
+            // assembly, so nothing races this - but leaving a global pinned to pid 4242 for
+            // whatever runs next is how a later test starts failing for a reason that is
+            // nowhere in its own source. Restored BEFORE the assertions, so a failure here
+            // does not also leave the mess behind.
+            PipeClient.Target = TargetSelection.Automatic;
+
             Assert.True(Interlocked.Read(ref reads) > 100000,
                         "only " + Interlocked.Read(ref reads) + " reads - too few to have found a narrow window");
+
+            // NOT VACUOUS. A million clean reads of a target that never changed prove
+            // nothing about a window between two writes, and this repository has already
+            // shipped one probe that passed by examining zero verdicts. Both published
+            // targets must actually have been seen, or the writer never got going and the
+            // green tick means only that the test ran.
+            Assert.True(Interlocked.Read(ref sawInstance) > 0 && Interlocked.Read(ref sawYear) > 0,
+                        "the readers never observed BOTH published targets (instance=" +
+                        Interlocked.Read(ref sawInstance) + ", year=" + Interlocked.Read(ref sawYear) +
+                        "), so no flip was ever witnessed and a torn read could not have been found");
+
             Assert.True(torn.IsEmpty,
                         "readers observed " + torn.Count + " target(s) nobody chose, e.g. " +
                         string.Join("; ", new List<string>(torn).GetRange(0, Math.Min(3, torn.Count))));

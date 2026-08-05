@@ -36,16 +36,73 @@ namespace Horizun.Revit.Commands
             var plans = new List<Plan>();
             var errors = new JArray();
             var claimed = new HashSet<long>();
+            // Every action's outcome, so the fallback is decided once over the whole
+            // batch rather than granted because one entry was uncovered.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
-                string error = null;
-                Plan plan = PlanOperation(doc, i, input[i] as JObject, scale, claimed, out error);
-                if (plan == null) errors.Add(new JObject { ["index"] = i, ["error"] = error ?? "entry is not an object" });
+                string error = null, reason = null;
+                Plan plan = PlanOperation(doc, i, input[i] as JObject, scale, claimed, out error, out reason);
+                if (plan == null)
+                {
+                    string message = error ?? "entry is not an object";
+                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                }
                 else plans.Add(plan);
             }
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "units", "operations");
+
+            // ---- The MATERIALISED plan: the ELEMENTS this resolves to, right now. ----
+            // planHash above binds the REQUEST - the operations as written. It cannot see
+            // that the model moved: an operation naming a filter, or a type whose instances
+            // changed, resolves to a different set of elements without a single character of
+            // the request changing. Built identically here on both paths, so the dry run's
+            // fingerprint rides in the token and the apply recomputes it.
+            //
+            // CONTRIBUTING points new commands at this file as the shape to copy, which is
+            // exactly why the plan belongs here: whatever this command does, the next ten
+            // will do.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Plan p in plans)
+            {
+                foreach (ElementId id in (p.Ids ?? new List<ElementId>()))
+                {
+                    Element e = doc.GetElement(id);
+                    if (e == null) continue;
+                    var planned = new PlannedElement
+                    {
+                        UniqueId = SafePlanUniqueId(e),
+                        Category = e.Category == null ? null : e.Category.Name,
+                        TypeName = SafePlanTypeName(doc, e),
+                        // change_type REPLACES the type; move/rotate/copy do not. Both are
+                        // modifications of this element, and 'copy' additionally creates -
+                        // but the created ids do not exist yet at plan time, so what is
+                        // fingerprinted is the SOURCE set and the operation, which is what
+                        // the caller actually approved.
+                        Action = PlannedAction.Modify,
+                        // The geometry the operation is ABOUT. A move approved against an
+                        // element somebody has since moved is a different move, and only a
+                        // position read can show that.
+                        GeometryFingerprint = SafePlanGeometry(e),
+                        BeforeValues = new Dictionary<string, string>
+                        {
+                            { "operation", p.Operation ?? "" },
+                            { "type_id", p.TypeId == null ? "" : Rid.Value(p.TypeId).ToString() }
+                        }
+                    };
+                    resolvedPlan.Elements.Add(planned);
+                }
+            }
+
             if (dryRun)
             {
                 var result = new JObject
@@ -55,13 +112,27 @@ namespace Horizun.Revit.Commands
                     ["errors"] = errors, ["plan"] = new JArray(plans.Select(p => p.Summary)),
                     ["note"] = "Nothing was transformed; no transaction was opened."
                 };
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0 ? "the token binds the ordered operations, targets, vectors, axes and types" :
                     "no usable confirmation is issued while any operation is invalid");
-                return CommandResult.Ok(result);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
+                // is the first call a caller makes; without the block here they got
+                // success=true with invalid rows and no way to tell a capability gap
+                // from a typo except by sending an apply they had no reason to send.
+                return FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             }
-            if (errors.Count > 0) return CommandResult.Fail("Invalid operations; nothing ran: " + errors.ToString(Formatting.None));
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            if (errors.Count > 0)
+                return FallbackDecision.Refuse(
+                    "Invalid operations; nothing ran: " + errors.ToString(Formatting.None),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
+            // The rehearsed fingerprint travels in the token; the rehearsed PLAN does not,
+            // so a stale refusal names the drift generically rather than per element.
+            // Still refused, still nothing written.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                    resolvedPlan, null);
             if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
@@ -102,15 +173,18 @@ namespace Horizun.Revit.Commands
         }
 
         private static Plan PlanOperation(Document doc, int index, JObject o, double scale, HashSet<long> claimed,
-                                          out string error)
+                                          out string error, out string unsupportedReason)
         {
-            error = null;
+            error = null; unsupportedReason = null;
             if (o == null) { error = "entry is not an object"; return null; }
             try
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" && op != "change_type")
-                    throw new ArgumentException("unsupported operation '" + op + "'");
+                    throw new UnsupportedCapability(
+                        "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
+                        "rotate, pin, unpin and change_type only. Nothing was written.",
+                        FallbackSignal.ReasonUnsupportedOperation);
                 JArray ids = o["element_ids"] as JArray;
                 if (ids == null || ids.Count == 0 || ids.Count > 2000) throw new ArgumentException("element_ids must contain 1..2000 ids");
                 var p = new Plan { Index = index, Operation = op, Ids = new List<ElementId>(), Samples = new Dictionary<long, List<XYZ>>() };
@@ -152,7 +226,12 @@ namespace Horizun.Revit.Commands
                 p.Summary = new JObject { ["index"] = index, ["operation"] = op, ["targets"] = p.Ids.Count, ["verifiable"] = true };
                 return p;
             }
-            catch (Exception ex) { error = ex.Message; return null; }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return null;
+            }
         }
 
         private static void Apply(Document doc, Plan p)
@@ -229,6 +308,49 @@ namespace Horizun.Revit.Commands
         }
         private static bool Scale(string units, out double scale)
         { if (units == "feet") { scale = 1; return true; } if (units == "m") { scale = 1 / 0.3048; return true; } if (units == "mm") { scale = 1 / 304.8; return true; } scale = 0; return false; }
+
+        /// <summary>
+        /// Identity for the plan. Every read here is guarded: a plan that throws while
+        /// being MEASURED would turn a safety feature into a new way to fail.
+        /// </summary>
+        private static string SafePlanUniqueId(Element e)
+        {
+            try { return e.UniqueId; } catch { return null; }
+        }
+
+        private static string SafePlanTypeName(Document doc, Element e)
+        {
+            try
+            {
+                ElementId tid = e.GetTypeId();
+                if (tid == null || tid == ElementId.InvalidElementId) return null;
+                Element t = doc.GetElement(tid);
+                return t == null ? null : t.Name;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// A rounded bounding box: enough to notice that an element moved or changed shape
+        /// between the rehearsal and the apply, cheap enough to take for every element in a
+        /// batch. Rounded to a millimetre because Revit's own regeneration jitters the last
+        /// digits, and a fingerprint that changes on its own would refuse every apply.
+        /// </summary>
+        private static string SafePlanGeometry(Element e)
+        {
+            try
+            {
+                BoundingBoxXYZ b = e.get_BoundingBox(null);
+                if (b == null) return null;
+                const double mm = 304.8;   // feet -> mm
+                return string.Join(",", new[]
+                {
+                    Math.Round(b.Min.X * mm), Math.Round(b.Min.Y * mm), Math.Round(b.Min.Z * mm),
+                    Math.Round(b.Max.X * mm), Math.Round(b.Max.Y * mm), Math.Round(b.Max.Z * mm)
+                }.Select(v => v.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+            }
+            catch { return null; }
+        }
 
         private sealed class Plan
         {

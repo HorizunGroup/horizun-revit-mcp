@@ -35,11 +35,19 @@ namespace Horizun.Revit.Commands
             var knownKeys = new Dictionary<string, Type>(StringComparer.Ordinal);
             var errors = new JArray();
             var plans = new List<JObject>();
+            // Every action's outcome, so the fallback is decided once over the whole
+            // batch rather than granted because one entry was uncovered.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
                 JObject a = input[i] as JObject;
-                string error = Validate(doc, a, knownKeys);
-                if (error != null) errors.Add(new JObject { ["index"] = i, ["error"] = error });
+                string reason = null;
+                string error = Validate(doc, a, knownKeys, out reason);
+                if (error != null)
+                {
+                    errors.Add(new JObject { ["index"] = i, ["error"] = error });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = error, UnsupportedReason = reason });
+                }
                 else
                 {
                     string key = a.Value<string>("key");
@@ -49,6 +57,49 @@ namespace Horizun.Revit.Commands
             }
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "units", "actions");
+
+            // ---- The MATERIALISED plan: what the batch's ID REFERENCES resolve to. ------
+            // planHash binds the graph as written. But this batch builds documentation on
+            // top of existing elements it names by id - a source view to duplicate, a
+            // template to apply, a titleblock, a level for a new plan - and an id is a
+            // pointer, not a meaning. Between rehearsal and apply the template can be
+            // edited, the source view cropped, the titleblock swapped for another type
+            // under the same id family. The plan records each referenced element's
+            // UniqueId AND NAME as resolved now: the name is what the person read when
+            // they approved, so a renamed reference refuses as stale even though the id
+            // still resolves. In-batch aliases (keys) are not ambient state and carry no
+            // drift; they are deliberately absent.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            for (int i = 0; i < input.Count; i++)
+            {
+                JObject a = input[i] as JObject;
+                if (a == null) continue;
+                string op = a.Value<string>("operation") ?? "";
+                var row = new PlannedElement
+                {
+                    UniqueId = "action:" + i,
+                    Category = op,
+                    // apply_template and place_* CHANGE an existing object; the rest mint
+                    // new ones. The distinction keeps the counts a person reads honest.
+                    Action = (op == "apply_template" || op == "place_view" || op == "place_schedule")
+                        ? PlannedAction.Modify : PlannedAction.Create,
+                    BeforeValues = new Dictionary<string, string>()
+                };
+                foreach (string field in RefIdFields)
+                {
+                    long? id = a.Value<long?>(field);
+                    if (id == null) continue;
+                    row.BeforeValues[field] = SafePlanRef(doc, id.Value);
+                }
+                resolvedPlan.Elements.Add(row);
+            }
+
             if (dryRun)
             {
                 var result = new JObject
@@ -57,12 +108,28 @@ namespace Horizun.Revit.Commands
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors, ["plan"] = new JArray(plans),
                     ["note"] = "Nothing was created or changed. Aliases are resolved in action order."
                 };
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
-                    errors.Count == 0 ? "the token binds the ordered dependency graph" : "no usable token is issued while an action is invalid");
-                return CommandResult.Ok(result);
+                    errors.Count == 0
+                        ? "the token binds the ordered dependency graph AND what every referenced id resolves to " +
+                          "right now, by identity and by name - a template edited into a different template, a " +
+                          "renamed source view or a swapped titleblock refuses as a stale plan."
+                        : "no usable token is issued while an action is invalid");
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so this
+                // is the first call a caller makes; without the block here they got
+                // success=true with invalid rows and no way to tell a capability gap
+                // from a typo except by sending an apply they had no reason to send.
+                return FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
             }
-            if (errors.Count > 0) return CommandResult.Fail("Invalid action graph; nothing ran: " + errors.ToString(Formatting.None));
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            if (errors.Count > 0)
+                return FallbackDecision.Refuse(
+                    "Invalid action graph; nothing ran: " + errors.ToString(Formatting.None),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
+            // Recomputed by THIS call's own resolution of the same references.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                     resolvedPlan, null);
             if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
@@ -119,8 +186,39 @@ namespace Horizun.Revit.Commands
             });
         }
 
-        private static string Validate(Document doc, JObject a, Dictionary<string, Type> known)
+        /// <summary>
+        /// Every request field that points at an EXISTING element. Kept as one list so the
+        /// plan builder and the schema cannot quietly disagree about what is a reference.
+        /// </summary>
+        private static readonly string[] RefIdFields =
         {
+            "level_id", "view_family_type_id", "plan_view_id", "source_view_id", "view_id",
+            "template_view_id", "title_block_type_id", "sheet_id", "schedule_id"
+        };
+
+        /// <summary>
+        /// Identity and name of a referenced element, guarded: a plan must never fail
+        /// while MEASURING. A dangling id reads as "unresolved" - the validator has its
+        /// own, louder opinion about those; the plan just has to be stable about them.
+        /// </summary>
+        private static string SafePlanRef(Document doc, long id)
+        {
+            try
+            {
+                if (!Rid.CanRepresent(id)) return "unresolved";
+                Element e = doc.GetElement(Rid.Make(id));
+                if (e == null) return "unresolved";
+                string uid; try { uid = e.UniqueId ?? ""; } catch { uid = "<unreadable>"; }
+                string name; try { name = e.Name ?? ""; } catch { name = "<unreadable>"; }
+                return uid + "|" + name;
+            }
+            catch { return "<unreadable>"; }
+        }
+
+        private static string Validate(Document doc, JObject a, Dictionary<string, Type> known,
+                                       out string unsupportedReason)
+        {
+            unsupportedReason = null;
             if (a == null) return "action is not an object";
             string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
             string key = a.Value<string>("key");
@@ -164,11 +262,20 @@ namespace Horizun.Revit.Commands
                         break;
                     case "place_view": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); ReferenceViewportView(doc, a, known); Point(a["point"]); break;
                     case "place_schedule": Reference<ViewSheet>(doc, a, "sheet_id", "sheet_key", known); Reference<ViewSchedule>(doc, a, "schedule_id", "schedule_key", known); Point(a["point"]); break;
-                    default: return "unsupported operation '" + op + "'";
+                    default:
+                        // A capability gap, not a fixable argument: this command implements a
+                        // fixed set of documentation operations and this is not one of them.
+                        unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
+                        return "unsupported operation '" + op + "' - horizun_manage_views implements a fixed " +
+                               "set of view, sheet and viewport operations. Nothing was written.";
                 }
                 return null;
             }
-            catch (Exception ex) { return ex.Message; }
+            catch (Exception ex)
+            {
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return ex.Message;
+            }
         }
 
         private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)

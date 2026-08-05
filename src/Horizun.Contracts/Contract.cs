@@ -56,6 +56,24 @@ namespace Horizun.Contracts
         /// idempotency and the MCP annotations cannot drift into three opinions.
         /// </summary>
         public ToolEffect Effect;
+
+        /// <summary>
+        /// MCP's destructiveHint: this tool can remove or overwrite something a caller
+        /// would not get back. DECLARED HERE, next to Effect, and not in the server.
+        ///
+        /// It used to be a hardcoded list of six tool names inside Tools.cs, three files
+        /// away from where a tool is defined. A tool added without editing that list got
+        /// destructiveHint=false by default - the annotation a client uses to decide
+        /// whether to ask a human first. Silence was the dangerous answer.
+        /// </summary>
+        public bool Destructive;
+
+        /// <summary>
+        /// MCP's openWorldHint: this tool touches something outside the model - the
+        /// filesystem, a network endpoint, the Revit session itself. Same story as
+        /// Destructive: declared with the contract, never inferred three files away.
+        /// </summary>
+        public bool OpenWorld;
     }
 
     public static class Contract
@@ -501,7 +519,10 @@ namespace Horizun.Contracts
                     "family, type, name, level, parameter predicates and an optional 3D bounding box; choose the " +
                     "fields returned and receive counts grouped by category, level and source. Results use a " +
                     "stale-detecting cursor rather than a naked offset, and every unreadable element, unloaded link " +
-                    "or closed workset keeps coverage from being called complete.",
+                    "or closed workset keeps coverage from being called complete. For histograms, pass group_by " +
+                    "(with optional sum_parameters) and receive aggregated groups computed server-side over the " +
+                    "whole matched set in ONE call - no rows, no paging, and every sum reports how many elements " +
+                    "actually contributed to it.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -509,7 +530,7 @@ namespace Horizun.Contracts
     ""family"": { ""type"": ""string"", ""description"": ""Case-insensitive substring."" },
     ""type"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the type name."" },
     ""name"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the element name."" },
-    ""level"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the level name."" },
+    ""level"": { ""type"": ""string"", ""description"": ""Case-insensitive substring of the level name. Matches the level the element is ASSOCIATED with, wherever its category keeps it - walls' base constraint, family instances' base level, MEP curves' reference level - not only the plain Level parameter, so it works for walls without knowing about WALL_BASE_CONSTRAINT."" },
     ""parameters"": { ""type"": ""array"", ""description"": ""All predicates must match. Names may be BuiltInParameter tokens, shared-parameter GUIDs or display names; an ambiguous display name is unreadable, never guessed."", ""items"": {
       ""type"": ""object"", ""required"": [""name"", ""operator""], ""properties"": {
         ""name"": { ""type"": ""string"" },
@@ -530,7 +551,11 @@ namespace Horizun.Contracts
     ""coordinate_units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""include_types"": { ""type"": ""boolean"", ""default"": false },
     ""cursor"": { ""type"": ""string"", ""description"": ""next_cursor from the previous page. It is refused if the query or result set changed."" },
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 }
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500, ""default"": 100 },
+    ""group_by"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""category"", ""level"", ""type"", ""family"", ""source_model"", ""source_kind""] }, ""description"": ""Aggregate instead of listing: returns groups with counts over the WHOLE matched set in one call, no rows and no cursor. 'how many wall types per floor' is group_by:[type,level]."" },
+    ""parameter_format"": { ""type"": ""string"", ""enum"": [""full"", ""compact""], ""default"": ""full"", ""description"": ""compact returns each readable parameter as name:raw-value instead of the five-field object (~5x smaller per parameter). Parameters that were absent or unreadable move to a per-row parameter_issues object rather than disappearing - compact is a diet, not an amnesty."" },
+    ""return_fields"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"", ""enum"": [""unique_id"", ""category"", ""name"", ""family"", ""type"", ""type_id"", ""level"", ""is_element_type"", ""source_kind"", ""source_model"", ""link_instance_id""] }, ""description"": ""Row fields to include besides element_id, which is always present. The identity and federation fields repeat identically down a page and are most of the payload; name only what you will read."" },
+    ""sum_parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""With group_by: numeric parameters to sum per group. Each sum reports summed/absent/unreadable/non_numeric counts and a complete flag - a sum over part of a group never reads like a sum over all of it."" }
   },
   ""additionalProperties"": false
 }")
@@ -568,11 +593,12 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_list_schedules",
                 Command = "horizun_list_schedules",
-                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only.",
+                Description = "List native schedules with their real fields, linked-file setting, itemization, body dimensions and host/link coverage. Read-only. Titleblock revision schedules (one per titleblock family - they can be over half the list) are labelled per row and excludable; the document's revision-schedule count is reported either way.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 }
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 },
+    ""include_revision_schedules"": { ""type"": ""boolean"", ""default"": true, ""description"": ""false hides titleblock revision schedules from rows; revision_schedules_in_document still reports how many exist, so the count never silently shrinks."" }
   },
   ""additionalProperties"": false
 }")
@@ -764,9 +790,30 @@ namespace Horizun.Contracts
                 Name = "horizun_execute_python",
                 Command = "horizun_execute_python",
                 Description =
-                    "Run Python directly against the Revit API on the UI thread. doc/uidoc/uiapp/app are injected. " +
-                    "Return data by assigning __output__ or with print(). The standard library is available " +
-                    "(json, re, csv, datetime, math). " +
+                    "Run Python directly against the Revit API on the UI thread - THE EXECUTION FALLBACK for " +
+                    "everything the typed commands do not cover. Enabled by default; an owner's explicit OFF in " +
+                    "settings.json is respected. POLICY: prefer a typed command when it fully covers the " +
+                    "operation. When none exists, or a failed typed call returns fallback.allowed=true - its " +
+                    "machine-readable signal that no typed capability covers the request AND nothing was " +
+                    "written - generate minimal Python and run it here instead of answering 'not supported'. " +
+                    "Decide on that block, never on the wording of an error: no block, or allowed=false, means " +
+                    "DO NOT fall back. NEVER fall back here after a typed write FAILED mid-operation - it may " +
+                    "have partially written, and a Python retry is a second write; report the real state " +
+                    "instead. doc/uidoc/uiapp/app are injected. " +
+                    "RETURN EVIDENCE: assign __output__ the structured shape {status: " +
+                    "verified|completed_unverified|partial|failed, summary, created_ids, modified_ids, " +
+                    "deleted_ids, verification:{checked, evidence:[]}, warnings:[]} and RE-READ what you wrote " +
+                    "before claiming verified. WHAT COMES BACK IS SELF-REPORTED, NOT HOST-VERIFIED: the bridge " +
+                    "does not re-read the model after arbitrary code, so evidence_status is one of " +
+                    "self_reported_verified|completed_unverified|partial|failed - there is no 'verified' on " +
+                    "this path, host_verified is always false, and a verified claim without evidence is " +
+                    "downgraded to completed_unverified. script_reported_status carries what your script " +
+                    "declared. print() remains as compatibility output. " +
+                    "preflight=true validates permission, document, size, script hash and basic syntax WITHOUT " +
+                    "executing, and returns advisory warnings; it cannot prove what arbitrary code will do. " +
+                    "When the objective is unambiguous and preflight passes, continue to execution in the same " +
+                    "task. Scripts that only duplicate a typed command get an advisory naming it, not a " +
+                    "refusal. The standard library is available (json, re, csv, datetime, math). " +
                     "TRANSACTIONS ARE YOURS TO CLOSE, and this is the one thing to read before using it. NOTHING " +
                     "here rolls back a transaction your script opened - the Revit API offers no handle on a " +
                     "transaction opened by other code, so no amount of error handling on this side can reach it. " +
@@ -781,7 +828,8 @@ namespace Horizun.Contracts
                     "target_document is REQUIRED and is matched against the ACTIVE document - this command will " +
                     "not switch documents for you, and a script that needs no document cannot run here. " +
                     "run_async=true returns a job_id immediately for work longer than the request timeout. " +
-                    "Every execution requires a durable idempotency_key. " +
+                    "Every execution requires a durable idempotency_key; a preflight executes nothing and " +
+                    "needs none. " +
                     "STILL A PRIVILEGED BYPASS: it has no dry run, no plan and no confirmation token, so unlike " +
                     "the typed write commands nothing rehearses what it will do. Accepted risk, not a satisfied " +
                     "policy - see docs/security-model.md.",
@@ -809,10 +857,23 @@ namespace Horizun.Contracts
                         {
                             ["type"] = "string",
                             ["description"] =
-                                "REQUIRED for every execution. Claimed durably before Python runs: the same key " +
+                                "REQUIRED for every execution; not needed (and not claimed) for preflight=true, " +
+                                "which executes nothing. Claimed durably before Python runs: the same key " +
                                 "with the identical operation replays its recorded answer without executing, a " +
                                 "different operation under that key is refused, and a claimed operation with no " +
                                 "terminal record after a crash is reported in_doubt instead of repeated."
+                        },
+                        ["preflight"] = new JObject
+                        {
+                            ["type"] = "boolean",
+                            ["default"] = false,
+                            ["description"] =
+                                "Validate WITHOUT executing: permission, target document, size, script SHA-256 " +
+                                "and basic syntax, plus advisory warnings (typed-command overlaps, missing " +
+                                "transaction hygiene, missing __output__). It cannot prove the safety or effect " +
+                                "of arbitrary code. Not combinable with run_async. When the objective is already " +
+                                "unambiguous and the preflight passes, continue to execution in the same task - " +
+                                "this is a check, not an approval step."
                         },
                         ["run_async"] = new JObject
                         {
@@ -1047,6 +1108,7 @@ namespace Horizun.Contracts
                          ""description"": ""Relative disagreement above which sources are flagged as not agreeing."" },
     ""top"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
                 ""description"": ""Max element rows returned. Totals and coverage are EXACT and independent of this; a shortened list sets truncated=true and rows_matching says how many there were."" },
+    ""code_parameter"": { ""type"": ""string"", ""description"": ""Parameter carrying each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' per row and a by_code rollup whose sums state how many elements they cover."" },
     ""only_disagreements"": { ""type"": ""boolean"", ""default"": false,
                               ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" }
   }
@@ -1586,6 +1648,40 @@ namespace Horizun.Contracts
                 "horizun_capture_view", "horizun_excel_write_rows", "horizun_navigate", "horizun_target"
             };
 
+            // MCP's destructiveHint, where every other classification already lives.
+            // Beyond what Effect implies: a command can be MutatingUnlessDryRun and still
+            // destroy something a caller cannot get back - an export overwrites a file, a
+            // family rebuild replaces geometry, a push replaces a dataset.
+            var destructive = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_delete_verified", "horizun_execute_python", "horizun_document_session",
+                "horizun_export", "horizun_create_family", "horizun_power_bi_push"
+            };
+
+            // MCP's openWorldHint. Effect already covers ExternalSideEffect and
+            // DocumentSession; these are the ones that reach outside the model while being
+            // classified by Effect as ordinary model writes.
+            var openWorld = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_open_document", "horizun_export", "horizun_create_family",
+                "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup"
+            };
+
+            // A name in one of those sets that matches no contract is a rename nobody
+            // finished, and it fails LOUDLY here rather than handing a client a wrong hint
+            // for the tool that was renamed. This is the rot the sets are prone to.
+            var known = new HashSet<string>(StringComparer.Ordinal);
+            foreach (CommandContract c in all) known.Add(c.Name);
+            foreach (string n in destructive)
+                if (!known.Contains(n))
+                    throw new InvalidOperationException(
+                        "destructive names a tool that does not exist: '" + n + "'. Renamed or removed? " +
+                        "Fix the set - a stale entry means the tool it replaced now reports destructiveHint=false.");
+            foreach (string n in openWorld)
+                if (!known.Contains(n))
+                    throw new InvalidOperationException(
+                        "openWorld names a tool that does not exist: '" + n + "'.");
+
             foreach (CommandContract c in all)
             {
                 c.OutputSchema = new JObject
@@ -1598,6 +1694,11 @@ namespace Horizun.Contracts
                 else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
                 else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
                 else c.Effect = ToolEffect.ReadOnly;
+
+                c.Destructive = destructive.Contains(c.Name);
+                c.OpenWorld = openWorld.Contains(c.Name) ||
+                              c.Effect == ToolEffect.ExternalSideEffect ||
+                              c.Effect == ToolEffect.DocumentSession;
 
                 if (c.Effect == ToolEffect.Mutating ||
                     c.Effect == ToolEffect.MutatingUnlessDryRun ||

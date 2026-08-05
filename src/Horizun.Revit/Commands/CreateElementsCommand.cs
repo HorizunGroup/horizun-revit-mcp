@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - compact, typed authoring surface for common BIM elements.
 // -----------------------------------------------------------------------------
 using System;
@@ -39,17 +39,71 @@ namespace Horizun.Revit.Commands
 
             var plans = new List<Plan>();
             var errors = new JArray();
+            // Every action's outcome, so the FALLBACK decision is made once, centrally,
+            // over the whole batch - a mixed batch must not inherit one entry's
+            // capability gap as permission for the request. See FallbackDecision.
+            var outcomes = new List<ActionOutcome>();
             for (int i = 0; i < input.Count; i++)
             {
                 JObject item = input[i] as JObject;
-                string error = null;
-                Plan plan = item == null ? null : PlanItem(doc, i, item, scale, out error);
-                if (plan == null) errors.Add(new JObject { ["index"] = i, ["error"] = item == null ? "entry is not an object" : error });
+                string error = null, reason = null;
+                Plan plan = item == null ? null : PlanItem(doc, i, item, scale, out error, out reason);
+                if (plan == null)
+                {
+                    string message = item == null ? "entry is not an object" : error;
+                    errors.Add(new JObject { ["index"] = i, ["error"] = message });
+                    outcomes.Add(new ActionOutcome { Index = i, Error = message, UnsupportedReason = reason });
+                }
                 else plans.Add(plan);
             }
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
             string planHash = DocumentGate.PlanHash(request, "units", "elements");
+
+            // ---- The MATERIALISED plan: what the request's NAMES resolved to. -----------
+            // planHash binds the batch as written, and for a creation command the batch is
+            // names and ids: a wall type called "Muro 200", a level called "N.E 10", a
+            // piping system picked by name. None of those meanings is frozen by the
+            // request. Between the rehearsal and the apply somebody can rename a type,
+            // swap what a name resolves to, or move a level's elevation - and the same
+            // batch then creates different elements in different places. The plan records
+            // each row's RESOLVED references: the type's UniqueId and name, the level's
+            // UniqueId and its elevation as measured now. A level that moved 50mm is a
+            // different plan even though its name still matches.
+            //
+            // Elements created do not exist at plan time, so what is fingerprinted is what
+            // the caller actually approved: the recipe plus the resolved ingredients.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest()
+            };
+            foreach (Plan planned in plans)
+            {
+                var row = new PlannedElement
+                {
+                    UniqueId = "create:" + planned.Index,
+                    Category = planned.Kind,
+                    TypeName = SafePlanName(planned.Type),
+                    Action = PlannedAction.Create,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "type_uid", SafePlanUid(planned.Type) },
+                        { "system_type", SafePlanName(planned.SystemType) },
+                        { "system_type_uid", SafePlanUid(planned.SystemType) },
+                        { "level", SafePlanName(planned.Level) },
+                        { "level_uid", SafePlanUid(planned.Level) },
+                        // The level's measured elevation, to the tenth of a millimetre.
+                        // "Create on N.E 10" approved a HEIGHT, not a name: a level that
+                        // moved is a different creation wearing the same words.
+                        { "level_elev_mm", SafePlanElevation(planned.Level) }
+                    }
+                };
+                resolvedPlan.Elements.Add(row);
+            }
+
             if (dryRun)
             {
                 var result = new JObject
@@ -59,14 +113,36 @@ namespace Horizun.Revit.Commands
                     ["plan"] = new JArray(plans.Select(p => p.Summary)),
                     ["note"] = "Nothing was created and no transaction was opened. Correct every invalid row before apply."
                 };
+                if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so
+                // this is the first thing a caller sends; without the block here they
+                // got success=true, invalid=1 and no way to tell a capability gap from
+                // a typo except by sending an apply they had no reason to send.
+                CommandResult rehearsal = FallbackDecision.Attach(
+                    CommandResult.Ok(result),
+                    FallbackDecision.Decide(outcomes, writeStarted: false));
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
-                    errors.Count == 0 ? "the token binds this ordered heterogeneous batch and its units" :
-                    "no usable confirmation is issued while any row is invalid");
-                return CommandResult.Ok(result);
+                    errors.Count == 0
+                        ? "the token binds this ordered heterogeneous batch, its units, AND what its names resolved " +
+                          "to right now - the types, system types and levels, including each level's measured " +
+                          "elevation. A type renamed, a name re-pointed or a level moved before you apply refuses " +
+                          "as a stale plan instead of creating something else under the approved words."
+                        : "no usable confirmation is issued while any row is invalid");
+                return rehearsal;
             }
             if (errors.Count > 0)
-                return CommandResult.Fail(errors.Count + " element plan(s) are invalid. Nothing was created: " + errors.ToString(Formatting.None));
-            CommandResult confirmation = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            {
+                string why = errors.Count + " element plan(s) are invalid. Nothing was created: " +
+                             errors.ToString(Formatting.None);
+                // Nothing has been written - no transaction is open at this point - so the
+                // decision is entirely about WHAT failed, and it is made centrally.
+                return FallbackDecision.Refuse(why, FallbackDecision.Decide(outcomes, writeStarted: false));
+            }
+            // Recomputed above by this call's own PlanItem resolution. The rehearsed plan
+            // does not travel in the token, only its fingerprint, so a stale refusal names
+            // the drift generically - still refused, nothing created.
+            CommandResult confirmation = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                          resolvedPlan, null);
             if (confirmation != null) return confirmation;
             CommandResult moved = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (moved != null) return moved;
@@ -134,9 +210,10 @@ namespace Horizun.Revit.Commands
             });
         }
 
-        private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error)
+        private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error,
+                                     out string unsupportedReason)
         {
-            error = null;
+            error = null; unsupportedReason = null;
             string kind = (item.Value<string>("kind") ?? "").ToLowerInvariant();
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
@@ -236,12 +313,20 @@ namespace Horizun.Revit.Commands
                         if (!InCategory(p.Type, BuiltInCategory.OST_StructuralColumns))
                             throw new ArgumentException("structural_column type_id must identify a FamilySymbol in OST_StructuralColumns");
                         break;
-                    default: throw new ArgumentException("unsupported kind '" + kind + "'");
+                    default: throw new UnsupportedCapability(
+                        "unsupported kind '" + kind + "' - horizun_create_elements implements a fixed set of " +
+                        "element kinds and this is not one of them. Nothing was created.",
+                        FallbackSignal.ReasonUnsupportedKind);
                 }
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
                 return p;
             }
-            catch (Exception ex) { error = ex.Message; return null; }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                unsupportedReason = UnsupportedCapability.ReasonOf(ex);
+                return null;
+            }
         }
 
         private static Element Create(Document doc, Plan p)
@@ -375,6 +460,33 @@ namespace Horizun.Revit.Commands
         private static string Safe(Func<string> f) { try { return f(); } catch { return null; } }
         private static double Finite(double value, string field)
         { if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException(field + " must be finite"); return value; }
+
+        /// <summary>Guarded reads for the plan: measuring must never be what fails.</summary>
+        private static string SafePlanName(Element e)
+        {
+            try { return e == null ? "" : (e.Name ?? ""); } catch { return "<unreadable>"; }
+        }
+
+        private static string SafePlanUid(Element e)
+        {
+            try { return e == null ? "" : (e.UniqueId ?? ""); } catch { return "<unreadable>"; }
+        }
+
+        /// <summary>
+        /// The level's elevation in tenths of a millimetre. Rounded because Revit's own
+        /// regeneration jitters the last digits, and a fingerprint that changes on its own
+        /// would refuse every apply - the same lesson the transform wiring paid for.
+        /// </summary>
+        private static string SafePlanElevation(Level level)
+        {
+            try
+            {
+                if (level == null) return "";
+                return System.Math.Round(level.Elevation * 304.8, 1)
+                             .ToString(System.Globalization.CultureInfo.InvariantCulture);
+            }
+            catch { return "<unreadable>"; }
+        }
 
         private sealed class Plan
         {

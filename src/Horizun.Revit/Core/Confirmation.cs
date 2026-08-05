@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // "Yes, do it" - tied to a specific document and a specific plan.
@@ -54,7 +54,14 @@ namespace Horizun.Revit.Core
         PlanChanged,
 
         /// <summary>Issued for a different command.</summary>
-        WrongCommand
+        WrongCommand,
+
+        /// <summary>
+        /// The request is identical and the document is the same one, but the MODEL moved:
+        /// the elements the dry run resolved, or the values it read off them, are not what is
+        /// there now. This is the state the old code confessed it could not detect.
+        /// </summary>
+        StalePlan
     }
 
     public sealed class ConfirmationCheck
@@ -72,6 +79,13 @@ namespace Horizun.Revit.Core
         public string Command { get; internal set; }
         public string DocumentKey { get; internal set; }
         public string PlanHash { get; internal set; }
+
+        /// <summary>
+        /// The fingerprint of the ELEMENTS the dry run resolved - see ResolvedPlan. Null for
+        /// a command that has not been taught to materialise its plan yet, and the check
+        /// below says so out loud rather than reporting a guarantee it did not make.
+        /// </summary>
+        public string ElementFingerprint { get; internal set; }
         public DateTime IssuedUtc { get; internal set; }
         public DateTime ExpiresUtc { get; internal set; }
         public bool Used { get; internal set; }
@@ -95,7 +109,8 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Issue a token for a plan that was just computed. Never for one that was not.</summary>
-        public Confirmation Issue(string command, string documentKey, string planHash, TimeSpan? ttl = null)
+        public Confirmation Issue(string command, string documentKey, string planHash, TimeSpan? ttl = null,
+                                  string elementFingerprint = null)
         {
             var c = new Confirmation
             {
@@ -103,6 +118,7 @@ namespace Horizun.Revit.Core
                 Command = command,
                 DocumentKey = documentKey,
                 PlanHash = planHash,
+                ElementFingerprint = elementFingerprint,
                 IssuedUtc = _now(),
                 ExpiresUtc = _now().Add(ttl ?? DefaultTtl)
             };
@@ -118,7 +134,20 @@ namespace Horizun.Revit.Core
         /// Check a token against the situation NOW. On success the token is spent, so the
         /// same approval cannot execute twice.
         /// </summary>
-        public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash)
+        public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash) =>
+            Validate(token, command, documentKey, planHash, null, null);
+
+        /// <summary>
+        /// The same check, plus the one the old code said it could not make: whether the
+        /// MODEL still looks the way the dry run found it.
+        ///
+        /// `elementFingerprint` is what ResolvedPlan.Fingerprint() returns for the plan
+        /// recomputed NOW. Pass null from a command that does not materialise its plan yet -
+        /// the check then behaves exactly as before and the reply says which guarantee was
+        /// not made, because a guarantee nobody mentions reads like one that held.
+        /// </summary>
+        public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash,
+                                          string elementFingerprint, string driftDescription)
         {
             lock (_lock)
             {
@@ -161,8 +190,35 @@ namespace Horizun.Revit.Core
                         "model, so it cannot detect that the model moved underneath you. Staleness is covered " +
                         "by the token's expiry, and the document by its own separate check.");
 
+                // THE MODEL, not the request. Everything above compared the question; this
+                // compares the answer. Only when both sides materialised a plan: a token
+                // issued before this existed carries null, and inventing a comparison there
+                // would report a check that never ran.
+                if (c.ElementFingerprint != null && elementFingerprint != null &&
+                    !string.Equals(c.ElementFingerprint, elementFingerprint, StringComparison.Ordinal))
+                {
+                    return Fail(ConfirmationState.StalePlan,
+                        "THE MODEL MOVED AFTER THE DRY RUN. The request is identical and the document is the " +
+                        "same one, but the elements this resolves to - or the values read off them - are not " +
+                        "what was rehearsed. " +
+                        (string.IsNullOrWhiteSpace(driftDescription) ? "" : "What changed: " + driftDescription + " ") +
+                        "Nothing was changed. This is the case a request hash cannot see: the question did not " +
+                        "change, the answer did. Re-run the dry run, read the CURRENT plan, and approve that one.");
+                }
+
                 c.Used = true;
-                return new ConfirmationCheck { State = ConfirmationState.Valid, Message = null };
+                return new ConfirmationCheck
+                {
+                    State = ConfirmationState.Valid,
+                    // Said out loud when the token predates materialised plans or the command
+                    // has not been taught to build one: the caller is entitled to know that
+                    // "approved" covered the request and not the element set.
+                    Message = (c.ElementFingerprint == null || elementFingerprint == null)
+                        ? "Approved against the REQUEST only: this command does not materialise its resolved " +
+                          "element set yet, so a model that moved between the dry run and now would not have " +
+                          "been detected."
+                        : null
+                };
             }
         }
 

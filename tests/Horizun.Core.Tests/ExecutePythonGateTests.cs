@@ -168,7 +168,7 @@ namespace Horizun.Core.Tests
             string text = Source(File_);
             int desc = text.IndexOf("public string Description", StringComparison.Ordinal);
             Assert.True(desc >= 0);
-            string description = text.Substring(desc, Math.Min(2600, text.Length - desc));
+            string description = text.Substring(desc, Math.Min(5000, text.Length - desc));
 
             Assert.Contains("target_document", description);
             Assert.Contains("idempotency_key", description);
@@ -176,6 +176,10 @@ namespace Horizun.Core.Tests
             // not only in a document nobody opens.
             Assert.True(description.Contains("PRIVILEGED BYPASS") || description.Contains("privileged bypass"),
                 "the description must say it is still a privileged bypass");
+            // And since the default flipped, the description owns the fallback policy
+            // too: when to come here, and the one direction that stays forbidden.
+            Assert.Contains("EXECUTION FALLBACK", description);
+            Assert.Contains("second write, not a recovery", description);
         }
 
         /// <summary>
@@ -207,25 +211,156 @@ namespace Horizun.Core.Tests
 
         /// <summary>
         /// A caller that reaches for execute_python to do exactly what a typed command
-        /// already performs and verifies gets redirected, not a silent unverified
-        /// duplicate. Reported case: a script calling ViewSheet.Create instead of
-        /// horizun_manage_views(create_sheet).
+        /// already performs and verifies is TOLD where the verified version lives - an
+        /// advisory, not a refusal. The old hard veto forced composite scripts to split
+        /// one operation across two transactions or give up; what must survive its
+        /// removal is that the advisory is still computed for every path, including
+        /// run_async, and that the veto does not quietly come back.
         /// </summary>
         [Fact]
-        public void Typed_overlaps_are_refused_before_the_gate_and_before_queueing()
+        public void Typed_overlaps_advise_instead_of_refusing_and_cover_every_path()
         {
             string text = Source(File_);
 
-            int overlapCheck = text.IndexOf("RefuseIfTypedOverlap(code)", StringComparison.Ordinal);
+            // The refusal helper is gone for good; a reintroduction is a policy change
+            // that must fail here first.
+            Assert.DoesNotContain("RefuseIfTypedOverlap", text);
+
+            int advisory = text.IndexOf("TypedAlternatives(code)", StringComparison.Ordinal);
             int gate = text.IndexOf("DocumentGate.ForMutation", StringComparison.Ordinal);
             int queue = text.IndexOf("AsyncQueue.TryAdd", StringComparison.Ordinal);
 
-            Assert.True(overlapCheck >= 0, "the typed-overlap check must be called");
-            Assert.True(overlapCheck < gate,
-                "the overlap check must run BEFORE the document gate - a script redirected to a typed command " +
-                "should never reach far enough to touch a document at all.");
-            Assert.True(overlapCheck < queue,
-                "the overlap check must run BEFORE anything is queued, or run_async=true bypasses it.");
+            Assert.True(advisory >= 0, "the typed-overlap advisory must be computed");
+            Assert.True(advisory < gate && advisory < queue,
+                "the advisory must be computed before the gate and before anything is queued, so every path - " +
+                "sync, async and preflight - carries it.");
+        }
+
+        /// <summary>
+        /// The advisory scans CODE, not prose. A live run advised a script whose only
+        /// mention of ElementTransformUtils.MoveElement was inside a comment; the rules
+        /// themselves are proved in PythonSourceMaskTests, and this pins the wiring so
+        /// the mask cannot be dropped from the call site while those keep passing.
+        /// </summary>
+        [Fact]
+        public void The_advisory_scans_masked_source_rather_than_raw_text()
+        {
+            string text = Source(File_);
+            int mask = text.IndexOf("PythonSourceMask.StripCommentsAndStrings(code)", StringComparison.Ordinal);
+            Assert.True(mask >= 0,
+                "TypedAlternatives must strip comments and string literals before matching, or a comment " +
+                "mentioning an API produces a false advisory.");
+
+            int helper = text.IndexOf("private static JArray TypedAlternatives", StringComparison.Ordinal);
+            Assert.True(helper >= 0 && mask > helper,
+                "the masking must happen inside TypedAlternatives, where the matching is.");
+        }
+
+        /// <summary>
+        /// The evidence path must never present arbitrary Python as host-verified. The
+        /// classifier's own rules are proved in ScriptEvidenceTests; this pins what the
+        /// COMMAND publishes, which is where a client reads it.
+        /// </summary>
+        [Fact]
+        public void The_response_says_python_is_self_reported_and_never_host_verified()
+        {
+            string text = Source(File_);
+
+            Assert.Contains("script_reported_status = evidence.ScriptReportedStatus", text);
+            Assert.Contains("host_verified = evidence.HostVerified", text);
+            // The word must not come back as a state on this path at all.
+            Assert.Contains("self_reported_verified", text);
+            Assert.Contains("host_verification_note", text);
+        }
+
+        /// <summary>
+        /// The size limit must not be sold as something a file can slip past. The old
+        /// refusal said "put it in a file and read it from a short script" - which evades
+        /// the limit, the submitted_source hash AND the idempotency binding all at once.
+        /// </summary>
+        [Fact]
+        public void The_oversized_refusal_does_not_teach_evading_the_limit()
+        {
+            string text = Source(File_);
+
+            Assert.Contains("code.Length > MaxScriptChars", text);
+            // The evasion advice is gone.
+            Assert.DoesNotContain("read it from a short", text);
+            Assert.DoesNotContain("Put it in a file", text);
+            // And the honest guidance is present.
+            Assert.Contains("must not be evaded", text);
+            Assert.Contains("split the work", text);
+        }
+
+        /// <summary>
+        /// The reported hash covers the SUBMITTED SOURCE only. It must be named for that and
+        /// must declare what it does not cover, so nobody reads it as a fingerprint of
+        /// everything that ran - imports, exec/eval, files opened at runtime are all outside it.
+        /// </summary>
+        [Fact]
+        public void The_reported_hash_is_named_for_the_submitted_source_and_scoped()
+        {
+            string text = Source(File_);
+
+            Assert.Contains("[\"submitted_source_sha256\"]", text);
+            Assert.Contains("submitted_source_sha256_covers", text);
+            // The old, over-claiming name is DEPRECATED, not deleted. RELEASE-POLICY keeps a
+            // renamed field working for two MINOR releases; removing it outright would break a
+            // working client, which is a MAJOR change this release is not.
+            Assert.Contains("[\"script_sha256\"]", text);
+            Assert.Contains("script_sha256_deprecated", text);
+            Assert.Contains("DEPRECATED since", text);
+            // The disclaimer names the escape hatches it cannot see.
+            Assert.Contains("imports", text);
+            Assert.Contains("exec()", text);
+            Assert.Contains("eval()", text);
+        }
+
+        /// <summary>
+        /// preflight=true validates and compiles but must never execute: its block has
+        /// to return before the script reaches the engine and before anything can be
+        /// queued, and it must sit AFTER the document gate so the document check it
+        /// reports actually ran.
+        /// </summary>
+        [Fact]
+        public void Preflight_runs_after_the_gate_and_before_any_execution_or_queueing()
+        {
+            string text = Source(File_);
+
+            int gate = text.IndexOf("DocumentGate.ForMutation", StringComparison.Ordinal);
+            int preflightBlock = text.IndexOf("if (preflight)", StringComparison.Ordinal);
+            int queue = text.IndexOf("AsyncQueue.TryAdd", StringComparison.Ordinal);
+            int run = text.IndexOf("source.Execute(scope)", StringComparison.Ordinal);
+
+            Assert.True(preflightBlock >= 0, "the preflight block must exist");
+            Assert.True(gate < preflightBlock,
+                "preflight must run AFTER the shared document gate, or its document check is a claim with " +
+                "nothing behind it.");
+            Assert.True(preflightBlock < queue && preflightBlock < run,
+                "the preflight block must return before anything is queued or executed.");
+            // Compile-only, never Execute: the one call a preflight makes into the engine.
+            Assert.Contains("compileOnly.Compile()", text);
+            // And the combination that would queue a no-op is refused outright.
+            Assert.Contains("preflight=true cannot be combined with run_async=true", text);
+        }
+
+        /// <summary>
+        /// A preflight executes nothing, so the dispatcher must not demand or claim a
+        /// durable idempotency key for it - the same shape as dry_run on the typed
+        /// plan/apply commands.
+        /// </summary>
+        [Fact]
+        public void Preflight_is_exempt_from_the_dispatchers_idempotency_demand()
+        {
+            string dispatcher = File.ReadAllText(Path.GetFullPath(
+                Path.Combine(CommandsDir(), "..", "Core", "Dispatcher.cs")));
+
+            int mutatingCase = dispatcher.IndexOf("case ToolEffect.Mutating:", StringComparison.Ordinal);
+            int exemption = dispatcher.IndexOf("request.Value<bool?>(\"preflight\") == true) return false;",
+                                               StringComparison.Ordinal);
+            Assert.True(mutatingCase >= 0 && exemption > mutatingCase,
+                "RequiresIdempotency must exempt an execute_python preflight inside the Mutating case; " +
+                "otherwise every preflight burns a durable key for work that never runs.");
         }
 
         [Theory]
@@ -243,8 +378,9 @@ namespace Horizun.Core.Tests
             int table = text.IndexOf("TypedOverlaps =", StringComparison.Ordinal);
             Assert.True(table >= 0, "the typed-overlap table moved; this test needs updating");
 
-            // Every entry lives between the table and the refusal method that reads it.
-            int helperEnd = text.IndexOf("private static CommandResult RefuseIfTypedOverlap", StringComparison.Ordinal);
+            // Every entry lives between the table and the advisory method that reads it.
+            int helperEnd = text.IndexOf("private static JArray TypedAlternatives", StringComparison.Ordinal);
+            Assert.True(helperEnd > table, "the advisory helper moved; this test needs updating");
             string tableText = text.Substring(table, helperEnd - table);
 
             // The table stores REGEX SOURCE (backslashes and all), not the API call

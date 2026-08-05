@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - declarative, typed creation of loadable RFA families.
 // -----------------------------------------------------------------------------
 using System;
@@ -56,6 +56,36 @@ namespace Horizun.Revit.Commands
             string planHash = DocumentGate.PlanHash(request, "template_path", "output_path", "units", "parameters", "types",
                 "forms", "connectors", "reference_planes", "dimensions", "family_lines",
                 "nested_instances", "overwrite", "load_into_project", "overwrite_parameter_values");
+            // ---- The MATERIALISED plan. The request is a recipe; the TEMPLATE is an
+            // ingredient that lives on disk, and everything in the family starts as a copy
+            // of it. A template swapped between rehearsal and apply mints a different
+            // family under the approved words, and nothing in the request would notice -
+            // so its content hash rides in the plan, along with the output-file fact the
+            // overwrite decision was taken against.
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ContextFingerprint = "template=" + SafeFileHash(template) +
+                                     ";output_exists=" + (File.Exists(output) ? "1" : "0") +
+                                     ";overwrite=" + (overwrite ? "1" : "0")
+            };
+            resolvedPlan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "family:" + Path.GetFileName(output),
+                Category = "loadable_rfa",
+                Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                {
+                    { "parameters", plan.Parameters.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "types", plan.Types.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "forms", plan.Forms.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "load", load ? "1" : "0" }
+                }
+            });
+
             if (dryRun)
             {
                 var result = new JObject
@@ -79,12 +109,17 @@ namespace Horizun.Revit.Commands
                         "The public Revit API does not provide general creation of in-place families; Horizun refuses to fake it with UI automation."),
                     ["note"] = "No family document, transaction or file was created."
                 };
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, true,
-                    "the token binds template, destination, units, parameter/type/form graph, connectors and load policy");
+                    "the token binds template BY CONTENT (its SHA-256, not its path), destination and what already " +
+                    "exists there, units, parameter/type/form graph, connectors and load policy - a template edited " +
+                    "or swapped before you apply refuses as a stale plan.");
                 return CommandResult.Ok(result);
             }
 
-            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash);
+            // Recomputed by THIS call, template re-hashed from disk.
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash,
+                                                                     resolvedPlan, null);
             if (refusal != null) return refusal;
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
@@ -1201,6 +1236,27 @@ namespace Horizun.Revit.Commands
             if (!string.Equals(Path.GetExtension(path), extension, StringComparison.OrdinalIgnoreCase)) { error = field + " must end in " + extension + "."; return null; }
             if (mustExist && !File.Exists(path)) { error = field + " does not exist: " + path; return null; } return path;
         }
+        /// <summary>
+        /// SHA-256 of a file, guarded. Templates are hundreds of kilobytes, so hashing the
+        /// content costs milliseconds and buys the only honest identity a file has - path,
+        /// size and mtime all survive an edit that changes what the family becomes.
+        /// </summary>
+        private static string SafeFileHash(string path)
+        {
+            try
+            {
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                using (var stream = File.OpenRead(path))
+                {
+                    byte[] h = sha.ComputeHash(stream);
+                    var hex = new System.Text.StringBuilder(h.Length * 2);
+                    foreach (byte b in h) hex.Append(b.ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+                    return hex.ToString();
+                }
+            }
+            catch (Exception ex) { return "<unhashable:" + ex.GetType().Name + ">"; }
+        }
+
         private static bool Scale(string units, out double scale)
         { if (units == "feet") { scale = 1; return true; } if (units == "m") { scale = 1 / 0.3048; return true; } if (units == "mm") { scale = 1 / 304.8; return true; } scale = 0; return false; }
         private static double Finite(double value, string field)

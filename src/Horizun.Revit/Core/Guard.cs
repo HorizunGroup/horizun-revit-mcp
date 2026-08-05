@@ -61,6 +61,27 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// What a rollback ACTUALLY did, never what we hoped. Revit's RollBack() returns a
+        /// TransactionStatus; Confirmed is true only when that status is RolledBack. A
+        /// Pending, an Error or anything else keeps its uncertainty here rather than being
+        /// smoothed into "done" - the whole point is that the caller cannot claim a clean
+        /// model it did not see.
+        /// </summary>
+        public readonly struct RollbackResult
+        {
+            public TransactionStatus Status { get; }
+            public RollbackResult(TransactionStatus status) { Status = status; }
+            public bool Confirmed => Status == TransactionStatus.RolledBack;
+            public string StatusName => Status.ToString();
+        }
+
+        /// <summary>Roll a transaction back and REPORT the status Revit returned - do not assume it.</summary>
+        public static RollbackResult RollBack(Transaction t) => new RollbackResult(t.RollBack());
+
+        /// <summary>Roll a transaction group back and REPORT the status Revit returned - do not assume it.</summary>
+        public static RollbackResult RollBack(TransactionGroup g) => new RollbackResult(g.RollBack());
+
+        /// <summary>
         /// Verify a write actually landed: compare what we asked for against what the
         /// model reports now. Returns a block the caller must include in its response —
         /// the point is that the discrepancy reaches the user, not a log.

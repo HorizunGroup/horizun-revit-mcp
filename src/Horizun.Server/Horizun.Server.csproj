@@ -17,7 +17,7 @@
     <!-- Same version as the plugin, and for the same reason: the number the MCP client
          sees in serverInfo is read from this assembly, never hand-typed. Keep the two
          csproj values in step - a server and a plugin that disagree is a support call. -->
-    <Version>0.6.0</Version>
+    <Version>0.6.1</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
@@ -51,6 +51,9 @@
     <!-- Host-side external mutations use the same append-only, fail-closed
          idempotency ledger as Revit mutations. -->
     <Compile Include="..\Horizun.Revit\Core\CommandResult.cs" />
+    <!-- CommandResult carries the machine-readable permission to fall back to Python,
+         so its type travels with it. Revit-free, like everything else linked here. -->
+    <Compile Include="..\Horizun.Revit\Core\FallbackSignal.cs" />
     <Compile Include="..\Horizun.Revit\Core\Idempotency.cs" />
     <Compile Include="..\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
   </ItemGroup>

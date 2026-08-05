@@ -1,0 +1,18 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/HorizunGroup/horizun-revit-mcp/security/advisories/new
+    about: >
+      Do NOT open a public issue. This bridge holds an escape hatch to the full Revit
+      API and writes to people's deliverables; report privately so a fix ships before
+      the details do. See SECURITY.md.
+  - name: Question or help getting it running
+    url: https://github.com/HorizunGroup/horizun-revit-mcp/discussions
+    about: >
+      Install problems, MCP client configuration, "is this supposed to work like
+      this" — Discussions, so answers stay findable for the next person.
+  - name: Delivery workflows built on top of the bridge
+    url: https://horizunhub.com
+    about: >
+      Model audits, classification, family homologation and pre-delivery QA are not in
+      this repository by design — it is organisation-neutral. They live in Horizun Hub.

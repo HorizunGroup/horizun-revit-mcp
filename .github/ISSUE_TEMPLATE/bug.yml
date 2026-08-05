@@ -1,0 +1,132 @@
+name: Bug report
+description: Something the bridge did that it should not have, or did not do that it promised.
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Before anything else, please paste `horizun_health`.** Almost every report
+        turns on which Revit answered and which document was active, and health is the
+        one call that says both. It changes nothing.
+
+        **Sanitise what you paste.** Model titles, file paths and parameter values can
+        carry client and project names. Replace them — `TOWER_A`, `C:\models\x.rvt` —
+        rather than not reporting.
+
+  - type: textarea
+    id: health
+    attributes:
+      label: horizun_health output
+      description: Sanitised. The version, the commit and the active document are what matter.
+      render: json
+    validations:
+      required: true
+
+  - type: input
+    id: revit
+    attributes:
+      label: Revit version AND build
+      description: >
+        The build, not only the year. Two 2026 installs on different builds are two
+        different APIs, and a fix pinned to the wrong one helps nobody.
+        Revit → Help → About.
+      placeholder: "2026.4 (build 20251103_1515)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Revit interface language
+      description: >
+        Not cosmetic. Family-template names are localized, and some parameters that are
+        unambiguous in English collide in other languages — a Spanish model can have two
+        parameters both called "Level", which makes a lookup by display name unreadable.
+      options:
+        - English
+        - Español
+        - Português
+        - Français
+        - Deutsch
+        - Italiano
+        - 中文
+        - 日本語
+        - Other (say which in the description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: units
+    attributes:
+      label: Project units
+      options: ["Metric", "Imperial", "Mixed"]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: doc_kind
+    attributes:
+      label: Document kind
+      description: Worksharing changes what a command can even see. A closed workset hides elements without reporting a gap.
+      options:
+        - Non-workshared (single file)
+        - Local of a central
+        - Central opened directly
+        - Detached from central
+        - Family document (.rfa)
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      placeholder: "Claude Code 2.x / Codex / Cursor / Copilot / other"
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Which tool was called
+      placeholder: "horizun_place_sprinklers"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+      description: >
+        Both, separately. "It failed" and "it did not work" are the two reports that
+        cannot be acted on. If a command reported success and the model disagrees, say
+        what you found in the model.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reply
+    attributes:
+      label: The tool's full JSON reply
+      description: >
+        Sanitised. These commands are built to explain themselves — the reply usually
+        contains the reason, the counts it re-read and what it refused to claim.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Relevant lines from the add-in log
+      description: "`%USERPROFILE%\\.horizun\\logs\\revit-<year>.log`. Sanitised."
+      render: text
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have removed client, project and personal names from everything above.
+          required: true
+        - label: I understand `horizun_execute_python` is an escape hatch and does not carry the typed-command guarantee.

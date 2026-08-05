@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - one composable query instead of a tool per question.
 // -----------------------------------------------------------------------------
 using System;
@@ -50,6 +50,55 @@ namespace Horizun.Revit.Commands
 
             List<string> categories = Strings(request["categories"] as JArray);
             List<string> returnParameters = Strings(request["return_parameters"] as JArray);
+
+            // ---- The payload diet (field report 2026-08-04). Measured: ~741 characters
+            // per row to read three numbers per wall - 500 walls cost 370,299 characters,
+            // most of it identity fields repeated per row and five-field parameter
+            // objects where the caller wanted one number.
+            string parameterFormat = (request.Value<string>("parameter_format") ?? "full").ToLowerInvariant();
+            if (parameterFormat != "full" && parameterFormat != "compact")
+                return CommandResult.Fail("parameter_format must be 'full' or 'compact'.");
+            List<string> returnFields = Strings(request["return_fields"] as JArray);
+            HashSet<string> fieldSet = null;
+            if (returnFields.Count > 0)
+            {
+                var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    "unique_id", "category", "name", "family", "type", "type_id", "level",
+                    "is_element_type", "source_kind", "source_model", "link_instance_id"
+                };
+                foreach (string f in returnFields)
+                    if (!known.Contains(f))
+                        return CommandResult.Fail("return_fields '" + f + "' is not a row field. Known: " +
+                                                  string.Join(", ", known.OrderBy(x => x)) + ". element_id is always present.");
+                fieldSet = new HashSet<string>(returnFields, StringComparer.OrdinalIgnoreCase);
+            }
+
+            // ---- Aggregation, requested. Measured need (field report 2026-08-04): every
+            // query in a real session ended in group-and-count, none possible server-side,
+            // and the workaround was query -> token overflow -> dump to disk -> a script,
+            // three times. A histogram request should be one call.
+            List<string> groupBy = Strings(request["group_by"] as JArray);
+            List<string> sumParameters = Strings(request["sum_parameters"] as JArray);
+            foreach (string g in groupBy)
+                if (g != "category" && g != "level" && g != "type" && g != "family" &&
+                    g != "source_model" && g != "source_kind")
+                    return CommandResult.Fail("group_by '" + g + "' is not a grouping key. Known: category, level, " +
+                                              "type, family, source_model, source_kind.");
+            bool compactRows = parameterFormat == "compact" && groupBy.Count == 0;
+            if (sumParameters.Count > 0 && groupBy.Count == 0)
+                return CommandResult.Fail("sum_parameters requires group_by: a sum with no groups is a single row " +
+                                          "the summary already carries, and silently treating it as one group would " +
+                                          "answer a question that was not asked.");
+            if (groupBy.Count > 0 && !string.IsNullOrWhiteSpace(request.Value<string>("cursor")))
+                return CommandResult.Fail("group_by and cursor cannot be combined: groups are computed over the " +
+                                          "WHOLE matched set in one call, so there is no page to resume.");
+            // The sums read from each row's projected parameters, so make sure they are
+            // projected - without echoing the internal union back as if the caller asked
+            // for those columns.
+            List<string> projected = returnParameters;
+            if (sumParameters.Count > 0)
+                projected = returnParameters.Union(sumParameters, StringComparer.OrdinalIgnoreCase).ToList();
             JArray predicates = request["parameters"] as JArray ?? new JArray();
             foreach (JToken token in predicates)
             {
@@ -80,8 +129,8 @@ namespace Horizun.Revit.Commands
             int unreadableTotal = 0;
 
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
-                    predicates, returnParameters, queryBox, includeBox, coordinateScale, includeTypes,
-                    matched, unreadable, ref unreadableTotal);
+                    predicates, projected, queryBox, includeBox, coordinateScale, includeTypes,
+                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
 
             if (includeLinks)
             {
@@ -112,8 +161,8 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
-                            predicates, returnParameters, queryBox, includeBox, coordinateScale, includeTypes,
-                            matched, unreadable, ref unreadableTotal);
+                            predicates, projected, queryBox, includeBox, coordinateScale, includeTypes,
+                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
                 }
             }
 
@@ -134,6 +183,30 @@ namespace Horizun.Revit.Commands
             }
             if (offset > matched.Count)
                 return CommandResult.Fail("The cursor starts beyond the current result set. Re-run without cursor.");
+
+            if (groupBy.Count > 0)
+            {
+                JObject aggCoverage = FederatedVisibility.Measure(host, includeLinks);
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = host.Title,
+                    ["scope"] = scope,
+                    ["include_links"] = includeLinks,
+                    ["matched_total"] = matched.Count,
+                    ["group_by"] = new JArray(groupBy),
+                    ["groups"] = Aggregate(matched, groupBy, sumParameters, out bool groupsTruncated),
+                    ["groups_truncated"] = groupsTruncated,
+                    // The same honesty block a row answer carries: a histogram over a
+                    // model with five links unloaded is a histogram of what was VISIBLE.
+                    ["coverage_complete"] = aggCoverage.Value<bool>("coverage_complete") && unreadableTotal == 0,
+                    ["unreadable_total"] = unreadableTotal,
+                    ["unreadable_shown"] = unreadable.Count,
+                    ["unreadable_truncated"] = unreadableTotal > unreadable.Count,
+                    ["unreadable"] = unreadable,
+                    ["federated_coverage"] = aggCoverage,
+                    ["note"] = "Aggregated server-side; no rows were returned. Drop group_by to page through rows."
+                });
+            }
 
             List<Row> page = matched.Skip(offset).Take(maxRows).ToList();
             int nextOffset = offset + page.Count;
@@ -167,7 +240,8 @@ namespace Horizun.Revit.Commands
         private static void Collect(Document source, string sourceKind, string sourceName, long? linkId,
                                     Transform transform, ElementId viewId, List<string> categories, JObject request,
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
-                                    double coordinateScale, bool includeTypes, List<Row> rows, JArray unreadable,
+                                    double coordinateScale, bool includeTypes, HashSet<string> fields,
+                                    bool compactParameters, List<Row> rows, JArray unreadable,
                                     ref int unreadableTotal)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
@@ -227,35 +301,38 @@ namespace Horizun.Revit.Commands
                         if (!elementBox.Intersects(queryBox)) continue;
                     }
 
-                    var json = new JObject
-                    {
-                        ["element_id"] = id,
-                        ["unique_id"] = Safe(() => element.UniqueId),
-                        ["category"] = Safe(() => element.Category?.Name),
-                        ["name"] = elementName,
-                        ["family"] = family,
-                        ["type"] = typeName,
-                        ["type_id"] = type == null ? JValue.CreateNull() : new JValue(Rid.Value(type.Id)),
-                        ["level"] = level,
-                        ["is_element_type"] = element is ElementType,
-                        ["source_kind"] = sourceKind,
-                        ["source_model"] = sourceName,
-                        ["link_instance_id"] = linkId == null ? JValue.CreateNull() : new JValue(linkId.Value)
-                    };
+                    // element_id is never projectable away: rows that cannot be told
+                    // apart are not an answer. Everything else is the caller's choice -
+                    // the identity and federation fields repeat identically down a page,
+                    // and at ~741 measured characters per row they were most of the bill.
+                    var json = new JObject { ["element_id"] = id };
+                    if (fields == null || fields.Contains("unique_id")) json["unique_id"] = Safe(() => element.UniqueId);
+                    if (fields == null || fields.Contains("category")) json["category"] = Safe(() => element.Category?.Name);
+                    if (fields == null || fields.Contains("name")) json["name"] = elementName;
+                    if (fields == null || fields.Contains("family")) json["family"] = family;
+                    if (fields == null || fields.Contains("type")) json["type"] = typeName;
+                    if (fields == null || fields.Contains("type_id")) json["type_id"] = type == null ? JValue.CreateNull() : new JValue(Rid.Value(type.Id));
+                    if (fields == null || fields.Contains("level")) json["level"] = level;
+                    if (fields == null || fields.Contains("is_element_type")) json["is_element_type"] = element is ElementType;
+                    if (fields == null || fields.Contains("source_kind")) json["source_kind"] = sourceKind;
+                    if (fields == null || fields.Contains("source_model")) json["source_model"] = sourceName;
+                    if (fields == null || fields.Contains("link_instance_id")) json["link_instance_id"] = linkId == null ? JValue.CreateNull() : new JValue(linkId.Value);
                     if (includeBox) json["bounding_box"] = BoxJson(elementBox, coordinateScale);
                     if (returnParameters.Count > 0)
                     {
                         List<string> projectionErrors;
-                        json["parameters"] = ProjectParameters(source, element, type, returnParameters, out projectionErrors);
+                        JObject full = ProjectParameters(source, element, type, returnParameters, out projectionErrors);
                         foreach (string projectionError in projectionErrors)
                             AddUnreadable(unreadable, ref unreadableTotal,
                                 Error(sourceName, linkId, id, projectionError));
+                        json["parameters"] = compactParameters ? CompactParameters(full, json) : full;
                     }
 
                     rows.Add(new Row
                     {
                         Id = id, SourceKind = sourceKind, SourceModel = sourceName,
-                        LinkInstanceId = linkId, Category = (string)json["category"], Level = level, Json = json
+                        LinkInstanceId = linkId, Category = Safe(() => element.Category?.Name),
+                        TypeName = typeName, Family = family, Level = level, Json = json
                     });
                 }
                 catch (Exception ex)
@@ -397,6 +474,40 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { error = "parameter comparison failed: " + ex.Message; return false; }
         }
 
+        /// <summary>
+        /// The compact projection: name -> raw value, and nothing else, for every
+        /// parameter that read cleanly. What did NOT read cleanly must not vanish into
+        /// the compactness - "compact" is a diet, not an amnesty - so absent and
+        /// unreadable parameters go to a parameter_issues object ON THE ROW, present
+        /// only when there is something in it. A caller who reads only the values gets
+        /// numbers that are real; a caller who checks parameter_issues sees everything
+        /// the full format would have told them. null stays reserved for a real stored
+        /// null (an empty string parameter reads as ""), never for "could not look".
+        /// </summary>
+        private static JObject CompactParameters(JObject full, JObject row)
+        {
+            var compact = new JObject();
+            JObject issues = null;
+            foreach (JProperty prop in full.Properties())
+            {
+                JObject cell = prop.Value as JObject;
+                if (cell == null) continue;
+                if (cell["read_error"] != null)
+                {
+                    (issues = issues ?? new JObject())[prop.Name] = "unreadable: " + (string)cell["read_error"];
+                    continue;
+                }
+                if (cell.Value<bool?>("exists") == false)
+                {
+                    (issues = issues ?? new JObject())[prop.Name] = "absent";
+                    continue;
+                }
+                compact[prop.Name] = cell["raw"];
+            }
+            if (issues != null) row["parameter_issues"] = issues;
+            return compact;
+        }
+
         private static JObject ProjectParameters(Document doc, Element element, Element type, List<string> specs,
                                                   out List<string> errors)
         {
@@ -511,6 +622,82 @@ namespace Horizun.Revit.Commands
             };
         }
 
+        /// <summary>
+        /// Group-and-count (and sum) over the WHOLE matched set. The labels for a missing
+        /// key are the same ones Summary() uses, so "(no level)" means the same thing in
+        /// both places. Sums are reported with their own arithmetic shown: how many
+        /// elements contributed, how many had no such parameter, how many could not be
+        /// read, how many held a non-numeric value. A sum over half a group must not read
+        /// like a sum over the group - that substitution is what this repository exists
+        /// to refuse, and it is easiest to commit inside an aggregate, where the rows
+        /// that would have shown the gap are exactly what the caller asked not to see.
+        /// </summary>
+        private static JArray Aggregate(List<Row> rows, List<string> groupBy, List<string> sums,
+                                        out bool truncated)
+        {
+            var groups = rows.GroupBy(r => string.Join("\u001f", groupBy.Select(g => KeyOf(r, g))))
+                             .OrderByDescending(g => g.Count())
+                             .ThenBy(g => g.Key, StringComparer.Ordinal)
+                             .ToList();
+            // Bounded like every other answer. 500 groups is far past any histogram a
+            // person reads; past it the caller is enumerating, and rows do that better.
+            const int maxGroups = 500;
+            truncated = groups.Count > maxGroups;
+            var result = new JArray();
+            foreach (var g in groups.Take(maxGroups))
+            {
+                var key = new JObject();
+                string[] parts = g.Key.Split('\u001f');
+                for (int i = 0; i < groupBy.Count; i++) key[groupBy[i]] = parts[i];
+
+                var entry = new JObject { ["key"] = key, ["count"] = g.Count() };
+                if (sums.Count > 0)
+                {
+                    var sumBlock = new JObject();
+                    foreach (string param in sums)
+                    {
+                        double total = 0; int summed = 0, absent = 0, unreadable = 0, nonNumeric = 0;
+                        foreach (Row r in g)
+                        {
+                            JObject cell = r.Json?["parameters"]?[param] as JObject;
+                            if (cell == null || cell["read_error"] != null) { unreadable++; continue; }
+                            if (cell.Value<bool?>("exists") == false) { absent++; continue; }
+                            JToken raw = cell["raw"];
+                            if (raw == null || raw.Type == JTokenType.Null ||
+                                (raw.Type != JTokenType.Float && raw.Type != JTokenType.Integer))
+                            { nonNumeric++; continue; }
+                            total += raw.Value<double>(); summed++;
+                        }
+                        sumBlock[param] = new JObject
+                        {
+                            ["sum"] = total, ["summed"] = summed, ["absent"] = absent,
+                            ["unreadable"] = unreadable, ["non_numeric"] = nonNumeric,
+                            // Explicit, not derivable-if-you-think-about-it: the flag a
+                            // caller can branch on without re-doing the arithmetic.
+                            ["complete"] = summed == g.Count()
+                        };
+                    }
+                    entry["sums"] = sumBlock;
+                }
+                result.Add(entry);
+            }
+            return result;
+        }
+
+        private static string KeyOf(Row r, string g)
+        {
+            switch (g)
+            {
+                case "category": return r.Category ?? "(no category)";
+                case "level": return r.Level ?? "(no level)";
+                case "type": return r.TypeName ?? "(no type)";
+                case "family": return r.Family ?? "(no family)";
+                case "source_model": return r.SourceModel ?? "(unknown)";
+                case "source_kind": return r.SourceKind ?? "(unknown)";
+                default: return "(unknown key)";   // unreachable: validated at parse
+            }
+        }
+
         private static JObject Summary(List<Row> rows)
         {
             return new JObject
@@ -556,7 +743,19 @@ namespace Horizun.Revit.Commands
 
         private static string LevelName(Document doc, Element element)
         {
+            // The order is: where the category ACTUALLY keeps its level, most specific
+            // first. Walls carry theirs in WALL_BASE_CONSTRAINT and expose no LEVEL_PARAM
+            // at all - measured in the field 2026-08-04, where by_level answered
+            // '"(no level)": 2616' over a tower of walls: a falsehood with the shape of a
+            // fact, in the summary of a tool whose contract is to never report what it
+            // did not verify. The same read feeds the `level:` filter, which therefore
+            // also did not work for walls without insider knowledge of the constraint
+            // parameter. Base/start constraints are used, not tops: "the level of a wall"
+            // means where it stands, which is also what Revit's own schedules mean by it.
             Parameter p = element.get_Parameter(BuiltInParameter.LEVEL_PARAM) ??
+                          element.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT) ??
+                          element.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM) ??
+                          element.get_Parameter(BuiltInParameter.RBS_START_LEVEL_PARAM) ??
                           element.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM) ??
                           element.get_Parameter(BuiltInParameter.SCHEDULE_LEVEL_PARAM);
             if (p == null) return null;
@@ -580,6 +779,7 @@ namespace Horizun.Revit.Commands
 
         private sealed class Row
         {
+            public string TypeName; public string Family;
             public long Id; public string SourceKind; public string SourceModel; public long? LinkInstanceId;
             public string Category; public string Level; public JObject Json;
         }
