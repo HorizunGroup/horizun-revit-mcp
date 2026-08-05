@@ -47,14 +47,14 @@ if (-not $Output) { $Output = Join-Path $repo 'dist\public\horizun-revit-mcp' }
 #   publish/              this machinery, and the overlay sources.
 #   dist/, bin/, obj/     build outputs; the public repo builds its own.
 # =============================================================================
-$allowDirs = @('src', 'tests', 'scripts', 'installer', '.github')
+$allowDirs = @('src', 'tests', 'scripts', 'installer', '.github', 'docs/requirement-sets')
 $allowDocs = @('docs\security-model.md', 'docs\live-fixtures.example.json',
                # The release policy is a promise made TO users about channels, SemVer and
                # what 1.0 will mean. A promise kept in the private tree is not a promise.
                'docs\RELEASE-POLICY.md',
                # The requirement-set schema: people write documents against it, so a
                # private copy is no schema at all.
-               'docsequirement-set.md')
+               'docs\requirement-set.md')
 $allowRoot = @('CHANGELOG.md', 'THIRD-PARTY-NOTICES.md', '.gitignore', '.gitattributes', 'install.ps1')
 $overlay   = Join-Path $PSScriptRoot 'overlay'   # README, LICENSE, NOTICE, AGENTS.md, CLAUDE.md
 

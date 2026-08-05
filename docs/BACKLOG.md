@@ -180,6 +180,35 @@ by use are worth more than gaps predicted by planning — and the freeze should 
 lifted deliberately once 5.1–5.4 land, with these three first in the queue, rather
 than punctured one command at a time whenever somebody hits one.
 
+### 5.11 — `family_apply`'s shape check keys types by NAME, so a rename reads as a moved shape
+
+| ID | Story | Size | Dep |
+|----|-------|------|-----|
+| 5.11 ⭐ | Identify types by ElementId across the before/after shape comparison, so `family_name` can rename the surviving type without the guard firing. A check that cannot find its subject must report `unproven`, never `changed` | S | — |
+
+**Re-measured on v0.6.1, 2026-08-05, with a cleaner reproduction than the first.** The
+request carried NOTHING but `family_name` + `keep_type` — no values, no shared
+parameters, no junk sweep — and still rolled back:
+
+```
+geometry_check: "changed"   dimensions_compared: 0
+  types_added:   ["PRD-CAJA_PASO-15x15x10cm_COM"]
+  types_removed: ["Caja paso RITEL 15x15x10 cm"]
+```
+
+Nothing moved. The before-census measures the type **by name**; the rename the command
+was asked to perform makes that name vanish, so the after-pass matches zero types,
+compares **zero dimensions**, and calls it changed. `dimensions_compared: 0` next to a
+verdict of `changed` is the tell: the conclusion was reached without comparing anything.
+
+**The control, same session, same host:** seven INDIRED families where
+`type_rename_would` came back `null` (their types were already canonical) all committed
+clean — `geometry_check: unchanged`, **7 of 7** dimensions compared, every value
+confirmed against the caller's. The rename is the sole trigger, and it is not an
+optional flourish: renaming the surviving type to the canonical family name is one of
+homologation's four defined outcomes. Today it has no path through the MCP, and the
+family has to be finished by hand in Revit.
+
 ## ~~EPIC 2 — Unified bridge contract~~ *(DROPPED 2026-08-04)*
 
 **Dropped by the owner.** It was the only epic whose work lives in a DIFFERENT
