@@ -3,6 +3,66 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.8.0 — 2026-08-05
+
+La versión que v0.7.0 dijo ser. Sus notas presumían el rollback arreglado y la
+verificación viva pendiente; esta lleva ambas cosas hechas de verdad, más lo que
+una jornada de uso real y las probes vivas encontraron. MINOR porque
+`geometry_check` gana campos nuevos (`types_renamed`, `types_renamed_note`).
+
+- **La mentira del rollback vivía en once sitios, no en dos.** v0.7.0 corrigió
+  `execute_plan` y `annotate`; un barrido encontró el patrón idéntico en nueve
+  comandos más — `RollBack()` llamado, su `TransactionStatus` descartado, y el
+  caso limpio afirmado en prosa — y, peor, **tres campos `transaction_status`
+  que eran literales**, no mediciones (`write_params` y `bind_shared_param` los
+  reportaban desde dentro del handler de `SilentRollbackException` teniendo el
+  estado real en la excepción). Los once pasan ahora por `Guard.RollBack` y una
+  sola frase compartida (`PlanFailure.SingleTransactionOutcome`); un estado
+  distinto de `RolledBack` se lee como INCIERTO y nombra lo que no debe
+  asumirse. Dos guards nuevos impiden la duodécima: ningún comando puede llamar
+  `RollBack()` a pelo ni asignar el nombre del estado como literal — ambos
+  dispararon en su primera corrida y destaparon seis archivos más.
+
+- **`family_apply` ya no tropieza con su propio renombrado (5.11).** Pedir
+  `family_name` renombra el tipo superviviente, y la comparación de forma
+  emparejaba por nombre: el comando devolvía `changed` con
+  `dimensions_compared: 0` sobre el trabajo que se le acababa de encargar —
+  medido en 9 familias reales, en 0.5.0 y otra vez en 0.6.1. Ahora la
+  comparación recibe el mapa de renombrados que el comando MISMO ejecutó (solo
+  si se pidió, no fue creación y la llamada no falló) y empareja la forma de
+  antes bajo el nombre de después. Nada se adivina: un tipo que desaparece sin
+  renombrado declarado sigue siendo `removed`, y un renombrado declarado no es
+  por sí solo un cambio de forma. Campos nuevos `types_renamed` y
+  `types_renamed_note`.
+
+- **El servidor perdía el diagnóstico de rollback un salto antes del cliente.**
+  El forwarder de errores de `Program.cs` no llama a `McpResult.FromPluginReply`
+  (la función que los tests ejercitan) y botaba `reply["detail"]`: el add-in
+  calculaba la traza estructurada, el pipe la llevaba, y el cliente nunca la
+  veía. Segunda ocurrencia del mismo patrón que ya perdió el veredicto del
+  fallback en el camino de éxito; guardado igual, sobre el fuente de Program.cs.
+  Medido: la probe viva pasó de UNVERIFIED a PASS con esta única línea.
+
+- **`clash` adopta el marcador canónico de cobertura.** Su frase de cobertura
+  incompleta usaba redacción propia ("AS COORDINATED"); ahora lleva `DO NOT READ
+  AN ABSENCE`, la misma frase que scan, audit y quantities enseñan a buscar.
+
+- **Retroalimentación de una jornada real, convertida en trabajo.** El reporte
+  crudo (9 familias de Prodesa contra Revit 2025) está en
+  `docs/feedback-from-use-2026-08-05.md`; sus hallazgos son las historias
+  5.12–5.18 del backlog, con sus medidas.
+
+### Verificación de esta versión — en vivo esta vez
+
+Estáticos: 466 + 235 tests en verde; seis compilaciones (servidor + add-in
+2023–2027) con 0 advertencias y 0 errores. **Vivo, contra Revit 2026 y un solo
+binario:** el tier de escritura commiteó y releyó del modelo
+(`created_verified`), la probe de rollback probó con TRAZA ESTRUCTURAL que el
+grupo arrancó, la acción válida commiteó, la inválida fue alcanzada,
+`rollback_status=RolledBack` y el modelo quedó sin residuo; y las cinco probes
+de workset cerrado pasaron contra un modelo workshared real con un workset
+cerrado — 0 FAIL / 0 UNVERIFIED en la unión de ambas corridas.
+
 ## v0.7.0 — 2026-08-05
 
 Dos mitades. La primera es el cambio de dirección de producto de la sección de
