@@ -83,5 +83,36 @@ namespace Horizun.Server.Tests
             Assert.True((bool)mcp["isError"]);
             Assert.Null(mcp["structuredContent"]);
         }
+
+        /// <summary>
+        /// THE MISTAKE THIS GUARDS, second occurrence of a known shape. Every test above
+        /// goes through McpResult.FromPluginReply - and the running server does NOT call
+        /// it: its forwarder in Program.cs builds the error itself, passed fallback and
+        /// capability_gaps onward, and dropped `detail` on the floor. Every unit test
+        /// passed and the LIVE rollback probe reported "the failed plan carried no
+        /// structured rollback diagnostic" against a build that computed one. Exactly how
+        /// the success path lost the fallback verdict before it (see
+        /// DryRunFallbackTests.The_servers_success_forwarder_passes_the_verdict_on).
+        ///
+        /// Program.cs is not linked by this project, so the guard is over its source: the
+        /// error branch must hand reply["detail"] onward.
+        /// </summary>
+        [Fact]
+        public void The_servers_error_forwarder_passes_the_diagnostic_on()
+        {
+            var d = new System.IO.DirectoryInfo(System.AppContext.BaseDirectory);
+            while (d != null && !System.IO.File.Exists(
+                       System.IO.Path.Combine(d.FullName, "src", "Horizun.Server", "Program.cs")))
+                d = d.Parent;
+            Assert.True(d != null, "could not locate src/Horizun.Server/Program.cs");
+
+            string text = System.IO.File.ReadAllText(
+                System.IO.Path.Combine(d.FullName, "src", "Horizun.Server", "Program.cs"));
+
+            Assert.Contains("reply[\"detail\"] as JObject", text);
+            // And the local helper must not silently narrow back to three arguments.
+            Assert.Contains("JArray capabilityGaps,", text);
+            Assert.Contains("JObject detail", text);
+        }
     }
 }

@@ -149,7 +149,7 @@ namespace Horizun.Revit.Commands
 
                     if (missing.Count > 0)
                     {
-                        tx.RollBack();
+                        Guard.RollBack(tx);
                         return CommandResult.Fail("The schedule was not created because these requested fields are not schedulable for " +
                             category.Name + ": " + string.Join(", ", missing) + ". Use a displayed field name, Count/Family/Type, " +
                             "or a BuiltInParameter token such as ELEM_TYPE_PARAM.");
@@ -166,7 +166,7 @@ namespace Horizun.Revit.Commands
                 }
                 catch
                 {
-                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
+                    if (tx.GetStatus() == TransactionStatus.Started) Guard.RollBack(tx);
                     throw;
                 }
             }

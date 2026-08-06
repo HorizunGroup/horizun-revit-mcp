@@ -351,8 +351,9 @@ namespace Horizun.Revit.Commands
                     : "INCOMPLETE COVERAGE in " + incomplete.Count + " of " + sources.Count + " source(s): " +
                       string.Join("; ", incomplete) + ". The elements on a closed workset are not hidden - they are " +
                       "NOT IN THAT DOCUMENT, so they were never offered to either side of this check and appear in " +
-                      "no ledger. A clash against them could not have been found. DO NOT READ THIS RESULT AS " +
-                      "COORDINATED: re-open the affected model(s) with all worksets open and run it again."
+                      "no ledger. A clash against them could not have been found. DO NOT READ AN ABSENCE of " +
+                      "clashes here as coordination: re-open the affected model(s) with all worksets open and run " +
+                      "it again."
             };
         }
 

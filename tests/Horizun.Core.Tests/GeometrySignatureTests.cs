@@ -11,6 +11,7 @@
 // that a dimension nobody could measure must never be counted as one that did not
 // change.
 // -----------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Horizun.Revit.Core;
@@ -128,6 +129,78 @@ namespace Horizun.Core.Tests
             Assert.Equal("changed", v.Status);
             Assert.Contains("Old", v.TypesRemoved);
             Assert.Contains("New", v.TypesAdded);
+        }
+
+        // ---- A rename the CALLER declared is paired, not read as a disappearance. -------------
+        // Regression: family_apply's own `family_name` renames the surviving type, and matching
+        // by name alone made the command trip its own guard on the work it was told to do -
+        // "changed" with ZERO dimensions compared, whole transaction rolled back. Measured live
+        // live on a real family, add-in 0.5.0 and again on 0.6.1.
+
+        private static Dictionary<string, string> Renamed(string from, string to) =>
+            new Dictionary<string, string>(StringComparer.Ordinal) { [from] = to };
+
+        [Fact]
+        public void A_declared_rename_is_paired_and_the_shape_is_actually_compared()
+        {
+            var v = GeometryCompare.Compare(new[] { Sig("Old", 1) }, new[] { Sig("New", 1) },
+                                            Renamed("Old", "New"));
+
+            Assert.Equal("unchanged", v.Status);
+            Assert.False(v.AnyChange);
+            Assert.Empty(v.TypesRemoved);
+            Assert.Empty(v.TypesAdded);
+            Assert.Contains("Old -> New", v.TypesRenamed);
+            // The point of the fix: dimensions were COMPARED, not skipped.
+            Assert.True(v.Unchanged > 0);
+        }
+
+        [Fact]
+        public void A_declared_rename_still_catches_a_shape_that_moved_underneath_it()
+        {
+            var v = GeometryCompare.Compare(new[] { Sig("Old", 1) }, new[] { Sig("New", 99) },
+                                            Renamed("Old", "New"));
+
+            Assert.Equal("changed", v.Status);
+            Assert.Contains("Old -> New", v.TypesRenamed);
+            Assert.NotEmpty(v.Changed);
+        }
+
+        [Fact]
+        public void A_deletion_cannot_hide_behind_a_declared_rename()
+        {
+            // "Old" was renamed to "New", and "Other" quietly vanished. The rename is paired;
+            // the deletion is still reported. This is the fear the old comment named.
+            var v = GeometryCompare.Compare(new[] { Sig("Old", 1), Sig("Other", 2) },
+                                            new[] { Sig("New", 1) },
+                                            Renamed("Old", "New"));
+
+            Assert.Equal("changed", v.Status);
+            Assert.Contains("Other", v.TypesRemoved);
+            Assert.Contains("Old -> New", v.TypesRenamed);
+        }
+
+        [Fact]
+        public void An_undeclared_rename_keeps_the_old_conservative_behaviour()
+        {
+            // A rename map that does not mention this type changes nothing: still removed+added.
+            var v = GeometryCompare.Compare(new[] { Sig("Old", 1) }, new[] { Sig("New", 1) },
+                                            Renamed("Something", "Else"));
+
+            Assert.Equal("changed", v.Status);
+            Assert.Contains("Old", v.TypesRemoved);
+            Assert.Contains("New", v.TypesAdded);
+            Assert.Empty(v.TypesRenamed);
+        }
+
+        [Fact]
+        public void A_rename_is_not_by_itself_a_geometry_change()
+        {
+            var v = GeometryCompare.Compare(new[] { Sig("Old", 1) }, new[] { Sig("New", 1) },
+                                            Renamed("Old", "New"));
+
+            Assert.DoesNotContain("CHANGED", v.Summary());
+            Assert.Single(v.TypesRenamed);
         }
 
         [Fact]

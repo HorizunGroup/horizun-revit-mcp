@@ -171,8 +171,10 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.GetStatus() == TransactionStatus.Started) tx.RollBack();
-                    return CommandResult.Fail("Atomic creation failed: " + ex.Message + ". The transaction was rolled back; nothing in this batch was kept.");
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
+                    return CommandResult.Fail("Atomic creation failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing in this batch was kept"));
                 }
             }
 

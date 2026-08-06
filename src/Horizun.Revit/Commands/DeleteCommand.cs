@@ -324,7 +324,7 @@ namespace Horizun.Revit.Commands
                 catch (SilentRollbackException) { throw; }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
+                    if (tx.HasStarted()) Guard.RollBack(tx);
                     return CommandResult.Fail("Delete failed, nothing was deleted: " + ex.Message);
                 }
             }
@@ -494,13 +494,15 @@ namespace Horizun.Revit.Commands
                 }
                 catch (SilentRollbackException)
                 {
-                    if (group.HasStarted()) group.RollBack();
+                    if (group.HasStarted()) Guard.RollBack(group);
                     throw;
                 }
                 catch (Exception ex)
                 {
-                    if (group.HasStarted()) group.RollBack();
-                    return CommandResult.Fail("Purge failed and was rolled back; nothing was purged: " + ex.Message);
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (group.HasStarted()) { attempted = true; rb = Guard.RollBack(group).StatusName; }
+                    return CommandResult.Fail("Purge failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was purged"));
                 }
             }
 
@@ -660,10 +662,10 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
+                    if (tx.HasStarted()) Guard.RollBack(tx);
                     return CommandResult.Fail("Dry run failed before it could measure anything: " + ex.Message);
                 }
-                tx.RollBack();
+                Guard.RollBack(tx);
             }
             return null;
         }

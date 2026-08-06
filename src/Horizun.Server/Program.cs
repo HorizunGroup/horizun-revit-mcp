@@ -687,11 +687,17 @@ namespace Horizun.Server
                                       reply["capability_gaps"] as JArray);
             }
             // A failure carries what Revit objected to as well: that is usually the reason.
-            // It may ALSO carry the machine-readable fallback signal, and that one has to
-            // survive as structure: a client deciding whether to write Python must branch
-            // on a field, not parse this English.
+            // It may ALSO carry the machine-readable fallback signal AND the structured
+            // failure diagnostic (an atomic plan's rollback trace), and both have to
+            // survive as structure: a client deciding whether to write Python - or whether
+            // a rollback actually landed - must branch on a field, not parse this English.
+            // `detail` was dropped here once already: the unit tests exercised
+            // McpResult.FromPluginReply, this forwarder did not call it, and the live
+            // probe caught the difference - the same shipped-unnoticed shape as the
+            // success path's verdict, now guarded the same way.
             return ErrorResult("Error: " + (string)reply["error"] + RevitSaidText(reply["revit_said"]),
-                               reply["fallback"] as JObject, reply["capability_gaps"] as JArray);
+                               reply["fallback"] as JObject, reply["capability_gaps"] as JArray,
+                               reply["detail"] as JObject);
         }
 
         /// <summary>
@@ -771,8 +777,9 @@ namespace Horizun.Server
         /// the signal exists to replace. No fallback block means an ordinary text error,
         /// byte for byte as before.
         /// </summary>
-        private static JObject ErrorResult(string text, JObject fallback, JArray capabilityGaps)
-            => McpResult.Error(text, fallback, capabilityGaps);
+        private static JObject ErrorResult(string text, JObject fallback, JArray capabilityGaps,
+                                           JObject detail = null)
+            => McpResult.Error(text, fallback, capabilityGaps, detail);
 
         private static JObject StructuredResult(JObject data)
             => StructuredResult((JToken)data, data == null ? "null" : data.ToString(Formatting.Indented));

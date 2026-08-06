@@ -496,7 +496,12 @@ namespace Horizun.Revit.Commands
                     // through. Measuring here, before the commit, is the whole point: a
                     // geometry check that cannot stop the write is a log line.
                     geoAfterTx = CaptureGeometry(doc, doc.FamilyManager);
-                    geoVerdict = GeometryCompare.Compare(geoBefore, geoAfterTx);
+                    // Hand the comparison the rename THIS transaction just performed, so the
+                    // surviving type is recognised under its new name instead of reading as a
+                    // deletion plus an arrival. Only a rename whose call did not fail is
+                    // declared: if RenameCurrentType threw, the type still answers to its old
+                    // name and claiming otherwise would pair two different subjects.
+                    geoVerdict = GeometryCompare.Compare(geoBefore, geoAfterTx, AppliedRenames(plan));
                     RolledBackGeometry = geoVerdict;
                     RolledBackBaseline = geoBefore;
                     string measuredType = geoBefore.Count > 0 ? geoBefore[0].TypeName : null;
@@ -552,8 +557,9 @@ namespace Horizun.Revit.Commands
 
                     if (rollbackReason != null)
                     {
-                        tx.RollBack();
-                        txStatus = "RolledBack";
+                        // MEASURED. The status a caller reads must come from Revit, not from a
+                        // literal that is true by construction.
+                        txStatus = Guard.RollBack(tx).StatusName;
                     }
                     else
                     {
@@ -572,10 +578,12 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.HasStarted()) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
                     return CommandResult.Fail(
-                        "The homologation failed and was rolled back; the family is untouched and was not saved: " +
-                        ex.Message);
+                        "The homologation failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb,
+                            "the family is untouched and was not saved"));
                 }
             }
 
@@ -2454,6 +2462,27 @@ namespace Horizun.Revit.Commands
             return true;
         }
 
+        /// <summary>
+        /// The type renames this run actually carried out, as before-name -> after-name, for the
+        /// shape comparison to pair on. Empty whenever there is nothing to declare, which is the
+        /// safe direction: an undeclared rename reads as removed+added, the old behaviour.
+        ///
+        /// A rename is declared only when it was REQUESTED (Needed), the call did NOT throw
+        /// (Error == null), and it renamed an existing type rather than creating one (Created is
+        /// false - a created type has no before-side to pair with). From and To must also differ
+        /// and both be present; anything else is not a rename worth declaring.
+        /// </summary>
+        private static IDictionary<string, string> AppliedRenames(Plan plan)
+        {
+            var map = new Dictionary<string, string>(StringComparer.Ordinal);
+            var r = plan?.Rename;
+            if (r == null || !r.Needed || r.Created || r.Error != null) return map;
+            if (string.IsNullOrEmpty(r.From) || string.IsNullOrEmpty(r.To)) return map;
+            if (string.Equals(r.From, r.To, StringComparison.Ordinal)) return map;
+            map[r.From] = r.To;
+            return map;
+        }
+
         private static List<GeometrySignature> CaptureGeometry(Document fam, FamilyManager fm)
         {
             var all = new List<GeometrySignature>();
@@ -2635,6 +2664,13 @@ namespace Horizun.Revit.Commands
                 ["changes"] = new JArray(v.Changed.Select(c => (JToken)c.Describe())),
                 ["types_added"] = new JArray(v.TypesAdded.Select(s => (JToken)s)),
                 ["types_removed"] = new JArray(v.TypesRemoved.Select(s => (JToken)s)),
+                ["types_renamed"] = new JArray(v.TypesRenamed.Select(s => (JToken)s)),
+                ["types_renamed_note"] =
+                    "Renames THIS run performed and this comparison paired across, so the surviving type was " +
+                    "measured under its new name instead of reading as one type gone and another arrived. The " +
+                    "pairing is declared by the command that did the renaming, never guessed from the names: a " +
+                    "type that vanished without a declared rename is still reported in types_removed. A rename is " +
+                    "not a shape change, so these do not make the verdict 'changed'.",
                 ["not_verified"] = new JArray(v.NotVerified.Take(40).Select(s => (JToken)s)),
                 ["summary"] = v.Summary(),
                 ["status_means"] =

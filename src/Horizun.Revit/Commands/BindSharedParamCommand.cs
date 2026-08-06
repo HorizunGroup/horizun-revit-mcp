@@ -450,11 +450,11 @@ namespace Horizun.Revit.Commands
 
                     if (!apiReturned)
                     {
-                        tx.RollBack();
+                        string rbStatus = Guard.RollBack(tx).StatusName;
                         return CommandResult.Fail(
                             "ParameterBindings." + (op == "reinsert" ? "ReInsert" : "Insert") + " returned FALSE " +
-                            "without throwing: Revit declined to bind '" + (defName ?? guidText) + "'. Nothing was " +
-                            "written and the transaction was rolled back. A binding kind change on a parameter that " +
+                            "without throwing: Revit declined to bind '" + (defName ?? guidText) + "'. " +
+                            PlanFailure.SingleTransactionOutcome(true, rbStatus, "nothing was written") + " A binding kind change on a parameter that " +
                             "already has values, or a category that cannot carry this parameter's data type, are the " +
                             "usual reasons.");
                     }
@@ -515,7 +515,7 @@ namespace Horizun.Revit.Commands
                             : "not_bound: nothing was bound before this call and Revit rolled this call back, so " +
                               "the model does not carry the parameter.",
                         ["was_bound_before_this_call"] = before.Exists,
-                        ["transaction_status"] = "RolledBack",
+                        ["transaction_status"] = ex.Status.ToString(),
                         ["transaction_name"] = txName,
                         ["document"] = SafeTitle(doc),
                         ["parameter_name"] = defName,
@@ -538,8 +538,10 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
-                    return CommandResult.Fail("Binding failed and was rolled back; nothing was written: " + ex.Message);
+                    bool attempted = false; string rb = PlanFailure.NotAttempted;
+                    if (tx.HasStarted()) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
+                    return CommandResult.Fail("Binding failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was written"));
                 }
             }
 

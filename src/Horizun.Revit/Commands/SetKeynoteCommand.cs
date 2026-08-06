@@ -311,7 +311,7 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex)
                 {
-                    if (tx.HasStarted()) tx.RollBack();
+                    if (tx.HasStarted()) Guard.RollBack(tx);
                     return CommandResult.Fail("Set keynote failed, nothing written: " + ex.Message);
                 }
             }

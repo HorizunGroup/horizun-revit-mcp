@@ -106,6 +106,16 @@ namespace Horizun.Revit.Core
         public List<string> TypesAdded { get; } = new List<string>();
         public List<string> TypesRemoved { get; } = new List<string>();
 
+        /// <summary>
+        /// Renames the CALLER declared and this comparison therefore paired instead of reading
+        /// as a disappearance plus an arrival. Reported so the pairing is visible rather than
+        /// silent: a reader can see exactly which identity was carried across, and a rename that
+        /// should not have happened is on the record instead of being smoothed away.
+        /// A rename is NOT a geometry change - it is the same shape under a new name - so this
+        /// list deliberately does not feed AnyChange.
+        /// </summary>
+        public List<string> TypesRenamed { get; } = new List<string>();
+
         public bool AnyChange => Changed.Count > 0 || TypesAdded.Count > 0 || TypesRemoved.Count > 0;
         public bool FullyVerified => NotVerified.Count == 0;
 
@@ -164,18 +174,54 @@ namespace Horizun.Revit.Core
 
         public static GeometryVerdict Compare(IList<GeometrySignature> before, IList<GeometrySignature> after)
         {
+            return Compare(before, after, null);
+        }
+
+        /// <summary>
+        /// <paramref name="appliedRenames"/> maps a type's name BEFORE to its name AFTER, for
+        /// renames the caller PERFORMED and verified in this same transaction. Omit it (or pass
+        /// null) and nothing is assumed - the comparison falls back to matching purely by name.
+        ///
+        /// Why this parameter exists, since the old comment here said the opposite. Matching by
+        /// name alone reports a renamed type as one gone plus one arrived, and family_apply's own
+        /// `family_name` option renames the surviving type - so the command tripped its own guard
+        /// on work it had just been told to do: verdict "changed" with dimensions_compared = 0,
+        /// the whole transaction rolled back, and NOTHING measured. A guard that cannot find its
+        /// subject has not found a change; it has failed to look.
+        ///
+        /// The old comment's fear was real and is still honoured: guessing a rename from names
+        /// alone WOULD let a deletion hide behind one. This does not guess. The mapping is not
+        /// inferred from the two snapshots - it is supplied by the caller, which knows the rename
+        /// because it executed it and read the new name back off the model. A type that vanished
+        /// without such a mapping is still reported as removed, exactly as before.
+        /// </summary>
+        public static GeometryVerdict Compare(IList<GeometrySignature> before, IList<GeometrySignature> after,
+                                              IDictionary<string, string> appliedRenames)
+        {
             var v = new GeometryVerdict();
             before = before ?? new List<GeometrySignature>();
             after = after ?? new List<GeometrySignature>();
 
             var beforeByName = new Dictionary<string, GeometrySignature>(StringComparer.Ordinal);
-            foreach (var s in before) if (s?.TypeName != null) beforeByName[s.TypeName] = s;
+            foreach (var s in before)
+            {
+                if (s?.TypeName == null) continue;
+                // File the BEFORE signature under the name that type is expected to answer to
+                // AFTER, so the two sides line up on the same subject.
+                string key = s.TypeName;
+                if (appliedRenames != null && appliedRenames.TryGetValue(key, out string renamedTo) &&
+                    !string.IsNullOrEmpty(renamedTo))
+                {
+                    key = renamedTo;
+                    v.TypesRenamed.Add(s.TypeName + " -> " + renamedTo);
+                }
+                beforeByName[key] = s;
+            }
             var afterByName = new Dictionary<string, GeometrySignature>(StringComparer.Ordinal);
             foreach (var s in after) if (s?.TypeName != null) afterByName[s.TypeName] = s;
 
-            // A renamed type is reported as one gone and one arrived. That is deliberate:
-            // this cannot tell a rename from a delete-plus-create, and guessing would let a
-            // real deletion hide behind a rename.
+            // Whatever is left unmatched really is one-sided: a type that went away, or one that
+            // turned up. A rename the caller declared has already been paired above.
             foreach (string name in beforeByName.Keys)
                 if (!afterByName.ContainsKey(name)) v.TypesRemoved.Add(name);
             foreach (string name in afterByName.Keys)
