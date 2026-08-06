@@ -48,7 +48,7 @@ una jornada de uso real y las probes vivas encontraron. MINOR porque
   AN ABSENCE`, la misma frase que scan, audit y quantities enseñan a buscar.
 
 - **Retroalimentación de una jornada real, convertida en trabajo.** El reporte
-  crudo (9 familias de Prodesa contra Revit 2025) está en
+  crudo (9 familias reales contra Revit 2025) está en
   `docs/feedback-from-use-2026-08-05.md`; sus hallazgos son las historias
   5.12–5.18 del backlog, con sus medidas.
 

@@ -135,7 +135,7 @@ namespace Horizun.Core.Tests
         // Regression: family_apply's own `family_name` renames the surviving type, and matching
         // by name alone made the command trip its own guard on the work it was told to do -
         // "changed" with ZERO dimensions compared, whole transaction rolled back. Measured live
-        // on a Prodesa family, add-in 0.5.0 and again on 0.6.1.
+        // live on a real family, add-in 0.5.0 and again on 0.6.1.
 
         private static Dictionary<string, string> Renamed(string from, string to) =>
             new Dictionary<string, string>(StringComparer.Ordinal) { [from] = to };
