@@ -48,6 +48,7 @@
          %LOCALAPPDATA%. Linked for the same reason Settings.cs is: the server and the
          add-in must not be able to disagree about it. -->
     <Compile Include="..\Horizun.Revit\Core\HorizunPaths.cs" />
+    <Compile Include="..\Horizun.Revit\Core\DiscoverySweep.cs" />
     <!-- Host-side external mutations use the same append-only, fail-closed
          idempotency ledger as Revit mutations. -->
     <Compile Include="..\Horizun.Revit\Core\CommandResult.cs" />

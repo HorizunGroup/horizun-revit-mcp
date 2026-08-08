@@ -5,6 +5,16 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **El servidor barre discovery huérfano al arrancar (5.24).** Un archivo de
+  discovery (`revit-<año>-<pid>.json`) lo escribe un Revit vivo y lo borra al salir;
+  uno que crashea —o lo matan pasando un modal— nunca llega a borrarlo. El add-in ya
+  barría, pero SOLO al publicar el suyo, es decir cuando arranca un Revit: si el
+  servidor levanta tras un crash y no hay Revit nuevo, nada limpiaba el huérfano y el
+  siguiente comando tropezaba con él. Ahora el servidor barre al arrancar, decidiendo
+  QUÉ archivos con la MISMA regla que el add-in (`DiscoverySweep`, libre de Revit,
+  con sus dos negativas: los nombres legacy de dos segmentos jamás se tocan, y un pid
+  vivo conserva su archivo). Una sola fuente de verdad para las dos mitades.
+
 - **`self_reported_verified` deja de ser un status que el puente rechaza (5.23).**
   El clasificador aceptaba `verified|completed_unverified|partial|failed`; un script
   que declaraba `self_reported_verified` —la palabra que TODA la documentación y cada

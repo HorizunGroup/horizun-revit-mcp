@@ -150,23 +150,16 @@ namespace Horizun.Revit.Core
             try
             {
                 int me = System.Diagnostics.Process.GetCurrentProcess().Id;
+
+                // The WHICH-files rule is DiscoverySweep, shared with the server so the two
+                // halves cannot drift; this side owns the listing, the pid check and the IO.
+                List<string> stale = DiscoverySweep.StaleFiles(
+                    Directory.GetFiles(Dir(), "revit-*.json"), PidExists, me);
+
                 int swept = 0;
-
-                foreach (string f in Directory.GetFiles(Dir(), "revit-*.json"))
+                foreach (string f in stale)
                 {
-                    try
-                    {
-                        string[] parts = Path.GetFileNameWithoutExtension(f).Split('-');
-                        if (parts.Length != 3) continue;                    // legacy form: never touch
-                        if (!int.TryParse(parts[2], out int pid)) continue;
-                        if (pid == me) continue;                            // that one is ours
-
-                        bool alive;
-                        try { using (System.Diagnostics.Process.GetProcessById(pid)) { } alive = true; }
-                        catch (ArgumentException) { alive = false; }        // no such process
-
-                        if (!alive) { File.Delete(f); swept++; }
-                    }
+                    try { File.Delete(f); swept++; }
                     catch { /* one unreadable file must not stop the sweep */ }
                 }
 
@@ -174,6 +167,19 @@ namespace Horizun.Revit.Core
                     Log.Info("discovery: swept " + swept + " stale file(s) left by Revit instance(s) that no longer run");
             }
             catch { /* hygiene only - our own file is already published */ }
+        }
+
+        /// <summary>
+        /// Bare pid existence - ANY process with that number, not "is a Revit". A pid
+        /// that resolves keeps its discovery file; only "no such process" is stale. See
+        /// DiscoverySweep for why conservative is correct here.
+        /// </summary>
+        private static bool PidExists(int pid)
+        {
+            if (pid <= 0) return false;
+            try { using (System.Diagnostics.Process.GetProcessById(pid)) { } return true; }
+            catch (ArgumentException) { return false; }        // no such process
+            catch { return true; }                             // unreadable -> keep the file
         }
 
         public static void Delete(string year)

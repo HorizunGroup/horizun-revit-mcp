@@ -108,6 +108,10 @@
          the declaration rule is arithmetic over strings, and the states that
          matter - a flapping title, a dialog replaced mid-count - are here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ModalSighting.cs" />
+    <!-- Which discovery files are orphaned (5.24). The rule the add-in and the
+         server share, so the states that matter - a legacy name that must never
+         be touched, a recycled pid that must keep its file - are proved once. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" />
     <!-- And how a close reaches a document Revit will let it close (5.13). The
          states that matter - every other document detached, no other document at
          all - are exactly the ones a live Revit will not produce on demand. -->

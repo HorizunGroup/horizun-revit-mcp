@@ -74,6 +74,18 @@ namespace Horizun.Server
             _writer = new OutboundWriter(stdout);
 
             Log.Start();
+
+            // Orphaned discovery files - left by a Revit that crashed or was killed past a
+            // modal - are swept at startup. The add-in sweeps only when it publishes (when
+            // a Revit STARTS); a server that comes up after a crash, with no new Revit, is
+            // the exact moment nothing else would clean them (story 5.24).
+            try
+            {
+                int swept = PipeClient.SweepStaleDiscovery();
+                if (swept > 0) Log.Info("swept " + swept + " orphaned discovery file(s) at startup");
+            }
+            catch (Exception ex) { Log.Warn("discovery sweep at startup failed: " + ex.Message); }
+
             Log.Info("server " + ServerVersion + " up" +
                      (string.IsNullOrEmpty(TargetYear) ? "" : ", HORIZUN_REVIT_YEAR=" + TargetYear));
 
