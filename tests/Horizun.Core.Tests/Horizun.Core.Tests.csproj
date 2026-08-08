@@ -100,6 +100,9 @@
          strings and four booleans, and they lived in two large command files in two
          versions that had quietly diverged. Split out so the whole table is here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
+         the watcher that acts on the answer needs a Revit and is not here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />
     <!-- And whether closing one would throw work away. The tri-state is the point:
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->

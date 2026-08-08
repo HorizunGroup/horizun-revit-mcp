@@ -192,8 +192,10 @@ namespace Horizun.Revit.Commands
                 Detach = request.Value<bool?>("detach") ?? false,
                 Audit = request.Value<bool?>("audit") ?? false,
                 OpenCentral = request.Value<bool?>("open_central") ?? false,
-                OpenAllWorksets = request.Value<bool?>("open_all_worksets") ?? false
+                OpenAllWorksets = request.Value<bool?>("open_all_worksets") ?? false,
+                OnOpenDialog = OpenRequest.ParseDialogAnswer(request.Value<string>("on_open_dialog"), out string dialogError)
             };
+            if (dialogError != null) return CommandResult.Fail(dialogError);
 
             OpenPlan plan = OpenGuard.Check(app, openRequest);
             if (!plan.Ok) return plan.Refusal;
@@ -242,7 +244,8 @@ namespace Horizun.Revit.Commands
                 // to take the bare-path overload whenever neither audit nor detach was
                 // set, which silently meant open_all_worksets could never be honoured
                 // here at all - the flag was accepted and dropped.
-                uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                using (Interference.WithDialogAnswer(openRequest.OnOpenDialog))
+                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
             }
             catch (Exception ex)
             {
@@ -396,7 +399,11 @@ namespace Horizun.Revit.Commands
                      " - if no result line follows this one, opening this model took Revit down.");
 
             UIDocument uidoc;
-            try { uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false); }
+            try
+            {
+                using (Interference.WithDialogAnswer(r.OnOpenDialog))
+                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+            }
             catch (Exception ex)
             {
                 Log.Warn("document_session OPEN CLOUD refused model=" + plan.CloudModel + ": " + ex.Message);

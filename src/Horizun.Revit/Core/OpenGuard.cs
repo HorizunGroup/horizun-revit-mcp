@@ -82,8 +82,22 @@ namespace Horizun.Revit.Core
         public bool OpenCentral;
         public bool OpenAllWorksets;
 
+        /// <summary>
+        /// How a dialog raised DURING the open is answered. Default Cancel (the safe
+        /// unattended answer, unchanged). Dismiss = acknowledge and continue, for reading
+        /// a model whose open raises an unattended-answerable dialog (story 5.22).
+        /// </summary>
+        public DialogAnswer OnOpenDialog = DialogAnswer.Cancel;
+
         /// <summary>The tool name, for messages that have to tell the caller what to pass.</summary>
         public string CommandName = "this command";
+
+        /// <summary>
+        /// Parse the on_open_dialog argument. Delegates to OpenDialogPolicy (Revit-free,
+        /// where the rule is unit-tested); kept here as the name both open commands call.
+        /// </summary>
+        public static DialogAnswer ParseDialogAnswer(string raw, out string error)
+            => OpenDialogPolicy.Parse(raw, out error);
     }
 
     /// <summary>

@@ -5,6 +5,18 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **`on_open_dialog: cancel | dismiss` en las aperturas (5.22).** Cancelar por
+  defecto es correcto y sigue siendo el default: un modelo que no abre desatendido
+  es un hallazgo. Pero 6 de 123 modelos de un lote no se podían auditar porque su
+  apertura levanta un diálogo cuya única respuesta desatendida sensata es "reconocer
+  y continuar", y no había forma de decirlo por llamada. Con `dismiss`, `open_document`
+  y el `open` de `document_session` responden OK/continuar al diálogo de apertura y lo
+  registran en `revit_said`; es best-effort (un diálogo cuyo "continuar" no es el botón
+  por defecto se anota como respondido en vez de proceder a ciegas) y está acotado a la
+  llamada de apertura — cualquier otro diálogo sigue cancelándose. La regla de parseo
+  vive en `OpenDialogPolicy`, libre de Revit y con tests; un valor mal escrito es un
+  error, no un cancel silencioso.
+
 - **El servidor barre discovery huérfano al arrancar (5.24).** Un archivo de
   discovery (`revit-<año>-<pid>.json`) lo escribe un Revit vivo y lo borra al salir;
   uno que crashea —o lo matan pasando un modal— nunca llega a borrarlo. El add-in ya

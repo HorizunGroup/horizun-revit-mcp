@@ -86,8 +86,10 @@ namespace Horizun.Revit.Commands
                 Detach = req.Value<bool?>("detach") ?? false,
                 Audit = req.Value<bool?>("audit") ?? false,
                 OpenCentral = req.Value<bool?>("open_central") ?? false,
-                OpenAllWorksets = req.Value<bool?>("open_all_worksets") ?? false
+                OpenAllWorksets = req.Value<bool?>("open_all_worksets") ?? false,
+                OnOpenDialog = OpenRequest.ParseDialogAnswer(req.Value<string>("on_open_dialog"), out string dialogError)
             };
+            if (dialogError != null) return CommandResult.Fail(dialogError);
 
             OpenPlan plan = OpenGuard.Check(app, request);
             if (!plan.Ok) return plan.Refusal;
@@ -109,7 +111,9 @@ namespace Horizun.Revit.Commands
             Document opened;
             try
             {
-                UIDocument uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                UIDocument uidoc;
+                using (Interference.WithDialogAnswer(r.OnOpenDialog))
+                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
                 opened = uidoc != null ? uidoc.Document : null;
             }
             catch (Exception ex)
@@ -185,7 +189,9 @@ namespace Horizun.Revit.Commands
             Document opened;
             try
             {
-                UIDocument uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
+                UIDocument uidoc;
+                using (Interference.WithDialogAnswer(r.OnOpenDialog))
+                    uidoc = app.OpenAndActivateDocument(plan.ModelPath, plan.Options(), false);
                 opened = uidoc != null ? uidoc.Document : null;
             }
             catch (Exception ex)
