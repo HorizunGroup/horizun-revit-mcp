@@ -1086,6 +1086,33 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_file_info",
+                Command = "horizun_file_info",
+                Description =
+                    "Read Revit files' headers off disk - format/saved version, is_workshared, is_central, is_local, " +
+                    "central path - WITHOUT opening any of them and WITHOUT an active document. The folder triage " +
+                    "every batch starts with, which used to be hand-written in execute_python and needed a blank " +
+                    "document open just to satisfy the active-document check. Pass 'paths' (a list) or 'folder' " +
+                    "(swept for 'pattern', default *.rvt, optionally recursive). Nothing is opened, so nothing is " +
+                    "upgraded. Each file names its own read_error when unreadable; the summary counts " +
+                    "readable/unreadable/missing. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""paths"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""Explicit file paths to read, in order. Combine with 'folder' or use alone. At least one of paths/folder is required."" },
+    ""folder"": { ""type"": ""string"",
+                  ""description"": ""A directory to sweep for 'pattern'. Its matches follow any explicit 'paths', de-duplicated. At least one of paths/folder is required."" },
+    ""pattern"": { ""type"": ""string"", ""default"": ""*.rvt"",
+                   ""description"": ""Glob for the folder sweep. Default *.rvt. Use *.rfa for families."" },
+    ""recursive"": { ""type"": ""boolean"", ""default"": false,
+                     ""description"": ""Sweep subfolders too. Off by default."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_audit_model",
                 Command = "horizun_audit_model",
                 Description = @"Pre-delivery audit of the open model: warnings, orphan group types, in-place families, imported (not linked) CAD, views off sheets, unplaced/redundant rooms, links, design options and file weight. Read-only. Every count is the model's, every list states total vs. shown, and any check that could not run is reported as failed rather than skipped silently.",

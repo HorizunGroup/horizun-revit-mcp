@@ -83,7 +83,7 @@ namespace Horizun.Core.Tests
         {
             // The caller passes whatever Directory.GetFiles handed it (full paths); the
             // returned entries must be those same strings, ready to File.Delete.
-            string path = @"C:\Users\x\.horizun\discovery\revit-2026-321.json";
+            string path = @"C:\Users\someone\.horizun\discovery\revit-2026-321.json";
             var stale = DiscoverySweep.StaleFiles(new[] { path }, Alive(/* dead */), selfPid: -1);
 
             Assert.Equal(new[] { path }, stale);

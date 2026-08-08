@@ -103,6 +103,9 @@
     <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
          the watcher that acts on the answer needs a Revit and is not here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />
+    <!-- Which files horizun_file_info reads (5.20). The directory listing is IO and
+         injected; the refusal, the union, the dedup and the cap are proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FileInfoPaths.cs" />
     <!-- And whether closing one would throw work away. The tri-state is the point:
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->

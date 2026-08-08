@@ -5,6 +5,21 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **Nuevo comando tipado `horizun_file_info` — triage de carpeta sin abrir nada (5.20).**
+  Leer formato/versión guardada, `is_workshared`, `is_central`, `is_local` y ruta de
+  central de una lista de archivos o de una carpeta entera, DESDE DISCO con
+  `BasicFileInfo`, sin abrir ninguno y sin documento activo. Es lo primero que hace
+  cualquier lote, y hasta ahora se escribía a mano en `execute_python` cada vez —
+  peor, había que crear un proyecto en blanco solo para satisfacer el chequeo de
+  documento activo. Acepta `paths` (lista) o `folder` (barrido por `pattern`, default
+  `*.rvt`, `recursive` opcional); los explícitos primero, luego la carpeta, dedup sin
+  distinguir mayúsculas, tope de 2000 con aviso. Cada archivo nombra su propio
+  `read_error` cuando no se puede leer; el resumen cuenta legibles/ilegibles/ausentes.
+  Nada se abre, nada se actualiza. Read-only. (La regla de qué archivos leer vive en
+  `FileInfoPaths`, libre de Revit y con tests; el lector `BasicFileProbe` necesita la
+  API de Revit.) Esto levanta el freeze de herramientas para este comando por decisión
+  del dueño.
+
 - **`on_open_dialog: cancel | dismiss` en las aperturas (5.22).** Cancelar por
   defecto es correcto y sigue siendo el default: un modelo que no abre desatendido
   es un hallazgo. Pero 6 de 123 modelos de un lote no se podían auditar porque su
