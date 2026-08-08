@@ -1031,7 +1031,9 @@ namespace Horizun.Contracts
                     "CLOSING a document with unsaved changes is refused unless you say discard_unsaved=true AND spend " +
                     "a confirmation_token from a dry_run: Close() discards the work, returns true, and leaves no trace " +
                     "afterwards, so a lost hour and an untouched document produce identical replies. Every close " +
-                    "reports the IsModified it measured before closing. " +
+                    "reports the IsModified it measured before closing. The API cannot close the ACTIVE document; " +
+                    "activate_other=true makes this command activate another open document first (or its own empty " +
+                    "anchor project when nothing else is open) and report which one, instead of refusing. " +
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. It never syncs to central.",
@@ -1071,7 +1073,9 @@ namespace Horizun.Contracts
     ""discard_unsaved"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: REQUIRED to close a document that has unsaved changes without saving them. Close() discards them, returns true, and leaves nothing behind to detect it - the file on disk is untouched and IsModified cannot be asked of a closed document, so an hour of lost edits and an untouched model produce identical responses. Not enough on its own: a dry_run token is required too. Unknown counts as modified."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": false,
-                     ""description"": ""close: rehearse. Closes NOTHING, reports is_modified and would_discard_unsaved, and issues a confirmation_token when the close would discard work."" },
+                     ""description"": ""close: rehearse. Closes NOTHING and activates nothing, reports is_modified, would_discard_unsaved and the activation that WOULD happen under activate_other, and issues a confirmation_token when the close would discard work."" },
+    ""activate_other"": { ""type"": ""boolean"", ""default"": false,
+                     ""description"": ""close: Revit's API cannot close the ACTIVE document, so closing the last document of a batch used to need a decoy opened by hand (and a relaunched batch SKIPPED the model that stayed open). With this true, the command activates another open document first - or opens the bridge's own empty anchor project when nothing else qualifies - then closes the target, and REPORTS which document it activated. Off by default because activation changes what the user is looking at; it must be asked for, never a side effect."" },
     ""confirmation_token"": { ""type"": ""string"",
                      ""description"": ""close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
   }

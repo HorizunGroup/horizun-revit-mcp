@@ -795,21 +795,38 @@ namespace Horizun.Revit.Commands
 
             // Revit's Document.Close cannot close the document that owns the active
             // UIDocument. Discovering that only after issuing (and consuming) a discard
-            // token makes the rehearsal promise an impossible operation. Refuse before
-            // measuring, issuing a token or attempting any close. The caller can open or
-            // activate another model and then close this one by its explicit target.
+            // token makes the rehearsal promise an impossible operation. Decide the way
+            // out BEFORE measuring, issuing a token or attempting any close.
+            //
+            // The way out used to be only the caller's problem, and the field solved it
+            // with the decoy dance: open a document you do not want so the target stops
+            // being active - three times in one session on 2026-08-05, twice more at
+            // batch scale on 2026-08-07, where the last model of a 54-model batch stayed
+            // open and a relaunch SKIPPED it. activate_other=true asks this command to
+            // do that dance itself and REPORT which document it activated (story 5.13).
+            // The choice of way out is ActivationChoice.Decide - Revit-free, so every
+            // branch is provable in CI.
             Document activeForClose = app.ActiveUIDocument?.Document;
             string closeHostVersion = HostVersion(app);
+            string targetFingerprint = DocumentGate.IdentityOf(doc, closeHostVersion).Fingerprint();
             bool targetIsActive = activeForClose != null &&
                 string.Equals(DocumentGate.IdentityOf(activeForClose, closeHostVersion).Fingerprint(),
-                              DocumentGate.IdentityOf(doc, closeHostVersion).Fingerprint(),
+                              targetFingerprint,
                               StringComparison.Ordinal);
-            if (targetIsActive)
+            bool activateOther = request.Value<bool?>("activate_other") ?? false;
+            ActivationPlan activation = ActivationChoice.Decide(
+                targetIsActive, activateOther, ActivationCandidatesFor(app, doc, targetFingerprint, closeHostVersion));
+
+            if (activation.Action == ActivationAction.RefusedNotAsked)
                 return CommandResult.Fail(
                     "REFUSING TO CLOSE: '" + (SafeTitle(doc) ?? SafePath(doc) ?? "this document") +
                     "' is the ACTIVE document, and Revit's API cannot close the active document. " +
                     "Nothing was closed and no confirmation token was issued or consumed. Activate or open " +
-                    "another document first, then call close again with this target_document.");
+                    "another document first, then call close again with this target_document - or pass " +
+                    "activate_other=true and this command will do it for you: it activates another open " +
+                    "document (opening the bridge's own empty anchor project when nothing else qualifies), " +
+                    "closes this target, and reports which document it activated. Activation changes what " +
+                    "the user is looking at, which is why it is asked for and never a side effect.");
 
             var path = SafePath(doc);
             var title = SafeTitle(doc);
@@ -888,7 +905,29 @@ namespace Horizun.Revit.Commands
                           "not a clean document, and this guard treats it as modified.",
                     ["save_on_close"] = saveOnClose,
                     ["would_discard_unsaved"] = wouldDiscard,
-                    ["is_workshared"] = WorksharedJson(worksharedState),
+                    // The rehearsal DESCRIBES the activation and performs none of it: a
+                    // dry run that switches the active document has already changed the
+                    // session it claimed only to inspect.
+                    ["activation"] = !targetIsActive
+                        ? (activateOther
+                            ? new JObject
+                              {
+                                  ["required"] = false,
+                                  ["note"] = "activate_other was passed but this target is not the active document; " +
+                                             "no activation is needed and none would happen."
+                              }
+                            : null)
+                        : new JObject
+                          {
+                              ["required"] = true,
+                              ["would"] = activation.Action == ActivationAction.ActivateOpenDocument
+                                  ? "activate the already-open document '" +
+                                    (activation.Chosen.Title ?? activation.Chosen.Path) + "'"
+                                  : "open the bridge's anchor project (" + AnchorPath(app) +
+                                    (File.Exists(AnchorPath(app)) ? ", which already exists)" : ", creating it first)"),
+                              ["note"] = "This target is the ACTIVE document and Revit's API cannot close the active " +
+                                         "document. Nothing was activated by this rehearsal."
+                          },
                     ["note"] = wouldDiscard
                         ? "NOTHING WAS CLOSED. This close WOULD DISCARD unsaved changes. To go through with it, call " +
                           "again with dry_run=false, discard_unsaved=true and the confirmation_token below - or pass " +
@@ -949,6 +988,37 @@ namespace Horizun.Revit.Commands
                 // something false about it.
                 Log.Info("document_session close: discard_unsaved was passed for '" + (title ?? path) +
                          "', which has no unsaved changes to discard");
+            }
+
+            // The activation happens AFTER every refusal above, so a request that was
+            // going to be refused anyway has not switched the user's active document on
+            // the way to its refusal - and BEFORE the close, because it is what makes
+            // the close possible at all.
+            JObject activationReport = null;
+            if (activation.Action == ActivationAction.ActivateOpenDocument ||
+                activation.Action == ActivationAction.OpenAnchor)
+            {
+                string activationError = PerformActivation(app, activation, out activationReport);
+                if (activationError != null) return CommandResult.Fail(activationError);
+
+                // Activation is claimed only as measured: the target must no longer be
+                // the active document. OpenAndActivateDocument not throwing is intent,
+                // not evidence - the same rule as everything else in this file.
+                Document nowActive = app.ActiveUIDocument?.Document;
+                string nowActiveFingerprint = nowActive == null
+                    ? null
+                    : DocumentGate.IdentityOf(nowActive, closeHostVersion).Fingerprint();
+                if (nowActiveFingerprint == null ||
+                    string.Equals(nowActiveFingerprint, targetFingerprint, StringComparison.Ordinal))
+                    return CommandResult.Fail(
+                        "activate_other activated '" + activationReport.Value<string>("activated_path") +
+                        "' without an exception, but the target is STILL the active document" +
+                        (nowActiveFingerprint == null ? " (the active document could not be read afterwards)" : "") +
+                        ". Nothing was closed: closing would have failed against Revit's " +
+                        "active-document rule, and reporting the activation as done would leave the next " +
+                        "caller aimed at the wrong model. If a confirmation_token was spent getting here, " +
+                        "it is spent - run dry_run again for a fresh one.");
+                activationReport["activated_title"] = SafeTitle(nowActive);
             }
 
             var before = StatFile(path);
@@ -1038,6 +1108,11 @@ namespace Horizun.Revit.Commands
                 ["title"] = title,
                 ["path"] = path,
                 ["saved_on_close"] = saveOnClose,
+                // WHICH document this command activated to make the close possible, or
+                // null when none was needed. Reported by measurement (the post-activation
+                // active document), because an unnamed decoy is exactly the surprise the
+                // manual dance leaves behind.
+                ["activation"] = activationReport,
                 // MEASURED before the close, and reported whether or not it mattered.
                 // This used to be absent entirely, so a close that discarded an hour of
                 // edits and a close of an untouched document produced identical replies.
@@ -1081,6 +1156,140 @@ namespace Horizun.Revit.Commands
                             : null,
                 ["file_on_disk_after"] = ProbeFile(path)
             });
+        }
+
+        // =====================================================================
+        // Activation - how a close reaches a document Revit will let it close.
+        // The DECISION lives in ActivationChoice (Revit-free); these two methods
+        // are only its eyes and hands.
+        // =====================================================================
+
+        /// <summary>
+        /// Every open document that could be activated instead of the target: not
+        /// linked, not the target itself (by reference AND by identity, because two
+        /// wrappers for one document must not nominate the target as its own decoy).
+        /// </summary>
+        private static List<ActivationCandidate> ActivationCandidatesFor(
+            UIApplication app, Document target, string targetFingerprint, string hostVersion)
+        {
+            var result = new List<ActivationCandidate>();
+            try
+            {
+                foreach (Document d in app.Application.Documents.Cast<Document>())
+                {
+                    try
+                    {
+                        if (d.IsLinked || ReferenceEquals(d, target)) continue;
+                        string fp = DocumentGate.IdentityOf(d, hostVersion)?.Fingerprint();
+                        if (fp != null && string.Equals(fp, targetFingerprint, StringComparison.Ordinal)) continue;
+
+                        string p = SafePath(d);
+                        bool onDisk = false;
+                        try { onDisk = !string.IsNullOrEmpty(p) && File.Exists(p); } catch { }
+                        result.Add(new ActivationCandidate
+                        {
+                            Title = SafeTitle(d),
+                            Path = p,
+                            PathExistsOnDisk = onDisk
+                        });
+                    }
+                    catch { /* one unreadable document must not hide the others */ }
+                }
+            }
+            catch { /* an unreadable collection leaves zero candidates, which the anchor covers */ }
+            return result;
+        }
+
+        /// <summary>
+        /// The bridge's own decoy: a deliberately empty project in the bridge's data
+        /// directory, one per Revit year because the format differs per year.
+        /// </summary>
+        private static string AnchorPath(UIApplication app)
+        {
+            return Path.Combine(HorizunPaths.DataRoot(), "anchor",
+                                "HZ_ANCHOR_" + (HostVersion(app) ?? "unknown") + ".rvt");
+        }
+
+        /// <summary>
+        /// Make some other document the active one, per the plan. Returns null on
+        /// success (with a report of what was activated and how), or the refusal text.
+        /// Never falls back to a different document than the plan named: an activation
+        /// that opens a file must open the file it said it would.
+        /// </summary>
+        private static string PerformActivation(UIApplication app, ActivationPlan plan, out JObject report)
+        {
+            report = new JObject();
+            string activatePath;
+            string how;
+
+            if (plan.Action == ActivationAction.ActivateOpenDocument)
+            {
+                activatePath = plan.Chosen.Path;
+                how = "activated_open_document";
+            }
+            else
+            {
+                activatePath = AnchorPath(app);
+                bool anchorExisted;
+                try { anchorExisted = File.Exists(activatePath); }
+                catch (Exception ex)
+                {
+                    return "Could not test for the bridge's anchor project at '" + activatePath + "': " + ex.Message +
+                           ". Nothing was activated and nothing was closed.";
+                }
+                how = anchorExisted ? "opened_existing_anchor" : "created_anchor";
+
+                if (!anchorExisted)
+                {
+                    Document anchor = null;
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(activatePath));
+                        anchor = app.Application.NewProjectDocument(UnitSystem.Metric);
+                        if (anchor == null)
+                            return "Could not create the anchor project: NewProjectDocument returned nothing. " +
+                                   "Nothing was activated and nothing was closed.";
+                        var opts = new SaveAsOptions();
+                        opts.OverwriteExistingFile = true;
+                        anchor.SaveAs(ModelPathUtils.ConvertUserVisiblePathToModelPath(activatePath), opts);
+                    }
+                    catch (Exception ex)
+                    {
+                        // A failed anchor must not stay open as an unsaved background
+                        // document - that is a new decoy problem wearing this one's fix.
+                        try { if (anchor != null) anchor.Close(false); } catch { }
+                        return "Could not create the bridge's anchor project at '" + activatePath + "': " + ex.Message +
+                               ". Nothing was activated and nothing was closed.";
+                    }
+                    // The anchor was created as a background document; close it so the
+                    // activation below is an ordinary open of a file that provably
+                    // exists, the same code path as the anchor-already-existed case.
+                    try { anchor.Close(false); } catch { /* the open below decides what matters */ }
+
+                    bool written;
+                    try { written = File.Exists(activatePath); } catch { written = false; }
+                    if (!written)
+                        return "SaveAs of the anchor project raised no exception but no file is at '" + activatePath +
+                               "'. Nothing was activated and nothing was closed.";
+                }
+            }
+
+            try { app.OpenAndActivateDocument(activatePath); }
+            catch (Exception ex)
+            {
+                return "Could not activate '" + activatePath + "': " + ex.Message +
+                       ". Nothing was closed; the target is still the active document.";
+            }
+
+            report["activated_path"] = activatePath;
+            report["how"] = how;
+            report["note"] = plan.Action == ActivationAction.OpenAnchor
+                ? "No other open document qualified, so the bridge opened its own empty anchor project. It is " +
+                  "now the ACTIVE document and stays open - Revit cannot reach a zero-document state from the " +
+                  "API. It is safe to close the same way, or to leave."
+                : "This already-open document was activated so the target could stop being active. Nothing " +
+                  "about it was modified.";
+            return null;
         }
 
         // =====================================================================

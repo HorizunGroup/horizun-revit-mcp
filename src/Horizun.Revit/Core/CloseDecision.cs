@@ -102,9 +102,16 @@ namespace Horizun.Revit.Core
         /// and three commands in this codebase have shipped with that circle before.
         /// dry_run is absent for the same reason.
         /// </summary>
+        /// <remarks>
+        /// activate_other IS here: it changes what the command does to the session
+        /// (another document becomes active, possibly the bridge's anchor opening),
+        /// which is plan, not approval - a rehearsal approved without it must not
+        /// authorise an execution that also switches documents.
+        /// </remarks>
         public static readonly string[] PlanFields =
         {
-            "operation", "target_document", "file_path", "save_on_close", "force_workshared"
+            "operation", "target_document", "file_path", "save_on_close", "force_workshared",
+            "activate_other"
         };
     }
 }

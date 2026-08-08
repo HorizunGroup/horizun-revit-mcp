@@ -3,6 +3,28 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased
+
+- **`document_session` close puede activar el señuelo por dentro (5.13).** La
+  API de Revit no cierra el documento ACTIVO, y el baile del señuelo — abrir un
+  documento que no quieres para desplazar al que sí — lo hacía el humano: tres
+  veces en una sesión el 2026-08-05, dos más el 2026-08-07 a escala de lote,
+  donde el último modelo de 54 quedó abierto y relanzar el lote se lo saltó.
+  `activate_other: true` hace el baile dentro del comando: activa otro
+  documento abierto (el primero cuya ruta exista en disco — uno detached no
+  puede reabrirse por su ruta sintética) o, cuando no hay otro, abre el ANCLA
+  propia del puente (`.horizun\anchor\HZ_ANCHOR_<año>.rvt`, un proyecto vacío
+  creado una vez y reutilizado), y REPORTA cuál activó y cómo. La decisión es
+  `ActivationChoice` (libre de Revit, 8 tests, incluidos los estados que un
+  Revit vivo no produce a demanda: todos los documentos detached, lista nula).
+  La activación se afirma midiendo — el activo posterior ya no es el objetivo —
+  nunca por "no lanzó excepción"; ocurre después de todos los rechazos (una
+  petición rechazada no te cambia el documento activo de camino) y antes del
+  cierre. `activate_other` entra en `PlanFields`: un rehearsal aprobado sin él
+  no autoriza una ejecución que además cambia de documento. Apagado por
+  defecto: la activación cambia lo que el usuario está mirando y se pide, no
+  se hereda.
+
 ## v0.8.0 — 2026-08-05
 
 La versión que v0.7.0 dijo ser. Sus notas presumían el rollback arreglado y la

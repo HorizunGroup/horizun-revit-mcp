@@ -104,6 +104,10 @@
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CloseDecision.cs" />
+    <!-- And how a close reaches a document Revit will let it close (5.13). The
+         states that matter - every other document detached, no other document at
+         all - are exactly the ones a live Revit will not produce on demand. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ActivationChoice.cs" />
     <!-- How much of a model an answer is about. The READING needs Revit and lives in
          DocumentVisibility.cs; the arithmetic and every sentence it reports are here,
          including the state a real Revit will not produce on request - the workset
