@@ -149,9 +149,34 @@ namespace Horizun.Revit.Core
         /// </summary>
         public void Result(string payload)
         {
+            Result(payload, null);
+        }
+
+        /// <summary>
+        /// The job's output PLUS what Revit raised while it ran.
+        ///
+        /// The synchronous path attaches revit_said - warnings, errors and cancelled
+        /// modal dialogs - beside the payload in every reply (PipeEnvelope). The async
+        /// path wrote only the payload, so the exact telemetry that diagnoses a batch
+        /// failure ("Opening was canceled" was a DocWarnDialog the bridge cancelled)
+        /// existed for a synchronous call and vanished for the same work submitted
+        /// through run_async - which is how batches run. It is carried here so a
+        /// job_status reader gets what a synchronous caller would have seen.
+        ///
+        /// <paramref name="revitSaidJson"/> is ALREADY-SERIALIZED, single-line JSON
+        /// (the caller builds it exactly as PipeEnvelope does, so both paths report the
+        /// same shape). It is embedded raw, not string-quoted; null or empty omits the
+        /// field entirely, which reads as "Revit raised nothing", the same as a
+        /// synchronous reply with no revit_said.
+        /// </summary>
+        public void Result(string payload, string revitSaidJson)
+        {
             lock (_gate)
             {
-                Append("{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + ",\"at\":" + Now() + "}");
+                string said = string.IsNullOrEmpty(revitSaidJson)
+                    ? ""
+                    : ",\"revit_said\":" + revitSaidJson;
+                Append("{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + said + ",\"at\":" + Now() + "}");
             }
         }
 

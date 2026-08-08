@@ -201,6 +201,63 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void An_async_job_carries_revit_said_beside_its_result()
+        {
+            // 5.21: the sync path attaches revit_said to every reply; the async path
+            // dropped it, so the dialog/warning telemetry that diagnoses a batch failure
+            // vanished for exactly the run_async work batches are made of. It is stored
+            // on the result event now and surfaced here, the same sibling of the payload
+            // a synchronous caller sees.
+            Job j = Job.Start("horizun_execute_python");
+            j.MarkRunning();
+            j.Result("{\"opened\":false}",
+                     "{\"dialogs\":1,\"items\":[{\"kind\":\"dialog\",\"description\":\"Dialog_Revit_DocWarnDialog\"," +
+                     "\"answered\":\"cancelled by the bridge (nobody is at the keyboard to answer it)\"}]}");
+            j.Finish("ok", null);
+
+            JObject reported = Read(j);
+
+            Assert.Equal(JTokenType.Object, reported["revit_said"].Type);
+            Assert.Equal(1, (int)reported["revit_said"]["dialogs"]);
+            Assert.Equal("Dialog_Revit_DocWarnDialog",
+                         (string)reported["revit_said"]["items"][0]["description"]);
+        }
+
+        [Fact]
+        public void A_job_that_recorded_no_revit_said_reports_null_not_a_dropped_field()
+        {
+            // Absent must read as "Revit raised nothing", never as "it was dropped" -
+            // the confusion 5.21 removed. A plain result with no revit_said is null here,
+            // exactly like a synchronous reply that carried none.
+            Job j = Job.Start("horizun_execute_python");
+            j.MarkRunning();
+            j.Result("{\"done\":true}");
+            j.Finish("ok", null);
+
+            JObject reported = Read(j);
+
+            Assert.Equal(JTokenType.Null, reported["revit_said"].Type);
+        }
+
+        [Fact]
+        public void A_failed_async_job_still_carries_what_revit_said()
+        {
+            // revit_said is usually the REASON a job failed, and the async caller has no
+            // other channel to learn it. It travels on the failure path too.
+            Job j = Job.Start("horizun_execute_python");
+            j.MarkRunning();
+            j.Result(null, "{\"errors\":1,\"items\":[{\"kind\":\"error\",\"description\":\"Opening was canceled\"}]}");
+            j.Finish("failed", "the open was cancelled");
+
+            JObject reported = Read(j);
+
+            Assert.Equal("failed", (string)reported["state"]);
+            Assert.Equal(1, (int)reported["revit_said"]["errors"]);
+            Assert.Equal("Opening was canceled",
+                         (string)reported["revit_said"]["items"][0]["description"]);
+        }
+
+        [Fact]
         public void A_job_that_ran_and_failed_is_failed()
         {
             Job j = Job.Start("horizun_execute_python");

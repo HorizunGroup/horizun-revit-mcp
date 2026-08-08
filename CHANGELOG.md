@@ -5,6 +5,19 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **`revit_said` ahora viaja también por la ruta async (5.21).** La ruta síncrona
+  adjunta `revit_said` —advertencias, errores y diálogos modales cancelados— junto
+  al payload en cada respuesta (`PipeEnvelope`). La async escribía solo
+  `result.Data` en el record del job, así que esa telemetría —la que diagnosticó el
+  caso más difícil del 2026-08-07, un `Dialog_Revit_DocWarnDialog` cancelado más los
+  errores que Revit levantó antes— existía para una llamada síncrona y desaparecía
+  para el mismo trabajo enviado por `run_async`, que es justo como corren los lotes:
+  4 modelos caídos quedaron sin diagnóstico por esto. `Job.Result` ahora guarda
+  `revit_said` en el evento `result` (construido EXACTO como `PipeEnvelope`, misma
+  forma en ambas rutas), `RunOneAsync` lo serializa —también en fallo, porque suele
+  ser la razón— y `horizun_job_status` lo expone como hermano de `result`. Ausente
+  significa "Revit no levantó nada", igual que en síncrono, nunca "se perdió".
+
 - **Un modal se devuelve como RESULTADO, no como timeout (5.19).** Medido
   2026-08-07: un diálogo "New Project" abierto costó 600 s a cada una de tres
   llamadas a `horizun_health` — 30 minutos para enterarse de lo que el log del

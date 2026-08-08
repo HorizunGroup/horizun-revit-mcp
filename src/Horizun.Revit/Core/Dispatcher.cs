@@ -560,7 +560,19 @@ namespace Horizun.Revit.Core
                 try
                 {
                     if (result == null) result = CommandResult.Fail("'" + work.Command + "' produced no result.");
-                    work.Record.Result(result.Success ? Newtonsoft.Json.JsonConvert.SerializeObject(result.Data) : null);
+                    // revit_said, built EXACTLY as PipeEnvelope builds it for the sync
+                    // path, so run_async and a synchronous call report the same shape. It
+                    // travels on failure too: what Revit raised is usually the REASON, and
+                    // the async caller has no other channel to learn it - the four
+                    // undiagnosed models on 2026-08-07 lost precisely this.
+                    string revitSaidJson = null;
+                    if (result.RevitSaid != null)
+                    {
+                        try { revitSaidJson = Newtonsoft.Json.Linq.JToken.FromObject(result.RevitSaid).ToString(Newtonsoft.Json.Formatting.None); }
+                        catch (Exception rex) { Log.Warn("could not serialize revit_said for async job: " + rex.Message); }
+                    }
+                    work.Record.Result(result.Success ? Newtonsoft.Json.JsonConvert.SerializeObject(result.Data) : null,
+                                       revitSaidJson);
                     work.Record.Finish(result.Success ? "ok" : "failed", result.Success ? null : result.Error);
                 }
                 catch (Exception ex) { Log.Error("could not close the async job record", ex); }
