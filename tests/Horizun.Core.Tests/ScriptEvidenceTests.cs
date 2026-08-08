@@ -126,6 +126,47 @@ namespace Horizun.Core.Tests
             Assert.Null(unstructured.ScriptReportedStatus);
         }
 
+        /// <summary>
+        /// 5.23: the bridge's own docs and every disclaimer teach the word
+        /// self_reported_verified, so a careful script writes it back. It used to fall
+        /// into the unknown-status branch and be downgraded with a warning naming a list
+        /// that OMITTED it - the vocabulary refusing a word it had taught. It is now a
+        /// declared status, held to the same bar as "verified".
+        /// </summary>
+        [Fact]
+        public void Self_reported_verified_declared_by_the_script_is_accepted_with_evidence()
+        {
+            EvidenceReport r = ScriptEvidence.Classify(
+                Structured("self_reported_verified", true, "re-read id 42: Comments='x'"));
+
+            Assert.Equal("self_reported_verified", r.Status);
+            Assert.True(r.Structured);
+            Assert.False(r.HostVerified);
+            // The script's own word is kept verbatim, exactly as for any other status.
+            Assert.Equal("self_reported_verified", r.ScriptReportedStatus);
+            Assert.Contains(r.Warnings, w => ((string)w).Contains("did not re-read the model"));
+        }
+
+        [Fact]
+        public void Self_reported_verified_without_evidence_is_downgraded_like_verified()
+        {
+            // Same bar as "verified": the WORD does not earn the state, the evidence does.
+            Assert.Equal("completed_unverified",
+                ScriptEvidence.Classify(Structured("self_reported_verified", true)).Status);
+            Assert.Equal("completed_unverified",
+                ScriptEvidence.Classify(Structured("self_reported_verified", false, "claim")).Status);
+        }
+
+        [Fact]
+        public void Self_reported_verified_is_no_longer_an_unknown_status()
+        {
+            // The regression this story is about: it must NOT produce the
+            // "not one of ..." warning that the default branch emits.
+            EvidenceReport r = ScriptEvidence.Classify(
+                Structured("self_reported_verified", true, "re-read id 7"));
+            Assert.DoesNotContain(r.Warnings, w => ((string)w).Contains("is not one of"));
+        }
+
         [Fact]
         public void A_verified_claim_without_evidence_is_downgraded()
         {

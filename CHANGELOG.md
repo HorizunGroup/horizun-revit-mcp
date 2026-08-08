@@ -5,6 +5,16 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **`self_reported_verified` deja de ser un status que el puente rechaza (5.23).**
+  El clasificador aceptaba `verified|completed_unverified|partial|failed`; un script
+  que declaraba `self_reported_verified` —la palabra que TODA la documentación y cada
+  disclaimer del puente popularizan para esto mismo— caía en la rama de status
+  desconocido y se DEGRADABA con una advertencia que nombraba una lista que lo omitía:
+  la jerga contradiciéndose, rechazando una palabra que ella misma enseña. Ahora es un
+  status declarado, con la MISMA vara que `verified` (checked=true + evidence, si no
+  downgrade), y se registra tal cual. Nunca sube una afirmación: sigue sin existir
+  `verified` para Python.
+
 - **`revit_said` ahora viaja también por la ruta async (5.21).** La ruta síncrona
   adjunta `revit_said` —advertencias, errores y diálogos modales cancelados— junto
   al payload en cada respuesta (`PipeEnvelope`). La async escribía solo
