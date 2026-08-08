@@ -206,6 +206,18 @@ Notes on the skeleton:
   `status: "verified"` with the read values as evidence — a read that shows its
   data has verified itself.
 
+### IronPython environment gotchas (measured in the field, 2026-08-07)
+
+Two traps a 123-model batch day paid for, so the next script does not:
+
+- **`System` is NOT pre-imported, even though `clr` is.** `clr.AddReference(...)`
+  works on the first line, and `System.IO.File` on the next raises `NameError`.
+  Write `import System` explicitly before touching anything under it.
+- **`System.Array.CreateInstance` fails where the generic indexer works.** Build
+  .NET arrays with `System.Array[System.Byte](sequence)` — the
+  `CreateInstance`-then-assign route dies in this host where the one-shot
+  constructor form succeeds.
+
 ## 4. Worked examples
 
 ### 4a. A detail line in a drafting view (no typed capability)
