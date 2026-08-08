@@ -104,6 +104,10 @@
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CloseDecision.cs" />
+    <!-- When a probed modal dialog may be DECLARED (5.19). The probe needs Win32;
+         the declaration rule is arithmetic over strings, and the states that
+         matter - a flapping title, a dialog replaced mid-count - are here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalSighting.cs" />
     <!-- And how a close reaches a document Revit will let it close (5.13). The
          states that matter - every other document detached, no other document at
          all - are exactly the ones a live Revit will not produce on demand. -->

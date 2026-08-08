@@ -5,6 +5,25 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **Un modal se devuelve como RESULTADO, no como timeout (5.19).** Medido
+  2026-08-07: un diálogo "New Project" abierto costó 600 s a cada una de tres
+  llamadas a `horizun_health` — 30 minutos para enterarse de lo que el log del
+  puente dijo en el primer segundo ("it never started"). Revit solo atiende el
+  ExternalEvent cuando está ocioso y un modal significa que nunca lo estará;
+  el hilo del transporte NO está bloqueado, así que ahora la espera va en
+  rebanadas de 1 s y entre rebanadas pregunta a `ModalProbe` (Win32: la ventana
+  principal deshabilitada + la ventana visible y habilitada del hilo de UI).
+  Un diálogo que persiste 3 sondeos consecutivos — la regla es `ModalSighting`,
+  libre de Revit y con 7 tests, porque un solo avistamiento puede ser un
+  diálogo que `Interference` ya estaba cancelando — se responde YA, con el
+  diálogo nombrado y la petición sacada de la cola: "NEVER STARTED, nada se
+  escribió". Una petición que ya arrancó nunca se abandona por sondeo; el
+  timeout final ahora nombra el modal visible si lo hay. Y en el servidor,
+  `horizun_health` tiene techo propio de 30 s: es el comando de diagnóstico, y
+  no contestar rápido ES la respuesta — el respaldo para cuando la sonda no
+  puede mirar. Una sonda que no capturó sus datos degrada exactamente al
+  comportamiento anterior.
+
 - **`document_session` close puede activar el señuelo por dentro (5.13).** La
   API de Revit no cierra el documento ACTIVO, y el baile del señuelo — abrir un
   documento que no quieres para desplazar al que sí — lo hacía el humano: tres

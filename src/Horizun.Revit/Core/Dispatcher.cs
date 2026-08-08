@@ -162,9 +162,59 @@ namespace Horizun.Revit.Core
                         : $"Raise() itself reported {raised}."));
             }
 
-            if (!req.Wait(timeoutMs))
+            // The wait, in slices. One flat Wait(timeoutMs) used to be the whole story,
+            // and its measured failure mode was the expensive kind of honesty: a "New
+            // Project" dialog left open cost three health calls 600 s EACH - 30 minutes
+            // to learn what this class's own log line said in the first second ("it
+            // never started"). Revit only services the ExternalEvent when idle, and a
+            // modal means it never will; the caller's thread is not stuck, so between
+            // slices it asks ModalProbe. A dialog that persists across consecutive
+            // probes (ModalSighting's rule - one sighting can be a dialog Interference
+            // is already cancelling) while this request has NOT started is returned as
+            // a RESULT, now, with the dialog named - not as a timeout, ten minutes
+            // late, with a guess.
+            bool completed = false;
+            string declaredModal = null;
+            var sighting = new ModalSighting();
+            int waitedSoFarMs = 0;
+            while (waitedSoFarMs < timeoutMs)
+            {
+                int slice = Math.Min(ModalSighting.ProbeSliceMs, timeoutMs - waitedSoFarMs);
+                if (req.Wait(slice)) { completed = true; break; }
+                waitedSoFarMs += slice;
+
+                // Once the command is RUNNING the UI thread is doing the work it was
+                // asked to do; a dialog it raises is Interference's to record and this
+                // caller's only honest option is to keep waiting.
+                if (req.Started) continue;
+
+                declaredModal = sighting.Observe(ModalProbe.DescribeModal());
+                if (declaredModal != null) break;
+            }
+
+            if (!completed && declaredModal != null)
             {
                 _gate.Abandon(req);
+                Log.Warn($"'{name}' REMOVED FROM QUEUE after {waitedSoFarMs} ms: Revit is on modal dialog " +
+                         declaredModal + " and the request never started");
+                return CommandResult.Fail(
+                    "Revit has a MODAL DIALOG open: " + declaredModal + ". '" + name + "' was queued but Revit " +
+                    "does not service the bridge until the dialog is answered by a human, so the request was " +
+                    "removed from the queue after " + waitedSoFarMs + " ms instead of holding this call for the " +
+                    "full " + timeoutMs + " ms timeout. It NEVER STARTED: nothing ran and nothing was written. " +
+                    "The dialog persisted across " + ModalSighting.ConsecutiveSightingsToDeclare + " probes " +
+                    "about a second apart, so it is not one the bridge auto-cancels during a command - it " +
+                    "predates this request. Answer or close it in the Revit UI (check every monitor: it can " +
+                    "open on another screen) and retry.");
+            }
+
+            if (!completed)
+            {
+                _gate.Abandon(req);
+                // The probe again, once, for the final message: a modal seen here could
+                // not be declared above (the request had started, or it never persisted),
+                // but naming what is on screen right now beats "may be waiting".
+                string modalNow = ModalProbe.DescribeModal();
                 Log.Warn($"'{name}' TIMED OUT after {timeoutMs} ms - Revit busy or on a modal dialog" +
                          (req.Started ? " (it is still running; its result will be discarded)" : " (it never started)"));
                 return CommandResult.Fail(
@@ -172,7 +222,10 @@ namespace Horizun.Revit.Core
                     (req.Started
                         ? "The command is STILL RUNNING inside Revit - it cannot be cancelled from here, and whatever " +
                           "it does will complete unseen. Nothing else can run until it returns."
-                        : "It was removed from the FIFO queue before Revit started it, so nothing was done."));
+                        : "It was removed from the FIFO queue before Revit started it, so nothing was done.") +
+                    (modalNow != null
+                        ? " Revit is showing a modal dialog RIGHT NOW: " + modalNow + "."
+                        : ""));
             }
 
             clock.Stop();

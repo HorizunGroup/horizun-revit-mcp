@@ -48,6 +48,13 @@ namespace Horizun.Revit
                 RegisterCommands(_dispatcher);
                 _dispatcher.Initialize();   // ExternalEvent.Create — UI thread, here.
 
+                // The modal probe's two facts - main window handle and the UI thread's
+                // native id - can only be captured here, on the UI thread. Best effort:
+                // a probe that never captured stays Unavailable and answers "no modal
+                // seen", which degrades to exactly the old behaviour (the full timeout).
+                try { ModalProbe.CaptureUiThread(app.MainWindowHandle); }
+                catch (Exception mex) { Log.Warn("modal probe not available: " + mex.Message); }
+
                 string token = Discovery.NewToken();
                 _pipe = new PipeServer(_dispatcher, token);
                 _pipe.Start();

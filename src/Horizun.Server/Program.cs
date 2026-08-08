@@ -27,6 +27,16 @@ namespace Horizun.Server
         // to be edited in two places is a version that will disagree with itself.
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
+        // horizun_health is the diagnostic command: its whole job is to answer fast, and
+        // an answer that does not come fast IS the diagnosis (Revit busy, or a modal up).
+        // Measured 2026-08-07: three health calls each waited the full 600 s behind a
+        // "New Project" dialog - 30 minutes to learn what one minute would have said.
+        // The ceiling is generous against warm-up (25 s measured on first call after
+        // add-in load) and still 20x faster than the general timeout. The add-in side
+        // now also detects a persistent modal and answers in seconds; this bound is the
+        // backstop for when that probe cannot see (health is queued behind long real
+        // work, or the probe never captured its facts).
+        private const int HealthTimeoutMs = 30000;
         // The version list and the negotiation rule live in ProtocolNegotiation.cs,
         // where they are golden-tested - see that file for why 2026-07-28 is absent.
 
@@ -665,7 +675,9 @@ namespace Horizun.Server
             JObject reply;
             try
             {
-                reply = PipeClient.Send(d, def.Command, args, CommandTimeoutMs, ct);
+                reply = PipeClient.Send(d, def.Command, args,
+                                        def.Command == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs,
+                                        ct);
             }
             catch (Exception ex)
             {
