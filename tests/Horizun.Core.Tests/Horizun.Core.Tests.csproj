@@ -131,6 +131,11 @@
          shows while another handle holds the file with write access - which a test
          can do and a code review cannot. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FileFacts.cs" />
+    <!-- Whether a planned write would move the parameter (5.14). The before-read
+         needs Revit; the tri-state comparison is JToken arithmetic, and the two
+         ways a boolean would lie - unknown collapsing into "it matches", and a
+         unit string judged before Revit parses it - are pinned here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WouldChange.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1437,6 +1437,13 @@ namespace Horizun.Revit.Commands
             public string How;
             public string Error;
             public string Outcome;
+            // Whether applying this row would MOVE the parameter (5.14): true would
+            // change it, false already holds the requested value, null cannot be told
+            // (and the note says why). Computed once at plan time, where the before
+            // read and the requested value sit side by side - previously every caller
+            // re-derived this by diffing before.value against requested.
+            public bool? WouldChangeVerdict;
+            public string WouldChangeNote;
 
             public void Judge()
             {
@@ -1484,6 +1491,12 @@ namespace Horizun.Revit.Commands
                                    "instances, not a value carried by instances already placed in a project.")
                         : null,
                     ["requested"] = Requested,
+                    ["would_change"] = WouldChangeVerdict.HasValue ? (JToken)WouldChangeVerdict.Value : JValue.CreateNull(),
+                    ["would_change_note"] = WouldChangeVerdict == false
+                        ? (JToken)("The parameter already reads the requested value; applying this row rewrites " +
+                                   "the same value. It is still written - a no-op write is idempotent - but a plan " +
+                                   "presented to a person should not show it as a change.")
+                        : (JToken)WouldChangeNote,
                     ["applied_via"] = How,
                     ["before"] = Before,
                     ["value_expected"] = Expected,
@@ -1681,7 +1694,15 @@ namespace Horizun.Revit.Commands
                             if (!ar.AlreadyPresent && ar.Error == null &&
                                 string.Equals(ar.Name, prop.Name, StringComparison.Ordinal))
                             { willBeAdded = true; break; }
-                        if (willBeAdded) continue;   // resolved and set at apply time; row.Error stays null
+                        if (willBeAdded)
+                        {
+                            // No before-value can exist for a parameter that does not
+                            // exist yet; any value written into it is a change.
+                            row.WouldChangeVerdict = true;
+                            row.WouldChangeNote = "the parameter does not exist yet - this same call adds it, " +
+                                                  "so writing any value is a change.";
+                            continue;   // resolved and set at apply time; row.Error stays null
+                        }
 
                         row.Error = pWhy;
                         continue;
@@ -1719,6 +1740,9 @@ namespace Horizun.Revit.Commands
                     }
 
                     row.Before = ReadFamilyValue(fm, SafeCurrentType(fm), prop.Name);
+                    string wcWhy;
+                    row.WouldChangeVerdict = WouldChange.Judge(row.Storage, row.Requested, row.Before, out wcWhy);
+                    row.WouldChangeNote = wcWhy;
                 }
             }
 
