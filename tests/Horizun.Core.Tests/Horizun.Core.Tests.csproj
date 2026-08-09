@@ -127,6 +127,10 @@
          including the state a real Revit will not produce on request - the workset
          collector throwing, which is reported as incomplete rather than fine. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentVisibilityCoverage.cs" />
+    <!-- The save evidence family_apply stands on (5.12). The failure it fixes only
+         shows while another handle holds the file with write access - which a test
+         can do and a code review cannot. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FileFacts.cs" />
   </ItemGroup>
 
   <ItemGroup>

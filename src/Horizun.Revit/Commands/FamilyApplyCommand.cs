@@ -2682,42 +2682,11 @@ namespace Horizun.Revit.Commands
             };
         }
 
-        private sealed class FileFacts
-        {
-            public bool Existed;
-            public long? Size;
-            public DateTime? WrittenUtc;
-            public string Sha256;
-            public string Error;
-
-            public static FileFacts Read(string path)
-            {
-                var f = new FileFacts();
-                if (string.IsNullOrEmpty(path)) { f.Error = "no path"; return f; }
-                try
-                {
-                    if (!File.Exists(path)) { f.Existed = false; return f; }
-                    f.Existed = true;
-                    var fi = new FileInfo(path);
-                    f.Size = fi.Length;
-                    f.WrittenUtc = fi.LastWriteTimeUtc;
-                    using (var sha = System.Security.Cryptography.SHA256.Create())
-                    using (var s = File.OpenRead(path))
-                        f.Sha256 = BitConverter.ToString(sha.ComputeHash(s)).Replace("-", "").ToLowerInvariant();
-                }
-                catch (Exception ex) { f.Error = ex.Message; }
-                return f;
-            }
-
-            /// <summary>true changed, false identical, NULL when it cannot be told.</summary>
-            public static bool? Changed(FileFacts before, FileFacts after)
-            {
-                if (before == null || after == null) return null;
-                if (!before.Existed) return true;                       // it did not exist; now it does
-                if (before.Sha256 == null || after.Sha256 == null) return null;
-                return !string.Equals(before.Sha256, after.Sha256, StringComparison.Ordinal);
-            }
-        }
+        // FileFacts moved to Core/FileFacts.cs (story 5.12): its OpenRead() hash threw
+        // "file is being used by another process" on every family Revit held open -
+        // measured 9/9 - so file_changed was null on exactly the saves it exists to
+        // prove. The Core copy shares write access the way save_document's hash does,
+        // and is unit-tested against a holder that keeps the file open.
 
         /// <summary>
         /// doc.Save(), then prove it: the path must exist AND the bytes must read back as
