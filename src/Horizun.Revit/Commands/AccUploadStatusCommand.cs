@@ -102,11 +102,19 @@ namespace Horizun.Revit.Commands
                     "name - the absence of the log is not the absence of uploads. Is the Desktop Connector " +
                     "installed on this machine" + (rootWasDefaulted ? "? A nonstandard install can be pointed at with 'wal_root'." : ", and is 'wal_root' right?"));
 
+            // TWO file layouts, both real. The field script matched *.properties-log.db;
+            // the Desktop Connector on the machine this was live-verified against
+            // (2026-08-08) names the same content <urn>.properties.db - measured: the
+            // ParentFolderUrn-beside-Name records are in there, 9,612 of them, same
+            // escaping, same regex. Sweep both; a machine has whichever its DC version
+            // writes, and a dedup makes overlap harmless.
             List<string> walFiles;
             try
             {
-                walFiles = Directory.GetFiles(root, "*.properties-log.db", SearchOption.TopDirectoryOnly)
-                                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
+                walFiles = new[] { "*.properties-log.db", "*.properties.db" }
+                    .SelectMany(pat => Directory.GetFiles(root, pat, SearchOption.TopDirectoryOnly))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(p => p, StringComparer.OrdinalIgnoreCase).ToList();
             }
             catch (Exception ex)
             {
@@ -115,9 +123,9 @@ namespace Horizun.Revit.Commands
             }
             if (walFiles.Count == 0)
                 return CommandResult.Fail(
-                    "No *.properties-log.db files exist under '" + root + "'. Upload status is UNKNOWN for " +
-                    "every name - the connector may never have synced a BIM Docs project on this machine, or " +
-                    "the data source folder is different. Nothing here says the files are not in the cloud.");
+                    "No *.properties-log.db or *.properties.db files exist under '" + root + "'. Upload status " +
+                    "is UNKNOWN for every name - the connector may never have synced a BIM Docs project on this " +
+                    "machine, or the data source folder is different. Nothing here says the files are not in the cloud.");
 
             // ---- Read and scan. A file that will not read is REPORTED, never skipped silently. ----
             var hits = new List<WalHit>();
