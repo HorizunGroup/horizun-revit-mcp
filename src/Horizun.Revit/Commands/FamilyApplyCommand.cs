@@ -90,7 +90,7 @@ namespace Horizun.Revit.Commands
             "by re-reading fm.Parameters and never by counting calls that did not throw (FamilyManager.Set and " +
             "RemoveParameter return void â€” there is not even a bool to check). Never opens a file: rfa_path is a guard that " +
             "must match the active document, because opening a 2025 .rfa in Revit 2026 upgrades it irreversibly. " +
-            "SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a " +
+            "SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / unproven (zero dimensions compared - a verdict that measured nothing does not wear the word of a clean pass) / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a " +
             "transaction.";
 
         public string ParametersSchema => @"{
@@ -2701,7 +2701,9 @@ namespace Horizun.Revit.Commands
                 ["status_means"] =
                     "unchanged: every dimension of every type was compared and none moved. " +
                     "unchanged_where_measured: nothing that WAS compared moved, but something could not be measured - " +
-                    "read not_verified. changed: the shape moved, and `changes` says which dimension. Only the ACTIVE " +
+                    "read not_verified. unproven: NOT A SINGLE dimension was compared, so this verdict measured " +
+                    "nothing and says so instead of wearing the same word as a clean pass - an empty table is not " +
+                    "agreement. changed: the shape moved, and `changes` says which dimension. Only the ACTIVE " +
                     "family type is measured: measuring the others means activating each one, which is itself a " +
                     "change to the file, so they are listed as not verified rather than assumed intact."
             };

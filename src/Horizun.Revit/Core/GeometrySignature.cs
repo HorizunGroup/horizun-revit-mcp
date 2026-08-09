@@ -167,12 +167,25 @@ namespace Horizun.Revit.Core
         public bool FullyVerified => NotVerified.Count == 0;
 
         /// <summary>
-        /// The only three answers this may give. "unchanged" requires that every dimension
+        /// True when not a single dimension was compared on both sides. A verdict built
+        /// out of zero comparisons has measured nothing, and NOTHING measured must not
+        /// wear the same word as a clean pass (story 5.18) - the same rule the live
+        /// harness enforces for empty tables: an empty table is not agreement.
+        /// </summary>
+        public bool NothingCompared => Unchanged == 0 && Changed.Count == 0;
+
+        /// <summary>
+        /// The only four answers this may give. "unchanged" requires that every dimension
         /// on every type was actually compared - anything less is "unchanged_where_measured",
-        /// which is a different sentence and must read like one.
+        /// which is a different sentence and must read like one. And either of those
+        /// requires that SOMETHING was compared: zero comparisons is "unproven", because
+        /// two empty captures agree the way two blank pages agree. "changed" stays first -
+        /// a type that appeared or vanished is an observation even when no dimension was
+        /// comparable.
         /// </summary>
         public string Status =>
             AnyChange ? "changed"
+            : NothingCompared ? "unproven"
             : FullyVerified ? "unchanged"
             : "unchanged_where_measured";
 
@@ -189,6 +202,14 @@ namespace Horizun.Revit.Core
                     s += " " + NotVerified.Count + " further dimension(s) could not be measured at all.";
                 return s;
             }
+
+            if (NothingCompared)
+                return "NOTHING was compared: zero dimensions were measured on both sides" +
+                       (NotVerified.Count > 0
+                           ? " (" + NotVerified.Count + " could not be measured)"
+                           : " (no measured dimension existed on either side)") +
+                       ". This is not evidence that the shape held - it was not looked at, and " +
+                       "'unchanged' is deliberately not said here.";
 
             if (FullyVerified)
                 return "Every measured dimension of every type is identical before and after: " + Unchanged +

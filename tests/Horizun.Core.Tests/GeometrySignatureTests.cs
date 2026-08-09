@@ -248,17 +248,67 @@ namespace Horizun.Core.Tests
             Assert.Contains(v.NotVerified, s => s.Contains("connectors"));
         }
 
+        // ---- Story 5.18: a guard that measured nothing must not say unchanged. ----------------
+        // The residual edge of the 5.11 lesson: two EMPTY captures compared to zero types,
+        // zero dimensions - and Status said "unchanged", the same word as a clean pass over
+        // a fully measured family. The same rule the live harness enforces for empty tables:
+        // an empty table is not agreement.
+
         [Fact]
-        public void Comparing_nothing_against_nothing_is_not_a_proof()
+        public void Comparing_nothing_against_nothing_is_unproven_not_unchanged()
         {
-            // An empty family on both sides: no dimensions compared. This must not read as
-            // a clean "unchanged" verdict with authority behind it.
             var v = GeometryCompare.Compare(new List<GeometrySignature>(), new List<GeometrySignature>());
 
             Assert.Equal(0, v.Unchanged);
             Assert.False(v.AnyChange);
-            Assert.Equal("unchanged", v.Status);   // nothing was found to differ...
-            Assert.Contains("0 comparison(s)", v.Summary());   // ...and the summary says how much was checked
+            Assert.True(v.NothingCompared);
+            Assert.Equal("unproven", v.Status);
+            Assert.Contains("NOTHING was compared", v.Summary());
+            Assert.DoesNotContain("none changed", v.Summary());
+        }
+
+        [Fact]
+        public void A_type_whose_every_dimension_failed_to_read_is_unproven_too()
+        {
+            // Both sides present, zero comparisons made: "unchanged_where_measured" would
+            // claim a place was looked at, and none was.
+            GeometrySignature Broken()
+            {
+                var s = new GeometrySignature { TypeName = "T", Connectors = null };
+                s.Add(GeoDimension.Unmeasured("solid_volume", "the geometry read threw"));
+                return s;
+            }
+            var v = GeometryCompare.Compare(new[] { Broken() }, new[] { Broken() });
+
+            Assert.Equal(0, v.Unchanged);
+            Assert.Equal("unproven", v.Status);
+            Assert.Contains("could not be measured", v.Summary());
+        }
+
+        [Fact]
+        public void A_type_that_vanished_still_beats_unproven()
+        {
+            // Zero dimension comparisons, but a type disappearing IS an observation:
+            // "changed" wins, exactly as before.
+            var v = GeometryCompare.Compare(new[] { Sig("A", 1) }, new List<GeometrySignature>());
+
+            Assert.True(v.NothingCompared);
+            Assert.Equal("changed", v.Status);
+        }
+
+        [Fact]
+        public void One_real_comparison_is_enough_to_leave_unproven()
+        {
+            // Connectors compared count as a comparison: something WAS looked at.
+            var before = new GeometrySignature { TypeName = "T", Connectors = new List<string> { "a" } };
+            before.Add(GeoDimension.Unmeasured("solid_volume", "read threw"));
+            var after = new GeometrySignature { TypeName = "T", Connectors = new List<string> { "a" } };
+            after.Add(GeoDimension.Unmeasured("solid_volume", "read threw"));
+
+            var v = GeometryCompare.Compare(new[] { before }, new[] { after });
+
+            Assert.False(v.NothingCompared);
+            Assert.Equal("unchanged_where_measured", v.Status);
         }
     }
 
