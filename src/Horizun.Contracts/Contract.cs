@@ -1113,6 +1113,37 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_acc_upload_status",
+                Command = "horizun_acc_upload_status",
+                Description =
+                    "Has each of these files been assigned an ACC cloud folder yet, or is its upload still " +
+                    "pending? Copying into the Desktop Connector folder and hashing proves the LOCAL CACHE, not " +
+                    "the cloud - the upload is a later async step that fails under throttling (measured: 3 of 8 " +
+                    "files silently unuploaded while every local hash checked out). This reads the connector's " +
+                    "OWN log on this machine: the Name-beside-ParentFolderUrn record it writes when an upload " +
+                    "completes. Pass 'names' and/or 'paths' (basenames are used); optional 'project_id' turns " +
+                    "each hit into an ACC Docs URL. has_folder_urn=true is the connector's testimony, not a " +
+                    "cloud API check; false is absence of evidence, never proof of absence - pending, failed, " +
+                    "or synced under another name look identical from here, and the reply says so. A log file " +
+                    "that cannot be read is reported per file and makes the counts declared lower bounds. " +
+                    "Read-only, touches no model, needs no document open.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""names"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""File names to look up, with or without extension. At least one of names/paths is required."" },
+    ""paths"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""Paths whose BASENAMES are looked up - pass the same paths you copied into the Desktop Connector folder. At least one of names/paths is required."" },
+    ""project_id"": { ""type"": ""string"",
+                      ""description"": ""Optional ACC project id; each recorded folder is also returned as an acc.autodesk.com Docs URL."" },
+    ""wal_root"": { ""type"": ""string"",
+                    ""description"": ""Optional override of the Desktop Connector data folder, for nonstandard installs. Default: %LOCALAPPDATA%\\Autodesk\\Desktop Connector\\Data\\Autodesk.DataSourceType.BIMDocs."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_audit_model",
                 Command = "horizun_audit_model",
                 Description = @"Pre-delivery audit of the open model: warnings, orphan group types, in-place families, imported (not linked) CAD, views off sheets, unplaced/redundant rooms, links, design options and file weight. Read-only. Every count is the model's, every list states total vs. shown, and any check that could not run is reported as failed rather than skipped silently.",

@@ -133,6 +133,7 @@ namespace Horizun.Revit
             d.Register(new SaveDocumentCommand());
             d.Register(new OpenDocumentCommand());
             d.Register(new FileInfoCommand());
+            d.Register(new AccUploadStatusCommand());
             d.Register(new RelinquishAllCommand());
             d.Register(new CaptureViewCommand());
             d.Register(new CreateScheduleCommand());

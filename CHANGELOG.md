@@ -5,6 +5,27 @@ assumed. Dates are the day the work landed.
 
 ## Unreleased
 
+- **Nuevo comando tipado `horizun_acc_upload_status` — ¿subido a ACC o pendiente? (5.15).**
+  Copiar a la carpeta del Desktop Connector y hashear la copia prueba la CACHÉ LOCAL,
+  no la nube: la subida es un paso asíncrono posterior que falla bajo throttling
+  ("Too many people or processes…", circuit breaker de ~11 minutos) — medido en campo:
+  3 de 8 familias sin subir en silencio, detectadas solo por una captura humana. El
+  único registro local que responde la pregunta es el WAL del propio conector
+  (`*.properties-log.db`): al completarse una subida, el `Name` aparece junto a un
+  `ParentFolderUrn`; mientras está pendiente o fallida, no. Un script externo probó la
+  lectura; ahora es un comando del bridge. Acepta `names` y/o `paths` (se usan los
+  basenames), `project_id` opcional convierte cada hallazgo en URL de ACC Docs, y
+  `wal_root` cubre instalaciones no estándar. Dos líneas de honestidad en la respuesta:
+  un hallazgo es el TESTIMONIO del conector leído en esta máquina, no una consulta a la
+  API de la nube; y una ausencia es ausencia de EVIDENCIA, nunca prueba de ausencia —
+  pendiente, fallida o subida con otro nombre se ven idénticas desde aquí. Un log que
+  no se puede leer se reporta por archivo y declara los contadores como cotas
+  inferiores. Org-neutral donde el script no lo era: los nombres son argumento, ningún
+  prefijo de cliente va compilado. Read-only, no toca ningún modelo, no necesita
+  documento abierto. (Parseo y matching en `AccUploadWal`, libre de Revit y con tests;
+  el comando lee los logs con el share mode que el conector exige — la misma lección
+  de 5.12.)
+
 - **Nuevo comando tipado `horizun_file_info` — triage de carpeta sin abrir nada (5.20).**
   Leer formato/versión guardada, `is_workshared`, `is_central`, `is_local` y ruta de
   central de una lista de archivos o de una carpeta entera, DESDE DISCO con
