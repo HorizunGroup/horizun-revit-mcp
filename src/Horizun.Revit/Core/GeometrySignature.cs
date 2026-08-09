@@ -75,6 +75,49 @@ namespace Horizun.Revit.Core
             Dimensions.FirstOrDefault(d => string.Equals(d.Name, name, StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The unit each dimension is measured in (story 5.17). The numbers come out of
+    /// the Revit API in its internal units - decimal FEET, whatever the document
+    /// displays - and the baseline published them bare. Verified in the field on a
+    /// 15x15x10 cm box: solid_volume and surface_area read back exactly in ft3/ft2,
+    /// and a human reading 0.0794 next to "volume" with no unit has every reason to
+    /// call it wrong. The comparison never cared (same units on both sides); the
+    /// names are for the reader.
+    /// </summary>
+    public static class GeoUnits
+    {
+        public const string Note =
+            "All numbers are in Revit's INTERNAL units - decimal feet - whatever the document displays: " +
+            "lengths in ft, areas in ft2, volumes in ft3. A 15x15x10 cm box reads solid_volume ~0.0794 ft3. " +
+            "The before/after comparison is unaffected (both sides share the units); the unit is named so a " +
+            "human reading a single number is not misled.";
+
+        /// <summary>
+        /// Accepts a bare dimension name ("bbox_x") or a type-qualified one
+        /// ("Caja 15x15.bbox_x"); the dimension is whatever follows the last dot.
+        /// Unknown names answer "unknown", never a guess.
+        /// </summary>
+        public static string Of(string dimensionName)
+        {
+            if (string.IsNullOrEmpty(dimensionName)) return "unknown";
+            string n = dimensionName;
+            int dot = n.LastIndexOf('.');
+            if (dot >= 0 && dot < n.Length - 1) n = n.Substring(dot + 1);
+            switch (n)
+            {
+                case "solid_volume": return "ft3";
+                case "surface_area": return "ft2";
+                case "bbox_x":
+                case "bbox_y":
+                case "bbox_z": return "ft";
+                case "solid_count":
+                case "connector_count": return "count";
+                case "connectors": return "ft (positions); unitless (directions)";
+                default: return "unknown";
+            }
+        }
+    }
+
     public sealed class GeoChange
     {
         public string Dimension { get; internal set; }
@@ -85,8 +128,12 @@ namespace Horizun.Revit.Core
         public string Describe()
         {
             if (Before.HasValue && After.HasValue)
+            {
+                string unit = GeoUnits.Of(Dimension);
                 return Dimension + ": " + Before.Value.ToString("0.######", CultureInfo.InvariantCulture) +
-                       " -> " + After.Value.ToString("0.######", CultureInfo.InvariantCulture);
+                       " -> " + After.Value.ToString("0.######", CultureInfo.InvariantCulture) +
+                       (unit == "unknown" ? "" : " " + unit);
+            }
             return Dimension + ": " + (Detail ?? "changed");
         }
     }

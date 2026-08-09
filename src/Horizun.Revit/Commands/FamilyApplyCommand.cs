@@ -341,7 +341,16 @@ namespace Horizun.Revit.Commands
                 var measurable = new JArray();
                 if (geoNow.Count > 0)
                     foreach (GeoDimension d in geoNow[0].Dimensions)
-                        measurable.Add(new JObject { ["name"] = d.Name, ["measurable"] = d.IsMeasured, ["value"] = d.IsMeasured ? (JToken)d.Value.Value : null });
+                        measurable.Add(new JObject
+                        {
+                            ["name"] = d.Name,
+                            ["measurable"] = d.IsMeasured,
+                            ["value"] = d.IsMeasured ? (JToken)d.Value.Value : null,
+                            // 5.17: the number came out of the API in Revit's internal
+                            // units and used to be published bare - a human read
+                            // "bbox_x: 656.17" off a 15 cm box and rightly balked.
+                            ["unit"] = GeoUnits.Of(d.Name)
+                        });
                 var otherTypes = new JArray();
                 for (int i = 1; i < geoNow.Count; i++) otherTypes.Add(geoNow[i].TypeName);
 
@@ -350,10 +359,14 @@ namespace Horizun.Revit.Commands
                     ["type_that_would_be_measured"] = geoNow.Count > 0 ? geoNow[0].TypeName : null,
                     ["types_that_would_NOT_be_measured"] = otherTypes,
                     ["dimensions"] = measurable,
+                    ["units_note"] = GeoUnits.Note,
                     ["note"] =
                         "This is the shape as it stands, not evidence about any write. It states which dimensions a " +
                         "real run would compare: one listed with measurable=false CANNOT be checked, so a change to " +
-                        "it would not be caught, and the run would roll back rather than claim the shape held."
+                        "it would not be caught, and the run would roll back rather than claim the shape held. " +
+                        "bbox_x/y/z span the elements that CARRY solid geometry - reference planes and other " +
+                        "template scaffolding are excluded, because a metric template's planes span ~200 m and " +
+                        "used to be what the box measured."
                 };
 
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
@@ -2506,14 +2519,25 @@ namespace Horizun.Revit.Commands
                     try
                     {
                         GeometryElement g = e.get_Geometry(opt);
+                        int solidsBefore = solids;
                         if (g != null) HarvestGeometry(g, ref volume, ref area, ref solids);
 
-                        BoundingBoxXYZ bb = e.get_BoundingBox(null);
-                        if (bb != null)
+                        // Only elements that CONTRIBUTED a solid extend the box (5.17).
+                        // The walk visits everything in the family document, and a metric
+                        // template's reference planes report a ~200 m bounding box each -
+                        // measured in the field: bbox_x 656.17 ft off a 15x15x10 cm piece,
+                        // which is the template's scaffolding, not the shape. An envelope
+                        // that ignores the form it envelopes is a broken ruler, and a
+                        // broken ruler falsifies good levers (story 1.1's own lesson).
+                        if (solids > solidsBefore)
                         {
-                            anyBox = true;
-                            minX = Math.Min(minX, bb.Min.X); minY = Math.Min(minY, bb.Min.Y); minZ = Math.Min(minZ, bb.Min.Z);
-                            maxX = Math.Max(maxX, bb.Max.X); maxY = Math.Max(maxY, bb.Max.Y); maxZ = Math.Max(maxZ, bb.Max.Z);
+                            BoundingBoxXYZ bb = e.get_BoundingBox(null);
+                            if (bb != null)
+                            {
+                                anyBox = true;
+                                minX = Math.Min(minX, bb.Min.X); minY = Math.Min(minY, bb.Min.Y); minZ = Math.Min(minZ, bb.Min.Z);
+                                maxX = Math.Max(maxX, bb.Max.X); maxY = Math.Max(maxY, bb.Max.Y); maxZ = Math.Max(maxZ, bb.Max.Z);
+                            }
                         }
                     }
                     catch { readFailures++; }
@@ -2544,9 +2568,9 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    sig.Add(GeoDimension.Unmeasured("bbox_x", "no element reported a bounding box"));
-                    sig.Add(GeoDimension.Unmeasured("bbox_y", "no element reported a bounding box"));
-                    sig.Add(GeoDimension.Unmeasured("bbox_z", "no element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_x", "no solid-bearing element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_y", "no solid-bearing element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_z", "no solid-bearing element reported a bounding box"));
                 }
 
                 sig.Connectors = CaptureConnectors(fam);
@@ -2662,6 +2686,7 @@ namespace Horizun.Revit.Commands
                 ["not_verified_count"] = v.NotVerified.Count,
                 ["fully_verified"] = v.FullyVerified,
                 ["changes"] = new JArray(v.Changed.Select(c => (JToken)c.Describe())),
+                ["units_note"] = GeoUnits.Note,
                 ["types_added"] = new JArray(v.TypesAdded.Select(s => (JToken)s)),
                 ["types_removed"] = new JArray(v.TypesRemoved.Select(s => (JToken)s)),
                 ["types_renamed"] = new JArray(v.TypesRenamed.Select(s => (JToken)s)),

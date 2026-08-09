@@ -261,4 +261,57 @@ namespace Horizun.Core.Tests
             Assert.Contains("0 comparison(s)", v.Summary());   // ...and the summary says how much was checked
         }
     }
+
+    // Story 5.17: every dimension names its unit. The numbers leave the Revit API in
+    // internal units (decimal feet) and were published bare; a human read 656.17 off
+    // a 15 cm box and had no way to know it was feet - or that the box was measuring
+    // the template's reference planes, which is the other half of the story, fixed
+    // where the capture happens.
+    public class GeoUnitsTests
+    {
+        [Theory]
+        [InlineData("solid_volume", "ft3")]
+        [InlineData("surface_area", "ft2")]
+        [InlineData("bbox_x", "ft")]
+        [InlineData("bbox_y", "ft")]
+        [InlineData("bbox_z", "ft")]
+        [InlineData("solid_count", "count")]
+        [InlineData("connector_count", "count")]
+        public void Every_known_dimension_names_its_unit(string dimension, string unit)
+        {
+            Assert.Equal(unit, GeoUnits.Of(dimension));
+        }
+
+        [Fact]
+        public void A_type_qualified_dimension_resolves_by_its_suffix()
+        {
+            // Change rows arrive as "TypeName.dimension", and a type name may itself
+            // carry dots - the dimension is whatever follows the last one.
+            Assert.Equal("ft3", GeoUnits.Of("PRD-CAJA_PASO-15x15x10cm_COM.solid_volume"));
+            Assert.Equal("ft", GeoUnits.Of("Caja 1.5x2.5.bbox_z"));
+        }
+
+        [Fact]
+        public void An_unknown_dimension_answers_unknown_never_a_guess()
+        {
+            Assert.Equal("unknown", GeoUnits.Of("some_future_dimension"));
+            Assert.Equal("unknown", GeoUnits.Of(null));
+            Assert.Equal("unknown", GeoUnits.Of(""));
+        }
+
+        [Fact]
+        public void A_described_change_carries_the_unit()
+        {
+            var c = new GeoChange { Dimension = "T.solid_volume", Before = 0.0794, After = 0.15 };
+            Assert.EndsWith("ft3", c.Describe());
+        }
+
+        [Fact]
+        public void A_change_with_unknown_unit_stays_bare_rather_than_guessing()
+        {
+            var c = new GeoChange { Dimension = "T.mystery", Before = 1.0, After = 2.0 };
+            Assert.DoesNotContain("unknown", c.Describe());
+            Assert.EndsWith("2", c.Describe());
+        }
+    }
 }
