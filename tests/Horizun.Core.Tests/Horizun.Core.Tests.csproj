@@ -136,6 +136,10 @@
          ways a boolean would lie - unknown collapsing into "it matches", and a
          unit string judged before Revit parses it - are pinned here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\WouldChange.cs" />
+    <!-- Who else is talking to this Revit (5.16). The pid comes from the pipe and
+         needs Windows; the window arithmetic, the minus-one rule and the
+         lower-bound warning for an unreadable pid are proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClientPresence.cs" />
   </ItemGroup>
 
   <ItemGroup>

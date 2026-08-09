@@ -137,6 +137,12 @@ namespace Horizun.Revit.Commands
                 revit_name = rvt.VersionName,
                 username = rvt.Username,
                 process_id = pid,
+                // WHO ELSE is talking to this Revit (5.16). Two agents on one machine
+                // once cost three journal autopsies: one killed and redeployed the
+                // add-in underneath the other, and neither could see the other. The
+                // transport records the pid of every pipe connection; this is that
+                // registry, read at answer time.
+                clients = ClientsBlock(),
                 // The point of the whole call: WHICH document your next command will hit.
                 no_active_document = active == null,
                 active_document = active == null ? null : new
@@ -156,6 +162,65 @@ namespace Horizun.Revit.Commands
                 active_document_match = active == null ? null : match.Outcome.ToString(),
                 note = Note(active, match, listError)
             });
+        }
+
+        /// <summary>
+        /// The client-presence block. Liveness and process names are read HERE, at
+        /// answer time, because a pid is only a number until somebody asks whether
+        /// the process behind it still runs - and a name read can throw on
+        /// permissions, which is a null name, never a dropped row.
+        /// </summary>
+        private static object ClientsBlock()
+        {
+            try
+            {
+                DateTime now = DateTime.UtcNow;
+                PresenceSnapshot snap = ClientPresence.Default.Take(now);
+
+                var rows = new List<object>();
+                foreach (ClientSeen c in snap.Clients)
+                {
+                    bool? alive;
+                    string processName = null;
+                    try
+                    {
+                        var p = Process.GetProcessById((int)c.Pid);
+                        alive = true;
+                        try { processName = p.ProcessName; } catch { /* permissions; the pid stands on its own */ }
+                    }
+                    catch (ArgumentException) { alive = false; }   // no such process any more
+                    catch { alive = null; }                        // could not be told
+                    rows.Add(new
+                    {
+                        pid = c.Pid,
+                        process_name = processName,
+                        seconds_since_last_request = (int)Math.Max(0, (now - c.LastSeenUtc).TotalSeconds),
+                        process_alive = alive
+                    });
+                }
+
+                return new
+                {
+                    other_clients_connected = snap.OtherThanCaller,
+                    distinct_clients_in_window = snap.Clients.Count,
+                    unidentified_connections_in_window = snap.UnidentifiedInWindow,
+                    window_seconds = (int)ClientPresence.Window.TotalSeconds,
+                    clients_seen = rows,
+                    note = "APPROXIMATE by design: the transport is one connection per request, so 'connected' " +
+                           "means 'sent at least one request in the last " + (int)ClientPresence.Window.TotalMinutes +
+                           " minutes'. The count excludes this call's own client, whose connection was recorded " +
+                           "when this request arrived." +
+                           snap.UnidentifiedNote() +
+                           " If this is not 0 while you believed you were alone on this Revit, you are not: " +
+                           "another MCP client is sending commands to the same instance, and anything it does - " +
+                           "closing documents, recompiling the add-in, killing the process - lands on you too."
+                };
+            }
+            catch (Exception ex)
+            {
+                // Presence is telemetry; health must answer without it rather than fail over it.
+                return new { error = "client presence could not be read: " + ex.Message };
+            }
         }
 
         private static string Note(Document active, DocMatch match, string listError)
