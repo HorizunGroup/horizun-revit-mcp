@@ -1,6 +1,6 @@
 # Retroalimentación de uso real — 2026-08-05
 
-Una jornada completa homologando y publicando 9 familias de Prodesa (lote INDIRED + DINELO) con
+Una jornada completa homologando y publicando 9 familias de una biblioteca de cliente (dos lotes internos) con
 el MCP contra Revit 2025. Todo lo de abajo se midió; nada se supone. Ordenado por lo que costó
 tiempo o casi cuesta un error, no por lo que es fácil de arreglar.
 
@@ -20,7 +20,7 @@ propia guarda sobre el trabajo que se le acababa de encargar.
 
 ```
 geometry_check: "changed"   dimensions_compared: 0
-  types_added:   ["PRD-CAJA_PASO-15x15x10cm_COM"]
+  types_added:   ["CUSTOM-CABLE_BOX-15x15x10cm"]
   types_removed: ["Caja paso RITEL 15x15x10 cm"]
 ```
 
@@ -90,7 +90,7 @@ que despistaba. Así como está, entendí el problema en un segundo.
 
 ## 6. `nothing_to_do: false` cuando en realidad no cambia nada
 
-En el canal pedí `PRD_Unidad_De_Medida: "m"` y la familia **ya** tenía `"m"`. El plan igual lo listó
+En el canal pedí `CUSTOM_UnitOfMeasure: "m"` y la familia **ya** tenía `"m"`. El plan igual lo listó
 en `params_would_set` y `nothing_to_do` volvió `false`. Está documentado que significa "se pidieron
 operaciones", y el dato para decidir está ahí (`before.value` vs `requested`), pero obliga a cada
 caller a hacer esa comparación para no enseñarle al usuario un plan que aparenta tocar cosas que no
@@ -107,7 +107,7 @@ Copié 8 familias a la carpeta del Desktop Connector y **verifiqué cada una por
 appear to be accessing this service"* y abrió un circuit breaker de ~11 minutos. El hash probaba la
 **caché local**, no la nube — la subida es un paso asíncrono posterior que puede fallar y falla.
 
-Lo detecté porque Pablo me mandó la captura del Desktop Connector con los 3 errores. Sin esa
+Lo detecté porque un compañero me mandó la captura del Desktop Connector con los 3 errores. Sin esa
 captura habría cerrado el trabajo con una afirmación equivocada.
 
 Hoy la única forma de saberlo es leer el WAL del Desktop Connector con un script externo
