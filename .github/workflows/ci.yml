@@ -92,11 +92,20 @@ jobs:
             src/Horizun.Revit/Horizun.Revit.csproj \
             tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj \
             tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj; do
-            out=$(dotnet list "$p" package --vulnerable --include-transitive)
+            # Capture stderr too.  A failed audit command must name its project
+            # and retain its diagnostic instead of vanishing under `set -e`.
+            if ! out=$(dotnet list "$p" package --vulnerable --include-transitive 2>&1); then
+              echo "$out"
+              echo "::error::dependency audit could not run for $p"
+              exit 1
+            fi
             echo "$out"
             # The command exits 0 whether or not it found anything, so the text is
             # the result. A vulnerable package must fail the build, not be logged.
-            echo "$out" | grep -q "has the following vulnerable packages" && { echo "::error::vulnerable packages in $p"; exit 1; }
+            if echo "$out" | grep -q "has the following vulnerable packages"; then
+              echo "::error::vulnerable packages in $p"
+              exit 1
+            fi
           done
           echo "no vulnerable packages"
 
