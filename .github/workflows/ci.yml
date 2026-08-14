@@ -85,6 +85,10 @@ jobs:
         run: dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=server.trx" --results-directory artifacts/tests
 
       - name: Audit dependencies for known vulnerabilities
+        # The audit includes the Revit project. It does not build Revit on this
+        # Linux runner, but MSBuild must be allowed to evaluate its Windows TFM.
+        env:
+          EnableWindowsTargeting: true
         run: |
           set -e
           for p in \
