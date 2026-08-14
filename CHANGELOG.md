@@ -25,6 +25,13 @@ assumed. Dates are the day the work landed.
   `1.0.0`. The release tests resolve the effective MSBuild property for both projects
   and inspect the packaged binaries, so filename and embedded version cannot drift.
 
+- **The 0.9 live gate exercises valid Revit structures.** The parametric-family
+  rehearsal now preserves the outer profile-loop array when PowerShell serializes
+  it. Compound system types apply and verify layer wrapping only on exterior or
+  interior shell layers: Revit reports core layers as participating but rejects the
+  wrapping setter on those same layers, so a core layer is treated as effectively
+  non-wrapping and `wraps=true` there is refused before a transaction starts.
+
 - **Nuevo comando tipado `horizun_acc_upload_status` — ¿subido a ACC o pendiente? (5.15).**
   Copiar a la carpeta del Desktop Connector y hashear la copia prueba la CACHÉ LOCAL,
   no la nube: la subida es un paso asíncrono posterior que falla bajo throttling

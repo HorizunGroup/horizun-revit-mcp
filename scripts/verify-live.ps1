@@ -929,10 +929,10 @@ if ($Document) {
                                     )
                                     types = @(@{ name = '600'; values = @{ Depth = 600; Visible = $true; Diameter = 100; Width = 500 } })
                                     forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 600
-                                                profile = @(@(@(-250,-250,0),@(250,-250,0),@(250,250,0),@(-250,250,0)))
+                                                profile = @(, @(@(-250,-250,0),@(250,-250,0),@(250,250,0),@(-250,250,0)))
                                                 end_parameter = 'Depth'; material_parameter = 'Material'; visibility_parameter = 'Visible' },
                                               @{ key = 'swept_body'; kind = 'sweep'; plane = 'xy'; path_plane = 'xz'
-                                                 profile = @(@(@(-50,-50,0),@(50,-50,0),@(50,50,0),@(-50,50,0)))
+                                                 profile = @(, @(@(-50,-50,0),@(50,-50,0),@(50,50,0),@(-50,50,0)))
                                                  path = @(@(0,0,0),@(0,0,600)); profile_plane_location = 'Start' })
                                     connectors = @(@{ key = 'pipe_out'; host_form_key = 'body'; kind = 'pipe';
                                                       face_normal = @(0,0,1); system_type = 'SupplyHydronic';
