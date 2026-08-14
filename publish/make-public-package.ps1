@@ -48,6 +48,7 @@ $allowDocs = @(
     'docs\FAMILY-AUTHORING.md',
     'docs\HORIZUN-HUB.md',
     'docs\live-fixtures.example.json',
+    'docs\release-runner-fixtures.example.json',
     'docs\python-fallback-recipes.md',
     'docs\RELEASE-POLICY.md',
     'docs\requirement-set.md',

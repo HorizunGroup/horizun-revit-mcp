@@ -1,0 +1,54 @@
+{
+  "_README": [
+    "Copy this file to %USERPROFILE%\\.horizun\\release-runner-fixtures.json on the interactive Windows runner.",
+    "Every model must be a disposable, non-client fixture made for release verification.",
+    "release_model is opened with closed_workset closed, becomes the active document, receives write probes, and is never saved.",
+    "inactive_model stays open but inactive so the active-document refusal is measured against a real second document.",
+    "For each year, old_file must have been saved by a DIFFERENT Revit generation. It may override common.old_file."
+  ],
+  "common": {
+    "spf_path": "C:\\path\\to\\release-shared-parameters.txt",
+    "spf_param": "RELEASE_PROBE",
+    "quantity_category": "OST_DuctCurves",
+    "old_file": "C:\\path\\to\\model-saved-by-another-year.rvt",
+    "write_document_disposable": "yes-this-model-is-disposable"
+  },
+  "years": {
+    "2023": {
+      "release_model": "C:\\path\\to\\2023-disposable-workshared.rvt",
+      "release_title": "RELEASE_2023",
+      "inactive_model": "C:\\path\\to\\2023-inactive.rvt",
+      "inactive_title": "INACTIVE_2023",
+      "closed_workset": "RELEASE_CLOSED",
+      "old_file": "C:\\path\\to\\model-saved-by-2024-or-newer.rvt"
+    },
+    "2024": {
+      "release_model": "C:\\path\\to\\2024-disposable-workshared.rvt",
+      "release_title": "RELEASE_2024",
+      "inactive_model": "C:\\path\\to\\2024-inactive.rvt",
+      "inactive_title": "INACTIVE_2024",
+      "closed_workset": "RELEASE_CLOSED"
+    },
+    "2025": {
+      "release_model": "C:\\path\\to\\2025-disposable-workshared.rvt",
+      "release_title": "RELEASE_2025",
+      "inactive_model": "C:\\path\\to\\2025-inactive.rvt",
+      "inactive_title": "INACTIVE_2025",
+      "closed_workset": "RELEASE_CLOSED"
+    },
+    "2026": {
+      "release_model": "C:\\path\\to\\2026-disposable-workshared.rvt",
+      "release_title": "RELEASE_2026",
+      "inactive_model": "C:\\path\\to\\2026-inactive.rvt",
+      "inactive_title": "INACTIVE_2026",
+      "closed_workset": "RELEASE_CLOSED"
+    },
+    "2027": {
+      "release_model": "C:\\path\\to\\2027-disposable-workshared.rvt",
+      "release_title": "RELEASE_2027",
+      "inactive_model": "C:\\path\\to\\2027-inactive.rvt",
+      "inactive_title": "INACTIVE_2027",
+      "closed_workset": "RELEASE_CLOSED"
+    }
+  }
+}

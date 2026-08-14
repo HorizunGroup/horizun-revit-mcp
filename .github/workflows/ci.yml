@@ -163,6 +163,10 @@ jobs:
     runs-on: [self-hosted, windows, revit]
     strategy:
       fail-fast: false
+      # One Windows desktop can host one unattended Revit session safely. Running
+      # two matrix rows together would either make target selection ambiguous or
+      # make one row kill/overwrite the other's fixture state.
+      max-parallel: 1
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
@@ -400,6 +404,10 @@ jobs:
     runs-on: [self-hosted, windows, revit]
     strategy:
       fail-fast: false
+      # This matrix shares one interactive Windows desktop. Two simultaneous
+      # Revit sessions would make target selection ambiguous and invalidate both
+      # reports, even if more runner slots are added later.
+      max-parallel: 1
       # Stable means every supported year has a published live report. Compilation
       # is not a substitute for opening the installed artifact in that Revit API.
       matrix:
@@ -505,7 +513,10 @@ jobs:
           if ($stamp -lt $startedLocal.AddMinutes(-5)) { throw "install-result.txt is STALE ($stamp local, this run started $startedLocal local) - it is from an earlier install" }
           if ($text -notmatch 'server_installed\s*=\s*yes') { throw "the server was not installed" }
           if ($text -notmatch 'any_revit_found\s*=\s*yes') { throw "no Revit installation was found" }
-          if ($text -match '(?m)^failed\s*=\s*\S') { throw "one or more Revit payloads failed" }
+          # Horizontal whitespace only. \s also consumes the newline after an
+          # empty `failed=` and then mistakes the next key (`fully_installed`)
+          # for a failed year; a completely green install was measured doing so.
+          if ($text -match '(?m)^failed[ \t]*=[ \t]*\S') { throw "one or more Revit payloads failed" }
           if ($text -notmatch 'fully_installed\s*=\s*yes') { throw "the install was PARTIAL - see install-result.txt above" }
 
       # The chain, end to end: source commit -> manifest -> stage -> installed.
@@ -514,36 +525,17 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        run: pwsh scripts/verify-release.ps1 -Installed -Json artifacts/live/release-chain.json
+        # Unsigned is explicit because no public CA identity exists yet; see the
+        # release policy. The result path is the exact per-run file requested in
+        # the install step, never the global result left by an earlier install.
+        run: pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}-${{ matrix.year }}.txt" -Json artifacts/live/release-chain.json
 
       - name: Live verification against a running Revit ${{ matrix.year }}
         shell: pwsh
-        run: |
-          # The shipped default is safe_write, which intentionally hides session/file
-          # tools. This release gate explicitly tests those tools, so give this isolated
-          # runner process a throwaway full_write profile rather than altering the
-          # machine owner's real %USERPROFILE%\.horizun settings.
-          $env:HORIZUN_DATA_ROOT = Join-Path $env:RUNNER_TEMP "horizun-live-${{ github.run_id }}-${{ matrix.year }}"
-          New-Item -ItemType Directory -Force $env:HORIZUN_DATA_ROOT | Out-Null
-          '{"permission_profile":"unsafe_code","enable_execute_python":true}' |
-            Set-Content (Join-Path $env:HORIZUN_DATA_ROOT 'settings.json') -Encoding utf8
-
-          $doc = Get-Content dist/stage/manifest.json -Raw | ConvertFrom-Json
-          $addin = $doc.Plugins | Where-Object { $_.Year -eq ${{ matrix.year }} }
-          if (-not $addin) { throw "the manifest has no payload for ${{ matrix.year }}" }
-
-          # Fixture names (the model, the second model, the shared-parameter file
-          # and so on) come from a file on the runner, OUTSIDE the repository -
-          # putting them here would publish client and project names. See
-          # the client-name policy. A fixture that is absent makes its probes NOT
-          # COVERED, and -ReleaseGate turns that into exit 3.
-          pwsh scripts/verify-live.ps1 `
-            -Year ${{ matrix.year }} `
-            -ReleaseGate `
-            -ExpectedCommit $doc.Commit `
-            -ExpectedServerSha256 $doc.Server.Sha256 `
-            -ExpectedAddinSha256 $addin.Sha256 `
-            -Json "artifacts/live/live-${{ matrix.year }}.json"
+        # This owns the whole lifecycle. Merely invoking verify-live.ps1 does not
+        # start Revit, open fixtures, close a workset or opt into the committing
+        # tier; without those steps a green-looking job cannot be release evidence.
+        run: pwsh scripts/run-release-live-gate.ps1 -Year ${{ matrix.year }} -Json "artifacts/live/live-${{ matrix.year }}.json"
 
       # always(), because the JSON of a FAILED run is the artifact somebody
       # actually needs. Publishing only the green ones is publishing nothing.

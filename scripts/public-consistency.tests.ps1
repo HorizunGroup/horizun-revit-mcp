@@ -62,6 +62,28 @@ if ($settings -notmatch 'if\s*\(t\s*==\s*null\s*\|\|\s*t\.Type\s*!=\s*JTokenType
 if ($evidence -notmatch 'HostVerified\s*=>\s*false') { Fail 'Python evidence no longer pins HostVerified=false' }
 if ($contract -notmatch 'Enabled by default' -or $contract -notmatch 'host_verified is always false') { Fail 'tool contract no longer states the Python decision/evidence ceiling' }
 
+# The public CI must own the real Revit lifecycle and opt into the committing
+# tier. A direct verify-live invocation against no running Revit was present for
+# months and looked like integration coverage while being structurally unable to
+# produce it.
+$ci = Get-Content (Join-Path $repo '.github/workflows/ci.yml') -Raw
+$runnerGate = Get-Content (Join-Path $repo 'scripts/run-release-live-gate.ps1') -Raw
+$hzCall = Get-Content (Join-Path $repo 'scripts/hz-call.ps1') -Raw
+if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
+if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
+if ($runnerGate -notmatch "'-ReleaseGate',\s*'-WriteProbes'") { Fail 'the release lifecycle no longer runs the committing write tier' }
+if ($runnerGate -notmatch "Get-Process -Name Revit" -or $runnerGate -notmatch 'preexisting\.Count -gt 0') {
+    Fail 'the release lifecycle no longer refuses a pre-existing user Revit session'
+}
+if ($runnerGate -match 'Stop-Process\s+-Name\s+Revit') { Fail 'the release lifecycle can kill arbitrary Revit processes' }
+if ($hzCall -notmatch 'reply\.result\.structuredContent') { Fail 'hz-call no longer reads the machine payload before human Revit diagnostics' }
+if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
+    Fail 'CI install-result parsing can again read the line after an empty failed= as a failed year'
+}
+if ($ci -notmatch 'verify-release\.ps1 -Installed -AllowUnsigned -InstallResult') {
+    Fail 'CI no longer verifies the exact per-run install result with an explicit signing policy'
+}
+
 # Resolve every local link that will appear in the public repository. Anchors are
 # deliberately ignored here; missing files are the high-cost publication defect.
 $publicDocs = @(
