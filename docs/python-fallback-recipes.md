@@ -138,7 +138,7 @@ import json
 from Autodesk.Revit.DB import Transaction, TransactionGroup, ElementId
 
 result = {
-    "status": "failed", "summary": "", 
+    "status": "failed", "summary": "",
     "created_ids": [], "modified_ids": [], "deleted_ids": [],
     "verification": {"checked": False, "evidence": []},
     "warnings": [],

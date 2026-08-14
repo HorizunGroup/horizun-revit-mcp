@@ -123,7 +123,12 @@ jobs:
           pwsh scripts/public-consistency.tests.ps1
 
       - name: Whitespace and line-ending hygiene
-        run: git diff --check HEAD~1 HEAD || git diff --check $(git hash-object -t tree /dev/null) HEAD
+        run: |
+          if git rev-parse --verify HEAD~1 >/dev/null 2>&1; then
+            git diff --check HEAD~1 HEAD
+          else
+            git diff --check $(git hash-object -t tree /dev/null) HEAD
+          fi
 
       # Client, project and model names. The STRUCTURAL rules run here and need no
       # wordlist - a home directory with a real name in it, an e-mail address, a
