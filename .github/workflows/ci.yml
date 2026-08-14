@@ -310,6 +310,26 @@ jobs:
           $lines | Out-File 'dist/SHA256SUMS.txt' -Encoding ascii
           Get-Content 'dist/SHA256SUMS.txt' | Write-Host
 
+      # actions/upload-artifact deliberately does not preserve file mtimes. The
+      # release-chain verifier uses those times as an independent chronology
+      # check (the installer must be newer than everything it contains), so
+      # transporting 3,520 loose files makes a good stage look post-installer.
+      # ZIP stores each entry's build timestamp and is also much faster to move.
+      - name: Archive the complete stage with its build timestamps
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $source = (Resolve-Path 'dist/stage').Path
+          $archive = Join-Path (Resolve-Path 'dist').Path 'stage.zip'
+          if (Test-Path $archive) { Remove-Item -LiteralPath $archive -Force }
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            $source,
+            $archive,
+            [System.IO.Compression.CompressionLevel]::Optimal,
+            $false
+          )
+          if (-not (Test-Path $archive)) { throw 'stage.zip was not created' }
+
       # Reported, not enforced: there is no certificate yet, and a gate nobody can
       # pass is a gate everybody learns to bypass. See docs/security-model.md.
       - name: Report signing status
@@ -346,6 +366,7 @@ jobs:
             'installer'     = $setup.FullName
             'sbom.json'     = 'dist/sbom.json'
             'manifest.json' = 'dist/stage/manifest.json'
+            'stage.zip'     = 'dist/stage.zip'
             'SHA256SUMS.txt'= 'dist/SHA256SUMS.txt'
           }
           $hashes = @{}
@@ -382,7 +403,7 @@ jobs:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
-      - name: Publish the installer, complete stage, manifest and SBOM
+      - name: Publish the installer, timestamped stage, manifest and SBOM
         uses: actions/upload-artifact@v4
         with:
           name: horizun-mcp-package
@@ -391,11 +412,8 @@ jobs:
             dist/sbom.json
             dist/package-hashes.json
             dist/SHA256SUMS.txt
-            # verify-release proves source -> stage -> installer -> installed.
-            # The integration job runs in a clean checkout, so publishing only
-            # manifest.json makes that proof structurally impossible: every
-            # staged binary is absent even when the installer is correct.
-            dist/stage/**
+            dist/stage.zip
+            dist/stage/manifest.json
 
   # ---------------------------------------------------------------------------
   # The integration suite: real commands against a real model. The harness is in
@@ -459,6 +477,7 @@ jobs:
             'installer'     = $setup.FullName
             'sbom.json'     = 'dist/sbom.json'
             'manifest.json' = 'dist/stage/manifest.json'
+            'stage.zip'     = 'dist/stage.zip'
             'SHA256SUMS.txt'= 'dist/SHA256SUMS.txt'
           }
           $wrong = @()
@@ -474,6 +493,16 @@ jobs:
             throw "the downloaded package does not match what was built:`n  - $($wrong -join "`n  - ")"
           }
           Write-Host "the package is byte-for-byte the one built from commit $($rec.commit)"
+
+      - name: Restore the complete staged payload and its build timestamps
+        shell: pwsh
+        run: |
+          $archive = (Resolve-Path 'dist/stage.zip').Path
+          $destination = Join-Path (Resolve-Path 'dist').Path 'stage'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination -Force
+          if (-not (Test-Path 'dist/stage/server/horizun-mcp.exe')) {
+            throw 'stage.zip did not restore the server payload'
+          }
 
       # THE INSTALLED ARTIFACT, NOT bin/Release.
       #

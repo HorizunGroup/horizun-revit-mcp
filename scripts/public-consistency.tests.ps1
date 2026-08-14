@@ -71,7 +71,8 @@ $runnerGate = Get-Content (Join-Path $repo 'scripts/run-release-live-gate.ps1') 
 $hzCall = Get-Content (Join-Path $repo 'scripts/hz-call.ps1') -Raw
 if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
 if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
-if ($ci -notmatch 'dist/stage/\*\*') { Fail 'the package artifact no longer carries the complete stage required by verify-release' }
+if ($ci -notmatch "'stage\.zip'\s*=\s*'dist/stage\.zip'") { Fail 'the package record no longer hashes the complete staged payload archive' }
+if ($ci -notmatch '(?s)Restore the complete staged payload and its build timestamps.*?Expand-Archive') { Fail 'the integration job no longer restores the timestamp-preserving stage archive' }
 if ($runnerGate -notmatch "'-ReleaseGate',\s*'-WriteProbes'") { Fail 'the release lifecycle no longer runs the committing write tier' }
 if ($runnerGate -notmatch "Get-Process -Name Revit" -or $runnerGate -notmatch 'preexisting\.Count -gt 0') {
     Fail 'the release lifecycle no longer refuses a pre-existing user Revit session'
