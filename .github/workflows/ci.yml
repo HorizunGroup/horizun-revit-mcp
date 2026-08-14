@@ -382,7 +382,7 @@ jobs:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
-      - name: Publish the installer, manifest and SBOM
+      - name: Publish the installer, complete stage, manifest and SBOM
         uses: actions/upload-artifact@v4
         with:
           name: horizun-mcp-package
@@ -391,7 +391,11 @@ jobs:
             dist/sbom.json
             dist/package-hashes.json
             dist/SHA256SUMS.txt
-            dist/stage/manifest.json
+            # verify-release proves source -> stage -> installer -> installed.
+            # The integration job runs in a clean checkout, so publishing only
+            # manifest.json makes that proof structurally impossible: every
+            # staged binary is absent even when the installer is correct.
+            dist/stage/**
 
   # ---------------------------------------------------------------------------
   # The integration suite: real commands against a real model. The harness is in
