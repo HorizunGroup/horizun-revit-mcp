@@ -28,7 +28,7 @@ jobs:
   revit-free:
     runs-on: ubuntu-latest    # the Revit-free surface is plain net8.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -39,26 +39,30 @@ jobs:
       # Found in the field 2026-08-04: a v0.6.1 tag shipped while both .csproj still
       # said 0.6.0. In a project that stamps commit + SHA-256 into every binary, a
       # version number that disagrees with its own tag is the one identity nobody
-      # verified. Two rules, cheap to hold: the two projects always agree with each
-      # other, and a tagged build agrees with its tag.
-      - name: Version numbers agree (and match the tag, when there is one)
+      # verified. Every project inherits one value; a tagged build must match it.
+      - name: Product version matches the tag, when there is one
         shell: bash
         run: |
-          revit=$(grep -oP '(?<=<Version>)[^<]+' src/Horizun.Revit/Horizun.Revit.csproj)
-          server=$(grep -oP '(?<=<Version>)[^<]+' src/Horizun.Server/Horizun.Server.csproj)
-          echo "Horizun.Revit=$revit Horizun.Server=$server ref=$GITHUB_REF"
-          if [ "$revit" != "$server" ]; then
-            echo "::error::The add-in says $revit and the server says $server. They ship together; they version together."
-            exit 1
-          fi
+          version=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props)
+          test -n "$version" || { echo "::error::Directory.Build.props has no product Version"; exit 1; }
+          echo "Horizun=$version ref=$GITHUB_REF"
           case "$GITHUB_REF" in
             refs/tags/v*)
               tag="${GITHUB_REF#refs/tags/v}"
-              if [ "$tag" != "$revit" ]; then
-                echo "::error::Tag v$tag but <Version> is $revit. Bump the .csproj (and the CHANGELOG) before cutting the tag."
+              if [ "$tag" != "$version" ]; then
+                echo "::error::Tag v$tag but <Version> is $version. Bump Directory.Build.props (and the CHANGELOG) before cutting the tag."
                 exit 1
               fi ;;
           esac
+
+      - name: Tagged releases require the live Revit gate
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          if [ "${{ vars.HAS_REVIT_RUNNER }}" != "true" ]; then
+            echo "::error::A release tag cannot pass without the self-hosted Revit runner. Publish a preview from a non-tag build or restore the full live gate first."
+            exit 1
+          fi
 
       - name: Restore
         run: |
@@ -83,7 +87,11 @@ jobs:
       - name: Audit dependencies for known vulnerabilities
         run: |
           set -e
-          for p in src/Horizun.Server/Horizun.Server.csproj tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj; do
+          for p in \
+            src/Horizun.Server/Horizun.Server.csproj \
+            src/Horizun.Revit/Horizun.Revit.csproj \
+            tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj \
+            tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj; do
             out=$(dotnet list "$p" package --vulnerable --include-transitive)
             echo "$out"
             # The command exits 0 whether or not it found anything, so the text is
@@ -91,6 +99,15 @@ jobs:
             echo "$out" | grep -q "has the following vulnerable packages" && { echo "::error::vulnerable packages in $p"; exit 1; }
           done
           echo "no vulnerable packages"
+
+      - name: Test release scripts and public metadata consistency
+        shell: pwsh
+        run: |
+          pwsh scripts/install-arguments.tests.ps1
+          pwsh scripts/install-result.tests.ps1
+          pwsh scripts/manifest-integrity.tests.ps1
+          pwsh scripts/register-client.tests.ps1
+          pwsh scripts/public-consistency.tests.ps1
 
       - name: Whitespace and line-ending hygiene
         run: git diff --check HEAD~1 HEAD || git diff --check $(git hash-object -t tree /dev/null) HEAD
@@ -131,7 +148,7 @@ jobs:
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the add-in for Revit ${{ matrix.year }} against its own RevitAPI
         shell: pwsh
@@ -160,8 +177,13 @@ jobs:
     if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
     needs: [revit-free, revit-addin]
     runs-on: [self-hosted, windows, revit]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build and stage every supported year
         shell: pwsh
@@ -187,7 +209,7 @@ jobs:
           $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
           if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
           if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
-          foreach ($helper in 'register-client.ps1','verify-clients.ps1','hz-call.ps1') {
+          foreach ($helper in 'register-client.ps1','verify-clients.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
             if (-not (Test-Path "$stage/server/client-tools/$helper")) {
               throw "installer client helper is missing: $helper"
             }
@@ -226,11 +248,45 @@ jobs:
 
       - name: Inventory what ships (fails on an unidentified licence)
         shell: pwsh
-        run: pwsh scripts/sbom.ps1
+        run: |
+          pwsh scripts/sbom.ps1
+          pwsh scripts/sbom.tests.ps1
+          pwsh scripts/version-consistency.tests.ps1 -RequireStage
+
+      - name: Validate the SBOM with the pinned official CycloneDX CLI
+        shell: pwsh
+        run: |
+          $tool = Join-Path $env:RUNNER_TEMP 'cyclonedx-win-x64.exe'
+          $url = 'https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.32.0/cyclonedx-win-x64.exe'
+          $expected = 'b1c00dbb40e628ec8c1252771871341ac4d4aaf032f832d83bd22cb2b1d258ae'
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tool
+          $actual = (Get-FileHash $tool -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "CycloneDX CLI checksum mismatch: $actual" }
+          & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
+          if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
 
       - name: Compile the installer
         shell: pwsh
-        run: pwsh scripts/pack.ps1 -InstallerOnly
+        run: |
+          pwsh scripts/pack.ps1 -InstallerOnly
+          pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
+
+      - name: Generate release checksums
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "expected one setup, found $($setup.Count)" }
+          $releaseFiles = @(
+            $setup[0],
+            (Get-Item 'dist/sbom.json'),
+            (Get-Item 'dist/stage/manifest.json')
+          )
+          $lines = foreach ($file in $releaseFiles) {
+            $sha = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$sha *$($file.Name)"
+          }
+          $lines | Out-File 'dist/SHA256SUMS.txt' -Encoding ascii
+          Get-Content 'dist/SHA256SUMS.txt' | Write-Host
 
       # Reported, not enforced: there is no certificate yet, and a gate nobody can
       # pass is a gate everybody learns to bypass. See docs/security-model.md.
@@ -268,6 +324,7 @@ jobs:
             'installer'     = $setup.FullName
             'sbom.json'     = 'dist/sbom.json'
             'manifest.json' = 'dist/stage/manifest.json'
+            'SHA256SUMS.txt'= 'dist/SHA256SUMS.txt'
           }
           $hashes = @{}
           foreach ($k in $files.Keys) {
@@ -288,6 +345,21 @@ jobs:
           } | ConvertTo-Json -Depth 5 | Out-File 'dist/package-hashes.json' -Encoding utf8
           Get-Content 'dist/package-hashes.json' | Write-Host
 
+      - name: Attest build provenance for tagged artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*setup.exe
+            dist/stage/manifest.json
+
+      - name: Attest the CycloneDX SBOM for the installer
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*setup.exe
+          sbom-path: dist/sbom.json
+
       - name: Publish the installer, manifest and SBOM
         uses: actions/upload-artifact@v4
         with:
@@ -296,6 +368,7 @@ jobs:
             dist/*setup.exe
             dist/sbom.json
             dist/package-hashes.json
+            dist/SHA256SUMS.txt
             dist/stage/manifest.json
 
   # ---------------------------------------------------------------------------
@@ -309,13 +382,12 @@ jobs:
     runs-on: [self-hosted, windows, revit]
     strategy:
       fail-fast: false
-      # 2025 and 2026 are the two generations in production use. They are
-      # different runtimes (.NET 8 both, but different RevitAPI), and a suite that
-      # only ever ran on one of them proved one of them.
+      # Stable means every supported year has a published live report. Compilation
+      # is not a substitute for opening the installed artifact in that Revit API.
       matrix:
-        year: [2025, 2026]
+        year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # DOWNLOAD THE ARTIFACT. This job used to read dist/ straight off the runner
       # and call it "the packaged artifact". On a self-hosted runner that directory
@@ -357,6 +429,7 @@ jobs:
             'installer'     = $setup.FullName
             'sbom.json'     = 'dist/sbom.json'
             'manifest.json' = 'dist/stage/manifest.json'
+            'SHA256SUMS.txt'= 'dist/SHA256SUMS.txt'
           }
           $wrong = @()
           foreach ($k in $onDisk.Keys) {
@@ -390,7 +463,8 @@ jobs:
           # a local stamp against a UTC clock and rejected a good install as
           # stale on any machine not on UTC.
           $startedLocal = Get-Date
-          $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          $result = Join-Path $env:RUNNER_TEMP "horizun-install-result-${{ github.run_id }}-${{ matrix.year }}.txt"
+          $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"/HORIZUNRESULT=$result" -Wait -PassThru
 
           # BOTH, and neither alone. Inno returns 0 from any install that
           # COMPLETES - including one where a year failed and was rolled back -
@@ -404,7 +478,6 @@ jobs:
           # file and would have called it a success.
           if ($p.ExitCode -ne 0) { throw "Setup did not complete: exit code $($p.ExitCode). Nothing can be concluded from install-result.txt - it is from an earlier run." }
 
-          $result = "$env:LOCALAPPDATA\Programs\Horizun\MCP\install-result.txt"
           if (-not (Test-Path $result)) { throw "the installer left no install-result.txt" }
           Get-Content $result | Write-Host
 
@@ -412,6 +485,9 @@ jobs:
           if ($text -notmatch 'installed_local\s*=\s*(\S+ \S+)') { throw "install-result.txt has no installed_local - it predates this installer and its freshness cannot be checked" }
           $stamp = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $null)
           if ($stamp -lt $startedLocal.AddMinutes(-5)) { throw "install-result.txt is STALE ($stamp local, this run started $startedLocal local) - it is from an earlier install" }
+          if ($text -notmatch 'server_installed\s*=\s*yes') { throw "the server was not installed" }
+          if ($text -notmatch 'any_revit_found\s*=\s*yes') { throw "no Revit installation was found" }
+          if ($text -match '(?m)^failed\s*=\s*\S') { throw "one or more Revit payloads failed" }
           if ($text -notmatch 'fully_installed\s*=\s*yes') { throw "the install was PARTIAL - see install-result.txt above" }
 
       # The chain, end to end: source commit -> manifest -> stage -> installed.
@@ -460,6 +536,109 @@ jobs:
           name: live-verification-${{ matrix.year }}
           path: artifacts/live
 
+  # A stable tag gets one matrix artifact that is mechanically complete. The
+  # release job consumes this artifact; it cannot substitute a skipped year or
+  # an old local report.
+  stable-release-evidence:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: revit-integration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every live report from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: live-verification-*
+          path: live
+          merge-multiple: true
+
+      - name: Require a clean release-gate report for all five years
+        shell: pwsh
+        run: |
+          foreach ($year in 2023,2024,2025,2026,2027) {
+            $path = "live/live-$year.json"
+            if (-not (Test-Path $path)) { throw "missing published live report for Revit $year" }
+            $doc = Get-Content $path -Raw | ConvertFrom-Json
+            if (-not $doc.release_gate -or $doc.revit_year -ne $year) { throw "$path is not this year's release-gate report" }
+            if ($doc.summary.failed -ne 0 -or $doc.summary.unverified -ne 0 -or $doc.summary.not_covered -ne 0) {
+              throw "$path is incomplete: $($doc.summary | ConvertTo-Json -Compress)"
+            }
+          }
+
+      - name: Publish the complete stable matrix
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-live-matrix-${{ github.ref_name }}
+          path: live/live-*.json
+
+  publish-stable-release:
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    needs: [package, stable-release-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the exact package from this run
+        uses: actions/download-artifact@v4
+        with:
+          name: horizun-mcp-package
+          path: release
+
+      - name: Download the complete live matrix from this run
+        uses: actions/download-artifact@v4
+        with:
+          name: stable-live-matrix-${{ github.ref_name }}
+          path: release/live
+
+      - name: Create or complete the stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release/*setup.exe release/SHA256SUMS.txt release/sbom.json release/package-hashes.json release/stage/manifest.json release/live/live-*.json)
+          if [ "${#files[@]}" -ne 10 ]; then
+            printf 'Expected installer + 4 metadata files + 5 live reports; found %s\n' "${#files[@]}" >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
+          fi
+
+  publish-mcp-registry:
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    needs: publish-stable-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate registry metadata from the canonical version
+        shell: pwsh
+        run: pwsh scripts/generate-mcp-manifest.ps1 -OutFile .mcp/server.json
+
+      - name: Install the pinned official MCP publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://github.com/modelcontextprotocol/registry/releases/download/v1.8.0/mcp-publisher_linux_amd64.tar.gz'
+          expected='1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf'
+          curl --fail --location --proto '=https' --tlsv1.2 "$url" --output mcp-publisher.tar.gz
+          echo "$expected  mcp-publisher.tar.gz" | sha256sum --check --strict
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher validate .mcp/server.json
+
+      - name: Authenticate and publish official registry metadata
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish .mcp/server.json
+
   # ---------------------------------------------------------------------------
   # Says out loud what did not run. Without this, a green run looks complete.
   # ---------------------------------------------------------------------------
@@ -477,7 +656,7 @@ jobs:
           echo "reports NOT RUN - which is not the same as passing, and is not printed as if it were."
           if [ "${{ vars.HAS_REVIT_RUNNER }}" = "true" ]; then
             echo "Revit jobs: RAN (a self-hosted runner with Revit is configured)."
-            echo "Integration ran against the INSTALLED artifact on Revit 2025 and 2026, with the"
+            echo "Integration ran against the INSTALLED artifact on Revit 2023 through 2027, with the"
             echo "commit and full SHA-256 of the server and that year's add-in checked against the"
             echo "release manifest. NOT COVERED exits 3 under -ReleaseGate."
           else

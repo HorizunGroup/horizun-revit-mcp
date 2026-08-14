@@ -35,7 +35,27 @@ namespace Horizun.Contracts
         Mutating,
         MutatingUnlessDryRun,
         DocumentSession,
-        ExternalSideEffect
+
+        /// <summary>
+        /// Writes an ARTEFACT OUTSIDE THE MODEL: a workbook, a PNG. This is what the
+        /// permission ladder means by "external", and full_write is the rung that
+        /// authorizes it.
+        /// </summary>
+        ExternalSideEffect,
+
+        /// <summary>
+        /// Steers the host without changing anything that outlives the session: which
+        /// Revit the bridge talks to, what is selected, which view is active. No model
+        /// change, no document session, no file written.
+        ///
+        /// Split out of ExternalSideEffect, which had come to mean two different things.
+        /// horizun_target and horizun_navigate sat in the same bucket as the workbook
+        /// writer, so making read_only refuse "external" effects - which is correct, and
+        /// is the fix - would also have stopped a read-only machine from choosing WHICH
+        /// Revit it was reading from. The classification, not the profile, was the part
+        /// that was wrong.
+        /// </summary>
+        HostState
     }
 
     /// <summary>One command, exactly as both halves must understand it.</summary>
@@ -1603,10 +1623,12 @@ namespace Horizun.Contracts
                     "file holds on re-read, not a count of calls. Text is written as inline strings, numbers as numbers. v1 " +
                     "APPENDS after the last used row and does NOT expand an Excel Table's range: sheet_has_table reports " +
                     "whether the target sheet carries a table, so rows landing below it are never silently assumed to be " +
-                    "inside it. Writes to disk; touches no Revit model.",
+                    "inside it. Writes to disk; touches no Revit model. REQUIRES an idempotency_key: appending is not " +
+                    "undone by repeating it, so a lost reply resent without a key lands the rows twice - with a key, an " +
+                    "identical retry replays the recorded answer and the same key aimed at different rows is refused.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""file_path"", ""rows""],
+  ""required"": [""file_path"", ""rows"", ""idempotency_key""],
   ""properties"": {
     ""file_path"": { ""type"": ""string"",
       ""description"": ""Absolute path to an existing .xlsx. It is backed up to <file_path>.horizunbak before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
@@ -1616,7 +1638,9 @@ namespace Horizun.Contracts
       ""type"": ""array"", ""minItems"": 1,
       ""description"": ""Rows to append. Each element is an array of cell values, filled left-to-right from column A. A cell may be a string, number, boolean or null (null leaves the cell blank â€” a blank is not a zero)."",
       ""items"": { ""type"": ""array"", ""items"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } }
-    }
+    },
+    ""idempotency_key"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 200,
+      ""description"": ""REQUIRED. A retry with the same key and identical arguments returns the recorded answer without appending again; the same key with different rows or a different workbook is refused. Generate a new UUID for each deliberate append and keep it unchanged only for retries."" }
   },
   ""additionalProperties"": false
 }")
@@ -1708,9 +1732,20 @@ namespace Horizun.Contracts
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls"
             };
+            // Writes something outside the model that is still there after the call: a PNG,
+            // a workbook. full_write is the rung that authorizes these.
             var external = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_capture_view", "horizun_excel_write_rows", "horizun_navigate", "horizun_target"
+                "horizun_capture_view", "horizun_excel_write_rows"
+            };
+
+            // Steers the host and leaves no artefact: which Revit answers, what is
+            // selected, which view is active. These used to be in `external`, which is why
+            // making the restrictive profiles honour "external" needed this split first -
+            // read_only has to keep horizun_target or it cannot choose the Revit it reads.
+            var hostState = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_navigate", "horizun_target"
             };
 
             // MCP's destructiveHint, where every other classification already lives.
@@ -1747,6 +1782,34 @@ namespace Horizun.Contracts
                     throw new InvalidOperationException(
                         "openWorld names a tool that does not exist: '" + n + "'.");
 
+            // The EFFECT sets get the same guard, and they need it more. A stale name in
+            // `destructive` costs a wrong hint; a stale name in one of these falls through
+            // every branch to `else c.Effect = ToolEffect.ReadOnly` - so a mistyped entry
+            // does not merely lose a classification, it hands the tool the ONE effect that
+            // read_only admits. Silent, and in the permissive direction.
+            foreach (var set in new[]
+                     {
+                         new KeyValuePair<string, HashSet<string>>("always (Mutating)", always),
+                         new KeyValuePair<string, HashSet<string>>("dryRun (MutatingUnlessDryRun)", dryRun),
+                         new KeyValuePair<string, HashSet<string>>("external (ExternalSideEffect)", external),
+                         new KeyValuePair<string, HashSet<string>>("hostState (HostState)", hostState)
+                     })
+                foreach (string n in set.Value)
+                    if (!known.Contains(n))
+                        throw new InvalidOperationException(
+                            "The effect set " + set.Key + " names a tool that does not exist: '" + n +
+                            "'. Renamed or removed? Fix the set - an entry that matches nothing falls " +
+                            "through to ToolEffect.ReadOnly, which is the one effect permission_profile=" +
+                            "read_only allows.");
+
+            // And the other direction: the sets must not overlap, or the if/else chain
+            // silently picks whichever branch comes first.
+            foreach (string n in external)
+                if (hostState.Contains(n))
+                    throw new InvalidOperationException(
+                        "'" + n + "' is in BOTH external and hostState. One of them decides its effect " +
+                        "and the other is a lie about what it does; pick one deliberately.");
+
             foreach (CommandContract c in all)
             {
                 c.OutputSchema = new JObject
@@ -1758,11 +1821,16 @@ namespace Horizun.Contracts
                 else if (dryRun.Contains(c.Name)) c.Effect = ToolEffect.MutatingUnlessDryRun;
                 else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
                 else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
+                else if (hostState.Contains(c.Name)) c.Effect = ToolEffect.HostState;
                 else c.Effect = ToolEffect.ReadOnly;
 
                 c.Destructive = destructive.Contains(c.Name);
+                // HostState is listed here so the MCP annotations do not change when the
+                // classification split: navigate and target reported openWorldHint=true
+                // under their old effect and still describe something outside this process.
                 c.OpenWorld = openWorld.Contains(c.Name) ||
                               c.Effect == ToolEffect.ExternalSideEffect ||
+                              c.Effect == ToolEffect.HostState ||
                               c.Effect == ToolEffect.DocumentSession;
 
                 if (c.Effect == ToolEffect.Mutating ||

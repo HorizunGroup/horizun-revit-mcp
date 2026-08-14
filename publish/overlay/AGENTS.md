@@ -26,8 +26,9 @@ this machine. No executable is downloaded.
 - Windows with at least one Revit 2023–2027 installed
   (`C:\Program Files\Autodesk\Revit <year>\RevitAPI.dll` exists).
 - The .NET SDK on PATH (`dotnet --version` answers): 8.0+ for Revit 2023–2026,
-  and 10.0+ when building for Revit 2027. Revit ≤ 2024 also needs the .NET
-  Framework 4.8 targeting pack.
+  and 10.0+ when building for Revit 2027. Revit ≤ 2024 builds against .NET
+  Framework 4.8; NuGet supplies the reference assemblies, so the Visual Studio
+  targeting pack is needed only on a fully offline machine.
 - **Revit closed.** The script refuses to run with Revit open and changes
   nothing when it refuses.
 
@@ -55,13 +56,21 @@ Do not retype it with `%LOCALAPPDATA%`: `cmd.exe` expands that variable and
 **PowerShell does not**, so a config written that way points somewhere that does
 not exist and the client shows no tools without saying why.
 
+Installation and registration are two phases. Do not edit the configuration of
+the Claude/Codex process that is currently running: it may overwrite the change
+when it exits. Install and verify first, print the command, ask the user to close
+the client, run it from a fresh shell, and reopen the client.
+
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — user scope is available across projects
+claude mcp add --scope user horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex
+codex mcp add horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Codex timeout settings — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -88,10 +97,11 @@ when it is merely busy.
 
 ### First Revit start — tell the user about this
 
-- Revit will show the **"Security - Unsigned Add-In"** dialog (this build is
-  unsigned). They must choose **Always Load**. Revit normally remembers that
-  choice for this add-in's identity, though a trust or policy reset can bring the
-  prompt back. It can open **on another monitor** — a Revit that has been
+- Without an already trusted local signing certificate, Revit will show a
+  **Security** dialog. Choose **Always Load** after verifying the build. A source
+  install can reuse a certificate the user explicitly self-signed and trusted;
+  that is local trust, not a public publisher identity. It can open **on another
+  monitor** — a Revit that has been
   "starting" for minutes with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
   **Estado del puente** button answers "is this working, and which version?"
@@ -114,14 +124,13 @@ and run `install.ps1` again.
   `horizun_job_status` for work that should outlive the MCP request.
 - **The contract**: no command reports work it did not verify. Every typed write
   is re-read from the model after the commit. `horizun_execute_python` does not
-  provide that guarantee by itself; scripts run through it are expected to
-  verify their own work and report it in the structured `__output__`
-  (`status: verified|completed_unverified|partial|failed`).
-- **Typed first, Python as the fallback — never "not supported".** When no typed
-  command covers an operation, or one refuses **before writing** because it is
-  outside its contract, generate minimal Revit Python and run it through
-  `horizun_execute_python` (optionally `preflight=true` first). Never fall back
-  to Python after a typed write failed mid-operation — report the real state.
+  provide that guarantee. Scripts report structured `__output__`, with states
+  `self_reported_verified`, `completed_unverified`, `partial` or `failed`.
+  `host_verified` is always false; never describe this as host verification.
+- **Typed first, Python as the fallback — never "not supported".** Fall back only
+  when the typed response carries `fallback.allowed: true`. No block, or
+  `allowed: false`, means do not retry in Python. A mixed invalid batch must be
+  corrected and resent typed first; never infer permission from error wording.
 - **`horizun_execute_python` is enabled by default.** A machine owner can switch
   it off (`enable_execute_python=false` or a profile below `unsafe_code` in
   `%USERPROFILE%\.horizun\settings.json`); that explicit choice is always
@@ -142,9 +151,10 @@ contract hash and are updated **together**; there is no partial deployment.
 
 ### Uninstall
 
-With Revit closed: delete `%APPDATA%\Autodesk\Revit\Addins\<year>\Horizun\` and
-each year's `Horizun.addin`, plus `%LOCALAPPDATA%\Programs\Horizun\MCP\`. Local
-state (settings, logs, job records) lives in `%USERPROFILE%\.horizun\`.
+Close Revit and the MCP client, then uninstall **Horizun Revit MCP** from Windows
+Installed apps. Before uninstalling, the Start-menu **Advanced cleanup before
+uninstall** shortcut can remove only the named `horizun-revit` entries. State
+and signing trust are preserved by default and purged only when explicitly chosen.
 
 ---
 
@@ -162,8 +172,9 @@ No se descarga ningún ejecutable.
 - Windows con al menos un Revit 2023–2027 instalado
   (`C:\Program Files\Autodesk\Revit <año>\RevitAPI.dll` existe).
 - El SDK de .NET en el PATH (`dotnet --version` responde): 8.0+ para Revit
-  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 necesita además
-  el targeting pack de .NET Framework 4.8.
+  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 compila contra
+  .NET Framework 4.8; NuGet aporta los reference assemblies, así que el targeting
+  pack solo hace falta en una máquina totalmente offline.
 - **Revit cerrado.** El script se niega a correr con Revit abierto y no cambia
   nada cuando se niega.
 
@@ -191,13 +202,21 @@ máquina. No la reescribas con `%LOCALAPPDATA%`: `cmd.exe` expande esa variable 
 **PowerShell no**, así que una config escrita así apunta a un sitio que no
 existe y el cliente no muestra herramientas sin decir por qué.
 
+La instalación y el registro son dos fases. No edites la configuración del
+proceso de Claude/Codex que está corriendo: puede pisar el cambio al cerrarse.
+Instala y verifica, imprime el comando, pide cerrar el cliente, ejecutarlo desde
+una consola nueva y después volver a abrir el cliente.
+
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — el scope user queda disponible en todos los proyectos
+claude mcp add --scope user horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex
+codex mcp add horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Ajustes de timeout de Codex — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -224,10 +243,10 @@ minutos, y un timeout de 60 s por defecto abandona trabajo que sigue corriendo
 
 ### Primer arranque de Revit — avisa al usuario de esto
 
-- Revit mostrará el diálogo **"Security - Unsigned Add-In"** (este build no va
-  firmado). Hay que elegir **Always Load**. Revit normalmente recuerda esa
-  elección por la identidad del add-in, aunque un cambio de política o confianza
-  puede hacer que el aviso vuelva. Puede abrirse **en otro monitor** — un Revit
+- Sin un certificado local de firma ya confiable, Revit mostrará un diálogo de
+  **Security**. Tras verificar el build, elige **Always Load**. La instalación
+  desde fuente puede reutilizar un certificado autofirmado y confiado
+  explícitamente; eso no es identidad pública. Puede abrirse **en otro monitor** — un Revit
   que lleva minutos "arrancando" con la CPU quieta suele tener este diálogo
   escondido.
 - Con un documento abierto aparece la pestaña **Horizun Hub** en la cinta. Su
@@ -251,14 +270,13 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   `horizun_submit_job` y `horizun_job_status` para trabajos largos.
 - **El contrato**: ningún comando reporta trabajo que no verificó. Toda escritura
   tipada se relee del modelo tras el commit. `horizun_execute_python` no ofrece
-  esa garantía por sí solo; los scripts que corren por ahí deben verificar su
-  propio trabajo y reportarlo en el `__output__` estructurado
-  (`status: verified|completed_unverified|partial|failed`).
-- **Tipado primero, Python como respaldo — nunca "no soportado".** Cuando ningún
-  comando tipado cubra una operación, o uno se niegue **antes de escribir** por
-  quedar fuera de su contrato, genera el Python de Revit mínimo y córrelo con
-  `horizun_execute_python` (si quieres, `preflight=true` primero). Nunca caigas a
-  Python tras una escritura tipada que falló a mitad — informa el estado real.
+  esa garantía. Los scripts reportan `__output__` estructurado con estados
+  `self_reported_verified`, `completed_unverified`, `partial` o `failed`.
+  `host_verified` siempre es false; nunca lo describas como verificación del host.
+- **Tipado primero, Python como respaldo — nunca "no soportado".** Cae a Python
+  solo cuando la respuesta tipada trae `fallback.allowed: true`. Sin bloque, o
+  con `allowed: false`, no reintentes. Un lote mixto inválido se corrige y se
+  reenvía primero por la ruta tipada; no infieras permiso del texto del error.
 - **`horizun_execute_python` viene habilitado por defecto.** El dueño de la
   máquina puede apagarlo (`enable_execute_python=false` o un perfil por debajo
   de `unsafe_code` en `%USERPROFILE%\.horizun\settings.json`); esa elección
@@ -279,6 +297,7 @@ un hash de contrato y se actualizan **juntos**; no hay despliegue parcial.
 
 ### Desinstalar
 
-Con Revit cerrado: borra `%APPDATA%\Autodesk\Revit\Addins\<año>\Horizun\` y el
-`Horizun.addin` de cada año, y `%LOCALAPPDATA%\Programs\Horizun\MCP\`. El estado
-local (settings, logs, registros de jobs) vive en `%USERPROFILE%\.horizun\`.
+Cierra Revit y el cliente MCP, y desinstala **Horizun Revit MCP** desde
+Aplicaciones instaladas de Windows. Antes, el acceso **Limpieza avanzada antes de
+desinstalar** puede quitar solo las entradas `horizun-revit`. El estado y la
+confianza de firma se conservan salvo que el usuario elija purgarlos.

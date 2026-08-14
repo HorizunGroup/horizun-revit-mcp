@@ -61,6 +61,7 @@
          malformed setting read as permission to delete, and a size cap dropping the
          newest receipt instead of the oldest. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptRetention.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
@@ -73,6 +74,12 @@
          safe to point at a mutation. Both shipped with no test at all. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncQueue.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" />
+    <!-- Job.cs reports a record it could not write through Log, and the admission rule
+         both async entry points share is decided in AsyncJobAdmission. Both are
+         Revit-free; the commands that call them are not, which is exactly why the rule
+         was extracted to where it can be proved. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Log.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncJobAdmission.cs" />
     <!-- The single data root both halves resolve. Job.cs asks it where to write, and
          the property under test is that the SERVER and REVIT reach the same folder
          even when their %LOCALAPPDATA% differ - which is provable here and nowhere

@@ -79,18 +79,20 @@ Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
 [Files]
-; --- The MCP server: one copy, shared by every Revit year. ---
-Source: "..\dist\stage\server\*"; DestDir: "{app}\server"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Extract into Setup's private temporary payload. The post-install code swaps this
+; exact directory into place transactionally. Copying directly over {app}\server
+; retained files removed by a newer release and mixed two versions.
+Source: "..\dist\stage\server\*"; DestDir: "{tmp}\HorizunPayload\server"; Flags: ignoreversion recursesubdirs createallsubdirs deleteafterinstall
 
 ; --- The plugin, both runtimes, staged for the per-year copy below. ---
 ; One payload per YEAR, each compiled against that year's own RevitAPI. Sharing a
 ; binary between years that share a target framework was the old scheme, and it
 ; shipped the 2024 build to Revit 2023 and the 2026 build to Revit 2025.
-Source: "..\dist\stage\plugin\2023\*"; DestDir: "{app}\plugin\2023"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "..\dist\stage\plugin\2024\*"; DestDir: "{app}\plugin\2024"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "..\dist\stage\plugin\2025\*"; DestDir: "{app}\plugin\2025"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "..\dist\stage\plugin\2026\*"; DestDir: "{app}\plugin\2026"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
-Source: "..\dist\stage\plugin\2027\*"; DestDir: "{app}\plugin\2027"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+Source: "..\dist\stage\plugin\2023\*"; DestDir: "{tmp}\HorizunPayload\plugin\2023"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
+Source: "..\dist\stage\plugin\2024\*"; DestDir: "{tmp}\HorizunPayload\plugin\2024"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
+Source: "..\dist\stage\plugin\2025\*"; DestDir: "{tmp}\HorizunPayload\plugin\2025"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
+Source: "..\dist\stage\plugin\2026\*"; DestDir: "{tmp}\HorizunPayload\plugin\2026"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
+Source: "..\dist\stage\plugin\2027\*"; DestDir: "{tmp}\HorizunPayload\plugin\2027"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
 Source: "..\dist\stage\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\dist\stage\Horizun.addin";  DestDir: "{app}";              Flags: ignoreversion
 
@@ -102,6 +104,9 @@ Name: "{group}\Configurar Horizun en Codex y Claude"; Filename: "{sys}\WindowsPo
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Limpieza avanzada antes de desinstalar"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\uninstall-cleanup.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
 
 [Tasks]
@@ -137,6 +142,9 @@ var
   InstalledYears: String;
   FailedYears: String;
   FoundAny: Boolean;
+  ServerInstalled: Boolean;
+  ServerFailure: String;
+  UninstallFailures: String;
 
 procedure InitYears;
 begin
@@ -161,6 +169,16 @@ begin
     Result := (Code = 0);
 end;
 
+function BridgeIsRunning: Boolean;
+var
+  Code: Integer;
+begin
+  Result := False;
+  if Exec(ExpandConstant('{cmd}'), '/C tasklist /FI "IMAGENAME eq {#AppExeName}" | find /I "{#AppExeName}"',
+          '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Result := (Code = 0);
+end;
+
 function InitializeSetup: Boolean;
 begin
   Result := True;
@@ -171,6 +189,17 @@ begin
            'still running the old build without being told.' + #13#10#13#10 +
            'Close every Revit window and run this installer again. Nothing has been changed.',
            mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  Result := True;
+  if RevitIsRunning or BridgeIsRunning then
+  begin
+    SuppressibleMsgBox('Close every Revit window and every Codex/Claude client using Horizun before uninstalling.' + #13#10#13#10 +
+      'Those processes hold the installed files open. Nothing was removed.', mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;
@@ -197,6 +226,73 @@ begin
   Result := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins\' + Year;
 end;
 
+function RecoverInterruptedSwap(Dst, Staging, Backup, RequiredFile: String): Boolean;
+begin
+  Result := False;
+
+  { A previous process may have died after moving live -> previous and before
+    moving installing -> live. Restore the only usable copy BEFORE cleanup. }
+  if (not DirExists(Dst)) and DirExists(Backup) then
+    if not RenameFile(Backup, Dst) then exit;
+
+  if DirExists(Staging) then
+    if not DelTree(Staging, True, True, True) then exit;
+
+  if DirExists(Backup) then
+  begin
+    { A live directory must prove it contains its primary binary before an older
+      recoverable copy is discarded. }
+    if not FileExists(Dst + '\' + RequiredFile) then exit;
+    if not DelTree(Backup, True, True, True) then exit;
+  end;
+  Result := True;
+end;
+
+function DeployServer: Boolean;
+var
+  Src, Dst, Staging, Backup: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  ServerFailure := '';
+  Src := ExpandConstant('{tmp}') + '\HorizunPayload\server';
+  Dst := ExpandConstant('{app}') + '\server';
+  Staging := ExpandConstant('{app}') + '\server.installing';
+  Backup := ExpandConstant('{app}') + '\server.previous';
+
+  if not DirExists(Src) then begin ServerFailure := 'the installer contains no server payload'; exit; end;
+  if not RecoverInterruptedSwap(Dst, Staging, Backup, '{#AppExeName}') then
+  begin ServerFailure := 'an interrupted server update could not be recovered safely'; exit; end;
+  if not ForceDirectories(Staging) then begin ServerFailure := 'the server staging folder could not be created'; exit; end;
+
+  Exec(ExpandConstant('{cmd}'), '/C xcopy "' + Src + '" "' + Staging + '" /E /I /Y /Q',
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then
+  begin DelTree(Staging, True, True, True); ServerFailure := 'server copy failed, code ' + IntToStr(ResultCode); exit; end;
+  if (not FileExists(Staging + '\{#AppExeName}')) or (not FileExists(Staging + '\horizun-mcp.dll')) then
+  begin DelTree(Staging, True, True, True); ServerFailure := 'the staged server is incomplete'; exit; end;
+
+  if DirExists(Dst) then
+    if not RenameFile(Dst, Backup) then
+    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is in use'; exit; end;
+  if not RenameFile(Staging, Dst) then
+  begin
+    if DirExists(Backup) then RenameFile(Backup, Dst);
+    DelTree(Staging, True, True, True);
+    ServerFailure := 'the new server could not be swapped in; the previous one was restored';
+    exit;
+  end;
+  if not FileExists(Dst + '\{#AppExeName}') then
+  begin
+    DelTree(Dst, True, True, True);
+    if DirExists(Backup) then RenameFile(Backup, Dst);
+    ServerFailure := 'the server vanished after its swap; the previous one was restored';
+    exit;
+  end;
+  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  Result := True;
+end;
+
 { ---------------------------------------------------------------------------
   Deploy one year, TRANSACTIONALLY.
 
@@ -217,7 +313,7 @@ var
   ResultCode: Integer;
 begin
   Result := False;
-  Src     := ExpandConstant('{app}') + '\plugin\' + Year;
+  Src     := ExpandConstant('{tmp}') + '\HorizunPayload\plugin\' + Year;
   Dst     := AddinsDir(Year) + '\Horizun';
   Staging := AddinsDir(Year) + '\Horizun.installing';
   Backup  := AddinsDir(Year) + '\Horizun.previous';
@@ -235,9 +331,11 @@ begin
       exit;
     end;
 
-  { Leftovers from an interrupted previous run. }
-  if DirExists(Staging) then DelTree(Staging, True, True, True);
-  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  if not RecoverInterruptedSwap(Dst, Staging, Backup, 'Horizun.Revit.dll') then
+  begin
+    FailedYears := FailedYears + Year + ' (an interrupted update could not be recovered safely), ';
+    exit;
+  end;
 
   if not ForceDirectories(Staging) then
   begin
@@ -318,13 +416,20 @@ begin
     InstalledYears := '';
     FailedYears := '';
     FoundAny := False;
+    ServerInstalled := DeployServer;
 
     for I := 0 to YearsCount - 1 do
       if RevitInstalled(Years[I]) then
       begin
         FoundAny := True;
-        DeployYear(Years[I]);
+        if ServerInstalled then DeployYear(Years[I])
+        else FailedYears := FailedYears + Years[I] + ' (server deployment failed; add-in left unchanged), ';
       end;
+
+    { Old installers staged plugin payloads permanently under the application
+      directory. It is not live; the new installer extracts to a private temp. }
+    if ServerInstalled and DirExists(ExpandConstant('{app}') + '\plugin') then
+      DelTree(ExpandConstant('{app}') + '\plugin', True, True, True);
 
     { A MACHINE-READABLE RESULT, because the dialog is for a person and an
       unattended install has nobody reading it.
@@ -342,7 +447,7 @@ begin
       stated rather than left to be discovered:
 
         EXIT CODE 0 DOES NOT MEAN EVERY YEAR DEPLOYED. Read install-result.txt. }
-    SaveStringToFile(ExpandConstant('{app}') + '\install-result.txt',
+    SaveStringToFile(ExpandConstant('{param:HORIZUNRESULT|' + ExpandConstant('{app}') + '\install-result.txt}'),
       'version=' + '{#AppVersion}' + #13#10 +
       (* WHEN. Added after a silent install FAILED TO INITIALIZE (exit 1, nothing
          deployed) and left the PREVIOUS run's result file sitting in the install
@@ -366,10 +471,12 @@ begin
          whose name states a timezone it is not in is worse than one with no
          timezone at all. Inno offers no UTC form, so the name follows the value. *)
       'installed_local=' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10 +
+      'server_installed=' + YesNo(ServerInstalled) + #13#10 +
+      'server_failure=' + ServerFailure + #13#10 +
       'any_revit_found=' + YesNo(FoundAny) + #13#10 +
       'succeeded=' + InstalledYears + #13#10 +
       'failed=' + FailedYears + #13#10 +
-      'fully_installed=' + YesNo(FoundAny and (FailedYears = '')) + #13#10 +
+      'fully_installed=' + YesNo(ServerInstalled and FoundAny and (FailedYears = '')) + #13#10 +
       'note=READ THIS FILE AND THE EXIT CODE, NOT EITHER ALONE. Setup returns 0 from any install that ' +
       'COMPLETES, including one where a year failed - so 0 does not mean every year deployed, and ' +
       'fully_installed is what says that. But a NON-ZERO code means Setup did not complete, and then ' +
@@ -407,7 +514,7 @@ begin
               'Use the Start-menu shortcut "Configurar Horizun en Codex y Claude" to register both clients safely.' + #13#10 +
               'It keeps timestamped backups and preserves every other MCP entry.' + #13#10#13#10 +
               'Claude CLI alternative:' + #13#10 +
-              'claude mcp add --scope user horizun-revit "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
+               'claude mcp add --scope user horizun-revit -- "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
              mbInformation, MB_OK);
   end;
 end;
@@ -419,14 +526,31 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    UninstallFailures := '';
     InitYears;
     for I := 0 to YearsCount - 1 do
     begin
-      DelTree(AddinsDir(Years[I]) + '\Horizun', True, True, True);
+      if DirExists(AddinsDir(Years[I]) + '\Horizun') and
+         (not DelTree(AddinsDir(Years[I]) + '\Horizun', True, True, True)) then
+        UninstallFailures := UninstallFailures + 'Revit ' + Years[I] + ' add-in folder; ';
       { Leftovers from an interrupted install. Ours, and named unambiguously. }
       DelTree(AddinsDir(Years[I]) + '\Horizun.installing', True, True, True);
       DelTree(AddinsDir(Years[I]) + '\Horizun.previous', True, True, True);
-      DeleteFile(AddinsDir(Years[I]) + '\Horizun.addin');
+      if FileExists(AddinsDir(Years[I]) + '\Horizun.addin') and
+         (not DeleteFile(AddinsDir(Years[I]) + '\Horizun.addin')) then
+        UninstallFailures := UninstallFailures + 'Revit ' + Years[I] + ' manifest; ';
+    end;
+    if DirExists(ExpandConstant('{app}') + '\server') and
+       (not DelTree(ExpandConstant('{app}') + '\server', True, True, True)) then
+      UninstallFailures := UninstallFailures + 'MCP server; ';
+    DelTree(ExpandConstant('{app}') + '\server.installing', True, True, True);
+    DelTree(ExpandConstant('{app}') + '\server.previous', True, True, True);
+    if UninstallFailures <> '' then
+    begin
+      Log('Horizun uninstall incomplete: ' + UninstallFailures);
+      SuppressibleMsgBox('Horizun could not remove: ' + UninstallFailures + #13#10 +
+        'Close any remaining client and run uninstall again. Settings and job history were intentionally preserved.',
+        mbError, MB_OK, IDOK);
     end;
   end;
 end;

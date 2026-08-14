@@ -1,5 +1,12 @@
 <Project>
 
+  <!-- MSBuild imports only the nearest Directory.Build.props automatically.
+       Without this explicit parent import, every project below src/ silently
+       fell back to 1.0.0 while packaging read 0.8.0 from the repository root.
+       Import the canonical product version before adding source-only targets. -->
+  <Import Project="$(MSBuildThisFileDirectory)../Directory.Build.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)../Directory.Build.props')" />
+
   <!--
     PROVENANCE, stamped by the build rather than typed by a person.
 

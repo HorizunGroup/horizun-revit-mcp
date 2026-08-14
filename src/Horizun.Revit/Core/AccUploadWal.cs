@@ -22,9 +22,8 @@
 //     or synced under another name all look identical from here. And a WAL
 //     that cannot be found or read is UNKNOWN, not "not uploaded".
 //
-// ORG-NEUTRAL, unlike the script it generalises: the script matched PRD-*
-// because those were one client's families. Which names to look for is the
-// caller's argument; nothing here knows any organisation's prefix.
+// ORG-NEUTRAL, unlike the field prototype it generalises: which names to look
+// for is the caller's argument; nothing here knows any organisation's prefix.
 //
 // Revit-free: the bytes come from the command's IO; everything decided about
 // them - the decode, the pair extraction, the name matching - is provable here.
@@ -40,7 +39,7 @@ namespace Horizun.Revit.Core
     /// <summary>One Name-beside-ParentFolderUrn pair found in a WAL file.</summary>
     public sealed class WalHit
     {
-        public string Name;        // as recorded, e.g. "PRD-CAMARA.rfa"
+        public string Name;        // as recorded, e.g. "SAMPLE-CAMERA.rfa"
         public string FolderUrn;   // the co.XXX tail of urn:adsk.wipprod:fs.folder:co.XXX
         public string SourceFile;  // which WAL file it was read from
     }

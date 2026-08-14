@@ -3,7 +3,27 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased
+## v0.9.0 — 2026-08-14
+
+- **Release hardening: protocol, durability, installation and public supply chain.**
+  JSON-RPC now enforces the MCP initialization lifecycle and request-id rules; the
+  unsupported MCP Tasks advertisement is gone; stdout failure stops the server
+  instead of reporting a write that never happened. Excel writes claim durable
+  idempotency keys under the workbook lock, replay preserves the complete result,
+  async jobs refuse IDs without a durable record, and opt-in retention removes only
+  terminal records. Packaging is transactional and self-contained, validates the
+  installed result rather than Setup's exit code alone, registers Claude at user
+  scope, preserves unrelated client configuration on removal, and produces an exact
+  CycloneDX 1.6 inventory. Stable publication now requires clean artifacts and live
+  reports for Revit 2023–2027. `horizun_execute_python` remains enabled by default;
+  its evidence remains self-reported and `host_verified` remains false.
+
+- **One effective version, not merely one version file.** Server, add-in, installer,
+  registry metadata and SBOM now inherit `0.9.0` from the repository root. The
+  source-level `Directory.Build.props` explicitly imports that root because MSBuild
+  otherwise stops at the nearest file and silently stamped every source binary as
+  `1.0.0`. The release tests resolve the effective MSBuild property for both projects
+  and inspect the packaged binaries, so filename and embedded version cannot drift.
 
 - **Nuevo comando tipado `horizun_acc_upload_status` — ¿subido a ACC o pendiente? (5.15).**
   Copiar a la carpeta del Desktop Connector y hashear la copia prueba la CACHÉ LOCAL,

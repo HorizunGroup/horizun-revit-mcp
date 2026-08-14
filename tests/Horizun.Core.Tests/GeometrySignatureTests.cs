@@ -337,7 +337,7 @@ namespace Horizun.Core.Tests
         {
             // Change rows arrive as "TypeName.dimension", and a type name may itself
             // carry dots - the dimension is whatever follows the last one.
-            Assert.Equal("ft3", GeoUnits.Of("PRD-CAJA_PASO-15x15x10cm_COM.solid_volume"));
+            Assert.Equal("ft3", GeoUnits.Of("SAMPLE-JUNCTION-15x15x10.solid_volume"));
             Assert.Equal("ft", GeoUnits.Of("Caja 1.5x2.5.bbox_z"));
         }
 

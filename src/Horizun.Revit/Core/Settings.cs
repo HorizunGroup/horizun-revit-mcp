@@ -33,6 +33,28 @@
 // CLOSED (read_only, Python off), not open. The owner may have written an
 // explicit restriction into that file, and a corrupted byte must never convert
 // "I turned this off" into "everything is enabled".
+//
+// WHAT EACH PROFILE MEANS. The ladder is cumulative, and each rung is decided by
+// ToolEffect rather than by a list of tool names - a list is what let an
+// externally-effecting tool be admitted by a profile that forbids external
+// effects, because the tool was added to the enum and not to the list:
+//
+//   read_only    reads, and steers the host (which Revit answers, what is
+//                selected). It does not change the model, does not open or close
+//                a document session, and writes NOTHING outside the model.
+//   safe_write   the above, plus typed writes INSIDE the document.
+//   full_write   the above, plus document sessions and typed external writes.
+//   unsafe_code  the above, plus horizun_execute_python. THE DEFAULT.
+//
+// ToolEffect.HostState is why read_only still admits something that is not a
+// pure read: horizun_target chooses WHICH Revit every later call talks to, and a
+// read-only machine that cannot choose its Revit cannot read. It used to share a
+// classification with the workbook writer, and refusing the whole bucket would
+// have broken the profile this fix exists to protect.
+//
+// The matrix is asserted for every profile against every ToolEffect value in
+// SettingsEffectMatrixTests, so a new effect nobody classified fails a test
+// instead of quietly inheriting whichever branch happens to miss it.
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
@@ -101,19 +123,35 @@ namespace Horizun.Revit.Core
             { reason = contract.Name + " is outside the allowed_tools allowlist in " + Path() + "."; return false; }
 
             string profile = PermissionProfile;
+
+            // ExternalSideEffect is consulted by BOTH restrictive profiles, and that is
+            // the fix rather than a detail. The classification exists precisely to mean
+            // "this reaches outside the model", and neither profile used to ask about it
+            // - so every tool carrying it was admitted by both. horizun_excel_write_rows
+            // is one: a machine set to read_only refused to move a wall and then rewrote
+            // a workbook on disk. Deciding on the ENUM rather than on a list of names is
+            // what keeps the next externally-effecting tool from repeating it.
             if (profile == "read_only" &&
                 (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
-                 contract.Effect == ToolEffect.DocumentSession))
-            { reason = contract.Name + " is hidden/refused by permission_profile=read_only in " + Path() + "."; return false; }
+                 contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect))
+            {
+                reason = contract.Name + " is hidden/refused by permission_profile=read_only in " + Path() +
+                         ": read_only changes nothing - not the model, not the document session, and nothing " +
+                         "written outside it.";
+                return false;
+            }
             if (profile == "safe_write" &&
-                (contract.Effect == ToolEffect.DocumentSession ||
+                (contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect ||
+                 // Named as well as classified: these write outside the model while being
+                 // classified MutatingUnlessDryRun, so the effect alone does not catch them.
                  contract.Name == "horizun_open_document" || contract.Name == "horizun_save_document" ||
                  contract.Name == "horizun_relinquish_all" || contract.Name == "horizun_export" ||
                  contract.Name == "horizun_power_bi_push" || contract.Name == "horizun_create_family"))
             {
                 reason = contract.Name + " changes the Revit document session or writes external files and is " +
                          "hidden/refused by permission_profile=safe_write in " + Path() +
-                         ". Use full_write only on machines authorized for those side effects.";
+                         ". safe_write permits typed writes INSIDE the document only. Use full_write only on " +
+                         "machines authorized for those side effects.";
                 return false;
             }
             if (contract.Name == "horizun_execute_python" &&

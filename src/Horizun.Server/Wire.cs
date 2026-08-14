@@ -59,12 +59,34 @@ namespace Horizun.Server
     {
         private readonly TextWriter _out;
         private readonly object _lock = new object();
+        private readonly Action<string> _onChannelLost;
         private long _written;
+        private bool _channelLost;
+        private string _channelLostReason;
 
-        public OutboundWriter(TextWriter output) { _out = output; }
+        /// <summary>
+        /// <paramref name="onChannelLost"/> is called ONCE, outside the lock, the first
+        /// time a message cannot be delivered. The server uses it to cancel what is in
+        /// flight and stop reading: a bridge that cannot answer must stop being asked,
+        /// and it must above all stop accepting calls that change somebody's model.
+        /// </summary>
+        public OutboundWriter(TextWriter output, Action<string> onChannelLost = null)
+        {
+            _out = output;
+            _onChannelLost = onChannelLost;
+        }
 
-        /// <summary>How many messages have gone out. For tests and reporting.</summary>
+        /// <summary>
+        /// How many messages have actually GONE OUT. It used to be incremented next to a
+        /// swallowed exception, so it counted attempts and was quoted as deliveries.
+        /// </summary>
         public long WrittenCount { get { lock (_lock) return _written; } }
+
+        /// <summary>True once a message could not be delivered. Never goes back to false.</summary>
+        public bool ChannelIsLost { get { lock (_lock) return _channelLost; } }
+
+        /// <summary>Why, in the words of the exception that said so. Null until it happens.</summary>
+        public string ChannelLostReason { get { lock (_lock) return _channelLostReason; } }
 
         /// <summary>
         /// A one-shot handle for answering ONE request. Every path that can answer it -
@@ -91,15 +113,64 @@ namespace Horizun.Server
             Write(msg);
         }
 
+        /// <summary>
+        /// Deliver one complete line, and say whether it was delivered.
+        ///
+        /// The old body caught every exception into an empty block, incremented the
+        /// counter regardless, and returned true. Its comment said "the client is gone;
+        /// the reader will notice" - but stdout and stdin are separate pipes, and a
+        /// client that has stopped reading stdout has not closed stdin. Nothing noticed.
+        /// The server kept accepting tool calls, kept running mutations against a live
+        /// model, and kept posting the results into a pipe that was not there; and
+        /// because ReplySlot claims its one-shot latch BEFORE calling in here, each of
+        /// those requests was permanently unanswerable by any other path.
+        /// </summary>
         internal bool Write(JObject message)
         {
+            string lostReason = null;
+
             lock (_lock)
             {
-                try { _out.WriteLine(message.ToString(Formatting.None)); }
-                catch { /* the client is gone; the reader will notice */ }
-                _written++;
-                return true;
+                // Once it is gone it is gone. Not an optimisation: shutdown answers
+                // everything still outstanding, and every one of those writes would
+                // throw again and re-announce a loss that is already being handled.
+                if (_channelLost) return false;
+
+                try
+                {
+                    _out.WriteLine(message.ToString(Formatting.None));
+                    // Explicit, even though production sets AutoFlush: a line the writer
+                    // accepted and never flushed has been delivered exactly as little as
+                    // one it refused outright.
+                    _out.Flush();
+                    _written++;
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    // Broad, and deliberately not empty. Anything the writer can throw
+                    // means this message did not arrive, and the response channel is not
+                    // something a server can carry on without. It is recorded rather than
+                    // rethrown because throwing here would unwind whichever request
+                    // happened to be answering, which is not the thing that is broken.
+                    _channelLost = true;
+                    _channelLostReason = ex.GetType().Name + ": " + ex.Message;
+                    lostReason = _channelLostReason;
+                }
             }
+
+            // OUTSIDE the lock. The handler cancels in-flight work, and cancellation
+            // paths write - so calling it while holding the writer's lock would deadlock
+            // the shutdown it exists to start.
+            if (_onChannelLost != null)
+            {
+                try { _onChannelLost(lostReason); }
+                catch (Exception ex)
+                {
+                    Log.Error("the response-channel-lost handler itself failed: " + ex.Message, ex);
+                }
+            }
+            return false;
         }
 
         internal static JObject Envelope(object id, string field, JToken payload)

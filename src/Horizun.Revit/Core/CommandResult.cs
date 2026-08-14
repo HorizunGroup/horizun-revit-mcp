@@ -88,6 +88,36 @@ namespace Horizun.Revit.Core
             => new CommandResult { Success = false, Error = error };
 
         /// <summary>
+        /// REBUILD A RECORDED ANSWER, field for field. The durable idempotency ledger is
+        /// the only caller, and it needs this because the ordinary factories cannot
+        /// express every shape a real result takes: a SUCCESS carrying a dry-run fallback
+        /// grant has no factory, and reassembling one through Ok(...) plus CarryFallback
+        /// worked only for the combinations somebody remembered to reassemble.
+        ///
+        /// That is exactly how three fields went missing from a replay. The ledger's job
+        /// is to hand a retry the answer the first caller would have received; anything
+        /// this constructor cannot carry is something the retry silently does not learn.
+        ///
+        /// It does not VALIDATE - the ledger decides whether a recorded combination is
+        /// believable before it gets here, and an unbelievable one is in-doubt, not
+        /// something to repair on the way past.
+        /// </summary>
+        internal static CommandResult Restore(bool success, object data, string error, object revitSaid,
+                                              FallbackSignal fallback,
+                                              Newtonsoft.Json.Linq.JArray capabilityGaps,
+                                              Newtonsoft.Json.Linq.JObject detail)
+            => new CommandResult
+            {
+                Success = success,
+                Data = data,
+                Error = error,
+                RevitSaid = revitSaid,
+                Fallback = fallback,
+                CapabilityGaps = capabilityGaps,
+                Detail = detail
+            };
+
+        /// <summary>
         /// A failure carrying a structured diagnostic beside its message. Built for the
         /// atomic-plan rollback path, where "what happened to the group" must be a value a
         /// client can read, not a sentence it has to trust. The message is expected to be

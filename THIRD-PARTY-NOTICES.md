@@ -50,9 +50,11 @@ is the largest single body of third-party code it ships.
 | Component | Version | Licence |
 | --- | --- | --- |
 | Newtonsoft.Json | 13.0.3 | MIT |
+| Microsoft .NET runtime and native host (`win-x64`, self-contained publish) | 8.x, exact files and hashes in `sbom.json` | MIT |
 
-The server is otherwise a framework-dependent .NET 8 executable; the runtime is
-the user's, not ours.
+The server is self-contained so a release installation does not depend on an
+already-installed .NET runtime. `sbom.json` is generated from `dist/stage` as a
+CycloneDX 1.6 document and inventories every runtime/app/file byte separately.
 
 ## Referenced but NEVER redistributed
 
@@ -82,6 +84,7 @@ assemblies. Re-run it before every release; CI does.
 
 ## Signing
 
-Nothing here is signed. See [docs/security-model.md](docs/security-model.md) for
-what that means, what it would take, and why signing with an untrusted
-certificate was measured to be **worse** than not signing at all.
+Release notes and the manifest must state the actual signature state. A self-signed
+signature can support controlled verification but is not a publicly trusted
+publisher identity; on a clean machine it can still produce a Windows/Revit prompt.
+See [docs/security-model.md](docs/security-model.md).

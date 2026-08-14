@@ -43,7 +43,9 @@ The setup installs every supported Revit payload present in the release and the
 MCP server. It also installs Start-menu helpers to register or verify Horizun in
 Codex and Claude. Registration is explicit and unchecked by default: the helper
 makes timestamped backups, preserves all other MCP entries and refuses to edit a
-client that is still running and could overwrite its configuration.
+client that is still running and could overwrite its configuration. An advanced
+pre-uninstall helper can remove only the `horizun-revit` client entries and,
+only when explicitly selected, purge local state or the self-signing trust.
 
 For a command-line installation without Git or an SDK, download the repository's
 small bootstrap and let it select the latest release. It downloads the setup and
@@ -56,7 +58,7 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/HorizunGroup/horizun-revit-
 powershell -ExecutionPolicy Bypass -File $p
 ```
 
-Pass `-Version v0.6.0` to pin the official release instead of following `latest`.
+Pass `-Version vX.Y.Z` to pin a specific release instead of following `latest`.
 
 ### Build from source
 
@@ -75,9 +77,9 @@ Paste this into **Claude Code** or **Codex**, in any folder:
 
 ```
 Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-AGENTS.md, and follow the install procedure there. When it finishes, register the
-MCP server with yourself using the exact path the installer printed, and tell me
-which version and commit ended up installed.
+AGENTS.md, and follow the install procedure there. Install and verify the binaries,
+then print the exact registration command for my client. Do not edit the active
+client's configuration; tell me to close it and run that command in a fresh shell.
 ```
 
 Both agents pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
@@ -104,12 +106,15 @@ by `cmd.exe` and **not** by PowerShell, so a config written with the variable
 silently points nowhere.
 
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — persistent for this user, from a fresh shell after closing Claude
+claude mcp add --scope user horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex — from a fresh shell after closing Codex
+codex mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Codex timeout settings — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -138,9 +143,9 @@ while it is merely busy.
 
 Two things to expect, neither of them a fault:
 
-- Revit shows a **"Security - Unsigned Add-In"** dialog. Choose **Always Load**.
-  This build is unsigned. Revit normally remembers that choice for this add-in's
-  identity, but the prompt may return after a trust or policy reset. It can also
+- Revit can show a **Security** add-in dialog when the publisher is not already
+  trusted. After verifying the build, choose **Always Load**. Revit normally
+  remembers that choice, but the prompt may return after a trust or policy reset. It can also
   open on a monitor you are not looking at — a Revit that seems stuck on startup
   with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
@@ -309,23 +314,23 @@ pwsh scripts/verify-queue-live.ps1 -Year 2026 -Document <active model title or p
 
 ## Status
 
-Working, in production use, and honest about its edges.
+Working and in production use, with stable promotion governed by published,
+release-scoped evidence rather than by a local success claim.
 
-- **450+ tests** over the Revit-free surface. CI builds and tests exactly that
+- **Revit-free suites are enforced in CI.** CI builds and tests exactly that
   surface and nothing else: a hosted runner has no `RevitAPI.dll`, so building
   the plugin there would be a lie. The Revit-bound half is verified live
   instead, with `scripts/verify-live.ps1`.
 - **Built for five Revit years** — 2023 through 2027, each compiled against its
   own `RevitAPI.dll`.
-- **Verified live** against real models rather than mocks: the full tool
-  surface, the upgrade guard refusing a real older-year family, the commit
-  contract's rollback on a geometry change, bounded FIFO ordering and capacity,
-  cancellation-before-start with an independently checked absent side effect,
-  and `job_status` answering while Revit's UI thread was inside the very command
-  it describes.
-- **Unsigned.** Revit raises its "Security - Unsigned Add-In" dialog on first
-  load. Revit normally remembers the decision by add-in identity, but policy or
-  trust-store changes can make the prompt return.
+- **Live evidence is release-scoped.** `verify-live.ps1` refuses uncovered
+  release-gate probes, and stable promotion requires a published report for
+  every supported Revit year. If an artifact is absent, local experience or a
+  compiled DLL is not substituted for it.
+- **No publicly trusted publisher identity by default.** Revit can raise its
+  security dialog on first load. Source installs offer an explicit per-user
+  self-sign/trust helper; that local trust is not a public CA signature and can
+  be removed independently during advanced cleanup.
 - **Known limits, stated**: `excel_write_rows` appends below an Excel Table
   without expanding the table's range (reported per call); a catalog that is
   neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling a

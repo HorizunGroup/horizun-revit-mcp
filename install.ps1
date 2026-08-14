@@ -27,9 +27,8 @@
   What it needs:
 
     * Windows, with at least one Revit 2023-2027 installed.
-    * The .NET SDK (8.0+ for Revit 2023-2026; 10.0+ for Revit 2027). Revit
-      <= 2024 additionally needs the .NET Framework 4.8 targeting pack, which
-      Visual Studio and most SDK installs include. Checked before anything runs.
+    * The .NET SDK (8.0+ for Revit 2023-2026; 10.0+ for Revit 2027). SDK-style
+      restore obtains the .NET Framework 4.8 reference assemblies for older Revit.
     * Revit CLOSED. Revit holds a lock on the add-in DLL it loaded; this
       refuses to run while any Revit is open, and changes nothing.
 
@@ -41,13 +40,14 @@
 #>
 [CmdletBinding()]
 param(
-    [int[]]$Years,
+    [string[]]$Years,
     [string]$Config = 'Release',
     [switch]$SkipServer
 )
 $ErrorActionPreference = 'Stop'
 $repo = $PSScriptRoot
 . (Join-Path $repo 'scripts\horizun-deploy.lib.ps1')
+. (Join-Path $repo 'scripts\install-arguments.lib.ps1')
 
 $serverInstall  = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server'
 $serverExe      = Join-Path $serverInstall 'horizun-mcp.exe'
@@ -58,6 +58,8 @@ $stagingRoot    = Join-Path ([IO.Path]::GetTempPath()) ('horizun-install-' + (Ge
 # its undo BEFORE acting, and a failure walks it backwards, newest first.
 $undo = New-Object System.Collections.Generic.List[object]
 $installedThings = New-Object System.Collections.Generic.List[object]
+$installMutex = New-Object System.Threading.Mutex($false, 'Local\Horizun.Revit.MCP.Install')
+$installMutexHeld = $false
 
 function Invoke-Rollback([string]$Because) {
     Write-Host ""
@@ -83,6 +85,15 @@ function Invoke-Rollback([string]$Because) {
 }
 
 try {
+    try { $installMutexHeld = $installMutex.WaitOne(0) }
+    catch [System.Threading.AbandonedMutexException] { $installMutexHeld = $true }
+    if (-not $installMutexHeld) {
+        throw 'Another Horizun installation is already running. Wait for it to finish and run this again. Nothing was changed.'
+    }
+    # powershell.exe -File does not bind `-Years 2025,2026` to [int[]] the way
+    # an interactive PowerShell expression does; it produced 20252026. Parse the
+    # documented CLI syntax explicitly and validate the closed supported set.
+    $Years = @(ConvertTo-HorizunRevitYears $Years)
     # =========================================================================
     # 0. REFUSE UP FRONT, so nothing is half-done.
     # =========================================================================
@@ -340,6 +351,8 @@ finally {
     if (Test-Path $stagingRoot) {
         try { Remove-Item $stagingRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
     }
+    if ($installMutexHeld) { try { $installMutex.ReleaseMutex() } catch { } }
+    $installMutex.Dispose()
 }
 
 # =============================================================================
@@ -384,8 +397,8 @@ Write-Host ""
 Write-Host "Add the MCP server to your client. The path below is THIS machine's, already" -ForegroundColor Cyan
 Write-Host "expanded - do not retype it with %LOCALAPPDATA%, which PowerShell does not expand." -ForegroundColor Cyan
 Write-Host ""
-Write-Host "  Claude Code:"
-Write-Host "    claude mcp add horizun-revit -- `"$serverExe`""
+    Write-Host "  Claude Code:"
+    Write-Host "    claude mcp add --scope user horizun-revit -- `"$serverExe`""
 Write-Host ""
 # TOML literal strings (single quotes) take Windows paths as they are; the
 # double-quoted form would need every backslash doubled, and one missed pair is
@@ -394,13 +407,16 @@ Write-Host ""
 # The timeouts are not decoration. A model scan or a batch open occupies Revit's
 # UI thread for minutes, and a client with a 60-second default gives up on work
 # that is still running - the bridge then looks broken while it is busy.
-Write-Host "  Codex - add to $($env:USERPROFILE)\.codex\config.toml:"
+    Write-Host "  Codex CLI:"
+    Write-Host "    codex mcp add horizun-revit -- `"$serverExe`""
+    Write-Host "  Then keep these timeouts under [mcp_servers.horizun-revit] in $($env:USERPROFILE)\.codex\config.toml:"
 Write-Host "    [mcp_servers.horizun-revit]"
 Write-Host "    command = '$serverExe'"
 Write-Host "    args = []"
 Write-Host "    startup_timeout_sec = 120"
 Write-Host "    tool_timeout_sec = 600"
-Write-Host ""
+    Write-Host ""
+    Write-Host "Close Claude/Codex before registering, then reopen it. A running client can rewrite its config from memory." -ForegroundColor Yellow
 Write-Host "  Cursor, Cline, Windsurf, Claude Desktop and other MCP clients - in their"
 Write-Host "  JSON config (mcpServers), using the SAME path:"
 Write-Host "    { `"mcpServers`": { `"horizun-revit`": { `"command`": `"$($serverExe -replace '\\', '\\')`" } } }"

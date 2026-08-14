@@ -80,7 +80,7 @@ reports every write probe as NOT COVERED by name rather than passing quietly —
 
 ## Where the backlog lives
 
-[docs/BACKLOG.md](docs/BACKLOG.md). Pick a story, branch, PR.
+[GitHub issues](https://github.com/HorizunGroup/horizun-revit-mcp/issues). Pick a focused issue, branch, and PR.
 
 ## Knowledge is a DIFFERENT channel
 

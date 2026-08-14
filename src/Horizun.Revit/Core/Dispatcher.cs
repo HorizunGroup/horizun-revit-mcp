@@ -31,7 +31,8 @@ namespace Horizun.Revit.Core
         private ExternalEvent _event;
 
         private readonly RequestGate _gate = new RequestGate();
-        private readonly DurableCommandLedger _idempotency = new DurableCommandLedger();
+        private readonly DurableCommandLedger _idempotency =
+            new DurableCommandLedger(retentionLog: message => Log.Info(message));
         private bool _preferAsync;
 
         /// <summary>

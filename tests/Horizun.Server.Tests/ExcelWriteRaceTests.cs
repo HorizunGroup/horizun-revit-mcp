@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
@@ -89,7 +89,10 @@ namespace Horizun.Server.Tests
         private static JObject Args(string path, string cell) => new JObject
         {
             ["file_path"] = path,
-            ["rows"] = new JArray { new JArray { cell } }
+            ["rows"] = new JArray { new JArray { cell } },
+            // Distinct work needs a distinct key: these tests race two DIFFERENT
+            // appends, and sharing a key would make the second a replay of the first.
+            ["idempotency_key"] = Guid.NewGuid().ToString("N")
         };
 
         /// <summary>Many rows, so this caller's transform outlasts the other's whole call.</summary>
@@ -97,7 +100,12 @@ namespace Horizun.Server.Tests
         {
             var rows = new JArray();
             for (int i = 0; i < rowCount; i++) rows.Add(new JArray { tag + i });
-            return new JObject { ["file_path"] = path, ["rows"] = rows };
+            return new JObject
+            {
+                ["file_path"] = path,
+                ["rows"] = rows,
+                ["idempotency_key"] = Guid.NewGuid().ToString("N")
+            };
         }
 
         internal static void Sweep(string path)
@@ -163,7 +171,7 @@ namespace Horizun.Server.Tests
                         barrier.SignalAndWait();
                         try
                         {
-                            JObject r = ExcelWriteRows.Handle(Args(path, "QUICK"));
+                            JObject r = ExcelWriteRows.Handle(Args(path, "QUICK"), ExcelTestLedger.New());
                             if ((int)r["rows_written"] == 1) succeeded.Add("QUICK");
                         }
                         catch (IOException) { /* refused: told, so nothing is lost */ }
@@ -174,7 +182,7 @@ namespace Horizun.Server.Tests
                         barrier.SignalAndWait();
                         try
                         {
-                            JObject r = ExcelWriteRows.Handle(BulkArgs(path, "SLOW", 60000));
+                            JObject r = ExcelWriteRows.Handle(BulkArgs(path, "SLOW", 60000), ExcelTestLedger.New());
                             if ((int)r["rows_written"] == 60000) succeeded.Add("SLOW0");
                         }
                         catch (IOException) { /* refused: told, so nothing is lost */ }
@@ -206,7 +214,7 @@ namespace Horizun.Server.Tests
 
                 using (new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
-                    var ex = Assert.ThrowsAny<Exception>(() => ExcelWriteRows.Handle(Args(path, "refused")));
+                    var ex = Assert.ThrowsAny<Exception>(() => ExcelWriteRows.Handle(Args(path, "refused"), ExcelTestLedger.New()));
                     Assert.Contains("in progress", ex.Message, StringComparison.OrdinalIgnoreCase);
                 }
 

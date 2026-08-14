@@ -33,6 +33,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
+using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
@@ -333,7 +334,20 @@ namespace Horizun.Server
         // The host handler.
         // ---------------------------------------------------------------------
 
-        internal static JObject Handle(JObject args)
+        /// <summary>The tool name, as the ledger records it.</summary>
+        internal const string ToolName = "horizun_excel_write_rows";
+
+        /// <summary>
+        /// What the durable key is scoped to. The workbook, so the same key aimed at a
+        /// different file is a conflict rather than a second append somewhere else.
+        /// </summary>
+        internal static string LedgerScopeOf(JObject args)
+            => "xlsx:" + ((string)args?["file_path"] ?? "(none)");
+
+        internal static JObject Handle(JObject args) =>
+            Handle(args, new DurableCommandLedger(retentionLog: message => Log.Info(message)));
+
+        internal static JObject Handle(JObject args, DurableCommandLedger ledger)
         {
             string filePath = (string)args?["file_path"];
             string sheetName = (string)args?["sheet"];
@@ -343,6 +357,19 @@ namespace Horizun.Server
                 throw new ArgumentException("file_path is required.");
             if (!(rowsTok is JArray rowsArr) || rowsArr.Count == 0)
                 throw new ArgumentException("rows is required and must be a non-empty array of arrays.");
+
+            // AT-MOST-ONCE, because an append is not idempotent and a lost reply is not
+            // rare. Every typed Revit mutation gets this from the dispatcher; this tool is
+            // answered in the server and so was never on that path. The failure it removes
+            // needs no concurrency at all: one client, one timeout, one retry, two copies
+            // of the rows - and the second answer honestly reporting rows_written: 1.
+            string idempotencyKey = (string)args["idempotency_key"];
+            if (string.IsNullOrWhiteSpace(idempotencyKey))
+                throw new ToolRefusal(
+                    "idempotency_key is required. Appending rows cannot be undone by repeating it: if this " +
+                    "reply is lost and you send the call again without a key, the rows land twice and the " +
+                    "second answer reports rows_written honestly, because it did write them. Generate a new " +
+                    "UUID for each deliberate append and keep it unchanged only for retries.");
 
             // Parse the caller's rows into CLR values (numbers/bools/strings/null).
             // This depends on the ARGUMENTS and never on the workbook, so it stays
@@ -392,8 +419,22 @@ namespace Horizun.Server
             AppendReport rep;
             bool hasTable;
             string replaceNote;
+            DurableCommandDecision decision = null;
+            bool writeStarted = false;
             try
             {
+                // THE KEY IS CLAIMED AFTER THE LOCK, deliberately. A caller refused the
+                // lock has been told "somebody else is writing, nothing was read, nothing
+                // was written" - and a claim written before that refusal would leave the
+                // key in doubt forever, so the one thing a caller should obviously do
+                // (wait and retry with the same key) would be permanently refused.
+                string fingerprint = RequestFingerprint.OfOperation(
+                    ToolName, LedgerScopeOf(args), args, "idempotency_key");
+                decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
+
+                if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
+                if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+
                 original = File.ReadAllBytes(filePath);
                 if (original.Length < 4 || original[0] != 0x50 || original[1] != 0x4B) // "PK"
                     throw new InvalidDataException("Not an .xlsx (OPC/zip) file — refusing to write. First bytes are not a zip signature.");
@@ -427,6 +468,12 @@ namespace Horizun.Server
 
                 File.Copy(filePath, backupPath, true);
                 File.WriteAllBytes(tmp, produced);
+
+                // From here the original may already have been replaced. Everything above
+                // is a read or a write to a file nobody else is going to open, so a failure
+                // there is safely terminal; a failure from here on is not knowable, and the
+                // ledger must be left in doubt rather than recording an outcome.
+                writeStarted = true;
                 replaceNote = ReplaceFile(tmp, filePath);
 
                 // THE FILE, not the bytes we hoped we wrote. VerifyReadBack above proved
@@ -454,12 +501,21 @@ namespace Horizun.Server
                         RestoreFromBackup(backupPath, filePath), ex);
                 }
             }
+            catch (Exception ex) when (!writeStarted && decision != null && decision.IsFresh)
+            {
+                // A refusal that never reached the replace: the workbook is exactly as it
+                // was. Recording it as a terminal failure is what lets an identical retry
+                // be told the same thing instead of finding the key in doubt - in doubt is
+                // for outcomes nobody can know, and this one is known.
+                ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                throw;
+            }
             finally
             {
                 ReleaseWorkbookLock(lockHandle, lockPath, tmp);
             }
 
-            return new JObject
+            var response = new JObject
             {
                 ["file_path"] = filePath,
                 ["sheet"] = sheet.Name,
@@ -478,8 +534,42 @@ namespace Horizun.Server
                 ["table_note"] = hasTable
                     ? "This sheet carries an Excel Table. Rows were appended to the sheet but the table's range was NOT expanded — the new rows are below the table, not inside it."
                     : "No Excel Table detected on this sheet.",
-                ["mode"] = "append_inline_strings"
+                ["mode"] = "append_inline_strings",
+                ["idempotency_key"] = idempotencyKey,
+                ["replayed"] = false
             };
+
+            // Recorded AFTER the lock is released, and that ordering is safe: the rows are
+            // in the file and verified there. A failure to record now costs a retry the
+            // replay - it becomes in_doubt, which refuses rather than appending twice.
+            ledger.Complete(decision, CommandResult.Ok(response));
+            return response;
+        }
+
+        /// <summary>
+        /// Hand back the recorded answer, marked as a replay so a caller can tell "your
+        /// rows are already in the file" from "I just appended them". Every other field is
+        /// the first answer's, including first_new_row and sha256_after - the point is
+        /// that it describes the write that actually happened, not this call.
+        /// </summary>
+        private static JObject Replay(CommandResult result)
+        {
+            if (result == null) throw new ToolRefusal("The durable replay record had no result.");
+            if (!result.Success)
+                throw new ToolRefusal((result.Error ?? "The recorded workbook append failed.") +
+                                      " This is the recorded answer for that idempotency_key; nothing was " +
+                                      "written now. Use a NEW key only if you deliberately decide the append " +
+                                      "must be attempted again.");
+
+            if (!(result.Data is JObject recorded))
+                throw new ToolRefusal("The durable replay record for this key is not a workbook result.");
+
+            var clone = (JObject)recorded.DeepClone();
+            clone["replayed"] = true;
+            clone["replay_note"] =
+                "These rows were appended by an EARLIER call with this same idempotency_key. The workbook was " +
+                "not opened or written now; every count and hash above describes that first write.";
+            return clone;
         }
 
         /// <summary>

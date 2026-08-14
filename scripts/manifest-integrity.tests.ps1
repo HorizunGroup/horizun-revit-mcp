@@ -31,10 +31,12 @@ try {
     # --- build a minimal but structurally real stage ------------------------
     New-Item -ItemType Directory -Force (Join-Path $stage 'server') | Out-Null
     New-Item -ItemType Directory -Force (Join-Path $stage 'plugin\2026') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $stage 'plugin\2026\lib') | Out-Null
     Set-Content (Join-Path $stage 'server\horizun-mcp.exe')  'apphost-bytes-v1'      -NoNewline
     Set-Content (Join-Path $stage 'server\horizun-mcp.dll')  'server-code-bytes-v1'  -NoNewline
     Set-Content (Join-Path $stage 'server\Newtonsoft.Json.dll') 'third-party-v1'     -NoNewline
     Set-Content (Join-Path $stage 'plugin\2026\Horizun.Revit.dll') 'plugin-2026-v1'  -NoNewline
+    Set-Content (Join-Path $stage 'plugin\2026\lib\site.py') 'stdlib-v1'             -NoNewline
     Set-Content (Join-Path $stage 'Horizun.addin') '<addin/>'                        -NoNewline
 
     $serverListing = Get-HorizunPayloadListing (Join-Path $stage 'server')
@@ -56,6 +58,9 @@ try {
                 Year    = 2026
                 Sha256  = (Get-HorizunFileHash (Join-Path $stage 'plugin\2026\Horizun.Revit.dll'))
                 Payload = $pluginListing.Files
+                Files = ($pluginListing.FileCount + $pluginListing.StdLibFiles)
+                StdLibFiles = $pluginListing.StdLibFiles
+                StdLibDigest = $pluginListing.StdLibDigest
             }
         )
     }
@@ -83,7 +88,23 @@ try {
     Assert 'the recomputed manifest carries a signature block' ([bool]$updated.Signature) 'no Signature block after recompute'
     Assert 'unsigned own binaries are honestly reported as NOT signed' ($updated.Signed -eq $false) 'claimed signed on an unsigned stage'
 
-    # --- 5. -InstallerOnly is wired to the validator ------------------------
+    # --- 5. exact set: an extra file is not allowed -------------------------
+    Set-Content (Join-Path $stage 'server\stale-from-old-release.dll') 'stale' -NoNewline
+    $unexpected = @(Test-HorizunStageMatchesManifest $stage)
+    Assert 'an unexpected stale server file is REJECTED' `
+           ([bool]($unexpected -match 'unexpected server payload')) ($unexpected -join '; ')
+    Remove-Item (Join-Path $stage 'server\stale-from-old-release.dll') -Force
+
+    # --- 6. the aggregate really covers lib\ -------------------------------
+    Add-Content (Join-Path $stage 'plugin\2026\lib\site.py') 'changed' -NoNewline
+    $changedLib = @(Test-HorizunStageMatchesManifest $stage)
+    Assert 'a changed stdlib byte is REJECTED' ([bool]($changedLib -match 'stdlib digest')) ($changedLib -join '; ')
+    $updated = Update-HorizunManifestToStage $stage
+    Remove-Item (Join-Path $stage 'plugin\2026\lib\site.py') -Force
+    $missingLib = @(Test-HorizunStageMatchesManifest $stage)
+    Assert 'a missing stdlib file is REJECTED' ([bool]($missingLib -match 'stdlib file count')) ($missingLib -join '; ')
+
+    # --- 7. -InstallerOnly is wired to the validator ------------------------
     $packSrc = Get-Content (Join-Path $PSScriptRoot 'pack.ps1') -Raw
     Assert 'pack.ps1 -InstallerOnly calls the stage/manifest validator before building' `
            ($packSrc -match 'Test-HorizunStageMatchesManifest' -and $packSrc -match 'Refusing to build the installer') `

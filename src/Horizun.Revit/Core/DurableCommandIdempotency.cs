@@ -46,13 +46,15 @@ namespace Horizun.Revit.Core
         private readonly Func<string> _dir;
         private readonly Func<DateTime> _utcNow;
         private readonly Func<int> _pid;
+        private readonly Action<string> _retentionLog;
 
         public DurableCommandLedger(Func<string> directory = null, Func<DateTime> utcNow = null,
-                                    Func<int> processId = null)
+                                    Func<int> processId = null, Action<string> retentionLog = null)
         {
             _dir = directory ?? HorizunPaths.IdempotencyDir;
             _utcNow = utcNow ?? (() => DateTime.UtcNow);
             _pid = processId ?? (() => { try { return Process.GetCurrentProcess().Id; } catch { return 0; } });
+            _retentionLog = retentionLog;
         }
 
         public DurableCommandDecision Claim(string key, string command, string fingerprint)
@@ -66,6 +68,22 @@ namespace Horizun.Revit.Core
             string dir = _dir();
             Directory.CreateDirectory(dir);
             string path = System.IO.Path.Combine(dir, keyHash + ".jsonl");
+
+            // Never purge the key being claimed: even an old key must replay or
+            // conflict when its caller presents it. Retention only removes other
+            // terminal records, and an operator must opt in through settings.json.
+            try
+            {
+                DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
+                    dir, DurableStoreKind.Idempotency, Settings.RawValue, _utcNow(), path);
+                if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
+                    (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
+                    _retentionLog?.Invoke("idempotency retention: " + retention.Summary());
+            }
+            catch (Exception ex)
+            {
+                _retentionLog?.Invoke("idempotency retention failed closed; no record was deleted (" + ex.Message + ").");
+            }
 
             return WithKeyLock(keyHash, () =>
             {
@@ -139,12 +157,20 @@ namespace Horizun.Revit.Core
 
                 if (completed != null)
                 {
-                    bool success = completed.Value<bool?>("success") == true;
-                    CommandResult result = success
-                        ? CommandResult.Ok(completed["data"]?.DeepClone())
-                        : CommandResult.Fail((string)completed["error"] ?? "The recorded operation failed.");
-                    if (completed["revit_said"] != null)
-                        result.RevitSaid = completed["revit_said"].DeepClone();
+                    string rebuildError;
+                    CommandResult result = RebuildResult(completed, out rebuildError);
+                    if (result == null)
+                        return new DurableCommandDecision
+                        {
+                            Outcome = DurableCommandOutcome.InDoubt,
+                            Key = key, Command = command, Fingerprint = fingerprint, Path = path,
+                            Message = "The durable idempotency record for key '" + key + "' carries a completion " +
+                                      "that cannot be believed (" + rebuildError + "). Horizun will NOT hand back " +
+                                      "an answer it had to repair, and will NOT run the operation again to find " +
+                                      "out. Inspect the model and the ledger file " + path + " before deliberately " +
+                                      "choosing a new key."
+                        };
+
                     return new DurableCommandDecision
                     {
                         Outcome = DurableCommandOutcome.Replay,
@@ -158,7 +184,11 @@ namespace Horizun.Revit.Core
                 {
                     Outcome = DurableCommandOutcome.InDoubt,
                     Key = key, Command = command, Fingerprint = fingerprint, Path = path,
-                    Message = "idempotency_key '" + key + "' was claimed for this exact operation by Revit pid " +
+                    // "process", not "Revit process": this ledger is shared with the
+                    // host-resident tools (the workbook writer, the Power BI push), whose
+                    // claims carry the MCP server's pid. Naming the wrong process is the
+                    // kind of small inaccuracy that costs somebody an hour in an incident.
+                    Message = "idempotency_key '" + key + "' was claimed for this exact operation by process " +
                               ((string)claim["pid"] ?? "unknown") + " at " +
                               ((string)claim["at_utc"] ?? "an unknown time") +
                               ", but no durable completion record exists. The process may have died after changing " +
@@ -189,9 +219,106 @@ namespace Horizun.Revit.Core
                 else
                     record["error"] = result.Error;
                 if (result.RevitSaid != null) record["revit_said"] = JToken.FromObject(result.RevitSaid);
+
+                // EVERYTHING A CLIENT BRANCHES ON, not just what a human reads.
+                //
+                // These three used to be dropped, and the drop was invisible: the replay
+                // carried the same success flag and the same sentence, so it looked like
+                // the first answer to everything except a program. The first answer could
+                // say "no typed capability covers this and nothing was written"; its replay
+                // said only "failed". A client that retried BECAUSE it never saw the first
+                // answer is exactly the client with no other way to learn that.
+                //
+                // The signal is stored as the three facts it is made of rather than as its
+                // rendered ToJson(): what_this_means is derived prose, and persisting prose
+                // would mean a reworded sentence changes what a replay of an OLD operation
+                // says. Rebuilt through the same constructor the live path uses.
+                if (result.Fallback != null)
+                    record["fallback"] = new JObject
+                    {
+                        ["allowed"] = result.Fallback.IsAllowed,
+                        ["reason"] = result.Fallback.Reason,
+                        ["write_started"] = result.Fallback.WriteStarted
+                    };
+                if (result.CapabilityGaps != null) record["capability_gaps"] = result.CapabilityGaps.DeepClone();
+                if (result.Detail != null) record["detail"] = result.Detail.DeepClone();
+
                 Append(claim.Path, record);
                 return 0;
             });
+        }
+
+        /// <summary>
+        /// Rebuild the recorded answer, or say why it cannot be believed (null + reason).
+        ///
+        /// FAIL CLOSED, DO NOT REPAIR. The one combination worth spelling out is
+        /// allowed=true with write_started=true: FallbackSignal's constructor refuses to
+        /// produce it, so a ledger holding it is not describing anything this code wrote.
+        /// Rebuilding it through Allowed() would quietly turn it into a valid grant - and
+        /// a grant is precisely permission to run a SECOND write after a partial one. The
+        /// same goes for a reason outside the closed set: a grant nobody can branch on is
+        /// not an answer to hand back. Both become in-doubt, which is what this ledger
+        /// does with every other thing it cannot prove.
+        /// </summary>
+        private static CommandResult RebuildResult(JObject completed, out string error)
+        {
+            error = null;
+            bool success = completed.Value<bool?>("success") == true;
+
+            FallbackSignal signal = null;
+            if (completed["fallback"] is JObject fb)
+            {
+                bool allowed = fb.Value<bool?>("allowed") == true;
+                string reason = (string)fb["reason"];
+                bool writeStarted = fb.Value<bool?>("write_started") == true;
+
+                if (allowed && writeStarted)
+                {
+                    error = "it records a GRANTED fallback alongside write_started=true, which this bridge " +
+                            "never emits - a grant means nothing was written, and rebuilding it would licence " +
+                            "a second write over a partial one";
+                    return null;
+                }
+                if (allowed && !FallbackSignal.IsKnownGapReason(reason))
+                {
+                    error = "it records a granted fallback whose reason '" + (reason ?? "(none)") +
+                            "' is not one this bridge issues, so no client could branch on it";
+                    return null;
+                }
+
+                signal = allowed
+                    ? FallbackSignal.Allowed(reason)
+                    : FallbackSignal.NotAllowed(reason, writeStarted);
+            }
+            else if (completed["fallback"] != null && completed["fallback"].Type != JTokenType.Null)
+            {
+                error = "its fallback field is not an object";
+                return null;
+            }
+
+            JArray gaps = completed["capability_gaps"] as JArray;
+            if (gaps == null && completed["capability_gaps"] != null &&
+                completed["capability_gaps"].Type != JTokenType.Null)
+            {
+                error = "its capability_gaps field is not an array";
+                return null;
+            }
+
+            JObject detail = completed["detail"] as JObject;
+            if (detail == null && completed["detail"] != null && completed["detail"].Type != JTokenType.Null)
+            {
+                error = "its detail field is not an object";
+                return null;
+            }
+
+            return CommandResult.Restore(
+                success,
+                success ? completed["data"]?.DeepClone() : null,
+                success ? null : ((string)completed["error"] ?? "The recorded operation failed."),
+                completed["revit_said"]?.DeepClone(),
+                signal,
+                (JArray)gaps?.DeepClone(),
+                (JObject)detail?.DeepClone());
         }
 
         private static T WithKeyLock<T>(string keyHash, Func<T> work)

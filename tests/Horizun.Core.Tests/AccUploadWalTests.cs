@@ -30,7 +30,7 @@ namespace Horizun.Core.Tests
         [Fact]
         public void Decode_strips_nul_bytes_and_keeps_the_text()
         {
-            string rec = Record("co.AbC-123", "PRD-CAMARA.rfa");
+            string rec = Record("co.AbC-123", "SAMPLE-CAMERA.rfa");
             // NULs interleaved the way a binary log interleaves them.
             var raw = new List<byte>();
             foreach (byte b in Encoding.GetEncoding("ISO-8859-1").GetBytes(rec))
@@ -44,16 +44,15 @@ namespace Horizun.Core.Tests
 
             Assert.Single(hits);
             Assert.Equal("co.AbC-123", hits[0].FolderUrn);
-            Assert.Equal("PRD-CAMARA.rfa", hits[0].Name);
+            Assert.Equal("SAMPLE-CAMERA.rfa", hits[0].Name);
             Assert.Equal("f1", hits[0].SourceFile);
         }
 
         [Fact]
         public void Scan_is_org_neutral_where_the_field_script_was_not()
         {
-            // The proven script matched PRD-* only, because those were one client's
-            // families. The rule must find ANY name - AGENTS.md compiles no
-            // organisation in.
+            // The field prototype matched one organisation's prefix. The rule
+            // must find ANY name - AGENTS.md compiles no organisation in.
             string content = Record("co.X1", "ACME-Valve.rfa") + "noise" + Record("co.X2", "modelo estructural.rvt");
 
             var hits = AccUploadWal.Scan("f", content);
@@ -66,19 +65,19 @@ namespace Horizun.Core.Tests
         [Fact]
         public void A_recorded_name_matches_with_or_without_its_extension_and_canonically()
         {
-            var hits = AccUploadWal.Scan("f", Record("co.A", "PRD-CAJA_PASO-15x15x10cm_COM.rfa"));
+            var hits = AccUploadWal.Scan("f", Record("co.A", "SAMPLE-JUNCTION-15x15x10.rfa"));
 
             foreach (string asked in new[]
             {
-                "PRD-CAJA_PASO-15x15x10cm_COM.rfa",       // exact
-                "PRD-CAJA_PASO-15x15x10cm_COM",           // no extension
-                "prd caja paso 15x15x10cm com",           // spacing/case/dashes differ
+                "SAMPLE-JUNCTION-15x15x10.rfa",       // exact
+                "SAMPLE-JUNCTION-15x15x10",           // no extension
+                "sample junction 15x15x10",           // spacing/case/dashes differ
             })
             {
                 var r = AccUploadWal.Match(new[] { asked }, hits).Single();
                 Assert.True(r.HasFolderUrn, asked);
                 Assert.Contains("co.A", r.FolderUrns);
-                Assert.Contains("PRD-CAJA_PASO-15x15x10cm_COM.rfa", r.MatchedNames);
+                Assert.Contains("SAMPLE-JUNCTION-15x15x10.rfa", r.MatchedNames);
             }
         }
 
@@ -88,9 +87,9 @@ namespace Horizun.Core.Tests
             // 3 of 8 families copied into the connector folder and silently unuploaded:
             // their names are NOT in the WAL, and the verdict must say so instead of
             // being inferred from the local copy existing.
-            var hits = AccUploadWal.Scan("f", Record("co.A", "PRD-UPLOADED.rfa"));
+            var hits = AccUploadWal.Scan("f", Record("co.A", "SAMPLE-UPLOADED.rfa"));
 
-            var r = AccUploadWal.Match(new[] { "PRD-THROTTLED.rfa" }, hits).Single();
+            var r = AccUploadWal.Match(new[] { "SAMPLE-THROTTLED.rfa" }, hits).Single();
 
             Assert.False(r.HasFolderUrn);
             Assert.Empty(r.FolderUrns);
@@ -102,9 +101,9 @@ namespace Horizun.Core.Tests
             // The flat-old-location case. The script took a hint list and picked one;
             // the rule reports every folder and lets the caller decide, because a
             // silent choice is a guess wearing a fact's clothes.
-            string content = Record("co.OLD", "PRD-X.rfa") + Record("co.NEW", "PRD-X.rfa");
+            string content = Record("co.OLD", "SAMPLE-X.rfa") + Record("co.NEW", "SAMPLE-X.rfa");
 
-            var r = AccUploadWal.Match(new[] { "PRD-X" }, AccUploadWal.Scan("f", content)).Single();
+            var r = AccUploadWal.Match(new[] { "SAMPLE-X" }, AccUploadWal.Scan("f", content)).Single();
 
             Assert.True(r.HasFolderUrn);
             Assert.Equal(2, r.FolderUrns.Count);
@@ -125,7 +124,7 @@ namespace Horizun.Core.Tests
         [Fact]
         public void Stem_strips_a_real_extension_and_leaves_a_size_alone()
         {
-            Assert.Equal("PRD-CAMARA", AccUploadWal.Stem("PRD-CAMARA.rfa"));
+            Assert.Equal("SAMPLE-CAMERA", AccUploadWal.Stem("SAMPLE-CAMERA.rfa"));
             Assert.Equal("modelo", AccUploadWal.Stem("modelo.rvt"));
             // ".5" is a size, not an extension: digits after the dot never strip.
             Assert.Equal("Caja 1.5x2.5", AccUploadWal.Stem("Caja 1.5x2.5"));

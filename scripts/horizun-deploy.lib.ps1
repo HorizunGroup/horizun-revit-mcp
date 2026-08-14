@@ -331,6 +331,15 @@ function Test-HorizunStageMatchesManifest([string]$Stage) {
 
     # The whole server directory (horizun-mcp.dll, Newtonsoft, the runtimeconfig...).
     $serverDir = Join-Path $Stage 'server'
+    $serverListing = Get-HorizunPayloadListing $serverDir
+    $serverExpected = @($doc.Server.Payload | ForEach-Object { "$($_.Path)".Replace('\', '/') })
+    $serverActual = @($serverListing.Files | ForEach-Object { "$($_.Path)".Replace('\', '/') })
+    foreach ($path in @($serverActual | Where-Object { $serverExpected -notcontains $_ })) {
+        $bad += "unexpected server payload: $path"
+    }
+    foreach ($path in @($serverExpected | Where-Object { $serverActual -notcontains $_ })) {
+        $bad += "server manifest entry absent from payload: $path"
+    }
     foreach ($p in @($doc.Server.Payload)) {
         $onDisk = Join-Path $serverDir ($p.Path -replace '/', '\')
         if (-not (Test-Path $onDisk)) { $bad += "server payload missing: $($p.Path)"; continue }
@@ -344,6 +353,25 @@ function Test-HorizunStageMatchesManifest([string]$Stage) {
         if (-not (Test-Path $dll)) { $bad += "plugin $($entry.Year) missing"; continue }
         if ((Get-HorizunFileHash $dll) -ne $entry.Sha256) {
             $bad += "plugin $($entry.Year) Horizun.Revit.dll: $((Get-HorizunFileHash $dll)) vs manifest $($entry.Sha256)"
+        }
+        $pluginListing = Get-HorizunPayloadListing $pluginDir
+        $pluginExpected = @($entry.Payload | ForEach-Object { "$($_.Path)".Replace('\', '/') })
+        $pluginActual = @($pluginListing.Files | ForEach-Object { "$($_.Path)".Replace('\', '/') })
+        foreach ($path in @($pluginActual | Where-Object { $pluginExpected -notcontains $_ })) {
+            $bad += "plugin $($entry.Year) unexpected payload: $path"
+        }
+        foreach ($path in @($pluginExpected | Where-Object { $pluginActual -notcontains $_ })) {
+            $bad += "plugin $($entry.Year) manifest entry absent from payload: $path"
+        }
+        if ([int]$entry.StdLibFiles -ne [int]$pluginListing.StdLibFiles) {
+            $bad += "plugin $($entry.Year) stdlib file count: stage $($pluginListing.StdLibFiles) vs manifest $($entry.StdLibFiles)"
+        }
+        if ("$($entry.StdLibDigest)" -ne "$($pluginListing.StdLibDigest)") {
+            $bad += "plugin $($entry.Year) stdlib digest changed since the manifest"
+        }
+        $actualTotal = [int]$pluginListing.FileCount + [int]$pluginListing.StdLibFiles
+        if ($null -ne $entry.Files -and [int]$entry.Files -ne $actualTotal) {
+            $bad += "plugin $($entry.Year) total file count: stage $actualTotal vs manifest $($entry.Files)"
         }
         foreach ($p in @($entry.Payload)) {
             $onDisk = Join-Path $pluginDir ($p.Path -replace '/', '\')

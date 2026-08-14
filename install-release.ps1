@@ -5,14 +5,71 @@
 
   Usage:
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1
-    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version v0.6.0
+    powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version vX.Y.Z
 #>
 [CmdletBinding()]
 param(
     [string]$Version = 'latest',
-    [switch]$KeepDownloadedFiles
+    [switch]$KeepDownloadedFiles,
+    [switch]$Silent,
+    [switch]$VerifyOnly
 )
 $ErrorActionPreference = 'Stop'
+
+# Kept in this file deliberately: the documented bootstrap downloads this ONE
+# script to a temp folder. A helper beside the repository copy would not exist
+# there, so depending on one makes the no-Git installation fail before download.
+function Read-HorizunInstallResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][datetime]$StartedLocal,
+        [Parameter(Mandatory=$true)][datetime]$FinishedLocal,
+        [string]$ExpectedVersion
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Setup returned but wrote no result for this run at $Path. Exit code 0 alone is not proof of a complete install."
+    }
+    $values = @{}
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $at = $line.IndexOf('=')
+        if ($at -le 0) { continue }
+        $key = $line.Substring(0, $at).Trim()
+        if ($values.ContainsKey($key)) { throw "Install result repeats '$key'; refusing an ambiguous report." }
+        $values[$key] = $line.Substring($at + 1).Trim()
+    }
+    foreach ($required in 'version','installed_local','server_installed','any_revit_found','succeeded','failed','fully_installed') {
+        if (-not $values.ContainsKey($required)) { throw "Install result is missing '$required'." }
+    }
+    $stamp = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($values.installed_local, 'yyyy-MM-dd HH:mm:ss',
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AssumeLocal, [ref]$stamp)) {
+        throw "Install result has an invalid installed_local stamp: '$($values.installed_local)'."
+    }
+    if ($stamp -lt $StartedLocal.AddSeconds(-2) -or $stamp -gt $FinishedLocal.AddMinutes(1)) {
+        throw "Install result is not from this run: stamp $stamp, launch $StartedLocal, return $FinishedLocal."
+    }
+    if ($ExpectedVersion) {
+        $want = $ExpectedVersion.TrimStart('v')
+        if ($values.version.TrimStart('v') -ne $want) {
+            throw "Install result is for version '$($values.version)', expected '$ExpectedVersion'."
+        }
+    }
+    if ($values.server_installed -ne 'yes') { throw "The MCP server was not installed: $($values.server_failure)" }
+    if ($values.any_revit_found -ne 'yes') { throw 'No supported Revit installation was found; the add-in was not installed.' }
+    if ($values.fully_installed -ne 'yes' -or -not [string]::IsNullOrWhiteSpace($values.failed)) {
+        throw "Setup completed only partially. Succeeded: '$($values.succeeded)'. Failed: '$($values.failed)'."
+    }
+    if ([string]::IsNullOrWhiteSpace($values.succeeded)) {
+        throw 'Setup claimed fully_installed=yes but named no successfully installed Revit year.'
+    }
+    [pscustomobject]$values
+}
+
+# Tests dot-source the standalone bootstrap to exercise the exact parser that
+# ships. Dot-sourcing defines functions and performs no network or installation.
+if ($MyInvocation.InvocationName -eq '.') { return }
 $repo = 'HorizunGroup/horizun-revit-mcp'
 $encodedVersion = [Uri]::EscapeDataString($Version)
 $api = if ($Version -eq 'latest') {
@@ -62,9 +119,21 @@ try {
     }
 
     Write-Host "[Horizun] verified $($release.tag_name): $actual" -ForegroundColor Green
-    $process = Start-Process -FilePath $setupPath -Wait -PassThru
+    if ($VerifyOnly) {
+        Write-Host '[Horizun] verification-only requested; Setup was NOT launched.' -ForegroundColor Green
+        return
+    }
+
+    $resultPath = Join-Path $temporary 'install-result.txt'
+    $arguments = @("/HORIZUNRESULT=$resultPath")
+    if ($Silent) { $arguments += '/SILENT'; $arguments += '/SUPPRESSMSGBOXES' }
+    $startedLocal = Get-Date
+    $process = Start-Process -FilePath $setupPath -ArgumentList $arguments -Wait -PassThru
+    $finishedLocal = Get-Date
     if ($process.ExitCode -ne 0) { throw "The setup exited with code $($process.ExitCode). Review its on-screen report." }
-    Write-Host '[Horizun] setup completed successfully.' -ForegroundColor Green
+    $installResult = Read-HorizunInstallResult -Path $resultPath -StartedLocal $startedLocal `
+        -FinishedLocal $finishedLocal -ExpectedVersion $release.tag_name
+    Write-Host ("[Horizun] setup completed successfully for Revit " + $installResult.succeeded + '.') -ForegroundColor Green
 }
 finally {
     if ($KeepDownloadedFiles) { Write-Host "Downloaded files kept at $temporary" -ForegroundColor DarkYellow }

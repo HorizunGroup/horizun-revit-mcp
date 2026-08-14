@@ -23,7 +23,7 @@ namespace Horizun.Core.Tests
             var p = new ClientPresence();
             p.Seen(100, T0);
             var snap = p.Take(T0);
-            Assert.Equal(1, snap.Clients.Count);
+            Assert.Single(snap.Clients);
             Assert.Equal(0, snap.OtherThanCaller);
         }
 
@@ -43,7 +43,7 @@ namespace Horizun.Core.Tests
         {
             var p = new ClientPresence();
             for (int i = 0; i < 50; i++) p.Seen(100, T0.AddSeconds(i));
-            Assert.Equal(1, p.Take(T0.AddSeconds(50)).Clients.Count);
+            Assert.Single(p.Take(T0.AddSeconds(50)).Clients);
         }
 
         [Fact]
@@ -52,7 +52,7 @@ namespace Horizun.Core.Tests
             // Health can only run over a recorded connection, but the floor is a
             // property of the rule, not of the one caller we know about today.
             var snap = new ClientPresence().Take(T0);
-            Assert.Equal(0, snap.Clients.Count);
+            Assert.Empty(snap.Clients);
             Assert.Equal(0, snap.OtherThanCaller);
         }
 
@@ -63,7 +63,7 @@ namespace Horizun.Core.Tests
             p.Seen(100, T0 - ClientPresence.Window - TimeSpan.FromSeconds(1));
             p.Seen(200, T0);
             var snap = p.Take(T0);
-            Assert.Equal(1, snap.Clients.Count);
+            Assert.Single(snap.Clients);
             Assert.Equal(200, snap.Clients[0].Pid);
             Assert.Equal(0, snap.OtherThanCaller);
         }
@@ -73,7 +73,7 @@ namespace Horizun.Core.Tests
         {
             var p = new ClientPresence();
             p.Seen(100, T0 - ClientPresence.Window);
-            Assert.Equal(1, p.Take(T0).Clients.Count);
+            Assert.Single(p.Take(T0).Clients);
         }
 
         [Fact]

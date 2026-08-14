@@ -60,7 +60,8 @@ namespace Horizun.Server.Tests
         private static JObject Args(string path, string cell) => new JObject
         {
             ["file_path"] = path,
-            ["rows"] = new JArray { new JArray { cell } }
+            ["rows"] = new JArray { new JArray { cell } },
+            ["idempotency_key"] = Guid.NewGuid().ToString("N")
         };
 
         private static void Sweep(string path)
@@ -85,7 +86,7 @@ namespace Horizun.Server.Tests
                 // Stand in for a write already in progress.
                 using (new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 {
-                    var ex = Assert.ThrowsAny<Exception>(() => ExcelWriteRows.Handle(Args(path, "B")));
+                    var ex = Assert.ThrowsAny<Exception>(() => ExcelWriteRows.Handle(Args(path, "B"), ExcelTestLedger.New()));
                     Assert.Contains("in progress", ex.Message, StringComparison.OrdinalIgnoreCase);
                 }
 
@@ -103,12 +104,12 @@ namespace Horizun.Server.Tests
             string path = MakeBook();
             try
             {
-                ExcelWriteRows.Handle(Args(path, "one"));
+                ExcelWriteRows.Handle(Args(path, "one"), ExcelTestLedger.New());
                 Assert.False(File.Exists(path + ".horizunlock"),
                              "The lock must be released when the write finishes, or the workbook is dead to every later call.");
 
                 // Proven by doing it again rather than by inspecting the flag.
-                JObject second = ExcelWriteRows.Handle(Args(path, "two"));
+                JObject second = ExcelWriteRows.Handle(Args(path, "two"), ExcelTestLedger.New());
                 Assert.Equal(1, (int)second["rows_written"]);
             }
             finally { Sweep(path); }
@@ -120,8 +121,8 @@ namespace Horizun.Server.Tests
             string path = MakeBook();
             try
             {
-                JObject a = ExcelWriteRows.Handle(Args(path, "one"));
-                JObject b = ExcelWriteRows.Handle(Args(path, "two"));
+                JObject a = ExcelWriteRows.Handle(Args(path, "one"), ExcelTestLedger.New());
+                JObject b = ExcelWriteRows.Handle(Args(path, "two"), ExcelTestLedger.New());
 
                 string backupA = (string)a["backup_path"];
                 string backupB = (string)b["backup_path"];
@@ -142,7 +143,7 @@ namespace Horizun.Server.Tests
             string path = MakeBook();
             try
             {
-                ExcelWriteRows.Handle(Args(path, "one"));
+                ExcelWriteRows.Handle(Args(path, "one"), ExcelTestLedger.New());
                 Assert.False(Directory.GetFiles(Path.GetDirectoryName(path), Path.GetFileName(path) + ".*")
                                       .Any(p => p.EndsWith(".horizuntmp", StringComparison.Ordinal)),
                              "The temp file must be cleaned up whichever branch of the replace ran.");

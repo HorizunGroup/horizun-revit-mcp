@@ -1,13 +1,17 @@
 // -----------------------------------------------------------------------------
 // Horizun Server tests - original Horizun code.
 //
-// execution.taskSupport tells a client whether a tool may be run as a long-lived
-// task instead of a blocking call. It is DERIVED from the contract, and these
-// tests exist because the derivation must keep agreeing with the one rule that
-// makes it true: horizun_submit_job accepts exactly the tools that forward to
-// Revit, and refuses host-resident ones plus execute_python and itself. If those
-// two ever disagree, the server advertises a task a caller cannot create - which
-// is worse than advertising nothing.
+// WHICH TOOLS MAY BE QUEUED, and the contract facts that decide it.
+//
+// These began as tests for the MCP execution.taskSupport hint. That field is no
+// longer emitted - the server implements no tasks/* method and declares no
+// "tasks" capability, so hinting at MCP Tasks was a promise it withdrew one
+// field later (see NoUnimplementedTaskSupportTests).
+//
+// The RULE these assert outlived the field, because it is what horizun_submit_job
+// actually does: it accepts exactly the tools that forward to Revit, and refuses
+// host-resident ones plus execute_python and itself. The bridge's own queue is
+// built on that, so it is still worth pinning to the contract.
 // -----------------------------------------------------------------------------
 using System.Linq;
 using Horizun.Contracts;

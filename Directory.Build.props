@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- One product, one release number. The server and every Revit payload
+         inherit this value and are packaged/deployed as an inseparable pair. -->
+    <Version>0.9.0</Version>
+  </PropertyGroup>
+</Project>

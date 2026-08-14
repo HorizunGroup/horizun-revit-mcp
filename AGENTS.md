@@ -72,13 +72,21 @@ Do not retype it with `%LOCALAPPDATA%`: `cmd.exe` expands that variable and
 **PowerShell does not**, so a config written that way points somewhere that does
 not exist and the client shows no tools without saying why.
 
+Installation and registration are two phases. Do not rewrite the configuration
+of the Claude/Codex process that is currently running: it may overwrite the edit
+when it exits. Install and verify first, print the command below, ask the user to
+close the client, run it from a fresh shell, then reopen the client.
+
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — user scope makes it available across projects
+claude mcp add --scope user horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex
+codex mcp add horizun-revit -- "C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Codex timeout settings — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<you>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -105,10 +113,11 @@ when it is merely busy.
 
 ### First Revit start — tell the user about this
 
-- Revit will show the **"Security - Unsigned Add-In"** dialog (this build is
-  unsigned). They must choose **Always Load**. Revit normally remembers that
-  choice for this add-in's identity, though a trust or policy reset can bring the
-  prompt back. It can open **on another monitor** — a Revit that has been
+- Without an already trusted local signing certificate, Revit will show a
+  **Security** dialog. Choose **Always Load** after verifying the build. A source
+  install reuses an explicitly created trusted self-signing certificate when one
+  exists; that is local trust, not a public publisher identity. The dialog can
+  open **on another monitor** — a Revit that has been
   "starting" for minutes with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
   **Estado del puente** button answers "is this working, and which version?"
@@ -190,9 +199,11 @@ contract hash and are updated **together**; there is no partial deployment.
 
 ### Uninstall
 
-With Revit closed: delete `%APPDATA%\Autodesk\Revit\Addins\<year>\Horizun\` and
-each year's `Horizun.addin`, plus `%LOCALAPPDATA%\Programs\Horizun\MCP\`. Local
-state (settings, logs, job records) lives in `%USERPROFILE%\.horizun\`.
+Close Revit and the MCP client, then uninstall **Horizun Revit MCP** from Windows
+Installed apps. Before uninstalling, the Start-menu shortcut **Advanced cleanup
+before uninstall** can remove only the named `horizun-revit` entries from Claude
+and Codex. State in `%USERPROFILE%\.horizun\` and signing trust are preserved by
+default; the helper purges either only when the user explicitly selects it.
 
 ---
 
@@ -243,13 +254,21 @@ máquina. No la reescribas con `%LOCALAPPDATA%`: `cmd.exe` expande esa variable 
 **PowerShell no**, así que una config escrita así apunta a un sitio que no
 existe y el cliente no muestra herramientas sin decir por qué.
 
+La instalación y el registro son dos fases. No reescribas la configuración del
+proceso de Claude/Codex que está corriendo: puede pisar el cambio al cerrarse.
+Instala y verifica, imprime el comando siguiente, pide cerrar el cliente,
+ejecutarlo desde una consola nueva y después volver a abrir el cliente.
+
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — el scope user lo deja disponible en todos los proyectos
+claude mcp add --scope user horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex
+codex mcp add horizun-revit -- "C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Ajustes de timeout de Codex — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<usuario>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -276,10 +295,11 @@ minutos, y un timeout de 60 s por defecto abandona trabajo que sigue corriendo
 
 ### Primer arranque de Revit — avisa al usuario de esto
 
-- Revit mostrará el diálogo **"Security - Unsigned Add-In"** (este build no va
-  firmado). Hay que elegir **Always Load**. Revit normalmente recuerda esa
-  elección por la identidad del add-in, aunque un cambio de política o confianza
-  puede hacer que el aviso vuelva. Puede abrirse **en otro monitor** — un Revit
+- Sin un certificado local de firma ya confiable, Revit mostrará un diálogo de
+  **Security**. Tras verificar el build, hay que elegir **Always Load**. Una
+  instalación desde fuente reutiliza el certificado autofirmado que el usuario
+  haya creado y confiado explícitamente; eso no es identidad pública. El diálogo
+  puede abrirse **en otro monitor** — un Revit
   que lleva minutos "arrancando" con la CPU quieta suele tener este diálogo
   escondido.
 - Con un documento abierto aparece la pestaña **Horizun Hub** en la cinta. Su
@@ -364,6 +384,9 @@ un hash de contrato y se actualizan **juntos**; no hay despliegue parcial.
 
 ### Desinstalar
 
-Con Revit cerrado: borra `%APPDATA%\Autodesk\Revit\Addins\<año>\Horizun\` y el
-`Horizun.addin` de cada año, y `%LOCALAPPDATA%\Programs\Horizun\MCP\`. El estado
-local (settings, logs, registros de jobs) vive en `%USERPROFILE%\.horizun\`.
+Cierra Revit y el cliente MCP, y desinstala **Horizun Revit MCP** desde
+Aplicaciones instaladas de Windows. Antes, el acceso **Limpieza avanzada antes de
+desinstalar** del menú Inicio puede quitar únicamente las entradas
+`horizun-revit` de Claude y Codex. El estado en `%USERPROFILE%\.horizun\` y la
+confianza de firma se conservan por defecto; el helper solo purga cada uno si el
+usuario lo selecciona explícitamente.

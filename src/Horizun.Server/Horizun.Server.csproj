@@ -14,10 +14,7 @@
     <ImplicitUsings>disable</ImplicitUsings>
     <AssemblyName>horizun-mcp</AssemblyName>
     <RootNamespace>Horizun.Server</RootNamespace>
-    <!-- Same version as the plugin, and for the same reason: the number the MCP client
-         sees in serverInfo is read from this assembly, never hand-typed. Keep the two
-         csproj values in step - a server and a plugin that disagree is a support call. -->
-    <Version>0.8.0</Version>
+    <!-- Version is inherited from the repository's Directory.Build.props. -->
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
@@ -57,6 +54,7 @@
     <Compile Include="..\Horizun.Revit\Core\FallbackSignal.cs" />
     <Compile Include="..\Horizun.Revit\Core\Idempotency.cs" />
     <Compile Include="..\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
+    <Compile Include="..\Horizun.Revit\Core\DurableStoreRetention.cs" />
   </ItemGroup>
 
   <ItemGroup>
