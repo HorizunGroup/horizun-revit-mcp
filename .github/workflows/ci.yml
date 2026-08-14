@@ -416,24 +416,15 @@ jobs:
             dist/stage/manifest.json
 
   # ---------------------------------------------------------------------------
-  # The integration suite: real commands against a real model. The harness is in
-  # scripts/verify-live.ps1; this job exists so it runs somewhere other than a
-  # developer's memory.
+  # Install exactly once. Reinstalling the identical package before every Revit
+  # year adds no evidence and creates a false dependency on unrelated MCP clients
+  # staying closed for the whole matrix. The immutable installed payload is
+  # proven here; the next job exercises it in each supported Revit API.
   # ---------------------------------------------------------------------------
-  revit-integration:
+  install-package:
     if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
     needs: package
     runs-on: [self-hosted, windows, revit]
-    strategy:
-      fail-fast: false
-      # This matrix shares one interactive Windows desktop. Two simultaneous
-      # Revit sessions would make target selection ambiguous and invalidate both
-      # reports, even if more runner slots are added later.
-      max-parallel: 1
-      # Stable means every supported year has a published live report. Compilation
-      # is not a substitute for opening the installed artifact in that Revit API.
-      matrix:
-        year: [2023, 2024, 2025, 2026, 2027]
     steps:
       - uses: actions/checkout@v7
 
@@ -522,7 +513,7 @@ jobs:
           # a local stamp against a UTC clock and rejected a good install as
           # stale on any machine not on UTC.
           $startedLocal = Get-Date
-          $result = Join-Path $env:RUNNER_TEMP "horizun-install-result-${{ github.run_id }}-${{ matrix.year }}.txt"
+          $result = Join-Path $env:RUNNER_TEMP "horizun-install-result-${{ github.run_id }}.txt"
           $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"/HORIZUNRESULT=$result" -Wait -PassThru
 
           # BOTH, and neither alone. Inno returns 0 from any install that
@@ -561,7 +552,33 @@ jobs:
         # Unsigned is explicit because no public CA identity exists yet; see the
         # release policy. The result path is the exact per-run file requested in
         # the install step, never the global result left by an earlier install.
-        run: pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}-${{ matrix.year }}.txt" -Json artifacts/live/release-chain.json
+        run: pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+
+      - name: Publish the installed release-chain evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: installed-release-chain
+          path: artifacts/live/release-chain.json
+
+  # ---------------------------------------------------------------------------
+  # The integration suite: real commands against real disposable models. Every
+  # year consumes the one package install proven above; compilation alone is not
+  # a substitute for opening the payload in that Revit API.
+  # ---------------------------------------------------------------------------
+  revit-integration:
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    needs: install-package
+    runs-on: [self-hosted, windows, revit]
+    strategy:
+      fail-fast: false
+      # This matrix shares one interactive Windows desktop. Two simultaneous
+      # Revit sessions would make target selection ambiguous and invalidate both
+      # reports, even if more runner slots are added later.
+      max-parallel: 1
+      matrix:
+        year: [2023, 2024, 2025, 2026, 2027]
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Live verification against a running Revit ${{ matrix.year }}
         shell: pwsh
