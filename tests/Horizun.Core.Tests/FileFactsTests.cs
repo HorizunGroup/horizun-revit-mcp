@@ -50,10 +50,12 @@ namespace Horizun.Core.Tests
             var path = Write("held.rfa", "family bytes");
             using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
             {
-                // The approach this replaced: OpenRead() demands no other writer, so it
-                // throws here. If this ever STOPS throwing, the share-mode fix is no
-                // longer load-bearing and the comment in FileFacts is stale.
-                Assert.ThrowsAny<IOException>(() => { using (File.OpenRead(path)) { } });
+                // The approach this replaced: on Windows OpenRead() demands that no
+                // other writer holds the file, so it throws here. Unix does not enforce
+                // FileShare flags this way, therefore asserting that platform-specific
+                // failure there would make this Revit/Windows regression test flaky.
+                if (OperatingSystem.IsWindows())
+                    Assert.ThrowsAny<IOException>(() => { using (File.OpenRead(path)) { } });
 
                 var f = FileFacts.Read(path);
                 Assert.True(f.Existed);
