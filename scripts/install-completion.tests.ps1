@@ -128,6 +128,13 @@ args = []
         -Client Codex -ServerPath $server -SkipLive *> $null
     Assert 'standalone Codex installation verification passes' ($LASTEXITCODE -eq 0) "exit $LASTEXITCODE"
 
+    $noneReport = Join-Path $root 'none-verification.json'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-install.ps1') `
+        -Client None -ServerPath $server -SkipLive -Json $noneReport *> $null
+    $noneState = Get-Content -LiteralPath $noneReport -Raw | ConvertFrom-Json
+    Assert 'binary-only verification does not claim client registration' `
+        ($LASTEXITCODE -eq 0 -and $noneState.state -eq 'installed') $noneState.state
+
     Add-Content -LiteralPath $server -Value 'tampered'
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-install.ps1') `
         -Client Claude -ServerPath $server -SkipLive *> $null

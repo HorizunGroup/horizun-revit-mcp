@@ -218,6 +218,7 @@ if (-not $SkipLive -and $problems.Count -eq 0) {
 }
 
 $state = if ($problems.Count -gt 0) { 'failed' }
+         elseif ($SkipLive -and $resolvedClient -eq 'None') { 'installed' }
          elseif ($SkipLive) { 'installed_and_registered' }
          elseif ($livePending) { 'awaiting_revit' }
          else { 'live_verified' }
