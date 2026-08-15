@@ -35,9 +35,15 @@ deploys a different add-in binary compiled against each installed year's own API
 It also installs the MCP server and reports exactly which years succeeded. No Git
 or .NET SDK is required for this path.
 
-The release carries `SHA256SUMS.txt` and a complete payload manifest. The current
-build is not signed by a publicly trusted code-signing CA, so Windows/Revit may
-show a publisher warning; verify the SHA-256 before running it.
+The release carries `SHA256SUMS.txt` and a complete payload manifest. The latest
+public release predates the pending SignPath Foundation application and is not
+signed by a publicly trusted code-signing CA, so Windows/Revit may show a
+publisher warning; verify the SHA-256 before running it. Future stable releases
+must satisfy the public signature gate in the
+[code signing policy](CODE-SIGNING-POLICY.md) before publication. The intended
+open-source service is: **Free code signing provided by SignPath.io, certificate
+by SignPath Foundation.** This is an application status, not a claim that the
+current download is already signed.
 
 The setup installs every supported Revit payload present in the release and the
 MCP server. It also completes Codex/Claude registration automatically. If either
@@ -369,6 +375,11 @@ outbound HTTPS calls only to fixed Microsoft Entra and `api.powerbi.com`
 endpoints; it accepts no URL or credential in tool arguments. The full threat model — what is defended, and what
 deliberately is not — is in [docs/security-model.md](docs/security-model.md),
 and it is written to be argued with.
+
+Horizun has no automatic telemetry or maintainer-operated data collection.
+User-requested network operations and local state are described in the
+[privacy policy](docs/PRIVACY.md). Stable Windows release signing is governed by
+the [code signing policy](CODE-SIGNING-POLICY.md).
 
 ## License
 

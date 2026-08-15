@@ -105,6 +105,22 @@ if ($readme -notmatch 'irm https://raw\.githubusercontent\.com/HorizunGroup/hori
     Fail 'the public README no longer offers the one-paste release installer'
 }
 
+$signingPolicy = Get-Content (Join-Path $repo 'CODE-SIGNING-POLICY.md') -Raw
+$privacyPolicy = Get-Content (Join-Path $repo 'docs/PRIVACY.md') -Raw
+$codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
+if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code signing provided by SignPath\.io, certificate\s+by SignPath Foundation') {
+    Fail 'README no longer exposes the required SignPath code-signing statement and policy'
+}
+if ($signingPolicy -notmatch 'application is pending' -or $signingPolicy -notmatch 'GitHub-hosted runners' -or $signingPolicy -notmatch 'docs/PRIVACY\.md') {
+    Fail 'code-signing policy no longer states its pending status, trusted origin and privacy boundary'
+}
+if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {
+    Fail 'privacy policy no longer names the automatic and user-requested data boundaries'
+}
+if ($codeowners -notmatch '/\.github/workflows/' -or $codeowners -notmatch '/CODE-SIGNING-POLICY\.md') {
+    Fail 'signing policy and workflows are no longer covered by CODEOWNERS'
+}
+
 $sourceInstaller = Get-Content (Join-Path $repo 'install.ps1') -Raw
 $clientToolsCopy = [regex]::Escape("Copy-Item (Join-Path `$serverStage 'client-tools') `$installedClientTools -Recurse -Force")
 if ($sourceInstaller -notmatch $clientToolsCopy -or
