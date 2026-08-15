@@ -784,6 +784,7 @@ jobs:
 
       - name: Create or complete the stable GitHub release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
