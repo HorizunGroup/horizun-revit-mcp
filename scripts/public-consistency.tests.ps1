@@ -75,6 +75,7 @@ if ($ci -notmatch "'stage\.zip'\s*=\s*'dist/stage\.zip'") { Fail 'the package re
 if ($ci -notmatch '(?s)install-package:.*?Restore the complete staged payload and its build timestamps.*?Expand-Archive') { Fail 'the package install no longer restores the timestamp-preserving stage archive' }
 if ($ci -notmatch '(?s)revit-integration:.*?needs:\s*install-package') { Fail 'live Revit jobs can run without the one proven package installation' }
 if ([regex]::Matches($ci, '(?m)^\s*- name: Install the packaged artifact\s*$').Count -ne 1) { Fail 'the release workflow must install the immutable package exactly once' }
+if ($ci -notmatch '(?s)name:\s*installed-release-chain.*?dist/stage/manifest\.json.*?revit-integration:.*?Get the proven install manifest') { Fail 'clean live jobs no longer receive the proven package manifest' }
 if ($runnerGate -notmatch "'-ReleaseGate',\s*'-WriteProbes'") { Fail 'the release lifecycle no longer runs the committing write tier' }
 if ($runnerGate -notmatch "Get-Process -Name Revit" -or $runnerGate -notmatch 'preexisting\.Count -gt 0') {
     Fail 'the release lifecycle no longer refuses a pre-existing user Revit session'

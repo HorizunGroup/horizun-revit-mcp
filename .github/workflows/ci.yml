@@ -558,7 +558,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: installed-release-chain
-          path: artifacts/live/release-chain.json
+          # Every live job starts from a clean checkout. The orchestrator needs
+          # this manifest to bind the installed server and selected add-in year
+          # to the package commit before it opens Revit.
+          path: |
+            artifacts/live/release-chain.json
+            dist/stage/manifest.json
 
   # ---------------------------------------------------------------------------
   # The integration suite: real commands against real disposable models. Every
@@ -579,6 +584,12 @@ jobs:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
       - uses: actions/checkout@v7
+
+      - name: Get the proven install manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: installed-release-chain
+          path: .
 
       - name: Live verification against a running Revit ${{ matrix.year }}
         shell: pwsh
