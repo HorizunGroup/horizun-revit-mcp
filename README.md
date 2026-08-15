@@ -36,14 +36,15 @@ It also installs the MCP server and reports exactly which years succeeded. No Gi
 or .NET SDK is required for this path.
 
 The release carries `SHA256SUMS.txt` and a complete payload manifest. The latest
-public release predates the pending SignPath Foundation application and is not
-signed by a publicly trusted code-signing CA, so Windows/Revit may show a
+public release predates the SignPath Foundation application submitted on
+2026-08-15 and is not signed by a publicly trusted code-signing CA, so
+Windows/Revit may show a
 publisher warning; verify the SHA-256 before running it. Future stable releases
 must satisfy the public signature gate in the
 [code signing policy](CODE-SIGNING-POLICY.md) before publication. The intended
 open-source service is: **Free code signing provided by SignPath.io, certificate
-by SignPath Foundation.** This is an application status, not a claim that the
-current download is already signed.
+by SignPath Foundation.** The application is awaiting review; this is not a
+claim that the current download is already signed.
 
 The setup installs every supported Revit payload present in the release and the
 MCP server. It also completes Codex/Claude registration automatically. If either

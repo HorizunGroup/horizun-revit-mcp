@@ -44,9 +44,10 @@ can become `latest`.
 
 The preferred no-cost public identity is SignPath Foundation. Its governance,
 team roles, privacy statement and origin requirements are defined in the
-repository [code signing policy](../CODE-SIGNING-POLICY.md). The application is
-pending; until it is accepted and the clean-runner public-signature job passes,
-no release may claim SignPath signing. The SignPath signing input must originate
+repository [code signing policy](../CODE-SIGNING-POLICY.md). The application was
+submitted on 2026-08-15 and is awaiting review; until it is accepted and the
+clean-runner public-signature job passes, no release may claim SignPath signing.
+The SignPath signing input must originate
 entirely on GitHub-hosted runners. Self-hosted Revit jobs validate the resulting
 signed package but cannot contribute binaries to that signing request.
 

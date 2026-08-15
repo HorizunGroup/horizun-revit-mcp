@@ -7,11 +7,11 @@ Stable Windows releases are intended to use **free code signing provided by
 
 ## Current status
 
-The SignPath Foundation application is pending. This policy does not claim that
-an existing artifact is signed. The latest public release predates the
-application and its download page identifies it as unsigned. A release may only
-claim SignPath signing after the public signature gate has verified the exact
-published bytes on a clean Windows runner.
+The SignPath Foundation application was submitted on 2026-08-15 and is awaiting
+review. This policy does not claim that an existing artifact is signed. The
+latest public release predates the application and its download page identifies
+it as unsigned. A release may only claim SignPath signing after the public
+signature gate has verified the exact published bytes on a clean Windows runner.
 
 ## Scope
 
@@ -83,4 +83,3 @@ Report a suspected signing-policy violation or compromised release privately as
 described in [`SECURITY.md`](SECURITY.md). Maintainers will suspend publication,
 preserve the affected evidence and work with SignPath Foundation to revoke the
 signature or certificate when warranted.
-

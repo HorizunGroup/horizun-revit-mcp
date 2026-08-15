@@ -111,8 +111,8 @@ $codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
 if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code signing provided by SignPath\.io, certificate\s+by SignPath Foundation') {
     Fail 'README no longer exposes the required SignPath code-signing statement and policy'
 }
-if ($signingPolicy -notmatch 'application is pending' -or $signingPolicy -notmatch 'GitHub-hosted runners' -or $signingPolicy -notmatch 'docs/PRIVACY\.md') {
-    Fail 'code-signing policy no longer states its pending status, trusted origin and privacy boundary'
+if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or $signingPolicy -notmatch 'GitHub-hosted runners' -or $signingPolicy -notmatch 'docs/PRIVACY\.md') {
+    Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'
 }
 if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {
     Fail 'privacy policy no longer names the automatic and user-requested data boundaries'
