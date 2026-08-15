@@ -69,6 +69,7 @@ if ($contract -notmatch 'Enabled by default' -or $contract -notmatch 'host_verif
 $ci = Get-Content (Join-Path $repo '.github/workflows/ci.yml') -Raw
 $runnerGate = Get-Content (Join-Path $repo 'scripts/run-release-live-gate.ps1') -Raw
 $hzCall = Get-Content (Join-Path $repo 'scripts/hz-call.ps1') -Raw
+if ($ci -notmatch 'scan-sensitive\.tests\.ps1') { Fail 'CI no longer tests the narrow public-governance scanner exception' }
 if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
 if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
 if ($ci -notmatch "'stage\.zip'\s*=\s*'dist/stage\.zip'") { Fail 'the package record no longer hashes the complete staged payload archive' }

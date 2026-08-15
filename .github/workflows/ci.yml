@@ -121,6 +121,7 @@ jobs:
           pwsh scripts/install-completion.tests.ps1
           pwsh scripts/manifest-integrity.tests.ps1
           pwsh scripts/register-client.tests.ps1
+          pwsh scripts/scan-sensitive.tests.ps1
           pwsh scripts/server-update.tests.ps1
           pwsh scripts/public-consistency.tests.ps1
 
