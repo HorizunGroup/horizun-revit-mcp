@@ -3,7 +3,14 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v0.9.0 — 2026-08-14
+## v0.9.0 — 2026-08-15
+
+- **Public release trust state.** By owner decision, 0.9.0 ships without a
+  publicly trusted Authenticode identity while the SignPath Foundation
+  application is reviewed. The installer, manifest, SBOM, SHA-256 checksums,
+  provenance and Revit 2023–2027 live matrix remain mandatory. Windows/Revit may
+  show an unknown-publisher warning. Starting with 1.0.0, the clean-runner public
+  signature and timestamp gate is mandatory and has no unsigned exception.
 
 - **Release hardening: protocol, durability, installation and public supply chain.**
   JSON-RPC now enforces the MCP initialization lifecycle and request-id rules; the

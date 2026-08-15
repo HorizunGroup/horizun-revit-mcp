@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year; security gates green; signing status stated exactly | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year and security gates green. A disclosed 0.x release may be unsigned; 1.0+ requires a publicly trusted publisher | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -34,10 +34,24 @@ platform controls are on.
 Signing and public trust are separate facts. A self-signed or privately trusted
 certificate can prove byte identity in a controlled environment but does not make
 Windows trust the publisher on a clean machine. Every release states whether the
-payload and wrapper are unsigned, self-signed, or signed by a publicly trusted CA.
-Until a public trust chain exists, users can see publisher prompts and must verify
-the published SHA-256. Stable means *matrix-approved*; it never implies a trust
-chain that the release does not actually carry.
+payload and wrapper are unsigned, self-signed, or publicly trusted. By owner
+decision, 0.9.0 may become `latest` while correctly disclosed as unsigned; its
+manifest, SBOM, SHA-256 checksums, provenance, installed-package verification and
+complete live matrix remain release gates. For **1.0.0 and later**, CI requires a
+publicly trusted, non-self-signed Authenticode identity, signs the staged Horizun
+binaries and installer wrapper, timestamps them, re-validates public trust on a
+disposable Microsoft-hosted Windows runner, and verifies the installed bytes
+without `-AllowUnsigned`. Missing identity, signature, timestamp or trust then
+fails publication.
+
+The preferred no-cost public identity is SignPath Foundation. Its governance,
+team roles, privacy statement and origin requirements are defined in the
+repository [code signing policy](../CODE-SIGNING-POLICY.md). The application was
+submitted on 2026-08-15 and is awaiting review; until it is accepted and the
+clean-runner public-signature job passes, no release may claim SignPath signing.
+The SignPath signing input must originate
+entirely on GitHub-hosted runners. Self-hosted Revit jobs validate the resulting
+signed package but cannot contribute binaries to that signing request.
 
 ## Versioning
 
@@ -111,6 +125,9 @@ one is currently checkable rather than a matter of opinion:
       window written into the CHANGELOG.
 - [ ] Two maintainers with release rights.
 - [ ] GitHub secret scanning and push protection enabled on the public repository.
+- [ ] Payload and installer carry a timestamped, publicly trusted Authenticode
+      signature, and the stable tag pipeline verifies the installed signatures
+      without an unsigned exception.
 
 Until every box is ticked, this ships as 0.x and says so. A 1.0 that means "we
 think it is good now" is the claim this project exists not to make.

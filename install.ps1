@@ -209,6 +209,11 @@ try {
         $serverStage = Join-Path $stagingRoot 'server'
         New-Item -ItemType Directory -Path $serverStage -Force | Out-Null
         Get-ChildItem $serverBin -File | ForEach-Object { Copy-Item $_.FullName $serverStage -Force }
+        $clientTools = Join-Path $serverStage 'client-tools'
+        New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
+        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
+            Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
+        }
         Write-Host "    staged  server"
     }
 
@@ -306,6 +311,61 @@ try {
             Dll = (Join-Path $serverInstall 'horizun-mcp.dll')
             StagedDll = (Join-Path $serverStage 'horizun-mcp.dll')
         })
+
+        # Client helpers are a directory, while the server's transactional
+        # replacement above intentionally handles only top-level runtime files.
+        # Give the directory its own undo record so a failed source update cannot
+        # leave new registration logic beside an old server (or vice versa).
+        $installedClientTools = Join-Path $serverInstall 'client-tools'
+        $clientToolsBackup = Join-Path $stagingRoot 'backup-client-tools'
+        $hadClientTools = Test-Path -LiteralPath $installedClientTools
+        if ($hadClientTools) { Copy-Item $installedClientTools $clientToolsBackup -Recurse -Force }
+        $undo.Add([pscustomobject]@{
+            What = 'MCP client completion helpers'
+            Action = {
+                if (Test-Path -LiteralPath $installedClientTools) { Remove-Item $installedClientTools -Recurse -Force }
+                if ($hadClientTools) { Copy-Item $clientToolsBackup $installedClientTools -Recurse -Force }
+            }.GetNewClosure()
+        })
+        if (Test-Path -LiteralPath $installedClientTools) { Remove-Item $installedClientTools -Recurse -Force }
+        Copy-Item (Join-Path $serverStage 'client-tools') $installedClientTools -Recurse -Force
+
+        # Release Setup installs dist/stage/manifest.json. A source build needs
+        # the same on-disk identity contract, generated from the exact staged
+        # bytes in this run, so verify-install can prove server + selected Revit
+        # payloads without trusting the installer's exit code.
+        $installedManifest = Join-Path (Split-Path -Parent $serverInstall) 'manifest.json'
+        $manifestBackup = Join-Path $stagingRoot 'backup-installed-manifest.json'
+        $hadInstalledManifest = Test-Path -LiteralPath $installedManifest
+        if ($hadInstalledManifest) { Copy-Item $installedManifest $manifestBackup -Force }
+        $undo.Add([pscustomobject]@{
+            What = 'installed payload manifest'
+            Action = {
+                if ($hadInstalledManifest) { Copy-Item $manifestBackup $installedManifest -Force }
+                elseif (Test-Path -LiteralPath $installedManifest) { Remove-Item $installedManifest -Force }
+            }.GetNewClosure()
+        })
+        $pluginManifestRows = foreach ($y in $Years) {
+            $pluginDll = Join-Path $staged[$y] 'Horizun.Revit.dll'
+            [pscustomobject]@{ Year = [int]$y; Sha256 = Get-HorizunFileHash $pluginDll }
+        }
+        $sourceProvenance = Get-HorizunProvenance (Join-Path $serverStage 'horizun-mcp.dll')
+        $sourceManifest = [pscustomobject]@{
+            Schema = 2
+            Commit = $(if ($sourceProvenance) { $sourceProvenance.Sha } else { 'unknown' })
+            CleanTree = [bool]($sourceProvenance -and -not $sourceProvenance.Dirty)
+            BuiltUtc = (Get-Date).ToUniversalTime().ToString('o')
+            Config = $Config
+            SourceInstall = $true
+            Server = [pscustomobject]@{
+                File = 'server/horizun-mcp.exe'
+                Sha256 = Get-HorizunFileHash (Join-Path $serverStage 'horizun-mcp.exe')
+            }
+            Plugins = @($pluginManifestRows)
+        }
+        $manifestTemp = "$installedManifest.tmp-$([guid]::NewGuid().ToString('N'))"
+        $sourceManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestTemp -Encoding UTF8
+        Move-Item -LiteralPath $manifestTemp -Destination $installedManifest -Force
         Write-Host ("    server : {0}$(if ($firstInstall) { '  (first install)' })" -f $serverInstall)
     }
 
@@ -394,7 +454,8 @@ if ((Test-Path -LiteralPath $signScript) -and $haveCert) {
     Write-Host "          (creates a self-signed cert and trusts it for this user - a deliberate decision, so it is not done for you)" -ForegroundColor DarkYellow
 }
 Write-Host ""
-Write-Host "Add the MCP server to your client. The path below is THIS machine's, already" -ForegroundColor Cyan
+Write-Host "Manual recovery commands (automatic completion normally handles this)." -ForegroundColor Cyan
+Write-Host "The path below is THIS machine's, already" -ForegroundColor Cyan
 Write-Host "expanded - do not retype it with %LOCALAPPDATA%, which PowerShell does not expand." -ForegroundColor Cyan
 Write-Host ""
     Write-Host "  Claude Code:"
@@ -416,7 +477,7 @@ Write-Host "    args = []"
 Write-Host "    startup_timeout_sec = 120"
 Write-Host "    tool_timeout_sec = 600"
     Write-Host ""
-    Write-Host "Close Claude/Codex before registering, then reopen it. A running client can rewrite its config from memory." -ForegroundColor Yellow
+    Write-Host "For manual recovery, close Claude/Codex before registering, then reopen it." -ForegroundColor Yellow
 Write-Host "  Cursor, Cline, Windsurf, Claude Desktop and other MCP clients - in their"
 Write-Host "  JSON config (mcpServers), using the SAME path:"
 Write-Host "    { `"mcpServers`": { `"horizun-revit`": { `"command`": `"$($serverExe -replace '\\', '\\')`" } } }"
@@ -435,4 +496,21 @@ Write-Host "  * A 'Horizun Hub' ribbon tab appears once a document is open; its 
 Write-Host ""
 Write-Host "Verify the pairing from your MCP client: call horizun_health. Updating later is:"
 Write-Host "  git pull, close Revit, run install.ps1 again."
+
+# Installation and client registration cannot safely be one synchronous write
+# while the invoking Claude/Codex process is alive. The installed finisher makes
+# it one USER action instead: it registers immediately when possible, otherwise
+# waits for the active client to exit, verifies the config, then completes
+# horizun_health after Revit's first start.
+$completeInstall = Join-Path $serverInstall 'client-tools\complete-install.ps1'
+if (Test-Path -LiteralPath $completeInstall -PathType Leaf) {
+    Write-Host ""
+    Write-Host "[Horizun] completing client registration automatically." -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $completeInstall -Client Auto
+    if ($LASTEXITCODE -eq 1) {
+        Write-Host "[Horizun] automatic completion failed; binaries remain installed and verified." -ForegroundColor Red
+        Write-Host "          Review $env:LOCALAPPDATA\Horizun\install-status.json" -ForegroundColor Red
+        exit 1
+    }
+}
 exit 0

@@ -69,6 +69,7 @@ if ($contract -notmatch 'Enabled by default' -or $contract -notmatch 'host_verif
 $ci = Get-Content (Join-Path $repo '.github/workflows/ci.yml') -Raw
 $runnerGate = Get-Content (Join-Path $repo 'scripts/run-release-live-gate.ps1') -Raw
 $hzCall = Get-Content (Join-Path $repo 'scripts/hz-call.ps1') -Raw
+if ($ci -notmatch 'scan-sensitive\.tests\.ps1') { Fail 'CI no longer tests the narrow public-governance scanner exception' }
 if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
 if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
 if ($ci -notmatch "'stage\.zip'\s*=\s*'dist/stage\.zip'") { Fail 'the package record no longer hashes the complete staged payload archive' }
@@ -87,6 +88,64 @@ if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
 }
 if ($ci -notmatch 'verify-release\.ps1 -Installed -AllowUnsigned -InstallResult') {
     Fail 'CI no longer verifies the exact per-run install result with an explicit signing policy'
+}
+if ($ci -notmatch 'SIGNING_CERT_THUMBPRINT' -or
+    $ci -notmatch '\.Major -ge 1' -or
+    $ci -notmatch 'Horizun 1\.0\+ release contains unsigned, invalid, self-signed or untimestamped') {
+    Fail '1.0+ tags no longer fail closed on missing or non-public Authenticode signing'
+}
+if ($ci -notmatch 'runs-on: windows-latest' -or
+    $ci -notmatch 'not publicly trusted on a clean Windows runner' -or
+    $ci -notmatch 'needs: \[package, public-signature, stable-release-evidence\]') {
+    Fail 'stable publication no longer proves public trust on a clean hosted Windows runner'
+}
+if ($ci -notmatch '(?s)requiresPublicSignature.*?\.Major -ge 1.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
+    Fail 'installed release verification no longer allows unsigned only before 1.0'
+}
+
+$readme = Get-Content (Join-Path $repo 'README.md') -Raw
+if ($readme -notmatch 'irm https://raw\.githubusercontent\.com/HorizunGroup/horizun-revit-mcp/main/install-release\.ps1 \| iex') {
+    Fail 'the public README no longer offers the one-paste release installer'
+}
+
+$signingPolicy = Get-Content (Join-Path $repo 'CODE-SIGNING-POLICY.md') -Raw
+$privacyPolicy = Get-Content (Join-Path $repo 'docs/PRIVACY.md') -Raw
+$codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
+if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code signing provided by SignPath\.io, certificate\s+by SignPath Foundation') {
+    Fail 'README no longer exposes the required SignPath code-signing statement and policy'
+}
+if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or
+    $signingPolicy -notmatch 'Version 1\.0\.0 and every later release is blocked' -or
+    $signingPolicy -notmatch 'GitHub-hosted runners' -or
+    $signingPolicy -notmatch 'docs/PRIVACY\.md') {
+    Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'
+}
+if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {
+    Fail 'privacy policy no longer names the automatic and user-requested data boundaries'
+}
+if ($codeowners -notmatch '/\.github/workflows/' -or $codeowners -notmatch '/CODE-SIGNING-POLICY\.md') {
+    Fail 'signing policy and workflows are no longer covered by CODEOWNERS'
+}
+
+$sourceInstaller = Get-Content (Join-Path $repo 'install.ps1') -Raw
+$clientToolsCopy = [regex]::Escape("Copy-Item (Join-Path `$serverStage 'client-tools') `$installedClientTools -Recurse -Force")
+if ($sourceInstaller -notmatch $clientToolsCopy -or
+    $sourceInstaller -notmatch 'SourceInstall = \$true' -or
+    $sourceInstaller -notmatch 'Move-Item -LiteralPath \$manifestTemp -Destination \$installedManifest') {
+    Fail 'the source installer no longer installs the deferred helpers and their on-disk identity manifest transactionally'
+}
+$stopHelper = Get-Content (Join-Path $repo 'scripts\stop-installed-server.ps1') -Raw
+if ($stopHelper -notmatch 'GetFullPath\(\$_\.ExecutablePath\).*?-ieq \$target' -or
+    $stopHelper -notmatch 'Get-CimInstance Win32_Process -Filter "Name=''horizun-mcp\.exe''"' -or
+    $stopHelper -match 'taskkill|Stop-Process -Name') {
+    Fail 'the update helper no longer limits process termination to the exact installed server path'
+}
+$installerSource = Get-Content (Join-Path $repo 'installer\horizun-mcp.iss') -Raw
+if ($installerSource -notmatch 'procedure RollbackDeployment' -or
+    $installerSource -notmatch 'function WriteDeploymentManifests' -or
+    $installerSource -notmatch 'if WriteDeploymentManifests then CommitDeployment' -or
+    $installerSource -match 'Source: "\.\.\\dist\\stage\\manifest\.json"; DestDir: "\{app\}"') {
+    Fail 'Setup no longer promotes server, add-ins and identity manifests as one transaction'
 }
 
 # Resolve every local link that will appear in the public repository. Anchors are

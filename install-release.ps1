@@ -4,17 +4,31 @@
   SHA256SUMS.txt from the SAME release, then launch it. No Git or .NET SDK.
 
   Usage:
+    irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1 | iex
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1
     powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -Version vX.Y.Z
+
+  The default is a quiet CLI install. It then registers Horizun immediately when
+  the selected client is closed, or schedules the registration safely after the
+  active client exits. Live verification completes automatically after Revit's
+  first start. Pass -Interactive only when the Setup wizard itself is wanted.
 #>
 [CmdletBinding()]
 param(
     [string]$Version = 'latest',
+    [ValidateSet('Auto', 'Claude', 'Codex', 'Both', 'None')]
+    [string]$Client = 'Auto',
     [switch]$KeepDownloadedFiles,
+    [switch]$Interactive,
+    # Retained for compatibility. Quiet is the 0.9+ default.
     [switch]$Silent,
-    [switch]$VerifyOnly
+    [switch]$VerifyOnly,
+    [switch]$NoClientCompletion,
+    [switch]$NoLiveVerification
 )
 $ErrorActionPreference = 'Stop'
+
+if ($Interactive -and $Silent) { throw '-Interactive and -Silent are mutually exclusive.' }
 
 # Kept in this file deliberately: the documented bootstrap downloads this ONE
 # script to a temp folder. A helper beside the repository copy would not exist
@@ -125,8 +139,13 @@ try {
     }
 
     $resultPath = Join-Path $temporary 'install-result.txt'
-    $arguments = @("/HORIZUNRESULT=$resultPath")
-    if ($Silent) { $arguments += '/SILENT'; $arguments += '/SUPPRESSMSGBOXES' }
+    $installerClient = if ($NoClientCompletion) { 'None' } else { $Client }
+    $arguments = @("/HORIZUNRESULT=$resultPath", "/HORIZUNCLIENT=$installerClient", '/NORESTART')
+    if ($NoLiveVerification) { $arguments += '/HORIZUNNOLIVE=-NoLiveWait' }
+    if (-not $Interactive) {
+        $arguments += '/VERYSILENT'
+        $arguments += '/SUPPRESSMSGBOXES'
+    }
     $startedLocal = Get-Date
     $process = Start-Process -FilePath $setupPath -ArgumentList $arguments -Wait -PassThru
     $finishedLocal = Get-Date
@@ -134,6 +153,60 @@ try {
     $installResult = Read-HorizunInstallResult -Path $resultPath -StartedLocal $startedLocal `
         -FinishedLocal $finishedLocal -ExpectedVersion $release.tag_name
     Write-Host ("[Horizun] setup completed successfully for Revit " + $installResult.succeeded + '.') -ForegroundColor Green
+
+    if (-not $NoClientCompletion -and $Client -ne 'None') {
+        $serverRoot = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server'
+        $complete = Join-Path $serverRoot 'client-tools\complete-install.ps1'
+        if (Test-Path -LiteralPath $complete -PathType Leaf) {
+            # The 0.9+ Setup itself launches the same finisher so double-clicking
+            # the EXE is as complete as using this bootstrap. Give it a moment to
+            # publish fresh durable state; only invoke it here for a package that
+            # installed the helper but did not launch it. Two concurrent writers
+            # are not a convenience feature.
+            $statusPath = Join-Path $env:LOCALAPPDATA 'Horizun\install-status.json'
+            $freshCompletion = $false
+            for ($attempt = 1; $attempt -le 20; $attempt++) {
+                if (Test-Path -LiteralPath $statusPath) {
+                    try {
+                        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+                        $updated = [datetime]::Parse([string]$status.updated_utc).ToUniversalTime()
+                        if ($updated -ge $startedLocal.ToUniversalTime().AddSeconds(-2)) { $freshCompletion = $true; break }
+                    }
+                    catch { }
+                }
+                Start-Sleep -Milliseconds 250
+            }
+            $completionExit = 0
+            if (-not $freshCompletion) {
+                $completionArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $complete, '-Client', $Client)
+                if ($NoLiveVerification) { $completionArgs += '-NoLiveWait' }
+                & powershell @completionArgs
+                $completionExit = $LASTEXITCODE
+            }
+            if ($completionExit -eq 1) {
+                throw 'The release installed, but automatic client completion failed. Review %LOCALAPPDATA%\Horizun\install-status.json.'
+            }
+            elseif ($completionExit -eq 2) {
+                Write-Host '[Horizun] binaries are installed, but no Claude/Codex configuration exists yet.' -ForegroundColor Yellow
+                Write-Host '          Start the intended client once, close it, then use the Start-menu shortcut' -ForegroundColor Yellow
+                Write-Host '          "Completar y verificar instalación de Horizun".' -ForegroundColor Yellow
+            }
+            else {
+                Write-Host '[Horizun] client registration and first-start health verification are complete or safely scheduled.' -ForegroundColor Green
+                Write-Host ("          status: " + $statusPath) -ForegroundColor DarkGray
+            }
+        }
+        else {
+            # v0.8 and older releases predate the deferred completion helper. A
+            # current bootstrap may legitimately be used to pin one of them; do
+            # not claim automation that artifact cannot provide.
+            Write-Host "[Horizun] $($release.tag_name) predates automatic client completion." -ForegroundColor Yellow
+            Write-Host '          Close the client and register the installed server manually:' -ForegroundColor Yellow
+            $serverExe = Join-Path $serverRoot 'horizun-mcp.exe'
+            Write-Host "          claude mcp add --scope user horizun-revit -- `"$serverExe`""
+            Write-Host "          codex mcp add horizun-revit -- `"$serverExe`""
+        }
+    }
 }
 finally {
     if ($KeepDownloadedFiles) { Write-Host "Downloaded files kept at $temporary" -ForegroundColor DarkYellow }

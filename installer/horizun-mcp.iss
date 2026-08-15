@@ -17,26 +17,20 @@
 ; FAILS is reported as failed and rolled back to whatever was there before.
 ;
 ; Nothing outside Horizun's own folders is touched: no other add-in is
-; modified, and no MCP client configuration is rewritten behind the user's
-; back — the final page shows the one command that registers it.
+; modified. Client registration is completed only while that client is closed;
+; otherwise a per-user helper records the pending work and waits safely.
 ;
 ; ---------------------------------------------------------------------------
-; NOT DONE HERE YET, and it is the piece that actually silences Revit's
-; security dialog:
+; RELEASE SIGNING AND REVIT TRUST:
 ;
 ;   Signing the DLL is NOT enough. A signed add-in from a publisher the machine
 ;   does not know still raises a dialog — it changes from the red "Unsigned
 ;   Add-In" to "Signed Add-In" with an Always Load button, shown once per
 ;   certificate per machine instead of per binary. To get NO dialog at all on a
-;   clean machine, the publisher's public certificate must be in the machine's
-;   Trusted Publishers store BEFORE Revit starts:
-;
-;       certutil.exe -addstore TrustedPublisher horizun.cer
-;
-;   That is a change to the machine's trust configuration. It belongs in this
-;   installer as an explicit, opt-in step the person installing agrees to — not
-;   as a silent side effect — and it cannot be written until there is a real
-;   certificate to test it with. Deliberately absent rather than written blind.
+;   clean machine, the release must carry a valid public Authenticode chain.
+;   Stable CI signs the five add-ins, server exe/dll and this wrapper, and then
+;   rechecks them on a clean hosted Windows runner. This installer never imports
+;   a private root certificate or weakens the machine's trust policy.
 ; ---------------------------------------------------------------------------
 ; ----------------------------------------------------------------------------
 
@@ -93,14 +87,23 @@ Source: "..\dist\stage\plugin\2024\*"; DestDir: "{tmp}\HorizunPayload\plugin\202
 Source: "..\dist\stage\plugin\2025\*"; DestDir: "{tmp}\HorizunPayload\plugin\2025"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
 Source: "..\dist\stage\plugin\2026\*"; DestDir: "{tmp}\HorizunPayload\plugin\2026"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
 Source: "..\dist\stage\plugin\2027\*"; DestDir: "{tmp}\HorizunPayload\plugin\2027"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
-Source: "..\dist\stage\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\stage\Horizun.addin";  DestDir: "{app}";              Flags: ignoreversion
+; Identity and add-in manifests participate in the same post-install transaction
+; as the server and DLLs. Copying either directly to {app} before that transaction
+; completes can make a rolled-back install describe bytes that never landed.
+Source: "..\dist\stage\manifest.json"; DestDir: "{tmp}\HorizunPayload"; Flags: ignoreversion deleteafterinstall
+Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: ignoreversion deleteafterinstall
 
 [Icons]
 Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
 Name: "{group}\Configurar Horizun en Codex y Claude"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Completar y verificar instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Auto"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Estado de instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -StatusOnly"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
@@ -115,19 +118,25 @@ Name: "{group}\Limpieza avanzada antes de desinstalar"; Filename: "{sys}\Windows
 ; going to be installed by people who were told it is safe.
 Name: "openhub"; Description: "Ver Horizun Hub - las herramientas y flujos construidos sobre este puente"; \
   Flags: unchecked
-; Explicit and unchecked: client configuration belongs to the user. The helper
-; makes timestamped backups, preserves every other MCP entry and refuses to edit
-; a running Codex/Claude process because those clients can overwrite the file.
-Name: "registerclients"; Description: "Registrar Horizun en Codex y Claude (ciérrelos primero; conserva y respalda los otros MCP)"; \
-  Flags: unchecked
 
 [Run]
 Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
   Flags: shellexec nowait postinstall skipifsilent; Tasks: openhub
+; Complete the client side automatically. If Codex or Claude is open, the helper
+; records the pending work and waits outside Setup; it never writes under a live
+; client. It also verifies the installed manifest and finishes horizun_health
+; after the first Revit start. The process is hidden because every durable result
+; is written to %LOCALAPPDATA%\Horizun\install-status.json.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
-  Description: "Registrar Horizun en Codex y Claude"; WorkingDir: "{app}\server\client-tools"; \
-  Flags: postinstall skipifsilent waituntilterminated; Tasks: registerclients
+  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Auto} {param:HORIZUNNOLIVE|}"; \
+  WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait; Check: ShouldCompleteInstall
+
+[UninstallRun]
+; A pending first-start verification must not survive removal with a command that
+; points at files the uninstaller is about to delete.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -CancelPending"; \
+  Flags: runhidden waituntilterminated skipifdoesntexist
 
 [Code]
 const
@@ -145,14 +154,30 @@ var
   ServerInstalled: Boolean;
   ServerFailure: String;
   UninstallFailures: String;
+  YearDeployed: array[0..4] of Boolean;
+  YearManifestWritten: array[0..4] of Boolean;
+  InstallManifestWritten: Boolean;
+
+function ShouldCompleteInstall(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:HORIZUNCLIENT|Auto}'), 'None') <> 0;
+end;
 
 procedure InitYears;
+var
+  I: Integer;
 begin
   Years[0] := '2023';
   Years[1] := '2024';
   Years[2] := '2025';
   Years[3] := '2026';
   Years[4] := '2027';
+  for I := 0 to YearsCount - 1 do
+  begin
+    YearDeployed[I] := False;
+    YearManifestWritten[I] := False;
+  end;
+  InstallManifestWritten := False;
 end;
 
 { Revit holds a lock on the plugin it has loaded. Copying over it fails per-file and
@@ -272,9 +297,26 @@ begin
   if (not FileExists(Staging + '\{#AppExeName}')) or (not FileExists(Staging + '\horizun-mcp.dll')) then
   begin DelTree(Staging, True, True, True); ServerFailure := 'the staged server is incomplete'; exit; end;
 
+  { Claude/Codex legitimately keeps the currently configured stdio server open.
+    Revit is already known to be closed, so no Revit-side command can be in
+    flight. Stop ONLY processes whose executable path is this exact installed
+    server; never stop the client and never use taskkill by image name. }
+  if DirExists(Dst) then
+  begin
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Staging + '\client-tools\stop-installed-server.ps1"' +
+      ' -ServerPath "' + Dst + '\{#AppExeName}"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      DelTree(Staging, True, True, True);
+      ServerFailure := 'the existing installed server could not be stopped safely';
+      exit;
+    end;
+  end;
+
   if DirExists(Dst) then
     if not RenameFile(Dst, Backup) then
-    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is in use'; exit; end;
+    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is still in use after the bounded stop'; exit; end;
   if not RenameFile(Staging, Dst) then
   begin
     if DirExists(Backup) then RenameFile(Backup, Dst);
@@ -289,7 +331,7 @@ begin
     ServerFailure := 'the server vanished after its swap; the previous one was restored';
     exit;
   end;
-  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  { Keep Backup until every installed Revit year and both manifests succeed. }
   Result := True;
 end;
 
@@ -382,22 +424,119 @@ begin
     exit;
   end;
 
-  if not FileCopy(ExpandConstant('{app}') + '\Horizun.addin', AddinsDir(Year) + '\Horizun.addin', False) then
-  begin
-    { Without the manifest Revit never loads the DLL, so this is a failed install,
-      not a cosmetic problem. Roll the whole year back. }
-    DelTree(Dst, True, True, True);
-    if DirExists(Backup) then RenameFile(Backup, Dst);
-    FailedYears := FailedYears + Year + ' (the .addin manifest could not be written; the previous install was restored), ';
-    exit;
-  end;
-
-  { Only now is the previous version disposable, and only Horizun''s own folder. }
-  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  { Keep Backup and defer the .addin manifest until the whole deployment is
+    known good. A server/add-in contract may never be partially promoted. }
 
   if InstalledYears <> '' then InstalledYears := InstalledYears + ', ';
   InstalledYears := InstalledYears + Year;
   Result := True;
+end;
+
+procedure RollbackDeployment;
+var
+  I: Integer;
+  Dst, Backup, Addin, AddinBackup, ServerDst, ServerBackup, ProductManifest, ProductManifestBackup: String;
+begin
+  for I := YearsCount - 1 downto 0 do
+  begin
+    Dst := AddinsDir(Years[I]) + '\Horizun';
+    Backup := AddinsDir(Years[I]) + '\Horizun.previous';
+    Addin := AddinsDir(Years[I]) + '\Horizun.addin';
+    AddinBackup := AddinsDir(Years[I]) + '\Horizun.addin.previous';
+    if YearManifestWritten[I] then
+    begin
+      if FileExists(AddinBackup) then
+      begin
+        DeleteFile(Addin);
+        RenameFile(AddinBackup, Addin);
+      end
+      else
+        DeleteFile(Addin);
+    end;
+    if YearDeployed[I] then
+    begin
+      if DirExists(Dst) then DelTree(Dst, True, True, True);
+      if DirExists(Backup) then RenameFile(Backup, Dst);
+    end;
+  end;
+
+  ProductManifest := ExpandConstant('{app}') + '\manifest.json';
+  ProductManifestBackup := ExpandConstant('{app}') + '\manifest.previous.json';
+  if InstallManifestWritten then
+  begin
+    DeleteFile(ProductManifest);
+    if FileExists(ProductManifestBackup) then RenameFile(ProductManifestBackup, ProductManifest);
+  end;
+
+  if ServerInstalled then
+  begin
+    ServerDst := ExpandConstant('{app}') + '\server';
+    ServerBackup := ExpandConstant('{app}') + '\server.previous';
+    if DirExists(ServerDst) then DelTree(ServerDst, True, True, True);
+    if DirExists(ServerBackup) then RenameFile(ServerBackup, ServerDst);
+  end;
+  ServerInstalled := False;
+  InstalledYears := '';
+end;
+
+function WriteDeploymentManifests: Boolean;
+var
+  I: Integer;
+  SourceAddin, Addin, AddinBackup, ProductManifest, ProductManifestBackup: String;
+begin
+  Result := False;
+  SourceAddin := ExpandConstant('{tmp}') + '\HorizunPayload\Horizun.addin';
+  for I := 0 to YearsCount - 1 do
+    if YearDeployed[I] then
+    begin
+      Addin := AddinsDir(Years[I]) + '\Horizun.addin';
+      AddinBackup := AddinsDir(Years[I]) + '\Horizun.addin.previous';
+      if FileExists(AddinBackup) then DeleteFile(AddinBackup);
+      if FileExists(Addin) and (not FileCopy(Addin, AddinBackup, False)) then
+      begin
+        FailedYears := FailedYears + Years[I] + ' (could not back up the existing .addin manifest), ';
+        exit;
+      end;
+      YearManifestWritten[I] := True;
+      if not FileCopy(SourceAddin, Addin, False) then
+      begin
+        FailedYears := FailedYears + Years[I] + ' (could not write the .addin manifest), ';
+        exit;
+      end;
+    end;
+
+  ProductManifest := ExpandConstant('{app}') + '\manifest.json';
+  ProductManifestBackup := ExpandConstant('{app}') + '\manifest.previous.json';
+  if FileExists(ProductManifestBackup) then DeleteFile(ProductManifestBackup);
+  if FileExists(ProductManifest) and (not FileCopy(ProductManifest, ProductManifestBackup, False)) then
+  begin
+    ServerFailure := 'the installed identity manifest could not be backed up';
+    exit;
+  end;
+  InstallManifestWritten := True;
+  if not FileCopy(ExpandConstant('{tmp}') + '\HorizunPayload\manifest.json', ProductManifest, False) then
+  begin
+    ServerFailure := 'the installed identity manifest could not be written';
+    exit;
+  end;
+  Result := True;
+end;
+
+procedure CommitDeployment;
+var
+  I: Integer;
+begin
+  if DirExists(ExpandConstant('{app}') + '\server.previous') then
+    DelTree(ExpandConstant('{app}') + '\server.previous', True, True, True);
+  if FileExists(ExpandConstant('{app}') + '\manifest.previous.json') then
+    DeleteFile(ExpandConstant('{app}') + '\manifest.previous.json');
+  for I := 0 to YearsCount - 1 do
+  begin
+    if DirExists(AddinsDir(Years[I]) + '\Horizun.previous') then
+      DelTree(AddinsDir(Years[I]) + '\Horizun.previous', True, True, True);
+    if FileExists(AddinsDir(Years[I]) + '\Horizun.addin.previous') then
+      DeleteFile(AddinsDir(Years[I]) + '\Horizun.addin.previous');
+  end;
 end;
 
 { Pascal Script has no BoolToStr and no ternary. }
@@ -422,9 +561,20 @@ begin
       if RevitInstalled(Years[I]) then
       begin
         FoundAny := True;
-        if ServerInstalled then DeployYear(Years[I])
+        if ServerInstalled then
+        begin
+          YearDeployed[I] := DeployYear(Years[I]);
+        end
         else FailedYears := FailedYears + Years[I] + ' (server deployment failed; add-in left unchanged), ';
       end;
+
+    if ServerInstalled and ((not FoundAny) or (FailedYears = '')) then
+    begin
+      if WriteDeploymentManifests then CommitDeployment
+      else RollbackDeployment;
+    end
+    else if ServerInstalled then
+      RollbackDeployment;
 
     { Old installers staged plugin payloads permanently under the application
       directory. It is not live; the new installer extracts to a private temp. }

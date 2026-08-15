@@ -72,10 +72,14 @@ Do not retype it with `%LOCALAPPDATA%`: `cmd.exe` expands that variable and
 **PowerShell does not**, so a config written that way points somewhere that does
 not exist and the client shows no tools without saying why.
 
-Installation and registration are two phases. Do not rewrite the configuration
-of the Claude/Codex process that is currently running: it may overwrite the edit
-when it exits. Install and verify first, print the command below, ask the user to
-close the client, run it from a fresh shell, then reopen the client.
+Installation and registration are two internal phases but one user action. Do not
+rewrite the configuration of the Claude/Codex process that is currently running:
+it may overwrite the edit when it exits. The installer runs
+`complete-install.ps1`, which waits for active clients to close, registers beside
+existing MCP entries, verifies the configuration, and completes
+`horizun_health` after Revit's first start. Report the durable state from
+`%LOCALAPPDATA%\Horizun\install-status.json`. The commands below are manual
+recovery only.
 
 ```powershell
 # Claude Code — user scope makes it available across projects
@@ -254,10 +258,14 @@ máquina. No la reescribas con `%LOCALAPPDATA%`: `cmd.exe` expande esa variable 
 **PowerShell no**, así que una config escrita así apunta a un sitio que no
 existe y el cliente no muestra herramientas sin decir por qué.
 
-La instalación y el registro son dos fases. No reescribas la configuración del
-proceso de Claude/Codex que está corriendo: puede pisar el cambio al cerrarse.
-Instala y verifica, imprime el comando siguiente, pide cerrar el cliente,
-ejecutarlo desde una consola nueva y después volver a abrir el cliente.
+La instalación y el registro son dos fases internas pero una sola acción del
+usuario. No reescribas la configuración del proceso de Claude/Codex que está
+corriendo: puede pisar el cambio al cerrarse. El instalador ejecuta
+`complete-install.ps1`, que espera a que cierren los clientes activos, registra
+sin eliminar otros MCP, verifica la configuración y completa `horizun_health`
+después del primer arranque de Revit. Reporta el estado durable de
+`%LOCALAPPDATA%\Horizun\install-status.json`. Los comandos siguientes quedan
+solo como recuperación manual.
 
 ```powershell
 # Claude Code — el scope user lo deja disponible en todos los proyectos

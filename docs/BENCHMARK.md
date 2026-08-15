@@ -71,7 +71,7 @@ Revit concepts.
 | X4 | 5 | T/S; tenant L pending | Direct REST; tests prove bounds, one send on replay and fail-closed lost response. |
 | R1 | 5 | L/T/S | Bounded FIFO, fairness, capacity and cancellation harnesses. |
 | R2 | 5 | L/T/S | Append-only durable ledger shared by Revit and Power BI mutations. |
-| D1 | 4 | L/T/S | One setup, checksum, payload manifest, SBOM and verified-release bootstrap. Missing publicly trusted code signature keeps this below 5. |
+| D1 | 4 | L/T/S | One-paste setup, checksum, payload manifest, SBOM, safe deferred Claude/Codex registration, durable resume and first-live health verification. Stable tags now fail closed without public signing; the external signing identity and clean-machine proof are still missing. |
 | D2 | 5 | B/L | Five independently compiled payloads. |
 
 Current source-candidate total: **74/75**. The only structural point not earned
@@ -110,7 +110,7 @@ reply. This rule applies equally to Horizun.
 | Direct Power BI rows | Implemented with fixed endpoints and durable replay | Roadmap/in progress | Not established |
 | Loaded RFA compiler | Parameters/types/reference skeleton/sweeps/nested RFA/MEP connectors | Family capabilities require pinned case run | Family creation claim requires pinned case run |
 | System-family types | Dedicated verified operation, including host compound layers | Requires pinned case run | Requires pinned case run |
-| Installation | One setup; no Git/SDK; checksum/manifest/SBOM; guarded Codex/Claude registration | Bundled Windows installer, MCPB and source workflow | Source/pyRevit workflow |
+| Installation | One paste; no Git/SDK; checksum/manifest/SBOM; automatic safe post-exit Codex/Claude registration; durable first-Revit health verification | Bundled Windows installer, MCPB and source workflow | Source/pyRevit workflow |
 | Publicly trusted signing | No | Must be checked per asset | Must be checked per asset |
 
 This table does not say that an undocumented competitor feature is impossible;

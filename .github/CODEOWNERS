@@ -1,0 +1,6 @@
+# Signing and release controls require review from a Horizun Group owner.
+/.github/workflows/ @pablo-horizun @isabela-horizun @daniela-horizun
+/.signpath/ @pablo-horizun @isabela-horizun @daniela-horizun
+/CODE-SIGNING-POLICY.md @pablo-horizun @isabela-horizun @daniela-horizun
+/docs/PRIVACY.md @pablo-horizun @isabela-horizun @daniela-horizun
+/docs/RELEASE-POLICY.md @pablo-horizun @isabela-horizun @daniela-horizun

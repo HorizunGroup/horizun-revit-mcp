@@ -286,8 +286,14 @@ nothing in this repository audits it.
 ## 8. Code signing and public trust
 
 The package pipeline reports the signature state; a release must never imply a
-public trust chain it does not carry. The source installer also supports an
-explicit, per-user self-signing workflow (`scripts/self-sign.ps1`):
+public trust chain it does not carry. Stable tags fail closed unless every own
+payload binary and the setup wrapper have a valid, non-self-signed Authenticode
+signature. The signing key is provisioned outside the repository on the release
+runner. Public trust and timestamps are then checked again on a clean Microsoft-
+hosted Windows runner, and installed release verification has no unsigned
+exception. The source
+installer also supports an explicit, per-user self-signing workflow
+(`scripts/self-sign.ps1`):
 
 - Revit raises `Security - Unsigned Add-In` on first load, per add-in per year.
   On this machine that has been answered once per year and does not recur:
@@ -306,9 +312,11 @@ explicit, per-user self-signing workflow (`scripts/self-sign.ps1`):
   separately; uninstall never removes either silently.
 
 A self-signed certificate is useful only on accounts that explicitly trust it; it
-does not establish publisher identity on a clean third-party machine. A publicly
-trusted code-signing CA remains a separate release-hardening decision. Until one
-is used, release notes say so and users verify the release SHA-256/attestation.
+does not establish publisher identity on a clean third-party machine. Until a
+public signing identity is provisioned, branches and previews may be tested with
+an explicit unsigned exception, but **0.9.0 may not be tagged stable or published**.
+SHA-256, manifest and attestations complement publisher identity; they do not
+replace it.
 
 ## 9. Known gaps, stated
 

@@ -118,8 +118,11 @@ jobs:
         run: |
           pwsh scripts/install-arguments.tests.ps1
           pwsh scripts/install-result.tests.ps1
+          pwsh scripts/install-completion.tests.ps1
           pwsh scripts/manifest-integrity.tests.ps1
           pwsh scripts/register-client.tests.ps1
+          pwsh scripts/scan-sensitive.tests.ps1
+          pwsh scripts/server-update.tests.ps1
           pwsh scripts/public-consistency.tests.ps1
 
       - name: Whitespace and line-ending hygiene
@@ -231,7 +234,7 @@ jobs:
           $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
           if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
           if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
-          foreach ($helper in 'register-client.ps1','verify-clients.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
+          foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
             if (-not (Test-Path "$stage/server/client-tools/$helper")) {
               throw "installer client helper is missing: $helper"
             }
@@ -261,6 +264,10 @@ jobs:
 
           Write-Host "validated commit $($doc.Commit), server + $($doc.Plugins.Count) per-year payloads, all distinct, full hashes"
 
+      - name: Prove an active CLI update stops only the installed server path
+        shell: pwsh
+        run: pwsh scripts/server-update.tests.ps1 -RequireWindows
+
       # The full check, with the wordlist that lives on this runner. -RequireTerms
       # makes a MISSING wordlist a failure: at a release gate, "the name check did
       # not run" must not be indistinguishable from "it passed".
@@ -287,11 +294,39 @@ jobs:
           & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
           if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
 
-      - name: Compile the installer
+      - name: Compile the installer and sign releases from 1.0 onward
         shell: pwsh
         run: |
-          pwsh scripts/pack.ps1 -InstallerOnly
-          pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
+          $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          $thumbprint = '${{ vars.SIGNING_CERT_THUMBPRINT }}'.Trim()
+          if ($requiresPublicSignature -and -not $thumbprint) {
+            throw 'Horizun 1.0 and later require repository variable SIGNING_CERT_THUMBPRINT and its private key on the release runner. There is no unsigned exception from 1.0 onward.'
+          }
+          try {
+            if ($requiresPublicSignature) {
+              pwsh scripts/sign.ps1 -Thumbprint $thumbprint
+              if ($LASTEXITCODE -ne 0) { throw "staged payload signing failed ($LASTEXITCODE)" }
+            } elseif ($releaseTag) {
+              Write-Host '::warning::This 0.x release is intentionally unsigned. Verify SHA256SUMS.txt before installation. Public signing becomes mandatory at 1.0.0.'
+            }
+
+            pwsh scripts/pack.ps1 -InstallerOnly
+            if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
+
+            if ($requiresPublicSignature) {
+              # The second pass skips the already-signed stage and signs the new
+              # setup.exe. Wrapper and payload are separate Authenticode objects.
+              pwsh scripts/sign.ps1 -Thumbprint $thumbprint
+              if ($LASTEXITCODE -ne 0) { throw "installer signing failed ($LASTEXITCODE)" }
+            }
+            pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
+          }
+          finally {
+            # The private key is provisioned outside the repository (certificate
+            # store, token or cloud KSP). This workflow never exports or logs it.
+            Remove-Item Env:SIGNING_CERT_PASSWORD -ErrorAction SilentlyContinue
+          }
 
       - name: Generate release checksums
         shell: pwsh
@@ -330,19 +365,43 @@ jobs:
           )
           if (-not (Test-Path $archive)) { throw 'stage.zip was not created' }
 
-      # Reported, not enforced: there is no certificate yet, and a gate nobody can
-      # pass is a gate everybody learns to bypass. See docs/security-model.md.
-      - name: Report signing status
+      # 0.x releases may ship unsigned while the public identity is pending, but
+      # they must say so. Starting with 1.0, unknown-publisher distribution is a
+      # hard release failure with no bypass.
+      - name: Enforce versioned signing policy
         shell: pwsh
         run: |
+          $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
           $unsigned = @()
-          foreach ($f in Get-ChildItem dist -Recurse -Include *.exe,*.dll -File) {
+          $selfSigned = @()
+          $untimestamped = @()
+          . ./scripts/horizun-deploy.lib.ps1
+          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) + `
+                     @(Get-ChildItem dist -Filter '*setup.exe' -File)
+          foreach ($f in $targets) {
             $sig = Get-AuthenticodeSignature $f.FullName
-            if ($sig.Status -ne 'Valid') { $unsigned += "$($f.Name): $($sig.Status)" }
+            if ($sig.Status -ne 'Valid') { $unsigned += "$($f.FullName): $($sig.Status)" }
+            elseif ($sig.SignerCertificate -and $sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer) {
+              $selfSigned += "$($f.FullName): $($sig.SignerCertificate.Subject)"
+            }
+            if ($sig.Status -eq 'Valid' -and -not $sig.TimeStamperCertificate) {
+              $untimestamped += $f.FullName
+            }
           }
-          if ($unsigned.Count -gt 0) {
-            Write-Host "::warning::$($unsigned.Count) unsigned or invalidly signed file(s) - expected until a certificate exists"
+          if ($requiresPublicSignature -and ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0)) {
+            $details = @($unsigned) + @($selfSigned) + @($untimestamped | ForEach-Object { "${_}: no trusted timestamp" })
+            throw "Horizun 1.0+ release contains unsigned, invalid, self-signed or untimestamped own binaries:`n  - $($details -join "`n  - ")"
+          }
+          if ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0) {
+            if ($releaseTag) {
+              Write-Host "::warning::0.x release is not publicly signed; users must verify SHA256SUMS.txt. Version 1.0+ enforces this as a failure"
+            } else {
+              Write-Host "::warning::branch package is not publicly signed"
+            }
             $unsigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+            $selfSigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
+            $untimestamped | Select-Object -First 10 | ForEach-Object { Write-Host "  $_ : no trusted timestamp" }
           } else { Write-Host "everything is validly signed" }
 
       # WHAT THE NEXT JOB MUST BE ABLE TO CHECK IT RECEIVED.
@@ -414,6 +473,58 @@ jobs:
             dist/SHA256SUMS.txt
             dist/stage.zip
             dist/stage/manifest.json
+
+  # The release's stated trust state is re-evaluated on a disposable
+  # Microsoft-hosted machine. For 0.x every own binary must be honestly unsigned.
+  # From 1.0 onward every own binary must be publicly trusted and timestamped.
+  public-signature:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the exact signed package
+        uses: actions/download-artifact@v4
+        with:
+          name: horizun-mcp-package
+          path: dist
+
+      - name: Enforce the versioned trust promise on a clean runner
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage -Force
+          . ./scripts/horizun-deploy.lib.ps1
+          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) + `
+                     @(Get-ChildItem dist -Filter '*setup.exe' -File)
+          if ($targets.Count -ne 8) {
+            throw "Expected server exe+dll, five Revit DLLs and setup; found $($targets.Count)."
+          }
+          $major = ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major
+          if ($major -lt 1) {
+            foreach ($file in $targets) {
+              $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+              if ($sig.Status -ne 'NotSigned') {
+                throw "$($file.FullName) does not match the 0.x unsigned disclosure: $($sig.Status) - $($sig.StatusMessage)"
+              }
+              Write-Host "  disclosed unsigned $($file.Name)"
+            }
+            Write-Host '::warning::Horizun 0.x is distributed without a publicly trusted publisher. Verify SHA256SUMS.txt before running Setup.'
+            exit 0
+          }
+          foreach ($file in $targets) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+            if ($sig.Status -ne 'Valid') {
+              throw "$($file.FullName) is not publicly trusted on a clean Windows runner: $($sig.Status) - $($sig.StatusMessage)"
+            }
+            if (-not $sig.TimeStamperCertificate) {
+              throw "$($file.FullName) has no trusted Authenticode timestamp."
+            }
+            if ($sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer) {
+              throw "$($file.FullName) is self-signed, not a public publisher identity."
+            }
+            Write-Host "  trusted $($file.Name) - $($sig.SignerCertificate.Subject)"
+          }
 
   # ---------------------------------------------------------------------------
   # Install exactly once. Reinstalling the identical package before every Revit
@@ -514,7 +625,10 @@ jobs:
           # stale on any machine not on UTC.
           $startedLocal = Get-Date
           $result = Join-Path $env:RUNNER_TEMP "horizun-install-result-${{ github.run_id }}.txt"
-          $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART',"/HORIZUNRESULT=$result" -Wait -PassThru
+          # CI validates the installed artifact directly. It must never discover
+          # or rewrite a maintainer's personal Claude/Codex configuration on the
+          # self-hosted release runner.
+          $p = Start-Process $setup.FullName -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART','/HORIZUNCLIENT=None',"/HORIZUNRESULT=$result" -Wait -PassThru
 
           # BOTH, and neither alone. Inno returns 0 from any install that
           # COMPLETES - including one where a year failed and was rolled back -
@@ -549,10 +663,18 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Unsigned is explicit because no public CA identity exists yet; see the
-        # release policy. The result path is the exact per-run file requested in
-        # the install step, never the global result left by an earlier install.
-        run: pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+        # Branch builds and disclosed 0.x releases keep the explicit unsigned
+        # exception. From 1.0 onward the installed artifact must be publicly signed.
+        # The result path is the exact per-run file requested in the install step,
+        # never the global result left by an earlier install.
+        run: |
+          $requiresPublicSignature = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true' -and `
+            ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          if ($requiresPublicSignature) {
+            pwsh scripts/verify-release.ps1 -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+          } else {
+            pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+          }
 
       - name: Publish the installed release-chain evidence
         uses: actions/upload-artifact@v4
@@ -643,7 +765,7 @@ jobs:
 
   publish-stable-release:
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: [package, stable-release-evidence]
+    needs: [package, public-signature, stable-release-evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: write

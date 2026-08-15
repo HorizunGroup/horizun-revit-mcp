@@ -100,6 +100,31 @@ try {
         }) | Out-Null
     }
 
+    # Public maintainer identities are required in CODEOWNERS and in the signing
+    # governance policy. A private client-name term can legitimately be part of a
+    # maintainer's public GitHub handle, so exempt only a hit that is fully inside
+    # a GitHub handle (or its profile URL), and only in those two governance files.
+    # The same word anywhere else in either file is still a finding.
+    function Test-PublicGovernanceTermHit([string] $file, [string] $line, $hit) {
+        $patterns = switch ($file.Replace('\','/')) {
+            '.github/CODEOWNERS'      { @('@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})') }
+            'CODE-SIGNING-POLICY.md' { @(
+                '@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})',
+                'https://github\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})'
+            ) }
+            default { @() }
+        }
+        foreach ($pattern in $patterns) {
+            foreach ($span in [regex]::Matches($line, $pattern)) {
+                if ($hit.Index -ge $span.Index -and
+                    ($hit.Index + $hit.Length) -le ($span.Index + $span.Length)) {
+                    return $true
+                }
+            }
+        }
+        return $false
+    }
+
     # --- structural rules: no wordlist needed ------------------------------
     #
     # Each one is a SHAPE that leaks whoever the client turns out to be. The
@@ -175,7 +200,15 @@ try {
                 foreach ($line in (Get-Content -LiteralPath $f -ErrorAction SilentlyContinue)) {
                     $n++
                     foreach ($t in $terms) {
-                        if ($line -match [regex]::Escape($t)) {
+                        $termHits = @([regex]::Matches(
+                            $line,
+                            [regex]::Escape($t),
+                            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+                        ))
+                        $unapproved = @($termHits | Where-Object {
+                            -not (Test-PublicGovernanceTermHit $f $line $_)
+                        })
+                        if ($unapproved.Count -gt 0) {
                             # The TERM is not echoed into the output. A CI log is a
                             # published artifact, and a scanner that prints the
                             # secret it found has moved the leak rather than closed
