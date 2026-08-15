@@ -99,6 +99,9 @@ if ($ci -notmatch 'runs-on: windows-latest' -or
     $ci -notmatch 'needs: \[package, public-signature, stable-release-evidence\]') {
     Fail 'stable publication no longer proves public trust on a clean hosted Windows runner'
 }
+if ($ci -notmatch '(?s)Create or complete the stable GitHub release.*?GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}.*?gh release') {
+    Fail 'stable release publication can no longer identify the repository without a checkout'
+}
 if ($ci -notmatch '(?s)requiresPublicSignature.*?\.Major -ge 1.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
     Fail 'installed release verification no longer allows unsigned only before 1.0'
 }
