@@ -17,34 +17,27 @@ $ErrorActionPreference = 'Stop'
 if ($WaitSeconds -lt 1 -or $WaitSeconds -gt 60) { throw 'WaitSeconds must be between 1 and 60.' }
 
 $target = [IO.Path]::GetFullPath($ServerPath).TrimEnd('\')
-$matches = New-Object System.Collections.Generic.List[System.Diagnostics.Process]
-foreach ($process in @(Get-Process -Name 'horizun-mcp' -ErrorAction SilentlyContinue)) {
-    try {
-        if ($process.Path -and [IO.Path]::GetFullPath($process.Path).TrimEnd('\') -ieq $target) {
-            $matches.Add($process)
+$matches = @(
+    Get-CimInstance Win32_Process -Filter "Name='horizun-mcp.exe'" -ErrorAction Stop |
+        Where-Object {
+            $_.ExecutablePath -and
+            [IO.Path]::GetFullPath($_.ExecutablePath).TrimEnd('\') -ieq $target
         }
-    }
-    catch {
-        # A process that exited between enumeration and inspection needs no stop.
-        if (-not $process.HasExited) { throw }
-    }
-}
+)
 
 foreach ($process in $matches) {
-    Write-Host "[Horizun] stopping installed MCP server pid $($process.Id) for update"
-    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    Write-Host "[Horizun] stopping installed MCP server pid $($process.ProcessId) for update"
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
 }
 
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
 do {
     $remaining = @()
-    foreach ($process in @(Get-Process -Name 'horizun-mcp' -ErrorAction SilentlyContinue)) {
-        try {
-            if ($process.Path -and [IO.Path]::GetFullPath($process.Path).TrimEnd('\') -ieq $target) {
-                $remaining += $process.Id
-            }
+    foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name='horizun-mcp.exe'" -ErrorAction SilentlyContinue)) {
+        if ($process.ExecutablePath -and
+            [IO.Path]::GetFullPath($process.ExecutablePath).TrimEnd('\') -ieq $target) {
+            $remaining += $process.ProcessId
         }
-        catch { }
     }
     if ($remaining.Count -eq 0) { exit 0 }
     Start-Sleep -Milliseconds 200

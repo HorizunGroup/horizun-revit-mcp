@@ -121,6 +121,7 @@ jobs:
           pwsh scripts/install-completion.tests.ps1
           pwsh scripts/manifest-integrity.tests.ps1
           pwsh scripts/register-client.tests.ps1
+          pwsh scripts/server-update.tests.ps1
           pwsh scripts/public-consistency.tests.ps1
 
       - name: Whitespace and line-ending hygiene
@@ -261,6 +262,10 @@ jobs:
           if ($missing.Count -gt 0) { throw "no payload for $($missing -join ', ') - this runner is missing those Revit versions" }
 
           Write-Host "validated commit $($doc.Commit), server + $($doc.Plugins.Count) per-year payloads, all distinct, full hashes"
+
+      - name: Prove an active CLI update stops only the installed server path
+        shell: pwsh
+        run: pwsh scripts/server-update.tests.ps1 -RequireWindows
 
       # The full check, with the wordlist that lives on this runner. -RequireTerms
       # makes a MISSING wordlist a failure: at a release gate, "the name check did

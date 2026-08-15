@@ -113,10 +113,17 @@ if ($sourceInstaller -notmatch $clientToolsCopy -or
     Fail 'the source installer no longer installs the deferred helpers and their on-disk identity manifest transactionally'
 }
 $stopHelper = Get-Content (Join-Path $repo 'scripts\stop-installed-server.ps1') -Raw
-if ($stopHelper -notmatch 'GetFullPath\(\$process\.Path\).*?-ieq \$target' -or
-    $stopHelper -notmatch "Get-Process -Name 'horizun-mcp'" -or
+if ($stopHelper -notmatch 'GetFullPath\(\$_\.ExecutablePath\).*?-ieq \$target' -or
+    $stopHelper -notmatch 'Get-CimInstance Win32_Process -Filter "Name=''horizun-mcp\.exe''"' -or
     $stopHelper -match 'taskkill|Stop-Process -Name') {
     Fail 'the update helper no longer limits process termination to the exact installed server path'
+}
+$installerSource = Get-Content (Join-Path $repo 'installer\horizun-mcp.iss') -Raw
+if ($installerSource -notmatch 'procedure RollbackDeployment' -or
+    $installerSource -notmatch 'function WriteDeploymentManifests' -or
+    $installerSource -notmatch 'if WriteDeploymentManifests then CommitDeployment' -or
+    $installerSource -match 'Source: "\.\.\\dist\\stage\\manifest\.json"; DestDir: "\{app\}"') {
+    Fail 'Setup no longer promotes server, add-ins and identity manifests as one transaction'
 }
 
 # Resolve every local link that will appear in the public repository. Anchors are

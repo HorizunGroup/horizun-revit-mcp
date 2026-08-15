@@ -87,8 +87,11 @@ Source: "..\dist\stage\plugin\2024\*"; DestDir: "{tmp}\HorizunPayload\plugin\202
 Source: "..\dist\stage\plugin\2025\*"; DestDir: "{tmp}\HorizunPayload\plugin\2025"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
 Source: "..\dist\stage\plugin\2026\*"; DestDir: "{tmp}\HorizunPayload\plugin\2026"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
 Source: "..\dist\stage\plugin\2027\*"; DestDir: "{tmp}\HorizunPayload\plugin\2027"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist deleteafterinstall
-Source: "..\dist\stage\manifest.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "..\dist\stage\Horizun.addin";  DestDir: "{app}";              Flags: ignoreversion
+; Identity and add-in manifests participate in the same post-install transaction
+; as the server and DLLs. Copying either directly to {app} before that transaction
+; completes can make a rolled-back install describe bytes that never landed.
+Source: "..\dist\stage\manifest.json"; DestDir: "{tmp}\HorizunPayload"; Flags: ignoreversion deleteafterinstall
+Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: ignoreversion deleteafterinstall
 
 [Icons]
 Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
@@ -151,6 +154,9 @@ var
   ServerInstalled: Boolean;
   ServerFailure: String;
   UninstallFailures: String;
+  YearDeployed: array[0..4] of Boolean;
+  YearManifestWritten: array[0..4] of Boolean;
+  InstallManifestWritten: Boolean;
 
 function ShouldCompleteInstall(): Boolean;
 begin
@@ -158,12 +164,20 @@ begin
 end;
 
 procedure InitYears;
+var
+  I: Integer;
 begin
   Years[0] := '2023';
   Years[1] := '2024';
   Years[2] := '2025';
   Years[3] := '2026';
   Years[4] := '2027';
+  for I := 0 to YearsCount - 1 do
+  begin
+    YearDeployed[I] := False;
+    YearManifestWritten[I] := False;
+  end;
+  InstallManifestWritten := False;
 end;
 
 { Revit holds a lock on the plugin it has loaded. Copying over it fails per-file and
@@ -317,7 +331,7 @@ begin
     ServerFailure := 'the server vanished after its swap; the previous one was restored';
     exit;
   end;
-  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  { Keep Backup until every installed Revit year and both manifests succeed. }
   Result := True;
 end;
 
@@ -410,22 +424,119 @@ begin
     exit;
   end;
 
-  if not FileCopy(ExpandConstant('{app}') + '\Horizun.addin', AddinsDir(Year) + '\Horizun.addin', False) then
-  begin
-    { Without the manifest Revit never loads the DLL, so this is a failed install,
-      not a cosmetic problem. Roll the whole year back. }
-    DelTree(Dst, True, True, True);
-    if DirExists(Backup) then RenameFile(Backup, Dst);
-    FailedYears := FailedYears + Year + ' (the .addin manifest could not be written; the previous install was restored), ';
-    exit;
-  end;
-
-  { Only now is the previous version disposable, and only Horizun''s own folder. }
-  if DirExists(Backup) then DelTree(Backup, True, True, True);
+  { Keep Backup and defer the .addin manifest until the whole deployment is
+    known good. A server/add-in contract may never be partially promoted. }
 
   if InstalledYears <> '' then InstalledYears := InstalledYears + ', ';
   InstalledYears := InstalledYears + Year;
   Result := True;
+end;
+
+procedure RollbackDeployment;
+var
+  I: Integer;
+  Dst, Backup, Addin, AddinBackup, ServerDst, ServerBackup, ProductManifest, ProductManifestBackup: String;
+begin
+  for I := YearsCount - 1 downto 0 do
+  begin
+    Dst := AddinsDir(Years[I]) + '\Horizun';
+    Backup := AddinsDir(Years[I]) + '\Horizun.previous';
+    Addin := AddinsDir(Years[I]) + '\Horizun.addin';
+    AddinBackup := AddinsDir(Years[I]) + '\Horizun.addin.previous';
+    if YearManifestWritten[I] then
+    begin
+      if FileExists(AddinBackup) then
+      begin
+        DeleteFile(Addin);
+        RenameFile(AddinBackup, Addin);
+      end
+      else
+        DeleteFile(Addin);
+    end;
+    if YearDeployed[I] then
+    begin
+      if DirExists(Dst) then DelTree(Dst, True, True, True);
+      if DirExists(Backup) then RenameFile(Backup, Dst);
+    end;
+  end;
+
+  ProductManifest := ExpandConstant('{app}') + '\manifest.json';
+  ProductManifestBackup := ExpandConstant('{app}') + '\manifest.previous.json';
+  if InstallManifestWritten then
+  begin
+    DeleteFile(ProductManifest);
+    if FileExists(ProductManifestBackup) then RenameFile(ProductManifestBackup, ProductManifest);
+  end;
+
+  if ServerInstalled then
+  begin
+    ServerDst := ExpandConstant('{app}') + '\server';
+    ServerBackup := ExpandConstant('{app}') + '\server.previous';
+    if DirExists(ServerDst) then DelTree(ServerDst, True, True, True);
+    if DirExists(ServerBackup) then RenameFile(ServerBackup, ServerDst);
+  end;
+  ServerInstalled := False;
+  InstalledYears := '';
+end;
+
+function WriteDeploymentManifests: Boolean;
+var
+  I: Integer;
+  SourceAddin, Addin, AddinBackup, ProductManifest, ProductManifestBackup: String;
+begin
+  Result := False;
+  SourceAddin := ExpandConstant('{tmp}') + '\HorizunPayload\Horizun.addin';
+  for I := 0 to YearsCount - 1 do
+    if YearDeployed[I] then
+    begin
+      Addin := AddinsDir(Years[I]) + '\Horizun.addin';
+      AddinBackup := AddinsDir(Years[I]) + '\Horizun.addin.previous';
+      if FileExists(AddinBackup) then DeleteFile(AddinBackup);
+      if FileExists(Addin) and (not FileCopy(Addin, AddinBackup, False)) then
+      begin
+        FailedYears := FailedYears + Years[I] + ' (could not back up the existing .addin manifest), ';
+        exit;
+      end;
+      YearManifestWritten[I] := True;
+      if not FileCopy(SourceAddin, Addin, False) then
+      begin
+        FailedYears := FailedYears + Years[I] + ' (could not write the .addin manifest), ';
+        exit;
+      end;
+    end;
+
+  ProductManifest := ExpandConstant('{app}') + '\manifest.json';
+  ProductManifestBackup := ExpandConstant('{app}') + '\manifest.previous.json';
+  if FileExists(ProductManifestBackup) then DeleteFile(ProductManifestBackup);
+  if FileExists(ProductManifest) and (not FileCopy(ProductManifest, ProductManifestBackup, False)) then
+  begin
+    ServerFailure := 'the installed identity manifest could not be backed up';
+    exit;
+  end;
+  InstallManifestWritten := True;
+  if not FileCopy(ExpandConstant('{tmp}') + '\HorizunPayload\manifest.json', ProductManifest, False) then
+  begin
+    ServerFailure := 'the installed identity manifest could not be written';
+    exit;
+  end;
+  Result := True;
+end;
+
+procedure CommitDeployment;
+var
+  I: Integer;
+begin
+  if DirExists(ExpandConstant('{app}') + '\server.previous') then
+    DelTree(ExpandConstant('{app}') + '\server.previous', True, True, True);
+  if FileExists(ExpandConstant('{app}') + '\manifest.previous.json') then
+    DeleteFile(ExpandConstant('{app}') + '\manifest.previous.json');
+  for I := 0 to YearsCount - 1 do
+  begin
+    if DirExists(AddinsDir(Years[I]) + '\Horizun.previous') then
+      DelTree(AddinsDir(Years[I]) + '\Horizun.previous', True, True, True);
+    if FileExists(AddinsDir(Years[I]) + '\Horizun.addin.previous') then
+      DeleteFile(AddinsDir(Years[I]) + '\Horizun.addin.previous');
+  end;
 end;
 
 { Pascal Script has no BoolToStr and no ternary. }
@@ -450,9 +561,20 @@ begin
       if RevitInstalled(Years[I]) then
       begin
         FoundAny := True;
-        if ServerInstalled then DeployYear(Years[I])
+        if ServerInstalled then
+        begin
+          YearDeployed[I] := DeployYear(Years[I]);
+        end
         else FailedYears := FailedYears + Years[I] + ' (server deployment failed; add-in left unchanged), ';
       end;
+
+    if ServerInstalled and ((not FoundAny) or (FailedYears = '')) then
+    begin
+      if WriteDeploymentManifests then CommitDeployment
+      else RollbackDeployment;
+    end
+    else if ServerInstalled then
+      RollbackDeployment;
 
     { Old installers staged plugin payloads permanently under the application
       directory. It is not live; the new installer extracts to a private temp. }
