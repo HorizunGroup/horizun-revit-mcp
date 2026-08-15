@@ -119,7 +119,12 @@ $text = $null; $isError = $null; $data = $null
 if ($reply) {
     $text = $reply.result.content[0].text
     $isError = [bool]$reply.result.isError
-    if ($text) { try { $data = $text | ConvertFrom-Json } catch { $data = $null } }
+    # The text block is for a person and can legally contain the JSON payload
+    # followed by "what Revit raised while this ran". Parsing the whole block
+    # then returns null on precisely the calls that raised a warning or dialog.
+    # structuredContent is the machine channel and carries the payload alone.
+    if ($null -ne $reply.result.structuredContent) { $data = $reply.result.structuredContent }
+    elseif ($text) { try { $data = $text | ConvertFrom-Json } catch { $data = $null } }
 }
 
 $out = [pscustomobject]@{

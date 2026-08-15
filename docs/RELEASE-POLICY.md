@@ -10,24 +10,34 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Signed *(once a certificate exists — see below)*, live matrix approved for every supported Revit year | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year; security gates green; signing status stated exactly | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
-`latest` **always** points at the newest release that carries an installer. A
-validation-only tag exists so the code change has a name and a diff, not so anybody
-installs it — v0.6.1 is the reference example.
+`latest` **always** points at the newest **stable** release that carries an
+installer. A preview can carry binaries but remains marked pre-release, so the
+default bootstrap cannot silently move stable users onto incomplete live evidence.
+A validation-only tag exists so the code change has a name and a diff, not so
+anybody installs it — v0.6.1 is the reference example.
 
 Every release, whatever the channel, publishes: `manifest.json` (the commit and a
 SHA-256 per payload), `sbom.json` (every redistributed component with a named
 licence) and `SHA256SUMS.txt`. A stable release additionally publishes the live
 verification report for each Revit year it claims.
 
-**Signing is not currently on the roadmap.** The unsigned build shows Windows and
-Revit "unknown publisher" warnings; `AGENTS.md` and the README say so plainly, and
-"stable" here therefore means *matrix-approved*, not *signed*. If that changes, this
-table changes with it and the distinction gets stated in the release notes rather
-than quietly upgraded.
+The repository's generic secret patterns always run in hosted CI; the private
+client/project wordlist is mandatory on the release runner. GitHub secret scanning
+and push protection are repository settings, not files in this tree, and must also
+be enabled before stable promotion. A green custom scan does not claim that those
+platform controls are on.
+
+Signing and public trust are separate facts. A self-signed or privately trusted
+certificate can prove byte identity in a controlled environment but does not make
+Windows trust the publisher on a clean machine. Every release states whether the
+payload and wrapper are unsigned, self-signed, or signed by a publicly trusted CA.
+Until a public trust chain exists, users can see publisher prompts and must verify
+the published SHA-256. Stable means *matrix-approved*; it never implies a trust
+chain that the release does not actually carry.
 
 ## Versioning
 
@@ -43,7 +53,7 @@ names, their input schemas, and the shape of what they return.
   that begins refusing input it used to accept silently is a PATCH when the old
   behaviour was unverified** — the promise did not change, the honesty did.
 
-Both halves carry the same `<Version>` and are released **together**. They share a
+Both halves inherit the same `<Version>` from `Directory.Build.props` and are released **together**. They share a
 contract hash and refuse to pair across builds; there is no partial deployment, so
 there is no such thing as a server version and an add-in version.
 
@@ -100,6 +110,7 @@ one is currently checkable rather than a matter of opinion:
 - [ ] Schemas frozen under the compatibility rules above, with the deprecation
       window written into the CHANGELOG.
 - [ ] Two maintainers with release rights.
+- [ ] GitHub secret scanning and push protection enabled on the public repository.
 
 Until every box is ticked, this ships as 0.x and says so. A 1.0 that means "we
 think it is good now" is the claim this project exists not to make.

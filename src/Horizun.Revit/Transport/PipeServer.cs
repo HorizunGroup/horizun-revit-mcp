@@ -200,6 +200,22 @@ namespace Horizun.Revit.Transport
 
         private void HandleOne(NamedPipeServerStream server)
         {
+            // WHO is on the other end (5.16). Windows names the client pid of a pipe
+            // connection; recorded BEFORE dispatch so that by the time any command
+            // runs - health included - the asking client is already in the registry,
+            // and "other clients" is the distinct count minus one. A pid that cannot
+            // be read is counted as unidentified, never dropped. Best effort either
+            // way: presence bookkeeping must never cost a request.
+            try
+            {
+                uint clientPid;
+                if (GetNamedPipeClientProcessId(server.SafePipeHandle.DangerousGetHandle(), out clientPid))
+                    ClientPresence.Default.Seen(clientPid, DateTime.UtcNow);
+                else
+                    ClientPresence.Default.SeenUnidentified(DateTime.UtcNow);
+            }
+            catch { ClientPresence.Default.SeenUnidentified(DateTime.UtcNow); }
+
             var writer = new StreamWriter(server, new UTF8Encoding(false)) { AutoFlush = true };
 
             // Bounded in size and in time. StreamReader.ReadLine() was neither: a peer that
@@ -290,6 +306,12 @@ namespace Horizun.Revit.Transport
 
             try { writer.WriteLine(text); } catch { }
         }
+
+        // WHO is on the other end of a pipe connection. Win32 answers with the client
+        // pid; .NET never surfaced it. Used for presence only (5.16) - never for auth,
+        // which stays with the token and the ACL.
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(IntPtr pipe, out uint clientProcessId);
 
         // Compares two strings without leaking length/content through timing.
         private static bool ConstantTimeEquals(string a, string b)

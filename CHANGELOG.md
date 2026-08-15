@@ -3,6 +3,155 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.9.0 — 2026-08-14
+
+- **Release hardening: protocol, durability, installation and public supply chain.**
+  JSON-RPC now enforces the MCP initialization lifecycle and request-id rules; the
+  unsupported MCP Tasks advertisement is gone; stdout failure stops the server
+  instead of reporting a write that never happened. Excel writes claim durable
+  idempotency keys under the workbook lock, replay preserves the complete result,
+  async jobs refuse IDs without a durable record, and opt-in retention removes only
+  terminal records. Packaging is transactional and self-contained, validates the
+  installed result rather than Setup's exit code alone, registers Claude at user
+  scope, preserves unrelated client configuration on removal, and produces an exact
+  CycloneDX 1.6 inventory. Stable publication now requires clean artifacts and live
+  reports for Revit 2023–2027. `horizun_execute_python` remains enabled by default;
+  its evidence remains self-reported and `host_verified` remains false.
+
+- **One effective version, not merely one version file.** Server, add-in, installer,
+  registry metadata and SBOM now inherit `0.9.0` from the repository root. The
+  source-level `Directory.Build.props` explicitly imports that root because MSBuild
+  otherwise stops at the nearest file and silently stamped every source binary as
+  `1.0.0`. The release tests resolve the effective MSBuild property for both projects
+  and inspect the packaged binaries, so filename and embedded version cannot drift.
+
+- **The 0.9 live gate exercises valid Revit structures.** The parametric-family
+  rehearsal now preserves the outer profile-loop array when PowerShell serializes
+  it. Compound system types apply and verify layer wrapping only on exterior or
+  interior shell layers: Revit reports core layers as participating but rejects the
+  wrapping setter on those same layers, so a core layer is treated as effectively
+  non-wrapping and `wraps=true` there is refused before a transaction starts.
+
+- **Nuevo comando tipado `horizun_acc_upload_status` — ¿subido a ACC o pendiente? (5.15).**
+  Copiar a la carpeta del Desktop Connector y hashear la copia prueba la CACHÉ LOCAL,
+  no la nube: la subida es un paso asíncrono posterior que falla bajo throttling
+  ("Too many people or processes…", circuit breaker de ~11 minutos) — medido en campo:
+  3 de 8 familias sin subir en silencio, detectadas solo por una captura humana. El
+  único registro local que responde la pregunta es el WAL del propio conector
+  (`*.properties-log.db`): al completarse una subida, el `Name` aparece junto a un
+  `ParentFolderUrn`; mientras está pendiente o fallida, no. Un script externo probó la
+  lectura; ahora es un comando del bridge. Acepta `names` y/o `paths` (se usan los
+  basenames), `project_id` opcional convierte cada hallazgo en URL de ACC Docs, y
+  `wal_root` cubre instalaciones no estándar. Dos líneas de honestidad en la respuesta:
+  un hallazgo es el TESTIMONIO del conector leído en esta máquina, no una consulta a la
+  API de la nube; y una ausencia es ausencia de EVIDENCIA, nunca prueba de ausencia —
+  pendiente, fallida o subida con otro nombre se ven idénticas desde aquí. Un log que
+  no se puede leer se reporta por archivo y declara los contadores como cotas
+  inferiores. Org-neutral donde el script no lo era: los nombres son argumento, ningún
+  prefijo de cliente va compilado. Read-only, no toca ningún modelo, no necesita
+  documento abierto. (Parseo y matching en `AccUploadWal`, libre de Revit y con tests;
+  el comando lee los logs con el share mode que el conector exige — la misma lección
+  de 5.12.)
+
+- **Nuevo comando tipado `horizun_file_info` — triage de carpeta sin abrir nada (5.20).**
+  Leer formato/versión guardada, `is_workshared`, `is_central`, `is_local` y ruta de
+  central de una lista de archivos o de una carpeta entera, DESDE DISCO con
+  `BasicFileInfo`, sin abrir ninguno y sin documento activo. Es lo primero que hace
+  cualquier lote, y hasta ahora se escribía a mano en `execute_python` cada vez —
+  peor, había que crear un proyecto en blanco solo para satisfacer el chequeo de
+  documento activo. Acepta `paths` (lista) o `folder` (barrido por `pattern`, default
+  `*.rvt`, `recursive` opcional); los explícitos primero, luego la carpeta, dedup sin
+  distinguir mayúsculas, tope de 2000 con aviso. Cada archivo nombra su propio
+  `read_error` cuando no se puede leer; el resumen cuenta legibles/ilegibles/ausentes.
+  Nada se abre, nada se actualiza. Read-only. (La regla de qué archivos leer vive en
+  `FileInfoPaths`, libre de Revit y con tests; el lector `BasicFileProbe` necesita la
+  API de Revit.) Esto levanta el freeze de herramientas para este comando por decisión
+  del dueño.
+
+- **`on_open_dialog: cancel | dismiss` en las aperturas (5.22).** Cancelar por
+  defecto es correcto y sigue siendo el default: un modelo que no abre desatendido
+  es un hallazgo. Pero 6 de 123 modelos de un lote no se podían auditar porque su
+  apertura levanta un diálogo cuya única respuesta desatendida sensata es "reconocer
+  y continuar", y no había forma de decirlo por llamada. Con `dismiss`, `open_document`
+  y el `open` de `document_session` responden OK/continuar al diálogo de apertura y lo
+  registran en `revit_said`; es best-effort (un diálogo cuyo "continuar" no es el botón
+  por defecto se anota como respondido en vez de proceder a ciegas) y está acotado a la
+  llamada de apertura — cualquier otro diálogo sigue cancelándose. La regla de parseo
+  vive en `OpenDialogPolicy`, libre de Revit y con tests; un valor mal escrito es un
+  error, no un cancel silencioso.
+
+- **El servidor barre discovery huérfano al arrancar (5.24).** Un archivo de
+  discovery (`revit-<año>-<pid>.json`) lo escribe un Revit vivo y lo borra al salir;
+  uno que crashea —o lo matan pasando un modal— nunca llega a borrarlo. El add-in ya
+  barría, pero SOLO al publicar el suyo, es decir cuando arranca un Revit: si el
+  servidor levanta tras un crash y no hay Revit nuevo, nada limpiaba el huérfano y el
+  siguiente comando tropezaba con él. Ahora el servidor barre al arrancar, decidiendo
+  QUÉ archivos con la MISMA regla que el add-in (`DiscoverySweep`, libre de Revit,
+  con sus dos negativas: los nombres legacy de dos segmentos jamás se tocan, y un pid
+  vivo conserva su archivo). Una sola fuente de verdad para las dos mitades.
+
+- **`self_reported_verified` deja de ser un status que el puente rechaza (5.23).**
+  El clasificador aceptaba `verified|completed_unverified|partial|failed`; un script
+  que declaraba `self_reported_verified` —la palabra que TODA la documentación y cada
+  disclaimer del puente popularizan para esto mismo— caía en la rama de status
+  desconocido y se DEGRADABA con una advertencia que nombraba una lista que lo omitía:
+  la jerga contradiciéndose, rechazando una palabra que ella misma enseña. Ahora es un
+  status declarado, con la MISMA vara que `verified` (checked=true + evidence, si no
+  downgrade), y se registra tal cual. Nunca sube una afirmación: sigue sin existir
+  `verified` para Python.
+
+- **`revit_said` ahora viaja también por la ruta async (5.21).** La ruta síncrona
+  adjunta `revit_said` —advertencias, errores y diálogos modales cancelados— junto
+  al payload en cada respuesta (`PipeEnvelope`). La async escribía solo
+  `result.Data` en el record del job, así que esa telemetría —la que diagnosticó el
+  caso más difícil del 2026-08-07, un `Dialog_Revit_DocWarnDialog` cancelado más los
+  errores que Revit levantó antes— existía para una llamada síncrona y desaparecía
+  para el mismo trabajo enviado por `run_async`, que es justo como corren los lotes:
+  4 modelos caídos quedaron sin diagnóstico por esto. `Job.Result` ahora guarda
+  `revit_said` en el evento `result` (construido EXACTO como `PipeEnvelope`, misma
+  forma en ambas rutas), `RunOneAsync` lo serializa —también en fallo, porque suele
+  ser la razón— y `horizun_job_status` lo expone como hermano de `result`. Ausente
+  significa "Revit no levantó nada", igual que en síncrono, nunca "se perdió".
+
+- **Un modal se devuelve como RESULTADO, no como timeout (5.19).** Medido
+  2026-08-07: un diálogo "New Project" abierto costó 600 s a cada una de tres
+  llamadas a `horizun_health` — 30 minutos para enterarse de lo que el log del
+  puente dijo en el primer segundo ("it never started"). Revit solo atiende el
+  ExternalEvent cuando está ocioso y un modal significa que nunca lo estará;
+  el hilo del transporte NO está bloqueado, así que ahora la espera va en
+  rebanadas de 1 s y entre rebanadas pregunta a `ModalProbe` (Win32: la ventana
+  principal deshabilitada + la ventana visible y habilitada del hilo de UI).
+  Un diálogo que persiste 3 sondeos consecutivos — la regla es `ModalSighting`,
+  libre de Revit y con 7 tests, porque un solo avistamiento puede ser un
+  diálogo que `Interference` ya estaba cancelando — se responde YA, con el
+  diálogo nombrado y la petición sacada de la cola: "NEVER STARTED, nada se
+  escribió". Una petición que ya arrancó nunca se abandona por sondeo; el
+  timeout final ahora nombra el modal visible si lo hay. Y en el servidor,
+  `horizun_health` tiene techo propio de 30 s: es el comando de diagnóstico, y
+  no contestar rápido ES la respuesta — el respaldo para cuando la sonda no
+  puede mirar. Una sonda que no capturó sus datos degrada exactamente al
+  comportamiento anterior.
+
+- **`document_session` close puede activar el señuelo por dentro (5.13).** La
+  API de Revit no cierra el documento ACTIVO, y el baile del señuelo — abrir un
+  documento que no quieres para desplazar al que sí — lo hacía el humano: tres
+  veces en una sesión el 2026-08-05, dos más el 2026-08-07 a escala de lote,
+  donde el último modelo de 54 quedó abierto y relanzar el lote se lo saltó.
+  `activate_other: true` hace el baile dentro del comando: activa otro
+  documento abierto (el primero cuya ruta exista en disco — uno detached no
+  puede reabrirse por su ruta sintética) o, cuando no hay otro, abre el ANCLA
+  propia del puente (`.horizun\anchor\HZ_ANCHOR_<año>.rvt`, un proyecto vacío
+  creado una vez y reutilizado), y REPORTA cuál activó y cómo. La decisión es
+  `ActivationChoice` (libre de Revit, 8 tests, incluidos los estados que un
+  Revit vivo no produce a demanda: todos los documentos detached, lista nula).
+  La activación se afirma midiendo — el activo posterior ya no es el objetivo —
+  nunca por "no lanzó excepción"; ocurre después de todos los rechazos (una
+  petición rechazada no te cambia el documento activo de camino) y antes del
+  cierre. `activate_other` entra en `PlanFields`: un rehearsal aprobado sin él
+  no autoriza una ejecución que además cambia de documento. Apagado por
+  defecto: la activación cambia lo que el usuario está mirando y se pide, no
+  se hereda.
+
 ## v0.8.0 — 2026-08-05
 
 La versión que v0.7.0 dijo ser. Sus notas presumían el rollback arreglado y la

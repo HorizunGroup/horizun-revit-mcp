@@ -23,6 +23,7 @@
     <!-- The negotiation rule: which MCP version to answer. Golden-tested because a bad
          answer breaks every client at the first message, silently from this side. -->
     <Compile Include="..\..\src\Horizun.Server\ProtocolNegotiation.cs" Link="ProtocolNegotiation.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpSession.cs" Link="McpSession.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
@@ -39,6 +40,7 @@
          of the shared-root property is under test with the same source the add-in
          compiles. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" Link="DiscoverySweep.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
     <!-- CommandResult now carries the fallback signal, so its type comes with it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FallbackSignal.cs" Link="FallbackSignal.cs" />
@@ -59,9 +61,13 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonTokenMask.cs" Link="PythonTokenMask.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" Link="Idempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" Link="DurableCommandIdempotency.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" Link="DurableStoreRetention.cs" />
     <!-- The add-in's job record, so "the server reads where the add-in writes" can be
          asserted with the writer that actually ships rather than a stand-in. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" Link="Job.cs" />
+    <!-- Job reports a record it could not write rather than swallowing the failure,
+         and it reports it through Log. Revit-free, like everything else linked here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Log.cs" Link="Log.cs" />
     <!-- The reader those records exist for. It answers WITHOUT touching Revit, so
          the five states it reports are provable here against real files - which is
          the only place they can be proved, since four of the five require a Revit

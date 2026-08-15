@@ -33,6 +33,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
+using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
@@ -308,7 +309,7 @@ namespace Horizun.Server
                 return rels.Root.Elements(Pkg + "Relationship")
                     .Any(r => ((string)r.Attribute("Type") ?? "").EndsWith("/table"));
             }
-            catch { return false; }
+            catch (System.Xml.XmlException) { return false; }  // malformed rels: report "no table", never guess one
         }
 
         /// <summary>Re-serialize the entries to a new .xlsx byte array, substituting one part's bytes.</summary>
@@ -333,7 +334,20 @@ namespace Horizun.Server
         // The host handler.
         // ---------------------------------------------------------------------
 
-        internal static JObject Handle(JObject args)
+        /// <summary>The tool name, as the ledger records it.</summary>
+        internal const string ToolName = "horizun_excel_write_rows";
+
+        /// <summary>
+        /// What the durable key is scoped to. The workbook, so the same key aimed at a
+        /// different file is a conflict rather than a second append somewhere else.
+        /// </summary>
+        internal static string LedgerScopeOf(JObject args)
+            => "xlsx:" + ((string)args?["file_path"] ?? "(none)");
+
+        internal static JObject Handle(JObject args) =>
+            Handle(args, new DurableCommandLedger(retentionLog: message => Log.Info(message)));
+
+        internal static JObject Handle(JObject args, DurableCommandLedger ledger)
         {
             string filePath = (string)args?["file_path"];
             string sheetName = (string)args?["sheet"];
@@ -343,31 +357,24 @@ namespace Horizun.Server
                 throw new ArgumentException("file_path is required.");
             if (!(rowsTok is JArray rowsArr) || rowsArr.Count == 0)
                 throw new ArgumentException("rows is required and must be a non-empty array of arrays.");
-            if (!File.Exists(filePath))
-                throw new FileNotFoundException("Workbook not found: " + filePath);
 
-            byte[] original = File.ReadAllBytes(filePath);
-            if (original.Length < 4 || original[0] != 0x50 || original[1] != 0x4B) // "PK"
-                throw new InvalidDataException("Not an .xlsx (OPC/zip) file — refusing to write. First bytes are not a zip signature.");
-
-            List<KeyValuePair<string, byte[]>> entries;
-            try { entries = ReadEntries(original); }
-            catch (Exception ex) { throw new InvalidDataException("File is not a readable .xlsx package: " + ex.Message); }
-
-            if (!entries.Any(kv => kv.Key == "xl/workbook.xml"))
-                throw new InvalidDataException("Not an .xlsx workbook — xl/workbook.xml is absent. Refusing to write.");
-
-            ResolvedSheet sheet = ResolveSheet(entries, sheetName);
-            if (sheet == null)
-                throw new InvalidDataException(string.IsNullOrEmpty(sheetName)
-                    ? "Could not resolve the first worksheet from xl/workbook.xml."
-                    : "No worksheet named '" + sheetName + "'. Present sheets are read back from the workbook.");
-
-            byte[] sheetBytes = entries.FirstOrDefault(kv => kv.Key == sheet.PartPath).Value;
-            if (sheetBytes == null)
-                throw new InvalidDataException("Worksheet part '" + sheet.PartPath + "' referenced by the workbook is missing from the package.");
+            // AT-MOST-ONCE, because an append is not idempotent and a lost reply is not
+            // rare. Every typed Revit mutation gets this from the dispatcher; this tool is
+            // answered in the server and so was never on that path. The failure it removes
+            // needs no concurrency at all: one client, one timeout, one retry, two copies
+            // of the rows - and the second answer honestly reporting rows_written: 1.
+            string idempotencyKey = (string)args["idempotency_key"];
+            if (string.IsNullOrWhiteSpace(idempotencyKey))
+                throw new ToolRefusal(
+                    "idempotency_key is required. Appending rows cannot be undone by repeating it: if this " +
+                    "reply is lost and you send the call again without a key, the rows land twice and the " +
+                    "second answer reports rows_written honestly, because it did write them. Generate a new " +
+                    "UUID for each deliberate append and keep it unchanged only for retries.");
 
             // Parse the caller's rows into CLR values (numbers/bools/strings/null).
+            // This depends on the ARGUMENTS and never on the workbook, so it stays
+            // outside the lock: a malformed request is rejected without making a
+            // legitimate writer wait behind it.
             var rows = new List<IList<object>>();
             foreach (JToken rt in rowsArr)
             {
@@ -378,61 +385,96 @@ namespace Horizun.Server
                 rows.Add(one);
             }
 
-            string newSheetXml = AppendRowsToSheetXml(Utf8(sheetBytes), rows, out AppendReport rep);
-            byte[] newSheetBytes = new UTF8Encoding(false).GetBytes(newSheetXml);
-            byte[] produced = RewriteZip(entries, sheet.PartPath, newSheetBytes);
-
-            // RE-READ the produced bytes and confirm the appended cells are actually there,
-            // with the values we intended, before we let it replace the original.
-            VerifyReadBack(produced, sheet.PartPath, rows, rep);
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException("Workbook not found: " + filePath);
 
             // ---- Exclusive, uniquely named, and verified against DISK. ----
             //
-            // All three were missing, and each covered for the others' absence.
+            // THE LOCK IS TAKEN BEFORE THE FILE IS READ, and held until the replace has
+            // been verified. That ordering is the whole point, and it was wrong.
             //
-            // The temp and backup names were FIXED - filePath + ".horizuntmp" and
-            // ".horizunbak". Two writes to the same workbook at once wrote the same temp
-            // file: one Replace won, and the loser's backup had already been overwritten
-            // by the winner's copy of a file that was itself mid-write. The names now
-            // carry the process id and a guid, so two writers cannot land on one name.
+            // Reading and rewriting the package used to happen BEFORE the lock. Two
+            // writers therefore never met at the lock at all: both read the same bytes,
+            // both computed the same first_new_row, and whichever finished its transform
+            // second took a lock that was already free and wrote a package built from a
+            // snapshot that no longer described the file. The first writer's rows were
+            // gone -- and it had already answered rows_written and verified: true.
+            // Measured on an 8000-row workbook: a one-row append finished at 244 ms, a
+            // 60000-row append at 889 ms, both reporting success, and only the second
+            // one's rows were in the file.
             //
-            // Nothing stopped them being concurrent in the first place. A lock file taken
-            // with CreateNew does: the second writer is REFUSED, and told which process
-            // holds it, rather than interleaving with the first.
+            // The unique temp and backup names stay: two writers still cannot land on one
+            // name if a lock file is ever deleted by hand while a write is running.
             string stamp = System.Diagnostics.Process.GetCurrentProcess().Id + "-" +
                            Guid.NewGuid().ToString("N").Substring(0, 8);
             string lockPath = filePath + ".horizunlock";
             string backupPath = filePath + "." + stamp + ".horizunbak";
             string tmp = filePath + "." + stamp + ".horizuntmp";
 
-            FileStream lockHandle;
-            try
-            {
-                lockHandle = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-                using (var lw = new StreamWriter(lockHandle, new UTF8Encoding(false), 512, true))
-                    lw.WriteLine("horizun pid " + System.Diagnostics.Process.GetCurrentProcess().Id + " " +
-                                 DateTime.UtcNow.ToString("u"));
-                lockHandle.Flush();
-            }
-            catch (IOException)
-            {
-                string held = "(the lock file could not be read)";
-                try { held = File.ReadAllText(lockPath).Trim(); } catch { }
-                throw new IOException(
-                    "Another write to this workbook is in progress and holds " + lockPath + " (" + held + "). " +
-                    "Nothing was written. Two appenders interleaving would each rewrite the whole package from its " +
-                    "own stale copy, and the second to finish would silently discard the first's rows. If no write " +
-                    "is really running, delete that lock file.");
-            }
+            FileStream lockHandle = AcquireWorkbookLock(lockPath);
 
             byte[] onDisk;
+            byte[] original;
+            ResolvedSheet sheet;
+            AppendReport rep;
+            bool hasTable;
+            string replaceNote;
+            DurableCommandDecision decision = null;
+            bool writeStarted = false;
             try
             {
+                // THE KEY IS CLAIMED AFTER THE LOCK, deliberately. A caller refused the
+                // lock has been told "somebody else is writing, nothing was read, nothing
+                // was written" - and a claim written before that refusal would leave the
+                // key in doubt forever, so the one thing a caller should obviously do
+                // (wait and retry with the same key) would be permanently refused.
+                string fingerprint = RequestFingerprint.OfOperation(
+                    ToolName, LedgerScopeOf(args), args, "idempotency_key");
+                decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
+
+                if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
+                if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+
+                original = File.ReadAllBytes(filePath);
+                if (original.Length < 4 || original[0] != 0x50 || original[1] != 0x4B) // "PK"
+                    throw new InvalidDataException("Not an .xlsx (OPC/zip) file — refusing to write. First bytes are not a zip signature.");
+
+                List<KeyValuePair<string, byte[]>> entries;
+                try { entries = ReadEntries(original); }
+                catch (Exception ex) { throw new InvalidDataException("File is not a readable .xlsx package: " + ex.Message); }
+
+                if (!entries.Any(kv => kv.Key == "xl/workbook.xml"))
+                    throw new InvalidDataException("Not an .xlsx workbook — xl/workbook.xml is absent. Refusing to write.");
+
+                sheet = ResolveSheet(entries, sheetName);
+                if (sheet == null)
+                    throw new InvalidDataException(string.IsNullOrEmpty(sheetName)
+                        ? "Could not resolve the first worksheet from xl/workbook.xml."
+                        : "No worksheet named '" + sheetName + "'. Present sheets are read back from the workbook.");
+
+                byte[] sheetBytes = entries.FirstOrDefault(kv => kv.Key == sheet.PartPath).Value;
+                if (sheetBytes == null)
+                    throw new InvalidDataException("Worksheet part '" + sheet.PartPath + "' referenced by the workbook is missing from the package.");
+
+                string newSheetXml = AppendRowsToSheetXml(Utf8(sheetBytes), rows, out rep);
+                byte[] newSheetBytes = new UTF8Encoding(false).GetBytes(newSheetXml);
+                byte[] produced = RewriteZip(entries, sheet.PartPath, newSheetBytes);
+
+                // RE-READ the produced bytes and confirm the appended cells are actually there,
+                // with the values we intended, before we let it replace the original.
+                VerifyReadBack(produced, sheet.PartPath, rows, rep);
+
+                hasTable = SheetHasTable(entries, sheet.PartPath);
+
                 File.Copy(filePath, backupPath, true);
                 File.WriteAllBytes(tmp, produced);
-                // File.Replace keeps the destination's attributes and is atomic where supported.
-                try { File.Replace(tmp, filePath, null); }
-                catch { File.Copy(tmp, filePath, true); }
+
+                // From here the original may already have been replaced. Everything above
+                // is a read or a write to a file nobody else is going to open, so a failure
+                // there is safely terminal; a failure from here on is not knowable, and the
+                // ledger must be left in doubt rather than recording an outcome.
+                writeStarted = true;
+                replaceNote = ReplaceFile(tmp, filePath);
 
                 // THE FILE, not the bytes we hoped we wrote. VerifyReadBack above proved
                 // the produced package was correct IN MEMORY; it says nothing about what
@@ -442,24 +484,38 @@ namespace Horizun.Server
                 if (Sha256Hex(onDisk) != Sha256Hex(produced))
                     throw new IOException(
                         "The workbook on disk is NOT the package that was verified: its SHA-256 differs from the " +
-                        "bytes this call produced. The original is at " + backupPath + ". Nothing about the rows " +
-                        "can be claimed - the check passed against the package in memory, and something else ended " +
-                        "up in the file.");
+                        "bytes this call produced." + RestoreFromBackup(backupPath, filePath) + " Nothing about the " +
+                        "rows can be claimed - the check passed against the package in memory, and something else " +
+                        "ended up in the file.");
 
                 // And re-run the read-back over the DISK bytes, so 'verified' names the
                 // file the caller is going to open.
-                VerifyReadBack(onDisk, sheet.PartPath, rows, rep);
+                try
+                {
+                    VerifyReadBack(onDisk, sheet.PartPath, rows, rep);
+                }
+                catch (IOException ex)
+                {
+                    throw new IOException(
+                        "The workbook on disk did not read back as intended: " + ex.Message +
+                        RestoreFromBackup(backupPath, filePath), ex);
+                }
+            }
+            catch (Exception ex) when (!writeStarted && decision != null && decision.IsFresh)
+            {
+                // A refusal that never reached the replace: the workbook is exactly as it
+                // was. Recording it as a terminal failure is what lets an identical retry
+                // be told the same thing instead of finding the key in doubt - in doubt is
+                // for outcomes nobody can know, and this one is known.
+                ledger.Complete(decision, CommandResult.Fail(ex.Message));
+                throw;
             }
             finally
             {
-                try { lockHandle.Dispose(); } catch { }
-                try { if (File.Exists(lockPath)) File.Delete(lockPath); } catch { }
-                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+                ReleaseWorkbookLock(lockHandle, lockPath, tmp);
             }
 
-            bool hasTable = SheetHasTable(entries, sheet.PartPath);
-
-            return new JObject
+            var response = new JObject
             {
                 ["file_path"] = filePath,
                 ["sheet"] = sheet.Name,
@@ -470,6 +526,7 @@ namespace Horizun.Server
                 ["verified"] = true,
                 ["verified_means"] = "Twice: the produced package was re-opened in memory and every appended cell read back and matched the value requested, and then THE FILE ON DISK was re-read after the replace, its SHA-256 compared against the package that was verified, and every appended cell read back again from those bytes. The second check is the one that speaks about the file you are going to open.",
                 ["backup_path"] = backupPath,
+                ["replace_method"] = replaceNote,
                 ["bytes_before"] = original.Length,
                 ["bytes_after"] = onDisk.Length,
                 ["sha256_after"] = Sha256Hex(onDisk),
@@ -477,8 +534,147 @@ namespace Horizun.Server
                 ["table_note"] = hasTable
                     ? "This sheet carries an Excel Table. Rows were appended to the sheet but the table's range was NOT expanded — the new rows are below the table, not inside it."
                     : "No Excel Table detected on this sheet.",
-                ["mode"] = "append_inline_strings"
+                ["mode"] = "append_inline_strings",
+                ["idempotency_key"] = idempotencyKey,
+                ["replayed"] = false
             };
+
+            // Recorded AFTER the lock is released, and that ordering is safe: the rows are
+            // in the file and verified there. A failure to record now costs a retry the
+            // replay - it becomes in_doubt, which refuses rather than appending twice.
+            ledger.Complete(decision, CommandResult.Ok(response));
+            return response;
+        }
+
+        /// <summary>
+        /// Hand back the recorded answer, marked as a replay so a caller can tell "your
+        /// rows are already in the file" from "I just appended them". Every other field is
+        /// the first answer's, including first_new_row and sha256_after - the point is
+        /// that it describes the write that actually happened, not this call.
+        /// </summary>
+        private static JObject Replay(CommandResult result)
+        {
+            if (result == null) throw new ToolRefusal("The durable replay record had no result.");
+            if (!result.Success)
+                throw new ToolRefusal((result.Error ?? "The recorded workbook append failed.") +
+                                      " This is the recorded answer for that idempotency_key; nothing was " +
+                                      "written now. Use a NEW key only if you deliberately decide the append " +
+                                      "must be attempted again.");
+
+            if (!(result.Data is JObject recorded))
+                throw new ToolRefusal("The durable replay record for this key is not a workbook result.");
+
+            var clone = (JObject)recorded.DeepClone();
+            clone["replayed"] = true;
+            clone["replay_note"] =
+                "These rows were appended by an EARLIER call with this same idempotency_key. The workbook was " +
+                "not opened or written now; every count and hash above describes that first write.";
+            return clone;
+        }
+
+        /// <summary>
+        /// Take the workbook's exclusive lock, or refuse. Nothing has been read yet when
+        /// this runs, which is what makes the refusal safe: a caller that is told "no"
+        /// has lost nothing, whereas a caller that read first and queued here would go on
+        /// to write a package built from bytes that changed while it waited.
+        /// </summary>
+        private static FileStream AcquireWorkbookLock(string lockPath)
+        {
+            try
+            {
+                var handle = new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using (var lw = new StreamWriter(handle, new UTF8Encoding(false), 512, true))
+                    lw.WriteLine("horizun pid " + System.Diagnostics.Process.GetCurrentProcess().Id + " " +
+                                 DateTime.UtcNow.ToString("u"));
+                handle.Flush();
+                return handle;
+            }
+            catch (IOException)
+            {
+                string held;
+                try { held = File.ReadAllText(lockPath).Trim(); }
+                catch (IOException ex) { held = "the lock file exists but could not be read: " + ex.Message; }
+                catch (UnauthorizedAccessException ex) { held = "the lock file exists but is not readable: " + ex.Message; }
+                throw new IOException(
+                    "Another write to this workbook is in progress and holds " + lockPath + " (" + held + "). " +
+                    "Nothing was read and nothing was written. Two appenders interleaving would each rewrite the " +
+                    "whole package from its own copy, and the second to finish would silently discard the first's " +
+                    "rows. If no write is really running, delete that lock file.");
+            }
+        }
+
+        /// <summary>
+        /// Release the lock and clear the temp. Failures here are reported through the
+        /// server's error channel, never swallowed: a lock file left behind makes the
+        /// workbook unwritable for every later call, and finding out why by guessing is
+        /// exactly the situation this bridge exists to avoid. It does not throw, because
+        /// that would replace the real failure with the cleanup's.
+        /// </summary>
+        private static void ReleaseWorkbookLock(FileStream lockHandle, string lockPath, string tmp)
+        {
+            var problems = new List<string>();
+
+            try { lockHandle.Dispose(); }
+            catch (IOException ex) { problems.Add("could not close the lock handle: " + ex.Message); }
+
+            try { if (File.Exists(lockPath)) File.Delete(lockPath); }
+            catch (IOException ex) { problems.Add("could not delete " + lockPath + ": " + ex.Message); }
+            catch (UnauthorizedAccessException ex) { problems.Add("not allowed to delete " + lockPath + ": " + ex.Message); }
+
+            try { if (File.Exists(tmp)) File.Delete(tmp); }
+            catch (IOException ex) { problems.Add("could not delete the temp file " + tmp + ": " + ex.Message); }
+            catch (UnauthorizedAccessException ex) { problems.Add("not allowed to delete the temp file " + tmp + ": " + ex.Message); }
+
+            if (problems.Count > 0)
+                Console.Error.WriteLine("horizun_excel_write_rows cleanup: " + string.Join("; ", problems) +
+                                        ". A lock file left behind blocks every later write to this workbook.");
+        }
+
+        /// <summary>
+        /// Atomic replace where the platform supports it, with a stated fallback. The
+        /// reason for the fallback is returned rather than discarded: "we used the
+        /// non-atomic path" is exactly what someone reading an incident needs.
+        /// </summary>
+        private static string ReplaceFile(string tmp, string destination)
+        {
+            try
+            {
+                File.Replace(tmp, destination, null);
+                return "File.Replace (atomic where the filesystem supports it)";
+            }
+            catch (IOException ex)
+            {
+                File.Copy(tmp, destination, true);
+                return "File.Copy fallback, because File.Replace failed: " + ex.Message;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                File.Copy(tmp, destination, true);
+                return "File.Copy fallback, because File.Replace was not permitted: " + ex.Message;
+            }
+        }
+
+        /// <summary>
+        /// Put the original back after a failed write, and SAY whether it worked. A
+        /// message that names a backup nobody restored is not a recovery.
+        /// </summary>
+        private static string RestoreFromBackup(string backupPath, string filePath)
+        {
+            try
+            {
+                File.Copy(backupPath, filePath, true);
+                return " The original was RESTORED from " + backupPath + ", which is still there.";
+            }
+            catch (IOException ex)
+            {
+                return " The original could NOT be restored automatically (" + ex.Message + "); it is at " +
+                       backupPath + " and must be put back by hand.";
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return " The original could NOT be restored automatically (" + ex.Message + "); it is at " +
+                       backupPath + " and must be put back by hand.";
+            }
         }
 
         private static object JsonValueToClr(JToken t)

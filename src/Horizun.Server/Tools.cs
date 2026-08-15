@@ -106,17 +106,25 @@ namespace Horizun.Server
                     ["description"] = t.Description,
                     ["inputSchema"] = t.InputSchema,
                     ["outputSchema"] = t.OutputSchema,
-                    ["annotations"] = Annotations(t),
-                    // MCP's execution hint: may this tool be run as a long-lived task
-                    // rather than a blocking call. DERIVED, like every other hint, from
-                    // what the contract already knows - never a second list to maintain.
+                    ["annotations"] = Annotations(t)
+
+                    // NO execution/taskSupport BLOCK, deliberately.
                     //
-                    // A tool that forwards to Revit can be queued through
-                    // horizun_submit_job, so a client may treat it as a task. A
-                    // host-resident tool answers inside the server in milliseconds and
-                    // submit_job refuses it by its own documented rule, so offering it as
-                    // a task would advertise something that cannot happen.
-                    ["execution"] = new JObject { ["taskSupport"] = TaskSupport(t) }
+                    // It used to be emitted here, derived from whether a tool forwards to
+                    // Revit. The derivation was sound and the field was still wrong to
+                    // send: execution.taskSupport belongs to MCP Tasks (2025-11-25), and
+                    // this server implements no tasks/* method and declares no "tasks"
+                    // capability - initialize returns capabilities {"tools":{}}. So the
+                    // hint invited a client to call tasks/create and get "method not
+                    // found" for work it believed it had submitted.
+                    //
+                    // The long-running path is real, it is just not MCP's:
+                    // horizun_submit_job returns a job_id immediately and
+                    // horizun_job_status reads the durable record WITHOUT touching Revit,
+                    // which is what lets it answer while the UI thread is busy. That is a
+                    // Horizun extension and is documented as one. If tasks/* is ever
+                    // implemented and proved against the spec, this field comes back
+                    // together with the capability and the methods - not before.
                 });
             }
             return arr;
@@ -131,20 +139,12 @@ namespace Horizun.Server
             return string.Join(" ", words);
         }
 
-        /// <summary>
-        /// "optional" for anything that forwards to Revit - those are exactly the tools
-        /// horizun_submit_job accepts, and a model scan or a batch open genuinely outlives
-        /// a request. "forbidden" for host-resident tools and for the two submit_job
-        /// itself refuses by name, because advertising a task a caller cannot create is
-        /// worse than advertising nothing.
-        /// </summary>
-        private static string TaskSupport(ToolDef t)
-        {
-            bool hostResident = string.IsNullOrEmpty(t.Command);
-            bool refusedByJobs = t.Name == "horizun_execute_python" ||
-                                 t.Name == "horizun_submit_job";
-            return (hostResident || refusedByJobs) ? "forbidden" : "optional";
-        }
+        // TaskSupport(ToolDef) lived here and derived "optional"/"forbidden" for the MCP
+        // execution hint. It is gone with the field it fed - see List(). Deleted rather
+        // than left unused: a private helper nobody calls is the seed of the field
+        // reappearing without the capability and the methods that would make it true.
+        // The rule it encoded (submit_job takes exactly the tools that forward to Revit)
+        // is still asserted, against the contract, in TaskSupportTests.
 
         private static JObject Annotations(ToolDef t)
         {

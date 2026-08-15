@@ -44,6 +44,9 @@ param(
     [string]$Client = 'Both',
     [string]$ServerPath,
     [switch]$Rollback,
+    # Remove only this named entry, preserving every other server. Intended for
+    # advanced uninstall; unlike -Rollback it does not restore an old whole file.
+    [switch]$Remove,
     # Edit even though the client is running. It will probably be overwritten.
     [switch]$Force,
     # Installer convenience: when Both is requested, operate on whichever of the
@@ -87,7 +90,11 @@ function Act($client, $what, $ok, $detail) {
 
 # --- the binary ---------------------------------------------------------------
 if (-not $ServerPath) { $ServerPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
-if (-not $Rollback) {
+if ($Rollback -and $Remove) {
+    Write-Host '-Rollback and -Remove are mutually exclusive.' -ForegroundColor Red
+    exit 2
+}
+if (-not $Rollback -and -not $Remove) {
     if (-not (Test-Path $ServerPath)) {
         Write-Host "The installed server is not there: $ServerPath" -ForegroundColor Red
         Write-Host "Install the release first. Registering a path that does not exist gives a client that fails at startup"
@@ -112,6 +119,89 @@ function Backup($path) {
 function ClientIsRunning($which) {
     $pattern = if ($which -eq 'Claude') { '(?i)^claude' } else { '(?i)^codex' }
     return @(Get-Process | Where-Object { $_.ProcessName -match $pattern }).Count -gt 0
+}
+
+# --- targeted removal ----------------------------------------------------------
+if ($Remove) {
+    Write-Host ""
+    Write-Host "Removing only '$Name' from client configuration" -ForegroundColor Cyan
+
+    if ($Client -eq 'Both' -or $Client -eq 'Claude') {
+        if (-not (Test-Path $claudeConfig)) {
+            if ($SkipMissingClients) { Act 'Claude' 'entry already absent' $true "no config at $claudeConfig" }
+            else { Act 'Claude' 'remove the entry' $false "no config at $claudeConfig" }
+        }
+        elseif ((ClientIsRunning 'Claude') -and -not $Force) {
+            Act 'Claude' 'remove the entry' $false 'Claude is RUNNING and could restore the entry from memory. Close it and re-run.'
+        }
+        else {
+            try {
+                $cfg = Get-Content $claudeConfig -Raw | ConvertFrom-Json
+                $present = $cfg.mcpServers -and ($Name -in @($cfg.mcpServers.PSObject.Properties.Name))
+                if (-not $present) { Act 'Claude' 'entry already absent' $true $null }
+                elseif ($WhatIfOnly) { Act 'Claude' "would remove mcpServers.$Name" $true $null }
+                else {
+                    $backup = Backup $claudeConfig
+                    $cfg.mcpServers.PSObject.Properties.Remove($Name)
+                    $out = $cfg | ConvertTo-Json -Depth 100
+                    $null = $out | ConvertFrom-Json
+                    Set-Content -Path $claudeConfig -Value $out -Encoding UTF8
+                    $after = Get-Content $claudeConfig -Raw | ConvertFrom-Json
+                    if ($after.mcpServers -and ($Name -in @($after.mcpServers.PSObject.Properties.Name))) {
+                        Copy-Item $backup $claudeConfig -Force
+                        Act 'Claude' 'remove the entry' $false 'entry remained after writing; backup restored'
+                    }
+                    else {
+                        Act 'Claude' "removed '$Name'; backup $(Split-Path -Leaf $backup)" $true $null
+                        $successfulWrites.Add([pscustomobject]@{ Client='Claude'; Path=$claudeConfig; Backup=$backup }) | Out-Null
+                    }
+                }
+            }
+            catch { Act 'Claude' 'remove the entry' $false $_.Exception.Message }
+        }
+    }
+
+    if ($Client -eq 'Both' -or $Client -eq 'Codex') {
+        if (-not (Test-Path $codexConfig)) {
+            if ($SkipMissingClients) { Act 'Codex' 'entry already absent' $true "no config at $codexConfig" }
+            else { Act 'Codex' 'remove the entry' $false "no config at $codexConfig" }
+        }
+        elseif ((ClientIsRunning 'Codex') -and -not $Force) {
+            Act 'Codex' 'remove the entry' $false 'Codex is RUNNING and could restore the entry from memory. Close it and re-run.'
+        }
+        else {
+            try {
+                $lines = @(Get-Content $codexConfig)
+                $header = "[mcp_servers.$Name]"
+                $startIdx = -1
+                for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -eq $header) { $startIdx=$i; break } }
+                if ($startIdx -lt 0) { Act 'Codex' 'entry already absent' $true $null }
+                elseif ($WhatIfOnly) { Act 'Codex' "would remove $header" $true $null }
+                else {
+                    $endIdx = $lines.Count
+                    for ($i=$startIdx+1; $i -lt $lines.Count; $i++) {
+                        $trim = $lines[$i].Trim()
+                        if ($trim -match '^\[[^\]]+\]$' -and
+                            $trim -notmatch "^\[mcp_servers\.$([regex]::Escape($Name))\.") { $endIdx=$i; break }
+                    }
+                    $new = @()
+                    if ($startIdx -gt 0) { $new += $lines[0..($startIdx-1)] }
+                    if ($endIdx -lt $lines.Count) { $new += $lines[$endIdx..($lines.Count-1)] }
+                    $backup = Backup $codexConfig
+                    Set-Content -Path $codexConfig -Value $new -Encoding UTF8
+                    if ((Get-Content $codexConfig -Raw) -match [regex]::Escape($header)) {
+                        Copy-Item $backup $codexConfig -Force
+                        Act 'Codex' 'remove the entry' $false 'table remained after writing; backup restored'
+                    }
+                    else {
+                        Act 'Codex' "removed '$Name'; backup $(Split-Path -Leaf $backup)" $true $null
+                        $successfulWrites.Add([pscustomobject]@{ Client='Codex'; Path=$codexConfig; Backup=$backup }) | Out-Null
+                    }
+                }
+            }
+            catch { Act 'Codex' 'remove the entry' $false $_.Exception.Message }
+        }
+    }
 }
 
 # --- rollback -----------------------------------------------------------------
@@ -141,14 +231,16 @@ if ($Rollback) {
     exit 0
 }
 
-Write-Host ""
-Write-Host "Registering '$Name' beside what is already configured" -ForegroundColor Cyan
-Write-Host "  server: $ServerPath"
-Write-Host ("  sha256: " + (Get-FileHash $ServerPath -Algorithm SHA256).Hash.ToLower())
-Write-Host ""
+if (-not $Remove) {
+    Write-Host ""
+    Write-Host "Registering '$Name' beside what is already configured" -ForegroundColor Cyan
+    Write-Host "  server: $ServerPath"
+    Write-Host ("  sha256: " + (Get-FileHash $ServerPath -Algorithm SHA256).Hash.ToLower())
+    Write-Host ""
+}
 
 # --- Claude: JSON --------------------------------------------------------------
-if ($Client -eq 'Both' -or $Client -eq 'Claude') {
+if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Claude')) {
     if (-not (Test-Path $claudeConfig)) { Act 'Claude' 'add the entry' $false "no config at $claudeConfig" }
     elseif ((ClientIsRunning 'Claude') -and -not $Force) {
         Act 'Claude' 'add the entry' $false `
@@ -206,7 +298,7 @@ if ($Client -eq 'Both' -or $Client -eq 'Claude') {
 # writer in Windows PowerShell, and a hand-rolled one would be a new way to
 # corrupt a file that carries several other servers. A table can appear anywhere
 # in a TOML document, so appending is both valid and the smallest possible edit.
-if ($Client -eq 'Both' -or $Client -eq 'Codex') {
+if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
     if (-not (Test-Path $codexConfig)) { Act 'Codex' 'add the entry' $false "no config at $codexConfig" }
     elseif ((ClientIsRunning 'Codex') -and -not $Force) {
         Act 'Codex' 'add the entry' $false `
@@ -292,6 +384,7 @@ if ($Json) {
         server_path   = $ServerPath
         server_sha256 = $(if (Test-Path $ServerPath) { (Get-FileHash $ServerPath -Algorithm SHA256).Hash.ToLower() } else { $null })
         what_if_only  = [bool]$WhatIfOnly
+        remove        = [bool]$Remove
         actions       = $actions
         problems      = $problems
     } | ConvertTo-Json -Depth 6 | Out-File -FilePath $Json -Encoding utf8
@@ -313,7 +406,7 @@ if ($problems.Count -gt 0) {
     exit 1
 }
 
-if (-not $WhatIfOnly) {
+if (-not $WhatIfOnly -and -not $Remove) {
     Write-Host "  RESTART both clients for the entry to be picked up." -ForegroundColor Cyan
     Write-Host "  Then, from each: tools/list, horizun_target, horizun_health - and compare data_root."
 }

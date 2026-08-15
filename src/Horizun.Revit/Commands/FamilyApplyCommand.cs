@@ -90,7 +90,7 @@ namespace Horizun.Revit.Commands
             "by re-reading fm.Parameters and never by counting calls that did not throw (FamilyManager.Set and " +
             "RemoveParameter return void â€” there is not even a bool to check). Never opens a file: rfa_path is a guard that " +
             "must match the active document, because opening a 2025 .rfa in Revit 2026 upgrades it irreversibly. " +
-            "SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a " +
+            "SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / unproven (zero dimensions compared - a verdict that measured nothing does not wear the word of a clean pass) / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a " +
             "transaction.";
 
         public string ParametersSchema => @"{
@@ -341,7 +341,16 @@ namespace Horizun.Revit.Commands
                 var measurable = new JArray();
                 if (geoNow.Count > 0)
                     foreach (GeoDimension d in geoNow[0].Dimensions)
-                        measurable.Add(new JObject { ["name"] = d.Name, ["measurable"] = d.IsMeasured, ["value"] = d.IsMeasured ? (JToken)d.Value.Value : null });
+                        measurable.Add(new JObject
+                        {
+                            ["name"] = d.Name,
+                            ["measurable"] = d.IsMeasured,
+                            ["value"] = d.IsMeasured ? (JToken)d.Value.Value : null,
+                            // 5.17: the number came out of the API in Revit's internal
+                            // units and used to be published bare - a human read
+                            // "bbox_x: 656.17" off a 15 cm box and rightly balked.
+                            ["unit"] = GeoUnits.Of(d.Name)
+                        });
                 var otherTypes = new JArray();
                 for (int i = 1; i < geoNow.Count; i++) otherTypes.Add(geoNow[i].TypeName);
 
@@ -350,10 +359,14 @@ namespace Horizun.Revit.Commands
                     ["type_that_would_be_measured"] = geoNow.Count > 0 ? geoNow[0].TypeName : null,
                     ["types_that_would_NOT_be_measured"] = otherTypes,
                     ["dimensions"] = measurable,
+                    ["units_note"] = GeoUnits.Note,
                     ["note"] =
                         "This is the shape as it stands, not evidence about any write. It states which dimensions a " +
                         "real run would compare: one listed with measurable=false CANNOT be checked, so a change to " +
-                        "it would not be caught, and the run would roll back rather than claim the shape held."
+                        "it would not be caught, and the run would roll back rather than claim the shape held. " +
+                        "bbox_x/y/z span the elements that CARRY solid geometry - reference planes and other " +
+                        "template scaffolding are excluded, because a metric template's planes span ~200 m and " +
+                        "used to be what the box measured."
                 };
 
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
@@ -1424,6 +1437,13 @@ namespace Horizun.Revit.Commands
             public string How;
             public string Error;
             public string Outcome;
+            // Whether applying this row would MOVE the parameter (5.14): true would
+            // change it, false already holds the requested value, null cannot be told
+            // (and the note says why). Computed once at plan time, where the before
+            // read and the requested value sit side by side - previously every caller
+            // re-derived this by diffing before.value against requested.
+            public bool? WouldChangeVerdict;
+            public string WouldChangeNote;
 
             public void Judge()
             {
@@ -1471,6 +1491,12 @@ namespace Horizun.Revit.Commands
                                    "instances, not a value carried by instances already placed in a project.")
                         : null,
                     ["requested"] = Requested,
+                    ["would_change"] = WouldChangeVerdict.HasValue ? (JToken)WouldChangeVerdict.Value : JValue.CreateNull(),
+                    ["would_change_note"] = WouldChangeVerdict == false
+                        ? (JToken)("The parameter already reads the requested value; applying this row rewrites " +
+                                   "the same value. It is still written - a no-op write is idempotent - but a plan " +
+                                   "presented to a person should not show it as a change.")
+                        : (JToken)WouldChangeNote,
                     ["applied_via"] = How,
                     ["before"] = Before,
                     ["value_expected"] = Expected,
@@ -1668,7 +1694,15 @@ namespace Horizun.Revit.Commands
                             if (!ar.AlreadyPresent && ar.Error == null &&
                                 string.Equals(ar.Name, prop.Name, StringComparison.Ordinal))
                             { willBeAdded = true; break; }
-                        if (willBeAdded) continue;   // resolved and set at apply time; row.Error stays null
+                        if (willBeAdded)
+                        {
+                            // No before-value can exist for a parameter that does not
+                            // exist yet; any value written into it is a change.
+                            row.WouldChangeVerdict = true;
+                            row.WouldChangeNote = "the parameter does not exist yet - this same call adds it, " +
+                                                  "so writing any value is a change.";
+                            continue;   // resolved and set at apply time; row.Error stays null
+                        }
 
                         row.Error = pWhy;
                         continue;
@@ -1706,6 +1740,9 @@ namespace Horizun.Revit.Commands
                     }
 
                     row.Before = ReadFamilyValue(fm, SafeCurrentType(fm), prop.Name);
+                    string wcWhy;
+                    row.WouldChangeVerdict = WouldChange.Judge(row.Storage, row.Requested, row.Before, out wcWhy);
+                    row.WouldChangeNote = wcWhy;
                 }
             }
 
@@ -2506,14 +2543,25 @@ namespace Horizun.Revit.Commands
                     try
                     {
                         GeometryElement g = e.get_Geometry(opt);
+                        int solidsBefore = solids;
                         if (g != null) HarvestGeometry(g, ref volume, ref area, ref solids);
 
-                        BoundingBoxXYZ bb = e.get_BoundingBox(null);
-                        if (bb != null)
+                        // Only elements that CONTRIBUTED a solid extend the box (5.17).
+                        // The walk visits everything in the family document, and a metric
+                        // template's reference planes report a ~200 m bounding box each -
+                        // measured in the field: bbox_x 656.17 ft off a 15x15x10 cm piece,
+                        // which is the template's scaffolding, not the shape. An envelope
+                        // that ignores the form it envelopes is a broken ruler, and a
+                        // broken ruler falsifies good levers (story 1.1's own lesson).
+                        if (solids > solidsBefore)
                         {
-                            anyBox = true;
-                            minX = Math.Min(minX, bb.Min.X); minY = Math.Min(minY, bb.Min.Y); minZ = Math.Min(minZ, bb.Min.Z);
-                            maxX = Math.Max(maxX, bb.Max.X); maxY = Math.Max(maxY, bb.Max.Y); maxZ = Math.Max(maxZ, bb.Max.Z);
+                            BoundingBoxXYZ bb = e.get_BoundingBox(null);
+                            if (bb != null)
+                            {
+                                anyBox = true;
+                                minX = Math.Min(minX, bb.Min.X); minY = Math.Min(minY, bb.Min.Y); minZ = Math.Min(minZ, bb.Min.Z);
+                                maxX = Math.Max(maxX, bb.Max.X); maxY = Math.Max(maxY, bb.Max.Y); maxZ = Math.Max(maxZ, bb.Max.Z);
+                            }
                         }
                     }
                     catch { readFailures++; }
@@ -2544,9 +2592,9 @@ namespace Horizun.Revit.Commands
                 }
                 else
                 {
-                    sig.Add(GeoDimension.Unmeasured("bbox_x", "no element reported a bounding box"));
-                    sig.Add(GeoDimension.Unmeasured("bbox_y", "no element reported a bounding box"));
-                    sig.Add(GeoDimension.Unmeasured("bbox_z", "no element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_x", "no solid-bearing element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_y", "no solid-bearing element reported a bounding box"));
+                    sig.Add(GeoDimension.Unmeasured("bbox_z", "no solid-bearing element reported a bounding box"));
                 }
 
                 sig.Connectors = CaptureConnectors(fam);
@@ -2662,6 +2710,7 @@ namespace Horizun.Revit.Commands
                 ["not_verified_count"] = v.NotVerified.Count,
                 ["fully_verified"] = v.FullyVerified,
                 ["changes"] = new JArray(v.Changed.Select(c => (JToken)c.Describe())),
+                ["units_note"] = GeoUnits.Note,
                 ["types_added"] = new JArray(v.TypesAdded.Select(s => (JToken)s)),
                 ["types_removed"] = new JArray(v.TypesRemoved.Select(s => (JToken)s)),
                 ["types_renamed"] = new JArray(v.TypesRenamed.Select(s => (JToken)s)),
@@ -2676,48 +2725,19 @@ namespace Horizun.Revit.Commands
                 ["status_means"] =
                     "unchanged: every dimension of every type was compared and none moved. " +
                     "unchanged_where_measured: nothing that WAS compared moved, but something could not be measured - " +
-                    "read not_verified. changed: the shape moved, and `changes` says which dimension. Only the ACTIVE " +
+                    "read not_verified. unproven: NOT A SINGLE dimension was compared, so this verdict measured " +
+                    "nothing and says so instead of wearing the same word as a clean pass - an empty table is not " +
+                    "agreement. changed: the shape moved, and `changes` says which dimension. Only the ACTIVE " +
                     "family type is measured: measuring the others means activating each one, which is itself a " +
                     "change to the file, so they are listed as not verified rather than assumed intact."
             };
         }
 
-        private sealed class FileFacts
-        {
-            public bool Existed;
-            public long? Size;
-            public DateTime? WrittenUtc;
-            public string Sha256;
-            public string Error;
-
-            public static FileFacts Read(string path)
-            {
-                var f = new FileFacts();
-                if (string.IsNullOrEmpty(path)) { f.Error = "no path"; return f; }
-                try
-                {
-                    if (!File.Exists(path)) { f.Existed = false; return f; }
-                    f.Existed = true;
-                    var fi = new FileInfo(path);
-                    f.Size = fi.Length;
-                    f.WrittenUtc = fi.LastWriteTimeUtc;
-                    using (var sha = System.Security.Cryptography.SHA256.Create())
-                    using (var s = File.OpenRead(path))
-                        f.Sha256 = BitConverter.ToString(sha.ComputeHash(s)).Replace("-", "").ToLowerInvariant();
-                }
-                catch (Exception ex) { f.Error = ex.Message; }
-                return f;
-            }
-
-            /// <summary>true changed, false identical, NULL when it cannot be told.</summary>
-            public static bool? Changed(FileFacts before, FileFacts after)
-            {
-                if (before == null || after == null) return null;
-                if (!before.Existed) return true;                       // it did not exist; now it does
-                if (before.Sha256 == null || after.Sha256 == null) return null;
-                return !string.Equals(before.Sha256, after.Sha256, StringComparison.Ordinal);
-            }
-        }
+        // FileFacts moved to Core/FileFacts.cs (story 5.12): its OpenRead() hash threw
+        // "file is being used by another process" on every family Revit held open -
+        // measured 9/9 - so file_changed was null on exactly the saves it exists to
+        // prove. The Core copy shares write access the way save_document's hash does,
+        // and is unit-tested against a holder that keeps the file open.
 
         /// <summary>
         /// doc.Save(), then prove it: the path must exist AND the bytes must read back as

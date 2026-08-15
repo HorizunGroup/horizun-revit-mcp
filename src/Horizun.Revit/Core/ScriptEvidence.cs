@@ -143,26 +143,36 @@ namespace Horizun.Revit.Core
                     report.Status = "completed_unverified";
                     return report;
 
+                // "verified" is what the recommended contract shape tells a script to
+                // write; "self_reported_verified" is the word every disclaimer and doc
+                // popularises for the same thing, so a careful script writes it back
+                // verbatim. Both mean the same claim - "I checked and attached evidence" -
+                // and both are held to the same bar. Rejecting the second (it used to fall
+                // into default and be DOWNGRADED with a warning naming a list that omitted
+                // it) was the vocabulary contradicting itself: the bridge taught a word it
+                // then refused.
                 case "verified":
+                case "self_reported_verified":
                     report.Structured = true;
                     if (!HasSelfReportedEvidence(o))
                     {
                         report.Status = "completed_unverified";
                         report.Warnings.Add(
-                            "__output__ claimed status=verified but verification.checked was not true or " +
+                            "__output__ claimed status=" + status + " but verification.checked was not true or " +
                             "verification.evidence was empty, so the claim was DOWNGRADED to " +
                             "completed_unverified. Re-read the elements you touched inside the script and " +
                             "put what you re-read into verification.evidence.");
                         return report;
                     }
-                    // The ceiling for arbitrary code. The script declared verified and
+                    // The ceiling for arbitrary code. The script declared it checked and
                     // attached evidence; the host confirmed nothing, and says so in the
-                    // name of the state rather than in a footnote.
+                    // name of the state rather than in a footnote. A script that already
+                    // said self_reported_verified is recorded as exactly that, unchanged.
                     report.Status = "self_reported_verified";
                     report.Warnings.Add(
-                        "status=verified was reported BY THE SCRIPT and is recorded as self_reported_verified. " +
-                        "The bridge did not re-read the model to confirm it - only typed commands carry that " +
-                        "guarantee. " + HostVerificationDisclaimer);
+                        "status=" + status + " was reported BY THE SCRIPT and is recorded as " +
+                        "self_reported_verified. The bridge did not re-read the model to confirm it - only typed " +
+                        "commands carry that guarantee. " + HostVerificationDisclaimer);
                     return report;
 
                 case "":
@@ -175,8 +185,8 @@ namespace Horizun.Revit.Core
                 default:
                     report.Warnings.Add(
                         "__output__ carried status='" + status + "', which is not one of " +
-                        "verified|completed_unverified|partial|failed. Unknown claims are read as " +
-                        "completed_unverified, never as success.");
+                        "verified|self_reported_verified|completed_unverified|partial|failed. Unknown claims are " +
+                        "read as completed_unverified, never as success.");
                     return report;
             }
         }

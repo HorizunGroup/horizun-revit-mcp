@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // Proves horizun_excel_write_rows without Excel installed: the pure XML transform,
@@ -177,9 +177,10 @@ namespace Horizun.Server.Tests
                     ["rows"] = new JArray {
                         new JArray { "código", 12L, true },
                         new JArray { "otro", 3.5 }
-                    }
+                    },
+                    ["idempotency_key"] = Guid.NewGuid().ToString("N")
                 };
-                JObject r = ExcelWriteRows.Handle(args);
+                JObject r = ExcelWriteRows.Handle(args, ExcelTestLedger.New());
 
                 Assert.Equal(2, (int)r["rows_written"]);
                 Assert.Equal(2, (int)r["first_new_row"]);   // header was row 1
@@ -210,8 +211,9 @@ namespace Horizun.Server.Tests
                 Assert.ThrowsAny<Exception>(() => ExcelWriteRows.Handle(new JObject
                 {
                     ["file_path"] = path,
-                    ["rows"] = new JArray { new JArray { "x" } }
-                }));
+                    ["rows"] = new JArray { new JArray { "x" } },
+                    ["idempotency_key"] = Guid.NewGuid().ToString("N")
+                }, ExcelTestLedger.New()));
                 Assert.Equal(before, File.ReadAllBytes(path));   // untouched
             }
             finally { Cleanup(path); }
@@ -227,8 +229,9 @@ namespace Horizun.Server.Tests
                 {
                     ["file_path"] = path,
                     ["sheet"] = "NoExiste",
-                    ["rows"] = new JArray { new JArray { "x" } }
-                }));
+                    ["rows"] = new JArray { new JArray { "x" } },
+                    ["idempotency_key"] = Guid.NewGuid().ToString("N")
+                }, ExcelTestLedger.New()));
             }
             finally { Cleanup(path); }
         }
@@ -240,8 +243,9 @@ namespace Horizun.Server.Tests
             Assert.Throws<FileNotFoundException>(() => ExcelWriteRows.Handle(new JObject
             {
                 ["file_path"] = path,
-                ["rows"] = new JArray { new JArray { "x" } }
-            }));
+                ["rows"] = new JArray { new JArray { "x" } },
+                ["idempotency_key"] = Guid.NewGuid().ToString("N")
+            }, ExcelTestLedger.New()));
         }
 
         // --- a hand-built minimal but valid .xlsx -----------------------------

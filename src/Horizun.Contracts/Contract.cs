@@ -35,7 +35,27 @@ namespace Horizun.Contracts
         Mutating,
         MutatingUnlessDryRun,
         DocumentSession,
-        ExternalSideEffect
+
+        /// <summary>
+        /// Writes an ARTEFACT OUTSIDE THE MODEL: a workbook, a PNG. This is what the
+        /// permission ladder means by "external", and full_write is the rung that
+        /// authorizes it.
+        /// </summary>
+        ExternalSideEffect,
+
+        /// <summary>
+        /// Steers the host without changing anything that outlives the session: which
+        /// Revit the bridge talks to, what is selected, which view is active. No model
+        /// change, no document session, no file written.
+        ///
+        /// Split out of ExternalSideEffect, which had come to mean two different things.
+        /// horizun_target and horizun_navigate sat in the same bucket as the workbook
+        /// writer, so making read_only refuse "external" effects - which is correct, and
+        /// is the fix - would also have stopped a read-only machine from choosing WHICH
+        /// Revit it was reading from. The classification, not the profile, was the part
+        /// that was wrong.
+        /// </summary>
+        HostState
     }
 
     /// <summary>One command, exactly as both halves must understand it.</summary>
@@ -199,7 +219,8 @@ namespace Horizun.Contracts
     ""detach"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Open a workshared model detached from central (worksets preserved). The safe way to read a central model, on disk or in the cloud. A detached document has no path that exists until you save it - Revit reports a synthetic '<original>_detached.rvt'."" },
     ""open_central"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Permit opening the CENTRAL model directly - working in the file everyone else synchronizes to. REQUIRED for a cloud model unless you pass detach: a model in ACC / BIM 360 is the central, and living in the cloud rather than on a server share does not make it less shared. Prefer detach."" },
     ""open_all_worksets"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Open every workset. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one - a scan over a partly loaded model quietly scores the parts it cannot see. IT CAN ALSO KILL REVIT, and that is measured, not feared: on 2026-07-30, 2 of 24 ACC models took Revit 2025.4 down with an access violation (0xc0000005) inside SelectedPartitionsForEdit/decommitDocument on open, identical signature both times, with 30 GB of RAM free - and both opened and read fine with this left false. So it is off by default, and if a specific model dies on open this is the first thing to drop. The cost of dropping it is that whatever measures worksets is then measuring what got loaded, not what is there."" },
-    ""audit"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Run Revit's audit while opening. Slow, and it can modify the model to repair it."" }
+    ""audit"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Run Revit's audit while opening. Slow, and it can modify the model to repair it."" },
+    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"", ""description"": ""How a modal dialog raised WHILE opening is answered when nobody is at the keyboard. 'cancel' (default) presses Cancel - the safe answer, and a model that will not open unattended is a finding. 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort: a dialog whose continue button is not the default is recorded as answered in revit_said rather than silently proceeding. Scoped to the open call only; every other dialog still cancels."" }
   },
   ""additionalProperties"": false
 }")
@@ -1031,7 +1052,9 @@ namespace Horizun.Contracts
                     "CLOSING a document with unsaved changes is refused unless you say discard_unsaved=true AND spend " +
                     "a confirmation_token from a dry_run: Close() discards the work, returns true, and leaves no trace " +
                     "afterwards, so a lost hour and an untouched document produce identical replies. Every close " +
-                    "reports the IsModified it measured before closing. " +
+                    "reports the IsModified it measured before closing. The API cannot close the ACTIVE document; " +
+                    "activate_other=true makes this command activate another open document first (or its own empty " +
+                    "anchor project when nothing else is open) and report which one, instead of refusing. " +
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. It never syncs to central.",
@@ -1061,6 +1084,8 @@ namespace Horizun.Contracts
                      ""description"": ""open only: permit opening the CENTRAL model directly - working in the file everyone else synchronizes to. REQUIRED for a cloud model unless you pass detach, because a model in ACC / BIM 360 IS the central. Prefer detach."" },
     ""open_all_worksets"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""open only: open every workset. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one. IT CAN ALSO KILL REVIT - measured: 2 of 24 ACC models took Revit 2025.4 down with an access violation inside SelectedPartitionsForEdit on open, and both opened fine with this left false. Off by default, and the first thing to drop when a specific model dies on open."" },
+    ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"",
+                     ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
     ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
     ""compact"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save/save_as: pass Compact to the API. The response reports the byte delta it actually produced."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false, ""description"": ""save_as: allow overwriting an existing destination file."" },
@@ -1071,10 +1096,70 @@ namespace Horizun.Contracts
     ""discard_unsaved"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""close: REQUIRED to close a document that has unsaved changes without saving them. Close() discards them, returns true, and leaves nothing behind to detect it - the file on disk is untouched and IsModified cannot be asked of a closed document, so an hour of lost edits and an untouched model produce identical responses. Not enough on its own: a dry_run token is required too. Unknown counts as modified."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": false,
-                     ""description"": ""close: rehearse. Closes NOTHING, reports is_modified and would_discard_unsaved, and issues a confirmation_token when the close would discard work."" },
+                     ""description"": ""close: rehearse. Closes NOTHING and activates nothing, reports is_modified, would_discard_unsaved and the activation that WOULD happen under activate_other, and issues a confirmation_token when the close would discard work."" },
+    ""activate_other"": { ""type"": ""boolean"", ""default"": false,
+                     ""description"": ""close: Revit's API cannot close the ACTIVE document, so closing the last document of a batch used to need a decoy opened by hand (and a relaunched batch SKIPPED the model that stayed open). With this true, the command activates another open document first - or opens the bridge's own empty anchor project when nothing else qualifies - then closes the target, and REPORTS which document it activated. Off by default because activation changes what the user is looking at; it must be asked for, never a side effect."" },
     ""confirmation_token"": { ""type"": ""string"",
                      ""description"": ""close: the token from a dry_run, required alongside discard_unsaved=true. Single use, expires, and bound to THIS document and THIS request - if either changes it is refused and nothing is closed."" }
   }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_file_info",
+                Command = "horizun_file_info",
+                Description =
+                    "Read Revit files' headers off disk - format/saved version, is_workshared, is_central, is_local, " +
+                    "central path - WITHOUT opening any of them and WITHOUT an active document. The folder triage " +
+                    "every batch starts with, which used to be hand-written in execute_python and needed a blank " +
+                    "document open just to satisfy the active-document check. Pass 'paths' (a list) or 'folder' " +
+                    "(swept for 'pattern', default *.rvt, optionally recursive). Nothing is opened, so nothing is " +
+                    "upgraded. Each file names its own read_error when unreadable; the summary counts " +
+                    "readable/unreadable/missing. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""paths"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""Explicit file paths to read, in order. Combine with 'folder' or use alone. At least one of paths/folder is required."" },
+    ""folder"": { ""type"": ""string"",
+                  ""description"": ""A directory to sweep for 'pattern'. Its matches follow any explicit 'paths', de-duplicated. At least one of paths/folder is required."" },
+    ""pattern"": { ""type"": ""string"", ""default"": ""*.rvt"",
+                   ""description"": ""Glob for the folder sweep. Default *.rvt. Use *.rfa for families."" },
+    ""recursive"": { ""type"": ""boolean"", ""default"": false,
+                     ""description"": ""Sweep subfolders too. Off by default."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_acc_upload_status",
+                Command = "horizun_acc_upload_status",
+                Description =
+                    "Has each of these files been assigned an ACC cloud folder yet, or is its upload still " +
+                    "pending? Copying into the Desktop Connector folder and hashing proves the LOCAL CACHE, not " +
+                    "the cloud - the upload is a later async step that fails under throttling (measured: 3 of 8 " +
+                    "files silently unuploaded while every local hash checked out). This reads the connector's " +
+                    "OWN log on this machine: the Name-beside-ParentFolderUrn record it writes when an upload " +
+                    "completes. Pass 'names' and/or 'paths' (basenames are used); optional 'project_id' turns " +
+                    "each hit into an ACC Docs URL. has_folder_urn=true is the connector's testimony, not a " +
+                    "cloud API check; false is absence of evidence, never proof of absence - pending, failed, " +
+                    "or synced under another name look identical from here, and the reply says so. A log file " +
+                    "that cannot be read is reported per file and makes the counts declared lower bounds. " +
+                    "Read-only, touches no model, needs no document open.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""names"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""File names to look up, with or without extension. At least one of names/paths is required."" },
+    ""paths"": { ""type"": ""array"", ""items"": { ""type"": ""string"" },
+                 ""description"": ""Paths whose BASENAMES are looked up - pass the same paths you copied into the Desktop Connector folder. At least one of names/paths is required."" },
+    ""project_id"": { ""type"": ""string"",
+                      ""description"": ""Optional ACC project id; each recorded folder is also returned as an acc.autodesk.com Docs URL."" },
+    ""wal_root"": { ""type"": ""string"",
+                    ""description"": ""Optional override of the Desktop Connector data folder, for nonstandard installs. Default: %LOCALAPPDATA%\\Autodesk\\Desktop Connector\\Data\\Autodesk.DataSourceType.BIMDocs."" }
+  },
+  ""additionalProperties"": false
 }")
             },
             new CommandContract
@@ -1160,7 +1245,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_family_apply",
                 Command = "horizun_family_apply",
-                Description = @"Homologate the ACTIVE family document (.rfa) in ONE transaction: collapse surplus types down to one and rename it to family_name, add missing shared parameters from an SPF (respecting instance/type and the parameter group), clear formulas on the parameters about to be written (a formula-driven parameter refuses a value), set values, remove named parameters (the caller's parameter spec's 'NA' entries), and strip vendor junk under the conservative rule: String storage, no formula, matches a junk pattern, not excluded, not kept, not in the caller-supplied protected prefix (protected_prefix). TWO checks run. A PARAMETER SCHEMA CHECK IS ENFORCED, NOT LOGGED (it is NOT a geometry check and is no longer called one): the count of Double parameters and the presence of IsCustom are captured before, re-enumerated fresh after the writes, and if either changed â€” or if either census could not be read completely â€” the WHOLE transaction is rolled back and the family is left untouched. Every reported field is a fresh read of the family document after the commit: params_set reports value_written vs value_read_back and a mismatch is a failure, type_name_after comes from fm.CurrentType.Name, params_added/params_removed are counted by re-reading fm.Parameters and never by counting calls that did not throw (FamilyManager.Set and RemoveParameter return void â€” there is not even a bool to check). Never opens a file: rfa_path is a guard that must match the active document, because opening a 2025 .rfa in Revit 2026 upgrades it irreversibly. SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a transaction.",
+                Description = @"Homologate the ACTIVE family document (.rfa) in ONE transaction: collapse surplus types down to one and rename it to family_name, add missing shared parameters from an SPF (respecting instance/type and the parameter group), clear formulas on the parameters about to be written (a formula-driven parameter refuses a value), set values, remove named parameters (the caller's parameter spec's 'NA' entries), and strip vendor junk under the conservative rule: String storage, no formula, matches a junk pattern, not excluded, not kept, not in the caller-supplied protected prefix (protected_prefix). TWO checks run. A PARAMETER SCHEMA CHECK IS ENFORCED, NOT LOGGED (it is NOT a geometry check and is no longer called one): the count of Double parameters and the presence of IsCustom are captured before, re-enumerated fresh after the writes, and if either changed â€” or if either census could not be read completely â€” the WHOLE transaction is rolled back and the family is left untouched. Every reported field is a fresh read of the family document after the commit: params_set reports value_written vs value_read_back and a mismatch is a failure, type_name_after comes from fm.CurrentType.Name, params_added/params_removed are counted by re-reading fm.Parameters and never by counting calls that did not throw (FamilyManager.Set and RemoveParameter return void â€” there is not even a bool to check). Never opens a file: rfa_path is a guard that must match the active document, because opening a 2025 .rfa in Revit 2026 upgrades it irreversibly. SEPARATELY, the SHAPE is measured: bounding box, solid volume, surface area, solid count and connector positions of the ACTIVE family type are captured before and compared after, and reported in geometry_check as unchanged / unchanged_where_measured / unproven (zero dimensions compared - a verdict that measured nothing does not wear the word of a clean pass) / changed. Only the active type is measured, because activating another type to measure it would itself modify the file - the others are listed as not verified rather than assumed intact. Idempotent: a second run reports nothing to do, not an error. Use dry_run=true to see the plan without a transaction.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -1538,10 +1623,12 @@ namespace Horizun.Contracts
                     "file holds on re-read, not a count of calls. Text is written as inline strings, numbers as numbers. v1 " +
                     "APPENDS after the last used row and does NOT expand an Excel Table's range: sheet_has_table reports " +
                     "whether the target sheet carries a table, so rows landing below it are never silently assumed to be " +
-                    "inside it. Writes to disk; touches no Revit model.",
+                    "inside it. Writes to disk; touches no Revit model. REQUIRES an idempotency_key: appending is not " +
+                    "undone by repeating it, so a lost reply resent without a key lands the rows twice - with a key, an " +
+                    "identical retry replays the recorded answer and the same key aimed at different rows is refused.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""file_path"", ""rows""],
+  ""required"": [""file_path"", ""rows"", ""idempotency_key""],
   ""properties"": {
     ""file_path"": { ""type"": ""string"",
       ""description"": ""Absolute path to an existing .xlsx. It is backed up to <file_path>.horizunbak before any write. A file that is not a valid .xlsx package is an ERROR, never overwritten."" },
@@ -1551,7 +1638,9 @@ namespace Horizun.Contracts
       ""type"": ""array"", ""minItems"": 1,
       ""description"": ""Rows to append. Each element is an array of cell values, filled left-to-right from column A. A cell may be a string, number, boolean or null (null leaves the cell blank â€” a blank is not a zero)."",
       ""items"": { ""type"": ""array"", ""items"": { ""type"": [""string"", ""number"", ""boolean"", ""null""] } }
-    }
+    },
+    ""idempotency_key"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 200,
+      ""description"": ""REQUIRED. A retry with the same key and identical arguments returns the recorded answer without appending again; the same key with different rows or a different workbook is refused. Generate a new UUID for each deliberate append and keep it unchanged only for retries."" }
   },
   ""additionalProperties"": false
 }")
@@ -1643,9 +1732,20 @@ namespace Horizun.Contracts
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls"
             };
+            // Writes something outside the model that is still there after the call: a PNG,
+            // a workbook. full_write is the rung that authorizes these.
             var external = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_capture_view", "horizun_excel_write_rows", "horizun_navigate", "horizun_target"
+                "horizun_capture_view", "horizun_excel_write_rows"
+            };
+
+            // Steers the host and leaves no artefact: which Revit answers, what is
+            // selected, which view is active. These used to be in `external`, which is why
+            // making the restrictive profiles honour "external" needed this split first -
+            // read_only has to keep horizun_target or it cannot choose the Revit it reads.
+            var hostState = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_navigate", "horizun_target"
             };
 
             // MCP's destructiveHint, where every other classification already lives.
@@ -1682,6 +1782,34 @@ namespace Horizun.Contracts
                     throw new InvalidOperationException(
                         "openWorld names a tool that does not exist: '" + n + "'.");
 
+            // The EFFECT sets get the same guard, and they need it more. A stale name in
+            // `destructive` costs a wrong hint; a stale name in one of these falls through
+            // every branch to `else c.Effect = ToolEffect.ReadOnly` - so a mistyped entry
+            // does not merely lose a classification, it hands the tool the ONE effect that
+            // read_only admits. Silent, and in the permissive direction.
+            foreach (var set in new[]
+                     {
+                         new KeyValuePair<string, HashSet<string>>("always (Mutating)", always),
+                         new KeyValuePair<string, HashSet<string>>("dryRun (MutatingUnlessDryRun)", dryRun),
+                         new KeyValuePair<string, HashSet<string>>("external (ExternalSideEffect)", external),
+                         new KeyValuePair<string, HashSet<string>>("hostState (HostState)", hostState)
+                     })
+                foreach (string n in set.Value)
+                    if (!known.Contains(n))
+                        throw new InvalidOperationException(
+                            "The effect set " + set.Key + " names a tool that does not exist: '" + n +
+                            "'. Renamed or removed? Fix the set - an entry that matches nothing falls " +
+                            "through to ToolEffect.ReadOnly, which is the one effect permission_profile=" +
+                            "read_only allows.");
+
+            // And the other direction: the sets must not overlap, or the if/else chain
+            // silently picks whichever branch comes first.
+            foreach (string n in external)
+                if (hostState.Contains(n))
+                    throw new InvalidOperationException(
+                        "'" + n + "' is in BOTH external and hostState. One of them decides its effect " +
+                        "and the other is a lie about what it does; pick one deliberately.");
+
             foreach (CommandContract c in all)
             {
                 c.OutputSchema = new JObject
@@ -1693,11 +1821,16 @@ namespace Horizun.Contracts
                 else if (dryRun.Contains(c.Name)) c.Effect = ToolEffect.MutatingUnlessDryRun;
                 else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
                 else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
+                else if (hostState.Contains(c.Name)) c.Effect = ToolEffect.HostState;
                 else c.Effect = ToolEffect.ReadOnly;
 
                 c.Destructive = destructive.Contains(c.Name);
+                // HostState is listed here so the MCP annotations do not change when the
+                // classification split: navigate and target reported openWorldHint=true
+                // under their old effect and still describe something outside this process.
                 c.OpenWorld = openWorld.Contains(c.Name) ||
                               c.Effect == ToolEffect.ExternalSideEffect ||
+                              c.Effect == ToolEffect.HostState ||
                               c.Effect == ToolEffect.DocumentSession;
 
                 if (c.Effect == ToolEffect.Mutating ||

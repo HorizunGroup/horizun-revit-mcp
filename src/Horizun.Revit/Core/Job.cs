@@ -17,8 +17,9 @@
 // and flushed line by line, so a crash leaves every checkpoint that had already
 // happened. The next run reads it and skips what is already done.
 //
-// It records labels and counts, never model content: a job log is not a place to
-// put a client's data.
+// Async results can contain model names, paths, element ids and parameter values.
+// They are therefore governed by the explicit job retention policy rather than
+// described as content-free logs.
 // -----------------------------------------------------------------------------
 using System;
 using System.Globalization;
@@ -27,9 +28,55 @@ using System.Text;
 
 namespace Horizun.Revit.Core
 {
+    /// <summary>
+    /// The record could not be opened, so no job_id was handed out. Thrown only by the
+    /// DURABLE path - the one whose caller has no other channel to hear an answer on.
+    /// </summary>
+    public sealed class JobRecordException : Exception
+    {
+        public JobRecordException(string message, Exception inner) : base(message, inner) { }
+    }
+
+    /// <summary>
+    /// Where a job record's lines actually go. A seam, and a narrow one: the only
+    /// reason it exists is that "the disk refused this write" is a state a real
+    /// filesystem will not produce on request, and it is precisely the state whose
+    /// mishandling made an async job_id address nothing.
+    /// </summary>
+    public interface IJobSink
+    {
+        void EnsureDirectory(string directory);
+
+        /// <summary>Append one line and do not return until it is ON DISK.</summary>
+        void Append(string path, string line);
+    }
+
+    /// <summary>The real one: append, then flush through to the device.</summary>
+    public sealed class FileJobSink : IJobSink
+    {
+        public static readonly FileJobSink Instance = new FileJobSink();
+
+        public void EnsureDirectory(string directory) => Directory.CreateDirectory(directory);
+
+        public void Append(string path, string line)
+        {
+            byte[] bytes = new UTF8Encoding(false).GetBytes(line + Environment.NewLine);
+            using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                // Flush(true) rather than File.AppendAllText, which returns once the
+                // bytes are with the OS. The guarantee this file is built on is that a
+                // process which dies mid-job leaves every checkpoint that had already
+                // happened - and "already happened" has to mean on the device.
+                stream.Flush(true);
+            }
+        }
+    }
+
     public sealed class Job
     {
         private readonly object _gate = new object();
+        private readonly IJobSink _sink;
         private int _checkpoints;
         private bool _running;
 
@@ -37,7 +84,23 @@ namespace Horizun.Revit.Core
         public string Path { get; private set; }
         public int Checkpoints { get { return _checkpoints; } }
 
-        private Job() { }
+        /// <summary>
+        /// True when the start event reached the disk. False only on a best-effort
+        /// record, which is a log that failed to open, not a channel anybody is polling.
+        /// </summary>
+        public bool IsDurable { get; private set; }
+
+        /// <summary>
+        /// The FIRST write that failed after the record was opened, or null. Sticky: a
+        /// later success does not fill the gap the failure left, so it must not erase
+        /// the explanation for it.
+        /// </summary>
+        public string WriteFault { get; private set; }
+
+        /// <summary>Every line this job tried to write is in the file.</summary>
+        public bool RecordIsComplete => IsDurable && WriteFault == null;
+
+        private Job(IJobSink sink) { _sink = sink ?? FileJobSink.Instance; }
 
         /// <summary>
         /// Where job records live. The SERVER reads this same directory to answer
@@ -74,26 +137,114 @@ namespace Horizun.Revit.Core
             set { _ambient = value; }
         }
 
-        /// <summary>Open a job record. Never throws: a job that cannot be logged still runs.</summary>
-        public static Job Start(string tool)
+        /// <summary>
+        /// Open a job record DURABLY, or throw. When this returns, the start event is on
+        /// disk and the id it carries addresses a file that exists.
+        ///
+        /// It used to be "never throws: a job that cannot be logged still runs", and for
+        /// a synchronous command that is right - see StartBestEffort. For asynchronous
+        /// work it was exactly wrong. The caller of horizun_submit_job receives a job_id
+        /// and nothing else; the record is not a log of the answer, it IS the answer. So
+        /// an id that names no file is a promise the bridge cannot keep, handed out at
+        /// the one moment the caller has no way to check.
+        ///
+        /// The old shape also defeated its own guard: Id was assigned BEFORE the first
+        /// thing that could fail, so `if (string.IsNullOrWhiteSpace(job.Id))` in
+        /// SubmitJobCommand never fired. Here the id is not assigned until the write has
+        /// happened.
+        /// </summary>
+        public static Job Start(string tool, IJobSink sink = null)
         {
-            var job = new Job();
+            var job = new Job(sink);
             try
             {
-                job.Id = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
-                Directory.CreateDirectory(Dir());
-                job.Path = System.IO.Path.Combine(Dir(), job.Id + ".jsonl");
-                // The pid of the process writing this record. A record with no finish
-                // line is either a job in progress or a process that died, and the LOG
-                // cannot tell those apart - but the operating system can, if the record
-                // says which process to ask about. The server checks this pid without
-                // touching Revit, the same way it reads the rest of the file.
-                int pid;
-                try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; } catch { pid = 0; }
-                job.Append("{\"event\":\"start\",\"tool\":" + Str(tool) + ",\"pid\":" + pid + ",\"at\":" + Now() + "}");
+                job.OpenRecord(tool);
+                job.IsDurable = true;
+                return job;
             }
-            catch { job.Path = null; }
+            catch (Exception ex)
+            {
+                throw new JobRecordException(
+                    "The persistent job record for '" + tool + "' could not be created in " + Dir() + " (" +
+                    ex.Message + "). No job id was issued and nothing was queued: an asynchronous caller is " +
+                    "handed a job_id and nothing else, so an id whose record does not exist would leave the " +
+                    "work running and every later horizun_job_status answering 'unknown'.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Open a job record if the disk allows it, and carry on if it does not.
+        ///
+        /// For the SYNCHRONOUS path only, where the reply carries the result back over
+        /// the pipe and the record is a convenience. Failing a command that is about to
+        /// succeed because its log could not be opened would be the worse trade. The
+        /// difference from the old behaviour is that the failure is now visible -
+        /// IsDurable is false and WriteFault says why - instead of being a null Path
+        /// nobody looked at.
+        /// </summary>
+        public static Job StartBestEffort(string tool, IJobSink sink = null)
+        {
+            var job = new Job(sink);
+            try
+            {
+                job.OpenRecord(tool);
+                job.IsDurable = true;
+            }
+            catch (Exception ex)
+            {
+                job.Path = null;
+                job.IsDurable = false;
+                job.WriteFault = ex.Message;
+                Log.Warn("The job record for '" + tool + "' could not be opened in " + Dir() + " (" + ex.Message +
+                         "). The command still runs and its result is returned over the pipe; only the " +
+                         "progress record is missing.");
+            }
             return job;
+        }
+
+        /// <summary>
+        /// Create the directory, name the file, write the start line. Every failure
+        /// propagates - which of the two Start methods called it decides what that means.
+        /// </summary>
+        private void OpenRecord(string tool)
+        {
+            string dir = Dir();
+            _sink.EnsureDirectory(dir);
+
+            // Custom sinks exist to prove disk failures and may not write to this
+            // directory at all. Retention applies only to the real durable store.
+            if (ReferenceEquals(_sink, FileJobSink.Instance))
+            {
+                try
+                {
+                    DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
+                        dir, DurableStoreKind.Jobs, Settings.RawValue, DateTime.UtcNow);
+                    if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
+                        (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
+                        Log.Info("job retention: " + retention.Summary());
+                }
+                catch (Exception ex) { Log.Warn("job retention failed closed; no record was deleted (" + ex.Message + ")."); }
+            }
+
+            string id = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 6);
+            string path = System.IO.Path.Combine(dir, id + ".jsonl");
+
+            // The pid of the process writing this record. A record with no finish
+            // line is either a job in progress or a process that died, and the LOG
+            // cannot tell those apart - but the operating system can, if the record
+            // says which process to ask about. The server checks this pid without
+            // touching Revit, the same way it reads the rest of the file.
+            int pid;
+            try { pid = System.Diagnostics.Process.GetCurrentProcess().Id; }
+            catch (InvalidOperationException) { pid = 0; }
+            catch (PlatformNotSupportedException) { pid = 0; }
+
+            _sink.Append(path, "{\"event\":\"start\",\"tool\":" + Str(tool) + ",\"pid\":" + pid + ",\"at\":" + Now() + "}");
+
+            // Only now, once the line is on disk. An id is a promise that a record
+            // exists; assigning it before the write is what let the promise be broken.
+            Id = id;
+            Path = path;
         }
 
         /// <summary>
@@ -149,9 +300,34 @@ namespace Horizun.Revit.Core
         /// </summary>
         public void Result(string payload)
         {
+            Result(payload, null);
+        }
+
+        /// <summary>
+        /// The job's output PLUS what Revit raised while it ran.
+        ///
+        /// The synchronous path attaches revit_said - warnings, errors and cancelled
+        /// modal dialogs - beside the payload in every reply (PipeEnvelope). The async
+        /// path wrote only the payload, so the exact telemetry that diagnoses a batch
+        /// failure ("Opening was canceled" was a DocWarnDialog the bridge cancelled)
+        /// existed for a synchronous call and vanished for the same work submitted
+        /// through run_async - which is how batches run. It is carried here so a
+        /// job_status reader gets what a synchronous caller would have seen.
+        ///
+        /// <paramref name="revitSaidJson"/> is ALREADY-SERIALIZED, single-line JSON
+        /// (the caller builds it exactly as PipeEnvelope does, so both paths report the
+        /// same shape). It is embedded raw, not string-quoted; null or empty omits the
+        /// field entirely, which reads as "Revit raised nothing", the same as a
+        /// synchronous reply with no revit_said.
+        /// </summary>
+        public void Result(string payload, string revitSaidJson)
+        {
             lock (_gate)
             {
-                Append("{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + ",\"at\":" + Now() + "}");
+                string said = string.IsNullOrEmpty(revitSaidJson)
+                    ? ""
+                    : ",\"revit_said\":" + revitSaidJson;
+                Append("{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + said + ",\"at\":" + Now() + "}");
             }
         }
 
@@ -174,8 +350,22 @@ namespace Horizun.Revit.Core
         private void Append(string line)
         {
             if (string.IsNullOrEmpty(Path)) return;
-            try { File.AppendAllText(Path, line + Environment.NewLine, new UTF8Encoding(false)); }
-            catch { }
+            try { _sink.Append(Path, line); }
+            catch (Exception ex)
+            {
+                // NOT swallowed, and NOT thrown either. Throwing here would replace the
+                // job's real outcome with its bookkeeping - Finish() runs on the failure
+                // path too, and a command that failed for a good reason must not be
+                // reported as having failed to write a log line.
+                //
+                // So the fault is kept instead. It is sticky: this is the write whose
+                // absence explains the gap in the file, and a later success does not
+                // fill that gap. RecordIsComplete goes false and stays false, which is
+                // what a reader of a short record is entitled to be told.
+                if (WriteFault == null) WriteFault = ex.Message;
+                Log.Warn("Job " + (Id ?? "(no id)") + " could not append to its record (" + ex.Message +
+                         "). The record is now INCOMPLETE; later events may be missing from " + (Path ?? "(no path)") + ".");
+            }
         }
 
         private static string Now()

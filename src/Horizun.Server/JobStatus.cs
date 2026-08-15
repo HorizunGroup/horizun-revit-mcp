@@ -85,6 +85,7 @@ namespace Horizun.Server
             var checkpoints = new JArray();
             string tool = null, finished = null, finishNote = null;
             string lastAt = null, startedAt = null, runningAt = null, resultPayload = null;
+            JToken revitSaid = null;
             int count = 0;
             int? pid = null;
             var recent = new List<JObject>();
@@ -116,7 +117,15 @@ namespace Horizun.Server
                     // The OUTPUT of an async run. Its caller got a job_id and went away,
                     // so this record is the only place the answer exists - "finished, ok"
                     // with no output is not an answer to anything.
-                    else if (ev == "result") { resultPayload = (string)o["payload"]; lastAt = (string)o["at"]; }
+                    // The OUTPUT, and beside it what Revit raised while the job ran. The
+                    // sync path carries revit_said as a sibling of data in every reply;
+                    // the async record now stores it on the result event, so a job_status
+                    // reader gets the warnings, errors and cancelled dialogs a synchronous
+                    // caller would have seen. Absent = Revit raised nothing, same as sync.
+                    // DeepClone: the token belongs to this line's parsed object, and it
+                    // has to outlive it in the job we return without dragging a second
+                    // parent along.
+                    else if (ev == "result") { resultPayload = (string)o["payload"]; revitSaid = o["revit_said"]?.DeepClone(); lastAt = (string)o["at"]; }
                     else if (ev == "finish") { finished = (string)o["status"]; finishNote = (string)o["note"]; lastAt = (string)o["at"]; }
                     else if (ev == "checkpoint")
                     {
@@ -199,6 +208,11 @@ namespace Horizun.Server
                 // not parse, and never described as absent when it is merely unparseable.
                 ["result"] = ParseResult(resultPayload),
                 ["result_present"] = resultPayload != null,
+                // What Revit raised while the job ran - the sibling of the payload the
+                // sync path always carries. Null here means the job recorded none (Revit
+                // raised nothing, or the record predates this field): NOT that it was
+                // dropped, which is the exact confusion 5.21 removed on the async path.
+                ["revit_said"] = revitSaid ?? JValue.CreateNull(),
                 ["recent_checkpoints"] = checkpoints,
                 ["what_this_means"] = Explain(state, resultPayload != null, pid, processAlive)
             };

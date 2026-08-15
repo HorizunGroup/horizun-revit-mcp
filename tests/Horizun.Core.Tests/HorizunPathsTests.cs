@@ -358,6 +358,15 @@ namespace Horizun.Core.Tests
                 // nothing reads state through it.
                 if (Path.GetFileName(path) == "HorizunPaths.cs") continue;
 
+                // AccUploadStatusCommand (5.15) reads ANOTHER application's data: the
+                // Desktop Connector's log folder, which genuinely lives under the
+                // user's real LocalApplicationData. It is not bridge state - only the
+                // Revit side ever resolves it, the resolved path travels back in the
+                // reply so nothing re-derives it at the other end, and 'wal_root'
+                // overrides it. Routing it through HorizunPaths would claim the
+                // bridge owns a folder it only reads.
+                if (Path.GetFileName(path) == "AccUploadStatusCommand.cs") continue;
+
                 foreach (string line in File.ReadAllLines(path))
                 {
                     string code = line.TrimStart();

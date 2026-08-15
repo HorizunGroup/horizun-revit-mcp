@@ -300,7 +300,15 @@ namespace Horizun.Revit.Commands
                 throw new ArgumentException("structural_layer_index must point to a Structure or StructuralDeck layer");
             if (plan.VariableIndex >= 0 && plan.Layers[plan.VariableIndex].Function == MaterialFunctionAssignment.Membrane)
                 throw new ArgumentException("variable_layer_index cannot point to a zero-width Membrane layer");
+            for (int i = 0; i < plan.Layers.Count; i++)
+                if (plan.Layers[i].Wraps && !IsShellLayer(plan, i))
+                    throw new ArgumentException("layer " + i + " wraps=true requires an exterior or interior shell layer");
             return plan;
+        }
+
+        private static bool IsShellLayer(CompoundPlan plan, int index)
+        {
+            return index < plan.ExteriorShells || index >= plan.Layers.Count - plan.InteriorShells;
         }
 
         private static void ApplyCompound(HostObjAttributes type, CompoundPlan plan)
@@ -329,7 +337,12 @@ namespace Horizun.Revit.Commands
             for (int i = 0; i < plan.Layers.Count; i++)
             {
                 LayerPlan layer = plan.Layers[i];
-                structure.SetParticipatesInWrapping(i, layer.Wraps);
+                // Revit reports ParticipatesInWrapping=true for a core layer even
+                // though SetParticipatesInWrapping throws for that same layer. The
+                // flag is meaningful only on exterior/interior shell layers. Treat
+                // a core layer as effectively non-wrapping and never call the
+                // invalid setter there.
+                if (IsShellLayer(plan, i)) structure.SetParticipatesInWrapping(i, layer.Wraps);
                 if (layer.Function == MaterialFunctionAssignment.StructuralDeck)
                 {
                     structure.SetDeckProfileId(i, layer.DeckProfileId);
@@ -355,9 +368,10 @@ namespace Horizun.Revit.Commands
             for (int i = 0; i < plan.Layers.Count; i++)
             {
                 LayerPlan wanted = plan.Layers[i]; CompoundStructureLayer actual = layers != null && i < layers.Count ? layers[i] : null;
+                bool actualWraps = actual != null && IsShellLayer(plan, i) && structure.ParticipatesInWrapping(i);
                 bool layerOk = actual != null && actual.Function == wanted.Function &&
                     Math.Abs(actual.Width - wanted.Width) <= 1e-9 && actual.MaterialId == wanted.MaterialId &&
-                    structure.ParticipatesInWrapping(i) == wanted.Wraps;
+                    actualWraps == wanted.Wraps;
                 if (actual != null && wanted.Function == MaterialFunctionAssignment.StructuralDeck)
                     layerOk = layerOk && actual.DeckProfileId == wanted.DeckProfileId && actual.DeckEmbeddingType == wanted.DeckEmbedding;
                 ok = ok && layerOk;
@@ -365,7 +379,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["index"] = i, ["function"] = actual?.Function.ToString(), ["width_internal"] = actual?.Width,
                     ["material_id"] = actual == null ? JValue.CreateNull() : new JValue(Rid.Value(actual.MaterialId)),
-                    ["wraps"] = actual == null ? JValue.CreateNull() : new JValue(structure.ParticipatesInWrapping(i)), ["verified"] = layerOk
+                    ["wraps"] = actual == null ? JValue.CreateNull() : new JValue(actualWraps), ["verified"] = layerOk
                 });
             }
             bool settingsOk = structure != null &&

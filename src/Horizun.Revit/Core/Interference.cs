@@ -41,6 +41,9 @@ namespace Horizun.Revit.Core
         public List<long> Elements;  // ids Revit blamed, when it named any
     }
 
+    // DialogAnswer lives in OpenDialogPolicy.cs (Revit-free, so its parse rule is
+    // unit-tested without a Revit); this file only ACTS on it.
+
     /// <summary>
     /// Watches one command's execution: application-level failure processing and any
     /// modal dialog. Subscribe before, dispose after — it unsubscribes itself, so a
@@ -48,6 +51,33 @@ namespace Horizun.Revit.Core
     /// </summary>
     public sealed class Interference : IDisposable
     {
+        // How OnDialog answers, read at DIALOG TIME so a command can widen it only around
+        // the one call that needs it. ThreadStatic and defaulting to Cancel: commands run
+        // one at a time on Revit's UI thread, every command that does not set it gets
+        // Cancel, and the setter is a scoped using() that always restores it. Same shape
+        // as Job.Ambient - a cross-cutting per-call hint the dispatcher's watcher reads.
+        [ThreadStatic] private static DialogAnswer _openDialogPolicy;
+
+        /// <summary>
+        /// Answer open-time dialogs with <paramref name="answer"/> until the returned
+        /// scope is disposed, then restore the previous policy. Wrap ONLY the open call:
+        /// a Dismiss left in place would press "continue" on every later dialog too.
+        /// </summary>
+        public static IDisposable WithDialogAnswer(DialogAnswer answer)
+        {
+            DialogAnswer prev = _openDialogPolicy;
+            _openDialogPolicy = answer;
+            return new PolicyScope(prev);
+        }
+
+        private sealed class PolicyScope : IDisposable
+        {
+            private readonly DialogAnswer _prev;
+            private bool _done;
+            public PolicyScope(DialogAnswer prev) { _prev = prev; }
+            public void Dispose() { if (_done) return; _done = true; _openDialogPolicy = _prev; }
+        }
+
         private readonly UIApplication _app;
         private readonly List<Interruption> _seen = new List<Interruption>();
         private bool _off;
@@ -95,10 +125,23 @@ namespace Horizun.Revit.Core
             string answered;
             try
             {
-                // 2 == IDCANCEL for a plain dialog box; TaskDialog takes the same value
-                // as its Cancel result. Either way: do not proceed on the user's behalf.
-                e.OverrideResult(2);
-                answered = "cancelled by the bridge (nobody is at the keyboard to answer it)";
+                if (_openDialogPolicy == DialogAnswer.Dismiss)
+                {
+                    // on_open_dialog=dismiss: acknowledge and continue. 1 == IDOK for a
+                    // plain dialog box; TaskDialogResult.Ok is 1 too. Best effort - a
+                    // dialog whose "continue" is some other button will not proceed, and
+                    // that is recorded here rather than hidden. It is scoped to the open
+                    // call by the command that set it; every other dialog still cancels.
+                    e.OverrideResult(1);
+                    answered = "dismissed by the bridge (on_open_dialog=dismiss: acknowledged and continued)";
+                }
+                else
+                {
+                    // 2 == IDCANCEL for a plain dialog box; TaskDialog takes the same value
+                    // as its Cancel result. Either way: do not proceed on the user's behalf.
+                    e.OverrideResult(2);
+                    answered = "cancelled by the bridge (nobody is at the keyboard to answer it)";
+                }
             }
             catch (Exception ex)
             {

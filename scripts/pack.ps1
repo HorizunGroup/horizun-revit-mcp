@@ -111,17 +111,28 @@ else {
 
 if (-not $InstallerOnly) {
 
-# --- The MCP server: one build, framework-dependent net8. -------------------
-Step 'building the MCP server'
-& dotnet build (Join-Path $repo 'src\Horizun.Server') -c $Config --nologo -v q
-if ($LASTEXITCODE -ne 0) { throw 'server build failed' }
-$serverBin = Join-Path $repo "src\Horizun.Server\bin\$Config\net8.0"
-Copy-Item $serverBin (Join-Path $stage 'server') -Recurse -Force
+# --- The MCP server: self-contained Windows x64. -----------------------------
+# A release install promises "no SDK" and may land on a Revit 2023/2024 machine
+# with no modern .NET runtime at all. Framework-dependent output installed fine
+# and then failed at first launch. Publish the runtime beside it so Setup's own
+# success includes everything the server needs.
+Step 'publishing the MCP server (win-x64, self-contained)'
+$serverBin = Join-Path $stage 'server'
+& dotnet publish (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config `
+    -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false `
+    -o $serverBin --nologo -v q
+if ($LASTEXITCODE -ne 0) { throw 'server self-contained publish failed' }
+foreach ($requiredRuntimeFile in 'horizun-mcp.exe','horizun-mcp.dll','hostfxr.dll','hostpolicy.dll') {
+    if (-not (Test-Path (Join-Path $serverBin $requiredRuntimeFile))) {
+        throw "self-contained server publish is missing $requiredRuntimeFile"
+    }
+}
 $clientTools = Join-Path $stage 'server\client-tools'
 New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
 Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\verify-clients.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Step '  staged safe Codex/Claude registration and verification helpers'
 
 # --- The plugin, ONE ARTIFACT PER YEAR. --------------------------------------
@@ -252,6 +263,8 @@ $doc = [pscustomobject]@{
         Product = $serverItem.VersionInfo.FileVersion
         Sha256  = $serverSha
         Size    = $serverItem.Length
+        SelfContained = $true
+        RuntimeIdentifier = 'win-x64'
         # The rest of the server directory: Newtonsoft, the runtimeconfig, the deps
         # file. horizun-mcp.exe was the only one recorded, and it is an apphost -
         # the code that runs is in horizun-mcp.dll, which the manifest never named.
@@ -293,11 +306,11 @@ if (-not $iscc) {
     return
 }
 
-# ONE source for the product version: the csproj. It used to be written here and
-# in the .iss, which is two places to bump and one to forget.
-$csproj = [xml](Get-Content (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj'))
-$version = ($csproj.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
-if (-not $version) { throw 'could not read <Version> from the plugin csproj' }
+# ONE source for the product version. Every project inherits it, and the
+# installer receives the same value.
+$versionProps = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
+$version = ($versionProps.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+if (-not $version) { throw 'could not read <Version> from Directory.Build.props' }
 # CLEAR THE OLD ONES FIRST. The output name carries the version, so bumping it
 # leaves the previous installer sitting in dist/ beside the new one - and every
 # consumer of this directory picks with `Get-ChildItem dist -Filter '*setup.exe' |

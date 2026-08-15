@@ -36,6 +36,13 @@ param(
     # Also check what is installed on THIS machine. Off by default so the script
     # can validate a package before it is installed.
     [switch]$Installed,
+    # Stable releases may be unsigned until a publicly trusted CA identity exists;
+    # the release policy requires that state to be explicit, not disguised as a
+    # broken signature. Without this switch, unsigned remains a hard failure.
+    [switch]$AllowUnsigned,
+    # The installer can write a per-run result file. CI must pass the exact file
+    # it asked Setup to create instead of reading a global leftover in {app}.
+    [string]$InstallResult,
     [string]$Json,
     [int[]]$Years = @(2023, 2024, 2025, 2026, 2027)
 )
@@ -189,11 +196,20 @@ Check 'every staged add-in is a DISTINCT binary' ($dupes.Count -eq 0) `
 # and the manifest must not merely claim it.
 #
 # No manifest signature block means the stage was never signed (or was re-staged
-# after signing) - which is not a shippable release, so it is WRONG here rather
-# than skipped.
+# after signing). It remains a failure unless the caller opts into the repository's
+# documented unsigned-release policy explicitly with -AllowUnsigned.
 $own = @(Get-HorizunOwnBinaries $Stage)
-Check 'the manifest was recomputed after signing (it carries a signature block)' ([bool]$doc.Signature) `
-      'no Signature block in manifest.json: the payload was never signed, or was re-staged after signing'
+if ($doc.Signature) {
+    Check 'the manifest was recomputed after signing (it carries a signature block)' $true $null
+}
+elseif ($AllowUnsigned) {
+    Check 'the package signature state is explicit' $true `
+          'UNSIGNED by explicit release-policy exception; no public CA identity exists, so users verify SHA-256 and provenance attestations'
+}
+else {
+    Check 'the manifest was recomputed after signing (it carries a signature block)' $false `
+          'no Signature block in manifest.json: pass -AllowUnsigned only when the published release will state this exception'
+}
 
 if ($doc.Signature) {
     Check 'the manifest declares every own binary signed' ([bool]$doc.Signed) `
@@ -346,12 +362,16 @@ if ($Installed) {
     # and the four-hour-old install-result.txt still sitting in {app} said
     # fully_installed=yes for all five years. Anything that read it without
     # asking WHEN would have recorded a failed install as a complete one.
-    $resultFile = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\install-result.txt'
+    $resultFile = if ($InstallResult) { $InstallResult } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\install-result.txt' }
     if (-not (Test-Path $resultFile)) { Check 'the installer left a result file' $false "missing: $resultFile" }
     else {
         $rText = Get-Content $resultFile -Raw
-        Check 'the install reported every year installed' ($rText -match 'fully_installed\s*=\s*yes') `
+        Check 'the install reported every year installed' ($rText -match '(?m)^fully_installed[ \t]*=[ \t]*yes[ \t]*\r?$') `
               'install-result.txt does not say fully_installed=yes'
+        $failedLine = [regex]::Match($rText, '(?m)^failed[ \t]*=[ \t]*(.*)$')
+        $failedYears = if ($failedLine.Success) { $failedLine.Groups[1].Value.Trim() } else { '<missing failed= line>' }
+        Check 'the install reported no failed Revit year' ($failedLine.Success -and $failedYears.Length -eq 0) `
+              ("install-result.txt failed= value is '{0}'" -f $failedYears)
         if ($Installer -and (Test-Path $Installer)) {
             $newer = (Get-Item $resultFile).LastWriteTimeUtc -ge (Get-Item $Installer).LastWriteTimeUtc
             Check 'the result file is from THIS installer, not an earlier run' $newer `
@@ -431,6 +451,8 @@ $report = [pscustomobject]@{
     stage             = $Stage
     installer         = $Installer
     installer_sha256  = $installerSha
+    signature_policy  = $(if ($doc.Signature) { 'signed' } elseif ($AllowUnsigned) { 'unsigned_explicit_exception' } else { 'unsigned_refused' })
+    install_result    = $InstallResult
     checked_installed = [bool]$Installed
     installed         = $installedReport
     server            = $doc.Server

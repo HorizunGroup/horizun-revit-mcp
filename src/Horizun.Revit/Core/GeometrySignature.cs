@@ -75,6 +75,49 @@ namespace Horizun.Revit.Core
             Dimensions.FirstOrDefault(d => string.Equals(d.Name, name, StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The unit each dimension is measured in (story 5.17). The numbers come out of
+    /// the Revit API in its internal units - decimal FEET, whatever the document
+    /// displays - and the baseline published them bare. Verified in the field on a
+    /// 15x15x10 cm box: solid_volume and surface_area read back exactly in ft3/ft2,
+    /// and a human reading 0.0794 next to "volume" with no unit has every reason to
+    /// call it wrong. The comparison never cared (same units on both sides); the
+    /// names are for the reader.
+    /// </summary>
+    public static class GeoUnits
+    {
+        public const string Note =
+            "All numbers are in Revit's INTERNAL units - decimal feet - whatever the document displays: " +
+            "lengths in ft, areas in ft2, volumes in ft3. A 15x15x10 cm box reads solid_volume ~0.0794 ft3. " +
+            "The before/after comparison is unaffected (both sides share the units); the unit is named so a " +
+            "human reading a single number is not misled.";
+
+        /// <summary>
+        /// Accepts a bare dimension name ("bbox_x") or a type-qualified one
+        /// ("Caja 15x15.bbox_x"); the dimension is whatever follows the last dot.
+        /// Unknown names answer "unknown", never a guess.
+        /// </summary>
+        public static string Of(string dimensionName)
+        {
+            if (string.IsNullOrEmpty(dimensionName)) return "unknown";
+            string n = dimensionName;
+            int dot = n.LastIndexOf('.');
+            if (dot >= 0 && dot < n.Length - 1) n = n.Substring(dot + 1);
+            switch (n)
+            {
+                case "solid_volume": return "ft3";
+                case "surface_area": return "ft2";
+                case "bbox_x":
+                case "bbox_y":
+                case "bbox_z": return "ft";
+                case "solid_count":
+                case "connector_count": return "count";
+                case "connectors": return "ft (positions); unitless (directions)";
+                default: return "unknown";
+            }
+        }
+    }
+
     public sealed class GeoChange
     {
         public string Dimension { get; internal set; }
@@ -85,8 +128,12 @@ namespace Horizun.Revit.Core
         public string Describe()
         {
             if (Before.HasValue && After.HasValue)
+            {
+                string unit = GeoUnits.Of(Dimension);
                 return Dimension + ": " + Before.Value.ToString("0.######", CultureInfo.InvariantCulture) +
-                       " -> " + After.Value.ToString("0.######", CultureInfo.InvariantCulture);
+                       " -> " + After.Value.ToString("0.######", CultureInfo.InvariantCulture) +
+                       (unit == "unknown" ? "" : " " + unit);
+            }
             return Dimension + ": " + (Detail ?? "changed");
         }
     }
@@ -120,12 +167,25 @@ namespace Horizun.Revit.Core
         public bool FullyVerified => NotVerified.Count == 0;
 
         /// <summary>
-        /// The only three answers this may give. "unchanged" requires that every dimension
+        /// True when not a single dimension was compared on both sides. A verdict built
+        /// out of zero comparisons has measured nothing, and NOTHING measured must not
+        /// wear the same word as a clean pass (story 5.18) - the same rule the live
+        /// harness enforces for empty tables: an empty table is not agreement.
+        /// </summary>
+        public bool NothingCompared => Unchanged == 0 && Changed.Count == 0;
+
+        /// <summary>
+        /// The only four answers this may give. "unchanged" requires that every dimension
         /// on every type was actually compared - anything less is "unchanged_where_measured",
-        /// which is a different sentence and must read like one.
+        /// which is a different sentence and must read like one. And either of those
+        /// requires that SOMETHING was compared: zero comparisons is "unproven", because
+        /// two empty captures agree the way two blank pages agree. "changed" stays first -
+        /// a type that appeared or vanished is an observation even when no dimension was
+        /// comparable.
         /// </summary>
         public string Status =>
             AnyChange ? "changed"
+            : NothingCompared ? "unproven"
             : FullyVerified ? "unchanged"
             : "unchanged_where_measured";
 
@@ -142,6 +202,14 @@ namespace Horizun.Revit.Core
                     s += " " + NotVerified.Count + " further dimension(s) could not be measured at all.";
                 return s;
             }
+
+            if (NothingCompared)
+                return "NOTHING was compared: zero dimensions were measured on both sides" +
+                       (NotVerified.Count > 0
+                           ? " (" + NotVerified.Count + " could not be measured)"
+                           : " (no measured dimension existed on either side)") +
+                       ". This is not evidence that the shape held - it was not looked at, and " +
+                       "'unchanged' is deliberately not said here.";
 
             if (FullyVerified)
                 return "Every measured dimension of every type is identical before and after: " + Unchanged +

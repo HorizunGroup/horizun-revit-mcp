@@ -53,7 +53,7 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>Send raw lines, read every reply line back. One process, one round.</summary>
-        private static List<JObject> Exchange(params string[] lines)
+        private static List<JObject> ExchangeRaw(params string[] lines)
         {
             var psi = new ProcessStartInfo(ServerExe())
             {
@@ -80,6 +80,25 @@ namespace Horizun.Server.Tests
                 }
                 if (!proc.WaitForExit(60000)) { try { proc.Kill(); } catch { } }
             }
+            return replies;
+        }
+
+        /// <summary>
+        /// Most wire assertions exercise the operational phase. Establish the real MCP
+        /// lifecycle first and omit the handshake reply from the assertion payload.
+        /// Tests about initialize itself call ExchangeRaw explicitly.
+        /// </summary>
+        private static List<JObject> Exchange(params string[] lines)
+        {
+            const string initId = "test-initialize";
+            var all = new List<string>
+            {
+                "{\"jsonrpc\":\"2.0\",\"id\":\"" + initId + "\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"wire-tests\",\"version\":\"1\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
+            };
+            all.AddRange(lines);
+            List<JObject> replies = ExchangeRaw(all.ToArray());
+            replies.RemoveAll(r => (string)r["id"] == initId);
             return replies;
         }
 
@@ -183,11 +202,27 @@ namespace Horizun.Server.Tests
         [Fact]
         public void Initialize_negotiates_old_clients_and_offers_current_protocol_to_unknown_clients()
         {
-            var replies = Exchange(
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}",
+            var old = ExchangeRaw(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
+            var unknown = ExchangeRaw(
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1900-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
-            Assert.Equal("2024-11-05", (string)replies[0]["result"]["protocolVersion"]);
-            Assert.Equal("2025-11-25", (string)replies[1]["result"]["protocolVersion"]);
+            Assert.Equal("2024-11-05", (string)old[0]["result"]["protocolVersion"]);
+            Assert.Equal("2025-11-25", (string)unknown[0]["result"]["protocolVersion"]);
+        }
+
+        [Fact]
+        public void Tools_are_refused_before_initialize_and_request_ids_cannot_be_reused()
+        {
+            var before = ExchangeRaw("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}");
+            Assert.Equal(-32600, (int)before[0]["error"]["code"]);
+            Assert.Contains("first interaction", (string)before[0]["error"]["message"]);
+
+            var reused = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\",\"params\":{}}");
+            Assert.NotNull(reused[0]["result"]);
+            Assert.Equal(-32600, (int)reused[1]["error"]["code"]);
+            Assert.Contains("already used", (string)reused[1]["error"]["message"]);
         }
 
         [Fact]

@@ -1,76 +1,17 @@
-# Horizun Revit MCP — Model Context Protocol server for Autodesk Revit
+# Horizun Revit MCP
 
-Open-source **Model Context Protocol (MCP) server for Autodesk Revit**. Horizun
-connects Codex, Claude, Cursor and other MCP clients to a running Revit session
-for typed BIM queries, verified model edits, family authoring, exports and Power
-BI workflows. **Free and open source, Apache-2.0.** Part of the [Horizun
-Hub](https://horizunhub.com) ecosystem.
-
-> **Official stable release: v0.6.0.** This is the public source repository for
-> Horizun Revit MCP. It contains the complete implementation, typed Revit
-> operations, tests, installation scripts, security model and benchmark evidence.
-
-## Why Horizun is built to lead the Revit MCP benchmark
-
-Horizun is measured by verified outcomes, not by a raw count of tool names:
-
-| Differentiator | What the public source proves |
-|---|---|
-| Native Revit coverage | Typed creation and editing for architecture, structure, MEP, views, sheets, schedules, families and system-family types. |
-| Family authoring | RFT → RFA compilation with parameters, formulas, types, reference planes, labeled dimensions, symbolic/model lines, nested point instances, solid/void forms and MEP connectors. |
-| Interoperability | Verified PDF, DWG, IFC, Navisworks NWC, multi-view FBX, image and schedule export, plus direct Power BI push ingestion. |
-| Reliability | Dry-run plans, single-use confirmations, durable idempotency, bounded queueing, one Revit API operation at a time and post-commit re-reads. |
-| Federated models | Host and loaded-link inventory, queries, quantities, clashes and schedules with source-model identity and explicit coverage. |
-| Honest failure modes | Unsupported or ambiguous inputs are refused with a reason; the bridge never reports success from a call that merely did not throw. |
-
-The benchmark is reproducible from [`docs/BENCHMARK.md`](docs/BENCHMARK.md).
-Public CI passes **292 core tests + 162 server tests**, builds the MCP server with
-warnings treated as errors, audits NuGet dependencies and runs the repository-safe
-part of the sensitive-data scan. Revit-dependent CI jobs require a private
-self-hosted runner and are reported as skipped when it is unavailable. The
-benchmark marks every capability whose current public evidence is still pending
-a live Revit or Power BI fixture; a green hosted-CI check is never presented as
-proof that those live operations ran.
-
-The server metadata is also prepared for the [Official MCP Registry](https://registry.modelcontextprotocol.io/)
-under `io.github.HorizunGroup/horizun-revit-mcp`, and the repository publishes a
-machine-readable [llms.txt](llms.txt) discovery summary for AI systems and
-indexers.
-
-## Horizun Hub: the ecosystem around the MCP
-
-[Horizun Hub](https://horizunhub.com) is the product ecosystem from Horizun
-Group. Horizun Revit MCP is its open-source automation and Revit API layer; the
-Hub adds the training, apps, data products and expert workflows that turn the
-bridge into a complete BIM operating system:
-
-- **Apps:** PowerBIM Exporter for Revit, PowerBIM Online, PowerBIM Exporter for
-  Civil 3D, BuildMotion, CopyToExcel and Family Browser.
-- **Academia:** PowerBIM + IA training and the growing course library.
-- **Quantification and 4D/5D:** Revit + Navisworks examples, templates and
-  construction-planning workflows.
-- **Power BI and content:** dashboards, `.pbit` templates, visual assets and
-  data workflows.
-- **IA and automation:** agents, MCP workflows and scripts for standardising
-  families and auditing models.
-- **APS connection:** extraction of Autodesk Construction Cloud data into Power
-  BI workflows.
-- **Expert support:** two hours per month with a Horizun Group BIM expert,
-  delivered through Zoom or Teams.
-- **Learning media:** BIM Para Todos videos and tutorials covering Revit,
-  Power BI, Speckle, Civil 3D and AI.
-
-The MCP remains organisation-neutral: company standards, catalogues and audit
-rules are supplied by the Hub workflows or by the caller, rather than compiled
-into the bridge. See [`docs/HORIZUN-HUB.md`](docs/HORIZUN-HUB.md) for the full
-relationship between the open-source gateway and the Hub ecosystem.
+An MCP gateway for Autodesk Revit. **Free and open source, Apache-2.0.** Part of
+the [Horizun Hub](https://horizunhub.com) ecosystem.
 
 Point Claude — or any MCP client — at a running Revit and let it read and write
 the model, under one contract: **a command never reports work it did not
 verify.** Every typed write is re-read from the model after the commit; a silent
 rollback becomes an error, not a false success. Counts come from re-reading the
 model, never from counting calls that did not throw. The deliberately low-level
-`horizun_execute_python` escape hatch is the documented exception.
+`horizun_execute_python` fallback is the documented exception: the bridge does
+not re-read the model after arbitrary code, so its results are labelled
+**self-reported** rather than verified, and never presented as the same kind of
+claim a typed write makes.
 
 **What this is.** The bridge: transport, safety guards, and a generic tool
 surface over the Revit API. Organisation-neutral by design — no company's
@@ -85,38 +26,7 @@ is what plugs into it.
 
 ## Install
 
-### Install with an agent — recommended
-
-Paste one of these into the agent you already have open, in any folder:
-
-**Claude Code**
-
-```
-Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-CLAUDE.md, and follow the install procedure there. When it finishes, register the
-MCP server with yourself using the exact path the installer printed, and tell me
-which version and commit ended up installed.
-```
-
-**Codex**
-
-```
-Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-AGENTS.md, and follow the install procedure there. When it finishes, register the
-MCP server with yourself using the exact path the installer printed, and tell me
-which version and commit ended up installed.
-```
-
-Claude Code reads `CLAUDE.md` (which imports [AGENTS.md](AGENTS.md)); Codex reads
-[AGENTS.md](AGENTS.md) directly. Either way the agent checks the prerequisites,
-builds from this public source against each Revit version installed on the
-machine, installs the matching add-in binaries and MCP server, verifies their
-commit and SHA-256, and registers the resulting server path under the name
-`horizun-revit` — so it reads as what it is next to every other MCP server on
-your machine. Revit must be closed. No prebuilt executable is downloaded by this
-path.
-
-### Prebuilt release installer — optional
+### Release installer — recommended
 
 Download `horizun-mcp-<version>-setup.exe` from the
 [latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
@@ -133,7 +43,9 @@ The setup installs every supported Revit payload present in the release and the
 MCP server. It also installs Start-menu helpers to register or verify Horizun in
 Codex and Claude. Registration is explicit and unchecked by default: the helper
 makes timestamped backups, preserves all other MCP entries and refuses to edit a
-client that is still running and could overwrite its configuration.
+client that is still running and could overwrite its configuration. An advanced
+pre-uninstall helper can remove only the `horizun-revit` client entries and,
+only when explicitly selected, purge local state or the self-signing trust.
 
 For a command-line installation without Git or an SDK, download the repository's
 small bootstrap and let it select the latest release. It downloads the setup and
@@ -146,9 +58,9 @@ Invoke-WebRequest 'https://raw.githubusercontent.com/HorizunGroup/horizun-revit-
 powershell -ExecutionPolicy Bypass -File $p
 ```
 
-Pass `-Version v0.6.0` to pin the official release instead of following `latest`.
+Pass `-Version vX.Y.Z` to pin a specific release instead of following `latest`.
 
-### Build from source manually
+### Build from source
 
 This path builds everything from the repository, on your machine, against the
 Revit already installed. **Nothing prebuilt is downloaded and run.**
@@ -158,6 +70,24 @@ Revit already installed. **Nothing prebuilt is downloaded and run.**
 **10+** when building for Revit 2027), and **Revit closed** — the
 installer refuses to run while Revit holds the add-in files, and changes nothing
 when it refuses.
+
+#### Let an agent do it
+
+Paste this into **Claude Code** or **Codex**, in any folder:
+
+```
+Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
+AGENTS.md, and follow the install procedure there. Install and verify the binaries,
+then print the exact registration command for my client. Do not edit the active
+client's configuration; tell me to close it and run that command in a fresh shell.
+```
+
+Both agents pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
+repository (Claude Code also reads `CLAUDE.md`, which imports it). It has the
+prerequisites, the failure modes, and the two surprises worth knowing before the
+first Revit start.
+
+#### Or run it yourself
 
 ```powershell
 git clone https://github.com/HorizunGroup/horizun-revit-mcp
@@ -176,12 +106,15 @@ by `cmd.exe` and **not** by PowerShell, so a config written with the variable
 silently points nowhere.
 
 ```powershell
-# Claude Code
-claude mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+# Claude Code — persistent for this user, from a fresh shell after closing Claude
+claude mcp add --scope user horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+
+# Codex — from a fresh shell after closing Codex
+codex mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 
 ```toml
-# Codex — %USERPROFILE%\.codex\config.toml
+# Codex timeout settings — %USERPROFILE%\.codex\config.toml
 [mcp_servers.horizun-revit]
 command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
 args = []
@@ -210,9 +143,9 @@ while it is merely busy.
 
 Two things to expect, neither of them a fault:
 
-- Revit shows a **"Security - Unsigned Add-In"** dialog. Choose **Always Load**.
-  This build is unsigned. Revit normally remembers that choice for this add-in's
-  identity, but the prompt may return after a trust or policy reset. It can also
+- Revit can show a **Security** add-in dialog when the publisher is not already
+  trusted. After verifying the build, choose **Always Load**. Revit normally
+  remembers that choice, but the prompt may return after a trust or policy reset. It can also
   open on a monitor you are not looking at — a Revit that seems stuck on startup
   with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
@@ -258,7 +191,7 @@ In Revit, over the pipe:
 | `horizun_save_document` | Save, then prove it: the file's timestamp and size before and after. On a workshared model it says, loudly, that this is not a synchronize. |
 | `horizun_relinquish_all` | Give back everything this user owns, and count what is still owned afterwards rather than assume zero. |
 | `horizun_capture_view` | Export a view and hand the IMAGE back, so the caller can look at the model instead of only reading it. |
-| `horizun_execute_python` | The execution fallback: Python against the whole API on the UI thread, stdlib included. **Enabled by default**; an explicit off in `settings.json` is respected. `preflight=true` validates permission, document, size, hash and syntax without executing; the structured `__output__` evidence contract classifies each run as `verified`, `completed_unverified`, `partial` or `failed` — a verified claim without evidence is downgraded, never believed. It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
+| `horizun_execute_python` | The execution fallback: Python against the whole API on the UI thread, stdlib included. **Enabled by default**; an explicit off in `settings.json` is respected. `preflight=true` validates permission, document, size, hash and syntax without executing. Results are **self-reported, not host-verified**: the structured `__output__` contract classifies each run as `self_reported_verified`, `completed_unverified`, `partial` or `failed` — there is no `verified` state on this path, `host_verified` is always false, and a verified claim without evidence is downgraded. It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. |
@@ -381,23 +314,23 @@ pwsh scripts/verify-queue-live.ps1 -Year 2026 -Document <active model title or p
 
 ## Status
 
-Working, in production use, and honest about its edges.
+Working and in production use, with stable promotion governed by published,
+release-scoped evidence rather than by a local success claim.
 
-- **450+ tests** over the Revit-free surface. CI builds and tests exactly that
+- **Revit-free suites are enforced in CI.** CI builds and tests exactly that
   surface and nothing else: a hosted runner has no `RevitAPI.dll`, so building
   the plugin there would be a lie. The Revit-bound half is verified live
   instead, with `scripts/verify-live.ps1`.
 - **Built for five Revit years** — 2023 through 2027, each compiled against its
   own `RevitAPI.dll`.
-- **Verified live** against real models rather than mocks: the full tool
-  surface, the upgrade guard refusing a real older-year family, the commit
-  contract's rollback on a geometry change, bounded FIFO ordering and capacity,
-  cancellation-before-start with an independently checked absent side effect,
-  and `job_status` answering while Revit's UI thread was inside the very command
-  it describes.
-- **Unsigned.** Revit raises its "Security - Unsigned Add-In" dialog on first
-  load. Revit normally remembers the decision by add-in identity, but policy or
-  trust-store changes can make the prompt return.
+- **Live evidence is release-scoped.** `verify-live.ps1` refuses uncovered
+  release-gate probes, and stable promotion requires a published report for
+  every supported Revit year. If an artifact is absent, local experience or a
+  compiled DLL is not substituted for it.
+- **No publicly trusted publisher identity by default.** Revit can raise its
+  security dialog on first load. Source installs offer an explicit per-user
+  self-sign/trust helper; that local trust is not a public CA signature and can
+  be removed independently during advanced cleanup.
 - **Known limits, stated**: `excel_write_rows` appends below an Excel Table
   without expanding the table's range (reported per call); a catalog that is
   neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling a
@@ -431,15 +364,7 @@ whatever launched it. The optional `horizun_power_bi_push` tool makes bounded
 outbound HTTPS calls only to fixed Microsoft Entra and `api.powerbi.com`
 endpoints; it accepts no URL or credential in tool arguments. The full threat model — what is defended, and what
 deliberately is not — is in [docs/security-model.md](docs/security-model.md),
-and it is written to be argued with. Report vulnerabilities privately through
-the process in [SECURITY.md](SECURITY.md); do not place client/model data or
-credentials in a public issue.
-
-## Contributing
-
-Focused fixes, tests and documentation improvements are welcome. Read
-[CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request; public
-contributions must remain organisation-neutral and contain no project data.
+and it is written to be argued with.
 
 ## License
 

@@ -46,7 +46,12 @@ param(
 
     # Treat a missing wordlist as a failure. For a release gate, where "the name
     # check did not run" must not be indistinguishable from "it passed".
-    [switch] $RequireTerms
+    [switch] $RequireTerms,
+
+    # Scan a generated tree instead of the repository. With -AllFiles, every
+    # file below this root is scanned (except .git).
+    [string] $Root,
+    [switch] $AllFiles
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,11 +71,18 @@ if ([string]::IsNullOrWhiteSpace($TermsFile)) {
     }
 }
 
-$repo = Split-Path -Parent $PSScriptRoot
+$repo = if ([string]::IsNullOrWhiteSpace($Root)) { Split-Path -Parent $PSScriptRoot }
+        else { [IO.Path]::GetFullPath($Root) }
 Push-Location $repo
 try {
-    $tracked = @(git ls-files)
-    if ($LASTEXITCODE -ne 0) { Write-Error "not a git repository: $repo"; exit 2 }
+    if ($AllFiles) {
+        $tracked = @(Get-ChildItem $repo -Recurse -File | Where-Object {
+            $_.FullName -notlike "*$([IO.Path]::DirectorySeparatorChar).git$([IO.Path]::DirectorySeparatorChar)*"
+        } | ForEach-Object { $_.FullName.Substring($repo.Length + 1).Replace('\','/') })
+    } else {
+        $tracked = @(git ls-files)
+        if ($LASTEXITCODE -ne 0) { Write-Error "not a git repository: $repo"; exit 2 }
+    }
 
     # Binaries and vendored payloads: nothing to read, and the Python standard
     # library shipped in the installer would drown every real finding.
@@ -117,6 +129,21 @@ try {
            # the description of the leak rule. Ellipsis and <angle brackets> are
            # placeholders in every file here; a real project name is neither.
            Allow   = '(?i)://(Sample Project|Example|Test)[/\\"'']|://(…|\.\.\.|<)' }
+
+        # Generic credential patterns run even without the private name list.
+        # They are assembled so the scanner does not match its own source.
+        @{ Rule = 'private-key'
+           Pattern = ('-----BEGIN ' + '(RSA |EC |OPENSSH )?PRIVATE KEY-----')
+           Allow = $null }
+        @{ Rule = 'github-token'
+           Pattern = ('(?i)\bgh' + '[pousr]_[A-Za-z0-9]{30,}\b')
+           Allow = $null }
+        @{ Rule = 'aws-access-key'
+           Pattern = ('\bAK' + 'IA[0-9A-Z]{16}\b')
+           Allow = $null }
+        @{ Rule = 'generic-secret-assignment'
+           Pattern = ('(?i)\b(api[_-]?key|access[_-]?token|client[_-]?secret|password)\s*[:=]\s*["'']' + '[A-Za-z0-9_\-\./+=]{16,}["'']')
+           Allow = '(?i)(example|placeholder|<[^>]+>|\$\{[^}]+\}|%[^%]+%)' }
     )
 
     foreach ($f in $files) {
@@ -163,6 +190,7 @@ try {
 
     # --- report ------------------------------------------------------------
     $result = [pscustomobject]@{
+        scanned_root       = $repo
         scanned_files      = $files.Count
         structural_rules   = $structural.Count
         term_check_ran     = $termsRan

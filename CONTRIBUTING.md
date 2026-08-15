@@ -1,34 +1,90 @@
-# Contributing
+# Contributing — Horizun Revit MCP
 
-Horizun Revit MCP accepts focused bug reports, documentation corrections, tests
-and implementation improvements. Keep contributions organisation-neutral: client
-standards, project names, model names, credentials and proprietary catalogues do
-not belong in this public repository.
+How to work this repo from any machine without stepping on anyone. Read
+[AGENTS.md](AGENTS.md) too — it carries the project rules and loads every
+session.
 
-## Before opening a pull request
+## The single source of truth is GitHub, not any one PC
 
-1. Open an issue for a substantial behaviour or contract change so its safety
-   and Revit-version impact can be discussed first.
-2. Add or update tests for every behaviour change. A typed mutation must retain
-   its dry-run/confirmation, idempotency and post-commit verification guarantees.
-3. Run:
+`origin` is the team's private GitHub repository — `git remote get-url origin`
+names it on your machine. Your clone has no special status; it is one copy of
+what is on GitHub. (The URL is deliberately not written here: this file is
+tracked, and the sensitive-data scan gates a release on tracked files carrying
+no account or repository names.)
 
-   ```powershell
-   dotnet test tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj -c Release
-   dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release
-   dotnet build src/Horizun.Server/Horizun.Server.csproj -c Release -warnaserror
-   ```
+## One branch per task, a PR into `main`, never a direct commit to `main`
 
-4. If the change touches the add-in, compile it against every affected Revit
-   year. Live claims require retained fixture output; a successful compilation
-   alone is evidence grade B, not L, under [docs/BENCHMARK.md](docs/BENCHMARK.md).
-5. Run `pwsh scripts/scan-sensitive.ps1` and remove any client or project data.
+```bash
+git checkout main
+git pull origin main
+git checkout -b epic1/place-sprinklers      # epicN/short-name
+# ...work...
+git add -A && git commit -m "…"
+git push -u origin epic1/place-sprinklers
+# then open a Pull Request into main on GitHub; do not self-merge
+```
 
-## Pull requests
+Two people on two machines work in parallel this way: each task lives on its own
+branch and `main` only moves through reviewed merges. Committing straight to
+`main` from two places clobbers — that is the failure this rule exists to avoid.
 
-Keep each pull request reviewable and explain the user-visible result, failure
-behaviour and verification performed. Do not commit generated `bin`, `obj`,
-`dist`, installed add-ins, Revit models, credentials or production logs.
+## Build and test before opening a PR
 
-By contributing, you agree that your contribution is licensed under the
-repository's Apache License 2.0.
+```bash
+dotnet build src/Horizun.Revit/Horizun.Revit.csproj -p:RevitVersion=2026
+dotnet test tests/Horizun.Core.Tests
+```
+
+The add-in compiles against the Revit year installed on the machine. Tests must
+be green before the PR.
+
+Green tests are the floor, not the ceiling. If the branch adds or changes a
+command that WRITES, exercise it against a running Revit as well:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify-live.ps1 -Year 2026 -WriteProbes
+```
+
+That tier commits into a model your `%USERPROFILE%\.horizun\live-fixtures.json`
+declares disposable, re-reads the result, and never saves. Without the fixture it
+reports every write probe as NOT COVERED by name rather than passing quietly — see
+[docs/live-fixtures.example.json](docs/live-fixtures.example.json).
+
+## Hard rules
+
+- **The product name is written `Horizun`** — never `HORIZUN`, never `horizun`
+  as a word. Only `horizun_*` tool names and `HORIZUN_*` env vars are lower/upper
+  by design.
+- **The verified contract:** every typed command must re-read the model after the
+  commit — no command reports work it did not verify. Follow the shape of
+  `src/Horizun.Revit/Commands/TransformElementsCommand.cs`.
+- **A typed write whose verification fails must ROLL BACK.** Reporting the failure
+  honestly is not enough on its own: a command that commits and then says it could
+  not confirm the result leaves the caller a model to untangle by hand, and it
+  cannot simply be retried. `TerminateRiserCommand` gets this right — it names the
+  stage that failed and builds nothing. A command that deliberately keeps partial
+  work must say so in its description and report exactly what stayed.
+- **A write path is not verified until it has been COMMITTED against a real
+  model.** Green unit tests plus a clean build have already shipped three commands
+  to review that could not do their job: refusals prove the guards, dry runs prove
+  the arithmetic, and neither one executes the Revit half. Add a probe to the write
+  tier of `scripts/verify-live.ps1` (`-WriteProbes`) and run it before the PR.
+- **Respect an explicit `horizun_execute_python` off-switch.** The tool is
+  enabled by default and serves as the execution fallback, but a machine whose
+  owner disabled it (`enable_execute_python=false` or a profile below
+  `unsafe_code`) made a deliberate choice — never edit their `settings.json` to
+  reverse it. The owner re-enables it with `scripts/enable-execute-python.ps1`.
+- Every new typed command that overlaps `execute_python` gets an entry in its
+  typed-overlap **advisory** table — the advisory recommends the verified typed
+  command; it does not block the script.
+
+## Where the backlog lives
+
+[GitHub issues](https://github.com/HorizunGroup/horizun-revit-mcp/issues). Pick a focused issue, branch, and PR.
+
+## Knowledge is a DIFFERENT channel
+
+Reusable knowledge — agent memory (`api.md`, `mep.md`, `familias.md`), skills,
+field contributions — does **not** go in this git repo. It flows through the
+Horizun CORE on OneDrive via the `sincronizar` skill. Code → GitHub; knowledge →
+CORE. Keep them separate.

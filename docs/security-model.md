@@ -187,9 +187,14 @@ durably key-bound on every run, size-capped, and audited on every run.
 append-only claim is written under `%USERPROFILE%\.horizun\idempotency`; the
 full terminal result is appended afterward. This survives Revit and MCP-server
 restarts. A torn claim is not guessed: it remains `in_doubt` until a human
-inspects the model. Records can contain returned model data and currently have no
-automatic retention policy; protect and periodically remove that local directory
-according to the project's data-retention rules.
+inspects the model. Records can contain returned model data. Retention is
+configurable in `settings.json` with `idempotency_retention_days`,
+`idempotency_max_bytes`, `job_retention_days` and `job_max_bytes`. The compatible
+default is `0` for both limits — keep forever. Cleanup removes only valid terminal
+records; active jobs, claim-only/`in_doubt` records, corrupt files and the key
+currently being claimed are never selected. A malformed policy fails closed and
+keeps everything. Operators handling sensitive model data should set explicit
+time and size limits and protect the directory independently.
 
 ### 3b. Bounded outbound Power BI delivery
 
@@ -265,20 +270,24 @@ wrong session is a correct edit to the wrong model.
 
 ## 7. Supply chain
 
-Every redistributed component is inventoried with its licence and SHA-256 in
-`dist/sbom.json`, generated from the payload that actually ships rather than from
-the project file. See [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
+Every redistributed file is inventoried with its licence and SHA-256 in the
+CycloneDX 1.6 `dist/sbom.json`, generated from the payload that actually ships
+rather than from the project file. Tagged artifacts receive GitHub/Sigstore build
+provenance plus an SBOM attestation. See
+[THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
-`dotnet list package --vulnerable --include-transitive` reports no vulnerable
-packages in either project as of 2026-07-29. That is a snapshot of one advisory
-database on one day; CI re-runs it.
+CI runs `dotnet list package --vulnerable --include-transitive` for the server,
+add-in and both test projects. Any clean result is a snapshot of the advisory
+sources at that run, not a permanent guarantee.
 
 The largest third-party surface is the 614-file IronPython standard library, and
 nothing in this repository audits it.
 
-## 8. Code signing — an open release blocker
+## 8. Code signing and public trust
 
-**Nothing is signed.** The consequences, measured rather than assumed:
+The package pipeline reports the signature state; a release must never imply a
+public trust chain it does not carry. The source installer also supports an
+explicit, per-user self-signing workflow (`scripts/self-sign.ps1`):
 
 - Revit raises `Security - Unsigned Add-In` on first load, per add-in per year.
   On this machine that has been answered once per year and does not recur:
@@ -288,22 +297,18 @@ nothing in this repository audits it.
   `Signed Add-In`, once per certificate per machine. Zero dialogs additionally
   requires the publisher certificate in the machine's Trusted Publishers store
   before Revit starts.
-- **Signing with a certificate the machine does not trust is WORSE than not
-  signing.** Measured with a self-signed certificate: Revit went from loading
-  silently to `Security - Invalid Signature — this signed add-in has a security
-  problem`. Windows cannot chain it to a trusted root and Revit reads that as
-  tampering. Everything was reverted to unsigned.
+- **Signing with a certificate the machine does not trust is worse than not
+  signing.** Windows cannot build a chain and Revit can report an invalid
+  signature. The self-sign helper therefore creates/trusts the certificate only
+  after an explicit user action, signs the installed binaries, and verifies them.
+  A later source install reuses that already trusted certificate. The optional
+  uninstall-cleanup helper can remove that trust and private certificate
+  separately; uninstall never removes either silently.
 
-A certificate costs roughly USD 309 for the first year (SSL.com OV with cloud
-signing; a USB token requires a human per signature and breaks CI). Every free
-route was checked and rejected: they either sign with someone else's name, are
-restricted to individuals, or are invisible to Windows.
-
-**This is a release blocker for installing on a machine that is not ours**, and it
-is a decision with a price tag, not an oversight. Writing the Trusted Publishers
-step into the installer is deliberately deferred until there is a real certificate
-to test it against — it changes the machine's trust configuration and must be an
-explicit, opt-in step, never a silent side effect.
+A self-signed certificate is useful only on accounts that explicitly trust it; it
+does not establish publisher identity on a clean third-party machine. A publicly
+trusted code-signing CA remains a separate release-hardening decision. Until one
+is used, release notes say so and users verify the release SHA-256/attestation.
 
 ## 9. Known gaps, stated
 
@@ -314,6 +319,6 @@ explicit, opt-in step, never a silent side effect.
 - The confirmation token binds a request, not a resolved element set (§4).
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
-- No signing (§8).
-- Durable idempotency records may contain result data and have no automatic
-  retention policy (§3a).
+- No publicly trusted code-signing identity (§8).
+- Durable job/idempotency records may contain result data. Their compatible
+  default retains forever until the operator sets the time/size limits (§3a).

@@ -42,9 +42,15 @@ namespace Horizun.Revit.Commands
             // create two unrelated retry identities for one operation.
             JObject queuedArguments = (JObject)arguments.DeepClone();
             queuedArguments.Remove("idempotency_key");
-            Job job = Job.Start(tool);
-            if (string.IsNullOrWhiteSpace(job.Id))
-                return CommandResult.Fail("Could not create the persistent job record. Nothing was queued.");
+            // The record before the queue, and the record is not optional here. The old
+            // guard tested job.Id, which Job.Start assigned before anything could fail,
+            // so it never fired: an unwritable jobs directory produced a queued command
+            // and a job_id that addressed nothing.
+            Job job;
+            string admissionRefusal;
+            if (!AsyncJobAdmission.TryOpen(tool, out job, out admissionRefusal))
+                return CommandResult.Fail(admissionRefusal);
+
             string refusal;
             if (!AsyncQueue.TryAdd(new AsyncWork
             {

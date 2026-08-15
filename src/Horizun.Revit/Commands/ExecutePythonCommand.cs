@@ -461,14 +461,29 @@ namespace Horizun.Revit.Commands
                 };
 
                 Job asyncJob = null;
-                IdempotencyDecision decision = AsyncClaims.Claim(idempotencyKey, Name, fingerprint, () =>
+                IdempotencyDecision decision;
+                try
                 {
-                    // Inside the ledger's lock. Two requests carrying one key can be in
-                    // flight at once - that is what a retry IS - and creating the record
-                    // out here would let both of them make one.
-                    asyncJob = Job.Start(Name);
-                    return asyncJob.Id;
-                });
+                    decision = AsyncClaims.Claim(idempotencyKey, Name, fingerprint, () =>
+                    {
+                        // Inside the ledger's lock. Two requests carrying one key can be in
+                        // flight at once - that is what a retry IS - and creating the record
+                        // out here would let both of them make one.
+                        asyncJob = Job.Start(Name);
+                        return asyncJob.Id;
+                    });
+                }
+                catch (JobRecordException ex)
+                {
+                    // The record could not be created, so no job_id exists to hand back and
+                    // the script must not be queued: run_async reports ONLY through that
+                    // record. The key is left UNCLAIMED - Claim assigns _claims[key] only
+                    // after the factory returns - so an honest retry is still possible once
+                    // whatever broke the disk is fixed.
+                    Log.Warn("execute_python run_async REFUSED: " + ex.Message);
+                    return CommandResult.Fail(ex.Message + " The idempotency_key was NOT consumed; retry it once " +
+                                              "the job directory is writable.");
+                }
 
                 if (decision.Outcome == IdempotencyOutcome.Conflict)
                 {
@@ -614,7 +629,12 @@ namespace Horizun.Revit.Commands
             // Ambient when the async dispatcher already opened one for this work, so the
             // caller's job_id is the record the script's checkpoints land in. Null on the
             // synchronous path, where this opens its own exactly as before.
-            Job job = Job.Ambient ?? Job.Start(Name);
+            //
+            // BEST EFFORT here, and durable on the async path above. The difference is
+            // which channel carries the answer: a synchronous run replies over the pipe,
+            // so an unopenable record costs a progress log and nothing else, and failing
+            // the command over it would be the worse trade.
+            Job job = Job.Ambient ?? Job.StartBestEffort(Name);
             // Whoever OPENED the record closes it. On the async path the dispatcher owns
             // it and writes the result before the finish line; finishing here as well
             // would put two finish events in one record and land the result after the

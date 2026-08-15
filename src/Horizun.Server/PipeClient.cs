@@ -180,6 +180,56 @@ namespace Horizun.Server
             return best;
         }
 
+        /// <summary>
+        /// Delete discovery files left by Revit instances that no longer run, and return
+        /// how many. The add-in sweeps too, but only when an instance PUBLISHES - i.e.
+        /// when a Revit starts; kill Revit and call the server again without starting a
+        /// new one and the orphan sits there for the server to trip over (story 5.24).
+        /// So the server sweeps at startup, deciding WHICH files with the same shared rule
+        /// the add-in uses (DiscoverySweep), and owning only the IO. Never throws: hygiene
+        /// must not stop the server coming up.
+        /// </summary>
+        public static int SweepStaleDiscovery()
+        {
+            try
+            {
+                string dir = DiscoveryDir();
+                if (!Directory.Exists(dir)) return 0;
+
+                // selfPid -1: the server is not a Revit and owns no discovery file, so
+                // there is nothing of its own to skip.
+                List<string> stale = Horizun.Revit.Core.DiscoverySweep.StaleFiles(
+                    Directory.GetFiles(dir, "revit-*.json"), BarePidExists, -1);
+
+                int swept = 0;
+                foreach (string f in stale)
+                {
+                    try { File.Delete(f); swept++; }
+                    catch { /* one unreadable file must not stop the sweep */ }
+                }
+                return swept;
+            }
+            catch { return 0; }
+        }
+
+        /// <summary>
+        /// Bare pid existence - ANY process with that number, matching the add-in's sweep
+        /// rule (see DiscoverySweep). NOT IsRevitAlive: that also checks the name, and a
+        /// recycled pid owned by a non-Revit process would then delete a file the
+        /// conservative rule keeps. The test LivenessProbe steers it, so a sweep is
+        /// exercised deterministically without spawning processes.
+        /// </summary>
+        private static bool BarePidExists(int pid)
+        {
+            Func<int, bool> probe = LivenessProbe;
+            if (probe != null) return probe(pid);
+
+            if (pid <= 0) return false;
+            try { using (var p = System.Diagnostics.Process.GetProcessById(pid)) { } return true; }
+            catch (ArgumentException) { return false; }        // no such process
+            catch { return true; }                             // unreadable -> keep the file
+        }
+
         /// <summary>Every Revit that has published a discovery file, newest first.</summary>
         public static List<Discovered> ListAll()
         {

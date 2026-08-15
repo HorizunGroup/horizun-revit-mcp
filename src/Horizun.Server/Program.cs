@@ -27,6 +27,16 @@ namespace Horizun.Server
         // to be edited in two places is a version that will disagree with itself.
         private static readonly string ServerVersion = ReadVersion();
         private const int CommandTimeoutMs = 600000;
+        // horizun_health is the diagnostic command: its whole job is to answer fast, and
+        // an answer that does not come fast IS the diagnosis (Revit busy, or a modal up).
+        // Measured 2026-08-07: three health calls each waited the full 600 s behind a
+        // "New Project" dialog - 30 minutes to learn what one minute would have said.
+        // The ceiling is generous against warm-up (25 s measured on first call after
+        // add-in load) and still 20x faster than the general timeout. The add-in side
+        // now also detects a persistent modal and answers in seconds; this bound is the
+        // backstop for when that probe cannot see (health is queued behind long real
+        // work, or the probe never captured its facts).
+        private const int HealthTimeoutMs = 30000;
         // The version list and the negotiation rule live in ProtocolNegotiation.cs,
         // where they are golden-tested - see that file for why 2026-07-28 is absent.
 
@@ -52,6 +62,14 @@ namespace Horizun.Server
 
         private static OutboundWriter _writer;
         private static readonly InFlight _inFlight = new InFlight();
+        private static readonly McpSession _session = new McpSession();
+
+        /// <summary>
+        /// Set once the response channel has failed. The read loop stops on it, so no
+        /// further request - least of all a mutation - is accepted after the point where
+        /// its answer could no longer be delivered.
+        /// </summary>
+        private static int _responseChannelLost;
 
         private static int Main()
         {
@@ -61,9 +79,35 @@ namespace Horizun.Server
             // reading, and ReadLine() allocates the whole line before anyone can object.
             // See BoundedLineReader.cs.
             var stdin = new BoundedLineReader(Console.OpenStandardInput());
-            _writer = new OutboundWriter(stdout);
+
+            // LOSING STDOUT IS TERMINAL, and it has to be acted on rather than waited out.
+            // stdout and stdin are separate pipes: a client that has stopped reading its
+            // end of stdout has not closed stdin, so nothing in the read loop would ever
+            // find out. The old writer swallowed the error and reported success, and the
+            // server carried on accepting tool calls and running MUTATIONS whose results
+            // went nowhere. Cancel what is in flight and stop reading.
+            _writer = new OutboundWriter(stdout, reason =>
+            {
+                Log.Error("the response channel is gone (" + reason + "); cancelling in-flight work and " +
+                          "shutting down. Nothing further will be accepted: results could not be delivered, " +
+                          "and a mutation whose outcome cannot be reported must not be started.", null);
+                Volatile.Write(ref _responseChannelLost, 1);
+                try { _inFlight.CancelAll(); } catch (Exception ex) { Log.Warn("cancel-all after channel loss: " + ex.Message); }
+            });
 
             Log.Start();
+
+            // Orphaned discovery files - left by a Revit that crashed or was killed past a
+            // modal - are swept at startup. The add-in sweeps only when it publishes (when
+            // a Revit STARTS); a server that comes up after a crash, with no new Revit, is
+            // the exact moment nothing else would clean them (story 5.24).
+            try
+            {
+                int swept = PipeClient.SweepStaleDiscovery();
+                if (swept > 0) Log.Info("swept " + swept + " orphaned discovery file(s) at startup");
+            }
+            catch (Exception ex) { Log.Warn("discovery sweep at startup failed: " + ex.Message); }
+
             Log.Info("server " + ServerVersion + " up" +
                      (string.IsNullOrEmpty(TargetYear) ? "" : ", HORIZUN_REVIT_YEAR=" + TargetYear));
 
@@ -73,7 +117,22 @@ namespace Horizun.Server
             // to be asked while Revit is busy.
             while (true)
             {
+                // Checked before the read AND after it: the channel can die while this
+                // thread is blocked waiting for the next line, and the request that
+                // arrives next would then be accepted with nowhere to send its answer.
+                if (Volatile.Read(ref _responseChannelLost) != 0)
+                {
+                    Log.Error("stopping the read loop: the response channel was lost.", null);
+                    break;
+                }
+
                 BoundedLine incoming = stdin.ReadLine();
+
+                if (Volatile.Read(ref _responseChannelLost) != 0)
+                {
+                    Log.Error("a request arrived after the response channel was lost; it was NOT dispatched.", null);
+                    break;
+                }
 
                 if (incoming.Outcome == BoundedLineOutcome.Failed)
                 {
@@ -132,34 +191,17 @@ namespace Horizun.Server
                         continue;
                     }
 
-                    // JSON-RPC ids are a string, a number, or null. Anything else cannot be
-                    // echoed, and a reply the client cannot match to its request is not an
-                    // answer - it is a loose message on a stream where every other reply is
-                    // matched by id. So the request is refused as invalid and NOT dispatched:
-                    // better to do nothing and say so than to do the work and hand the result
-                    // to nobody. (Running it and answering `id: null` was the first version
-                    // of this, and it was worse: the work happened, and the caller was told
-                    // nothing it could act on.)
-                    JToken idToken = msg["id"];
-                    bool isNotification = idToken == null;
-                    object id = null;
-                    if (!isNotification)
+                    // MCP narrows JSON-RPC: ids are string/integer, never null, and a
+                    // requestor MUST NOT reuse one anywhere in this session. The session
+                    // owns that lifetime rule; Wire owns only one answer for one request.
+                    bool isNotification;
+                    object id;
+                    string idError;
+                    if (!_session.TryAcceptId(msg, out isNotification, out id, out idError))
                     {
-                        var idValue = idToken as JValue;
-                        bool usableId = idValue != null &&
-                                        (idValue.Type == JTokenType.String ||
-                                         idValue.Type == JTokenType.Integer ||
-                                         idValue.Type == JTokenType.Float ||
-                                         idValue.Type == JTokenType.Null);
-                        if (!usableId)
-                        {
-                            Log.Warn("request refused: 'id' was " + idToken.Type + ", not a string, number or null");
-                            _writer.TryError(null, -32600,
-                                "Invalid request: 'id' must be a string, a number, or null. Nothing was done - a " +
-                                "reply to this request could not be matched back to it.");
-                            continue;
-                        }
-                        id = idValue.Value;
+                        Log.Warn("request refused: " + idError);
+                        _writer.TryError(null, -32600, idError);
+                        continue;
                     }
 
                     // JSON-RPC 2.0 requires this field to be exactly "2.0". It was never
@@ -193,6 +235,14 @@ namespace Horizun.Server
                         continue;
                     }
 
+                    string lifecycleError;
+                    if (!_session.Allows(method, isNotification, out lifecycleError))
+                    {
+                        Log.Warn("message refused by MCP lifecycle: " + lifecycleError);
+                        if (!isNotification) _writer.TryError(id, -32600, lifecycleError);
+                        continue;
+                    }
+
                     JObject prms = msg["params"] as JObject;
 
                     // Cancellation is a notification and must be handled by the READER,
@@ -215,7 +265,13 @@ namespace Horizun.Server
                     try
                     {
                         JToken result = Handle(method, prms);
-                        if (!isNotification && result != null) _writer.TryReply(id, result);
+                        if (!isNotification && result != null)
+                        {
+                            bool delivered = _writer.TryReply(id, result);
+                            if (delivered && method == "initialize") _session.InitializeAnswerDelivered();
+                        }
+                        else if (isNotification && method == "notifications/initialized")
+                            _session.InitializedNotificationAccepted();
                     }
                     catch (McpError me)
                     {
@@ -310,8 +366,8 @@ namespace Horizun.Server
                 return;
             }
 
-            // One answer for THIS request. Not for this id: the id belongs to the client
-            // and it is free to send another request under it once this one is done.
+            // One answer for THIS request. McpSession separately owns the stronger MCP
+            // rule that an id is never reused during the lifetime of this connection.
             ReplySlot reply = _writer.Slot(id);
 
             // A progressToken means the caller wants to know it is still alive. We do not
@@ -365,9 +421,8 @@ namespace Horizun.Server
                                 "'" + toolName + "' finished without producing a result or an error. That is a bug " +
                                 "in this server. Nothing can be said about whether the work reached Revit.");
                         }
-                        // The id is the CLIENT's, and it gets it back the moment this
-                        // request is done - reusing it for the next call is ordinary
-                        // JSON-RPC, not a duplicate.
+                        // The in-flight slot is released for resource accounting. The
+                        // session still remembers the id and refuses lifetime reuse.
                         _inFlight.Finish(key);
                     }
                 }
@@ -665,7 +720,9 @@ namespace Horizun.Server
             JObject reply;
             try
             {
-                reply = PipeClient.Send(d, def.Command, args, CommandTimeoutMs, ct);
+                reply = PipeClient.Send(d, def.Command, args,
+                                        def.Command == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs,
+                                        ct);
             }
             catch (Exception ex)
             {

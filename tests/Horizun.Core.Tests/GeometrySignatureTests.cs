@@ -248,17 +248,120 @@ namespace Horizun.Core.Tests
             Assert.Contains(v.NotVerified, s => s.Contains("connectors"));
         }
 
+        // ---- Story 5.18: a guard that measured nothing must not say unchanged. ----------------
+        // The residual edge of the 5.11 lesson: two EMPTY captures compared to zero types,
+        // zero dimensions - and Status said "unchanged", the same word as a clean pass over
+        // a fully measured family. The same rule the live harness enforces for empty tables:
+        // an empty table is not agreement.
+
         [Fact]
-        public void Comparing_nothing_against_nothing_is_not_a_proof()
+        public void Comparing_nothing_against_nothing_is_unproven_not_unchanged()
         {
-            // An empty family on both sides: no dimensions compared. This must not read as
-            // a clean "unchanged" verdict with authority behind it.
             var v = GeometryCompare.Compare(new List<GeometrySignature>(), new List<GeometrySignature>());
 
             Assert.Equal(0, v.Unchanged);
             Assert.False(v.AnyChange);
-            Assert.Equal("unchanged", v.Status);   // nothing was found to differ...
-            Assert.Contains("0 comparison(s)", v.Summary());   // ...and the summary says how much was checked
+            Assert.True(v.NothingCompared);
+            Assert.Equal("unproven", v.Status);
+            Assert.Contains("NOTHING was compared", v.Summary());
+            Assert.DoesNotContain("none changed", v.Summary());
+        }
+
+        [Fact]
+        public void A_type_whose_every_dimension_failed_to_read_is_unproven_too()
+        {
+            // Both sides present, zero comparisons made: "unchanged_where_measured" would
+            // claim a place was looked at, and none was.
+            GeometrySignature Broken()
+            {
+                var s = new GeometrySignature { TypeName = "T", Connectors = null };
+                s.Add(GeoDimension.Unmeasured("solid_volume", "the geometry read threw"));
+                return s;
+            }
+            var v = GeometryCompare.Compare(new[] { Broken() }, new[] { Broken() });
+
+            Assert.Equal(0, v.Unchanged);
+            Assert.Equal("unproven", v.Status);
+            Assert.Contains("could not be measured", v.Summary());
+        }
+
+        [Fact]
+        public void A_type_that_vanished_still_beats_unproven()
+        {
+            // Zero dimension comparisons, but a type disappearing IS an observation:
+            // "changed" wins, exactly as before.
+            var v = GeometryCompare.Compare(new[] { Sig("A", 1) }, new List<GeometrySignature>());
+
+            Assert.True(v.NothingCompared);
+            Assert.Equal("changed", v.Status);
+        }
+
+        [Fact]
+        public void One_real_comparison_is_enough_to_leave_unproven()
+        {
+            // Connectors compared count as a comparison: something WAS looked at.
+            var before = new GeometrySignature { TypeName = "T", Connectors = new List<string> { "a" } };
+            before.Add(GeoDimension.Unmeasured("solid_volume", "read threw"));
+            var after = new GeometrySignature { TypeName = "T", Connectors = new List<string> { "a" } };
+            after.Add(GeoDimension.Unmeasured("solid_volume", "read threw"));
+
+            var v = GeometryCompare.Compare(new[] { before }, new[] { after });
+
+            Assert.False(v.NothingCompared);
+            Assert.Equal("unchanged_where_measured", v.Status);
+        }
+    }
+
+    // Story 5.17: every dimension names its unit. The numbers leave the Revit API in
+    // internal units (decimal feet) and were published bare; a human read 656.17 off
+    // a 15 cm box and had no way to know it was feet - or that the box was measuring
+    // the template's reference planes, which is the other half of the story, fixed
+    // where the capture happens.
+    public class GeoUnitsTests
+    {
+        [Theory]
+        [InlineData("solid_volume", "ft3")]
+        [InlineData("surface_area", "ft2")]
+        [InlineData("bbox_x", "ft")]
+        [InlineData("bbox_y", "ft")]
+        [InlineData("bbox_z", "ft")]
+        [InlineData("solid_count", "count")]
+        [InlineData("connector_count", "count")]
+        public void Every_known_dimension_names_its_unit(string dimension, string unit)
+        {
+            Assert.Equal(unit, GeoUnits.Of(dimension));
+        }
+
+        [Fact]
+        public void A_type_qualified_dimension_resolves_by_its_suffix()
+        {
+            // Change rows arrive as "TypeName.dimension", and a type name may itself
+            // carry dots - the dimension is whatever follows the last one.
+            Assert.Equal("ft3", GeoUnits.Of("SAMPLE-JUNCTION-15x15x10.solid_volume"));
+            Assert.Equal("ft", GeoUnits.Of("Caja 1.5x2.5.bbox_z"));
+        }
+
+        [Fact]
+        public void An_unknown_dimension_answers_unknown_never_a_guess()
+        {
+            Assert.Equal("unknown", GeoUnits.Of("some_future_dimension"));
+            Assert.Equal("unknown", GeoUnits.Of(null));
+            Assert.Equal("unknown", GeoUnits.Of(""));
+        }
+
+        [Fact]
+        public void A_described_change_carries_the_unit()
+        {
+            var c = new GeoChange { Dimension = "T.solid_volume", Before = 0.0794, After = 0.15 };
+            Assert.EndsWith("ft3", c.Describe());
+        }
+
+        [Fact]
+        public void A_change_with_unknown_unit_stays_bare_rather_than_guessing()
+        {
+            var c = new GeoChange { Dimension = "T.mystery", Before = 1.0, After = 2.0 };
+            Assert.DoesNotContain("unknown", c.Describe());
+            Assert.EndsWith("2", c.Describe());
         }
     }
 }

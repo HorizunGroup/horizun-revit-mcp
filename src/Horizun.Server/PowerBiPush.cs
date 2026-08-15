@@ -28,7 +28,9 @@ namespace Horizun.Server
         public static JObject Handle(JObject request)
         {
             using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(90) })
-                return Handle(request, client, new DurableCommandLedger(), Environment.GetEnvironmentVariable);
+                return Handle(request, client,
+                    new DurableCommandLedger(retentionLog: message => Log.Info(message)),
+                    Environment.GetEnvironmentVariable);
         }
 
         internal static JObject Handle(JObject request, HttpClient client, DurableCommandLedger ledger,

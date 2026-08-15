@@ -9,6 +9,10 @@ on:
     - cron: "23 4 * * 1"
 
 permissions:
+  # CodeQL v4 queries the workflow run while publishing its SARIF results.
+  # Declaring any permissions makes omitted scopes "none", so retain this
+  # read-only scope explicitly.
+  actions: read
   contents: read
   security-events: write
 

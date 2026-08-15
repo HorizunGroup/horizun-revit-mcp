@@ -61,6 +61,7 @@
          malformed setting read as permission to delete, and a size cap dropping the
          newest receipt instead of the oldest. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptRetention.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
@@ -73,6 +74,12 @@
          safe to point at a mutation. Both shipped with no test at all. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncQueue.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" />
+    <!-- Job.cs reports a record it could not write through Log, and the admission rule
+         both async entry points share is decided in AsyncJobAdmission. Both are
+         Revit-free; the commands that call them are not, which is exactly why the rule
+         was extracted to where it can be proved. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Log.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncJobAdmission.cs" />
     <!-- The single data root both halves resolve. Job.cs asks it where to write, and
          the property under test is that the SERVER and REVIT reach the same folder
          even when their %LOCALAPPDATA% differ - which is provable here and nowhere
@@ -100,15 +107,51 @@
          strings and four booleans, and they lived in two large command files in two
          versions that had quietly diverged. Split out so the whole table is here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\OpenDecision.cs" />
+    <!-- How on_open_dialog parses (5.22). The enum and the parse rule are Revit-free;
+         the watcher that acts on the answer needs a Revit and is not here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\OpenDialogPolicy.cs" />
+    <!-- Which files horizun_file_info reads (5.20). The directory listing is IO and
+         injected; the refusal, the union, the dedup and the cap are proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FileInfoPaths.cs" />
     <!-- And whether closing one would throw work away. The tri-state is the point:
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CloseDecision.cs" />
+    <!-- When a probed modal dialog may be DECLARED (5.19). The probe needs Win32;
+         the declaration rule is arithmetic over strings, and the states that
+         matter - a flapping title, a dialog replaced mid-count - are here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModalSighting.cs" />
+    <!-- Which discovery files are orphaned (5.24). The rule the add-in and the
+         server share, so the states that matter - a legacy name that must never
+         be touched, a recycled pid that must keep its file - are proved once. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" />
+    <!-- And how a close reaches a document Revit will let it close (5.13). The
+         states that matter - every other document detached, no other document at
+         all - are exactly the ones a live Revit will not produce on demand. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ActivationChoice.cs" />
     <!-- How much of a model an answer is about. The READING needs Revit and lives in
          DocumentVisibility.cs; the arithmetic and every sentence it reports are here,
          including the state a real Revit will not produce on request - the workset
          collector throwing, which is reported as incomplete rather than fine. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentVisibilityCoverage.cs" />
+    <!-- The save evidence family_apply stands on (5.12). The failure it fixes only
+         shows while another handle holds the file with write access - which a test
+         can do and a code review cannot. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FileFacts.cs" />
+    <!-- Whether a planned write would move the parameter (5.14). The before-read
+         needs Revit; the tri-state comparison is JToken arithmetic, and the two
+         ways a boolean would lie - unknown collapsing into "it matches", and a
+         unit string judged before Revit parses it - are pinned here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WouldChange.cs" />
+    <!-- Who else is talking to this Revit (5.16). The pid comes from the pipe and
+         needs Windows; the window arithmetic, the minus-one rule and the
+         lower-bound warning for an unreadable pid are proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClientPresence.cs" />
+    <!-- Uploaded to ACC, or still pending? (5.15). The IO is the command's; the
+         decode, the pair extraction and the name matching are proved here against
+         synthetic WAL bytes shaped like the real ones - escaped JSON, NULs
+         interleaved - because that shape is what the field script parsed. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AccUploadWal.cs" />
   </ItemGroup>
 
   <ItemGroup>
