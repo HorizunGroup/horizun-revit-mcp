@@ -96,9 +96,8 @@ Paste one of these into the agent you already have open, in any folder:
 ```
 Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
 CLAUDE.md, and follow the install procedure there. Install and verify the binaries,
-then print the exact user-scope registration command. Do not edit the active
-Claude process's configuration; tell me to close it and run the command in a
-fresh shell.
+then confirm the automatic completion status. Do not edit the active Claude
+process's configuration; let the installed helper register after Claude exits.
 ```
 
 **Codex**
@@ -106,17 +105,17 @@ fresh shell.
 ```
 Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
 AGENTS.md, and follow the install procedure there. Install and verify the binaries,
-then print the exact registration command. Do not edit the active Codex process's
-configuration; tell me to close it and run the command in a fresh shell.
+then confirm the automatic completion status. Do not edit the active Codex
+process's configuration; let the installed helper register after Codex exits.
 ```
 
 Claude Code reads `CLAUDE.md` (which imports [AGENTS.md](AGENTS.md)); Codex reads
 [AGENTS.md](AGENTS.md) directly. Either way the agent checks the prerequisites,
 builds from this public source against each Revit version installed on the
 machine, installs the matching add-in binaries and MCP server, and verifies their
-commit and SHA-256. Registration is a deliberate second phase after the active
-client has closed; otherwise that client can overwrite its configuration on exit.
-Revit must be closed. No prebuilt executable is downloaded by this path.
+commit and SHA-256. Registration remains a safe internal second phase, but the
+helper completes it automatically after the active client closes. Revit must be
+closed. No prebuilt executable is downloaded by this path.
 
 ### Prebuilt release installer — optional
 
@@ -132,25 +131,28 @@ build is not signed by a publicly trusted code-signing CA, so Windows/Revit may
 show a publisher warning; verify the SHA-256 before running it.
 
 The setup installs every supported Revit payload present in the release and the
-MCP server. It also installs Start-menu helpers to register or verify Horizun in
-Codex and Claude. Registration is explicit and unchecked by default: the helper
-makes timestamped backups, preserves all other MCP entries and refuses to edit a
-client that is still running and could overwrite its configuration. An advanced
-pre-uninstall helper can remove only the `horizun-revit` client entries and,
-only when explicitly selected, purge local state or the self-signing trust.
+MCP server. It also completes Codex/Claude registration automatically. If either
+client is open, it does **not** edit underneath it: a user-level helper waits for
+the client to close, makes timestamped backups, preserves every other MCP entry,
+registers Horizun, verifies the configuration and completes `horizun_health`
+after the first Revit start. Its durable status is
+`%LOCALAPPDATA%\Horizun\install-status.json`; Start-menu helpers can resume or
+inspect it. An advanced pre-uninstall helper can remove only the
+`horizun-revit` client entries and, only when explicitly selected, purge local
+state or self-signing trust.
 
-For a command-line installation without Git or an SDK, download the repository's
-small bootstrap and let it select the latest release. It downloads the setup and
-`SHA256SUMS.txt` from the same GitHub release, verifies the complete SHA-256, and
-only then launches the installer:
+For a command-line installation without Git or an SDK, paste **one command**.
+It selects the latest release, downloads the setup and `SHA256SUMS.txt` from that
+same GitHub release, verifies the complete SHA-256, installs quietly, and safely
+finishes or schedules client registration and first-start health verification:
 
 ```powershell
-$p = Join-Path $env:TEMP 'horizun-install-release.ps1'
-Invoke-WebRequest 'https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1' -OutFile $p
-powershell -ExecutionPolicy Bypass -File $p
+irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1 | iex
 ```
 
-Pass `-Version vX.Y.Z` to pin a specific release instead of following `latest`.
+Download the script first and pass `-Version vX.Y.Z` when a pinned release or
+`-Interactive` Setup wizard is required. Quiet, latest and automatic client
+completion are the defaults.
 
 ### Build from source manually
 
@@ -174,16 +176,17 @@ for each of those years and the MCP server, installs both, and reads every
 installed binary back to prove it landed. A build failure changes nothing; a
 failure after that rolls back and tells you the state you are in.
 
-**The installer prints the exact path to register — use that one.** It is
+Automatic completion normally handles registration. **If manual recovery is
+needed, use the exact path printed by the installer.** It is
 already expanded for your machine, which matters: `%LOCALAPPDATA%` is expanded
 by `cmd.exe` and **not** by PowerShell, so a config written with the variable
 silently points nowhere.
 
 ```powershell
-# Claude Code — persistent for this user, from a fresh shell after closing Claude
+# Manual fallback: persistent for this user, after closing Claude
 claude mcp add --scope user horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 
-# Codex — from a fresh shell after closing Codex
+# Manual fallback: after closing Codex
 codex mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
 ```
 

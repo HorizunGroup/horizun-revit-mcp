@@ -17,26 +17,20 @@
 ; FAILS is reported as failed and rolled back to whatever was there before.
 ;
 ; Nothing outside Horizun's own folders is touched: no other add-in is
-; modified, and no MCP client configuration is rewritten behind the user's
-; back — the final page shows the one command that registers it.
+; modified. Client registration is completed only while that client is closed;
+; otherwise a per-user helper records the pending work and waits safely.
 ;
 ; ---------------------------------------------------------------------------
-; NOT DONE HERE YET, and it is the piece that actually silences Revit's
-; security dialog:
+; RELEASE SIGNING AND REVIT TRUST:
 ;
 ;   Signing the DLL is NOT enough. A signed add-in from a publisher the machine
 ;   does not know still raises a dialog — it changes from the red "Unsigned
 ;   Add-In" to "Signed Add-In" with an Always Load button, shown once per
 ;   certificate per machine instead of per binary. To get NO dialog at all on a
-;   clean machine, the publisher's public certificate must be in the machine's
-;   Trusted Publishers store BEFORE Revit starts:
-;
-;       certutil.exe -addstore TrustedPublisher horizun.cer
-;
-;   That is a change to the machine's trust configuration. It belongs in this
-;   installer as an explicit, opt-in step the person installing agrees to — not
-;   as a silent side effect — and it cannot be written until there is a real
-;   certificate to test it with. Deliberately absent rather than written blind.
+;   clean machine, the release must carry a valid public Authenticode chain.
+;   Stable CI signs the five add-ins, server exe/dll and this wrapper, and then
+;   rechecks them on a clean hosted Windows runner. This installer never imports
+;   a private root certificate or weakens the machine's trust policy.
 ; ---------------------------------------------------------------------------
 ; ----------------------------------------------------------------------------
 
@@ -102,6 +96,12 @@ Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
 Name: "{group}\Configurar Horizun en Codex y Claude"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
   WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Completar y verificar instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Auto"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Estado de instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -StatusOnly"; \
+  WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
@@ -115,19 +115,25 @@ Name: "{group}\Limpieza avanzada antes de desinstalar"; Filename: "{sys}\Windows
 ; going to be installed by people who were told it is safe.
 Name: "openhub"; Description: "Ver Horizun Hub - las herramientas y flujos construidos sobre este puente"; \
   Flags: unchecked
-; Explicit and unchecked: client configuration belongs to the user. The helper
-; makes timestamped backups, preserves every other MCP entry and refuses to edit
-; a running Codex/Claude process because those clients can overwrite the file.
-Name: "registerclients"; Description: "Registrar Horizun en Codex y Claude (ciérrelos primero; conserva y respalda los otros MCP)"; \
-  Flags: unchecked
 
 [Run]
 Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
   Flags: shellexec nowait postinstall skipifsilent; Tasks: openhub
+; Complete the client side automatically. If Codex or Claude is open, the helper
+; records the pending work and waits outside Setup; it never writes under a live
+; client. It also verifies the installed manifest and finishes horizun_health
+; after the first Revit start. The process is hidden because every durable result
+; is written to %LOCALAPPDATA%\Horizun\install-status.json.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
-  Description: "Registrar Horizun en Codex y Claude"; WorkingDir: "{app}\server\client-tools"; \
-  Flags: postinstall skipifsilent waituntilterminated; Tasks: registerclients
+  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Auto} {param:HORIZUNNOLIVE|}"; \
+  WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait; Check: ShouldCompleteInstall
+
+[UninstallRun]
+; A pending first-start verification must not survive removal with a command that
+; points at files the uninstaller is about to delete.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -CancelPending"; \
+  Flags: runhidden waituntilterminated skipifdoesntexist
 
 [Code]
 const
@@ -145,6 +151,11 @@ var
   ServerInstalled: Boolean;
   ServerFailure: String;
   UninstallFailures: String;
+
+function ShouldCompleteInstall(): Boolean;
+begin
+  Result := CompareText(ExpandConstant('{param:HORIZUNCLIENT|Auto}'), 'None') <> 0;
+end;
 
 procedure InitYears;
 begin

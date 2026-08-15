@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year; security gates green; signing status stated exactly | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year; security gates green; payload and installer signed by a publicly trusted publisher | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -33,11 +33,14 @@ platform controls are on.
 
 Signing and public trust are separate facts. A self-signed or privately trusted
 certificate can prove byte identity in a controlled environment but does not make
-Windows trust the publisher on a clean machine. Every release states whether the
-payload and wrapper are unsigned, self-signed, or signed by a publicly trusted CA.
-Until a public trust chain exists, users can see publisher prompts and must verify
-the published SHA-256. Stable means *matrix-approved*; it never implies a trust
-chain that the release does not actually carry.
+Windows trust the publisher on a clean machine. Preview builds state whether the
+payload and wrapper are unsigned, self-signed, or publicly trusted. A **stable tag
+has no unsigned exception**: CI requires a publicly trusted, non-self-signed
+Authenticode identity, signs the staged Horizun binaries and the installer wrapper,
+timestamps them, re-validates public trust on a disposable Microsoft-hosted Windows
+runner, and verifies the installed bytes without `-AllowUnsigned`.
+Missing identity, signature, timestamp or trust fails publication before a release
+can become `latest`.
 
 ## Versioning
 
@@ -111,6 +114,9 @@ one is currently checkable rather than a matter of opinion:
       window written into the CHANGELOG.
 - [ ] Two maintainers with release rights.
 - [ ] GitHub secret scanning and push protection enabled on the public repository.
+- [ ] Payload and installer carry a timestamped, publicly trusted Authenticode
+      signature, and the stable tag pipeline verifies the installed signatures
+      without an unsigned exception.
 
 Until every box is ticked, this ships as 0.x and says so. A 1.0 that means "we
 think it is good now" is the claim this project exists not to make.
