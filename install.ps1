@@ -211,7 +211,7 @@ try {
         Get-ChildItem $serverBin -File | ForEach-Object { Copy-Item $_.FullName $serverStage -Force }
         $clientTools = Join-Path $serverStage 'client-tools'
         New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
-        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
+        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
             Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
         }
         Write-Host "    staged  server"

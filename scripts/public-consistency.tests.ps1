@@ -112,6 +112,12 @@ if ($sourceInstaller -notmatch $clientToolsCopy -or
     $sourceInstaller -notmatch 'Move-Item -LiteralPath \$manifestTemp -Destination \$installedManifest') {
     Fail 'the source installer no longer installs the deferred helpers and their on-disk identity manifest transactionally'
 }
+$stopHelper = Get-Content (Join-Path $repo 'scripts\stop-installed-server.ps1') -Raw
+if ($stopHelper -notmatch 'GetFullPath\(\$process\.Path\).*?-ieq \$target' -or
+    $stopHelper -notmatch "Get-Process -Name 'horizun-mcp'" -or
+    $stopHelper -match 'taskkill|Stop-Process -Name') {
+    Fail 'the update helper no longer limits process termination to the exact installed server path'
+}
 
 # Resolve every local link that will appear in the public repository. Anchors are
 # deliberately ignored here; missing files are the high-cost publication defect.

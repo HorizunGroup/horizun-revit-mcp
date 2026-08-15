@@ -283,9 +283,26 @@ begin
   if (not FileExists(Staging + '\{#AppExeName}')) or (not FileExists(Staging + '\horizun-mcp.dll')) then
   begin DelTree(Staging, True, True, True); ServerFailure := 'the staged server is incomplete'; exit; end;
 
+  { Claude/Codex legitimately keeps the currently configured stdio server open.
+    Revit is already known to be closed, so no Revit-side command can be in
+    flight. Stop ONLY processes whose executable path is this exact installed
+    server; never stop the client and never use taskkill by image name. }
+  if DirExists(Dst) then
+  begin
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -File "' + Staging + '\client-tools\stop-installed-server.ps1"' +
+      ' -ServerPath "' + Dst + '\{#AppExeName}"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+    begin
+      DelTree(Staging, True, True, True);
+      ServerFailure := 'the existing installed server could not be stopped safely';
+      exit;
+    end;
+  end;
+
   if DirExists(Dst) then
     if not RenameFile(Dst, Backup) then
-    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is in use'; exit; end;
+    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is still in use after the bounded stop'; exit; end;
   if not RenameFile(Staging, Dst) then
   begin
     if DirExists(Backup) then RenameFile(Backup, Dst);

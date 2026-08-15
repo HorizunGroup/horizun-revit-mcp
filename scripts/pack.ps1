@@ -133,6 +133,7 @@ Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\verify-clients.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\verify-install.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\complete-install.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Step '  staged safe Codex/Claude registration, deferred completion and verification helpers'
