@@ -88,16 +88,18 @@ if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
 if ($ci -notmatch 'verify-release\.ps1 -Installed -AllowUnsigned -InstallResult') {
     Fail 'CI no longer verifies the exact per-run install result with an explicit signing policy'
 }
-if ($ci -notmatch 'SIGNING_CERT_THUMBPRINT' -or $ci -notmatch 'Stable release contains unsigned, invalid, self-signed or untimestamped') {
-    Fail 'stable tags no longer fail closed on missing or non-public Authenticode signing'
+if ($ci -notmatch 'SIGNING_CERT_THUMBPRINT' -or
+    $ci -notmatch '\.Major -ge 1' -or
+    $ci -notmatch 'Horizun 1\.0\+ release contains unsigned, invalid, self-signed or untimestamped') {
+    Fail '1.0+ tags no longer fail closed on missing or non-public Authenticode signing'
 }
 if ($ci -notmatch 'runs-on: windows-latest' -or
     $ci -notmatch 'not publicly trusted on a clean Windows runner' -or
     $ci -notmatch 'needs: \[package, public-signature, stable-release-evidence\]') {
     Fail 'stable publication no longer proves public trust on a clean hosted Windows runner'
 }
-if ($ci -notmatch '(?s)startsWith\(github\.ref.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
-    Fail 'installed release verification no longer removes the unsigned exception for stable tags only'
+if ($ci -notmatch '(?s)requiresPublicSignature.*?\.Major -ge 1.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
+    Fail 'installed release verification no longer allows unsigned only before 1.0'
 }
 
 $readme = Get-Content (Join-Path $repo 'README.md') -Raw
@@ -111,7 +113,10 @@ $codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
 if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code signing provided by SignPath\.io, certificate\s+by SignPath Foundation') {
     Fail 'README no longer exposes the required SignPath code-signing statement and policy'
 }
-if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or $signingPolicy -notmatch 'GitHub-hosted runners' -or $signingPolicy -notmatch 'docs/PRIVACY\.md') {
+if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or
+    $signingPolicy -notmatch 'Version 1\.0\.0 and every later release is blocked' -or
+    $signingPolicy -notmatch 'GitHub-hosted runners' -or
+    $signingPolicy -notmatch 'docs/PRIVACY\.md') {
     Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'
 }
 if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {

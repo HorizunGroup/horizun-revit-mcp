@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year; security gates green; payload and installer signed by a publicly trusted publisher | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year and security gates green. A disclosed 0.x release may be unsigned; 1.0+ requires a publicly trusted publisher | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -33,14 +33,16 @@ platform controls are on.
 
 Signing and public trust are separate facts. A self-signed or privately trusted
 certificate can prove byte identity in a controlled environment but does not make
-Windows trust the publisher on a clean machine. Preview builds state whether the
-payload and wrapper are unsigned, self-signed, or publicly trusted. A **stable tag
-has no unsigned exception**: CI requires a publicly trusted, non-self-signed
-Authenticode identity, signs the staged Horizun binaries and the installer wrapper,
-timestamps them, re-validates public trust on a disposable Microsoft-hosted Windows
-runner, and verifies the installed bytes without `-AllowUnsigned`.
-Missing identity, signature, timestamp or trust fails publication before a release
-can become `latest`.
+Windows trust the publisher on a clean machine. Every release states whether the
+payload and wrapper are unsigned, self-signed, or publicly trusted. By owner
+decision, 0.9.0 may become `latest` while correctly disclosed as unsigned; its
+manifest, SBOM, SHA-256 checksums, provenance, installed-package verification and
+complete live matrix remain release gates. For **1.0.0 and later**, CI requires a
+publicly trusted, non-self-signed Authenticode identity, signs the staged Horizun
+binaries and installer wrapper, timestamps them, re-validates public trust on a
+disposable Microsoft-hosted Windows runner, and verifies the installed bytes
+without `-AllowUnsigned`. Missing identity, signature, timestamp or trust then
+fails publication.
 
 The preferred no-cost public identity is SignPath Foundation. Its governance,
 team roles, privacy statement and origin requirements are defined in the

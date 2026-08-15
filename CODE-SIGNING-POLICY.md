@@ -1,17 +1,18 @@
 # Code signing policy
 
 Horizun Revit MCP is free and open-source software released under Apache-2.0.
-Stable Windows releases are intended to use **free code signing provided by
+Windows releases from 1.0.0 onward must use **free code signing provided by
 [SignPath.io](https://signpath.io/), certificate by
 [SignPath Foundation](https://signpath.org/)**.
 
 ## Current status
 
 The SignPath Foundation application was submitted on 2026-08-15 and is awaiting
-review. This policy does not claim that an existing artifact is signed. The
-latest public release predates the application and its download page identifies
-it as unsigned. A release may only claim SignPath signing after the public
+review. Horizun 0.9.0 is intentionally released unsigned and its download page
+must identify it that way. Windows and Revit may therefore display an unknown
+publisher warning. A release may only claim SignPath signing after the public
 signature gate has verified the exact published bytes on a clean Windows runner.
+Version 1.0.0 and every later release is blocked unless that gate passes.
 
 ## Scope
 
@@ -39,15 +40,18 @@ re-signed as Horizun binaries.
   signed package, but it is not an origin for SignPath signing input.
 - SignPath origin verification binds each request to the repository, workflow,
   commit and GitHub artifact.
-- Every stable release requires a human signing approval and a complete live
-  verification matrix for Revit 2023 through 2027.
+- Every release requires a complete live verification matrix for Revit 2023
+  through 2027. Releases from 1.0.0 onward additionally require human signing
+  approval.
 - CI generates a CycloneDX SBOM, full SHA-256 manifest, release checksums and
   GitHub build-provenance attestations.
 - A disposable GitHub-hosted Windows runner verifies Authenticode public trust,
   trusted timestamps and the absence of self-signed own binaries before
   publication.
-- A failed signature, timestamp, install, rollback or live test blocks release.
-  There is no unsigned exception for a stable tag.
+- A failed install, rollback or live test blocks every release. From 1.0.0 onward,
+  a failed or missing signature or timestamp also blocks release and there is no
+  unsigned exception. The only temporary exception is a correctly disclosed 0.x
+  artifact whose own binaries are all verified as unsigned on a clean runner.
 
 The detailed mechanical gates are documented in
 [`docs/RELEASE-POLICY.md`](docs/RELEASE-POLICY.md).

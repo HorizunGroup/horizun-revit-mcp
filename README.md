@@ -35,13 +35,11 @@ deploys a different add-in binary compiled against each installed year's own API
 It also installs the MCP server and reports exactly which years succeeded. No Git
 or .NET SDK is required for this path.
 
-The release carries `SHA256SUMS.txt` and a complete payload manifest. The latest
-public release predates the SignPath Foundation application submitted on
-2026-08-15 and is not signed by a publicly trusted code-signing CA, so
-Windows/Revit may show a
-publisher warning; verify the SHA-256 before running it. Future stable releases
-must satisfy the public signature gate in the
-[code signing policy](CODE-SIGNING-POLICY.md) before publication. The intended
+The release carries `SHA256SUMS.txt` and a complete payload manifest. Horizun
+0.9.0 is intentionally distributed without a publicly trusted code-signing CA,
+so Windows/Revit may show a publisher warning; verify the SHA-256 before running
+it. Public signing becomes a mandatory release gate at 1.0.0 under the
+[code signing policy](CODE-SIGNING-POLICY.md). The intended
 open-source service is: **Free code signing provided by SignPath.io, certificate
 by SignPath Foundation.** The application is awaiting review; this is not a
 claim that the current download is already signed.

@@ -11,11 +11,11 @@ Read [AGENTS.md](../AGENTS.md) first — it loads the project rules every sessio
 
 ## EPIC 0 — Publicly trusted installation *(reopened 2026-08-14)*
 
-The earlier decision not to acquire a public signing identity was superseded by
-the requirement that installation reach 100/100 before production. The software
-side now fails closed: a stable tag cannot be built or verified with an unsigned
-or self-signed payload. What remains in 0.1 is an external identity/procurement
-step, not a code bypass.
+The public signing identity remains required for 1.0.0. By owner decision,
+0.9.0 may ship with an explicit unsigned disclosure while the SignPath
+application is reviewed. The software side fails closed from 1.0 onward: those
+tags cannot be built or verified with an unsigned or self-signed payload. What
+remains in 0.1 is an external identity/procurement step, not a 1.0 code bypass.
 
 What was MEASURED on 2026-08-04, because it corrects an earlier wrong conclusion
 in this very file's history: Revit's "Always Load" trust is keyed to the **binary**,
@@ -31,10 +31,10 @@ That leaves exactly three honest options, and no fourth:
 
 | ID | Story | Size | Dep |
 |----|-------|------|-----|
-| 0.1 ⭐ | Acquire a publicly trusted Authenticode identity (OV certificate or an eligible managed signing service), provision its private key only on the release runner, and set `SIGNING_CERT_THUMBPRINT`. The tag pipeline signs payload + wrapper and refuses unsigned/self-signed stable releases | M | — |
+| 0.1 ⭐ | Acquire a publicly trusted Authenticode identity (OV certificate or an eligible managed signing service), provision its private key only on the release runner, and set `SIGNING_CERT_THUMBPRINT`. The tag pipeline signs payload + wrapper and refuses unsigned/self-signed releases from 1.0 onward | M | — |
 | 0.2 ⭐ | **Self-sign, free**: `New-SelfSignedCertificate` + `Set-AuthenticodeSignature` (both already on Windows), certificate into Trusted Publishers, DLLs signed at install. Ends the dialog **permanently on machines that trust that certificate** — which is the team's own machines. Trust moves to the certificate, so a rebuild no longer re-prompts | M | — |
 | 0.3 ◐ | **AUTOMATED HALF DONE 2026-08-04** — `install.ps1` now re-signs the fresh binaries automatically when this user's certificate already exists and is trusted (no new trust is ever minted as a side effect; without a cert it prints the one command and WHY it will not run it for you). The human failure this removes: every install re-armed the dialog because re-signing was a separate step people forgot. The practice half stands: on a daily-use machine, install releases, do not rebuild | S | 0.2 |
-| 0.4 | Verify 0.9.0 on a clean machine that has never trusted Horizun: installer publisher valid, no unknown-publisher warning, all Revit payloads validly signed, one-paste setup, deferred CLI registration, and first `horizun_health` green | S | 0.1 |
+| 0.4 | Before 1.0.0, verify on a clean machine that has never trusted Horizun: installer publisher valid, no unknown-publisher warning, all Revit payloads validly signed, one-paste setup, deferred CLI registration, and first `horizun_health` green | S | 0.1 |
 
 0.2 remains useful for source builds on controlled machines, but it cannot satisfy
 0.1 or the stable-release gate. A public identity exists so that a clean third-party
@@ -396,7 +396,7 @@ review's whole diagnosis came about.
 | 5.7 ◐ | **FAIL-CLOSED PIPELINE DONE 2026-08-14; identity pending (0.1).** Stable tags require `SIGNING_CERT_THUMBPRINT`, sign the own exe/dll payload before wrapping, sign the setup afterwards, recompute and verify the manifest, reject unsigned/self-signed files, and remove `-AllowUnsigned` from installed release verification. Preview branches remain buildable for testing. Procurement/provisioning of the public identity and clean-machine proof remain external | M | 0.1 |
 | 5.8 ✅ | **NEGOTIATION SLICE DONE 2026-08-04** (golden-tested; 2026-07-28 RC guarded by a failing test). Remaining: full adapter, SDK conformance, client matrix, execution.taskSupport. Isolate the protocol behind a `ProtocolAdapter` independent of the Revit domain: conformance tests against the official SDK and MCP Inspector, golden JSON-RPC request/response tests, explicit per-version negotiation, client compatibility matrix, schema deprecation policy. Add `execution.taskSupport`. Do this BEFORE adopting 2026-07-28, which is still RC | M | — |
 | 5.9 ✅ | **DONE 2026-08-04.** Public governance: issue templates (bug / proposal / compatibility) that demand Revit version+build+language, Horizun version, MCP client, tool, document kind, expected vs observed, sanitised logs. Discussions, public roadmap and milestones, labels, review SLA, a second maintainer with release rights, ADRs | S | — |
-| 5.10 ✅ | **DONE 2026-08-04** — `docs/RELEASE-POLICY.md`. Release channels and the road to 1.0: `stable` (signed + matrix approved), `preview`, `validation-only` (no new binaries). Publish SemVer policy, schema compatibility, deprecation window, config migration, back-version support, and an explicit definition of "production ready" | M | 5.5, 5.7 |
+| 5.10 ✅ | **DONE 2026-08-04; amended 2026-08-15** — `docs/RELEASE-POLICY.md`. Release channels and the road to 1.0: `stable` (0.x may be disclosed unsigned; 1.0+ signed; matrix approved), `preview`, `validation-only` (no new binaries). Publish SemVer policy, schema compatibility, deprecation window, config migration, back-version support, and an explicit definition of "production ready" | M | 5.5, 5.7 |
 
 ### What the review got right, verified in this tree
 

@@ -293,24 +293,27 @@ jobs:
           & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
           if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
 
-      - name: Sign stable payload, compile installer, and sign the wrapper
+      - name: Compile the installer and sign releases from 1.0 onward
         shell: pwsh
         run: |
-          $stableTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
           $thumbprint = '${{ vars.SIGNING_CERT_THUMBPRINT }}'.Trim()
-          if ($stableTag -and -not $thumbprint) {
-            throw 'Stable publication requires repository variable SIGNING_CERT_THUMBPRINT and its private key on the release runner. No unsigned exception exists for a tag.'
+          if ($requiresPublicSignature -and -not $thumbprint) {
+            throw 'Horizun 1.0 and later require repository variable SIGNING_CERT_THUMBPRINT and its private key on the release runner. There is no unsigned exception from 1.0 onward.'
           }
           try {
-            if ($stableTag) {
+            if ($requiresPublicSignature) {
               pwsh scripts/sign.ps1 -Thumbprint $thumbprint
               if ($LASTEXITCODE -ne 0) { throw "staged payload signing failed ($LASTEXITCODE)" }
+            } elseif ($releaseTag) {
+              Write-Host '::warning::This 0.x release is intentionally unsigned. Verify SHA256SUMS.txt before installation. Public signing becomes mandatory at 1.0.0.'
             }
 
             pwsh scripts/pack.ps1 -InstallerOnly
             if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
 
-            if ($stableTag) {
+            if ($requiresPublicSignature) {
               # The second pass skips the already-signed stage and signs the new
               # setup.exe. Wrapper and payload are separate Authenticode objects.
               pwsh scripts/sign.ps1 -Thumbprint $thumbprint
@@ -361,13 +364,14 @@ jobs:
           )
           if (-not (Test-Path $archive)) { throw 'stage.zip was not created' }
 
-      # Pull requests may exercise the complete packaging path before the signing
-      # identity is provisioned. Stable tags may not: public distribution that
-      # raises an unknown-publisher dialog is not the promised install experience.
-      - name: Enforce stable signing policy
+      # 0.x releases may ship unsigned while the public identity is pending, but
+      # they must say so. Starting with 1.0, unknown-publisher distribution is a
+      # hard release failure with no bypass.
+      - name: Enforce versioned signing policy
         shell: pwsh
         run: |
-          $stableTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
+          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
           $unsigned = @()
           $selfSigned = @()
           $untimestamped = @()
@@ -384,12 +388,16 @@ jobs:
               $untimestamped += $f.FullName
             }
           }
-          if ($stableTag -and ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0)) {
+          if ($requiresPublicSignature -and ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0)) {
             $details = @($unsigned) + @($selfSigned) + @($untimestamped | ForEach-Object { "${_}: no trusted timestamp" })
-            throw "Stable release contains unsigned, invalid, self-signed or untimestamped own binaries:`n  - $($details -join "`n  - ")"
+            throw "Horizun 1.0+ release contains unsigned, invalid, self-signed or untimestamped own binaries:`n  - $($details -join "`n  - ")"
           }
           if ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0) {
-            Write-Host "::warning::non-tag package is not publicly signed; stable tags enforce this as a failure"
+            if ($releaseTag) {
+              Write-Host "::warning::0.x release is not publicly signed; users must verify SHA256SUMS.txt. Version 1.0+ enforces this as a failure"
+            } else {
+              Write-Host "::warning::branch package is not publicly signed"
+            }
             $unsigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
             $selfSigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
             $untimestamped | Select-Object -First 10 | ForEach-Object { Write-Host "  $_ : no trusted timestamp" }
@@ -465,9 +473,9 @@ jobs:
             dist/stage.zip
             dist/stage/manifest.json
 
-  # Trust is re-evaluated on a disposable Microsoft-hosted machine. A private CA
-  # added only to the release runner could otherwise report Status=Valid there
-  # while still producing an unknown publisher on every clean user's machine.
+  # The release's stated trust state is re-evaluated on a disposable
+  # Microsoft-hosted machine. For 0.x every own binary must be honestly unsigned.
+  # From 1.0 onward every own binary must be publicly trusted and timestamped.
   public-signature:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: package
@@ -481,7 +489,7 @@ jobs:
           name: horizun-mcp-package
           path: dist
 
-      - name: Require public trust and trusted timestamps on a clean runner
+      - name: Enforce the versioned trust promise on a clean runner
         shell: pwsh
         run: |
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage -Force
@@ -490,6 +498,18 @@ jobs:
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
           if ($targets.Count -ne 8) {
             throw "Expected server exe+dll, five Revit DLLs and setup; found $($targets.Count)."
+          }
+          $major = ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major
+          if ($major -lt 1) {
+            foreach ($file in $targets) {
+              $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
+              if ($sig.Status -ne 'NotSigned') {
+                throw "$($file.FullName) does not match the 0.x unsigned disclosure: $($sig.Status) - $($sig.StatusMessage)"
+              }
+              Write-Host "  disclosed unsigned $($file.Name)"
+            }
+            Write-Host '::warning::Horizun 0.x is distributed without a publicly trusted publisher. Verify SHA256SUMS.txt before running Setup.'
+            exit 0
           }
           foreach ($file in $targets) {
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
@@ -642,12 +662,14 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Branch builds keep the explicit unsigned exception so the installer can
-        # be tested before certificate provisioning. A stable tag has no exception.
+        # Branch builds and disclosed 0.x releases keep the explicit unsigned
+        # exception. From 1.0 onward the installed artifact must be publicly signed.
         # The result path is the exact per-run file requested in the install step,
         # never the global result left by an earlier install.
         run: |
-          if ('${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true') {
+          $requiresPublicSignature = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true' -and `
+            ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          if ($requiresPublicSignature) {
             pwsh scripts/verify-release.ps1 -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
           } else {
             pwsh scripts/verify-release.ps1 -Installed -AllowUnsigned -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json

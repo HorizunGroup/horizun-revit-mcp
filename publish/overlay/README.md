@@ -126,9 +126,10 @@ deploys a different add-in binary compiled against each installed year's own API
 It also installs the MCP server and reports exactly which years succeeded. No Git
 or .NET SDK is required for this path.
 
-The release carries `SHA256SUMS.txt` and a complete payload manifest. The current
-build is not signed by a publicly trusted code-signing CA, so Windows/Revit may
-show a publisher warning; verify the SHA-256 before running it.
+The release carries `SHA256SUMS.txt` and a complete payload manifest. Horizun
+0.9.0 is intentionally distributed without a publicly trusted code-signing CA,
+so Windows/Revit may show a publisher warning; verify the SHA-256 before running
+it. Public signing becomes mandatory for 1.0.0 and later.
 
 The setup installs every supported Revit payload present in the release and the
 MCP server. It also completes Codex/Claude registration automatically. If either

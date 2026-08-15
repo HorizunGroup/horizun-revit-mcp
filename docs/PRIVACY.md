@@ -52,4 +52,3 @@ returned only to the MCP client that invoked the operation.
 Security-sensitive reports should follow [`SECURITY.md`](../SECURITY.md).
 Ordinary privacy questions may be opened as a public repository issue when they
 contain no model data, credentials or personal information.
-
