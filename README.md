@@ -71,9 +71,14 @@ Download `horizun-mcp-<version>-setup.exe` and `SHA256SUMS.txt` from the
 then check the hash before running anything:
 
 ```powershell
-Get-FileHash .\horizun-mcp-<version>-setup.exe -Algorithm SHA256
-Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe'
+$exe  = Get-Item .\horizun-mcp-*-setup.exe
+$want = (Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe').Line.Split(' ')[0]
+if ((Get-FileHash $exe -Algorithm SHA256).Hash -ieq $want) { "OK - matches the published hash" }
+else { "STOP - it does not match. Do not run it." }
 ```
+
+(`Get-FileHash` prints upper case and the file lists lower case, which is why the
+comparison above is case-insensitive rather than something to eyeball.)
 
 Every release also carries a payload `manifest.json`, `package-hashes.json`, an
 [SBOM](https://cyclonedx.org/) and one live verification report per supported

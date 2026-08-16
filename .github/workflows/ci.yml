@@ -803,6 +803,38 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
 
+      # THE RELEASE PAGE IS WHERE SOMEBODY WHO WANTS TO INSTALL ACTUALLY LANDS.
+      # --generate-notes alone leaves them a list of merged PRs and ten assets
+      # with no hint of which one to download, how to verify it, or why Windows
+      # is about to call the publisher unknown. The preamble goes ABOVE the
+      # generated changelog, and this step is idempotent: a re-run that finds it
+      # already there leaves the notes alone.
+      #
+      # Non-fatal on purpose. The binaries, their hashes and the live reports are
+      # the release; prose that failed to attach must not fail a publish that
+      # already succeeded - it must say so and let the job stand.
+      - name: Put the install instructions above the generated changelog
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          preamble='.github/release-preamble.md'
+          if [ ! -f "$preamble" ]; then
+            echo "::warning::$preamble is missing; the release keeps the generated notes only"
+            exit 0
+          fi
+          body=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body) || {
+            echo "::warning::could not read the release notes back; leaving them as generated"; exit 0; }
+          case "$body" in
+            *'## Install'*) echo "install instructions already present; leaving the notes alone"; exit 0 ;;
+          esac
+          { cat "$preamble"; printf '\n'; printf '%s\n' "$body"; } > release-notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md ||
+            echo "::warning::could not update the release notes; the assets are published and correct"
+
   publish-mcp-registry:
     if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
     needs: publish-stable-release
