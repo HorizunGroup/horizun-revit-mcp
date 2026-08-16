@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470" role="img" aria-label="Architecture: an MCP client speaks MCP over stdio to Horizun.Server, which forwards over a token-authenticated named pipe to the Horizun.Revit add-in, which dispatches each request onto Revit's UI thread through an ExternalEvent. Every typed write runs dry run, single-use token, transaction, commit, then a re-read of the model.">
+  <style>
+    /* The canvas carries an EXPLICIT background so this diagram stays readable
+       when the two themes disagree. A README image resolves prefers-color-scheme
+       from the browser, while the page around it follows the GitHub theme
+       setting; a viewer on OS-light with GitHub-dark (or the reverse) would
+       otherwise get light text on a light page. On its own surface, the worst
+       case is a light card on a dark page - different, never unreadable. */
+    .bg    { fill: #FFFFFF; stroke: #E2E8F0; stroke-width: 1; }
+    .box   { fill: #F1F5F9; stroke: #CBD5E1; stroke-width: 1.5; }
+    .accent{ fill: #E6F4FB; stroke: #0696D7; stroke-width: 1.75; }
+    .title { fill: #0F172A; font: 600 16px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .sub   { fill: #475569; font: 400 12.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .note  { fill: #64748B; font: 400 12.5px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    .mono  { fill: #0F172A; font: 600 12.5px ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace; }
+    .flow  { stroke: #94A3B8; stroke-width: 1.75; fill: none; }
+    .strip { fill: none; stroke: #0696D7; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .head  { fill: #0696D7; font: 600 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; letter-spacing: .08em; }
+    @media (prefers-color-scheme: dark) {
+      .bg    { fill: #0D1117; stroke: #21262D; }
+      .box   { fill: #1E293B; stroke: #475569; }
+      .accent{ fill: #0B2B3B; stroke: #38BDF8; }
+      .title { fill: #F1F5F9; }
+      .sub   { fill: #CBD5E1; }
+      .note  { fill: #94A3B8; }
+      .mono  { fill: #F1F5F9; }
+      .flow  { stroke: #64748B; }
+      .strip { stroke: #38BDF8; }
+      .head  { fill: #38BDF8; }
+      .arrowhead { fill: #64748B; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="arrowhead" d="M 0 0 L 10 5 L 0 10 z" fill="#94A3B8"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" x="1" y="1" width="878" height="468" rx="14"/>
+
+  <!-- 1. client -->
+  <rect class="box" x="40" y="20" width="440" height="64" rx="10"/>
+  <text class="title" x="64" y="47">MCP client</text>
+  <text class="sub"   x="64" y="68">Claude Code · Codex · Cursor · Cline · Claude Desktop</text>
+
+  <path class="flow" d="M 260 84 L 260 116" marker-end="url(#a)"/>
+  <text class="mono" x="500" y="96">MCP over stdio</text>
+  <text class="note" x="500" y="114">launched by the client; no port, no daemon</text>
+
+  <!-- 2. server -->
+  <rect class="accent" x="40" y="118" width="440" height="64" rx="10"/>
+  <text class="title" x="64" y="145">Horizun.Server</text>
+  <text class="sub"   x="64" y="166">wire protocol · shared schema contract · 5 host-resident tools</text>
+
+  <path class="flow" d="M 260 182 L 260 214" marker-end="url(#a)"/>
+  <text class="mono" x="500" y="194">named pipe, token-authenticated</text>
+  <text class="note" x="500" y="212">local only — a pipe is not reachable across a network</text>
+
+  <!-- 3. add-in -->
+  <rect class="accent" x="40" y="216" width="440" height="64" rx="10"/>
+  <text class="title" x="64" y="243">Horizun.Revit — the add-in</text>
+  <text class="sub"   x="64" y="264">Guard · Reconcile · bounded FIFO queue, 16 slots</text>
+
+  <path class="flow" d="M 260 280 L 260 312" marker-end="url(#a)"/>
+  <text class="mono" x="500" y="292">ExternalEvent → Revit UI thread</text>
+  <text class="note" x="500" y="310">one command at a time; the rest wait or get backpressure</text>
+
+  <!-- 4. revit -->
+  <rect class="box" x="40" y="314" width="440" height="64" rx="10"/>
+  <text class="title" x="64" y="341">Revit API</text>
+  <text class="sub"   x="64" y="362">2023 · 2024 · 2025 · 2026 · 2027 — one binary compiled per year</text>
+
+  <!-- contract strip -->
+  <rect class="strip" x="40" y="400" width="800" height="54" rx="10"/>
+  <text class="head" x="64" y="422">EVERY TYPED WRITE</text>
+  <text class="mono" x="200" y="422">dry_run  →  single-use token  →  transaction  →  commit  →  re-read</text>
+  <text class="note" x="64" y="442">A silent rollback surfaces as an error. Counts come from reading the model again, never from a call that did not throw.</text>
+</svg>

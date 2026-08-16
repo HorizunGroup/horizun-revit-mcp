@@ -1,10 +1,36 @@
 # Contributing — Horizun Revit MCP
 
-How to work this repo from any machine without stepping on anyone. Read
-[AGENTS.md](AGENTS.md) too — it carries the project rules and loads every
-session.
+How to work this repo without stepping on anyone. Read [AGENTS.md](AGENTS.md)
+too — it carries the project rules and loads every session — and the
+[code of conduct](CODE_OF_CONDUCT.md), which applies to everyone here.
 
-## The single source of truth is GitHub, not any one PC
+## From outside Horizun Group — start here
+
+You are welcome, and you do not need any of the internal machinery below.
+
+1. **Open an issue first for anything larger than a fix.** There are forms for a
+   [bug](.github/ISSUE_TEMPLATE/bug.yml), a
+   [Revit-year compatibility finding](.github/ISSUE_TEMPLATE/compatibility.yml)
+   and a [capability proposal](.github/ISSUE_TEMPLATE/proposal.yml). A proposal
+   agreed in an issue is a pull request that gets merged; a large surprise
+   branch usually is not.
+2. **Fork, branch, and open a pull request into `main`.** The
+   [pull-request template](.github/PULL_REQUEST_TEMPLATE.md) lists what a review
+   needs from you.
+3. **Bring evidence, not adjectives.** This project's entire contract is that
+   nothing claims work it did not verify; a pull request is held to the same
+   standard. Paste what you ran and what came back. If the change touches a
+   model, say which Revit year you exercised it against — see the live-write
+   tier below.
+4. **Never attach a real model, client name, path or screenshot from real work.**
+   Reproduce on a scratch model instead.
+
+Contributions are accepted under the repository's
+[Apache-2.0 license](LICENSE); by opening a pull request you agree your
+contribution is licensed that way. Security problems do **not** go in a public
+issue — [SECURITY.md](SECURITY.md) has the private route.
+
+## For Horizun Group members: the single source of truth is GitHub, not any one PC
 
 `origin` is the team's private GitHub repository — `git remote get-url origin`
 names it on your machine. Your clone has no special status; it is one copy of
