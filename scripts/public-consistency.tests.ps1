@@ -41,7 +41,14 @@ foreach ($project in 'src/Horizun.Server/Horizun.Server.csproj','src/Horizun.Rev
     if ($text -match '<Version>') { Fail "$project declares a second product Version" }
 }
 
-$installDocs = @('README.md','AGENTS.md','publish/overlay/README.md','publish/overlay/AGENTS.md','install.ps1','installer/horizun-mcp.iss')
+# publish/ is the export machinery and does NOT travel to the public repository,
+# where this same script runs in CI. A check that is meaningful only in the
+# private tree must SKIP where the input cannot exist, not fail there - and it
+# must not skip silently where the input should exist, which is why the overlay
+# identity check below fails on a missing root twin rather than on a missing
+# overlay.
+$installDocs = @('README.md','AGENTS.md','publish/overlay/README.md','publish/overlay/AGENTS.md','install.ps1','installer/horizun-mcp.iss') |
+    Where-Object { Test-Path (Join-Path $repo $_) }
 foreach ($path in $installDocs) {
     $text = Get-Content (Join-Path $repo $path) -Raw
     foreach ($match in [regex]::Matches($text, '(?m)^.*claude mcp add.*$')) {
@@ -111,6 +118,27 @@ if ($readme -notmatch 'irm https://raw\.githubusercontent\.com/HorizunGroup/hori
     Fail 'the public README no longer offers the one-paste release installer'
 }
 
+# THE OVERLAY IS WHAT THE PUBLIC GETS. publish/overlay/* is laid on top of the
+# exported tree after the allowlist copy, and README.md is not even in that
+# allowlist - so a change made only at the root never reaches GitHub, and a
+# stale overlay silently REVERTS the published file on the next export. Both
+# README.md and AGENTS.md had drifted exactly that way: the root carried a
+# rewrite and the brand-name rules the overlay had never seen, and publishing
+# would have deleted them from the public repository. Byte-identical or fail.
+$overlayDir = Join-Path $repo 'publish/overlay'
+foreach ($overlayFile in @(if (Test-Path $overlayDir) { Get-ChildItem $overlayDir -File })) {
+    $rootTwin = Join-Path $repo $overlayFile.Name
+    if (-not (Test-Path $rootTwin)) {
+        Fail "publish/overlay/$($overlayFile.Name) has no counterpart at the repository root"
+        continue
+    }
+    $a = [IO.File]::ReadAllBytes($rootTwin)
+    $b = [IO.File]::ReadAllBytes($overlayFile.FullName)
+    if (-not [Linq.Enumerable]::SequenceEqual($a, $b)) {
+        Fail "$($overlayFile.Name) and publish/overlay/$($overlayFile.Name) differ; the overlay is what gets published, so the two must be identical"
+    }
+}
+
 $signingPolicy = Get-Content (Join-Path $repo 'CODE-SIGNING-POLICY.md') -Raw
 $privacyPolicy = Get-Content (Join-Path $repo 'docs/PRIVACY.md') -Raw
 $codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
@@ -156,9 +184,10 @@ if ($installerSource -notmatch 'procedure RollbackDeployment' -or
 $publicDocs = @(
     'README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','THIRD-PARTY-NOTICES.md','llms.txt',
     'publish/overlay/README.md','publish/overlay/AGENTS.md',
-    'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md',
-    'docs/RELEASE-POLICY.md','docs/requirement-set.md','docs/security-model.md'
-)
+    'CODE_OF_CONDUCT.md','CODE-SIGNING-POLICY.md',
+    'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md','docs/PRIVACY.md',
+    'docs/RELEASE-POLICY.md','docs/requirement-set.md','docs/security-model.md','docs/TOOLS.md'
+) | Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
 foreach ($path in $publicDocs) {
     $full = Join-Path $repo $path
     if (-not (Test-Path $full)) { Fail "public document is missing: $path"; continue }

@@ -9,7 +9,8 @@
 - Repository: https://github.com/HorizunGroup/horizun-revit-mcp
 - Releases: https://github.com/HorizunGroup/horizun-revit-mcp/releases
 - Installation: https://github.com/HorizunGroup/horizun-revit-mcp#install
-- Tool catalogue: https://github.com/HorizunGroup/horizun-revit-mcp#tools
+- Tool catalogue: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/TOOLS.md
+- Contributing: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/CONTRIBUTING.md
 - Benchmark: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/BENCHMARK.md
 - Security model: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/security-model.md
 - Family authoring: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/FAMILY-AUTHORING.md
