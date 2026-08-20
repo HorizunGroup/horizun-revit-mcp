@@ -132,7 +132,13 @@ function Get-AggregatedPayloadSubtree([string]$Root, [string]$Subtree) {
     $digest = $null
     if ($rows.Count -gt 0) {
         $builder = New-Object Text.StringBuilder
-        foreach ($row in ($rows | Sort-Object Rel)) {
+        $orderedRows = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($row in $rows) { $orderedRows.Add($row) }
+        $orderedRows.Sort([System.Comparison[object]]{
+            param($left, $right)
+            [StringComparer]::Ordinal.Compare([string]$left.Rel, [string]$right.Rel)
+        })
+        foreach ($row in $orderedRows) {
             [void]$builder.Append($row.Rel).Append([char]31)
             [void]$builder.Append((Get-FileHash -LiteralPath $row.Path -Algorithm SHA256).Hash.ToLowerInvariant()).Append([char]30)
         }

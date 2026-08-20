@@ -345,7 +345,13 @@ function Get-HorizunPayloadListing([string]$Root) {
     $stdlibDigest = $null
     if ($stdlib.Count -gt 0) {
         $sb = New-Object System.Text.StringBuilder
-        foreach ($s in ($stdlib | Sort-Object Rel)) {
+        $orderedStdlib = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($s in $stdlib) { $orderedStdlib.Add($s) }
+        $orderedStdlib.Sort([System.Comparison[object]]{
+            param($left, $right)
+            [StringComparer]::Ordinal.Compare([string]$left.Rel, [string]$right.Rel)
+        })
+        foreach ($s in $orderedStdlib) {
             [void]$sb.Append($s.Rel).Append([char]31)
             [void]$sb.Append((Get-FileHash $s.File.FullName -Algorithm SHA256).Hash.ToLower()).Append([char]30)
         }
