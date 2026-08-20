@@ -59,31 +59,37 @@ finally {
     if (Test-Path -LiteralPath $projectionRoot) { Remove-Item -LiteralPath $projectionRoot -Recurse -Force }
 }
 
-$outside = Join-Path ([IO.Path]::GetTempPath()) ('horizun-public-output-refusal-' + [guid]::NewGuid().ToString('N'))
-try {
-    New-Item -ItemType Directory -Path $outside -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'must survive'
-    $refused = $false
-    try { & (Join-Path $repo 'publish/make-public-package.ps1') -Output $outside -ReplaceOutput } catch { $refused = $_.Exception.Message -match 'must stay under' }
-    Check 'public package cannot recursively replace an arbitrary directory' `
-        ($refused -and (Test-Path -LiteralPath (Join-Path $outside 'keep.txt'))) 'outside file was removed or refusal was not explicit'
-}
-finally { if (Test-Path -LiteralPath $outside) { Remove-Item -LiteralPath $outside -Recurse -Force } }
+$privateProjector = Join-Path $repo 'publish/make-public-package.ps1'
+if (Test-Path -LiteralPath $privateProjector) {
+    # The projector is intentionally absent from the exported public tree. Its
+    # confinement tests run in the private source tree; all shared deployment
+    # tests below still run in both trees.
+    $outside = Join-Path ([IO.Path]::GetTempPath()) ('horizun-public-output-refusal-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $outside -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $outside 'keep.txt') -Value 'must survive'
+        $refused = $false
+        try { & $privateProjector -Output $outside -ReplaceOutput } catch { $refused = $_.Exception.Message -match 'must stay under' }
+        Check 'public package cannot recursively replace an arbitrary directory' `
+            ($refused -and (Test-Path -LiteralPath (Join-Path $outside 'keep.txt'))) 'outside file was removed or refusal was not explicit'
+    }
+    finally { if (Test-Path -LiteralPath $outside) { Remove-Item -LiteralPath $outside -Recurse -Force } }
 
-$junctionTarget = Join-Path ([IO.Path]::GetTempPath()) ('horizun-public-junction-target-' + [guid]::NewGuid().ToString('N'))
-$junctionPath = Join-Path $repo ('dist\public\junction-refusal-' + [guid]::NewGuid().ToString('N'))
-try {
-    New-Item -ItemType Directory -Path $junctionTarget,(Split-Path -Parent $junctionPath) -Force | Out-Null
-    Set-Content -LiteralPath (Join-Path $junctionTarget 'keep.txt') -Value 'must survive'
-    New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
-    $refused = $false
-    try { & (Join-Path $repo 'publish/make-public-package.ps1') -Output $junctionPath -ReplaceOutput } catch { $refused = $_.Exception.Message -match 'link or junction' }
-    Check 'public package cannot escape through an in-root junction' `
-        ($refused -and (Test-Path -LiteralPath (Join-Path $junctionTarget 'keep.txt'))) 'junction target was changed or not refused'
-}
-finally {
-    if (Test-Path -LiteralPath $junctionPath) { Remove-Item -LiteralPath $junctionPath -Force }
-    if (Test-Path -LiteralPath $junctionTarget) { Remove-Item -LiteralPath $junctionTarget -Recurse -Force }
+    $junctionTarget = Join-Path ([IO.Path]::GetTempPath()) ('horizun-public-junction-target-' + [guid]::NewGuid().ToString('N'))
+    $junctionPath = Join-Path $repo ('dist\public\junction-refusal-' + [guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $junctionTarget,(Split-Path -Parent $junctionPath) -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $junctionTarget 'keep.txt') -Value 'must survive'
+        New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
+        $refused = $false
+        try { & $privateProjector -Output $junctionPath -ReplaceOutput } catch { $refused = $_.Exception.Message -match 'link or junction' }
+        Check 'public package cannot escape through an in-root junction' `
+            ($refused -and (Test-Path -LiteralPath (Join-Path $junctionTarget 'keep.txt'))) 'junction target was changed or not refused'
+    }
+    finally {
+        if (Test-Path -LiteralPath $junctionPath) { Remove-Item -LiteralPath $junctionPath -Force }
+        if (Test-Path -LiteralPath $junctionTarget) { Remove-Item -LiteralPath $junctionTarget -Recurse -Force }
+    }
 }
 
 $bootstrap = Get-Content (Join-Path $repo 'install-release.ps1') -Raw

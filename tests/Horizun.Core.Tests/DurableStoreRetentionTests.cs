@@ -108,6 +108,34 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Missing_job_policy_uses_bounded_defaults_but_explicit_zero_keeps_forever()
+        {
+            string defaulted = Record("defaulted", "{\"event\":\"finish\"}",
+                DurableStoreRetention.DefaultJobRetentionDays + 1);
+
+            DurableStoreRetentionReport bounded = DurableStoreRetention.Apply(
+                _root, DurableStoreKind.Jobs, Settings(), _now);
+            Assert.False(File.Exists(defaulted));
+            Assert.Equal(1, bounded.RemovedFiles);
+
+            string explicitForever = Record("explicit-zero", "{\"event\":\"finish\"}", 365);
+            DurableStoreRetentionReport forever = DurableStoreRetention.Apply(
+                _root, DurableStoreKind.Jobs,
+                Settings("job_retention_days", "0", "job_max_bytes", "0"), _now);
+            Assert.True(File.Exists(explicitForever));
+            Assert.Contains("forever", forever.Note, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Missing_idempotency_policy_preserves_compatibility_forever()
+        {
+            string completed = Record("old-idempotency",
+                "{\"event\":\"claimed\"}\n{\"event\":\"completed\"}", 365);
+            DurableStoreRetention.Apply(_root, DurableStoreKind.Idempotency, Settings(), _now);
+            Assert.True(File.Exists(completed));
+        }
+
+        [Fact]
         public void Job_retention_accounts_for_and_removes_its_durable_image_attachment()
         {
             string job = Record("with-image", "{\"event\":\"finish\"}", 40);

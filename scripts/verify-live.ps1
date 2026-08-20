@@ -1157,6 +1157,7 @@ $ClosedWorksetProbeTitle = $ClosedWorksetDocument
 $closedFixtureTemporaryCopy = $null
 $closedFixtureSafeToDelete = $false
 $closedCleanupExpectedDiscard = $null
+$closeOpenSourceName = 'close the open source before loading its detached closed-workset copy'
 $activateClosedName = 'activate the closed-workset fixture before measuring its loaded coverage'
 $restoreDocumentName = 'restore the original active document after closed-workset probes'
 if ($ClosedWorksetDocument -and $ClosedWorksetName) {
@@ -1165,8 +1166,26 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName) {
     # different products for enforcing the active-document guard. Bracket the probes with
     # typed, verified activation of the already-open documents. Paths are discovered from
     # health after the MCP session starts; the placeholders are never usable paths.
+    # Revit refuses to keep a central and a detached/local copy of that same
+    # model open in one session. All earlier probes are now complete, so close
+    # the harness-owned disposable source without saving, switch to the already
+    # open inactive fixture, then open the copied fixture with the typed workset
+    # plan. The source is reopened explicitly below before the write tier.
+    $probes += @{ Name = $closeOpenSourceName
+                  Tool = 'horizun_document_session'
+                  Args = @{ operation = 'close'; target_document = $Document
+                            dry_run = $false; save_on_close = $false; discard_unsaved = $false
+                            activate_other = $true
+                            idempotency_key = "live-close-source-before-workset-$probeRun" }
+                  Needs = 'ClosedWorksetActivationReady'
+                  NotCovered = 'closed-workset probes need unique local paths before the open source can be closed safely'
+                  Check = { param($d)
+                            $d.closed -eq $true -and $d.title -eq $Document -and
+                            $d.saved_on_close -eq $false -and $d.discarded_unsaved_changes -eq $false } }
+
     $probes += @{ Name = $activateClosedName
                   Tool = 'horizun_document_session'
+                  UseStructured = $true
                   Args = @{ operation = 'open'; file_path = 'C:\ZZ_HORIZUN_CLOSED_WORKSET_PATH_NOT_DISCOVERED.rvt'
                             expected_version = "$Year"; allow_upgrade = $false
                             close_workset_names = @($ClosedWorksetName)
@@ -1256,6 +1275,7 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName) {
 
     $probes += @{ Name = $restoreDocumentName
                   Tool = 'horizun_document_session'
+                  UseStructured = $true
                   Args = @{ operation = 'open'; file_path = 'C:\ZZ_HORIZUN_ORIGINAL_PATH_NOT_DISCOVERED.rvt'
                             expected_version = "$Year"; allow_upgrade = $false
                             idempotency_key = "live-restore-active-$probeRun" }
@@ -1263,7 +1283,7 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName) {
                   NotCovered = 'closed-workset probes were not run because the original document could not be restored safely'
                   Check = { param($d)
                             $d.active_document_verified -eq $true -and $d.title -eq $Document -and
-                            $d.status -match 'already_open' } }
+                            $d.status -eq 'opened' -and $d.opened_now -eq $true } }
 }
 else {
     $notCovered += 'a CLOSED workset making scan, audit, quantities and clash all report incomplete coverage ' +
@@ -1385,6 +1405,9 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName -and $Document) {
         }
         if ($closedInspect -and $closedInspect.file.is_central -eq $true) {
             $activateClosed.Args.detach = $true
+            if ($WriteDocumentDisposable -eq 'yes-this-model-is-disposable') {
+                $restoreOriginal.Args.open_central = $true
+            }
         }
         $sameDisposableFolder = [string]::Equals(
             [IO.Path]::GetDirectoryName($closedPath),

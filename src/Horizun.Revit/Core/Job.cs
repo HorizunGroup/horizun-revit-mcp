@@ -296,7 +296,7 @@ namespace Horizun.Revit.Core
                 try
                 {
                     DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
-                        dir, DurableStoreKind.Jobs, Settings.RawValue, DateTime.UtcNow);
+                        dir, DurableStoreKind.Jobs, Settings.RetentionValue, DateTime.UtcNow);
                     if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
                         (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
                         Log.Info("job retention: " + retention.Summary());

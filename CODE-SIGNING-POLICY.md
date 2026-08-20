@@ -50,13 +50,12 @@ re-signed as Horizun binaries.
   Stable signing stays fail-closed until SignPath explicitly approves this origin
   design; the external decision is recorded by
   `SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED=true` only after that approval.
-- The intended SignPath GitHub integration will bind each signing request to the
-  repository, workflow, commit and uploaded GitHub artifact. That request step is
-  **not active yet** because the project, policy and credentials do not exist
-  before acceptance. The current workflow therefore cannot publish binaries: a
-  protected local-certificate signing path exists for development/integration
-  testing, but it cannot satisfy the SignPath publisher gate and is not presented
-  as an origin-verified public release path.
+- The pinned SignPath GitHub action binds each of the two signing requests to the
+  repository, workflow, commit and uploaded GitHub artifact. The steps are active
+  in the tagged release path but remain fail-closed until the external project,
+  policies and credential are provisioned after acceptance. A protected
+  local-certificate path remains only for development; it cannot satisfy the
+  SignPath publisher gate and is never a public release fallback.
 - Every stable release requires a complete live verification matrix for Revit
   2023 through 2027. Every installable release requires signing approval.
 - CI generates a CycloneDX SBOM, full SHA-256 manifest, release checksums and
@@ -70,6 +69,9 @@ re-signed as Horizun binaries.
 
 The detailed mechanical gates are documented in
 [`docs/RELEASE-POLICY.md`](docs/RELEASE-POLICY.md).
+The exact post-acceptance project values, two-request signing sequence and
+acceptance test are defined in
+[`docs/SIGNPATH-ONBOARDING.md`](docs/SIGNPATH-ONBOARDING.md).
 
 ## Team roles
 

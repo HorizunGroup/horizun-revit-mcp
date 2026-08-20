@@ -39,8 +39,9 @@ this machine. No executable is downloaded.
 
 - Windows with at least one Revit 2023–2027 installed
   (`C:\Program Files\Autodesk\Revit <year>\RevitAPI.dll` exists).
-- The .NET SDK on PATH (`dotnet --version` answers): 8.0+ for Revit 2023–2026,
-  and 10.0+ when building for Revit 2027. Revit ≤ 2024 builds against .NET
+- The exact .NET SDK 10.0.400 on PATH (`dotnet --version` answers), fixed by
+  `global.json` so release bytes do not depend on the latest installed patch.
+  Revit ≤ 2024 still builds against .NET
   Framework 4.8 — the SDK-style projects restore the reference assemblies from
   NuGet, so the Visual Studio targeting pack is NOT required when NuGet restore
   is available. Verified on a machine without the pack: 2024 compiled with zero
@@ -233,8 +234,9 @@ No se descarga ningún ejecutable.
 
 - Windows con al menos un Revit 2023–2027 instalado
   (`C:\Program Files\Autodesk\Revit <año>\RevitAPI.dll` existe).
-- El SDK de .NET en el PATH (`dotnet --version` responde): 8.0+ para Revit
-  2023–2026 y 10.0+ al compilar para Revit 2027. Revit ≤ 2024 compila contra
+- El SDK exacto .NET 10.0.400 en el PATH (`dotnet --version` responde), fijado
+  por `global.json` para que los bytes no dependan del último parche instalado.
+  Revit ≤ 2024 sigue compilando contra
   .NET Framework 4.8 — los proyectos SDK-style restauran los reference
   assemblies desde NuGet, así que el targeting pack de Visual Studio NO hace
   falta cuando hay restauración de NuGet disponible. Verificado en una máquina

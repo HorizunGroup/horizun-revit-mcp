@@ -1,5 +1,26 @@
 #Requires -Version 5.1
 $ErrorActionPreference = 'Stop'
+
+$installSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\install.ps1') -Raw
+if ($installSource -match '&\s+\$dotnet\.Source') {
+    throw 'install.ps1 invokes a CommandInfo property directly; Windows PowerShell 5.1 cannot load that command.'
+}
+Write-Host '  PASS  Windows PowerShell invokes the resolved dotnet path, not a CommandInfo property'
+if ($installSource -notmatch '(?s)catch\s*\{.*?actualSdk\s*=\s*''''' -or
+    $installSource -notmatch 'isolatedDotnet') {
+    throw 'install.ps1 does not recover from a global.json SDK-selection error through the isolated SDK.'
+}
+Write-Host '  PASS  a failing system dotnet host falls through to the exact isolated SDK'
+if ($installSource -match 'LASTEXITCODE\s*-eq\s*0\s*-and\s*\$isolatedVersion') {
+    throw 'isolated SDK selection still depends on LASTEXITCODE retained from a prior native-host failure.'
+}
+Write-Host '  PASS  isolated SDK selection trusts the exact returned version, not stale LASTEXITCODE'
+if ($installSource -notmatch 'dotnet\s+publish' -or
+    $installSource -notmatch '--self-contained\s+true' -or
+    $installSource -notmatch "hostfxr\.dll'.*hostpolicy\.dll") {
+    throw 'source installation no longer stages a verified self-contained MCP server.'
+}
+Write-Host '  PASS  source installation publishes and verifies a self-contained MCP server'
 . (Join-Path $PSScriptRoot 'install-arguments.lib.ps1')
 $failed = 0
 function Assert($name, $condition, $detail) {

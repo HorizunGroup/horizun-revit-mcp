@@ -137,8 +137,10 @@ one is currently checkable rather than a matter of opinion:
       contract. *(5.3 — done)*
 - [ ] Schemas frozen under the compatibility rules above, with the deprecation
       window written into the CHANGELOG.
-- [ ] Two maintainers with release rights.
-- [ ] GitHub secret scanning and push protection enabled on the public repository.
+- [x] Two maintainers with release rights. *(verified on the public repository on
+      2026-08-20)*
+- [x] GitHub secret scanning and push protection enabled on the public repository.
+      *(verified on 2026-08-20)*
 - [ ] Public Authenticode identity and clean-machine signature validation. The
       repository is fail-closed and ready to consume the identity; procurement is
       external. See [production readiness](production-readiness.md).

@@ -16,12 +16,17 @@
     <RootNamespace>Horizun.Server</RootNamespace>
     <!-- Version is inherited from the repository's Directory.Build.props. -->
     <InvariantGlobalization>true</InvariantGlobalization>
-    <!-- One lock graph serves both installation modes: source installs build a
-         framework-dependent executable, while public packages publish a
-         self-contained win-x64 executable. Declaring the shipped RID here keeps
-         ordinary locked restore and the locked win-x64 publish
-         consistent instead of making each route invalidate the other's lock. -->
+    <!-- One lock graph serves the ordinary framework-dependent test build and
+         both installation modes, which publish a self-contained win-x64
+         executable. Declaring the shipped RID here keeps ordinary locked
+         restore and locked publishing consistent instead of making each route
+         invalidate the other's lock. -->
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <!-- The release redistributes this runtime, so its patch is part of our
+         supply-chain identity rather than whatever happens to be newest on the
+         packaging runner. pack.ps1 and sbom.ps1 re-read the published deps file
+         and fail if the bytes are not this exact component. -->
+    <RuntimeFrameworkVersion>8.0.30</RuntimeFrameworkVersion>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
          path of the folder it was built in, so the same commit built elsewhere

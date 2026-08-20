@@ -29,16 +29,99 @@ Assert-True ($prExecutable -notmatch '(?im)^\s*(?:id-token|attestations|artifact
     'pr.yml must not receive provenance, attestation, or artifact-metadata write permissions.'
 Assert-True ($prExecutable -notmatch '(?im)^\s*contents\s*:\s*write\s*$') `
     'pr.yml must not receive repository write permission.'
+Assert-True ($ci -match '(?s)windows-deployment:.*?runs-on:\s*windows-latest') `
+    'CI must run deployment/installer suites on a disposable Windows runner.'
+Assert-True ($pr -match '(?s)windows-deployment:.*?runs-on:\s*windows-latest') `
+    'Pull requests must run deployment/installer suites on a disposable Windows runner.'
+Assert-True ($ci -match '(?s)publish-validation-release:.*?needs:\s*\[revit-free,\s*windows-deployment\]') `
+    'Validation-only publication must wait for both hosted source and Windows deployment gates.'
+Assert-True ($ci -match '(?s)build-stage:.*?needs:\s*\[revit-free,\s*windows-deployment,\s*revit-addin\]') `
+    'The self-hosted stage build must not proceed when the Windows deployment gate failed.'
 Assert-True ($ci -match '(?s)revit-addin:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}') `
     'Revit jobs must target the externally configured Revit runner group.'
-Assert-True ($ci -match '(?s)package:.*?group:\s*\$\{\{\s*vars\.SIGNING_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit, signing\]') `
-    'The package/signing job must target the separately labelled signing runner group.'
+foreach ($jobName in 'build-stage','compile-installer') {
+    Assert-True ($ci -match "(?s)$([regex]::Escape($jobName)):.*?group:\s*\$\{\{\s*vars\.SIGNING_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit, signing\]") `
+        "$jobName must target the isolated build runner group."
+}
+
+function Get-JobBlock([string]$name) {
+    $match = [regex]::Match($ci, "(?ms)^  $([regex]::Escape($name)):\s*\r?\n(?:(?!^  [a-zA-Z0-9_-]+:\s*$).)*")
+    Assert-True $match.Success "Workflow job '$name' is missing."
+    $match.Value
+}
+
+$selfHostedReleaseBlocks = (Get-JobBlock 'build-stage') + (Get-JobBlock 'compile-installer')
+Assert-True ($selfHostedReleaseBlocks -notmatch 'SIGNPATH_API_TOKEN|secrets\.|environment:\s*release-signing') `
+    'A SignPath credential or protected signing environment can reach a self-hosted release job.'
+foreach ($jobName in 'build-stage','compile-installer') {
+    Assert-True ((Get-JobBlock $jobName) -match "startsWith\(github\.ref,\s*'refs/tags/v'\).*?!contains\(github\.ref_name,\s*'-validation\.'\)") `
+        "$jobName must run only for installable tags."
+}
+foreach ($jobName in 'sign-payload','sign-installer') {
+    $block = Get-JobBlock $jobName
+    Assert-True ($block -match 'runs-on:\s*windows-latest' -and
+                 $block -match 'environment:\s*release-signing' -and
+                 $block -match 'secrets\.SIGNPATH_API_TOKEN') `
+        "$jobName must be the protected hosted boundary that consumes SIGNPATH_API_TOKEN."
+}
+Assert-True ((Get-JobBlock 'package') -match 'runs-on:\s*windows-latest' -and
+             (Get-JobBlock 'package') -notmatch 'self-hosted|SIGNPATH_API_TOKEN') `
+    'Final package verification, attestation and upload must run on a hosted runner without the SignPath token.'
+Assert-True ([regex]::Matches($ci, 'signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627').Count -eq 2) `
+    'The installable path must use the immutable SignPath v2.3 action exactly twice: payload, then installer.'
+Assert-True ([regex]::Matches($ci, 'secrets\.SIGNPATH_API_TOKEN').Count -eq 2) `
+    'SIGNPATH_API_TOKEN must appear exactly once in each hosted signing-request job.'
+foreach ($handoff in
+    'github-artifact-id: ${{ needs.build-stage.outputs.payload-artifact-id }}',
+    'artifact-ids: ${{ needs.sign-payload.outputs.signed-payload-artifact-id }}',
+    'github-artifact-id: ${{ needs.compile-installer.outputs.installer-artifact-id }}',
+    'artifact-ids: ${{ needs.compile-installer.outputs.package-support-artifact-id }}',
+    'artifact-ids: ${{ needs.sign-installer.outputs.signed-installer-artifact-id }}') {
+    Assert-True ($ci.Contains($handoff)) "Immutable artifact-id hand-off is missing: $handoff"
+}
+$artifactIdDownloads = [regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{')
+$directArtifactIdDownloads = [regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{[^\r\n]+\r?\n\s+path:[^\r\n]+\r?\n\s+merge-multiple:\s*true\s*$')
+Assert-True ($artifactIdDownloads.Count -gt 0 -and $directArtifactIdDownloads.Count -eq $artifactIdDownloads.Count) `
+    'Every artifact-id download must extract directly into its verified destination (merge-multiple: true).'
+Assert-True ($ci -notmatch 'SIGNING_CERT_THUMBPRINT') `
+    'Public release CI must not expose a local certificate-store signing fallback.'
+foreach ($required in 'SIGNPATH_ORGANIZATION_ID','SIGNPATH_PROJECT_SLUG','SIGNPATH_PAYLOAD_POLICY_SLUG',
+                      'SIGNPATH_PAYLOAD_ARTIFACT_CONFIGURATION_SLUG','SIGNPATH_INSTALLER_POLICY_SLUG',
+                      'SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG','SIGNPATH_API_TOKEN') {
+    Assert-True ($ci -match [regex]::Escape($required)) "Release workflow does not consume required SignPath setting $required."
+}
 Assert-True ($ci -match 'SIGNING_RUNNER_GROUP.*!=.*REVIT_RUNNER_GROUP|SIGNING_RUNNER_GROUP.*-ne.*REVIT_RUNNER_GROUP') `
     'The workflow must fail closed unless signing and integration runner groups differ.'
 Assert-True ($ci -match 'SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED.*!=.*true') `
     'Stable signing must fail closed until SignPath approves the self-hosted Revit origin.'
 Assert-True ([regex]::Matches($ci, '(?m)^\s+NUGET_PACKAGES:\s*\$\{\{\s*github\.workspace\s*\}\}.*?github\.run_id').Count -ge 2) `
     'Every self-hosted build/package route must use a run-isolated NuGet extraction root.'
+
+$sdk = (Get-Content -LiteralPath (Join-Path $repo 'global.json') -Raw | ConvertFrom-Json).sdk.version
+foreach ($workflow in @($ci, $pr)) {
+    $setups = [regex]::Matches($workflow, 'uses:\s*actions/setup-dotnet@').Count
+    $sdkPins = [regex]::Matches($workflow, "(?m)^\s+$([regex]::Escape($sdk))\s*$").Count
+    $runtimeSdkPins = [regex]::Matches($workflow, '(?m)^\s+8\.0\.424\s*$').Count
+    Assert-True ($setups -gt 0 -and $sdkPins -eq $setups -and $runtimeSdkPins -eq $setups) `
+        "Every setup-dotnet step must install exact build SDK $sdk and SDK 8.0.424 carrying runtime 8.0.30."
+}
+
+# Child PowerShell processes do not make their non-zero exit code terminating in
+# a parent pwsh script. In a multiline `run: |` block, a later successful child
+# can therefore erase an earlier failure. A one-command `run: pwsh ...` returns
+# that child's status directly; every other child call must be followed by an
+# explicit LASTEXITCODE check.
+foreach ($workflowPath in @($ciPath, $prPath)) {
+    $lines = @(Get-Content -LiteralPath $workflowPath)
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*run:\s+pwsh(?:\s|$)') { continue }
+        if ($lines[$i] -notmatch '^\s+pwsh(?:\s|$)') { continue }
+        $next = $i + 1
+        while ($next -lt $lines.Count -and [string]::IsNullOrWhiteSpace($lines[$next])) { $next++ }
+        Assert-True ($next -lt $lines.Count -and $lines[$next] -match '\$LASTEXITCODE\s+-ne\s+0') `
+            "$(Split-Path -Leaf $workflowPath):$($i + 1) invokes child pwsh without immediately enforcing LASTEXITCODE."
+    }
+}
 
 $workflowFiles = Get-ChildItem -LiteralPath $workflowDir -Filter '*.yml' -File
 $badUses = [System.Collections.Generic.List[string]]::new()

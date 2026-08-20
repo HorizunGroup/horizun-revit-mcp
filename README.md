@@ -173,8 +173,10 @@ Revit and install again.
 
 Nothing prebuilt is downloaded or run: everything is compiled on your machine
 against the Revit already installed. You need the
-[.NET SDK](https://dotnet.microsoft.com/download) — 8+ for Revit 2023–2026, 10+
-to build for 2027.
+[.NET SDK 10.0.400](https://dotnet.microsoft.com/download), fixed by
+`global.json` so release bytes do not depend on the latest installed patch. The
+produced add-ins still target the runtime hosted by each Revit year: .NET
+Framework 4.8 for 2023–2024, .NET 8 for 2025–2026 and .NET 10 for 2027.
 
 ```powershell
 git clone https://github.com/HorizunGroup/horizun-revit-mcp

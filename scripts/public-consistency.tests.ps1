@@ -80,7 +80,20 @@ foreach ($policyFile in @('AGENTS.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY
 # produce it.
 $ci = Get-Content (Join-Path $repo '.github/workflows/ci.yml') -Raw
 $runnerGate = Get-Content (Join-Path $repo 'scripts/run-release-live-gate.ps1') -Raw
+if ($runnerGate -notmatch "ErrorActionPreference\s*=\s*'Continue'" -or
+    $runnerGate -notmatch 'PermitFailure') {
+    Fail 'the owned live runner cannot tolerate expected startup probe failures under Windows PowerShell 5.1'
+}
 $hzCall = Get-Content (Join-Path $repo 'scripts/hz-call.ps1') -Raw
+if ($hzCall -notmatch 'ArgumentsPath' -or $runnerGate -notmatch '-ArgumentsPath') {
+    Fail 'cross-process live calls do not transport JSON arguments through an exact UTF-8 file'
+}
+if ($runnerGate -match 'OpenAndActivateDocument' -or
+    -not $runnerGate.Contains("'-ClosedWorksetDocument', `$activeReleaseTitle") -or
+    -not $runnerGate.Contains("'-Document', `$activeReleaseTitle") -or
+    $runnerGate -notmatch 'open_all_worksets\s*=\s*\$true') {
+    Fail 'the owned runner bypasses the typed closed-workset open or hides its stable source path'
+}
 if ($ci -notmatch 'scan-sensitive\.tests\.ps1') { Fail 'CI no longer tests the narrow public-governance scanner exception' }
 if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
 if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
@@ -98,13 +111,36 @@ if ($hzCall -notmatch 'reply\.result\.structuredContent') { Fail 'hz-call no lon
 if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
     Fail 'CI install-result parsing can again read the line after an empty failed= as a failed year'
 }
-if ($ci -notmatch 'verify-release\.ps1 -Installed -AllowUnsigned -InstallResult') {
-    Fail 'CI no longer verifies the exact per-run install result with an explicit signing policy'
+if ($ci -notmatch 'verify-release\.ps1 -Installed -InstallResult' -or $ci -match 'verify-release\.ps1[^\r\n]*-AllowUnsigned') {
+    Fail 'tag-only package CI no longer verifies the exact signed install result without an unsigned fallback'
 }
-if ($ci -notmatch 'SIGNING_CERT_THUMBPRINT' -or
-    $ci -notmatch '\$requiresPublicSignature\s*=\s*\$releaseTag' -or
+if ([regex]::Matches($ci, 'signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627').Count -ne 2 -or
+    [regex]::Matches($ci, 'secrets\.SIGNPATH_API_TOKEN').Count -ne 2 -or
+    $ci -notmatch '(?s)sign-payload:.*?environment:\s*release-signing.*?runs-on:\s*windows-latest.*?SIGNPATH_API_TOKEN' -or
+    $ci -notmatch '(?s)sign-installer:.*?environment:\s*release-signing.*?runs-on:\s*windows-latest.*?SIGNPATH_API_TOKEN' -or
+    $ci -notmatch '(?s)build-stage:.*?runs-on:.*?self-hosted.*?(?:sign-payload:)' -or
+    $ci -notmatch '(?s)compile-installer:.*?runs-on:.*?self-hosted.*?(?:sign-installer:)' -or
+    $ci -match 'SIGNING_CERT_THUMBPRINT' -or
     $ci -notmatch 'Installable release contains unsigned, invalid, self-signed or untimestamped') {
-    Fail 'installable tags no longer fail closed on missing or non-public Authenticode signing'
+    Fail 'two-request hosted SignPath boundary or public Authenticode refusal has drifted'
+}
+foreach ($handoff in
+    'needs.build-stage.outputs.payload-artifact-id',
+    'needs.sign-payload.outputs.signed-payload-artifact-id',
+    'needs.compile-installer.outputs.installer-artifact-id',
+    'needs.compile-installer.outputs.package-support-artifact-id',
+    'needs.sign-installer.outputs.signed-installer-artifact-id') {
+    if ($ci -notmatch [regex]::Escape($handoff)) { Fail "release artifact-id chain is missing $handoff" }
+}
+if ([regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{').Count -ne
+    [regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{[^\r\n]+\r?\n\s+path:[^\r\n]+\r?\n\s+merge-multiple:\s*true\s*$').Count) {
+    Fail 'an artifact-id hand-off can extract beneath an unverified artifact-name directory'
+}
+foreach ($selfHostedJob in 'build-stage','compile-installer') {
+    $block = [regex]::Match($ci, "(?ms)^  ${selfHostedJob}:\s*\r?\n(?:(?!^  [a-zA-Z0-9_-]+:\s*$).)*").Value
+    if (-not $block -or $block -match 'SIGNPATH_API_TOKEN|secrets\.|environment:\s*release-signing') {
+        Fail "$selfHostedJob can receive signing credentials or its protected environment"
+    }
 }
 if ($ci -notmatch 'runs-on: windows-latest' -or
     $ci -notmatch 'not publicly trusted on a clean Windows runner' -or
@@ -114,8 +150,9 @@ if ($ci -notmatch 'runs-on: windows-latest' -or
 if ($ci -notmatch '(?s)Create or complete the stable GitHub release.*?GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}.*?gh release') {
     Fail 'stable release publication can no longer identify the repository without a checkout'
 }
-if ($ci -notmatch '(?s)requiresPublicSignature.*?startsWith\(github\.ref.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
-    Fail 'installed verification no longer reserves AllowUnsigned for untagged branch packages'
+if ($ci -notmatch '(?s)install-package:.*?startsWith\(github\.ref,\s*''refs/tags/v''\).*?verify-release\.ps1 -Installed -InstallResult' -or
+    $ci -match '(?s)install-package:.*?-AllowUnsigned') {
+    Fail 'installed verification is no longer tag-only and publicly signed'
 }
 if ($ci -notmatch 'publish-preview-release:' -or $ci -notmatch '--prerelease' -or
     $ci -notmatch 'publish-validation-release:' -or
@@ -210,7 +247,7 @@ $publicDocs = @(
     'publish/overlay/README.md','publish/overlay/AGENTS.md',
     'CODE_OF_CONDUCT.md','CODE-SIGNING-POLICY.md',
     'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md','docs/PRIVACY.md','docs/production-readiness.md',
-    'docs/RELEASE-POLICY.md','docs/requirement-set.md','docs/security-model.md','docs/TOOLS.md'
+    'docs/RELEASE-POLICY.md','docs/SIGNPATH-ONBOARDING.md','docs/requirement-set.md','docs/security-model.md','docs/TOOLS.md'
 ) | Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
 foreach ($path in $publicDocs) {
     $full = Join-Path $repo $path

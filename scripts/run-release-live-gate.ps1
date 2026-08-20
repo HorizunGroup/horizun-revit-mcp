@@ -61,9 +61,23 @@ function Invoke-HzCall([string]$tool, $arguments, [int]$timeoutSec, [switch]$Per
     $call = Join-Path $repo 'scripts\hz-call.ps1'
     $record = Join-Path $script:runRoot ("call-{0}-{1}.json" -f $tool, [guid]::NewGuid().ToString('N'))
     $argJson = $arguments | ConvertTo-Json -Depth 20 -Compress
-    $output = & pwsh -NoProfile -File $call -Tool $tool -Arguments $argJson `
-        -Server $Server -Json $record -TimeoutSec $timeoutSec -Quiet 2>&1
-    $code = $LASTEXITCODE
+    $argPath = "$record.arguments.json"
+    [IO.File]::WriteAllText($argPath, $argJson, [Text.UTF8Encoding]::new($false))
+    # A health probe is expected to fail while Revit is still starting. Under
+    # Windows PowerShell 5.1, native stderr redirected with 2>&1 becomes an
+    # ErrorRecord and `$ErrorActionPreference = 'Stop'` would abort this runner
+    # before PermitFailure can inspect the exit code. Capture it under Continue
+    # and restore the fail-closed policy immediately afterward.
+    $oldErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & pwsh -NoProfile -File $call -Tool $tool -ArgumentsPath $argPath `
+            -Server $Server -Json $record -TimeoutSec $timeoutSec -Quiet 2>&1
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $oldErrorActionPreference
+    }
     if ($output) { $output | ForEach-Object { Write-Host $_ } }
     $answer = if (Test-Path -LiteralPath $record) { Get-Content $record -Raw | ConvertFrom-Json } else { $null }
     if ($code -ne 0 -and -not $PermitFailure) {
@@ -84,10 +98,6 @@ function Wait-ForHealth([datetime]$deadline) {
         Start-Sleep -Seconds 10
     }
     throw "Revit $Year did not publish a healthy Horizun bridge within $StartupTimeoutSec seconds."
-}
-
-function Python-Quote([string]$value) {
-    return "u'" + $value.Replace('\', '\\').Replace("'", "\'") + "'"
 }
 
 if (-not (Test-Path -LiteralPath $Fixtures -PathType Leaf)) {
@@ -148,6 +158,7 @@ if ($preexisting.Count -gt 0) {
 $tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $runId = "{0}-{1}-{2}" -f $Year, ([DateTime]::UtcNow.ToString('yyyyMMddHHmmss')), ([guid]::NewGuid().ToString('N').Substring(0,8))
 $script:runRoot = Join-Path $tempBase "horizun-release-live-$runId"
+New-Item -ItemType Directory -Force -Path $script:runRoot | Out-Null
 # The bridge deliberately rejects LocalApplicationData as shared state: packaged
 # and elevated processes can resolve it to different folders. RUNNER_TEMP lives
 # there on Windows, so keep call transcripts in it but put the shared add-in /
@@ -188,63 +199,38 @@ try {
         throw "The inactive fixture did not open as '$inactiveTitle'."
     }
 
-    Stage "opening the disposable release fixture with workset '$closedWorkset' closed"
-    $pathLiteral = Python-Quote $releaseModel
-    $worksetLiteral = Python-Quote $closedWorkset
-    $python = @"
-from Autodesk.Revit.DB import BasicFileInfo, DetachFromCentralOption, FilteredWorksetCollector
-from Autodesk.Revit.DB import ModelPathUtils, OpenOptions, WorksetConfiguration, WorksetConfigurationOption
-from Autodesk.Revit.DB import WorksetId, WorksetKind, WorksharingUtils
-from System.Collections.Generic import List
-
-path = $pathLiteral
-workset_name = $worksetLiteral
-model_path = ModelPathUtils.ConvertUserVisiblePathToModelPath(path)
-preview = list(WorksharingUtils.GetUserWorksetInfo(model_path))
-matches = [w for w in preview if w.Name == workset_name]
-if len(matches) != 1:
-    raise Exception("Expected exactly one workset named '%s'; found %s" % (workset_name, len(matches)))
-
-closed_ids = List[WorksetId]()
-closed_ids.Add(matches[0].Id)
-configuration = WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets)
-configuration.Close(closed_ids)
-options = OpenOptions()
-if BasicFileInfo.Extract(path).IsCentral:
-    options.DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets
-options.SetOpenWorksetsConfiguration(configuration)
-opened = uiapp.OpenAndActivateDocument(model_path, options, False).Document
-closed = [{"id": w.Id.IntegerValue, "name": w.Name} for w in FilteredWorksetCollector(opened).OfKind(WorksetKind.UserWorkset) if not w.IsOpen]
-if len([w for w in closed if w["name"] == workset_name]) != 1:
-    raise Exception("The named workset is not closed after open: %s" % closed)
-__output__ = {
-    "status": "verified",
-    "summary": "Opened the disposable release fixture with the named workset closed",
-    "created_ids": [], "modified_ids": [], "deleted_ids": [], "warnings": [],
-    "verification": {"checked": True, "evidence": [{"active_title": opened.Title, "closed_worksets": closed}]}
-}
-"@
-    $openClosed = @{
-        code = $python
-        target_document = $inactiveTitle
-        idempotency_key = "release-runner-$runId-open-closed"
+    # Keep two documents open so the suite can prove the inactive-document
+    # refusal. Open the disposable release source normally (all worksets) and
+    # retain its stable absolute path; verify-live then copies it, opens that
+    # copy through typed document_session with one workset closed, restores this
+    # source, and closes the copy without saving. The former Python detach hid
+    # the source path as a relative *_detached.rvt name and made exact cleanup
+    # impossible.
+    Stage "opening the disposable release source with every workset loaded"
+    $inspectRelease = Invoke-HzCall 'horizun_document_session' @{
+        operation = 'inspect'; file_path = $releaseModel
+    } 90
+    $openRelease = @{
+        operation = 'open'; file_path = $releaseModel; expected_version = "$Year"
+        allow_upgrade = $false; open_all_worksets = $true
+        idempotency_key = "release-runner-$runId-open-release"
     }
-    $closedCall = Invoke-HzCall 'horizun_execute_python' $openClosed $OpenTimeoutSec
-    $activeReleaseTitle = [string]$closedCall.Answer.result.output.verification.evidence[0].active_title
-    if (-not $closedCall.Answer.result.executed -or
-        $closedCall.Answer.result.output.verification.checked -ne $true -or
-        [string]::IsNullOrWhiteSpace($activeReleaseTitle)) {
-        throw "The disposable release fixture did not open with a measured active title."
+    if ($inspectRelease.Answer.result.file.is_central -eq $true) {
+        # The fixtures file carries the explicit disposable opt-in. This model
+        # is never synchronized or saved; opening its central directly keeps the
+        # path stable so the harness can create its own temporary copy.
+        $openRelease.open_central = $true
+    }
+    $releaseCall = Invoke-HzCall 'horizun_document_session' $openRelease $OpenTimeoutSec
+    $activeReleaseTitle = [string]$releaseCall.Answer.result.title
+    if ($releaseCall.Answer.result.active_document_verified -ne $true -or
+        [string]::IsNullOrWhiteSpace($activeReleaseTitle) -or
+        $releaseCall.Answer.result.workset_configuration_satisfied -ne $true -or
+        [int]$releaseCall.Answer.result.workset_configuration_evidence.worksets_closed -ne 0) {
+        throw 'The disposable release source did not open active with measured all-worksets evidence.'
     }
 
-    $health = (Invoke-HzCall 'horizun_health' @{} 90).Answer.result
-    $active = @($health.open_documents | Where-Object { $_.is_active })
-    $inactive = @($health.open_documents | Where-Object { $_.title -eq $inactiveTitle -and -not $_.is_active })
-    if ($active.Count -ne 1 -or $active[0].title -ne $activeReleaseTitle -or $inactive.Count -ne 1) {
-        throw "Fixture state is wrong: '$activeReleaseTitle' must be the one active document and '$inactiveTitle' must be open but inactive."
-    }
-
-    Stage 'running the full release gate, including committing write probes (the model is never saved)'
+    Stage "running the full release gate; it will open '$releaseTitle' with workset '$closedWorkset' closed"
     $verify = Join-Path $repo 'scripts\verify-live.ps1'
     $verifyArgs = @(
         '-NoProfile', '-File', $verify,

@@ -217,6 +217,9 @@ namespace Horizun.Server.Tests
 
             Assert.True(activate >= 0 && scan > activate && restore > scan,
                 "closed-workset probes must run only between activation and restoration");
+            Assert.Contains("close the open source before loading its detached closed-workset copy", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("live-close-source-before-workset", text, StringComparison.Ordinal);
             Assert.True(cleanup > restore,
                 "cleanup must run after restoration was attempted, including when that attempt failed");
             Assert.Contains("$ClosedWorksetActivationReady", text, StringComparison.Ordinal);
@@ -234,6 +237,10 @@ namespace Horizun.Server.Tests
             Assert.Contains("$d.workset_configuration_evidence.applied -eq $true", text,
                             StringComparison.Ordinal);
             Assert.Contains("$d.opened_now -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("UseStructured = $true", text.Substring(restore,
+                            Math.Min(700, text.Length - restore)), StringComparison.Ordinal);
+            Assert.Contains("$d.status -eq 'opened' -and $d.opened_now -eq $true", text,
+                            StringComparison.Ordinal);
             Assert.Contains("close the closed-workset fixture opened by this harness without saving", text,
                             StringComparison.Ordinal);
             Assert.Contains("activate_other = $true", text, StringComparison.Ordinal);

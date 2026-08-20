@@ -71,6 +71,29 @@ function Get-StagedLicence([string]$relativePath) {
 $files = @(Get-ChildItem $stage -Recurse -File | Sort-Object FullName)
 if ($files.Count -eq 0) { throw 'the staged payload contains no files to inventory' }
 
+# The server redistributes a complete .NET runtime. A bag of hashed DLL paths is
+# not enough for vulnerability tooling: identify the actual NuGet runtime-pack
+# component from the published deps graph and bind it to the pinned project value.
+$depsPath = Join-Path $stage 'server\horizun-mcp.deps.json'
+if (-not (Test-Path $depsPath -PathType Leaf)) { throw 'staged server has no horizun-mcp.deps.json' }
+$deps = Get-Content $depsPath -Raw | ConvertFrom-Json
+$runtimeName = 'Microsoft.NETCore.App.Runtime.win-x64'
+$runtimePrefix = "runtimepack.$runtimeName/"
+$runtimeEntries = @($deps.libraries.PSObject.Properties |
+    Where-Object { $_.Name.StartsWith($runtimePrefix, [StringComparison]::Ordinal) })
+if ($runtimeEntries.Count -ne 1) {
+    throw "staged deps must identify exactly one $runtimeName runtime pack; found $($runtimeEntries.Count)"
+}
+$runtimeVersion = $runtimeEntries[0].Name.Substring($runtimePrefix.Length)
+$serverProject = [xml](Get-Content (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj'))
+$pinnedRuntimeVersion = [string]($serverProject.Project.PropertyGroup.RuntimeFrameworkVersion |
+    Where-Object { $_ } | Select-Object -First 1)
+if ($runtimeVersion -ne $pinnedRuntimeVersion) {
+    throw "staged runtime $runtimeVersion does not match pinned RuntimeFrameworkVersion $pinnedRuntimeVersion"
+}
+$runtimePurl = "pkg:nuget/$runtimeName@$runtimeVersion"
+$runtimeRef = $runtimePurl
+
 $components = @()
 $unknown = @()
 foreach ($file in $files) {
@@ -108,6 +131,21 @@ if ($unknown.Count -gt 0) {
 $props = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
 $version = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
 if ([string]::IsNullOrWhiteSpace($version)) { throw 'Directory.Build.props has no Version' }
+$applicationRef = "pkg:generic/horizun-revit-mcp@$version"
+
+$runtimeComponent = [ordered]@{
+    type      = 'framework'
+    'bom-ref' = $runtimeRef
+    name      = $runtimeName
+    version   = $runtimeVersion
+    purl      = $runtimePurl
+    supplier  = @{ name = 'Microsoft Corporation' }
+    licenses  = @(@{ license = @{ id = 'MIT' } })
+    properties = @(
+        @{ name = 'horizun:distribution'; value = 'redistributed self-contained runtime pack' },
+        @{ name = 'horizun:evidence'; value = 'server/horizun-mcp.deps.json' }
+    )
+}
 
 $sbom = [ordered]@{
     bomFormat   = 'CycloneDX'
@@ -118,7 +156,7 @@ $sbom = [ordered]@{
         timestamp = (Get-Date).ToUniversalTime().ToString('o')
         tools = @{ components = @(@{ type='application'; name='scripts/sbom.ps1'; version='1' }) }
         component = @{
-            type='application'; name='Horizun Revit MCP'; version=$version
+            type='application'; 'bom-ref'=$applicationRef; name='Horizun Revit MCP'; version=$version
             licenses=@(@{ license=@{ id='Apache-2.0' } })
         }
         properties = @(
@@ -126,10 +164,15 @@ $sbom = [ordered]@{
             @{ name='horizun:not-redistributed'; value='Autodesk RevitAPI.dll and RevitAPIUI.dll' }
         )
     }
-    components = $components
+    components = @($runtimeComponent) + @($components)
+    dependencies = @(
+        @{ ref = $applicationRef; dependsOn = @($runtimeRef) },
+        @{ ref = $runtimeRef; dependsOn = @() }
+    )
 }
 
 $outDir = Split-Path -Parent $OutFile
 if ($outDir -and -not (Test-Path $outDir)) { New-Item -ItemType Directory -Force $outDir | Out-Null }
 $sbom | ConvertTo-Json -Depth 10 | Out-File $OutFile -Encoding utf8
-Write-Host ("[sbom] CycloneDX 1.6: {0} files, every staged byte inventoried -> {1}" -f $components.Count, $OutFile) -ForegroundColor Green
+Write-Host ("[sbom] CycloneDX 1.6: {0} files + {1} {2}, every staged byte inventoried -> {3}" -f `
+    $components.Count, $runtimeName, $runtimeVersion, $OutFile) -ForegroundColor Green

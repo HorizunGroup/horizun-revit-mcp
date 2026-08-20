@@ -27,8 +27,9 @@
   What it needs:
 
     * Windows, with at least one Revit 2023-2027 installed.
-    * The .NET SDK (8.0+ for Revit 2023-2026; 10.0+ for Revit 2027). SDK-style
-      restore obtains the .NET Framework 4.8 reference assemblies for older Revit.
+    * The exact .NET SDK in global.json (currently 10.0.400). The SDK is fixed for
+      reproducible release bytes; targets remain net48/net8/net10 by Revit year.
+      SDK-style restore obtains the .NET Framework 4.8 references for older Revit.
     * Revit CLOSED. Revit holds a lock on the add-in DLL it loaded; this
       refuses to run while any Revit is open, and changes nothing.
 
@@ -104,16 +105,51 @@ try {
                "). It holds the add-in DLL open. Close Revit and run this again. Nothing was changed.")
     }
 
+    $requiredSdk = [string]((Get-Content -LiteralPath (Join-Path $repo 'global.json') -Raw | ConvertFrom-Json).sdk.version)
+    $isolatedSdkRoot = Join-Path $env:LOCALAPPDATA ("Programs\dotnet-sdk-$requiredSdk")
+    $isolatedDotnet = Join-Path $isolatedSdkRoot 'dotnet.exe'
     $dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
-    if (-not $dotnet) {
-        throw ("The .NET SDK is not on PATH, and this install BUILDS everything it installs. " +
-               "Install it from https://dotnet.microsoft.com/download (SDK, not just the runtime) " +
-               "and run this again. Nothing was changed.")
+    $actualSdk = ''
+    if ($dotnet) {
+        # Windows PowerShell 5.1 does not evaluate a property expression as the
+        # command operand of `&`; capture the path first or it tries to invoke
+        # the CommandInfo object itself and reports "The command could not be
+        # loaded" before the isolated-SDK fallback can run.
+        $dotnetPath = [string]$dotnet.Source
+        try {
+            $actualSdk = [string](& $dotnetPath --version 2>$null | Select-Object -First 1)
+            if ($LASTEXITCODE -ne 0) { $actualSdk = '' }
+        }
+        catch {
+            # A global.json asking for an unavailable exact SDK makes the
+            # system dotnet host write a native error. Under PS 5.1 and Stop
+            # that is terminating; it is precisely when the isolated fallback
+            # below must be tried.
+            $actualSdk = ''
+        }
     }
-    # An SDK answers `dotnet --version`; a runtime-only install does not.
-    & dotnet --version *> $null
-    if ($LASTEXITCODE -ne 0) {
-        throw "dotnet is on PATH but reports no SDK. Install the .NET SDK and run this again. Nothing was changed."
+    $actualSdk = $actualSdk.Trim()
+    if ($actualSdk -ne $requiredSdk -and (Test-Path -LiteralPath $isolatedDotnet -PathType Leaf)) {
+        $isolatedVersion = ''
+        try {
+            $isolatedVersion = [string](& $isolatedDotnet --version 2>$null | Select-Object -First 1)
+        }
+        catch { $isolatedVersion = '' }
+        # The exact version string is the success criterion. Windows PowerShell
+        # can retain the previous native process' LASTEXITCODE after a caught
+        # host-selection failure even though this isolated invocation succeeded.
+        if ($isolatedVersion.Trim() -eq $requiredSdk) {
+            $env:DOTNET_ROOT = $isolatedSdkRoot
+            $env:PATH = "$isolatedSdkRoot;$env:PATH"
+            $dotnet = Get-Command dotnet -ErrorAction Stop
+            $actualSdk = $isolatedVersion.Trim()
+        }
+    }
+    if ($actualSdk -ne $requiredSdk) {
+        $reported = if ($actualSdk) { $actualSdk } else { 'none' }
+        throw ("The build requires .NET SDK $requiredSdk from global.json, but dotnet selected $reported. " +
+               "Install that exact SDK from https://dotnet.microsoft.com/download or place its official ZIP under " +
+               "$isolatedSdkRoot. Nothing was changed.")
     }
 
     # =========================================================================
@@ -223,25 +259,24 @@ try {
     $serverStage = $null
     if (-not $SkipServer) {
         Write-Host ""
-        Write-Host "--- building the MCP server" -ForegroundColor Yellow
-        & dotnet restore (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') --locked-mode --nologo
-        if ($LASTEXITCODE -ne 0) { throw "Locked server restore failed. NOTHING was installed." }
-        & dotnet build (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config --no-restore -v quiet --nologo
-        if ($LASTEXITCODE -ne 0) { throw "Server build failed. NOTHING was installed." }
-
-        $serverBin = Join-Path $repo "src\Horizun.Server\bin\$Config\net8.0"
-        if (-not (Test-Path (Join-Path $serverBin 'horizun-mcp.exe'))) {
-            throw "No server build at $serverBin. NOTHING was installed."
-        }
+        Write-Host "--- publishing the MCP server (win-x64, self-contained)" -ForegroundColor Yellow
         $serverStage = Join-Path $stagingRoot 'server'
         New-Item -ItemType Directory -Path $serverStage -Force | Out-Null
-        Get-ChildItem $serverBin -File | ForEach-Object { Copy-Item $_.FullName $serverStage -Force }
+        & dotnet publish (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config `
+            -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false `
+            -p:RestoreLockedMode=true -o $serverStage --nologo -v quiet
+        if ($LASTEXITCODE -ne 0) { throw "Self-contained server publish failed. NOTHING was installed." }
+        foreach ($requiredRuntimeFile in 'horizun-mcp.exe','horizun-mcp.dll','hostfxr.dll','hostpolicy.dll') {
+            if (-not (Test-Path (Join-Path $serverStage $requiredRuntimeFile) -PathType Leaf)) {
+                throw "Self-contained server publish is missing $requiredRuntimeFile. NOTHING was installed."
+            }
+        }
         $clientTools = Join-Path $serverStage 'client-tools'
         New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
         foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1') {
             Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
         }
-        Write-Host "    staged  server"
+        Write-Host "    staged  self-contained server"
     }
 
     # =========================================================================

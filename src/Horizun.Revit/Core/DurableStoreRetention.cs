@@ -43,6 +43,12 @@ namespace Horizun.Revit.Core
 
     public static class DurableStoreRetention
     {
+        // New installations must not accumulate successful async results forever.
+        // These defaults apply only when BOTH job keys are absent. Any explicit
+        // setting, including 0, keeps the historical operator-selected semantics.
+        public const int DefaultJobRetentionDays = 30;
+        public const long DefaultJobMaxBytes = 1024L * 1024 * 1024;
+
         private sealed class Candidate
         {
             public string Path;
@@ -439,10 +445,25 @@ namespace Horizun.Revit.Core
             days = 0;
             maxBytes = 0;
             error = null;
-            if (get == null) return true;
+            if (get == null)
+            {
+                if (prefix == "job")
+                {
+                    days = DefaultJobRetentionDays;
+                    maxBytes = DefaultJobMaxBytes;
+                }
+                return true;
+            }
 
             string daysText = get(prefix + "_retention_days");
             string bytesText = get(prefix + "_max_bytes");
+            if (prefix == "job" && string.IsNullOrWhiteSpace(daysText) &&
+                string.IsNullOrWhiteSpace(bytesText))
+            {
+                days = DefaultJobRetentionDays;
+                maxBytes = DefaultJobMaxBytes;
+                return true;
+            }
             if (!string.IsNullOrWhiteSpace(daysText) &&
                 (!int.TryParse(daysText, NumberStyles.Integer, CultureInfo.InvariantCulture, out days) || days < 0))
             {

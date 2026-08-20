@@ -45,6 +45,19 @@ redistribution.
 This is the obligation this repository had not previously named anywhere, and it
 is the largest single body of third-party code it ships.
 
+`scripts/audit-python-stdlib.ps1` inventories and hashes that staged library,
+requires the 614-file Python set and the pinned non-Python distribution set,
+compares every byte across the five Revit-year payloads, checks the package and
+licence declarations, and applies documented high-confidence static risk rules.
+It can emit JSON and SARIF and returns a failing invocation on any finding. This is
+reproducible static triage, not a legal review, semantic source audit,
+vulnerability guarantee or runtime sandbox.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/audit-python-stdlib.ps1 `
+  -Json dist/python-stdlib-audit.json -Sarif dist/python-stdlib-audit.sarif
+```
+
 ## Redistributed with the MCP server
 
 | Component | Version | Licence |

@@ -27,6 +27,10 @@ param(
     [Parameter(Mandatory = $true)][string]$Tool,
     # JSON object. Defaults to no arguments.
     [string]$Arguments = '{}',
+    # Exact transport for callers that launch a separate PowerShell process.
+    # JSON quotes and Windows paths are not reliably preserved through the
+    # native Windows command line.
+    [string]$ArgumentsPath,
     [string]$Server,
     [string]$Json,
     # Seconds to wait for the reply. A model scan or a long script needs more
@@ -41,7 +45,13 @@ if (-not $Server) {
 }
 if (-not (Test-Path $Server)) { throw "MCP server not found: $Server" }
 
-try { $argObj = $Arguments | ConvertFrom-Json } catch { throw "-Arguments must be a JSON object: $($_.Exception.Message)" }
+if ($ArgumentsPath) {
+    if (-not (Test-Path -LiteralPath $ArgumentsPath -PathType Leaf)) {
+        throw "-ArgumentsPath does not exist: $ArgumentsPath"
+    }
+    $Arguments = Get-Content -LiteralPath $ArgumentsPath -Raw
+}
+try { $argObj = $Arguments | ConvertFrom-Json } catch { throw "arguments must be a JSON object: $($_.Exception.Message)" }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Server

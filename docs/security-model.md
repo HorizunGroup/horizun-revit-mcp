@@ -190,12 +190,17 @@ full terminal result is appended afterward. This survives Revit and MCP-server
 restarts. A torn claim is not guessed: it remains `in_doubt` until a human
 inspects the model. Records can contain returned model data. Retention is
 configurable in `settings.json` with `idempotency_retention_days`,
-`idempotency_max_bytes`, `job_retention_days` and `job_max_bytes`. The compatible
-default is `0` for both limits — keep forever. Cleanup removes only valid terminal
-records; active jobs, claim-only/`in_doubt` records, corrupt files and the key
-currently being claimed are never selected. A malformed policy fails closed and
-keeps everything. Operators handling sensitive model data should set explicit
-time and size limits and protect the directory independently.
+`idempotency_max_bytes`, `job_retention_days` and `job_max_bytes`. When neither
+job key has been configured, terminal jobs are bounded to 30 days and 1 GiB by
+default. Existing operator choices remain compatible: setting either job key
+uses the explicit values (a missing companion is zero), and explicit zero/zero
+keeps jobs forever. Idempotency records retain their historical default of
+forever because a claim may be the only evidence preventing a duplicate write.
+Cleanup removes only valid terminal records; active jobs, claim-only/`in_doubt`
+records, corrupt files and the key currently being claimed are never selected.
+A malformed settings file or policy fails closed and keeps everything. Operators
+handling sensitive model data should set explicit time and size limits and
+protect the directory independently.
 
 ### 3b. Bounded outbound Power BI delivery
 
@@ -238,9 +243,12 @@ transaction-reversible typed commands are accepted and one failure rolls back
 the whole graph. The fingerprint includes the Revit year, so the same file open
 in two versions is two documents.
 
-**Stated limitation.** The token binds the *request*, not the element set the
-rehearsal found. In purge mode the same request can match a different set once the
-model moves, and that would still be accepted.
+The token always binds the request. Commands that resolve a mutable element set
+during rehearsal additionally bind a canonical resolved-plan fingerprint and
+re-resolve it at apply time; a different set is rejected as a stale plan. A
+command without a resolved-plan binding says so explicitly in its confirmation
+note. The remaining release evidence is the live Revit 2023–2027 matrix, not an
+unqualified claim that every API resolver behaves identically across releases.
 
 ## 5. Multiple Revit instances
 
@@ -273,16 +281,28 @@ wrong session is a correct edit to the wrong model.
 
 Every redistributed file is inventoried with its licence and SHA-256 in the
 CycloneDX 1.6 `dist/sbom.json`, generated from the payload that actually ships
-rather than from the project file. Tagged artifacts receive GitHub/Sigstore build
-provenance plus an SBOM attestation. See
+rather than from the project file. The self-contained server runtime is also a
+versioned `Microsoft.NETCore.App.Runtime.win-x64` framework component with a NuGet
+PURL and dependency edge from the application; its patch must match the pinned
+`RuntimeFrameworkVersion` before packaging succeeds. The repository SDK is fixed
+by `global.json`. The current baseline is SDK 10.0.400 and server runtime 8.0.30,
+from Microsoft's [August 11, 2026 security update](https://github.com/dotnet/core/issues/10527)
+and [.NET 10.0.11 release](https://github.com/dotnet/core/blob/main/release-notes/10.0/10.0.11/10.0.11.md).
+Tagged artifacts receive GitHub/Sigstore build provenance plus an SBOM attestation. See
 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md).
 
-CI runs `dotnet list package --vulnerable --include-transitive` for the server,
-add-in and both test projects. Any clean result is a snapshot of the advisory
-sources at that run, not a permanent guarantee.
+`scripts/audit-dependencies.ps1` performs locked restores and runs NuGet's
+transitive vulnerability audit for the server, both test projects and every
+conditional Revit graph from 2023 through 2027. Any clean result is a snapshot
+of the configured advisory sources at that run, not a permanent guarantee.
 
-The largest third-party surface is the 614-file IronPython standard library, and
-nothing in this repository audits it.
+The largest third-party surface is the 614-file IronPython standard library.
+`scripts/audit-python-stdlib.ps1` now audits the bytes actually staged: it pins
+the Python and non-Python file sets, hashes and compares them across all five
+Revit-year payloads, verifies the package/licence declarations, and applies a
+small documented set of high-confidence static risk rules. JSON and SARIF make
+the result archivable. This is deterministic triage, not proof that the library
+is vulnerability-free or safe under arbitrary runtime inputs.
 
 ## 8. Code signing and public trust
 
@@ -324,11 +344,15 @@ replace it.
 
 - Arbitrary Python remains an explicit privileged bypass (§3), but is off by
   default and temporary ribbon grants expire automatically.
-- Nothing audits the Python standard library that ships in every payload.
-- Confirmation binds the request and the rehearsed resolved element set; the live
-  release matrix still has to prove that invariant for every supported Revit year (§4).
+- The shipped Python standard library has deterministic file/hash and static-risk
+  triage, but not a comprehensive semantic audit or Python-specific vulnerability
+  feed. A clean scan is evidence for its explicit rules, not a safety guarantee.
+- Confirmation binds the request; resolved-plan-capable commands also bind the
+  rehearsed element set. The live release matrix still has to prove those
+  command-specific invariants for every supported Revit year (§4).
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
 - No publicly trusted code-signing identity (§8).
-- Durable job/idempotency records may contain result data. Their compatible
-  default retains forever until the operator sets the time/size limits (§3a).
+- Durable job/idempotency records may contain result data. Terminal jobs are
+  bounded by default; idempotency records and explicitly configured zero/zero
+  job retention remain forever until the operator sets limits (§3a).

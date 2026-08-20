@@ -266,6 +266,19 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Raw retention setting with malformed-file provenance preserved. Returning
+        /// null means the owner never selected this key and bounded defaults may apply;
+        /// an unreadable settings file returns a deliberately invalid value so retention
+        /// fails closed instead of mistaking corruption for absence and deleting data.
+        /// </summary>
+        public static string RetentionValue(string key)
+        {
+            FileState state;
+            JObject o = Read(out state);
+            return state == FileState.Malformed ? "invalid-settings-file" : o?.Value<string>(key);
+        }
+
+        /// <summary>
         /// Three states, because two of them look identical and must not act identical:
         /// an ABSENT file means "the owner never chose" and the defaults apply, while a
         /// MALFORMED file may be a corrupted explicit choice and everything falls closed.

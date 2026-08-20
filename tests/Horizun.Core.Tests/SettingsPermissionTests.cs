@@ -205,9 +205,21 @@ namespace Horizun.Core.Tests
             {
                 Assert.Equal("read_only", Settings.PermissionProfile);
                 Assert.False(Settings.ExecutePythonEnabled);
+                Assert.Equal("invalid-settings-file", Settings.RetentionValue("job_retention_days"));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_create_elements"), out _));
             });
+        }
+
+        [Fact]
+        public void RetentionReaderDistinguishesMissingPolicyFromCorruptSettings()
+        {
+            WithoutSettingsFile(() =>
+                Assert.Null(Settings.RetentionValue("job_retention_days")));
+            WithSettings("{}", () =>
+                Assert.Null(Settings.RetentionValue("job_retention_days")));
+            WithSettings("{ this is not json", () =>
+                Assert.Equal("invalid-settings-file", Settings.RetentionValue("job_retention_days")));
         }
 
         private static void WithSettings(string json, Action action)

@@ -127,6 +127,26 @@ foreach ($requiredRuntimeFile in 'horizun-mcp.exe','horizun-mcp.dll','hostfxr.dl
         throw "self-contained server publish is missing $requiredRuntimeFile"
     }
 }
+$serverProject = [xml](Get-Content (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj'))
+$expectedServerRuntime = [string]($serverProject.Project.PropertyGroup.RuntimeFrameworkVersion |
+    Where-Object { $_ } | Select-Object -First 1)
+if ([string]::IsNullOrWhiteSpace($expectedServerRuntime)) {
+    throw 'Horizun.Server.csproj must pin RuntimeFrameworkVersion for the redistributed self-contained runtime'
+}
+$serverDepsPath = Join-Path $serverBin 'horizun-mcp.deps.json'
+if (-not (Test-Path $serverDepsPath)) { throw 'self-contained server publish is missing horizun-mcp.deps.json' }
+$serverDeps = Get-Content $serverDepsPath -Raw | ConvertFrom-Json
+$runtimePrefix = 'runtimepack.Microsoft.NETCore.App.Runtime.win-x64/'
+$runtimeEntries = @($serverDeps.libraries.PSObject.Properties |
+    Where-Object { $_.Name.StartsWith($runtimePrefix, [StringComparison]::Ordinal) })
+if ($runtimeEntries.Count -ne 1) {
+    throw "published deps must identify exactly one $runtimePrefix component; found $($runtimeEntries.Count)"
+}
+$serverRuntimeVersion = $runtimeEntries[0].Name.Substring($runtimePrefix.Length)
+if ($serverRuntimeVersion -ne $expectedServerRuntime) {
+    throw "self-contained publish resolved runtime $serverRuntimeVersion, expected pinned $expectedServerRuntime"
+}
+Step "  pinned Microsoft.NETCore.App.Runtime.win-x64 $serverRuntimeVersion"
 $clientTools = Join-Path $stage 'server\client-tools'
 New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
 Copy-Item (Join-Path $repo 'scripts\register-client.ps1') $clientTools -Force
@@ -271,6 +291,11 @@ $doc = [pscustomobject]@{
         Size    = $serverItem.Length
         SelfContained = $true
         RuntimeIdentifier = 'win-x64'
+        RuntimeComponent = [pscustomobject]@{
+            Name = 'Microsoft.NETCore.App.Runtime.win-x64'
+            Version = $serverRuntimeVersion
+            Purl = "pkg:nuget/Microsoft.NETCore.App.Runtime.win-x64@$serverRuntimeVersion"
+        }
         # The rest of the server directory: Newtonsoft, the runtimeconfig, the deps
         # file. horizun-mcp.exe was the only one recorded, and it is an apphost -
         # the code that runs is in horizun-mcp.dll, which the manifest never named.
