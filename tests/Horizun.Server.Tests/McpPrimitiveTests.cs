@@ -627,6 +627,10 @@ namespace Horizun.Server.Tests
         [Fact]
         public void Locked_orphan_snapshot_counts_against_the_aggregate_store_budget()
         {
+            // Windows denies delete/open under FileShare.None; Unix deliberately
+            // permits unlinking an open inode. The production bridge is Windows-only,
+            // and the hosted Linux gate cannot manufacture Windows share semantics.
+            if (!OperatingSystem.IsWindows()) return;
             WithDataRoot(() =>
             {
                 string directory = Path.Combine(HorizunPaths.DataRoot(), "mcp-tasks");
@@ -650,6 +654,7 @@ namespace Horizun.Server.Tests
         [Fact]
         public void Expired_task_keeps_its_sidecar_when_snapshot_cannot_be_deleted()
         {
+            if (!OperatingSystem.IsWindows()) return;
             WithDataRoot(() =>
             {
                 JObject first = McpTasks.Create(new JObject

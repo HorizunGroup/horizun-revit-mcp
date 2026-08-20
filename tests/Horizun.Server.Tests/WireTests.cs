@@ -390,7 +390,11 @@ namespace Horizun.Server.Tests
                     }, CancellationToken.None, 20));
                 }
 
-                Assert.Equal(HostCallRunner.MaxOutstandingTasks, entered);
+                // A constrained Unix thread pool may not start every deliberately
+                // blocked Task before the 20 ms caller deadlines expire. Admission
+                // leases are acquired before Task.Run, so the safety property is the
+                // full lease count and refusal below, not scheduler eagerness.
+                Assert.InRange(entered, 1, HostCallRunner.MaxOutstandingTasks);
                 Assert.Equal(HostCallRunner.MaxOutstandingTasks, HostCallRunner.OutstandingTaskCount);
 
                 bool extraEntered = false;
