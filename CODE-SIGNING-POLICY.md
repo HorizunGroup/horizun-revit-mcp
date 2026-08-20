@@ -1,21 +1,20 @@
 # Code signing policy
 
 Horizun Revit MCP is free and open-source software released under Apache-2.0.
-Every installable Windows release must use **free code signing provided by
+Every 1.0+ installable Windows release must use **free code signing provided by
 [SignPath.io](https://signpath.io/), certificate by
 [SignPath Foundation](https://signpath.org/)**.
 
 ## Current status
 
 The SignPath Foundation application was submitted on 2026-08-15 and is awaiting
-review. Legacy unsigned artifacts are not accepted by the release bootstrap:
-automatic binary publication and release installation resume only after SignPath has issued
-the public identity and a release is validly signed and timestamped. Source
-installation remains available because it compiles locally and does not cross
-this download trust boundary. A release may only claim SignPath signing after the
-public signature gate has verified the exact published bytes on a clean Windows
-runner.
-Until then, only source and validation-only releases without binary assets are allowed.
+review. Official 0.x releases may carry an unsigned installer only with an
+unmissable disclosure, a full SHA-256 manifest, the five-year live matrix and an
+explicit `-AllowUnsigned` acknowledgement in the bootstrap. That verifies byte
+identity, not publisher identity. Invalid or self-signed public artifacts remain
+forbidden. A release may only claim SignPath signing after the public signature
+gate has verified the exact published bytes on a clean Windows runner. Version
+1.0 and later fail closed without that identity and timestamp.
 
 ## Scope
 
@@ -57,15 +56,15 @@ re-signed as Horizun binaries.
   local-certificate path remains only for development; it cannot satisfy the
   SignPath publisher gate and is never a public release fallback.
 - Every stable release requires a complete live verification matrix for Revit
-  2023 through 2027. Every installable release requires signing approval.
+  2023 through 2027. Every 1.0+ installable release requires signing approval.
 - CI generates a CycloneDX SBOM, full SHA-256 manifest, release checksums and
   GitHub build-provenance attestations.
 - A disposable GitHub-hosted Windows runner verifies Authenticode public trust,
   trusted timestamps and the absence of self-signed own binaries before
   publication.
-- A failed install, rollback or required live test blocks publication. A failed or
-  missing signature or timestamp blocks every installable release; there is no
-  unsigned binary exception. Validation-only tags carry no assets.
+- A failed install, rollback or required live test blocks publication. A failed
+  or malformed signature always blocks publication. Missing signatures are
+  permitted only for disclosed 0.x releases; 1.0+ has no exception.
 
 The detailed mechanical gates are documented in
 [`docs/RELEASE-POLICY.md`](docs/RELEASE-POLICY.md).

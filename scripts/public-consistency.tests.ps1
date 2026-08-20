@@ -174,7 +174,8 @@ if (Test-Path (Join-Path $repo 'publish/make-public-package.ps1')) {
 }
 
 $readme = Get-Content (Join-Path $repo 'README.md') -Raw
-if ($readme -notmatch 'irm https://raw\.githubusercontent\.com/HorizunGroup/horizun-revit-mcp/main/install-release\.ps1 \| iex') {
+if ($readme -notmatch '\[scriptblock\]::Create\(\$s\)\) -AllowUnsigned' -or
+    $readme -notmatch 'raw\.githubusercontent\.com/HorizunGroup/horizun-revit-mcp/main/install-release\.ps1') {
     Fail 'the public README no longer offers the one-paste release installer'
 }
 
@@ -206,7 +207,8 @@ if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code
     Fail 'README no longer exposes the required SignPath code-signing statement and policy'
 }
 if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or
-    $signingPolicy -notmatch 'only source and validation-only releases without binary assets are allowed' -or
+    $signingPolicy -notmatch 'Official 0\.x releases may carry an unsigned installer' -or
+    $signingPolicy -notmatch 'Version\s+1\.0 and later fail closed' -or
     $signingPolicy -notmatch 'separate GitHub runner groups' -or
     $signingPolicy -notmatch 'docs/PRIVACY\.md') {
     Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'

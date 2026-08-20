@@ -3,6 +3,24 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.9.5 — 2026-08-20
+
+- **Deep multi-agent hardening.** Typed plan execution now fails closed on
+  partial/rolled-back children; document identity, workset configuration,
+  relinquish, schedule postconditions and Python stream/observer isolation are
+  verified instead of inferred. Host calls, task persistence, images, job
+  records and retention have bounded, durable failure semantics.
+- **Supply-chain and installation hardening.** Pull requests never reach
+  persistent Revit/signing hosts; release hand-offs use immutable artifact IDs;
+  dependencies, the embedded .NET 8.0.30 runtime and all 614 IronPython stdlib
+  files are inventoried/audited. Installation verifies exact hidden/extra files,
+  AddInId identity, reparse confinement and rollback generations.
+- **Official pre-1.0 unsigned release.** SignPath acceptance is still pending.
+  The 0.9.5 installer is therefore disclosed as unsigned, carries full hashes,
+  SBOM and Revit 2023–2027 live evidence, and requires the explicit bootstrap
+  switch `-AllowUnsigned`. This is byte verification, not public publisher
+  authentication; 1.0+ remains fail-closed without public Authenticode trust.
+
 ## v0.9.0 — 2026-08-15
 
 - **Public release trust state.** By owner decision, 0.9.0 ships without a

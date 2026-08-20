@@ -24,7 +24,9 @@ is a public release.
   implemented; the external project identifiers, policies and credential remain
   unavailable until the application is accepted.
 - A bootstrap that verifies Authenticode publisher identity independently of a
-  checksum downloaded from the same release.
+  checksum downloaded from the same release. For disclosed 0.x releases only,
+  an explicit `-AllowUnsigned` acknowledgement permits checksum-verified bytes
+  while warning that publisher identity is unavailable.
 - Separation between untrusted pull-request jobs, Revit integration runners and the
   signing runner, with immutable GitHub Actions references.
 - Safe capability defaults: typed in-model writes available, document/external side
@@ -43,7 +45,7 @@ is a public release.
 | Server tests | 350/350 on 2026-08-20 | repository/CI |
 | Windows deployment suites | 14/14 on 2026-08-20, each child exit code enforced | repository/CI |
 | Revit API compile | 2023–2027, 0 warnings/errors on 2026-08-20 | local licensed runner |
-| Live Revit matrix | not yet published for this candidate | Revit runners + fixtures |
+| Live Revit matrix | local candidate gate passed 86/86 in each of 2023–2027; the release must attach the five exact reports | Revit runners + fixtures |
 | SignPath request integration and public identity | workflow integrated and pinned; external project/identity unavailable | repository + external SignPath project/credentials |
 | Clean-machine public trust | blocked until a public identity exists | disposable hosted runner |
 | GitHub repository controls | secret scanning and push protection enabled; two administrators; protected `release-signing` environment and immutable `v*` tag ruleset created on 2026-08-20 | repository administrators |
@@ -55,11 +57,12 @@ substitute for the remaining rows.
 
 ## Release decision
 
-- **Stable:** blocked until public signing, clean-machine trust and the five-year
-  live matrix pass.
-- **Preview with binaries:** also blocked until public signing; it may omit the
-  complete live matrix and never replaces `latest`, but it cannot bypass the
-  bootstrap's trust boundary.
+- **Stable 0.x:** allowed unsigned only with explicit disclosure,
+  `-AllowUnsigned`, exact hashes/SBOM and a complete attached five-year live
+  matrix. It is official but not publicly authenticated or certified.
+- **Stable 1.0+:** blocked until public signing and clean-machine trust pass.
+- **Preview with binaries:** follows the same signing rule for its major version
+  and never replaces `latest`.
 - **Source/validation commit:** allowed when repository gates pass; it carries no
   installation or certification claim.
 
@@ -80,6 +83,6 @@ substitute for the remaining rows.
 4. Build/sign the release, install it on a disposable clean Windows account, and run
    `scripts/verify-release.ps1 -Installed` without `-AllowUnsigned`.
 
-Until those actions exist as attached evidence, the correct release verdict is
-**source-validated, with binary signing integration externally blocked**, not
-“certified” or “ready to publish binaries”.
+Until those actions exist, the correct 0.x verdict is **official unsigned
+pre-1.0 release; source and live validated, publisher identity pending**, not
+“certified”.

@@ -48,7 +48,7 @@ guessing.
 // horizun_health, abbreviated
 {
   "status": "healthy",
-  "horizun_version": "0.9.0",
+  "horizun_version": "0.9.5",
   "horizun_commit": "ced1aa1",
   "built_from_clean_tree": true,
   "revit_version": "2026",
@@ -79,11 +79,13 @@ Every installable release carries a payload `manifest.json`,
 `package-hashes.json` and an [SBOM](https://cyclonedx.org/). Stable releases also
 carry one live verification report per supported Revit year.
 
-> **Read this before you run it.** Automatic release installation requires a
-> publicly trusted, timestamped Horizun signature. While that identity is still
-> under review, the project publishes source/validation releases without
-> installers; source installation remains available. There is no unsigned binary
-> exception under the [code signing policy](CODE-SIGNING-POLICY.md). The intended open-source service is:
+> **Read this before you run it.** Version 0.x is an official pre-1.0 release,
+> but its Windows binaries are currently **unsigned** while the public identity
+> is under review. SHA-256 verifies the downloaded bytes against the release; it
+> does not authenticate the publisher. The bootstrap therefore requires the
+> explicit `-AllowUnsigned` acknowledgement shown below. Windows/Revit may show
+> an unknown-publisher warning. Version 1.0+ has no unsigned exception under the
+> [code signing policy](CODE-SIGNING-POLICY.md). The intended open-source service is:
 > **Free code signing provided by SignPath.io, certificate by SignPath Foundation.**
 > The application is under review; this is not a claim that a signed download is
 > currently available.
@@ -93,7 +95,7 @@ complete SHA-256 against that same GitHub release, installs quietly and finishes
 client registration:
 
 ```powershell
-irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1 | iex
+$s = irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1; & ([scriptblock]::Create($s)) -AllowUnsigned
 ```
 
 Download it first and pass `-Version <tag>` to pin a release, or `-Interactive`

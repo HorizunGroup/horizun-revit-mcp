@@ -47,7 +47,7 @@ jobs:
         env:
           EnableWindowsTargeting: true
         shell: pwsh
-        run: pwsh scripts/audit-dependencies.ps1
+        run: pwsh scripts/audit-dependencies.ps1 -SkipRevit
 
       - name: Scan for sensitive names
         shell: pwsh
@@ -99,3 +99,5 @@ jobs:
             pwsh -NoProfile -File $script
             if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE" }
           }
+          pwsh -NoProfile -File scripts/audit-dependencies.ps1
+          if ($LASTEXITCODE -ne 0) { throw "dependency audit failed with exit code $LASTEXITCODE" }

@@ -8,7 +8,8 @@
 [CmdletBinding()]
 param(
     [ValidateSet(2023, 2024, 2025, 2026, 2027)]
-    [int[]]$RevitYears = @(2023, 2024, 2025, 2026, 2027)
+    [int[]]$RevitYears = @(2023, 2024, 2025, 2026, 2027),
+    [switch]$SkipRevit
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,13 +62,17 @@ try {
     Invoke-DependencyAudit 'tests\Horizun.Core.Tests\Horizun.Core.Tests.csproj' 'core tests' @()
     Invoke-DependencyAudit 'tests\Horizun.Server.Tests\Horizun.Server.Tests.csproj' 'server tests' @()
 
-    foreach ($year in $RevitYears) {
-        [Environment]::SetEnvironmentVariable('RevitYear', [string]$year, 'Process')
-        Invoke-DependencyAudit 'src\Horizun.Revit\Horizun.Revit.csproj' "Revit $year add-in" @("-p:RevitYear=$year")
+    if (-not $SkipRevit) {
+        foreach ($year in $RevitYears) {
+            [Environment]::SetEnvironmentVariable('RevitYear', [string]$year, 'Process')
+            Invoke-DependencyAudit 'src\Horizun.Revit\Horizun.Revit.csproj' "Revit $year add-in" @("-p:RevitYear=$year")
+        }
     }
 }
 finally {
     [Environment]::SetEnvironmentVariable('RevitYear', $oldYear, 'Process')
 }
 
-Write-Host "[PASS] dependency audit covered server/tests and Revit years $($RevitYears -join ', ')" -ForegroundColor Green
+$coverage = if ($SkipRevit) { 'server/tests; Revit graphs are delegated to the hosted Windows gate' }
+            else { "server/tests and Revit years $($RevitYears -join ', ')" }
+Write-Host "[PASS] dependency audit covered $coverage" -ForegroundColor Green

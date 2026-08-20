@@ -307,12 +307,13 @@ is vulnerability-free or safe under arbitrary runtime inputs.
 ## 8. Code signing and public trust
 
 The package pipeline reports the signature state; a release must never imply a
-public trust chain it does not carry. Stable tags fail closed unless every own
-payload binary and the setup wrapper have a valid, non-self-signed Authenticode
-signature. The signing key is provisioned outside the repository on the release
+public trust chain it does not carry. Version 1.0+ tags fail closed unless every
+own payload binary and the setup wrapper have a valid, non-self-signed
+Authenticode signature. A disclosed 0.x release may be unsigned and requires an
+explicit bootstrap opt-in; its hashes prove byte identity but not publisher
+identity. The signing key is provisioned outside the repository on the release
 runner. Public trust and timestamps are then checked again on a clean Microsoft-
-hosted Windows runner, and installed release verification has no unsigned
-exception. The source
+hosted Windows runner. The source
 installer also supports an explicit, per-user self-signing workflow
 (`scripts/self-sign.ps1`):
 
@@ -334,9 +335,9 @@ installer also supports an explicit, per-user self-signing workflow
 
 A self-signed certificate is useful only on accounts that explicitly trust it; it
 does not establish publisher identity on a clean third-party machine. Until a
-public signing identity is provisioned, branch artifacts may use the explicit
-unsigned development policy, but **no stable or preview binary may be published
-without public trust**. Validation-only tags contain no executable assets.
+public signing identity is provisioned, 0.x release artifacts may use the
+explicit disclosed unsigned policy. Version 1.0+ may not be published without
+public trust. Validation-only tags contain no executable assets.
 SHA-256, manifest and attestations complement publisher identity; they do not
 replace it.
 

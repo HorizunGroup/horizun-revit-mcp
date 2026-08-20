@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year, publicly trusted signing and security gates green | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year; 0.x may be explicitly unsigned, 1.0+ requires public signing | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -37,13 +37,15 @@ platform controls are on.
 
 Signing and public trust are separate facts. A self-signed or privately trusted
 certificate can prove byte identity in a controlled environment but does not make
-Windows trust the publisher on a clean machine. Every installable release requires
+Windows trust the publisher on a clean machine. Every 1.0+ installable release requires
 a publicly trusted, non-self-signed Authenticode identity: CI signs the staged
 Horizun binaries and installer wrapper, timestamps them, re-validates public trust
 on a disposable Microsoft-hosted Windows runner, and verifies installed bytes
 without `-AllowUnsigned`. Missing identity, signature, timestamp or trust blocks
-stable and preview binaries at every version. Validation-only remains available
-because it publishes no executable asset.
+stable and preview binaries. For 0.x only, a missing signature is allowed when
+the release and bootstrap disclose it, SHA-256/manifest verification passes, the
+five-year live matrix is attached and installation explicitly opts in with
+`-AllowUnsigned`. Invalid or self-signed public artifacts are never accepted.
 
 The preferred no-cost public identity is SignPath Foundation. Its governance,
 team roles, privacy statement and origin requirements are defined in the

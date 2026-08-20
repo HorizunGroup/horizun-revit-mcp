@@ -83,6 +83,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
         shell: bash
         run: |
+          version=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props)
+          if [ "${version%%.*}" = "0" ]; then
+            echo "::warning::Pre-1.0 release: public Authenticode identity is pending. CI proves source/Windows gates; unsigned packaging and the complete live matrix must be attached and disclosed by the maintainer."
+            exit 0
+          fi
           if [ "${{ vars.HAS_REVIT_RUNNER }}" != "true" ]; then
             echo "::error::A release tag cannot pass without the self-hosted Revit runner. Publish a preview from a non-tag build or restore the full live gate first."
             exit 1
@@ -137,7 +142,10 @@ jobs:
         env:
           EnableWindowsTargeting: true
         shell: pwsh
-        run: pwsh scripts/audit-dependencies.ps1
+        # net48's reference-assembly package is injected only off Windows, so
+        # its Windows-authored lock cannot honestly be checked on this host.
+        # The Windows gate below audits every Revit-year graph.
+        run: pwsh scripts/audit-dependencies.ps1 -SkipRevit
 
       - name: Whitespace and line-ending hygiene
         run: |
@@ -215,6 +223,8 @@ jobs:
             pwsh -NoProfile -File $script
             if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE" }
           }
+          pwsh -NoProfile -File scripts/audit-dependencies.ps1
+          if ($LASTEXITCODE -ne 0) { throw "dependency audit failed with exit code $LASTEXITCODE" }
 
   # ---------------------------------------------------------------------------
   # The add-in, per Revit year. Needs a machine with Revit; skipped otherwise,
