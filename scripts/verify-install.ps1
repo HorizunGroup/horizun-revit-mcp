@@ -50,12 +50,51 @@ $livePending = $false
 $health = $null
 $horizunAddInId = 'b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30'
 
+trap {
+    $fatal = ($_ | Out-String).Trim()
+    if ($Json) {
+        try {
+            $dir = Split-Path -Parent $Json
+            if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+                New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            }
+            [pscustomobject]@{
+                state = 'verification_error'
+                checked_at = [DateTimeOffset]::UtcNow.ToString('o')
+                server_path = $ServerPath
+                manifest_path = $ManifestPath
+                checks = $checks.ToArray()
+                problems = @($problems.ToArray()) + $fatal
+                health = $health
+            } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Json -Encoding UTF8
+        } catch {
+            Write-Error "Could not persist the verifier failure report: $($_.Exception.Message)" -ErrorAction Continue
+        }
+    }
+    Write-Error $fatal -ErrorAction Continue
+    exit 1
+}
+
 function Check([string]$Label, [bool]$Ok, [string]$Detail) {
     $script:checks.Add([pscustomobject]@{ check = $Label; ok = $Ok; detail = $Detail }) | Out-Null
     if ($Ok) { Write-Host ("  OK    {0}" -f $Label) -ForegroundColor Green }
     else {
         Write-Host ("  WRONG {0} - {1}" -f $Label, $Detail) -ForegroundColor Red
         $script:problems.Add("$Label : $Detail") | Out-Null
+    }
+}
+
+function Get-HorizunSha256([string]$Path) {
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
     }
 }
 
@@ -140,7 +179,7 @@ function Get-AggregatedPayloadSubtree([string]$Root, [string]$Subtree) {
         })
         foreach ($row in $orderedRows) {
             [void]$builder.Append($row.Rel).Append([char]31)
-            [void]$builder.Append((Get-FileHash -LiteralPath $row.Path -Algorithm SHA256).Hash.ToLowerInvariant()).Append([char]30)
+            [void]$builder.Append((Get-HorizunSha256 $row.Path)).Append([char]30)
         }
         $algorithm = [Security.Cryptography.SHA256]::Create()
         try {
@@ -195,7 +234,7 @@ function Check-ManifestPayload([string]$Label, [string]$Root, $Payload, $StdLibF
             $wrong += "$($item.Path): missing"
             continue
         }
-        $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = Get-HorizunSha256 $path
         if ($actual -ne [string]$item.Sha256) { $wrong += "$($item.Path): hash mismatch" }
     }
     if (Test-Path -LiteralPath $rootFull -PathType Container) {
@@ -252,7 +291,7 @@ if ((Test-Path -LiteralPath $ServerPath) -and (Test-Path -LiteralPath $ManifestP
     try {
         $manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
         Check 'manifest schema is supported' ($manifest.Schema -eq 2) "schema '$($manifest.Schema)'"
-        $serverHash = (Get-FileHash -LiteralPath $ServerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $serverHash = Get-HorizunSha256 $ServerPath
         Check 'installed server matches the release manifest' ($serverHash -eq [string]$manifest.Server.Sha256) `
             "installed $serverHash; manifest $($manifest.Server.Sha256)"
         Check-ManifestPayload 'server' (Split-Path -Parent $ServerPath) $manifest.Server.Payload $null $null
@@ -275,13 +314,13 @@ if ($manifest) {
         Check "Revit $year add-in manifest exists" (Test-Path -LiteralPath $addin -PathType Leaf) $addin
         Check "Revit $year add-in binary exists" (Test-Path -LiteralPath $dll -PathType Leaf) $dll
         if (Test-Path -LiteralPath $dll) {
-            $hash = (Get-FileHash -LiteralPath $dll -Algorithm SHA256).Hash.ToLowerInvariant()
+            $hash = Get-HorizunSha256 $dll
             Check "Revit $year binary matches the release manifest" ($hash -eq [string]$plugin.Sha256) `
                 "installed $hash; manifest $($plugin.Sha256)"
         }
         if (Test-Path -LiteralPath $addin -PathType Leaf) {
             if ($manifest.AddinManifest -and $manifest.AddinManifest.Sha256) {
-                $addinHash = (Get-FileHash -LiteralPath $addin -Algorithm SHA256).Hash.ToLowerInvariant()
+                $addinHash = Get-HorizunSha256 $addin
                 Check "Revit $year .addin manifest matches the release" `
                     ($addinHash -eq [string]$manifest.AddinManifest.Sha256) `
                     "installed $addinHash; manifest $($manifest.AddinManifest.Sha256)"

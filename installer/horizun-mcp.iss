@@ -426,6 +426,29 @@ begin
   Result := True;
 end;
 
+function StopAndMoveInstalledServer(Staging, Dst, Backup: String): Boolean;
+var
+  Attempt, ResultCode: Integer;
+begin
+  Result := False;
+  { MCP clients may immediately respawn their configured stdio server after it
+    exits. Keep the stop and directory move in one bounded retry loop so a
+    respawn cannot turn the tiny gap between those operations into a permanent
+    update failure. The helper still kills only this exact executable path. }
+  for Attempt := 1 to 8 do
+  begin
+    if not DirExists(Dst) then begin Result := True; exit; end;
+    if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+      '-NoProfile -ExecutionPolicy Bypass -File ' +
+      AddQuotes(AddBackslash(Staging) + 'client-tools\stop-installed-server.ps1') +
+      ' -ServerPath ' + AddQuotes(AddBackslash(Dst) + '{#AppExeName}'),
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then
+      exit;
+    if RenameFile(Dst, Backup) then begin Result := True; exit; end;
+    Sleep(125);
+  end;
+end;
+
 function DeployServer: Boolean;
 var
   Src, Dst, Staging, Backup: String;
@@ -468,8 +491,8 @@ begin
   end;
 
   if DirExists(Dst) then
-    if not RenameFile(Dst, Backup) then
-    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is still in use after the bounded stop'; exit; end;
+    if not StopAndMoveInstalledServer(Staging, Dst, Backup) then
+    begin DelTree(Staging, True, True, True); ServerFailure := 'the existing server is still in use after bounded stop-and-swap retries'; exit; end;
   if not RenameFile(Staging, Dst) then
   begin
     if DirExists(Backup) then RenameFile(Backup, Dst);
@@ -675,7 +698,7 @@ begin
   Result := True;
 end;
 
-function VerifyInstalledPayload: Boolean;
+function LegacyVerifyInstalledPayload: Boolean;
 var
   ResultCode: Integer;
 begin
@@ -689,6 +712,30 @@ begin
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
   if not Result then
     ServerFailure := 'exact installed-payload verification failed; the previous installation was restored';
+end;
+
+function VerifyInstalledPayload: Boolean;
+var
+  ResultCode: Integer;
+  ReportPath, VerifyArgs: String;
+begin
+  { Pascal strings are single-quoted. A double quote therefore must be passed
+    directly; prefixing it with a backslash makes that backslash part of the
+    Windows command line and PowerShell rejects the -File path as illegal. }
+  ReportPath := AddBackslash(ExpandConstant('{localappdata}')) + 'Horizun\install-verification.json';
+  ForceDirectories(ExtractFileDir(ReportPath));
+  VerifyArgs := '-NoProfile -ExecutionPolicy Bypass -File ' +
+    AddQuotes(AddBackslash(ExpandConstant('{app}')) + 'server\client-tools\verify-install.ps1') +
+    ' -Client None -ServerPath ' +
+    AddQuotes(AddBackslash(ExpandConstant('{app}')) + 'server\{#AppExeName}') +
+    ' -SkipLive -Json ' + AddQuotes(ReportPath);
+  Log('Installed payload verifier arguments: ' + VerifyArgs);
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    VerifyArgs,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if not Result then
+    ServerFailure := 'exact installed-payload verification failed (verifier exit ' +
+      IntToStr(ResultCode) + '); the previous installation was restored';
 end;
 
 procedure CommitDeployment;
