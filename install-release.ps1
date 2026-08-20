@@ -81,6 +81,51 @@ function Read-HorizunInstallResult {
     [pscustomobject]$values
 }
 
+function Get-HorizunAuthoritativeCompletionStatus([string]$BasePath) {
+    $pointer = "$BasePath.current"
+    if (Test-Path -LiteralPath $pointer -PathType Leaf) {
+        try {
+            $generation = (Get-Content -LiteralPath $pointer -Raw).Trim()
+            if ($generation -match '^[A-Za-z0-9_-]{8,80}$') {
+                $candidate = "$BasePath.generation-$generation.json"
+                if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+            }
+        } catch { }
+    }
+    return $BasePath
+}
+
+function Assert-HorizunSetupAuthenticode([string]$Path) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
+        throw "Setup Authenticode is not valid under the independent Windows trust store: $($signature.Status) - $($signature.StatusMessage)"
+    }
+    if ($signature.SignerCertificate.Subject -eq $signature.SignerCertificate.Issuer) {
+        throw 'Setup is self-signed. Public release installation requires an independently trusted publisher.'
+    }
+    $identity = $signature.SignerCertificate.Subject
+    if ($identity -notmatch '(?i)SignPath Foundation') {
+        throw ("Setup is validly signed, but not by the release-policy publisher (SignPath Foundation): " +
+               $signature.SignerCertificate.Subject + ' / ' + $signature.SignerCertificate.Issuer)
+    }
+    # SignPath Foundation is necessarily the Authenticode publisher for its OSS
+    # certificate. Bind that shared public identity back to this product using
+    # the signed installer's version resource, which is covered by the signature.
+    $version = (Get-Item -LiteralPath $Path).VersionInfo
+    if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
+        throw "Setup has the expected public publisher but not the signed Horizun product identity. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
+    }
+    if (-not $signature.TimeStamperCertificate) {
+        throw 'Setup signature has no trusted timestamp; refusing an artifact whose trust expires with the current certificate.'
+    }
+    return $signature
+}
+
+function New-HorizunSetupArguments([string]$ResultPath, [string]$InstallerClient) {
+    $resultArgument = '/HORIZUNRESULT="' + $ResultPath.Replace('"', '""') + '"'
+    @($resultArgument, "/HORIZUNCLIENT=$InstallerClient", '/NORESTART')
+}
+
 # Tests dot-source the standalone bootstrap to exercise the exact parser that
 # ships. Dot-sourcing defines functions and performs no network or installation.
 if ($MyInvocation.InvocationName -eq '.') { return }
@@ -132,7 +177,9 @@ try {
         throw "SHA-256 mismatch. Expected $expected but downloaded $actual. The installer was NOT launched."
     }
 
-    Write-Host "[Horizun] verified $($release.tag_name): $actual" -ForegroundColor Green
+    $setupSignature = Assert-HorizunSetupAuthenticode $setupPath
+
+    Write-Host "[Horizun] verified $($release.tag_name): $actual; $($setupSignature.SignerCertificate.Subject)" -ForegroundColor Green
     if ($VerifyOnly) {
         Write-Host '[Horizun] verification-only requested; Setup was NOT launched.' -ForegroundColor Green
         return
@@ -140,7 +187,10 @@ try {
 
     $resultPath = Join-Path $temporary 'install-result.txt'
     $installerClient = if ($NoClientCompletion) { 'None' } else { $Client }
-    $arguments = @("/HORIZUNRESULT=$resultPath", "/HORIZUNCLIENT=$installerClient", '/NORESTART')
+    # Start-Process joins ArgumentList into one Windows command line. Preserve the
+    # quotes as command-line syntax or a profile/TEMP path containing a space is
+    # split after Setup has already changed the machine.
+    $arguments = @(New-HorizunSetupArguments $resultPath $installerClient)
     if ($NoLiveVerification) { $arguments += '/HORIZUNNOLIVE=-NoLiveWait' }
     if (-not $Interactive) {
         $arguments += '/VERYSILENT'
@@ -166,9 +216,10 @@ try {
             $statusPath = Join-Path $env:LOCALAPPDATA 'Horizun\install-status.json'
             $freshCompletion = $false
             for ($attempt = 1; $attempt -le 20; $attempt++) {
-                if (Test-Path -LiteralPath $statusPath) {
+                $authoritativeStatus = Get-HorizunAuthoritativeCompletionStatus $statusPath
+                if (Test-Path -LiteralPath $authoritativeStatus) {
                     try {
-                        $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+                        $status = Get-Content -LiteralPath $authoritativeStatus -Raw | ConvertFrom-Json
                         $updated = [datetime]::Parse([string]$status.updated_utc).ToUniversalTime()
                         if ($updated -ge $startedLocal.ToUniversalTime().AddSeconds(-2)) { $freshCompletion = $true; break }
                     }

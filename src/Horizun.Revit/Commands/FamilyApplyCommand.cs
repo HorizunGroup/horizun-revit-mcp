@@ -376,6 +376,11 @@ namespace Horizun.Revit.Commands
                     "different active type all refuse the apply as a stale plan. Still true, and unchanged by this: " +
                     "only the ACTIVE family type is measured for shape; the others are reported as not verified, " +
                     "never as intact.");
+                // Rows this plan refused up front are rows the apply will never attempt.
+                // A rehearsal carrying them has not rehearsed the request, and a token
+                // issued on it would authorise less than the caller previewed.
+                ApplicationOutcome.StampRehearsal(dryResult, plan.Sets.Count + plan.PreRefused.Count,
+                                                  plan.PreRefused.Count, 0, 0);
                 return CommandResult.Ok(dryResult);
             }
 
@@ -424,7 +429,7 @@ namespace Horizun.Revit.Commands
                 // Opening a transaction to commit nothing would let this report a clean
                 // "Committed" over an untouched family â€” success-shaped noise in a large
                 // batch where the operator reads the totals, not the rows.
-                return CommandResult.Ok(new JObject
+                var nothingToDo = new JObject
                 {
                     ["mode"] = "apply",
                     ["transaction_status"] = "not_started",
@@ -455,7 +460,12 @@ namespace Horizun.Revit.Commands
                     ["note"] = "Nothing to do: this family already matches what was asked for. No transaction was " +
                                "opened and the file was not saved, so no .000N.rfa backup was created either. This is " +
                                "the idempotent case, not a failure."
-                });
+                };
+                // The legitimate no-op: nothing was requested of the model, so nothing being
+                // written is completeness, not absence. Declared as such, and it is the one
+                // not_started an apply is allowed to answer.
+                ApplicationOutcome.StampApplied(nothingToDo, "not_started", 0, 0, 0, 0, 0, 0);
+                return CommandResult.Ok(nothingToDo);
             }
 
             // ---- Write. ONE transaction, one undo step. -----------------------------
@@ -671,7 +681,7 @@ namespace Horizun.Revit.Commands
             int setsFailed = plan.Sets.Count(r => r.Outcome == OUT_NOT_WRITTEN);
             int setsUnknown = plan.Sets.Count(r => r.Outcome == OUT_UNKNOWN);
 
-            return CommandResult.Ok(new JObject
+            var applied = new JObject
             {
                 ["mode"] = "apply",
                 ["transaction_status"] = txStatus,
@@ -735,7 +745,17 @@ namespace Horizun.Revit.Commands
 
                 ["saved"] = saved,
                 ["note"] = FinalNote(invariantFinal, setsConfirmed, setsFailed, setsUnknown, plan)
-            });
+            };
+
+            // The value writes are what this command can count as requested-and-verified.
+            // A row re-read after the commit that matched is confirmed; a row the model
+            // does not carry is failed; a row that could not be read back is unknown, and
+            // one of those is enough to make the whole reply uncertain rather than done -
+            // which is the difference between a partially homologated family and a
+            // homologated one.
+            ApplicationOutcome.StampApplied(applied, txStatus, plan.Sets.Count, setsConfirmed,
+                                            setsConfirmed, 0, setsFailed, setsUnknown);
+            return CommandResult.Ok(applied);
         }
 
         // ---- The three-way split, same as horizun_write_params_verified. -----------
@@ -2937,7 +2957,7 @@ namespace Horizun.Revit.Commands
                 if (s.ExpectationFromModel) s.Expected = null;
             }
 
-            return new JObject
+            var rolledBack = new JObject
             {
                 ["mode"] = "apply",
                 ["transaction_status"] = txStatus,
@@ -2968,6 +2988,11 @@ namespace Horizun.Revit.Commands
                            "including the parts that worked, and the file was not saved. Do not re-run this family " +
                            "blindly â€” the plan that produced this is the plan that would produce it again."
             };
+            // Whatever Revit returned. Every count in this reply is zero because the
+            // transaction was undone, so the declaration says the same thing in the one
+            // field a composing caller reads.
+            ApplicationOutcome.StampApplied(rolledBack, txStatus, plan.Sets.Count, 0, 0, 0, 0, 0);
+            return rolledBack;
         }
 
         private static string FinalNote(string invariant, int confirmed, int failed, int unknown, Plan plan)

@@ -30,13 +30,15 @@ namespace Horizun.Revit.Core
         /// refusal that is ambiguous about whether the work started is the one thing
         /// worse than a refusal.
         /// </summary>
-        public static bool TryOpen(string tool, IJobSink sink, out Job job, out string refusal)
+        public static bool TryOpenProtected(string tool, IJobSink sink, DateTimeOffset? retainUntilUtc,
+                                            out Job job, out string refusal)
         {
             job = null;
             refusal = null;
             try
             {
                 job = Job.Start(tool, sink);
+                if (retainUntilUtc.HasValue) job.ProtectUntil(retainUntilUtc.Value);
                 return true;
             }
             catch (JobRecordException ex)
@@ -47,10 +49,26 @@ namespace Horizun.Revit.Core
                           "it did.";
                 return false;
             }
+            catch (Exception ex)
+            {
+                try { job?.Finish("not_started", "The MCP task retention lease could not be persisted: " + ex.Message); }
+                catch { }
+                refusal = "Could not protect the persistent job record for '" + tool + "' through the MCP task TTL: " +
+                          ex.Message + ". Nothing was queued. Returning a job id without that lease would allow " +
+                          "configured retention to delete its answer before the task expires.";
+                job = null;
+                return false;
+            }
         }
+
+        public static bool TryOpen(string tool, IJobSink sink, out Job job, out string refusal)
+            => TryOpenProtected(tool, sink, null, out job, out refusal);
 
         /// <summary>Production overload: the real filesystem.</summary>
         public static bool TryOpen(string tool, out Job job, out string refusal)
             => TryOpen(tool, null, out job, out refusal);
+
+        public static bool TryOpenProtected(string tool, DateTimeOffset? retainUntilUtc, out Job job, out string refusal)
+            => TryOpenProtected(tool, null, retainUntilUtc, out job, out refusal);
     }
 }

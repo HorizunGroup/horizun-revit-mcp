@@ -111,6 +111,13 @@ namespace Horizun.Revit.Core
                 return CommandResult.Fail($"Unknown command: '{name}'.");
             }
 
+            // Submission itself touches no Revit API. Sending it through RequestGate
+            // placed it behind the long command it was meant to outlive, so a standard
+            // MCP task could wait ten minutes merely to receive its task id. Admit it on
+            // the pipe thread, durably, then raise the shared event for the queued child.
+            if (string.Equals(name, "horizun_submit_job", StringComparison.OrdinalIgnoreCase))
+                return SubmitJobWithoutWaitingForUi(name, paramsJson);
+
             string refusal;
             RequestGate.Request req = _gate.Begin(wireId, name, paramsJson, out refusal);
             if (req == null)
@@ -288,6 +295,94 @@ namespace Horizun.Revit.Core
             }
             catch { /* counted inside Append; a diary must never cost an answer */ }
 
+            return result;
+        }
+
+        private CommandResult SubmitJobWithoutWaitingForUi(string name, string paramsJson)
+        {
+            JObject request;
+            try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
+            catch (Exception ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            CommandContract contract = Contract.Find(name);
+            string permissionReason = null;
+            if (contract == null || !Settings.IsToolAllowed(contract, out permissionReason))
+                return CommandResult.Fail((permissionReason ?? "The submit_job contract is unavailable.") + " Nothing ran.");
+
+            JToken keyToken = request["idempotency_key"];
+            string key = keyToken?.Type == JTokenType.String ? (string)keyToken : null;
+            if (string.IsNullOrWhiteSpace(key))
+                return CommandResult.Fail("idempotency_key is REQUIRED when submitting asynchronous work. " +
+                    "Generate one UUID for this deliberate submission. Nothing was queued.");
+
+            string fingerprint = RequestFingerprint.OfOperation(
+                name, "(async-child-target-is-in-arguments)", request, "idempotency_key", "confirmation_token");
+            DurableCommandDecision claim;
+            try { claim = _idempotency.Claim(key, name, fingerprint); }
+            catch (Exception ex)
+            {
+                return CommandResult.Fail("Could not establish durable idempotency before async submission: " +
+                    ex.Message + ". Nothing was queued.");
+            }
+
+            if (claim.Outcome == DurableCommandOutcome.Replay)
+            {
+                StampIdempotency(claim.ReplayResult, key, "replayed", false,
+                    "The original task id is replayed; no second job was queued.");
+                return claim.ReplayResult;
+            }
+            if (!claim.IsFresh) return CommandResult.Fail(claim.Message);
+
+            CommandResult result = null;
+            string admittedJobId = null;
+            try
+            {
+                result = _commands[name].Execute(null, paramsJson);
+                if (result != null && result.Success)
+                {
+                    admittedJobId = (string)(result.Data as JObject)?["job_id"];
+                    RaiseOutcome raised;
+                    try { raised = Raiser().Raise(); }
+                    catch (Exception ex)
+                    {
+                        raised = RaiseOutcome.Unknown;
+                        Log.Warn("async submission raise threw: " + ex.Message);
+                    }
+                    if (raised != RaiseOutcome.Accepted && raised != RaiseOutcome.Pending)
+                    {
+                        AsyncPump.FailEverythingWaiting(
+                            "Revit refused the ExternalEvent after task admission. It NEVER RAN.",
+                            m => Log.Warn(m));
+                        result = CommandResult.Fail("The task record was created, but Revit refused the callback " +
+                            "that would execute it (" + raised + "). The queued job was closed as not_started.");
+                    }
+                }
+                if (result == null) result = CommandResult.Fail("horizun_submit_job produced no result.");
+                StampIdempotency(result, key, "executed_once", true,
+                    "The durable submission was recorded; an identical retry returns the same task id.");
+            }
+            catch (Exception ex)
+            {
+                result = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message);
+            }
+            finally
+            {
+                try { _idempotency.Complete(claim, result); }
+                catch (Exception ex)
+                {
+                    Log.Error("could not durably complete async submission idempotency", ex);
+                    var detail = new JObject
+                    {
+                        ["job_id"] = string.IsNullOrWhiteSpace(admittedJobId)
+                            ? JValue.CreateNull() : JToken.FromObject(admittedJobId),
+                        ["submission_record_incomplete"] = true,
+                        ["execution_may_continue"] = !string.IsNullOrWhiteSpace(admittedJobId)
+                    };
+                    result = CommandResult.FailWithDetail(
+                        "The job may have been queued, but the durable submission result could not be recorded: " +
+                        ex.Message + ". Do not submit it again; inspect the supplied job_id with job_status.", detail);
+                }
+            }
             return result;
         }
 
@@ -561,6 +656,26 @@ namespace Horizun.Revit.Core
                 try
                 {
                     if (result == null) result = CommandResult.Fail("'" + work.Command + "' produced no result.");
+                    string payloadJson = null;
+                    if (result.Success)
+                    {
+                        try { payloadJson = AsyncResultPayload.Serialize(result.Data, work.JobId); }
+                        catch (Exception imageEx)
+                        {
+                            object revitSaid = result.RevitSaid;
+                            result = CommandResult.FailWithDetail(
+                                "The command completed, but its file-backed async result could not be made durable: " +
+                                imageEx.Message + ". The job is failed rather than returning a path that may disappear.",
+                                new JObject
+                                {
+                                    ["job_id"] = work.JobId,
+                                    ["stage"] = "persist_async_result",
+                                    ["underlying_command_completed"] = true,
+                                    ["result_available"] = false
+                                });
+                            result.RevitSaid = revitSaid;
+                        }
+                    }
                     // revit_said, built EXACTLY as PipeEnvelope builds it for the sync
                     // path, so run_async and a synchronous call report the same shape. It
                     // travels on failure too: what Revit raised is usually the REASON, and
@@ -572,8 +687,14 @@ namespace Horizun.Revit.Core
                         try { revitSaidJson = Newtonsoft.Json.Linq.JToken.FromObject(result.RevitSaid).ToString(Newtonsoft.Json.Formatting.None); }
                         catch (Exception rex) { Log.Warn("could not serialize revit_said for async job: " + rex.Message); }
                     }
-                    work.Record.Result(result.Success ? Newtonsoft.Json.JsonConvert.SerializeObject(result.Data) : null,
-                                       revitSaidJson);
+                    string fallbackJson = result.Fallback == null ? null :
+                        result.Fallback.ToJson().ToString(Newtonsoft.Json.Formatting.None);
+                    string gapsJson = result.CapabilityGaps == null ? null :
+                        result.CapabilityGaps.ToString(Newtonsoft.Json.Formatting.None);
+                    string detailJson = result.Detail == null ? null :
+                        result.Detail.ToString(Newtonsoft.Json.Formatting.None);
+                    work.Record.Result(result.Success ? payloadJson : null,
+                                       revitSaidJson, fallbackJson, gapsJson, detailJson);
                     work.Record.Finish(result.Success ? "ok" : "failed", result.Success ? null : result.Error);
                 }
                 catch (Exception ex) { Log.Error("could not close the async job record", ex); }

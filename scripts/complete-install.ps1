@@ -31,6 +31,7 @@ param(
     [switch]$StatusOnly,
     [switch]$CancelPending,
     [string]$StatusPath,
+    [string]$Generation,
     # Deterministic harness hook. When supplied, each non-empty line names a
     # client considered running; normal installs always inspect real processes.
     [string]$ClientStateFile
@@ -46,15 +47,86 @@ if (-not $ServerPath) {
 if (-not $StatusPath) {
     $StatusPath = Join-Path $env:LOCALAPPDATA 'Horizun\install-status.json'
 }
+if (-not $Generation) { $Generation = [guid]::NewGuid().ToString('N') }
+if ($Generation -notmatch '^[A-Za-z0-9_-]{8,80}$') { throw 'Generation must be an opaque ASCII identifier (8..80 characters).' }
 
 $register = Join-Path $PSScriptRoot 'register-client.ps1'
 $verify = Join-Path $PSScriptRoot 'verify-install.ps1'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$runName = 'HorizunMCPCompleteInstall'
+$runNamePrefix = 'HorizunMCPCompleteInstall-'
+$runName = $runNamePrefix + $Generation
 $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$verificationPath = "$StatusPath.verification.json"
+$currentGenerationPath = "$StatusPath.current"
+$generationStatusPath = "$StatusPath.generation-$Generation.json"
+$verificationPath = "$generationStatusPath.verification.json"
+
+function Get-CurrentGeneration {
+    if (-not (Test-Path -LiteralPath $currentGenerationPath -PathType Leaf)) { return $null }
+    try { return (Get-Content -LiteralPath $currentGenerationPath -Raw).Trim() } catch { return $null }
+}
+
+function Claim-Generation {
+    $dir = Split-Path -Parent $StatusPath
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $tmp = "$currentGenerationPath.tmp-$([guid]::NewGuid().ToString('N'))"
+    Set-Content -LiteralPath $tmp -Value $Generation -Encoding ASCII
+    Move-Item -LiteralPath $tmp -Destination $currentGenerationPath -Force
+    if (-not $NoResume -and (Test-Path -LiteralPath $runKey)) {
+        foreach ($property in @(Get-ItemProperty -LiteralPath $runKey).PSObject.Properties | Where-Object {
+            $_.Name -eq 'HorizunMCPCompleteInstall' -or
+            ($_.Name -like "$runNamePrefix*" -and $_.Name -ne $runName)
+        }) {
+            Remove-ItemProperty -LiteralPath $runKey -Name $property.Name -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Test-CurrentGeneration { return (Get-CurrentGeneration) -eq $Generation }
+
+function Remove-LegacyServerBackups {
+    # Source installers before the external rollback ledger kept executable
+    # backups below server\replaced-*. A client racing the update can keep one
+    # DLL locked until that client exits. This finisher runs after the quiet
+    # window, which is the first reliable opportunity to remove it.
+    $serverRoot = Split-Path -Parent $ServerPath
+    if (-not (Test-Path -LiteralPath $serverRoot -PathType Container)) { return }
+    $rootFull = [IO.Path]::GetFullPath($serverRoot).TrimEnd('\')
+    $rootPrefix = $rootFull + '\'
+    foreach ($old in @(Get-ChildItem -LiteralPath $rootFull -Directory -Filter 'replaced-*' -ErrorAction SilentlyContinue)) {
+        $full = [IO.Path]::GetFullPath($old.FullName)
+        if (-not $full.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+        if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Write-Warning "Refusing to recursively clean reparse-point legacy backup: $full"
+            continue
+        }
+        try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop }
+        catch { Write-Warning "Legacy server backup remains in use and will be retried by a later completion: $full ($($_.Exception.Message))" }
+    }
+
+    # In-use legacy images are quarantined beside server\ so the exact runtime
+    # payload stays clean. They are ours only when the fixed prefix is present;
+    # never enumerate or delete any broader parent content.
+    $installRoot = Split-Path -Parent $rootFull
+    $installPrefix = [IO.Path]::GetFullPath($installRoot).TrimEnd('\') + '\'
+    # Only the verified quarantine prefix is disposable here. Never touch
+    # .install-rollback-*: that name may belong to a concurrently running source
+    # install whose undo ledger still needs it.
+    foreach ($pattern in '.legacy-backup-*') {
+        foreach ($old in @(Get-ChildItem -LiteralPath $installRoot -Directory -Filter $pattern -ErrorAction SilentlyContinue)) {
+            $full = [IO.Path]::GetFullPath($old.FullName)
+            if (-not $full.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if (($old.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Write-Warning "Refusing to recursively clean reparse-point deferred backup: $full"
+                continue
+            }
+            try { Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop }
+            catch { Write-Warning "Deferred backup remains in use and will be retried later: $full ($($_.Exception.Message))" }
+        }
+    }
+}
 
 function Write-State([string]$State, [string]$Detail, [string]$ResolvedClient, $Extra) {
+    if (-not (Test-CurrentGeneration)) { return $false }
     $dir = Split-Path -Parent $StatusPath
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $doc = [ordered]@{
@@ -65,14 +137,17 @@ function Write-State([string]$State, [string]$Detail, [string]$ResolvedClient, $
         client = $ResolvedClient
         server_path = $ServerPath
         verification_path = $verificationPath
+        generation = $Generation
     }
     if ($Extra) {
         foreach ($property in $Extra.PSObject.Properties) { $doc[$property.Name] = $property.Value }
     }
-    $tmp = "$StatusPath.tmp-$([guid]::NewGuid().ToString('N'))"
+    $tmp = "$generationStatusPath.tmp-$([guid]::NewGuid().ToString('N'))"
     [pscustomobject]$doc | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding UTF8
-    Move-Item -LiteralPath $tmp -Destination $StatusPath -Force
+    Move-Item -LiteralPath $tmp -Destination $generationStatusPath -Force
+    Copy-Item -LiteralPath $generationStatusPath -Destination $StatusPath -Force
     Write-Host "[Horizun] $State - $Detail" -ForegroundColor $(if ($State -match 'failed') { 'Red' } elseif ($State -match 'waiting|awaiting|scheduled') { 'Yellow' } else { 'Green' })
+    return
 }
 
 function Resolve-Client([string]$Requested) {
@@ -131,6 +206,7 @@ function Get-ResumeCommand([string]$Resolved) {
     $quotedStatus = '"' + $StatusPath.Replace('"', '""') + '"'
     $command = ('"{0}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File {1} -Client {2} -ServerPath {3} -StatusPath {4} -WaitTimeoutMinutes {5} -Detached' -f `
         $powerShellExe, $quotedScript, $Resolved, $quotedServer, $quotedStatus, $WaitTimeoutMinutes)
+    $command += ' -Generation ' + $Generation
     if ($NoLiveWait) { $command += ' -NoLiveWait' }
     if ($ClientStateFile) { $command += ' -ClientStateFile "' + $ClientStateFile.Replace('"', '""') + '"' }
     return $command
@@ -154,27 +230,51 @@ function Start-DetachedWorker([string]$Resolved, [switch]$OnlyLive) {
         '-File', ('"' + $PSCommandPath + '"'), '-Client', $Resolved,
         '-ServerPath', ('"' + $ServerPath + '"'),
         '-StatusPath', ('"' + $StatusPath + '"'),
-        '-WaitTimeoutMinutes', $WaitTimeoutMinutes, '-Detached'
+        '-WaitTimeoutMinutes', $WaitTimeoutMinutes, '-Detached', '-Generation', $Generation
     )
     if ($OnlyLive) { $arguments += '-LiveOnly' }
     if ($NoResume) { $arguments += '-NoResume' }
     if ($NoLiveWait) { $arguments += '-NoLiveWait' }
     if ($ClientStateFile) { $arguments += '-ClientStateFile'; $arguments += ('"' + $ClientStateFile + '"') }
-    $stdout = "$StatusPath.worker.log"
-    $stderr = "$StatusPath.worker-error.log"
+    $stdout = "$generationStatusPath.worker.log"
+    $stderr = "$generationStatusPath.worker-error.log"
     Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WindowStyle Hidden `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr | Out-Null
 }
 
+function Restore-RegistrationWrites([string]$ReportPath) {
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) { return $false }
+    $report = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
+    $ok = $true
+    $writes = @($report.writes)
+    for ($i = $writes.Count - 1; $i -ge 0; $i--) {
+        $write = $writes[$i]
+        if (-not (Test-Path -LiteralPath $write.Backup -PathType Leaf) -or -not (Test-Path -LiteralPath $write.Path -PathType Leaf)) { $ok = $false; continue }
+        $current = (Get-FileHash -LiteralPath $write.Path -Algorithm SHA256).Hash
+        if ($current -ne [string]$write.CurrentHash) { $ok = $false; continue }
+        Copy-Item -LiteralPath $write.Backup -Destination $write.Path -Force
+    }
+    return $ok
+}
+
 if ($StatusOnly) {
-    if (Test-Path -LiteralPath $StatusPath) { Get-Content -LiteralPath $StatusPath }
+    $current = Get-CurrentGeneration
+    $authoritative = if ($current) { "$StatusPath.generation-$current.json" } else { $StatusPath }
+    if (Test-Path -LiteralPath $authoritative) { Get-Content -LiteralPath $authoritative }
     else { Write-Host "No Horizun completion status exists at $StatusPath" -ForegroundColor Yellow }
     exit 0
 }
 
 if ($CancelPending) {
-    Clear-Resume
-    Remove-Item -LiteralPath $StatusPath, $verificationPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $runKey) {
+        foreach ($property in @(Get-ItemProperty -LiteralPath $runKey).PSObject.Properties |
+            Where-Object { $_.Name -eq 'HorizunMCPCompleteInstall' -or $_.Name -like "$runNamePrefix*" }) {
+            Remove-ItemProperty -LiteralPath $runKey -Name $property.Name -ErrorAction SilentlyContinue
+        }
+    }
+    Remove-Item -LiteralPath $StatusPath, $verificationPath, $currentGenerationPath -Force -ErrorAction SilentlyContinue
+    Get-ChildItem -LiteralPath (Split-Path -Parent $StatusPath) -Filter ((Split-Path -Leaf $StatusPath) + '.generation-*.json') -File -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
     Write-Host '[Horizun] pending installation completion was cancelled.' -ForegroundColor Yellow
     exit 0
 }
@@ -184,26 +284,32 @@ foreach ($needed in $register, $verify) {
 }
 if (-not (Test-Path -LiteralPath $ServerPath -PathType Leaf)) { throw "Installed MCP server is missing: $ServerPath" }
 
+if (-not $Detached) { Claim-Generation }
 $resolved = Resolve-Client $Client
 if ($resolved -eq 'None' -and -not $LiveOnly) {
     Write-State 'failed_no_client' 'Neither Claude nor Codex could be identified. Start the intended client once, close it, and run this helper again.' $resolved $null
     exit 2
 }
 
-# Only one hidden finisher may own the pending work. An interactive invocation is
-# allowed to schedule that owner; detached duplicates simply leave it alone.
+# One generation at a time may touch client configuration. Interactive setup
+# invocations participate too: otherwise a new install could register concurrently
+# with the older detached finisher it just superseded.
 $mutex = $null
 $mutexHeld = $false
-if ($Detached) {
-    $mutex = New-Object Threading.Mutex($false, 'Local\HorizunMCPCompleteInstall')
-    try { $mutexHeld = $mutex.WaitOne(0) } catch { $mutexHeld = $false }
-    if (-not $mutexHeld) {
-        Write-Host '[Horizun] another completion worker is already active.' -ForegroundColor DarkGray
-        exit 0
-    }
+$statusBytes = [Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($StatusPath).ToLowerInvariant())
+$statusHash = [BitConverter]::ToString(([Security.Cryptography.SHA256]::Create()).ComputeHash($statusBytes)).Replace('-', '').Substring(0, 20)
+$mutex = New-Object Threading.Mutex($false, "Local\HorizunMCPCompleteInstallV2-$statusHash")
+try { $mutexHeld = $mutex.WaitOne([TimeSpan]::FromSeconds(30)) } catch { $mutexHeld = $false }
+if (-not $mutexHeld) {
+    Set-Resume $resolved
+    if (-not $Detached) { Start-DetachedWorker $resolved }
+    Write-Host '[Horizun] another completion generation still owns this status path; this generation remains scheduled.' -ForegroundColor DarkGray
+    exit 3
 }
 
 try {
+    if ($Detached -and -not (Get-CurrentGeneration)) { Claim-Generation }
+    if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
     Set-Resume $resolved
     $deadline = (Get-Date).AddMinutes($WaitTimeoutMinutes)
 
@@ -217,6 +323,7 @@ try {
         }
 
         while ($running.Count -gt 0 -and (Get-Date) -lt $deadline) {
+            if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
             Write-State 'waiting_for_client_exit' ("Waiting for " + ($running -join ' and ') + ' to close; no configuration has been edited.') $resolved `
                 ([pscustomobject]@{ running_clients = $running })
             Start-Sleep -Seconds 2
@@ -236,12 +343,15 @@ try {
         if ($running.Count -gt 0) {
             if (-not $Detached) { Start-DetachedWorker $resolved; exit 0 }
             while ($running.Count -gt 0 -and (Get-Date) -lt $deadline) {
+                if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
                 Start-Sleep -Seconds 2
                 $running = @(Running-Clients $resolved)
             }
         }
 
-        $registerJson = "$StatusPath.registration.json"
+        Remove-LegacyServerBackups
+
+        $registerJson = "$generationStatusPath.registration.json"
         $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $register,
             '-Client', $resolved, '-ServerPath', $ServerPath, '-Json', $registerJson)
         if ($resolved -eq 'Both') { $arguments += '-SkipMissingClients' }
@@ -251,12 +361,24 @@ try {
             Write-State 'registration_failed' "register-client.ps1 exited $LASTEXITCODE; existing client configuration was restored." $resolved $null
             exit 1
         }
+        if (-not (Test-CurrentGeneration)) {
+            [void](Restore-RegistrationWrites $registerJson)
+            Clear-Resume
+            exit 0
+        }
 
         & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $verify -Client $resolved `
             -ServerPath $ServerPath -SkipLive -Json $verificationPath
         if ($LASTEXITCODE -ne 0) {
+            $restored = Restore-RegistrationWrites $registerJson
             Write-State 'verification_failed' "on-disk or client verification exited $LASTEXITCODE" $resolved $null
+            if (-not $restored) { Write-Warning 'Verification failed and at least one client config could not be safely restored because it changed after registration.' }
             exit 1
+        }
+        if (-not (Test-CurrentGeneration)) {
+            [void](Restore-RegistrationWrites $registerJson)
+            Clear-Resume
+            exit 0
         }
         Write-State 'installed_and_registered' 'Binaries and client configuration are verified. Restart the client; live health is the remaining automatic check.' $resolved $null
     }
@@ -285,6 +407,7 @@ try {
 
     Write-State 'awaiting_revit' 'Waiting for the first Revit start so horizun_health can be verified.' $resolved $null
     while ((Get-Date) -lt $deadline) {
+        if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
         Start-Sleep -Seconds 5
         & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $verify -Client $resolved `
             -ServerPath $ServerPath -RequireLive -Json $verificationPath *> $null

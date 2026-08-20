@@ -120,7 +120,7 @@ Step 'publishing the MCP server (win-x64, self-contained)'
 $serverBin = Join-Path $stage 'server'
 & dotnet publish (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config `
     -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false `
-    -o $serverBin --nologo -v q
+    -p:RestoreLockedMode=true -o $serverBin --nologo -v q
 if ($LASTEXITCODE -ne 0) { throw 'server self-contained publish failed' }
 foreach ($requiredRuntimeFile in 'horizun-mcp.exe','horizun-mcp.dll','hostfxr.dll','hostpolicy.dll') {
     if (-not (Test-Path (Join-Path $serverBin $requiredRuntimeFile))) {
@@ -136,6 +136,7 @@ Copy-Item (Join-Path $repo 'scripts\complete-install.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
+Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
 Step '  staged safe Codex/Claude registration, deferred completion and verification helpers'
 
 # --- The plugin, ONE ARTIFACT PER YEAR. --------------------------------------
@@ -161,7 +162,9 @@ foreach ($year in 2023, 2024, 2025, 2026, 2027) {
     }
 
     Step ("building the plugin for Revit {0} against its own RevitAPI" -f $year)
-    & dotnet build (Join-Path $repo 'src\Horizun.Revit') -c $Config -p:RevitYear=$year --nologo -v q
+    & dotnet restore (Join-Path $repo 'src\Horizun.Revit') -p:RevitYear=$year --locked-mode --nologo
+    if ($LASTEXITCODE -ne 0) { throw ("plugin locked restore failed for $year") }
+    & dotnet build (Join-Path $repo 'src\Horizun.Revit') -c $Config -p:RevitYear=$year --no-restore --nologo -v q
     if ($LASTEXITCODE -ne 0) { throw ("plugin build failed for $year") }
 
     $bin = Join-Path $repo "src\Horizun.Revit\bin\$Config"

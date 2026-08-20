@@ -25,6 +25,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
@@ -124,8 +125,11 @@ namespace Horizun.Server
         /// verdict. A code simply not in the catalog is NOT a failure: it is exists=false /
         /// is_leaf=null, the honest unknown.
         /// </summary>
-        internal static JObject Handle(JObject args)
+        internal static JObject Handle(JObject args) => Handle(args, CancellationToken.None);
+
+        internal static JObject Handle(JObject args, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             string catalogPath = (string)args?["catalog_path"];
             string code = (string)args?["code"];
             string separator = (string)args?["separator"];
@@ -138,6 +142,7 @@ namespace Horizun.Server
                 throw new FileNotFoundException("Catalog file not found: " + catalogPath);
 
             byte[] bytes = File.ReadAllBytes(catalogPath);
+            cancellationToken.ThrowIfCancellationRequested();
             string sha = Sha256Hex(bytes);
             string encodingUsed;
             string text = DecodeCatalog(StripBom(bytes), out encodingUsed);

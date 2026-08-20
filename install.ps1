@@ -52,6 +52,7 @@ $repo = $PSScriptRoot
 $serverInstall  = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server'
 $serverExe      = Join-Path $serverInstall 'horizun-mcp.exe'
 $manifestSource = Join-Path $repo 'src\Horizun.Revit\Horizun.addin'
+$horizunAddInId = 'b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30'
 $stagingRoot    = Join-Path ([IO.Path]::GetTempPath()) ('horizun-install-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 
 # The undo ledger, same shape as deploy-both.ps1: every reversible step appends
@@ -138,6 +139,29 @@ try {
     }
     else { $Years = $detected }
 
+    $addinIdentityConflicts = @($Years | ForEach-Object {
+        $year = [int]$_
+        $userRoot = Join-Path $env:APPDATA 'Autodesk\Revit\Addins'
+        $machineRoot = Join-Path $env:PROGRAMDATA 'Autodesk\Revit\Addins'
+        $expectedUserManifest = [IO.Path]::GetFullPath((Join-Path $userRoot "$year\Horizun.addin"))
+        Assert-HorizunNoReparseTree (Join-Path $userRoot ([string]$year)) "Revit $year per-user deployment"
+        foreach ($candidate in @(Get-HorizunManifestsByAddInId -AddinsRoot $userRoot -Year $year -AddInId $horizunAddInId)) {
+            if ([IO.Path]::GetFullPath($candidate) -ine $expectedUserManifest) { $candidate }
+        }
+        foreach ($candidate in @(Get-HorizunManifestsByAddInId -AddinsRoot $machineRoot -Year $year -AddInId $horizunAddInId)) {
+            $candidate
+        }
+    })
+    if ($addinIdentityConflicts.Count -gt 0) {
+        throw ("Horizun is already registered under another manifest path or scope for a selected Revit year. " +
+               "A second manifest with the same AddInId would make Revit load competing copies. Remove or migrate " +
+               "the conflicting installation first. Conflicts: " + ($addinIdentityConflicts -join '; ') +
+               '. Nothing was changed.')
+    }
+    if (Test-Path -LiteralPath $serverInstall -PathType Container) {
+        Assert-HorizunNoReparseTree $serverInstall 'MCP server update'
+    }
+
     # Revit 2027 targets net10.0, while 2023-2026 need an SDK capable of the
     # net48/net8 targets. Check the selected years before staging anything so a
     # missing SDK is a precise refusal, not a compiler failure halfway through.
@@ -177,8 +201,10 @@ try {
     foreach ($y in $Years) {
         Write-Host ""
         Write-Host "--- building the add-in for Revit $y" -ForegroundColor Yellow
+        & dotnet restore (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj') -p:RevitYear=$y --locked-mode --nologo
+        if ($LASTEXITCODE -ne 0) { throw "Locked restore failed before building Revit $y. NOTHING was installed." }
         & dotnet build (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj') `
-            -c $Config -p:RevitYear=$y -v quiet --nologo
+            -c $Config -p:RevitYear=$y --no-restore -v quiet --nologo
         if ($LASTEXITCODE -ne 0) { throw "Build failed for Revit $y. NOTHING was installed." }
 
         $dll = Join-Path $binDir 'Horizun.Revit.dll'
@@ -186,8 +212,7 @@ try {
         Assert-HorizunTfm $dll $y
 
         $stage = Join-Path $stagingRoot "$y"
-        New-Item -ItemType Directory -Path $stage -Force | Out-Null
-        Copy-Item (Join-Path $binDir '*') $stage -Recurse -Force
+        Copy-HorizunPluginPayloadToStage -Source $binDir -Destination $stage
         $staged[$y] = $stage
 
         $prov = Get-HorizunProvenance (Join-Path $stage 'Horizun.Revit.dll')
@@ -199,7 +224,9 @@ try {
     if (-not $SkipServer) {
         Write-Host ""
         Write-Host "--- building the MCP server" -ForegroundColor Yellow
-        & dotnet build (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config -v quiet --nologo
+        & dotnet restore (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') --locked-mode --nologo
+        if ($LASTEXITCODE -ne 0) { throw "Locked server restore failed. NOTHING was installed." }
+        & dotnet build (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c $Config --no-restore -v quiet --nologo
         if ($LASTEXITCODE -ne 0) { throw "Server build failed. NOTHING was installed." }
 
         $serverBin = Join-Path $repo "src\Horizun.Server\bin\$Config\net8.0"
@@ -211,7 +238,7 @@ try {
         Get-ChildItem $serverBin -File | ForEach-Object { Copy-Item $_.FullName $serverStage -Force }
         $clientTools = Join-Path $serverStage 'client-tools'
         New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
-        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
+        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1') {
             Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
         }
         Write-Host "    staged  server"
@@ -258,6 +285,7 @@ try {
         Write-Host ""
         Write-Host "--- installing the MCP server" -ForegroundColor Yellow
 
+        $serverBackup = $null
         $firstInstall = -not (Test-Path $serverInstall)
         if ($firstInstall) {
             # FIRST INSTALL - the case the update scripts refuse. The directory is
@@ -274,7 +302,11 @@ try {
             # rename one: move the old files aside, copy the new ones in. A running
             # horizun-mcp.exe keeps executing the old image from memory and picks
             # up the new files on its next start.
-            $serverBackup = Join-Path $serverInstall ('replaced-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+            # Keep the rollback image beside, not inside, the installed payload.
+            # This lets exact payload verification reject every unmanifested file
+            # without mistaking our own transaction ledger for product content.
+            $serverBackup = Join-Path (Split-Path -Parent $serverInstall) `
+                ('.install-rollback-' + [guid]::NewGuid().ToString('N'))
             New-Item -ItemType Directory -Path $serverBackup -Force | Out-Null
             $moved = New-Object System.Collections.Generic.List[object]
             $originalNames = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -347,7 +379,15 @@ try {
         })
         $pluginManifestRows = foreach ($y in $Years) {
             $pluginDll = Join-Path $staged[$y] 'Horizun.Revit.dll'
-            [pscustomobject]@{ Year = [int]$y; Sha256 = Get-HorizunFileHash $pluginDll }
+            $listing = Get-HorizunPayloadListing $staged[$y]
+            [pscustomobject]@{
+                Year = [int]$y
+                Sha256 = Get-HorizunFileHash $pluginDll
+                Files = $listing.FileCount
+                StdLibFiles = $listing.StdLibFiles
+                StdLibDigest = $listing.StdLibDigest
+                Payload = $listing.Files
+            }
         }
         $sourceProvenance = Get-HorizunProvenance (Join-Path $serverStage 'horizun-mcp.dll')
         $sourceManifest = [pscustomobject]@{
@@ -360,8 +400,13 @@ try {
             Server = [pscustomobject]@{
                 File = 'server/horizun-mcp.exe'
                 Sha256 = Get-HorizunFileHash (Join-Path $serverStage 'horizun-mcp.exe')
+                Payload = (Get-HorizunPayloadListing $serverStage).Files
             }
             Plugins = @($pluginManifestRows)
+            AddinManifest = [pscustomobject]@{
+                File = 'Horizun.addin'
+                Sha256 = Get-HorizunFileHash $manifestSource
+            }
         }
         $manifestTemp = "$installedManifest.tmp-$([guid]::NewGuid().ToString('N'))"
         $sourceManifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestTemp -Encoding UTF8
@@ -400,6 +445,77 @@ try {
                "  - " + ($problems -join ([Environment]::NewLine + "  - ")))
     }
     Write-Host ("    all {0} half(s) built from one tree in one run, and every file matches what was staged." -f $installedThings.Count) -ForegroundColor Green
+
+    if (-not $SkipServer) {
+        # These directories were created by older source installers after their
+        # transaction had already succeeded. They are not a valid part of the
+        # runtime payload and can otherwise hide stale executable dependencies.
+        foreach ($old in @(Get-ChildItem -LiteralPath $serverInstall -Directory -Filter 'replaced-*' -ErrorAction SilentlyContinue)) {
+            try { Remove-Item -LiteralPath $old.FullName -Recurse -Force -ErrorAction Stop }
+            catch {
+                # A client can restart the just-replaced server between the update
+                # stop and this cleanup. Its old DLL then remains locked under a
+                # legacy replaced-* directory. That stale copy is not part of the
+                # installed payload and must not invalidate or roll back a verified
+                # update; the generation-aware finisher retries after the client has
+                # actually exited and held a quiet window.
+                $legacyQuarantine = Join-Path (Split-Path -Parent $serverInstall) `
+                    ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
+                try {
+                    # Windows permits an in-use image directory to be renamed even
+                    # when it will not permit deleting the loaded DLL. Moving it out
+                    # of server\ is essential: exact payload verification must never
+                    # waive executable extras merely because an old client is alive.
+                    Move-Item -LiteralPath $old.FullName -Destination $legacyQuarantine -ErrorAction Stop
+                    Write-Warning ("Legacy server backup was still in use and was quarantined outside the " +
+                                   "loadable payload until client exit: " + $legacyQuarantine)
+                }
+                catch {
+                    # Leave it visible. The exact verifier below will fail closed
+                    # rather than bless a payload that still contains extra code.
+                    Write-Warning ("Legacy server backup could not be removed or quarantined: " +
+                                   $old.FullName + " (" + $_.Exception.Message + ")")
+                }
+            }
+        }
+
+        $installedVerifier = Join-Path $serverInstall 'client-tools\verify-install.ps1'
+        $installedVerificationOutput = @(& powershell -NoProfile -ExecutionPolicy Bypass -File $installedVerifier `
+            -Client None -ServerPath $serverExe -SkipLive 2>&1)
+        $installedVerificationExit = $LASTEXITCODE
+        if ($installedVerificationExit -ne 0) {
+            foreach ($line in $installedVerificationOutput) { Write-Host $line -ForegroundColor Red }
+            throw 'Exact installed-payload verification failed (server, add-in files or .addin manifest).'
+        }
+        foreach ($line in $installedVerificationOutput) { Write-Host $line }
+
+        # Only the exact rollback image owned by this transaction is disposable.
+        # A failed verification above still has it available to restore from.
+        if ($serverBackup -and (Test-Path -LiteralPath $serverBackup)) {
+            try { Remove-Item -LiteralPath $serverBackup -Recurse -Force -ErrorAction Stop }
+            catch {
+                # The old server image can remain mapped by a client which raced
+                # the update. The new bytes are already exactly verified, so this
+                # is deferred cleanup, not an installation failure. The
+                # generation-aware finisher retries after the client quiet window.
+                $verifiedQuarantine = Join-Path (Split-Path -Parent $serverInstall) `
+                    ('.legacy-backup-' + [guid]::NewGuid().ToString('N'))
+                try {
+                    Move-Item -LiteralPath $serverBackup -Destination $verifiedQuarantine -ErrorAction Stop
+                    Write-Warning ("Verified update is installed, but its obsolete rollback image is still in use " +
+                                   "and was quarantined for cleanup after client exit: $verifiedQuarantine")
+                    $serverBackup = $verifiedQuarantine
+                }
+                catch {
+                    # Never let the finisher delete an .install-rollback-* name:
+                    # until this rename succeeds it is indistinguishable from an
+                    # active transaction owned by another installer process.
+                    Write-Warning ("Verified update is installed, but its obsolete rollback image could not be " +
+                                   "quarantined and requires manual cleanup after client exit: $serverBackup")
+                }
+            }
+        }
+    }
 }
 catch {
     Invoke-Rollback $_.Exception.Message
@@ -436,12 +552,18 @@ Write-Host "[Horizun] installed and verified." -ForegroundColor Green
 # effect of an install.
 # =============================================================================
 $signScript = Join-Path $PSScriptRoot 'scripts\self-sign.ps1'
-$haveCert = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
-    Where-Object { $_.Subject -eq 'CN=Horizun Group (self-signed add-in signing)' }).Count -gt 0
+$trustedCert = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object {
+    if ($_.Subject -ne 'CN=Horizun Group (self-signed add-in signing)' -or -not $_.HasPrivateKey -or $_.NotAfter -le (Get-Date).AddDays(30)) { return $false }
+    $thumb = $_.Thumbprint
+    $inPublisher = Test-Path -LiteralPath "Cert:\CurrentUser\TrustedPublisher\$thumb"
+    $inRoot = Test-Path -LiteralPath "Cert:\CurrentUser\Root\$thumb"
+    return $inPublisher -and $inRoot
+} | Sort-Object NotAfter -Descending | Select-Object -First 1)
+$haveCert = $trustedCert.Count -eq 1
 if ((Test-Path -LiteralPath $signScript) -and $haveCert) {
     Write-Host ""
     Write-Host "--- re-signing the fresh binaries (existing certificate; no new trust)" -ForegroundColor Yellow
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $signScript
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $signScript -Thumbprint $trustedCert[0].Thumbprint
     if ($LASTEXITCODE -eq 3) {
         Write-Host "[Horizun] some files were IN USE and stayed unsigned - close that Revit or MCP client and run scripts\self-sign.ps1 again." -ForegroundColor Yellow
     } elseif ($LASTEXITCODE -ne 0) {
@@ -452,6 +574,7 @@ if ((Test-Path -LiteralPath $signScript) -and $haveCert) {
     Write-Host "[Horizun] binaries are UNSIGNED: Revit will show the 'Unsigned Add-In' dialog again." -ForegroundColor Yellow
     Write-Host "          To end that permanently on THIS machine's account:  powershell -ExecutionPolicy Bypass -File .\scripts\self-sign.ps1" -ForegroundColor Yellow
     Write-Host "          (creates a self-signed cert and trusts it for this user - a deliberate decision, so it is not done for you)" -ForegroundColor DarkYellow
+    Write-Host "          A same-subject certificate that is not already trusted in BOTH Root and TrustedPublisher is deliberately ignored." -ForegroundColor DarkYellow
 }
 Write-Host ""
 Write-Host "Manual recovery commands (automatic completion normally handles this)." -ForegroundColor Cyan

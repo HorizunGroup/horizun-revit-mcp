@@ -71,27 +71,22 @@ Download `horizun-mcp-<version>-setup.exe` and `SHA256SUMS.txt` from the
 then check the hash before running anything:
 
 ```powershell
-$exe  = Get-Item .\horizun-mcp-*-setup.exe
-$want = (Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe').Line.Split(' ')[0]
-if ((Get-FileHash $exe -Algorithm SHA256).Hash -ieq $want) { "OK - matches the published hash" }
-else { "STOP - it does not match. Do not run it." }
+Get-FileHash .\horizun-mcp-<version>-setup.exe -Algorithm SHA256
+Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe'
 ```
 
-(`Get-FileHash` prints upper case and the file lists lower case, which is why the
-comparison above is case-insensitive rather than something to eyeball.)
+Every installable release carries a payload `manifest.json`,
+`package-hashes.json` and an [SBOM](https://cyclonedx.org/). Stable releases also
+carry one live verification report per supported Revit year.
 
-Every release also carries a payload `manifest.json`, `package-hashes.json`, an
-[SBOM](https://cyclonedx.org/) and one live verification report per supported
-Revit year.
-
-> **Read this before you run it.** The 0.9.0 installer is deliberately published
-> **without a publicly trusted code-signing certificate**, so Windows SmartScreen
-> and Revit may warn about an unknown publisher. That is expected, and it is why
-> the hash above exists. Public signing becomes a mandatory release gate at 1.0.0
-> under the [code signing policy](CODE-SIGNING-POLICY.md). The intended open-source service is:
+> **Read this before you run it.** Automatic release installation requires a
+> publicly trusted, timestamped Horizun signature. While that identity is still
+> under review, the project publishes source/validation releases without
+> installers; source installation remains available. There is no unsigned binary
+> exception under the [code signing policy](CODE-SIGNING-POLICY.md). The intended open-source service is:
 > **Free code signing provided by SignPath.io, certificate by SignPath Foundation.**
-> The application is under review; this is not a claim that the current download
-> is already signed.
+> The application is under review; this is not a claim that a signed download is
+> currently available.
 
 If you would rather have the script do the same checks, one paste verifies the
 complete SHA-256 against that same GitHub release, installs quietly and finishes
@@ -220,7 +215,8 @@ surprises worth knowing before the first Revit start.
   open MCP spec, with no third-party SDK: it discovers the pipe, speaks MCP over
   stdio and forwards to the plugin. Schemas and behavioural effects live in one
   shared contract, so `tools/list` answers with Revit closed without drifting
-  from the add-in. It negotiates MCP through 2025-11-25 and returns both
+  from the add-in. It negotiates MCP through 2025-11-25; exposes standard Tools,
+  Resources, Prompts, Completions, opt-in Logging and durable Tasks; and returns both
   backward-compatible text and `structuredContent`. Five tools are
   **host-resident** — they answer inside the server and never touch Revit.
 - **One command at a time.** Concurrent calls wait in a bounded 16-slot FIFO
@@ -314,18 +310,23 @@ pwsh scripts/verify-live.ps1 -Year 2026 -OldFile <a model saved in another Revit
 ## Security
 
 `horizun_execute_python` runs arbitrary Python inside Revit with the rights of
-the signed-in user, and it is **enabled by default** during this early stage: a
-fresh install reads as `permission_profile: "unsafe_code"`, so the tool is
-advertised and serves as the execution fallback when no typed command covers an
-operation.
+the signed-in user, and it is **disabled by default**. A fresh install reads as
+`permission_profile: "safe_write"`: verified typed edits inside the active model
+are available, while arbitrary code, document-session changes and external
+writes require an explicit owner decision.
 
 An **explicit** choice in `%USERPROFILE%\.horizun\settings.json` is always
 respected — `read_only`, `safe_write`, `full_write` or
-`enable_execute_python: false` switch capability off, `allowed_tools` and
+`enable_execute_python: false` keep arbitrary code off, `allowed_tools` and
 `denied_tools` narrow any profile, and a settings file that exists but cannot be
 parsed falls **closed** (`read_only`, Python off) so a corrupted restriction
-never reads as consent. `scripts/enable-execute-python.ps1` re-enables an
-explicitly disabled setup and reverts with `-Disable`.
+never reads as consent. The **Python ON/OFF** button in Revit grants a visible
+60-minute exception without permanently elevating the profile; pressing it
+again revokes the permission immediately. `scripts/enable-execute-python.ps1`
+remains the explicit administrative path for a durable developer setup and
+reverts with `-Disable`. The server emits `notifications/tools/list_changed` when
+the effective permission changes, so compatible clients update automatically;
+clients that ignore the notification need one restart.
 
 There is **no inbound network listener**: named pipes are not reachable across a
 network, and the server speaks stdio to whatever launched it. The optional
@@ -338,7 +339,9 @@ The full threat model — what is defended, and what deliberately is not — is 
 [docs/security-model.md](docs/security-model.md), and it is written to be argued
 with. Local state and user-requested network operations are described in the
 [privacy policy](docs/PRIVACY.md). To report a vulnerability, see
-[SECURITY.md](SECURITY.md).
+[SECURITY.md](SECURITY.md). The exact line between source-candidate evidence and
+external certification is maintained in
+[production readiness](docs/production-readiness.md).
 
 ## Horizun Hub
 

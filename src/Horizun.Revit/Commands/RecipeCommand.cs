@@ -23,6 +23,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
@@ -164,6 +165,9 @@ namespace Horizun.Revit.Commands
                 result["note"] =
                     "DRY RUN: no transaction was opened and NOTHING was written. 'planned' is what would happen. " +
                     "Call again with dry_run=false and the confirmation_token to apply it.";
+                // A recipe dry run either planned or it threw; there is no half-planned
+                // recipe to declare, so a clean rehearsal is the honest verdict.
+                ApplicationOutcome.StampRehearsal(result, Verifications.Length, 0, 0, 0);
                 DocumentGate.RecordResolvedPlan(RecipePlan(gate, app, outcome));
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, true,
                     "the token binds the recipe BY CONTENT (its SHA-256) and the intended counts of this plan - a " +
@@ -196,6 +200,16 @@ namespace Horizun.Revit.Commands
                   "done. Do not treat this as finished — look at the mismatched block below and at 'errors' in " +
                   "'applied' before running anything that builds on this.";
 
+            // The recipe's own verdict, in the vocabulary a plan reads. Every count above
+            // was re-read from the model after the commit; a block that does not agree means
+            // the model does not contain what this run claims, and `all_verified` already
+            // says so in prose. This is the same fact where a composing caller can act on it.
+            // The transaction committed - a silent rollback is caught above and fails - so
+            // the open question is only whether the counts agree.
+            int checks = blocks.Count;
+            int agreed = blocks.Count(b => (b as JObject)?.Value<bool?>("verified") == true);
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, checks, agreed, agreed,
+                                            0, checks - agreed, 0);
             DocumentGate.StampConfirmation(result, gate, Name, planHash, false);
             return CommandResult.Ok(result);
         }

@@ -51,6 +51,7 @@
 //     silently drop by taking the bare-path overload of OpenAndActivateDocument.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.IO;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -81,6 +82,7 @@ namespace Horizun.Revit.Core
         public bool Audit;
         public bool OpenCentral;
         public bool OpenAllWorksets;
+        public IList<string> CloseWorksetNames = new List<string>();
 
         /// <summary>
         /// How a dialog raised DURING the open is answered. Default Cancel (the safe
@@ -136,6 +138,7 @@ namespace Horizun.Revit.Core
 
         /// <summary>How the central guard was satisfied: detached, open_central, not_a_central.</summary>
         public string CentralGuard { get; internal set; }
+        internal IList<WorksetId> CloseWorksetIds = new List<WorksetId>();
 
         internal OpenRequest Request;
 
@@ -150,7 +153,13 @@ namespace Horizun.Revit.Core
             var o = new OpenOptions();
             if (Request.Audit) o.Audit = true;
             if (Request.Detach) o.DetachFromCentralOption = DetachFromCentralOption.DetachAndPreserveWorksets;
-            if (Request.OpenAllWorksets)
+            if (CloseWorksetIds.Count > 0)
+            {
+                var worksets = new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets);
+                worksets.Close(CloseWorksetIds);
+                o.SetOpenWorksetsConfiguration(worksets);
+            }
+            else if (Request.OpenAllWorksets)
                 o.SetOpenWorksetsConfiguration(new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets));
             return o;
         }
@@ -213,6 +222,31 @@ namespace Horizun.Revit.Core
                     ? "Revit could not build a cloud path from region '" + plan.Region + "' and those GUIDs: " +
                       ex.Message + ". Nothing was opened."
                     : "Revit could not turn '" + r.Path + "' into a model path: " + ex.Message);
+            }
+
+            if (r.CloseWorksetNames != null && r.CloseWorksetNames.Count > 0)
+            {
+                if (r.OpenAllWorksets)
+                    return Refuse(plan, "open_all_worksets=true contradicts close_workset_names. Choose one loaded-workset plan; nothing was opened.");
+                try
+                {
+                    IList<WorksetPreview> previews = WorksharingUtils.GetUserWorksetInfo(plan.ModelPath);
+                    foreach (string wanted in r.CloseWorksetNames)
+                    {
+                        var hits = new List<WorksetPreview>();
+                        foreach (WorksetPreview preview in previews)
+                            if (string.Equals(preview.Name, wanted, StringComparison.OrdinalIgnoreCase)) hits.Add(preview);
+                        if (hits.Count != 1)
+                            return Refuse(plan, hits.Count == 0
+                                ? "No user workset named '" + wanted + "' exists in the file. Nothing was opened."
+                                : "More than one user workset matches '" + wanted + "'. Nothing was opened because choosing one would be ambiguous.");
+                        plan.CloseWorksetIds.Add(hits[0].Id);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return Refuse(plan, "The requested closed-workset plan could not be resolved before opening: " + ex.Message + ". Nothing was opened.");
+                }
             }
 
             return plan;
@@ -311,7 +345,8 @@ namespace Horizun.Revit.Core
         /// back a fresh managed wrapper for the same underlying document, so ReferenceEquals
         /// answers false for a document that plainly IS the one just opened - a false alarm,
         /// which is as dishonest as a false success. Identity first, then the file it is
-        /// bound to, then the title (a detached document has no path that exists).
+        /// bound to. Title is NEVER identity: homonymous files and detached documents are
+        /// common, and guessing between them would aim the next command at the wrong model.
         /// </summary>
         public static bool SameDocument(Document a, Document b)
         {
@@ -322,10 +357,24 @@ namespace Horizun.Revit.Core
 
             try
             {
-                string pa = a.PathName, pb = b.PathName;
-                if (!string.IsNullOrEmpty(pa) && !string.IsNullOrEmpty(pb))
-                    return string.Equals(Path.GetFullPath(pa), Path.GetFullPath(pb), StringComparison.OrdinalIgnoreCase);
-                return string.Equals(a.Title, b.Title, StringComparison.OrdinalIgnoreCase);
+                string projectA = null, modelA = null, projectB = null, modelB = null;
+                try
+                {
+                    ModelPath cloud = a.GetCloudModelPath();
+                    if (cloud != null) { projectA = cloud.GetProjectGUID().ToString(); modelA = cloud.GetModelGUID().ToString(); }
+                }
+                catch { }
+                try
+                {
+                    ModelPath cloud = b.GetCloudModelPath();
+                    if (cloud != null) { projectB = cloud.GetProjectGUID().ToString(); modelB = cloud.GetModelGUID().ToString(); }
+                }
+                catch { }
+
+                return DocumentMatcher.SameStableIdentity(
+                    new DocIdentity { Path = a.PathName, ModelGuid = modelA },
+                    new DocIdentity { Path = b.PathName, ModelGuid = modelB },
+                    projectA, projectB);
             }
             catch { return false; }
         }

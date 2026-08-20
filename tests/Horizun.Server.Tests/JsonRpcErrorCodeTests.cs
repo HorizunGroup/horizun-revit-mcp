@@ -37,12 +37,17 @@ namespace Horizun.Server.Tests
             // in this file threw "not built" against a server that had just built fine.
             // CI had been red on main for that reason alone, which is worse than a
             // failing test: a permanently red gate is a gate people stop reading.
+            string newest = null;
+            DateTime newestWrite = DateTime.MinValue;
             foreach (string cfg in new[] { "Release", "Debug" })
                 foreach (string exe in new[] { "horizun-mcp.exe", "horizun-mcp" })
                 {
                     string p = Path.Combine(d.FullName, "src", "Horizun.Server", "bin", cfg, "net8.0", exe);
-                    if (File.Exists(p)) return p;
+                    if (!File.Exists(p)) continue;
+                    DateTime written = File.GetLastWriteTimeUtc(p);
+                    if (newest == null || written > newestWrite) { newest = p; newestWrite = written; }
                 }
+            if (newest != null) return newest;
 
             // Deliberately a failure and not a skip: a test that quietly passes when it
             // could not run is the shape of defect this whole exercise is about.
@@ -160,6 +165,17 @@ namespace Horizun.Server.Tests
                 "request must be refused with -32600 rather than run. Got: " + Codes(replies));
         }
 
+        [Fact]
+        public void A_request_with_an_id_but_no_method_is_answered_with_32600()
+        {
+            var replies = Exchange("{\"jsonrpc\":\"2.0\",\"id\":77}");
+
+            JObject err = FindError(replies, -32600);
+            Assert.NotNull(err);
+            Assert.Equal(77, (int)err["id"]);
+            Assert.Contains("method", (string)err["error"]["message"]);
+        }
+
         /// <summary>
         /// The version field was never checked. A caller announcing 1.0, or announcing
         /// nothing, was served as though it had agreed to this protocol - and the first
@@ -200,6 +216,42 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Initialize_advertises_and_wire_serves_resources_and_prompts()
+        {
+            var init = ExchangeRaw(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
+            Assert.NotNull(init[0]["result"]["capabilities"]["resources"]);
+            Assert.NotNull(init[0]["result"]["capabilities"]["prompts"]);
+            Assert.NotNull(init[0]["result"]["capabilities"]["completions"]);
+            Assert.NotNull(init[0]["result"]["capabilities"]["logging"]);
+            Assert.NotNull(init[0]["result"]["capabilities"]["tasks"]);
+            Assert.Null(init[0]["result"]["capabilities"]["tasks"]["list"]);
+
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"resources/list\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"resources/read\",\"params\":{\"uri\":\"horizun://build/identity\"}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"prompts/list\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"prompts/get\",\"params\":{\"name\":\"health-first\"}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tasks/list\",\"params\":{}}");
+
+            Assert.Equal(5, replies.Count);
+            Assert.Equal(4, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
+            Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
+            Assert.Equal(3, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
+            Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);
+            Assert.Equal(-32601, (int)replies.Find(x => (int?)x["id"] == 15)["error"]["code"]);
+        }
+
+        [Fact]
+        public void Task_augmentation_is_refused_for_a_host_resident_tool_before_any_work_runs()
+        {
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"tools/call\",\"params\":{\"name\":\"horizun_job_status\",\"arguments\":{},\"task\":{\"ttl\":60000}}}");
+            Assert.Equal(-32602, (int)replies[0]["error"]["code"]);
+            Assert.Contains("does not support", (string)replies[0]["error"]["message"]);
+        }
+
+        [Fact]
         public void Initialize_negotiates_old_clients_and_offers_current_protocol_to_unknown_clients()
         {
             var old = ExchangeRaw(
@@ -208,6 +260,21 @@ namespace Horizun.Server.Tests
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"1900-01-01\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}");
             Assert.Equal("2024-11-05", (string)old[0]["result"]["protocolVersion"]);
             Assert.Equal("2025-11-25", (string)unknown[0]["result"]["protocolVersion"]);
+            Assert.Null(old[0]["result"]["capabilities"]["tasks"]);
+            Assert.NotNull(unknown[0]["result"]["capabilities"]["tasks"]);
+        }
+
+        [Fact]
+        public void Old_protocol_cannot_bypass_task_negotiation_through_tasks_result()
+        {
+            var replies = ExchangeRaw(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}",
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tasks/result\",\"params\":{\"taskId\":\"00000000000000000000000000000000\"}}");
+            JObject response = replies.Find(x => (int?)x["id"] == 2);
+            Assert.NotNull(response);
+            Assert.Equal(-32601, (int)response["error"]["code"]);
+            Assert.Contains("2025-11-25", (string)response["error"]["message"]);
         }
 
         [Fact]

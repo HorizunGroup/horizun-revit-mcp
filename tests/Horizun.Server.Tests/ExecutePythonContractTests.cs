@@ -26,14 +26,52 @@ namespace Horizun.Server.Tests
         private static JObject Props() => (JObject)ExecutePython().InputSchema["properties"];
 
         [Fact]
-        public void The_schema_requires_code_and_target_document()
+        public void The_schema_requires_target_document_and_leaves_the_source_to_the_handler()
         {
             var required = ((JArray)ExecutePython().InputSchema["required"]).Select(t => (string)t).ToList();
 
-            Assert.Contains("code", required);
             // The handler refuses without it. A schema that did not require it would
             // advertise a call that always fails.
             Assert.Contains("target_document", required);
+
+            // `code` is NO LONGER schema-required, because since 5.27 the rule is
+            // "exactly one of code / code_path" - which draft-7 can express and this
+            // schema deliberately does not, for the same reason it does not express
+            // run_async's dependency on idempotency_key: oneOf is enforced
+            // inconsistently across MCP clients, and a schema that demanded `code`
+            // would make code_path unreachable for every strict one.
+            Assert.DoesNotContain("code", required);
+            Assert.DoesNotContain("code_path", required);
+        }
+
+        /// <summary>
+        /// A 26 KB driver could not be sent inline, so it arrived as a stub that read
+        /// and compiled its own file - three attempts, two of them lost to IronPython
+        /// decoding errors. code_path is the supported path, and with
+        /// additionalProperties:false an undeclared field is unreachable, so declaring
+        /// it IS the feature.
+        /// </summary>
+        [Fact]
+        public void The_schema_declares_code_path_and_says_it_evades_nothing()
+        {
+            JObject codePath = (JObject)Props()["code_path"];
+
+            Assert.NotNull(codePath);
+            Assert.Equal("string", (string)codePath["type"]);
+
+            string d = (string)codePath["description"];
+            Assert.Contains("MACHINE RUNNING REVIT", d);
+            Assert.Contains("Exactly one", d);
+            // The limits it must not be read as a way around.
+            Assert.Contains("submitted_source_sha256", d);
+            // And the one that is easy to over-promise: the durable claim is taken over
+            // the REQUEST, which names the path - so an edited file under the same key
+            // replays rather than running. Claiming it would be "refused as a different
+            // request" would be a guarantee no code here provides.
+            Assert.Contains("NAMES THE PATH, NOT THE BYTES", d);
+            Assert.Contains("replays the original answer", d);
+            // And what it buys, which is why a caller would choose it.
+            Assert.Contains("<string>", d);
         }
 
         [Fact]
@@ -102,7 +140,7 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
-        /// Since the default flipped, the description is where a client learns the
+        /// The description is where a client learns the safe default and the
         /// fallback policy: typed first, Python when a capability is missing, never
         /// as a retry of a failed typed write, and evidence over prints.
         /// </summary>
@@ -112,7 +150,8 @@ namespace Horizun.Server.Tests
             string d = ExecutePython().Description;
 
             Assert.Contains("EXECUTION FALLBACK", d);
-            Assert.Contains("Enabled by default", d);
+            Assert.Contains("Disabled by default", d);
+            Assert.Contains("explicitly grant", d);
             Assert.Contains("instead of answering 'not supported'", d);
             Assert.Contains("second write", d);
             // The four evidence states, in the description a caller actually reads.
@@ -135,6 +174,39 @@ namespace Horizun.Server.Tests
             Assert.Contains("script_reported_status", d);
             // The old four-state list, which began with a bare "verified", must be gone.
             Assert.DoesNotContain("evidence_status is one of verified|", d);
+        }
+
+        /// <summary>
+        /// The dialog record is only useful to a caller who knows it exists. Three models
+        /// were reported unauditable with no cause, twice a month apart, because the
+        /// script saw nothing but Revit's own "Opening was canceled" - so the description
+        /// has to name the field, the reason, and the way past it.
+        /// </summary>
+        [Fact]
+        public void The_description_says_where_a_cancelled_open_is_explained()
+        {
+            string d = ExecutePython().Description;
+
+            Assert.Contains("'dialogs' and 'failures'", d);
+            Assert.Contains("Opening was canceled", d);
+            // Read DURING the run, which is the only way a batch can attribute one.
+            Assert.Contains("revit_raised(since)", d);
+            Assert.Contains("dialog_answer('dismiss')", d);
+        }
+
+        /// <summary>
+        /// `app` was always injected and `__revit__` never was, so the first thing anybody
+        /// arriving from pyRevit types answered "NameError" - which reads like the bridge
+        /// has no application object. Both names, and what each one IS, belong here.
+        /// </summary>
+        [Fact]
+        public void The_description_names_what_is_injected_including_the_pyrevit_alias()
+        {
+            string d = ExecutePython().Description;
+
+            Assert.Contains("__revit__", d);
+            Assert.Contains("UIApplication", d);
+            Assert.Contains("checkpoint()", d);
         }
 
         /// <summary>

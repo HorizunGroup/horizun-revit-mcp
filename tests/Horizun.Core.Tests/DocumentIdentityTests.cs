@@ -58,6 +58,35 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Strong_identity_never_accepts_homonymous_unsaved_or_detached_documents()
+        {
+            Assert.False(DocumentMatcher.SameStableIdentity(Doc("TOWER-A"), Doc("TOWER-A")));
+            Assert.False(DocumentMatcher.SameStableIdentity(
+                Doc("TOWER-A_detached", ""), Doc("TOWER-A_detached", "")));
+        }
+
+        [Fact]
+        public void Strong_cloud_identity_requires_both_project_and_model_guids()
+        {
+            DocIdentity a = Doc("A", null, "22222222-2222-2222-2222-222222222222");
+            DocIdentity b = Doc("A", null, "22222222-2222-2222-2222-222222222222");
+            Assert.True(DocumentMatcher.SameStableIdentity(
+                a, b, "11111111-1111-1111-1111-111111111111", "11111111-1111-1111-1111-111111111111"));
+            Assert.False(DocumentMatcher.SameStableIdentity(
+                a, b, "11111111-1111-1111-1111-111111111111", "99999999-9999-9999-9999-999999999999"));
+            Assert.False(DocumentMatcher.SameStableIdentity(a, b));
+        }
+
+        [Fact]
+        public void Strong_local_identity_is_path_based_not_title_based()
+        {
+            Assert.True(DocumentMatcher.SameStableIdentity(
+                Doc("same", @"C:\North\A.rvt"), Doc("different", "c:/north/A.RVT")));
+            Assert.False(DocumentMatcher.SameStableIdentity(
+                Doc("same", @"C:\North\A.rvt"), Doc("same", @"C:\South\A.rvt")));
+        }
+
+        [Fact]
         public void The_same_title_in_different_folders_is_settled_by_path()
         {
             var open = new List<DocIdentity>

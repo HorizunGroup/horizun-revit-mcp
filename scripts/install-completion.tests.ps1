@@ -29,7 +29,9 @@ try {
     $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
     [pscustomobject]@{
         Schema = 2
-        Server = [pscustomobject]@{ Sha256 = $serverHash }
+        Server = [pscustomobject]@{ Sha256 = $serverHash; Payload = @(
+            [pscustomobject]@{ Path = 'horizun-mcp.exe'; Sha256 = $serverHash }
+        ) }
         Plugins = @()
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $serverDir) 'manifest.json') -Encoding UTF8
 
@@ -139,6 +141,75 @@ args = []
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'verify-install.ps1') `
         -Client Claude -ServerPath $server -SkipLive *> $null
     Assert 'manifest verification rejects a changed installed server' ($LASTEXITCODE -eq 1) "exit $LASTEXITCODE"
+
+    # Registration is itself transactional with the subsequent binary/config
+    # verification.  A bad payload discovered after the client write must put
+    # the exact pre-registration bytes back, not strand a newly registered
+    # command that points at an invalid installation.
+    $rollbackConfig = @'
+{
+  "theme": "rollback-me",
+  "mcpServers": {
+    "other": { "command": "other.exe", "args": [] }
+  }
+}
+'@
+    $claudeConfig = Join-Path $env:USERPROFILE '.claude.json'
+    Set-Content -LiteralPath $claudeConfig -Value $rollbackConfig -Encoding UTF8
+    $rollbackBefore = [IO.File]::ReadAllBytes($claudeConfig)
+    Clear-Content -LiteralPath $clientState
+    $rollbackStatus = Join-Path $env:LOCALAPPDATA 'Horizun\rollback-install-status.json'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
+        -Client Claude -ServerPath $server -StatusPath $rollbackStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
+        -ClientStateFile $clientState *> $null
+    $rollbackExit = $LASTEXITCODE
+    $rollbackState = Get-Content -LiteralPath $rollbackStatus -Raw | ConvertFrom-Json
+    $rollbackAfter = [IO.File]::ReadAllBytes($claudeConfig)
+    Assert 'post-registration verification failure restores the exact previous client config' `
+        ($rollbackExit -eq 1 -and $rollbackState.state -eq 'verification_failed' -and
+         [Convert]::ToBase64String($rollbackBefore) -eq [Convert]::ToBase64String($rollbackAfter)) `
+        "exit=$rollbackExit state=$($rollbackState.state)"
+
+    # Two install generations sharing one status path: the newer claim must make
+    # the older worker relinquish the mutex, and only the newer journal is
+    # authoritative. This is also run while a real pre-fix finisher may exist on
+    # the workstation; its legacy mutex/run value cannot block V2.
+    'fake server bytes for generation race' | Set-Content -LiteralPath $server -Encoding ASCII
+    $serverHash = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
+    [pscustomobject]@{ Schema=2; Server=[pscustomobject]@{Sha256=$serverHash;Payload=@([pscustomobject]@{Path='horizun-mcp.exe';Sha256=$serverHash})};Plugins=@() } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $serverDir) 'manifest.json') -Encoding UTF8
+    $oldServerDir = Join-Path $root 'old-product\MCP\server'
+    New-Item -ItemType Directory -Path $oldServerDir -Force | Out-Null
+    $oldServer = Join-Path $oldServerDir 'horizun-mcp.exe'
+    'superseded server bytes' | Set-Content -LiteralPath $oldServer -Encoding ASCII
+    $oldServerHash = (Get-FileHash -LiteralPath $oldServer -Algorithm SHA256).Hash.ToLowerInvariant()
+    [pscustomobject]@{ Schema=2; Server=[pscustomobject]@{Sha256=$oldServerHash;Payload=@([pscustomobject]@{Path='horizun-mcp.exe';Sha256=$oldServerHash})};Plugins=@() } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path (Split-Path -Parent $oldServerDir) 'manifest.json') -Encoding UTF8
+    $raceStatus = Join-Path $env:LOCALAPPDATA 'Horizun\generation-race.json'
+    'Claude' | Set-Content -LiteralPath $clientState -Encoding ASCII
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
+        -Client Claude -ServerPath $oldServer -StatusPath $raceStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
+        -ClientStateFile $clientState -Generation oldgeneration01
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'complete-install.ps1') `
+        -Client Claude -ServerPath $server -StatusPath $raceStatus -WaitTimeoutMinutes 1 -NoResume -NoLiveWait `
+        -ClientStateFile $clientState -Generation newgeneration02
+    Clear-Content -LiteralPath $clientState
+    $deadline = (Get-Date).AddSeconds(40)
+    $raceFinal = $null
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $newJournal = "$raceStatus.generation-newgeneration02.json"
+        if (Test-Path -LiteralPath $newJournal) {
+            $raceFinal = Get-Content -LiteralPath $newJournal -Raw | ConvertFrom-Json
+            if ($raceFinal.state -eq 'installed_and_registered') { break }
+        }
+    }
+    $pointer = if (Test-Path "$raceStatus.current") { (Get-Content "$raceStatus.current" -Raw).Trim() } else { '' }
+    $raceConfig = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.claude.json') -Raw | ConvertFrom-Json
+    Assert 'new completion generation supersedes an older worker without being blocked or erased' `
+        ($pointer -eq 'newgeneration02' -and $raceFinal -and $raceFinal.state -eq 'installed_and_registered' -and
+         $raceConfig.mcpServers.'horizun-revit'.command -eq $server) `
+        "pointer=$pointer state=$($raceFinal.state) command=$($raceConfig.mcpServers.'horizun-revit'.command)"
 }
 finally {
     $env:USERPROFILE = $oldProfile

@@ -4,12 +4,10 @@
 // Give back everything this user owns in a workshared model, and MEASURE what
 // changed rather than assume it.
 //
-// WorksharingUtils.RelinquishOwnership tells you nothing useful about the result,
-// so the honest way to report it is to count what this user owns before and after
-// and hand over both numbers. If the count did not drop to zero, that is the
-// answer — elements can stay checked out for reasons Revit does not advertise,
-// and a cheerful "relinquished" over a still-locked model is how the next person
-// gets blocked with no idea why.
+// WorksharingUtils.RelinquishOwnership returns the ids it attempted to release,
+// but that is not a postcondition. The honest result is a second ownership census:
+// worksets by Owner and every element by GetCheckoutStatus. Only zero in BOTH,
+// with no unreadable element, can be declared fully relinquished.
 //
 // A non-workshared document is refused, not "succeeded with nothing to do":
 // asking to relinquish a file that has no ownership at all means the caller
@@ -30,7 +28,8 @@ namespace Horizun.Revit.Commands
 
         public string Description =>
             "Relinquish every workset and element this user owns in the ACTIVE workshared document, then MEASURE " +
-            "the result: the count of worksets owned by this user is read before and after and both are reported, " +
+            "the result: worksets and element-level checkout statuses are read before and after, and the ids Revit " +
+            "reported as relinquished are also returned, " +
             "so a partial relinquish cannot pass as a complete one. Refuses a document that is not workshared. " +
             "Does not synchronize with central and does not save.";
 
@@ -64,6 +63,9 @@ namespace Horizun.Revit.Commands
 
             string me = app.Application.Username;
             int? ownedBefore = CountWorksetsOwnedBy(doc, me);
+            ElementOwnershipCensus elementsBefore = CountElementsOwnedByCurrentUser(doc);
+            var apiRelinquishedElements = new List<long>();
+            var apiRelinquishedWorksets = new List<long>();
 
             try
             {
@@ -75,7 +77,20 @@ namespace Horizun.Revit.Commands
                     UserWorksets = true,
                     ViewWorksets = true
                 };
-                WorksharingUtils.RelinquishOwnership(doc, options, new TransactWithCentralOptions());
+                using (RelinquishedItems apiResult = WorksharingUtils.RelinquishOwnership(
+                    doc, options, new TransactWithCentralOptions()))
+                {
+                    if (apiResult != null)
+                    {
+                        ICollection<ElementId> ids = apiResult.GetRelinquishedElements();
+                        if (ids != null)
+                            foreach (ElementId id in ids) apiRelinquishedElements.Add(Rid.GetId(id));
+
+                        ICollection<WorksetId> worksets = apiResult.GetRelinquishedWorksets();
+                        if (worksets != null)
+                            foreach (WorksetId id in worksets) apiRelinquishedWorksets.Add(WorksetIdValue(id));
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -83,27 +98,49 @@ namespace Horizun.Revit.Commands
             }
 
             int? ownedAfter = CountWorksetsOwnedBy(doc, me);
+            ElementOwnershipCensus elementsAfter = CountElementsOwnedByCurrentUser(doc);
 
-            bool? complete = (ownedAfter.HasValue) ? (bool?)(ownedAfter.Value == 0) : null;
+            bool? complete = ownedAfter.HasValue && elementsAfter.Complete
+                ? (bool?)(ownedAfter.Value == 0 && elementsAfter.Owned == 0)
+                : null;
 
             return CommandResult.Ok(new
             {
-                relinquished = true,
+                relinquish_attempted = true,
+                relinquished = complete == true,
                 document = doc.Title,
                 user = me,
                 // Measured, not claimed. Null means the count could not be read at all.
                 worksets_owned_before = ownedBefore,
                 worksets_owned_after = ownedAfter,
+                elements_scanned_before = elementsBefore.Scanned,
+                elements_owned_before = elementsBefore.Owned,
+                elements_unreadable_before = elementsBefore.Unreadable,
+                elements_owned_before_sample = elementsBefore.OwnedSample,
+                elements_scanned_after = elementsAfter.Scanned,
+                elements_owned_after = elementsAfter.Owned,
+                elements_unreadable_after = elementsAfter.Unreadable,
+                elements_owned_after_sample = elementsAfter.OwnedSample,
+                api_reported_relinquished_element_ids = apiRelinquishedElements,
+                api_reported_relinquished_workset_ids = apiRelinquishedWorksets,
                 fully_relinquished = complete,
-                measured_how = "Worksets in this document whose Owner is the current user, counted before and " +
-                               "after. Element-level checkouts are released by the same call but are not counted " +
-                               "here — this number is about worksets, and says so rather than implying more.",
+                measured_how = "Worksets were counted by Owner. Every collectable element was checked with " +
+                               "WorksharingUtils.GetCheckoutStatus before and after. Revit's returned " +
+                               "RelinquishedItems ids are reported separately because they describe the call, " +
+                               "not proof of the state after it.",
                 note = complete == false
-                    ? "STILL OWNED: " + ownedAfter + " workset(s) remain under this user after the relinquish. " +
-                      "Do not treat the model as free; find out which and why before handing it over."
-                    : null,
-                also_note = "This did not synchronize with central and did not save. Ownership was returned; " +
-                            "your changes are wherever they already were."
+                    ? "STILL OWNED: " + ownedAfter + " workset(s) and " + elementsAfter.Owned +
+                      " element(s) remain under this user after the relinquish. Do not treat the model as free."
+                    : (complete == null
+                        ? "UNVERIFIED: the post-relinquish census could not read every required ownership fact " +
+                          "(workset count readable=" + ownedAfter.HasValue + ", unreadable elements=" +
+                          elementsAfter.Unreadable + "). This is not a claim of full release."
+                        : null),
+                also_note = complete == true
+                    ? "This did not synchronize with central and did not save. The postcondition census verified " +
+                      "that no workset or element remains owned by this user; your changes are wherever they already were."
+                    : "This did not synchronize with central and did not save. Complete ownership release was NOT " +
+                      "verified; your changes are wherever they already were."
             });
         }
 
@@ -125,6 +162,50 @@ namespace Horizun.Revit.Commands
             {
                 return null;
             }
+        }
+
+        private sealed class ElementOwnershipCensus
+        {
+            public int Scanned;
+            public int Owned;
+            public int Unreadable;
+            public readonly List<long> OwnedSample = new List<long>();
+            public bool Complete => Unreadable == 0;
+        }
+
+        /// <summary>
+        /// Re-read every element's checkout status. A failed read is counted, never
+        /// converted into NotOwned; otherwise an inaccessible locked element would make
+        /// an incomplete release look complete.
+        /// </summary>
+        private static ElementOwnershipCensus CountElementsOwnedByCurrentUser(Document doc)
+        {
+            var result = new ElementOwnershipCensus();
+            ICollection<ElementId> ids;
+            try { ids = new FilteredElementCollector(doc).ToElementIds(); }
+            catch
+            {
+                result.Unreadable = 1;
+                return result;
+            }
+
+            foreach (ElementId id in ids)
+            {
+                result.Scanned++;
+                try
+                {
+                    if (WorksharingUtils.GetCheckoutStatus(doc, id) != CheckoutStatus.OwnedByCurrentUser) continue;
+                    result.Owned++;
+                    if (result.OwnedSample.Count < 100) result.OwnedSample.Add(Rid.GetId(id));
+                }
+                catch { result.Unreadable++; }
+            }
+            return result;
+        }
+
+        private static long WorksetIdValue(WorksetId id)
+        {
+            return id.IntegerValue;
         }
     }
 }

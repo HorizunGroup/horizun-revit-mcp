@@ -1,18 +1,21 @@
 # Code signing policy
 
 Horizun Revit MCP is free and open-source software released under Apache-2.0.
-Windows releases from 1.0.0 onward must use **free code signing provided by
+Every installable Windows release must use **free code signing provided by
 [SignPath.io](https://signpath.io/), certificate by
 [SignPath Foundation](https://signpath.org/)**.
 
 ## Current status
 
 The SignPath Foundation application was submitted on 2026-08-15 and is awaiting
-review. Horizun 0.9.0 is intentionally released unsigned and its download page
-must identify it that way. Windows and Revit may therefore display an unknown
-publisher warning. A release may only claim SignPath signing after the public
-signature gate has verified the exact published bytes on a clean Windows runner.
-Version 1.0.0 and every later release is blocked unless that gate passes.
+review. Legacy unsigned artifacts are not accepted by the release bootstrap:
+automatic binary publication and release installation resume only after SignPath has issued
+the public identity and a release is validly signed and timestamped. Source
+installation remains available because it compiles locally and does not cross
+this download trust boundary. A release may only claim SignPath signing after the
+public signature gate has verified the exact published bytes on a clean Windows
+runner.
+Until then, only source and validation-only releases without binary assets are allowed.
 
 ## Scope
 
@@ -35,23 +38,35 @@ re-signed as Horizun binaries.
   the same repository.
 - Release signing starts only from a protected `v*` tag whose version matches the
   product version in source.
-- The unsigned signing input must be built on GitHub-hosted runners from the
-  tagged commit. The separate self-hosted Revit runner may consume and test the
-  signed package, but it is not an origin for SignPath signing input.
-- SignPath origin verification binds each request to the repository, workflow,
-  commit and GitHub artifact.
-- Every release requires a complete live verification matrix for Revit 2023
-  through 2027. Releases from 1.0.0 onward additionally require human signing
-  approval.
+- The tagged workflow requires separate GitHub runner groups for interactive
+  Revit integration and packaging/signing. The signing runner needs the five
+  locally installed Revit APIs but must not share the integration runner group.
+  Group membership, protected environments and key provisioning are external
+  controls and must be audited by an organization owner before stable release.
+- SignPath Foundation's published OSS origin rules require every job leading to
+  a signing request to use GitHub-hosted agents by default. The present build
+  requires locally installed, non-redistributed Revit APIs, so separate runner
+  groups reduce the persistent-runner risk but do not prove SignPath eligibility.
+  Stable signing stays fail-closed until SignPath explicitly approves this origin
+  design; the external decision is recorded by
+  `SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED=true` only after that approval.
+- The intended SignPath GitHub integration will bind each signing request to the
+  repository, workflow, commit and uploaded GitHub artifact. That request step is
+  **not active yet** because the project, policy and credentials do not exist
+  before acceptance. The current workflow therefore cannot publish binaries: a
+  protected local-certificate signing path exists for development/integration
+  testing, but it cannot satisfy the SignPath publisher gate and is not presented
+  as an origin-verified public release path.
+- Every stable release requires a complete live verification matrix for Revit
+  2023 through 2027. Every installable release requires signing approval.
 - CI generates a CycloneDX SBOM, full SHA-256 manifest, release checksums and
   GitHub build-provenance attestations.
 - A disposable GitHub-hosted Windows runner verifies Authenticode public trust,
   trusted timestamps and the absence of self-signed own binaries before
   publication.
-- A failed install, rollback or live test blocks every release. From 1.0.0 onward,
-  a failed or missing signature or timestamp also blocks release and there is no
-  unsigned exception. The only temporary exception is a correctly disclosed 0.x
-  artifact whose own binaries are all verified as unsigned on a clean runner.
+- A failed install, rollback or required live test blocks publication. A failed or
+  missing signature or timestamp blocks every installable release; there is no
+  unsigned binary exception. Validation-only tags carry no assets.
 
 The detailed mechanical gates are documented in
 [`docs/RELEASE-POLICY.md`](docs/RELEASE-POLICY.md).

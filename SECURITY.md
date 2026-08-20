@@ -23,6 +23,7 @@ Do not send secrets in the first message.
 The detailed trust boundaries, permission profiles, local transport,
 idempotency model and Python fallback are in
 [docs/security-model.md](docs/security-model.md). `horizun_execute_python` is
-enabled by default and executes arbitrary code as the signed-in user; its output
-is self-reported and `host_verified` is always false. Release notes state the
+disabled by default; when an owner explicitly enables it, it executes arbitrary
+code as the signed-in user, its output is self-reported and `host_verified` is
+always false. Release notes state the
 actual signature/trust status, and users should verify the published SHA-256.

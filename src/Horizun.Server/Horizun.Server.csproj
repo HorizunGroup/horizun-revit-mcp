@@ -16,6 +16,12 @@
     <RootNamespace>Horizun.Server</RootNamespace>
     <!-- Version is inherited from the repository's Directory.Build.props. -->
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- One lock graph serves both installation modes: source installs build a
+         framework-dependent executable, while public packages publish a
+         self-contained win-x64 executable. Declaring the shipped RID here keeps
+         ordinary locked restore and the locked win-x64 publish
+         consistent instead of making each route invalidate the other's lock. -->
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
          path of the folder it was built in, so the same commit built elsewhere

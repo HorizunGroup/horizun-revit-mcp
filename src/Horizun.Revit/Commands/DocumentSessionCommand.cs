@@ -161,6 +161,8 @@ namespace Horizun.Revit.Commands
         private static CommandResult Open(UIApplication app, JObject request)
         {
             var path = request.Value<string>("file_path");
+            List<string> closeWorksetNames = ReadWorksetNames(request["close_workset_names"], out string worksetError);
+            if (worksetError != null) return CommandResult.Fail(worksetError);
             bool wantsCloud = !string.IsNullOrWhiteSpace(request.Value<string>("cloud_project_guid")) ||
                               !string.IsNullOrWhiteSpace(request.Value<string>("cloud_model_guid"));
 
@@ -193,6 +195,7 @@ namespace Horizun.Revit.Commands
                 Audit = request.Value<bool?>("audit") ?? false,
                 OpenCentral = request.Value<bool?>("open_central") ?? false,
                 OpenAllWorksets = request.Value<bool?>("open_all_worksets") ?? false,
+                CloseWorksetNames = closeWorksetNames,
                 OnOpenDialog = OpenRequest.ParseDialogAnswer(request.Value<string>("on_open_dialog"), out string dialogError)
             };
             if (dialogError != null) return CommandResult.Fail(dialogError);
@@ -219,11 +222,55 @@ namespace Horizun.Revit.Commands
                 .FirstOrDefault(d => !d.IsLinked && string.Equals(SafePath(d), path, StringComparison.OrdinalIgnoreCase));
             if (already != null)
             {
+                if (openRequest.CloseWorksetNames.Count > 0)
+                    return CommandResult.Fail(
+                        "The document is already open, so close_workset_names cannot be applied retroactively. " +
+                        "Close it without saving and open it again with this request; nothing about the loaded " +
+                        "workset set was changed.");
+                WorksetConfigurationEvidence alreadyWorksets = MeasureWorksetConfiguration(already, openRequest);
+                if (openRequest.OpenAllWorksets && !alreadyWorksets.Applied)
+                    return CommandResult.FailWithDetail(
+                        "The document is already open, so open_all_worksets cannot be applied retroactively, and " +
+                        "the observed document does NOT already have every user workset open: " +
+                        alreadyWorksets.Error + " Nothing was opened, activated or changed.",
+                        new JObject
+                        {
+                            ["opened"] = false,
+                            ["opened_now"] = false,
+                            ["title"] = SafeTitle(already),
+                            ["path"] = SafePath(already),
+                            ["workset_configuration_applied"] = false,
+                            ["workset_configuration_satisfied"] = false,
+                            ["workset_configuration_evidence"] = alreadyWorksets.ToJson()
+                        });
+                bool wasActive = OpenGuard.SameDocument(
+                    app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null, already);
+                if (!wasActive)
+                {
+                    try { app.OpenAndActivateDocument(path); }
+                    catch (Exception ex)
+                    {
+                        return CommandResult.Fail(
+                            "The requested document is already open, but Revit refused to make it active: " +
+                            ex.Message + ". It remains open in the background; no successful open result is declared.");
+                    }
+                }
+
+                Document activeAfter = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
+                if (!OpenGuard.SameDocument(activeAfter, already))
+                {
+                    return CommandResult.Fail(
+                        "The requested document is already open, but it is NOT the active document after the " +
+                        "activation attempt. Refusing to report a successful open because the next command would " +
+                        "target '" + SafeTitle(activeAfter) + "' instead.");
+                }
+
                 return CommandResult.Ok(new JObject
                 {
                     ["operation"] = "open",
-                    ["status"] = "already_open",
+                    ["status"] = wasActive ? "already_open_and_active" : "already_open_activated",
                     ["opened_now"] = false,
+                    ["active_document_verified"] = true,
                     ["upgraded"] = false,
                     ["title"] = SafeTitle(already),
                     ["path"] = SafePath(already),
@@ -232,7 +279,19 @@ namespace Horizun.Revit.Commands
                     ["host_version"] = host,
                     ["expected_version"] = expected,
                     ["audit_ran"] = AuditState(app, already),
+                    // This call did not open the document and therefore applied no
+                    // OpenOptions. A true satisfied value is an observation of the
+                    // pre-existing state, deliberately separate from "applied".
+                    ["all_worksets_opened"] = openRequest.OpenAllWorksets && alreadyWorksets.Applied,
+                    ["closed_worksets_requested"] = new JArray(openRequest.CloseWorksetNames),
+                    ["workset_configuration_applied"] = false,
+                    ["workset_configuration_satisfied"] = alreadyWorksets.Requested
+                        ? (JToken)alreadyWorksets.Applied : JValue.CreateNull(),
+                    ["workset_configuration_evidence"] = alreadyWorksets.ToJson(),
                     ["note"] = "This document was already open; this call did not open, upgrade or modify anything. " +
+                               (openRequest.OpenAllWorksets
+                                   ? "Every user workset was already open when measured; this call did not apply that state. "
+                                   : "") +
                                "audit_ran describes the open THIS tool performed, if it performed one."
                 });
             }
@@ -299,6 +358,9 @@ namespace Horizun.Revit.Commands
             // does not exist is not evidence of anything. A detach open that activated
             // some OTHER document still fails, because its title would not match.
             bool isRequested = pathIsRequested || (detach && titleIsRequested);
+            Document activeAfterOpen = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
+            bool returnedDocumentIsActive = OpenGuard.SameDocument(activeAfterOpen, doc);
+            WorksetConfigurationEvidence worksetEvidence = MeasureWorksetConfiguration(doc, openRequest);
             string identifiedBy = pathIsRequested
                 ? "path"
                 : (isRequested
@@ -307,23 +369,32 @@ namespace Horizun.Revit.Commands
                         : "title, matched exactly (detached: no path until saved)")
                     : null);
 
-            if (!isRequested)
+            if (!isRequested || !returnedDocumentIsActive)
             {
                 // Do not imply nothing happened. A document is open right now, and on an
                 // allow_upgrade open it has already been upgraded in memory. Saying
                 // "nothing was opened" here is what sends someone looking in the wrong
                 // place while the damage sits in the session.
-                return CommandResult.Fail(
-                    "A DOCUMENT WAS OPENED, but this tool cannot prove it is the file you asked for. Revit reports the active " +
+                return CommandResult.FailWithDetail(
+                    "A DOCUMENT WAS OPENED, but this tool cannot prove that the requested file is ACTIVE. Revit reports the returned " +
                     "document as '" + (actualPath ?? "(no path)") + "' / title '" + (title ?? "(no title)") + "', and the request was " +
-                    "'" + path + "'" + (detach ? " with detach=true" : "") + ". Refusing to report this as opened: every tool that runs " +
+                    "'" + path + "'" + (detach ? " with detach=true" : "") +
+                    ". returned_document_is_active=" + returnedDocumentIsActive +
+                    ", source_matches_request=" + isRequested + ". Refusing to report this as opened: every tool that runs " +
                     "next would silently target the wrong model. " +
                     (openRequest.AllowUpgrade
                         ? "allow_upgrade was true, so whatever opened may ALREADY have been upgraded in memory and must not be saved. "
                         : "") +
                     "Close it in the UI or name the document explicitly before continuing. The audit flag for this open (audit=" +
-                    (audit ? "true" : "false") + ") was recorded against the document Revit returned.");
+                    (audit ? "true" : "false") + ") was recorded against the document Revit returned.",
+                    OpenedFailureDetail(doc, path, "local", returnedDocumentIsActive, worksetEvidence));
             }
+
+            if (worksetEvidence.Requested && !worksetEvidence.Applied)
+                return CommandResult.FailWithDetail(
+                    "A DOCUMENT WAS OPENED and is active, but the requested workset configuration was NOT verified: " +
+                    worksetEvidence.Error + " The document remains open; do not treat its loaded contents as the requested set.",
+                    OpenedFailureDetail(doc, path, "local", true, worksetEvidence));
 
             // Opening upgrades the IN-MEMORY document. The bytes on disk are still the
             // old version until something saves. Say that precisely — it is the last
@@ -336,6 +407,7 @@ namespace Horizun.Revit.Commands
                 ["operation"] = "open",
                 ["status"] = "opened",
                 ["opened_now"] = true,
+                ["active_document_verified"] = true,
                 ["title"] = title,
                 ["path"] = hasPath ? actualPath : null,
                 ["path_is_the_one_requested"] = pathIsRequested,
@@ -374,8 +446,47 @@ namespace Horizun.Revit.Commands
                     ? (detach ? "detached" : "open_central")
                     : (plan.FileIsCentral == false ? "not_a_central" : "unreadable, waived by detach or open_central"),
                 ["central_path"] = plan.CentralPath,
-                ["all_worksets_opened"] = openRequest.OpenAllWorksets
+                ["all_worksets_opened"] = openRequest.OpenAllWorksets,
+                ["closed_worksets_requested"] = new JArray(openRequest.CloseWorksetNames),
+                ["workset_configuration_applied"] = worksetEvidence.Applied,
+                ["workset_configuration_satisfied"] = worksetEvidence.Applied,
+                ["workset_configuration_evidence"] = worksetEvidence.ToJson()
             });
+        }
+
+        private static List<string> ReadWorksetNames(JToken token, out string error)
+        {
+            error = null;
+            var names = new List<string>();
+            if (token == null || token.Type == JTokenType.Null) return names;
+            var array = token as JArray;
+            if (array == null)
+            {
+                error = "close_workset_names must be an array of exact user-workset names.";
+                return names;
+            }
+            if (array.Count > 128)
+            {
+                error = "close_workset_names exceeds 128 entries. Nothing was opened.";
+                return names;
+            }
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (JToken item in array)
+            {
+                if (item.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)item))
+                {
+                    error = "close_workset_names entries must be non-empty strings.";
+                    return names;
+                }
+                string name = ((string)item).Trim();
+                if (!seen.Add(name))
+                {
+                    error = "close_workset_names repeats '" + name + "'. Nothing was opened.";
+                    return names;
+                }
+                names.Add(name);
+            }
+            return names;
         }
 
         // =====================================================================
@@ -424,24 +535,54 @@ namespace Horizun.Revit.Commands
             _auditedOnOpen[doc] = r.Audit;
 
             Document nowActive = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
-            bool confirmed = OpenGuard.SameDocument(nowActive, doc);
+            bool activeConfirmed = OpenGuard.SameDocument(nowActive, doc);
+            Guid actualProject;
+            Guid actualModel;
+            string cloudIdentityError;
+            bool cloudIdentityConfirmed = TryReadCloudIdentity(nowActive, out actualProject, out actualModel,
+                                                               out cloudIdentityError) &&
+                                          actualProject == plan.CloudProject && actualModel == plan.CloudModel;
+            WorksetConfigurationEvidence worksetEvidence = MeasureWorksetConfiguration(doc, r);
+
+            if (!activeConfirmed || !cloudIdentityConfirmed)
+            {
+                return CommandResult.FailWithDetail(
+                    "A DOCUMENT WAS OPENED, but the requested cloud model is not proven active. " +
+                    "active_document_matches_returned=" + activeConfirmed +
+                    ", cloud_identity_matches_request=" + cloudIdentityConfirmed +
+                    (cloudIdentityError == null ? "" : ", cloud_identity_error=" + cloudIdentityError) +
+                    ". The opened document remains in this Revit session; identify or close it before continuing.",
+                    OpenedFailureDetail(doc, null, "cloud", activeConfirmed, worksetEvidence));
+            }
+
+            if (worksetEvidence.Requested && !worksetEvidence.Applied)
+                return CommandResult.FailWithDetail(
+                    "A DOCUMENT WAS OPENED and is active, but the requested workset configuration was NOT verified: " +
+                    worksetEvidence.Error + " The document remains open; do not treat its loaded contents as the requested set.",
+                    OpenedFailureDetail(doc, null, "cloud", true, worksetEvidence));
 
             return CommandResult.Ok(new JObject
             {
                 ["operation"] = "open",
-                ["status"] = confirmed ? "opened" : "opened_but_not_active",
+                ["status"] = "opened",
                 ["opened_now"] = true,
+                ["active_document_verified"] = true,
                 ["source"] = "cloud",
                 ["title"] = SafeTitle(doc),
                 // A cloud document's PathName is not a file that can be opened again.
                 ["path"] = null,
                 ["cloud_region"] = plan.Region,
-                ["cloud_project_guid"] = plan.CloudProject.ToString(),
-                ["cloud_model_guid"] = plan.CloudModel.ToString(),
+                ["cloud_project_guid"] = actualProject.ToString(),
+                ["cloud_model_guid"] = actualModel.ToString(),
+                ["cloud_identity_matches_request"] = true,
                 ["is_workshared"] = WorksharedJson(SafeWorkshared(doc)),
                 ["detached"] = r.Detach,
                 ["audit_ran"] = r.Audit,
                 ["all_worksets_opened"] = r.OpenAllWorksets,
+                ["closed_worksets_requested"] = new JArray(r.CloseWorksetNames),
+                ["workset_configuration_applied"] = worksetEvidence.Applied,
+                ["workset_configuration_satisfied"] = worksetEvidence.Applied,
+                ["workset_configuration_evidence"] = worksetEvidence.ToJson(),
                 ["expected_version"] = expected,
                 ["host_version"] = plan.HostVersion,
                 ["file_version_before_open"] = null,
@@ -460,10 +601,7 @@ namespace Horizun.Revit.Commands
                         ? "DETACHED, so nothing here can reach the model the team synchronizes to."
                         : "DIRECTLY, because open_central=true was passed. Anything saved from this session writes " +
                           "to the model the team synchronizes to."),
-                ["note"] = confirmed
-                    ? null
-                    : "Revit opened a document but it is NOT the active one. Do not run anything that assumes the " +
-                      "active document is the model you named."
+                ["note"] = null
             });
         }
 
@@ -1637,6 +1775,76 @@ namespace Horizun.Revit.Commands
             foreach (var c in candidates)
                 if (string.Equals(title, c, StringComparison.OrdinalIgnoreCase)) return true;
             return false;
+        }
+
+        /// <summary>
+        /// Read the identity from the document Revit actually returned. Echoing the GUIDs
+        /// from OpenPlan would only prove what was requested, not what is now open.
+        /// </summary>
+        private static bool TryReadCloudIdentity(Document doc, out Guid project, out Guid model, out string error)
+        {
+            project = Guid.Empty;
+            model = Guid.Empty;
+            error = null;
+            try
+            {
+                ModelPath path = doc == null ? null : doc.GetCloudModelPath();
+                if (path == null)
+                {
+                    error = "GetCloudModelPath returned null";
+                    return false;
+                }
+                project = path.GetProjectGUID();
+                model = path.GetModelGUID();
+                return project != Guid.Empty && model != Guid.Empty;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        private static WorksetConfigurationEvidence MeasureWorksetConfiguration(Document doc, OpenRequest request)
+        {
+            bool requested = request != null &&
+                (request.OpenAllWorksets || (request.CloseWorksetNames != null && request.CloseWorksetNames.Count > 0));
+            if (!requested)
+                return WorksetConfigurationEvidence.Verify(new List<string>(), false,
+                    Enumerable.Empty<WorksetOpenObservation>());
+            try
+            {
+                var observed = new List<WorksetOpenObservation>();
+                if (doc.IsWorkshared)
+                {
+                    foreach (Workset workset in new FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset))
+                        observed.Add(new WorksetOpenObservation { Name = workset.Name, IsOpen = workset.IsOpen });
+                }
+                return WorksetConfigurationEvidence.Verify(request.CloseWorksetNames, request.OpenAllWorksets, observed);
+            }
+            catch (Exception ex)
+            {
+                return WorksetConfigurationEvidence.Unreadable(true, ex.Message);
+            }
+        }
+
+        private static JObject OpenedFailureDetail(Document doc, string openedFrom, string source,
+                                                   bool activeDocumentVerified,
+                                                   WorksetConfigurationEvidence worksetEvidence)
+        {
+            return new JObject
+            {
+                ["opened"] = true,
+                ["opened_now"] = true,
+                ["source"] = source,
+                ["title"] = SafeTitle(doc),
+                ["path"] = SafePath(doc),
+                ["opened_from"] = openedFrom,
+                ["active_document_verified"] = activeDocumentVerified,
+                ["workset_configuration_applied"] = worksetEvidence != null && worksetEvidence.Applied,
+                ["workset_configuration_satisfied"] = worksetEvidence != null && worksetEvidence.Applied,
+                ["workset_configuration_evidence"] = worksetEvidence == null ? null : worksetEvidence.ToJson()
+            };
         }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }

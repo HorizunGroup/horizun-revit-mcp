@@ -3,6 +3,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json;
@@ -66,42 +67,94 @@ namespace Horizun.Revit.Commands
             if (dryRun)
             {
                 var known = new Dictionary<string, JToken>(StringComparer.Ordinal);
+                var ledger = new PlanLedger();
                 var rows = new JArray();
                 for (int i = 0; i < actions.Count; i++)
                 {
                     JObject action = (JObject)actions[i];
                     string key = action.Value<string>("key");
-                    JObject supplied = (JObject)action["arguments"];
-                    if (PlanReferences.HasReference(supplied))
+                    JObject original = (JObject)action["arguments"];
+                    JObject supplied = original;
+                    JObject referenceBinding = null;
+                    if (PlanReferences.HasReference(original))
                     {
                         string resolveError;
-                        JToken resolved = PlanReferences.Resolve(supplied, known, out resolveError);
+                        JToken resolved = PlanReferences.Resolve(original, known, out resolveError);
                         if (resolveError != null)
                         {
-                            rows.Add(new JObject { ["index"] = i, ["key"] = key, ["tool"] = action.Value<string>("tool"),
-                                ["status"] = "deferred_until_execution", ["reason"] = resolveError });
+                            rows.Add(ledger.RecordDeferred(i, key, action.Value<string>("tool"), resolveError));
                             continue;
                         }
                         supplied = (JObject)resolved;
+                        referenceBinding = PlanReferences.DescribeBinding(original, supplied);
                     }
                     JObject child = ChildArguments(supplied, gate, true);
                     CommandResult rehearsal = _resolve(action.Value<string>("tool")).Execute(app, child.ToString(Formatting.None));
-                    JObject row = ResultRow(i, key, action.Value<string>("tool"), rehearsal, "rehearsed");
+                    // A rehearsal that ANSWERED is not the same as a rehearsal that RESOLVED
+                    // what it was given. A child that could not resolve half its rows returns
+                    // Ok and says so in its own counts; the ledger reads that declaration, and
+                    // a graph carrying one does not get an executable token below.
+                    JObject row = ledger.RecordRehearsal(i, key, action.Value<string>("tool"),
+                                                         rehearsal.Success, rehearsal.Data, rehearsal.Error,
+                                                         rehearsal.Detail, FallbackJson(rehearsal),
+                                                         rehearsal.CapabilityGaps);
+                    if (referenceBinding != null) row["reference_binding"] = referenceBinding;
                     rows.Add(row);
                     if (!rehearsal.Success)
-                        return CommandResult.Fail("Atomic plan rehearsal failed at action '" + key + "': " + rehearsal.Error +
-                            ". Nothing ran. Earlier rows: " + rows.ToString(Formatting.None));
+                        return BeforeGroupFailure("dry_run", rows, ledger.FailedAction,
+                            "Atomic plan rehearsal failed at action '" + key + "': " + rehearsal.Error,
+                            rehearsal);
                     known[key] = ToToken(rehearsal.Data);
                 }
+                bool rehearsedCleanly = ledger.RehearsedCleanly;
+
+                // ACTIONS THAT WERE NEVER REHEARSED AT ALL, counted and named.
+                //
+                // A deferred action's arguments contain ${key.path} pointing at something an
+                // earlier action has not produced in rehearsal. Until a typed symbolic
+                // contract can bind its type/cardinality/provenance, it dirties the rehearsal
+                // and withholds the outer token. Disclosure is not authorization.
+                //
+                // What replaces the preview for these, and it is the whole of it: the graph
+                // shape and their position in it are bound by the token; their arguments are
+                // resolved inside the confirmed group; and the apply-time rule refuses to run
+                // anything after one, or to keep the group, unless it comes back fully applied
+                // and verified. What is NOT covered is WHICH elements they will name - a
+                // deferred horizun_delete_verified computes its targets at apply time.
+                var notRehearsed = new JArray(rows.OfType<JObject>()
+                    .Where(r => r.Value<string>("status") == "deferred_until_execution")
+                    .Select(r => (JToken)new JObject
+                    {
+                        ["index"] = r["index"], ["key"] = r["key"], ["tool"] = r["tool"], ["reason"] = r["reason"]
+                    }));
+
                 var data = new JObject { ["dry_run"] = true, ["transaction_status"] = "not_started",
-                    ["actions"] = rows, ["note"] = "Independent actions were semantically rehearsed. References whose values only exist after creation are resolved during the confirmed atomic execution; any failure then rolls back every action." };
-                DocumentGate.RecordResolvedPlan(GraphPlan(app, gate, rows, actions));
-                DocumentGate.StampConfirmation(data, gate, Name, planHash, true,
+                    ["actions"] = rows,
+                    ["rehearsed_cleanly"] = rehearsedCleanly,
+                    ["confirmation_withheld"] = !rehearsedCleanly,
+                    ["actions_not_rehearsed"] = notRehearsed.Count,
+                    ["not_rehearsed"] = notRehearsed,
+                    ["rehearsed_cleanly_means"] =
+                        "every action was concretely rehearsed, every reference resolved, and every child declared " +
+                        "a clean rehearsal. Any action in not_rehearsed makes this false and withholds confirmation.",
+                    ["note"] = rehearsedCleanly
+                        ? "Every action was semantically rehearsed. References that resolved are bound to their " +
+                          "exact canonical values and are checked again before their consumer executes."
+                        : "NO EXECUTABLE CONFIRMATION WAS ISSUED. At least one action rehearsed to something other " +
+                          "than a clean dry run - read each row's application_state. A rehearsal that could not " +
+                          "resolve what it was given has not previewed this plan, and a token over it would " +
+                          "authorise an apply nobody saw. Fix those actions and rehearse again." };
+                // The recorded plan and the token travel together, and neither is issued over
+                // a rehearsal that did not resolve. Same shape the other commands use: the
+                // flag that gates the token is the flag that gates the plan.
+                if (rehearsedCleanly) DocumentGate.RecordResolvedPlan(GraphPlan(app, gate, rows, actions));
+                DocumentGate.StampConfirmation(data, gate, Name, planHash, rehearsedCleanly,
                     "one token authorizes this exact ordered graph, AND it is bound to what each independent " +
                     "action's own rehearsal resolved: the apply re-rehearses them (read-only) and refuses as a " +
-                    "stale plan if any resolves differently. Actions that only resolve after a creation are " +
-                    "protected by their own validation inside the group. External I/O and arbitrary code are " +
-                    "never allowed inside a plan.");
+                    "stale plan if any resolves differently. A reference that cannot resolve during rehearsal " +
+                    "withholds confirmation; references that do resolve are bound to the exact canonical value " +
+                    "seen then. Every action must come back fully applied and verified or the whole group rolls " +
+                    "back. External I/O and arbitrary code are never allowed inside a plan.");
                 return CommandResult.Ok(data);
             }
 
@@ -112,31 +165,59 @@ namespace Horizun.Revit.Commands
             // The cost is running each child's dry run twice per apply; the alternative is
             // an approval that froze the words of the graph and nothing it resolved to.
             var recheck = new JArray();
+            var expectedBindings = new Dictionary<int, JObject>();
+            var expectedChildPlans = new Dictionary<int, string>();
             {
                 var known = new Dictionary<string, JToken>(StringComparer.Ordinal);
+                var recheckLedger = new PlanLedger();
                 for (int i = 0; i < actions.Count; i++)
                 {
                     JObject action = (JObject)actions[i];
                     string key = action.Value<string>("key");
-                    JObject supplied = (JObject)action["arguments"];
-                    if (PlanReferences.HasReference(supplied))
+                    JObject original = (JObject)action["arguments"];
+                    JObject supplied = original;
+                    JObject referenceBinding = null;
+                    if (PlanReferences.HasReference(original))
                     {
                         string resolveError;
-                        JToken resolvedArgs = PlanReferences.Resolve(supplied, known, out resolveError);
+                        JToken resolvedArgs = PlanReferences.Resolve(original, known, out resolveError);
                         if (resolveError != null)
                         {
-                            recheck.Add(new JObject { ["index"] = i, ["key"] = key, ["tool"] = action.Value<string>("tool"),
-                                ["status"] = "deferred_until_execution", ["reason"] = resolveError });
-                            continue;
+                            JObject deferred = recheckLedger.RecordDeferred(i, key, action.Value<string>("tool"), resolveError);
+                            recheck.Add(deferred);
+                            return BeforeGroupFailure("pre_apply_recheck", recheck, deferred,
+                                "Pre-apply reference resolution failed at action '" + key + "': " + resolveError, null);
                         }
                         supplied = (JObject)resolvedArgs;
+                        referenceBinding = PlanReferences.DescribeBinding(original, supplied);
+                        expectedBindings[i] = referenceBinding;
                     }
                     JObject childArgs = ChildArguments(supplied, gate, true);
                     CommandResult again = _resolve(action.Value<string>("tool")).Execute(app, childArgs.ToString(Formatting.None));
-                    recheck.Add(ResultRow(i, key, action.Value<string>("tool"), again, "rehearsed"));
+                    // The same bar as the dry run, applied at the moment the token is about to
+                    // be spent: an action that resolved cleanly when it was approved and does
+                    // not now is exactly the drift this re-rehearsal exists to catch.
+                    JObject againRow = recheckLedger.RecordRehearsal(i, key, action.Value<string>("tool"),
+                                                                     again.Success, again.Data, again.Error,
+                                                                     again.Detail, FallbackJson(again),
+                                                                     again.CapabilityGaps);
+                    if (referenceBinding != null) againRow["reference_binding"] = referenceBinding;
+                    string expectedChildPlan = null;
+                    try { expectedChildPlan = (string)againRow["data"]?["plan_resolved"]?["fingerprint"]; }
+                    catch { expectedChildPlan = null; }
+                    if (!string.IsNullOrWhiteSpace(expectedChildPlan))
+                        expectedChildPlans[i] = expectedChildPlan;
+                    recheck.Add(againRow);
                     if (!again.Success)
-                        return CommandResult.Fail("Pre-apply rehearsal failed at action '" + key + "': " + again.Error +
-                            ". Nothing ran - the model has moved since this graph was approved.");
+                        return BeforeGroupFailure("pre_apply_recheck", recheck, recheckLedger.FailedAction,
+                            "Pre-apply rehearsal failed at action '" + key + "': " + again.Error, again);
+                    ApplicationState againState = ApplicationOutcome.Read(again.Data);
+                    if (!recheckLedger.RehearsedCleanly)
+                        return BeforeGroupFailure("pre_apply_recheck", recheck, recheckLedger.FailedAction,
+                            "Pre-apply rehearsal of action '" + key + "' came back '" +
+                            ApplicationOutcome.Name(againState) + "', not a clean dry run. Nothing ran, and no " +
+                            "TransactionGroup was opened. The graph approved a rehearsal that resolved; this one " +
+                            "does not, so applying it would write something nobody previewed.", again);
                     known[key] = ToToken(again.Data);
                 }
             }
@@ -146,7 +227,12 @@ namespace Horizun.Revit.Commands
             string groupName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(groupName)) groupName = "Horizun: atomic plan";
             var results = new Dictionary<string, JToken>(StringComparer.Ordinal);
-            var executed = new JArray();
+            // The book this apply keeps: the executed rows, the continue/stop decision after
+            // each one, the row that stopped it, and the verified count at the end. It is
+            // Revit-free on purpose - see PlanLedger - because these are the cases a live
+            // Revit will not produce on demand.
+            var applyLedger = new PlanLedger();
+            JArray executed = applyLedger.Executed;
             using (var group = new TransactionGroup(gate.Document, groupName))
             {
                 if (group.Start() != TransactionStatus.Started)
@@ -160,12 +246,57 @@ namespace Horizun.Revit.Commands
                             JObject action = (JObject)actions[i];
                             string key = action.Value<string>("key");
                             string resolveError;
-                            JObject child = PlanReferences.Resolve(action["arguments"], results, out resolveError) as JObject;
-                            if (resolveError != null) throw new InvalidOperationException("action '" + key + "': " + resolveError);
+                            JObject original = action["arguments"] as JObject;
+                            JObject child = PlanReferences.Resolve(original, results, out resolveError) as JObject;
+                            if (resolveError != null)
+                            {
+                                JObject referenceFailure = new JObject
+                                {
+                                    ["code"] = "reference_resolution_failed",
+                                    ["reason"] = resolveError
+                                };
+                                ApplicationState ignored;
+                                applyLedger.RecordExecuted(i, key, action.Value<string>("tool"), false, null,
+                                    "reference_resolution_failed: " + resolveError,
+                                    referenceFailure, null, null, out ignored);
+                                throw new InvalidOperationException("action '" + key + "': " + resolveError);
+                            }
+                            if (PlanReferences.HasReference(original))
+                            {
+                                JObject expected;
+                                expectedBindings.TryGetValue(i, out expected);
+                                JObject comparison = PlanReferences.CompareBinding(expected, original, child);
+                                if (!comparison.Value<bool>("matches"))
+                                {
+                                    ApplicationState ignored;
+                                    applyLedger.RecordExecuted(i, key, action.Value<string>("tool"), false, null,
+                                        "reference_binding_changed: the resolved arguments differ from the approved rehearsal",
+                                        comparison, null, null, out ignored);
+                                    throw new InvalidOperationException("action '" + key +
+                                        "': reference_binding_changed; the consumer was not executed");
+                                }
+                            }
                             child = ChildArguments(child, gate, false);
+                            string expectedChildPlan;
+                            if (expectedChildPlans.TryGetValue(i, out expectedChildPlan))
+                                child["__expected_plan_fingerprint"] = expectedChildPlan;
                             CommandResult result = _resolve(action.Value<string>("tool")).Execute(app, child.ToString(Formatting.None));
-                            executed.Add(ResultRow(i, key, action.Value<string>("tool"), result, "executed"));
-                            if (!result.Success) throw new InvalidOperationException("action '" + key + "' failed: " + result.Error);
+
+                            // THE CHECK THIS WHOLE CHANGE EXISTS FOR. Success means the child
+                            // ANSWERED. Only a declared full application means the model carries
+                            // what was asked for - and only that may let the NEXT action, which
+                            // may well be a delete, run on top of it, or let this group be kept.
+                            ApplicationState applied;
+                            if (!applyLedger.RecordExecuted(i, key, action.Value<string>("tool"),
+                                                            result.Success, result.Data, result.Error,
+                                                            result.Detail, FallbackJson(result),
+                                                            result.CapabilityGaps, out applied))
+                            {
+                                throw new InvalidOperationException(result.Success
+                                    ? PlanLedger.StopMessage(key, action.Value<string>("tool"),
+                                                             ApplicationOutcome.IsDeclared(result.Data), applied)
+                                    : "action '" + key + "' failed: " + result.Error);
+                            }
                             results[key] = ToToken(result.Data);
                         }
                     }
@@ -180,25 +311,67 @@ namespace Horizun.Revit.Commands
                     // RollBack again, but the group's final status still tells us whether the model
                     // is clean. rollback_confirmed is computed from that final status, so a RollBack
                     // that returned Error surfaces as UNCERTAIN, not as done.
+                    // NOTHING IN HERE MAY THROW ITS WAY OUT. Every read below is a call into
+                    // Revit at the moment Revit has already misbehaved once, and an exception
+                    // escaping this block would take the whole structured diagnostic with it -
+                    // no execution_trace, no failed_action, no rollback_confirmed - leaving the
+                    // caller a bare message at exactly the moment the model's state is least
+                    // certain. A rollback that throws is not less information than a rollback
+                    // that fails; it is more, and it has to reach the reply.
                     bool rollbackAttempted = false;
                     string rollbackStatus = PlanFailure.NotAttempted;
-                    if (group.GetStatus() == TransactionStatus.Started)
+                    string rollbackError = null;
+
+                    TransactionStatus statusBeforeRollback;
+                    string statusReadError = null;
+                    try { statusBeforeRollback = group.GetStatus(); }
+                    catch (Exception readEx)
+                    {
+                        statusBeforeRollback = TransactionStatus.Uninitialized;
+                        statusReadError = readEx.Message;
+                    }
+
+                    if (statusReadError == null && statusBeforeRollback == TransactionStatus.Started)
                     {
                         rollbackAttempted = true;
-                        rollbackStatus = Guard.RollBack(group).StatusName;
+                        try { rollbackStatus = Guard.RollBack(group).StatusName; }
+                        catch (Exception rollbackEx)
+                        {
+                            // Attempted, and we do not know what it did. Anything other than a
+                            // confirmed RolledBack leaves rollback_confirmed false, which is the
+                            // honest answer here.
+                            rollbackStatus = "threw";
+                            rollbackError = rollbackEx.Message;
+                        }
                     }
+
+                    string finalStatus;
+                    try { finalStatus = group.GetStatus().ToString(); }
+                    catch (Exception readEx)
+                    {
+                        finalStatus = "unreadable";
+                        if (statusReadError == null) statusReadError = readEx.Message;
+                    }
+
                     JObject diag = PlanFailure.Diagnostic(
                         transactionGroupStarted: true,
-                        transactionGroupStatus: group.GetStatus().ToString(),
+                        transactionGroupStatus: finalStatus,
                         rollbackAttempted: rollbackAttempted,
                         rollbackStatus: rollbackStatus,
                         executionTrace: executed,
-                        error: ex.Message);
+                        error: ex.Message,
+                        failedAction: applyLedger.FailedAction);
+
+                    // Explicit nulls when nothing went wrong, so "the rollback threw" and "this
+                    // reply does not carry that field" stay different facts.
+                    diag["rollback_error"] = rollbackError == null ? (JToken)JValue.CreateNull() : rollbackError;
+                    diag["transaction_group_status_error"] =
+                        statusReadError == null ? (JToken)JValue.CreateNull() : statusReadError;
+
                     return CommandResult.FailWithDetail(PlanFailure.Message(diag), diag);
                 }
             }
-            return CommandResult.Ok(new JObject { ["transaction_status"] = "Committed", ["transaction_name"] = groupName,
-                ["actions_verified"] = executed.Count, ["actions"] = executed, ["results"] = new JObject(results) });
+            return CommandResult.Ok(applyLedger.SuccessPayload(groupName, new JObject(results)));
         }
 
         /// <summary>
@@ -233,7 +406,9 @@ namespace Horizun.Revit.Commands
                     {
                         { "key", row.Value<string>("key") ?? "" },
                         { "child", childFp ?? (row.Value<string>("status") == "deferred_until_execution"
-                                                  ? "deferred" : "no_child_plan") }
+                                                  ? "deferred" : "no_child_plan") },
+                        { "reference_original", row["reference_binding"]?.Value<string>("original_hash") ?? "" },
+                        { "reference_resolved", row["reference_binding"]?.Value<string>("resolved_hash") ?? "" }
                     }
                 });
             }
@@ -255,12 +430,28 @@ namespace Horizun.Revit.Commands
             return child;
         }
 
+        /// <summary>
+        /// A child's fallback signal as JSON, or null when it carried none. Serialized the
+        /// same way the transport does it, so what a plan's trace shows and what a direct
+        /// call shows are the same block rather than two renderings of one idea.
+        /// </summary>
+        private static JToken FallbackJson(CommandResult result)
+        {
+            if (result?.Fallback == null) return null;
+            try { return JToken.FromObject(result.Fallback); }
+            catch { return null; }
+        }
+
+        private static CommandResult BeforeGroupFailure(string phase, JArray trace, JObject failedAction,
+                                                        string error, CommandResult child)
+        {
+            JObject detail = PlanFailure.BeforeGroup(phase, trace, failedAction, error);
+            return CommandResult.FailWithDetail(error + ". Nothing ran.", detail,
+                                                child?.Fallback, child?.CapabilityGaps);
+        }
+
         private static JObject Error(int index, string error) => new JObject { ["index"] = index, ["error"] = error };
         private static JToken ToToken(object data) => data == null ? JValue.CreateNull() :
             (data as JToken)?.DeepClone() ?? JToken.FromObject(data);
-        private static JObject ResultRow(int index, string key, string tool, CommandResult result, string status) =>
-            new JObject { ["index"] = index, ["key"] = key, ["tool"] = tool, ["status"] = status,
-                ["success"] = result.Success, ["data"] = result.Success ? ToToken(result.Data) : JValue.CreateNull(),
-                ["error"] = result.Success ? JValue.CreateNull() : new JValue(result.Error) };
     }
 }

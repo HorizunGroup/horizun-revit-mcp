@@ -83,7 +83,7 @@ namespace Horizun.Revit.Commands
     ""dry_run"": { ""type"": ""boolean"",
                    ""description"": ""Default TRUE in BOTH modes. Opens a transaction, asks Revit what would die (the real dependent closure, cascades included), then ROLLS BACK on purpose, and returns a confirmation_token for that plan."" },
     ""max_passes"": { ""type"": ""integer"", ""default"": 8, ""minimum"": 1,
-                      ""description"": ""Safety stop for purge. Hitting it is reported as converged:false — a stop, not a finish."" },
+                      ""description"": ""Safety stop for purge. A confirmed apply currently requires 1 because later-pass targets cannot exist during rehearsal; repeat one confirmed pass at a time. Hitting the limit is a stop, not convergence."" },
     ""transaction_name"": { ""type"": ""string"", ""description"": ""Name of the undo step."" },
     ""id_cap"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
                   ""description"": ""How many rows to list. Totals are exact regardless; every list states total vs shown vs truncated."" }
@@ -119,26 +119,12 @@ namespace Horizun.Revit.Commands
         {
             var o = result?.Data as JObject;
             if (o == null) return result;
-
-            // Every reply names the document it ran against - the one that was touched,
-            // not the one that was asked for.
-            o["document"] = gate.Identity?.Describe();
-            o["document_fingerprint"] = gate.Identity?.FingerprintDigest();
-
-            if (!dryRun) return result;
-
-            Confirmation issued = DocumentGate.Confirmations.Issue(
-                "horizun_delete_verified", gate.Fingerprint, planHash);
-
-            o["confirmation_token"] = issued.Token;
-            o["confirmation_expires_utc"] = issued.ExpiresUtc.ToString("u");
-            o["confirmation_note"] =
-                "To execute this, call again with dry_run=false and this confirmation_token. It is SINGLE USE, it " +
-                "expires, and it is bound to this document and this request - if either changes it is refused and " +
-                "nothing is deleted. STATED LIMIT: the token is bound to the REQUEST, not to the set of elements " +
-                "this rehearsal found. In purge mode the same request can match a different set once the model " +
-                "moves, and that would still be accepted - so read would_delete_total on the run you approve, and " +
-                "re-run the rehearsal if time has passed.";
+            bool cleanRehearsal = dryRun &&
+                ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(o));
+            DocumentGate.StampConfirmation(o, gate, "horizun_delete_verified", planHash, cleanRehearsal,
+                cleanRehearsal
+                    ? "the token is bound to the exact resolved delete targets and measured cascade count"
+                    : "no executable confirmation is issued for a partial, unmeasured, or multi-pass purge plan");
             return result;
         }
 
@@ -174,6 +160,86 @@ namespace Horizun.Revit.Commands
             return string.Join(",", items);
         }
 
+        /// <summary>
+        /// Materialise the exact blast radius Revit measured during the rolled-back
+        /// preview. Requested targets and collateral are both present: a token that binds
+        /// only the named ids still authorises an unbounded dependent cascade.
+        /// </summary>
+        private static ResolvedPlan DeletePlan(UIApplication app, GateResult gate, string mode,
+                                               List<Target> targets, List<Cascade> cascades)
+        {
+            var plan = new ResolvedPlan
+            {
+                Command = "horizun_delete_verified",
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = SafeVersion(app),
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ExpectedCascadeCount = cascades?.Count ?? 0,
+                ContextFingerprint = "mode=" + (mode ?? "")
+            };
+
+            foreach (Target target in targets ?? new List<Target>())
+            {
+                Element element = SafeElement(gate.Document, target.Id);
+                plan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafeUniqueId(element) ?? StableId("target", target.RawId),
+                    Category = target.Category ?? SafeCategory(element),
+                    TypeName = target.TypeName ?? SafeTypeName(gate.Document, element),
+                    Action = target.Verdict == V_DELETED ? PlannedAction.Delete : PlannedAction.Read,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "role", "requested" },
+                        { "raw_id", target.RawId?.ToString() ?? "unreadable" },
+                        { "verdict", target.Verdict ?? "unmeasured" },
+                        { "reason", target.Reason ?? "" },
+                        { "cascaded_by", target.CascadedBy?.ToString() ?? "" }
+                    }
+                });
+            }
+
+            foreach (Cascade cascade in cascades ?? new List<Cascade>())
+            {
+                Element element = SafeElement(gate.Document, cascade.Id);
+                plan.Elements.Add(new PlannedElement
+                {
+                    UniqueId = SafeUniqueId(element) ?? StableId("cascade", cascade.RawId),
+                    Category = SafeCategory(element),
+                    TypeName = SafeTypeName(gate.Document, element),
+                    Action = cascade.Gone == true ? PlannedAction.Delete : PlannedAction.Read,
+                    BeforeValues = new Dictionary<string, string>
+                    {
+                        { "role", "cascade" },
+                        { "raw_id", cascade.RawId?.ToString() ?? "unreadable" },
+                        { "parent_raw_id", cascade.ParentRawId.ToString() },
+                        { "confirmed_in_preview", cascade.Gone?.ToString() ?? "unknown" },
+                        { "note", cascade.Note ?? "" }
+                    }
+                });
+            }
+            return plan;
+        }
+
+        /// <summary>
+        /// Direct calls are checked by the confirmation store. Inside execute_plan the
+        /// outer token owns confirmation, so the graph injects the child fingerprint it
+        /// rechecked and this command independently refuses if its fresh preview differs.
+        /// </summary>
+        private static CommandResult ValidateDeletePlan(UIApplication app, GateResult gate, JObject request,
+                                                         string planHash, ResolvedPlan atApply)
+        {
+            string expected = request?.Value<string>("__expected_plan_fingerprint");
+            string actual = atApply?.Fingerprint();
+            if (!string.IsNullOrWhiteSpace(expected) &&
+                !string.Equals(expected, actual, StringComparison.Ordinal))
+                return CommandResult.Fail(
+                    "THE DELETE PLAN MOVED after the atomic plan recheck. The exact requested targets or measured " +
+                    "cascade differ, so nothing was deleted. Re-run the outer dry run and approve the current plan.");
+
+            return DocumentGate.RequireConfirmation(app, gate, request, "horizun_delete_verified",
+                                                     planHash, atApply, null);
+        }
+
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;
@@ -204,19 +270,6 @@ namespace Horizun.Revit.Commands
             // The plan this call describes, hashed. A confirmation is bound to it, so an
             // approval cannot be spent on a request that changed after it was granted.
             string planHash = PlanHashOf(mode, request);
-
-            if (!dryRun)
-            {
-                ConfirmationCheck check = DocumentGate.Confirmations.Validate(
-                    request.Value<string>("confirmation_token"), Name, gate.Fingerprint, planHash);
-                if (!check.Ok)
-                    return CommandResult.Fail(check.Message + " (Nothing was deleted.)");
-
-                // The token was minted against this document; prove the document did not
-                // move between then and now, immediately before any work starts.
-                CommandResult moved = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
-                if (moved != null) return moved;
-            }
 
             int maxPasses = request["max_passes"] != null ? Math.Max(1, request.Value<int>("max_passes")) : 8;
             int idCap = request["id_cap"] != null ? Math.Max(1, request.Value<int>("id_cap")) : 200;
@@ -276,10 +329,10 @@ namespace Horizun.Revit.Commands
                     // rejected out of it means the caller asked us to delete nothing.
                     if (ids.Count == 0 && idsRejected.Count == 0)
                         return CommandResult.Fail("mode='ids' requires a non-empty ids array.");
-                    return Stamp(DeleteIds(doc, ids, protectedIds, dryRun, txName, idCap,
+                    return Stamp(DeleteIds(app, gate, request, planHash, doc, ids, protectedIds, dryRun, txName, idCap,
                         Concat(idsRejected, protRejected)), gate, dryRun, planHash);
                 }
-                return Stamp(PurgeUnused(doc, protectedIds, dryRun, maxPasses, txName, idCap,
+                return Stamp(PurgeUnused(app, gate, request, planHash, doc, protectedIds, dryRun, maxPasses, txName, idCap,
                     Concat(protRejected)), gate, dryRun, planHash);
             }
             catch (SilentRollbackException ex)
@@ -292,7 +345,8 @@ namespace Horizun.Revit.Commands
         // ---------------------------------------------------------------------
         // Mode 1: an explicit id list.
         // ---------------------------------------------------------------------
-        private static CommandResult DeleteIds(Document doc, List<long> ids, List<long> protectedIds,
+        private static CommandResult DeleteIds(UIApplication app, GateResult gate, JObject request, string planHash,
+            Document doc, List<long> ids, List<long> protectedIds,
             bool dryRun, string txName, int idCap, JArray rejected)
         {
             var before = Census(doc);
@@ -304,9 +358,27 @@ namespace Horizun.Revit.Commands
             {
                 var preview = Preview(doc, targets, new HashSet<long>(ids), cascades, txName, ledger);
                 if (preview != null) return preview;   // rollback of a dry run is normal; a throw is not
-                return CommandResult.Ok(Report(doc, "ids", true, txName, before, before, targets, cascades,
-                    idCap, rejected, null, ledger));
+                JObject report = Report(doc, "ids", true, txName, before, before, targets, cascades,
+                    idCap, rejected, null, ledger);
+                if (ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(report)))
+                    DocumentGate.RecordResolvedPlan(DeletePlan(app, gate, "ids", targets, cascades));
+                return CommandResult.Ok(report);
             }
+
+            // Recompute the exact preview before consuming the token. The actual delete
+            // gets fresh Target objects below; Preview annotates its in-memory rows.
+            var planTargets = BuildTargets(doc, ids, protectedIds, new JArray());
+            var planCascades = new List<Cascade>();
+            var planLedger = new WarningLedger();
+            CommandResult planFailure = Preview(doc, planTargets, new HashSet<long>(ids), planCascades,
+                                                txName, planLedger);
+            if (planFailure != null) return planFailure;
+            ResolvedPlan atApply = DeletePlan(app, gate, "ids", planTargets, planCascades);
+            CommandResult planRefusal = ValidateDeletePlan(app, gate, request, planHash, atApply);
+            if (planRefusal != null) return planRefusal;
+
+            targets = BuildTargets(doc, ids, protectedIds, rejected);
+            cascades = new List<Cascade>();
 
             var owned = new HashSet<long>();
             using (var tx = new Transaction(doc, txName))
@@ -341,7 +413,8 @@ namespace Horizun.Revit.Commands
         // ---------------------------------------------------------------------
         // Mode 2: purge unused, to a real fixed point.
         // ---------------------------------------------------------------------
-        private static CommandResult PurgeUnused(Document doc, List<long> protectedIds, bool dryRun,
+        private static CommandResult PurgeUnused(UIApplication app, GateResult gate, JObject request, string planHash,
+            Document doc, List<long> protectedIds, bool dryRun,
             int maxPasses, string txName, int idCap, JArray rejected)
         {
             string lookError;
@@ -350,7 +423,7 @@ namespace Horizun.Revit.Commands
             {
                 // NOT "nothing to purge". We could not look. These are different
                 // facts and the caller must be able to tell them apart.
-                return CommandResult.Ok(new JObject
+                var unexamined = new JObject
                 {
                     ["mode"] = "purge_unused",
                     ["purge_supported"] = false,
@@ -365,7 +438,25 @@ namespace Horizun.Revit.Commands
                                "This is not a clean model; it is an unexamined one. Purge by hand or use mode='ids' " +
                                "with a candidate list you trust. Reporting 0 purged here would be the same lie as " +
                                "reporting 758."
-                });
+                };
+                // UNCERTAIN, on both paths, and deliberately not "nothing to do".
+                //
+                // No transaction was opened, so a reader of transaction_status alone would
+                // see the same shape as a legitimate no-op - and this is the opposite of
+                // one: a no-op has measured that there is nothing to do, and here nothing
+                // was measured at all. Declaring one element requested with none applied and
+                // one unknown is what keeps that distinction; it withholds the dry run's
+                // executable confirmation and rolls back any plan that contains it, which is
+                // the only safe reading of a purge nobody could examine.
+                // Declared rather than classified, because the classifier's inputs cannot
+                // express this: they describe a request that was attempted and counted, and
+                // here the LOOKING failed. "not_started with one thing requested" classifies
+                // as failed - true enough to be safe, and still the wrong word for a purge
+                // that was never examined.
+                ApplicationOutcome.Stamp(unexamined, ApplicationOutcome.Declare(
+                    ApplicationState.Uncertain, ApplicationOutcome.NotStarted,
+                    requested: 1, applied: 0, verified: 0, unresolved: 0, failed: 0, unknown: 1));
+                return CommandResult.Ok(unexamined);
             }
 
             var before = Census(doc);
@@ -401,10 +492,42 @@ namespace Horizun.Revit.Commands
                 report["converged"] = null;
                 report["remaining_purgeable"] = first.Count;
                 report["note"] = "Nothing was deleted; the transaction was rolled back on purpose. Only pass 1 is " +
-                                 "shown: purging cascades, so later passes' candidates do not exist until pass 1 is " +
-                                 "committed. The real total is >= this. Re-run with dry_run=false.";
+                                  "shown: purging cascades, so later passes' candidates do not exist until pass 1 is " +
+                                  "committed. The real total is >= this. Re-run with dry_run=false.";
+                if (maxPasses == 1 && ApplicationOutcome.IsValidRehearsal(ApplicationOutcome.Read(report)))
+                {
+                    DocumentGate.RecordResolvedPlan(DeletePlan(app, gate, "purge_unused", t1, cascades));
+                }
+                else if (maxPasses > 1)
+                {
+                    // Later-pass targets do not exist until pass 1 commits. Until the
+                    // symbolic multi-pass contract is implemented, that is an unmeasured
+                    // destructive scope and cannot mint a token.
+                    ApplicationOutcome.StampRehearsal(report, t1.Count, 0, 0, 1);
+                    report["confirmation_withheld"] = true;
+                    report["multi_pass_plan_unbound"] = true;
+                    report["note"] = (string)report["note"] +
+                        " No executable confirmation is issued when max_passes>1 because later-pass delete targets " +
+                        "cannot be previewed. Use max_passes=1 and repeat the confirmed cycle.";
+                }
                 return CommandResult.Ok(report);
             }
+
+            if (maxPasses != 1)
+                return CommandResult.Fail("A confirmed purge currently requires max_passes=1. Later-pass targets " +
+                    "do not exist during rehearsal, so executing more would delete elements the token did not bind. " +
+                    "Run one confirmed pass at a time.");
+
+            var preflightTargets = BuildTargetsFrom(doc, first, protectedSet);
+            var preflightCascades = new List<Cascade>();
+            var preflightLedger = new WarningLedger();
+            CommandResult preflightFailure = Preview(doc, preflightTargets,
+                new HashSet<long>(preflightTargets.Where(t => t.RawId.HasValue).Select(t => t.RawId.Value)),
+                preflightCascades, txName, preflightLedger);
+            if (preflightFailure != null) return preflightFailure;
+            ResolvedPlan atApply = DeletePlan(app, gate, "purge_unused", preflightTargets, preflightCascades);
+            CommandResult planRefusal = ValidateDeletePlan(app, gate, request, planHash, atApply);
+            if (planRefusal != null) return planRefusal;
 
             // One group so the user gets one undo step; one transaction per pass so
             // each pass's count is a real post-commit measurement and not a tally.
@@ -760,7 +883,11 @@ namespace Horizun.Revit.Commands
                 var eid = Rid.ToElementId(raw);
                 var elem = doc.GetElement(eid);
                 var t = new Target { RawId = raw, Id = eid, ExistedBefore = elem != null };
-                if (elem != null) { t.Name = SafeName(elem); t.Category = SafeCategory(elem); }
+                if (elem != null)
+                {
+                    t.Name = SafeName(elem); t.Category = SafeCategory(elem);
+                    t.UniqueId = SafeUniqueId(elem); t.TypeName = SafeTypeName(doc, elem);
+                }
 
                 if (prot.Contains(raw))
                 {
@@ -840,7 +967,11 @@ namespace Horizun.Revit.Commands
                 if (!seen.Add(raw)) continue;
                 var elem = doc.GetElement(eid);
                 var t = new Target { RawId = raw, Id = eid, ExistedBefore = elem != null };
-                if (elem != null) { t.Name = SafeName(elem); t.Category = SafeCategory(elem); }
+                if (elem != null)
+                {
+                    t.Name = SafeName(elem); t.Category = SafeCategory(elem);
+                    t.UniqueId = SafeUniqueId(elem); t.TypeName = SafeTypeName(doc, elem);
+                }
                 if (prot.Contains(raw))
                 {
                     t.Verdict = V_PROTECTED;
@@ -1171,6 +1302,22 @@ namespace Horizun.Revit.Commands
 
             o["warnings_dismissed"] = WarningsBlock(ledger, idCap);
 
+            // WHAT THIS DELETE DID, in the vocabulary a composing caller may branch on. A
+            // dry run rolls its transaction back ON PURPOSE, so it declares a rehearsal
+            // rather than a rollback - but an id that would not resolve, or one refused as
+            // protected or in use, still makes that rehearsal a partial one, and inside a
+            // plan a partial rehearsal must not become an executable confirmation.
+            //
+            // Deleting is the one operation where an unverifiable row is worst: fate_unknown
+            // means the model was asked and did not settle whether the element is gone, and
+            // no plan may keep work stacked on top of that.
+            int unresolvedIds = notFound + prot;
+            int refusedIds = failed + inUse;
+            if (dryRun) ApplicationOutcome.StampRehearsal(o, targets.Count, unresolvedIds, refusedIds,
+                                                         fateUnknown + cascUnknown);
+            else ApplicationOutcome.StampApplied(o, ApplicationOutcome.Committed, targets.Count, deleted,
+                                                 deleted, unresolvedIds, refusedIds, fateUnknown);
+
             if (note != null) o["note"] = note;
             if (dryRun && o["note"] == null)
                 o["note"] = "Nothing was deleted — the transaction was rolled back on purpose. The verdicts above are " +
@@ -1276,6 +1423,8 @@ namespace Horizun.Revit.Commands
             public bool ExistedBefore;
             public string Name;
             public string Category;
+            public string UniqueId;
+            public string TypeName;
             public string Verdict;      // null until the model says otherwise
             public string Reason;
             public long? CascadedBy;
@@ -1372,6 +1521,21 @@ namespace Horizun.Revit.Commands
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }
         private static string SafeName(Element e) { try { return e.Name; } catch { return null; } }
         private static string SafeCategory(Element e) { try { return e.Category != null ? e.Category.Name : null; } catch { return null; } }
+        private static string SafeUniqueId(Element e) { try { return e?.UniqueId; } catch { return null; } }
+        private static Element SafeElement(Document d, ElementId id) { try { return d?.GetElement(id); } catch { return null; } }
+        private static string SafeVersion(UIApplication app) { try { return app?.Application?.VersionNumber; } catch { return null; } }
+        private static string SafeTypeName(Document doc, Element e)
+        {
+            try
+            {
+                if (e == null) return null;
+                Element type = doc?.GetElement(e.GetTypeId());
+                return type?.Name;
+            }
+            catch { return null; }
+        }
+        private static string StableId(string role, long? raw) =>
+            role + ":" + (raw?.ToString() ?? "unreadable");
 
         /// <summary>
         /// An id we cannot read is an error, not something to drop. A dropped id is

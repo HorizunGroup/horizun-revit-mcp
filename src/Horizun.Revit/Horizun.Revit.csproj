@@ -22,6 +22,10 @@
   -->
   <PropertyGroup>
     <RevitYear Condition="'$(RevitYear)' == ''">2026</RevitYear>
+    <!-- Restore graphs differ across net48/net8/net10. One lock per Revit year
+         prevents a restore for one conditional TFM from overwriting the lock
+         used by the next year in the release matrix. -->
+    <NuGetLockFilePath>packages.lock.$(RevitYear).json</NuGetLockFilePath>
     <!-- TargetFramework follows the runtime Revit itself uses for the requested
          year. Order matters: for 2027 both of the last two conditions are true and
          the LAST assignment wins, which is the .NET 10 one. -->

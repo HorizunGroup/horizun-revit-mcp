@@ -127,6 +127,15 @@ namespace Horizun.Contracts
 
         public const int MaxReplyBytes = 32 * 1024 * 1024;
 
+        // An externally persisted async payload still has to fit once the server
+        // wraps it in an MCP result, structuredContent and task metadata. Keep this
+        // wire budget in the shared contract: the add-in writes the artifact and the
+        // standalone server reads it, so neither project may depend on the other's
+        // implementation assembly merely to agree on the boundary.
+        public const int AsyncResultEnvelopeReserveBytes = 1024 * 1024;
+        public const int MaxAsyncResultBytes = MaxReplyBytes - AsyncResultEnvelopeReserveBytes;
+        public const long MaxTaskTtlMilliseconds = 7L * 24 * 60 * 60 * 1000;
+
         /// <summary>
         /// How much free-flowing TEXT a command may return - what a script printed, or a
         /// value that could only be rendered as a string. Unlike the reply limit this one
@@ -231,8 +240,10 @@ namespace Horizun.Contracts
                 Command = "horizun_relinquish_all",
                 Description =
                     "Relinquish every workset and element this user owns in the ACTIVE workshared document, then " +
-                    "MEASURE it: the count of worksets owned by this user is read before and after and both are " +
-                    "reported, so a partial relinquish cannot pass as a complete one. Refuses a document that is " +
+                    "MEASURE it at both levels: workset owners and every collectable element's checkout status are " +
+                    "read before and after; unreadable element ownership makes the result unknown, never complete. " +
+                    "The element/workset ids returned by Revit are call telemetry, not a substitute for the " +
+                    "postcondition census, so a partial relinquish cannot pass as complete. Refuses a document that is " +
                     "not workshared rather than reporting a cheerful no-op - that request means the caller " +
                     "believes something false about the model. Does not synchronize and does not save.",
                 InputSchema = JObject.Parse(@"{
@@ -768,7 +779,8 @@ namespace Horizun.Contracts
   ""type"": ""object"", ""required"": [""tool"", ""arguments""],
   ""properties"": {
     ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python and horizun_submit_job are refused."" },
-    ""arguments"": { ""type"": ""object"", ""description"": ""The exact typed arguments, including target_document, dry_run/confirmation_token where that tool requires them."" }
+    ""arguments"": { ""type"": ""object"", ""description"": ""The exact typed arguments, including target_document, dry_run/confirmation_token where that tool requires them."" },
+    ""retain_until_utc"": { ""type"": ""string"", ""format"": ""date-time"", ""description"": ""Optional durable-retention lease for MCP Tasks. Must be a future UTC instant no more than seven days away; it protects this job record from configured retention but does not extend execution."" }
   }, ""additionalProperties"": false
 }")
             },
@@ -778,9 +790,11 @@ namespace Horizun.Contracts
                 Command = "horizun_execute_plan",
                 Description =
                     "Compose up to 100 typed Revit write commands into one ordered, atomic plan. Exact result " +
-                    "references such as ${walls.rows.0.element_id} feed created ids into later actions without " +
-                    "string coercion. One dry run and one confirmation authorize the complete graph; apply uses " +
-                    "an outer TransactionGroup, so a failure in any action rolls every action back. Session changes, " +
+                    "references such as ${scan.rows.0.element_id} feed rehearsed values into later actions without " +
+                    "string coercion. Confirmation is issued only when every action and reference resolves during " +
+                    "the dry run; each resolved reference is bound to its exact canonical value. References to " +
+                    "values that exist only after creation are currently refused rather than authorised unseen. " +
+                    "Apply uses an outer TransactionGroup, so a failure in any action rolls every action back. Session changes, " +
                     "exports and arbitrary Python are intentionally excluded because they are not transaction-reversible.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""actions""],
@@ -812,15 +826,28 @@ namespace Horizun.Contracts
                 Command = "horizun_execute_python",
                 Description =
                     "Run Python directly against the Revit API on the UI thread - THE EXECUTION FALLBACK for " +
-                    "everything the typed commands do not cover. Enabled by default; an owner's explicit OFF in " +
-                    "settings.json is respected. POLICY: prefer a typed command when it fully covers the " +
+                    "everything the typed commands do not cover. Disabled by default; the machine owner must " +
+                    "explicitly grant unsafe_code plus enable_execute_python, optionally until a UTC expiry. " +
+                    "POLICY: prefer a typed command when it fully covers the " +
                     "operation. When none exists, or a failed typed call returns fallback.allowed=true - its " +
                     "machine-readable signal that no typed capability covers the request AND nothing was " +
                     "written - generate minimal Python and run it here instead of answering 'not supported'. " +
                     "Decide on that block, never on the wording of an error: no block, or allowed=false, means " +
                     "DO NOT fall back. NEVER fall back here after a typed write FAILED mid-operation - it may " +
                     "have partially written, and a Python retry is a second write; report the real state " +
-                    "instead. doc/uidoc/uiapp/app are injected. " +
+                    "instead. " +
+                    "SOURCE: 'code' inline OR 'code_path' (a .py on the machine running Revit) - exactly one. " +
+                    "code_path is read as UTF-8, honouring a BOM or a '# -*- coding: -*-' line, with CRLF " +
+                    "normalised; it is measured, hashed and bound to the idempotency key exactly like inline " +
+                    "code, and it makes tracebacks name the real file and line instead of <string>. " +
+                    "INJECTED: doc, uidoc, uiapp AND __revit__ (both the UIApplication - __revit__ is pyRevit's " +
+                    "name for it), app (the Application), checkpoint(), revit_raised(), dialog_answer(). " +
+                    "WHAT REVIT RAISED comes back as 'dialogs' and 'failures' beside __output__ - read them " +
+                    "when an open fails, because the bridge CANCELS modal dialogs and all the script sees is " +
+                    "'Opening was canceled'. Each carries 'while', the script's own last checkpoint() label. " +
+                    "revit_raised(since) reads the same records from INSIDE the script, so a batch can attribute " +
+                    "a dialog to the model it was raised on; `with dialog_answer('dismiss'): ...` lets ONE call " +
+                    "continue past its dialog. " +
                     "RETURN EVIDENCE: assign __output__ the structured shape {status: " +
                     "verified|completed_unverified|partial|failed, summary, created_ids, modified_ids, " +
                     "deleted_ids, verification:{checked, evidence:[]}, warnings:[]} and RE-READ what you wrote " +
@@ -862,7 +889,26 @@ namespace Horizun.Contracts
                         ["code"] = new JObject
                         {
                             ["type"] = "string",
-                            ["description"] = "Python source to execute. Assign __output__ for the return value; print() is captured."
+                            ["description"] =
+                                "Python source to execute, inline. Assign __output__ for the return value; " +
+                                "print() is captured. Exactly one of code / code_path is required."
+                        },
+                        ["code_path"] = new JObject
+                        {
+                            ["type"] = "string",
+                            ["description"] =
+                                "A .py file ON THE MACHINE RUNNING REVIT, read instead of 'code'. Exactly one " +
+                                "of the two. For scripts too long or too awkward to send inline: it is read " +
+                                "here, in UTF-8 - honouring a byte-order mark or a '# -*- coding: -*-' line - " +
+                                "with CRLF normalised to LF, and a file that does not decode is REFUSED naming " +
+                                "the byte and the offset rather than run with replacement characters. It evades " +
+                                "nothing: the size limit and submitted_source_sha256 measure the bytes read " +
+                                "here. IDEMPOTENCY IS BOUND TO THE REQUEST, AND THE REQUEST NAMES THE PATH, NOT " +
+                                "THE BYTES - so re-sending the same idempotency_key after editing the file " +
+                                "replays the original answer and runs nothing. A changed script is new work: " +
+                                "give it a new key. Tracebacks name this file and the real line instead of " +
+                                "<string>. run_async reads the file ONCE, at submit, so a deferred run executes " +
+                                "the script its fingerprint was taken of."
                         },
                         ["target_document"] = new JObject
                         {
@@ -912,7 +958,13 @@ namespace Horizun.Contracts
                                 "because an async caller never sees a reply. REQUIRES idempotency_key."
                         }
                     },
-                    ["required"] = new JArray { "code", "target_document" },
+                    // target_document only. The SOURCE requirement is "exactly one of code /
+                    // code_path", which draft-7 can express and this schema deliberately does
+                    // not - the same call this file already makes for idempotency_key. A
+                    // oneOf here would be enforced inconsistently across MCP clients, and the
+                    // handler is the gate that says precisely which of the two mistakes was
+                    // made (neither sent, or both) before anything runs.
+                    ["required"] = new JArray { "target_document" },
                     ["additionalProperties"] = false
                 }
             },
@@ -1012,7 +1064,7 @@ namespace Horizun.Contracts
                     "against the document AFTER the commit â€” never from the return of Delete(); the last two are the cases " +
                     "where we could not look, and they are never folded into a failure or a survival. Elements Revit cascaded " +
                     "away that you did not name are reported explicitly, attributed to the id that took them. A rolled-back " +
-                    "transaction is an error, not a count. dry_run defaults to TRUE in purge mode; this is destructive and it " +
+                    "transaction is an error, not a count. dry_run defaults to TRUE in both modes; this is destructive and it " +
                     "is a client's model.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
@@ -1027,8 +1079,8 @@ namespace Horizun.Contracts
       ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document that is ACTIVE in Revit; this command will not switch documents for you. A delete aimed at whatever window happens to be in front is a delete aimed at whatever turns up."" },
     ""confirmation_token"": { ""type"": ""string"",
       ""description"": ""REQUIRED when dry_run=false. The token returned by the dry run of this exact request. Single-use, expires, and bound to this document and this request - if either changed, execution is refused and nothing is deleted."" },
-    ""dry_run"": { ""type"": ""boolean"",
-                   ""description"": ""Default TRUE for purge_unused, FALSE for ids. Opens a transaction, asks Revit what would die (the real dependent closure, cascades included), then ROLLS BACK on purpose."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+                   ""description"": ""Default TRUE in BOTH modes. Opens a transaction, asks Revit what would die (the real dependent closure, cascades included), then ROLLS BACK on purpose and returns a confirmation_token only for a fully resolved plan."" },
     ""max_passes"": { ""type"": ""integer"", ""default"": 8, ""minimum"": 1,
                       ""description"": ""Safety stop for purge. Hitting it is reported as converged:false â€” a stop, not a finish."" },
     ""transaction_name"": { ""type"": ""string"", ""description"": ""Name of the undo step."" },
@@ -1054,7 +1106,13 @@ namespace Horizun.Contracts
                     "afterwards, so a lost hour and an untouched document produce identical replies. Every close " +
                     "reports the IsModified it measured before closing. The API cannot close the ACTIVE document; " +
                     "activate_other=true makes this command activate another open document first (or its own empty " +
-                    "anchor project when nothing else is open) and report which one, instead of refusing. " +
+                     "anchor project when nothing else is open) and report which one, instead of refusing. " +
+                    "A requested open_all_worksets / close_workset_names plan is re-read from the opened Document: " +
+                    "workset_configuration_applied is true only when the observed IsOpen state proves the exact plan. " +
+                    "If the file was already open, close_workset_names is refused; open_all_worksets succeeds only " +
+                    "when measurement proves every user workset was already open, with applied=false and satisfied=true. " +
+                    "A mismatch is a structured post-open failure carrying opened=true plus the document identity so " +
+                    "an unattended caller can close what Revit actually opened. " +
                     "Saving reports bytes/mtime/format re-read from " +
                     "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
                     "so audit_ran only ever describes the open. It never syncs to central.",
@@ -1083,7 +1141,9 @@ namespace Horizun.Contracts
     ""open_central"": { ""type"": ""boolean"", ""default"": false,
                      ""description"": ""open only: permit opening the CENTRAL model directly - working in the file everyone else synchronizes to. REQUIRED for a cloud model unless you pass detach, because a model in ACC / BIM 360 IS the central. Prefer detach."" },
     ""open_all_worksets"": { ""type"": ""boolean"", ""default"": false,
-                     ""description"": ""open only: open every workset. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one. IT CAN ALSO KILL REVIT - measured: 2 of 24 ACC models took Revit 2025.4 down with an access violation inside SelectedPartitionsForEdit on open, and both opened fine with this left false. Off by default, and the first thing to drop when a specific model dies on open."" },
+                      ""description"": ""open only: open every workset. If the document is already open this cannot be applied retroactively: the call succeeds only when post-read evidence proves every user workset is already open, and reports satisfied=true with applied=false. Needed when something downstream MEASURES worksets, because a closed workset is indistinguishable from an empty one. IT CAN ALSO KILL REVIT - measured: 2 of 24 ACC models took Revit 2025.4 down with an access violation inside SelectedPartitionsForEdit on open, and both opened fine with this left false. Off by default, and the first thing to drop when a specific model dies on open."" },
+    ""close_workset_names"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""maxItems"": 128,
+                      ""description"": ""open only: exact user-workset names to keep CLOSED while every other user workset opens. Resolved from the unopened file before opening; a missing or ambiguous name refuses. After opening, every requested name and every other user workset are re-read from the Document; workset_configuration_applied is true only when that observed state proves the exact plan. Mutually exclusive with open_all_worksets=true. This is for honest partial-load audits: the reply can measure which content was unavailable instead of accidentally opening all and testing the wrong condition."" },
     ""on_open_dialog"": { ""type"": ""string"", ""enum"": [""cancel"", ""dismiss""], ""default"": ""cancel"",
                      ""description"": ""open only: how a modal dialog raised WHILE opening is answered unattended. 'cancel' (default) presses Cancel; 'dismiss' presses OK/continue, for READING a model whose open raises a dialog whose only unattended answer is 'acknowledge and continue'. Best effort, recorded in revit_said; scoped to the open call - every other dialog still cancels."" },
     ""save_as_path"": { ""type"": ""string"", ""description"": ""save_as: absolute destination path."" },
@@ -1115,7 +1175,16 @@ namespace Horizun.Contracts
                     "document open just to satisfy the active-document check. Pass 'paths' (a list) or 'folder' " +
                     "(swept for 'pattern', default *.rvt, optionally recursive). Nothing is opened, so nothing is " +
                     "upgraded. Each file names its own read_error when unreadable; the summary counts " +
-                    "readable/unreadable/missing. Read-only.",
+                    "readable/unreadable/missing/not_revit_files. " +
+                    "WHEN THE HEADER CANNOT BE READ, the reply also carries the file's first 8 bytes as " +
+                    "'signature', a plain-language 'signature_means' and the boolean 'is_revit_container' - and " +
+                    "you must read those before repeating the read_error. Revit's own message for that case names " +
+                    "two causes and BOTH are about Revit files ('a newer format file... or saved in a very old " +
+                    "version'), so a ZIP renamed .rvt is reported as a version problem: measured, that cost two " +
+                    "false diagnoses on the same two files, and a sweep of 3,252 files found 1,193 of them. " +
+                    "d0cf11e0a1b11ae1 = the OLE container a genuine .rvt/.rfa uses, so the version story is worth " +
+                    "believing. 504b0304 = ZIP, i.e. NOT a model (a renamed package). Anything else is returned as " +
+                    "hex and deliberately not interpreted. Read-only.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -1754,7 +1823,7 @@ namespace Horizun.Contracts
             // family rebuild replaces geometry, a push replaces a dataset.
             var destructive = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_delete_verified", "horizun_execute_python", "horizun_document_session",
+                "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session",
                 "horizun_export", "horizun_create_family", "horizun_power_bi_push"
             };
 

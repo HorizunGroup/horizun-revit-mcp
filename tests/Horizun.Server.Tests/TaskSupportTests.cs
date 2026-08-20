@@ -3,15 +3,9 @@
 //
 // WHICH TOOLS MAY BE QUEUED, and the contract facts that decide it.
 //
-// These began as tests for the MCP execution.taskSupport hint. That field is no
-// longer emitted - the server implements no tasks/* method and declares no
-// "tasks" capability, so hinting at MCP Tasks was a promise it withdrew one
-// field later (see NoUnimplementedTaskSupportTests).
-//
-// The RULE these assert outlived the field, because it is what horizun_submit_job
-// actually does: it accepts exactly the tools that forward to Revit, and refuses
-// host-resident ones plus execute_python and itself. The bridge's own queue is
-// built on that, so it is still worth pinning to the contract.
+// The same rule drives execution.taskSupport, task admission and the compatible
+// horizun_submit_job extension: Revit-forwarding tools are eligible, host tools,
+// execute_python and submit_job itself are not.
 // -----------------------------------------------------------------------------
 using System.Linq;
 using Horizun.Contracts;
@@ -83,6 +77,7 @@ namespace Horizun.Server.Tests
             var props = submit.InputSchema?["properties"] as JObject;
             Assert.NotNull(props);
             Assert.NotNull(props["idempotency_key"]);
+            Assert.Equal("date-time", (string)props["retain_until_utc"]?["format"]);
         }
     }
 }

@@ -179,14 +179,23 @@ and run `install.ps1` again.
   you get `capability_gaps` naming the uncovered indices — fix the invalid
   entries and resend the typed call first. `target_document` plus the
   active-document check apply to Python exactly as to every typed write.
-- **`horizun_execute_python` is enabled by default** during this early stage:
-  a fresh install exposes it, and it is the expected fallback path. A machine
-  owner can switch it off — an explicit `enable_execute_python=false` or a
-  profile below `unsafe_code` in `%USERPROFILE%\.horizun\settings.json` is
-  always respected, and you must not edit that file to reverse it. The admin
-  script `scripts/enable-execute-python.ps1` re-enables (or restores) an
-  explicitly disabled setup and reverts with `-Disable`; after a change,
-  restart the MCP client so the tool list refreshes.
+- **When a script opens models, read `dialogs` before you report a failure.** The
+  bridge CANCELS every modal dialog raised during a script — nobody is at the
+  keyboard — so all Revit tells the script is `Opening was canceled`, which is not
+  a diagnosis. The reply carries `dialogs` and `failures` beside `__output__`, and
+  `revit_raised(since)` reads the same records from INSIDE the script, windowed to
+  one call: `len(revit_raised())` before the open, the same number after it. Send
+  long scripts as `code_path` rather than an inline string. To let ONE call
+  continue past its dialog: `with dialog_answer('dismiss'):` — around that call
+  only, never a whole run, because Revit reads OK on a close-with-changes dialog as
+  Save. A model that will not open unattended remains a finding either way.
+- **`horizun_execute_python` is disabled by default.** A fresh install uses
+  `safe_write`: typed in-model writes are available, but arbitrary code is not.
+  The machine owner may use Revit's **Python ON/OFF** button for a 60-minute
+  grant, or the admin script `scripts/enable-execute-python.ps1` for a durable
+  developer opt-in; `-Disable` revokes it. Never edit settings to reverse the
+  owner's choice. Compatible MCP clients refresh tools/list automatically after a
+  change; restart once only when the client does not implement list-change notifications.
 - This bridge is **organisation-neutral by design**: no company's standards or
   catalogues are compiled in. Where a command needs one, it is passed as an
   argument. The delivery workflows built on top live in
@@ -367,15 +376,25 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   los índices no cubiertos — corrige primero las entradas inválidas y reenvía la
   llamada tipada. `target_document` más el control de documento activo aplican a
   Python igual que a toda escritura tipada.
-- **`horizun_execute_python` viene habilitado por defecto** en esta etapa
-  temprana: una instalación nueva lo expone y es la ruta de respaldo esperada.
-  El dueño de la máquina puede apagarlo — un `enable_execute_python=false`
-  explícito o un perfil por debajo de `unsafe_code` en
-  `%USERPROFILE%\.horizun\settings.json` siempre se respeta, y no debes editar
-  ese archivo para revertirlo. El script de administración
-  `scripts/enable-execute-python.ps1` re-habilita (o restaura) una configuración
-  apagada explícitamente y se revierte con `-Disable`; tras un cambio, reinicia
-  el cliente MCP para que la lista de herramientas se refresque.
+- **Cuando un script abre modelos, lee `dialogs` antes de reportar un fallo.** El
+  puente CANCELA todo diálogo modal levantado durante un script —no hay nadie al
+  teclado—, así que lo único que Revit le dice al script es `Opening was canceled`,
+  que no es un diagnóstico. La respuesta trae `dialogs` y `failures` junto a
+  `__output__`, y `revit_raised(since)` lee los mismos registros DESDE DENTRO del
+  script, acotados a una llamada: `len(revit_raised())` antes de abrir, ese mismo
+  número después. Manda los scripts largos como `code_path` en vez de una cadena
+  inline. Para dejar que UNA llamada continúe pese a su diálogo:
+  `with dialog_answer('dismiss'):` — alrededor de esa llamada y nada más, nunca de
+  una corrida entera, porque Revit lee OK en el diálogo de cerrar-con-cambios como
+  Guardar. Un modelo que no abre desatendido sigue siendo un hallazgo igual.
+- **`horizun_execute_python` viene deshabilitado por defecto.** El dueño de la
+  máquina puede habilitarlo durante 60 minutos con el botón **Python ON/OFF** de
+  Revit o administrarlo de forma durable con
+  `scripts/enable-execute-python.ps1`; `-Disable` revoca ambas rutas. Un
+  `enable_execute_python=false` explícito o un perfil por debajo de
+  `unsafe_code` siempre se respeta, y no debes editar `settings.json` para
+  revertirlo. Los clientes compatibles refrescan la lista automáticamente;
+  reinicia solo si el cliente no implementa la notificación de cambio.
 - Este puente es **neutral por diseño**: no lleva estándares ni catálogos de
   ninguna organización compilados dentro. Donde un comando necesita uno, se pasa
   como argumento. Los flujos de entrega construidos encima viven en

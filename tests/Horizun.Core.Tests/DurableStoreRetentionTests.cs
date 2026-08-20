@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
 using Xunit;
 
@@ -103,6 +105,102 @@ namespace Horizun.Core.Tests
 
             Assert.True(File.Exists(old));
             Assert.Contains("kept", report.Note, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Job_retention_accounts_for_and_removes_its_durable_image_attachment()
+        {
+            string job = Record("with-image", "{\"event\":\"finish\"}", 40);
+            string attachments = Path.Combine(_root, "attachments");
+            Directory.CreateDirectory(attachments);
+            string image = Path.Combine(attachments, "with-image.png");
+            File.WriteAllBytes(image, new byte[4096]);
+            long expected = new FileInfo(job).Length + new FileInfo(image).Length;
+
+            DurableStoreRetentionReport report = DurableStoreRetention.Apply(
+                _root, DurableStoreKind.Jobs, Settings("job_retention_days", "30"), _now);
+
+            Assert.False(File.Exists(job));
+            Assert.False(File.Exists(image));
+            Assert.Equal(expected, report.BytesBefore);
+            Assert.Equal(0, report.BytesAfter);
+        }
+
+        [Fact]
+        public void Active_task_lease_protects_job_and_all_companions_until_expiry()
+        {
+            string job = Record("leased", "{\"event\":\"finish\"}", 40);
+            string leases = Path.Combine(_root, "leases");
+            string results = Path.Combine(_root, "results");
+            Directory.CreateDirectory(leases);
+            Directory.CreateDirectory(results);
+            string lease = Path.Combine(leases, "leased.json");
+            File.WriteAllText(lease, new JObject
+            {
+                ["schema"] = 1, ["job_id"] = "leased",
+                ["retain_until_utc"] = new DateTimeOffset(_now.AddHours(1)).ToString("O")
+            }.ToString(Formatting.None));
+            string result = Path.Combine(results, "leased.json");
+            File.WriteAllText(result, new string('x', 4096));
+
+            DurableStoreRetentionReport protectedReport = DurableStoreRetention.Apply(_root, DurableStoreKind.Jobs,
+                Settings("job_retention_days", "1", "job_max_bytes", "1"), _now);
+            Assert.True(File.Exists(job), protectedReport.Summary());
+            Assert.True(File.Exists(lease));
+            Assert.True(File.Exists(result));
+
+            DurableStoreRetention.Apply(_root, DurableStoreKind.Jobs,
+                Settings("job_retention_days", "1", "job_max_bytes", "1"), _now.AddHours(2));
+            Assert.False(File.Exists(job));
+            Assert.False(File.Exists(lease));
+            Assert.False(File.Exists(result));
+        }
+
+        [Fact]
+        public void Corrupt_lease_fails_closed_for_maximum_TTL_then_becomes_reclaimable()
+        {
+            string job = Record("corrupt-lease", "{\"event\":\"finish\"}", 40);
+            string leases = Path.Combine(_root, "leases");
+            Directory.CreateDirectory(leases);
+            string lease = Path.Combine(leases, "corrupt-lease.json");
+            File.WriteAllText(lease, "not-json");
+
+            DurableStoreRetention.Apply(_root, DurableStoreKind.Jobs,
+                Settings("job_max_bytes", "1"), _now);
+            Assert.True(File.Exists(job));
+            Assert.True(File.Exists(lease));
+
+            File.SetLastWriteTimeUtc(lease, _now.AddDays(-8));
+            DurableStoreRetentionReport reclaimed = DurableStoreRetention.Apply(
+                _root, DurableStoreKind.Jobs, Settings("job_max_bytes", "1"), _now);
+            Assert.False(File.Exists(job));
+            Assert.False(File.Exists(lease));
+            Assert.Contains(reclaimed.Errors, e => e.Contains("expired unreadable", StringComparison.Ordinal));
+        }
+
+        [Fact]
+        public void Forged_far_future_lease_cannot_pin_store_forever()
+        {
+            string job = Record("future-lease", "{\"event\":\"finish\"}", 40);
+            string leases = Path.Combine(_root, "leases");
+            Directory.CreateDirectory(leases);
+            string lease = Path.Combine(leases, "future-lease.json");
+            File.WriteAllText(lease, new JObject
+            {
+                ["schema"] = 1, ["job_id"] = "future-lease",
+                ["retain_until_utc"] = new DateTimeOffset(_now.AddYears(20)).ToString("O")
+            }.ToString(Formatting.None));
+            File.SetLastWriteTimeUtc(lease, _now.AddYears(20));
+
+            DurableStoreRetention.Apply(_root, DurableStoreKind.Jobs,
+                Settings("job_max_bytes", "1"), _now);
+            Assert.True(File.Exists(job));
+            Assert.InRange(File.GetLastWriteTimeUtc(lease), _now.AddSeconds(-1), _now.AddSeconds(1));
+
+            DurableStoreRetention.Apply(_root, DurableStoreKind.Jobs,
+                Settings("job_max_bytes", "1"), _now.AddDays(8));
+            Assert.False(File.Exists(job));
+            Assert.False(File.Exists(lease));
         }
 
         public void Dispose()

@@ -263,6 +263,29 @@ namespace Horizun.Server.Tests
                                   InputSchema = JObject.Parse("{\"type\":\"object\"}") }
         };
 
+        [Fact]
+        public void A_legacy_addin_is_readable_but_cannot_receive_a_write_under_an_unknown_contract()
+        {
+            var legacy = new Discovered { ContractHash = null, ProtocolVersion = 0 };
+
+            Assert.Null(PipeClient.LegacyContractRefusal(legacy, Tools.Find("horizun_health")));
+            string refusal = PipeClient.LegacyContractRefusal(legacy, Tools.Find("horizun_create_elements"));
+            Assert.NotNull(refusal);
+            Assert.Contains("nothing was sent", refusal, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("contract", refusal, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void A_current_contract_does_not_trigger_the_legacy_write_guard()
+        {
+            var current = new Discovered
+            {
+                ContractHash = Contract.Hash,
+                ProtocolVersion = Contract.ProtocolVersion
+            };
+            Assert.Null(PipeClient.LegacyContractRefusal(current, Tools.Find("horizun_create_elements")));
+        }
+
         /// <summary>
         /// Mirrors Contract.ComputeHash over an arbitrary list. Kept in step by the two
         /// tests above, which would fail if the real one stopped covering a field.

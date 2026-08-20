@@ -4,11 +4,10 @@
 // Direct Python against the Revit API, on the UI thread. The standing fallback:
 // no set of typed tools ever covers the whole API, this does.
 //
-// ENABLED BY DEFAULT during this early stage: when a typed command cannot cover
-// a request, the client is expected to generate minimal Python and run it here,
-// rather than answer "not supported". It runs arbitrary code inside Revit with
-// the full API and the rights of the signed-in user, so the per-machine switch
-// in settings.json still exists and an explicit OFF is respected - checked here
+// DISABLED BY DEFAULT: when a typed command cannot cover a request, the owner may
+// grant a bounded exception from Revit's Python ON/OFF button, or configure a
+// durable developer opt-in. It runs arbitrary code inside Revit with the full API
+// and the rights of the signed-in user, so the per-machine switch is checked here
 // AND in the server, because the two halves ship separately and neither may be
 // the only gate.
 //
@@ -47,8 +46,8 @@ namespace Horizun.Revit.Commands
 
         public string Description =>
             "THE EXECUTION FALLBACK - runs arbitrary code inside Revit on the UI thread with the full API and " +
-            "the rights of the signed-in user. Enabled by default; a machine owner can switch it off in " +
-            "%USERPROFILE%\\.horizun\\settings.json and that explicit choice is respected. " +
+            "the rights of the signed-in user. Disabled by default; a machine owner must grant it temporarily " +
+            "from Revit or enable it durably, and every explicit off choice is respected. " +
             "WHEN TO USE IT: prefer a typed command whenever one fully covers the operation - typed commands " +
             "rehearse, verify and re-read their work. When no typed capability exists, or a typed command " +
             "refuses BEFORE writing because the operation/kind/category is outside its contract, generate " +
@@ -77,7 +76,22 @@ namespace Horizun.Revit.Commands
             "horizun_transform_elements, doc.Delete -> horizun_delete_verified). The advisory does not block: " +
             "a composite script that also needs one of those calls runs fine, and the typed command remains " +
             "the better tool when it is the WHOLE job. " +
-            "doc/uidoc/uiapp/app are injected. RETURN EVIDENCE, not prints: assign __output__ the structured " +
+            "SOURCE: send 'code' inline, OR 'code_path' - a .py file on the machine running Revit, read as " +
+            "UTF-8 (a BOM or a '# -*- coding: -*-' line is honoured), CRLF normalised, and measured, hashed and " +
+            "bound to the idempotency key exactly like inline code. Exactly one of the two. A file makes " +
+            "tracebacks name the real file and line instead of <string>. " +
+            "INJECTED NAMES: doc (Document), uidoc (UIDocument), uiapp AND __revit__ (UIApplication - the " +
+            "pyRevit name, aliased so it resolves), app (Application), checkpoint(label, done, total), " +
+            "revit_raised(since=0) and dialog_answer(answer). " +
+            "WHAT REVIT RAISED comes back as 'dialogs' and 'failures' beside __output__, each with the " +
+            "script's last checkpoint as 'while'. Read them when an open fails: the bridge CANCELS modal " +
+            "dialogs (nobody is at the keyboard), and all Revit tells the script is 'Opening was canceled'. " +
+            "Inside the script, revit_raised(since) reads the same records DURING the run - take " +
+            "len(revit_raised()) before an open and pass it back after to see exactly what that open raised. " +
+            "To let one call continue past its dialog: `with dialog_answer('dismiss'): " +
+            "doc = app.OpenDocumentFile(...)`, around that call ONLY - dismiss answers OK to everything, and " +
+            "Revit reads OK on a close-with-changes dialog as SAVE. " +
+            "RETURN EVIDENCE, not prints: assign __output__ the structured " +
             "shape {status: verified|completed_unverified|partial|failed, summary, created_ids, modified_ids, " +
             "deleted_ids, verification:{checked, evidence:[]}, warnings:[]} and RE-READ what you wrote before " +
             "claiming verified. WHAT COMES BACK IS SELF-REPORTED, NOT HOST-VERIFIED: your 'verified' is " +
@@ -266,14 +280,12 @@ namespace Horizun.Revit.Commands
             }
 
             JObject request;
-            string code;
             bool runAsync;
             bool preflight;
             string idempotencyKey;
             try
             {
                 request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
-                code = request.Value<string>("code");
                 runAsync = request.Value<bool?>("run_async") ?? false;
                 preflight = request.Value<bool?>("preflight") ?? false;
                 idempotencyKey = request.Value<string>("idempotency_key");
@@ -282,15 +294,31 @@ namespace Horizun.Revit.Commands
             {
                 return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message);
             }
-            if (string.IsNullOrWhiteSpace(code))
-                return CommandResult.Fail("'code' is required (the Python source to run).");
+
+            // WHERE THE SOURCE COMES FROM - inline `code` or a file named by `code_path`,
+            // never both (5.27). The file is read HERE, on the host side of the rules that
+            // follow: the size limit below and the SHA-256 measure what was read, so
+            // code_path is not a way around either.
+            //
+            // The DURABLE idempotency claim is the one exception, and it is stated rather
+            // than glossed: the dispatcher takes it over the REQUEST before this command
+            // runs, and the request names the path, not the bytes. So the same key with an
+            // edited file replays the recorded answer instead of running the new script -
+            // at-most-once doing its job. A changed script needs a new key, and the
+            // response says so.
+            SourceResolution source = ResolveSource(request);
+            if (source.Error != null) return CommandResult.Fail(source.Error);
+            string code = source.Code;
+
             if (code.Length > MaxScriptChars)
-                return CommandResult.Fail("Script is " + code.Length + " characters, over the " + MaxScriptChars +
-                    " limit. This limit is deliberate and must not be evaded: everything that runs is the source " +
-                    "submitted here - it is hashed as submitted_source_sha256 and bound to the idempotency key. " +
-                    "Reading code from a file at runtime would slip past this limit, that hash and that binding, " +
-                    "so it is not the answer. Reduce the script, or split the work across separate " +
-                    "execute_python calls. Nothing ran.");
+                return CommandResult.Fail("Script is " + code.Length + " characters" +
+                    (source.Path == null ? "" : " (read from " + source.Path + ")") + ", over the " +
+                    MaxScriptChars + " limit. This limit is deliberate and must not be evaded: everything that " +
+                    "runs is the source this command resolved, and it is hashed as submitted_source_sha256. " +
+                    "Use code_path if the problem is only that the script is awkward to send inline - it is read " +
+                    "here, then measured and hashed exactly like code. What is NOT the answer is a stub that " +
+                    "opens a file at RUNTIME: that slips past this limit and past that hash. Reduce the script, " +
+                    "or split the work across separate execute_python calls. Nothing ran.");
             if (preflight && runAsync)
                 return CommandResult.Fail(
                     "preflight=true cannot be combined with run_async=true: a preflight executes nothing, so " +
@@ -347,8 +375,7 @@ namespace Horizun.Revit.Commands
                 string syntaxError = null;
                 try
                 {
-                    ScriptSource compileOnly = GetEngine().CreateScriptSourceFromString(
-                        code, Microsoft.Scripting.SourceCodeKind.Statements);
+                    ScriptSource compileOnly = SourceFor(GetEngine(), code, source.Path);
                     compileOnly.Compile(); // parse and compile; nothing executes
                 }
                 catch (Exception ex)
@@ -370,11 +397,15 @@ namespace Horizun.Revit.Commands
                     ["mode"] = "preflight",
                     ["executed"] = false,
                     ["would_run"] = syntaxError == null,
+                    ["source"] = source.Describe(),
                     ["checks"] = new JObject
                     {
                         ["permission"] = "ok",
                         ["target_document"] = "ok - matches the active document",
                         ["size"] = code.Length + " of " + MaxScriptChars + " chars",
+                        ["source"] = source.Path == null
+                            ? "ok - inline"
+                            : "ok - read from " + source.Path + " as " + source.Encoding,
                         ["syntax"] = syntaxError == null ? "ok" : "failed"
                     },
                     ["syntax_error"] = syntaxError,
@@ -451,7 +482,12 @@ namespace Horizun.Revit.Commands
                 // reads outcomes anyway.
                 var queued = new JObject
                 {
+                    // The RESOLVED source, never the path. A code_path run reads the file
+                    // once, HERE, at submit: the deferred run must execute the script the
+                    // fingerprint was taken of, not whatever that path holds twenty
+                    // minutes later when the queue reaches it.
                     ["code"] = code,
+                    ["code_origin_path"] = source.Path,
                     // The dispatcher runs the script itself; a second async hop would
                     // queue it forever.
                     ["run_async"] = false,
@@ -555,6 +591,7 @@ namespace Horizun.Revit.Commands
                     ["mode"] = "async",
                     ["job_id"] = asyncJob.Id,
                     ["status"] = "queued",
+                    ["source"] = source.Describe(),
                     ["typed_alternatives"] = typedAlternatives.Count == 0 ? null : typedAlternatives,
                     ["queue_depth"] = AsyncQueue.Count,
                     ["poll_with"] = "horizun_job_status with job_id=" + asyncJob.Id,
@@ -613,6 +650,13 @@ namespace Horizun.Revit.Commands
             ScriptScope scope = engine.CreateScope();
             scope.SetVariable("uiapp", app);
             scope.SetVariable("app", app.Application);
+            // pyRevit and RevitPythonShell both call the UIApplication `__revit__`, so it
+            // is the first thing anybody coming from either types - and it answered
+            // "NameError: name '__revit__' is not defined", which reads like the bridge
+            // has no application object at all. It has: `app` (Application) and `uiapp`
+            // (UIApplication) were always here. The alias costs one line and removes a
+            // wrong turn nobody could have avoided by reading the error.
+            scope.SetVariable("__revit__", app);
             // The casts are load-bearing on .NET Framework (Revit <= 2024), not decoration.
             // ScriptScope there carries a second overload, SetVariable(string, ObjectHandle),
             // for remoting. An untyped null binds to it — ObjectHandle is more specific than
@@ -647,28 +691,59 @@ namespace Horizun.Revit.Commands
             job.MarkRunning();
             scope.SetVariable("__hz_job", job);
 
+            // THE WATCHER OF THIS COMMAND, borrowed from the dispatcher (5.25). Two things
+            // come of holding it here: the script can ASK what Revit has raised so far,
+            // and everything Revit raises gets stamped with the script's own last
+            // checkpoint - so a batch that checkpoints per model can say WHICH model a
+            // cancelled dialog belonged to. Null if the dispatcher could not subscribe;
+            // that is reported as "not observed", never as "nothing happened".
+            Interference watch = Interference.Current;
+            if (watch != null) watch.Locator = () => job.LastCheckpoint;
+
+            // What Revit has raised so far, as JSON, from index `since`. Null - never an
+                // empty list - when either channel was not subscribed OR a subscribed
+                // handler failed while processing: an empty list would read as "Revit
+                // raised nothing", which partial observation can never establish.
+            scope.SetVariable("__hz_raised", (Func<int, string>)(since =>
+            {
+                Interference w = Interference.Current;
+                if (w == null || !w.FullyObserved) return null;
+                return w.Since(since).ToString(Newtonsoft.Json.Formatting.None);
+            }));
+
+            // Widen the dialog answer around ONE call, and no further. Deliberately not a
+            // whole-script switch: "dismiss" answers OK to every dialog, and Revit's
+            // close-with-changes dialog reads OK as SAVE - a read-only audit could write
+            // to 250 models by asking for one open to continue. Scoped, it is the same
+            // mechanism open_document uses, aimed at the same one call.
+            scope.SetVariable("__hz_dialog_scope", (Func<string, IDisposable>)(answer =>
+            {
+                string parseError;
+                DialogAnswer parsed = OpenDialogPolicy.Parse(answer, out parseError);
+                if (parseError != null)
+                    throw new ArgumentException(
+                        "dialog_answer() takes 'cancel' or 'dismiss' (got '" + answer + "'). Nothing was " +
+                        "changed about how dialogs are answered, and the default stands: cancel.");
+                return Interference.WithDialogAnswer(parsed);
+            }));
+
             string printed = null;
+            string printedCaptureError = null;
             object output = null;
             string error = null;
             bool leftModifiable = false;
+            PythonStreamRestorer streamRestorer = PythonStreamRestorer.Capture(engine);
 
             try
             {
-                engine.Execute(
-                    "import sys as __hz_sys, io as __hz_io\n" +
-                    "__hz_buf = __hz_io.StringIO()\n" +
-                    "__hz_stdout, __hz_stderr = __hz_sys.stdout, __hz_sys.stderr\n" +
-                    "__hz_sys.stdout = __hz_buf\n" +
-                    "__hz_sys.stderr = __hz_buf\n" +
-                    // Available to every script with no import: checkpoint("placing walls", 40, 300).
-                    // Each call reaches the disk immediately, so progress is readable from
-                    // OUTSIDE while this thread is still busy being this call — and it
-                    // survives a crash, which is when knowing how far it got matters most.
-                    "def checkpoint(label, done=None, total=None):\n" +
-                    "    __hz_job.Write(str(label), done, total)\n", scope);
+                // checkpoint(), revit_raised() and dialog_answer(), plus the stdout
+                // capture. It is Python, so it lives in ScriptPrelude.cs where a real
+                // engine parses it in the test suite - a syntax error here breaks every
+                // execute_python call on the machine and no C# compiler would see it.
+                engine.Execute(ScriptPrelude.Prologue, scope);
 
-                ScriptSource source = engine.CreateScriptSourceFromString(code, Microsoft.Scripting.SourceCodeKind.Statements);
-                source.Execute(scope);
+                ScriptSource script = SourceFor(engine, code, source.Path);
+                script.Execute(scope);
                 scope.TryGetVariable("__output__", out output);
             }
             catch (Exception ex)
@@ -680,13 +755,33 @@ namespace Horizun.Revit.Commands
             {
                 try
                 {
-                    engine.Execute(
-                        "__hz_printed = __hz_buf.getvalue()\n" +
-                        "__hz_sys.stdout, __hz_sys.stderr = __hz_stdout, __hz_stderr\n", scope);
+                    engine.Execute(ScriptPrelude.Epilogue, scope);
                     object p;
                     if (scope.TryGetVariable("__hz_printed", out p) && p != null) printed = p.ToString();
+                    object captureProblem;
+                    if (scope.TryGetVariable("__hz_capture_error_text", out captureProblem) && captureProblem != null)
+                        printedCaptureError = captureProblem.ToString();
                 }
-                catch { }
+                catch (Exception cleanupEx)
+                {
+                    // Do not convert loss of stdout capture into proof that restoration ran.
+                    // The authoritative C# references are restored in the nested finally
+                    // below, independently of whether this best-effort capture succeeded.
+                    printedCaptureError = "Python stdout/stderr cleanup failed: " + cleanupEx.Message;
+                    Log.Error("execute_python could not prove stdout/stderr restoration", cleanupEx);
+                }
+                finally
+                {
+                    string restorationError;
+                    if (!streamRestorer.TryRestore(out restorationError))
+                    {
+                        string message = "Python stdout/stderr restoration failed: " + restorationError;
+                        printedCaptureError = printedCaptureError == null
+                            ? message
+                            : printedCaptureError + "; " + message;
+                        Log.Error(message, null);
+                    }
+                }
 
                 // A script that leaves the document modifiable has left a transaction open,
                 // and every later command will fail with "Modification of the document is
@@ -710,6 +805,11 @@ namespace Horizun.Revit.Commands
                     leftModifiable = true;
                     Log.Error("execute_python: could not determine whether the document was left modifiable", ex);
                 }
+
+                // The closure holds this run's job record; the watcher outlives the command
+                // by a few lines in the dispatcher, and nothing after this point is "the
+                // script's position".
+                if (watch != null) watch.Locator = null;
             }
 
             // Close the record either way. A job with no finish line is indistinguishable
@@ -740,8 +840,21 @@ namespace Horizun.Revit.Commands
             // a cut-off tail and concludes the loop finished.
             printed = ScriptOutput.Clamp(printed);
 
+            // WHAT REVIT RAISED, AS STRUCTURE, on the way out (5.25). The dispatcher also
+            // attaches it beside every reply as revit_said - but on the success path that
+            // rides in the human text only, and a batch driver reads structuredContent.
+            // Three models were reported unauditable with no cause for exactly this
+            // reason: the dialog record existed and never reached the program that needed
+            // it. Here it is a field, on success and on failure both.
+            JObject raised = RaisedBlock(watch);
+            raised["stdout_capture_error"] = printedCaptureError == null
+                ? (JToken)null
+                : printedCaptureError;
+
             if (error != null)
-                return CommandResult.Fail(error + (string.IsNullOrEmpty(printed) ? "" : "\n--- stdout before the error ---\n" + printed));
+                return CommandResult.FailWithDetail(
+                    error + (string.IsNullOrEmpty(printed) ? "" : "\n--- stdout before the error ---\n" + printed),
+                    raised);
 
             // A dict assigned to __output__ used to come back as the string
             // "IronPython.Runtime.PythonDictionary": ToString() on a value that does not
@@ -758,9 +871,26 @@ namespace Horizun.Revit.Commands
             {
                 mode = "sync",
                 executed = true,
+                source = source.Describe(),
+                // Beside __output__, exactly where a program looking for the cause of
+                // "Opening was canceled" will find it.
+                dialogs = raised["dialogs"],
+                failures = raised["failures"],
+                revit_raised_observed = raised["revit_raised_observed"],
+                revit_raised_note = raised["revit_raised_note"],
+                dialogs_observed = raised["dialogs_observed"],
+                failures_observed = raised["failures_observed"],
+                observation_complete = raised["observation_complete"],
+                observation_note = raised["observation_note"],
+                dialogs_subscribed = raised["dialogs_subscribed"],
+                failures_subscribed = raised["failures_subscribed"],
+                dialogs_processing_complete = raised["dialogs_processing_complete"],
+                failures_processing_complete = raised["failures_processing_complete"],
+                observer_errors = raised["observer_errors"],
                 output = rendered.Value,
                 output_kind = rendered.Kind,
                 output_note = rendered.Note,
+                stdout_capture_error = printedCaptureError,
                 evidence_status = evidence.Status,
                 // The status the SCRIPT declared, kept verbatim so classifying it never
                 // destroys information.
@@ -794,6 +924,182 @@ namespace Horizun.Revit.Commands
                 job_file = job.Path,
                 checkpoints = job.Checkpoints
             });
+        }
+
+        /// <summary>
+        /// Everything Revit raised during this script, split the way a caller reads it:
+        /// DIALOGS (a modal the bridge answered, which is why an open "was canceled") and
+        /// FAILURES (the warnings and errors Revit's failure processing produced). The
+        /// shaping - including the field that keeps an unobserved run from reading like a
+        /// quiet one - is RaisedRecord's, and is unit-tested there.
+        /// </summary>
+        private static JObject RaisedBlock(Interference watch) => Interference.BlockOf(watch);
+
+        /// <summary>Where the source came from, or exactly why there is none.</summary>
+        private sealed class SourceResolution
+        {
+            public string Code;
+            public string Path;                 // the file this source came from, if any
+            public bool ReadNow;                // THIS call read it off disk
+            public string Encoding;             // null when the source arrived inline
+            public bool NewlinesNormalized;
+            public string Error;
+
+            /// <summary>
+            /// Reported on every reply, because a caller that passes a path must be able
+            /// to confirm WHICH file ran and how it was read - a run that silently used
+            /// yesterday's copy of a driver is the failure this field exists to prevent.
+            /// </summary>
+            public JObject Describe()
+            {
+                return new JObject
+                {
+                    ["from"] = Path == null ? "code" : "code_path",
+                    ["path"] = Path,
+                    ["chars"] = Code == null ? 0 : Code.Length,
+                    ["decoded_as"] = Encoding,
+                    ["newlines_normalized"] = NewlinesNormalized,
+                    ["read_from_disk_by_this_call"] = ReadNow,
+                    ["note"] = Path == null
+                        ? "The source arrived inline."
+                        : ReadNow
+                            ? "The source was READ FROM DISK AT THIS INSTANT: the size limit and " +
+                              "submitted_source_sha256 measure these bytes, not the path. The DURABLE " +
+                              "idempotency claim does not - it is taken over the request, and the request names " +
+                              "the path - so re-sending the same idempotency_key after editing the file REPLAYS " +
+                              "this answer and runs nothing. That is at-most-once doing its job, not a silent " +
+                              "re-run; a changed script is new work and needs a new key."
+                            : "The source came from the queue, having been read from this path when the job was " +
+                              "SUBMITTED. The file is not re-read here, deliberately: a deferred run must execute " +
+                              "the script its fingerprint was taken of, not whatever the path holds now. The name " +
+                              "is carried so tracebacks and this record can point at the real file."
+                };
+            }
+        }
+
+        /// <summary>
+        /// Resolve `code` or `code_path` into one source string. Exactly one of them, and
+        /// every failure is a sentence naming the file: this path exists because the
+        /// alternative - a hand-written stub that reads and compiles the file inside the
+        /// script - failed twice with IronPython errors that told a caller nothing.
+        /// </summary>
+        private static SourceResolution ResolveSource(JObject request)
+        {
+            string code = request.Value<string>("code");
+            string path = request.Value<string>("code_path");
+
+            bool hasCode = !string.IsNullOrWhiteSpace(code);
+            bool hasPath = !string.IsNullOrWhiteSpace(path);
+
+            if (hasCode && hasPath)
+                return new SourceResolution
+                {
+                    Error = "Both 'code' and 'code_path' were sent. Send exactly ONE: running either of them " +
+                            "would be a guess about which script you meant, and the other would be silently " +
+                            "ignored. Nothing ran."
+                };
+
+            if (!hasCode && !hasPath)
+                return new SourceResolution
+                {
+                    Error = "One of 'code' (the Python source inline) or 'code_path' (a .py file on this machine, " +
+                            "read as UTF-8 unless it declares otherwise) is required. Nothing ran."
+                };
+
+            // Inline - including the queue's copy of a code_path run, which carries the
+            // file it came from so a traceback can still name it.
+            if (hasCode)
+                return new SourceResolution
+                {
+                    Code = code,
+                    Path = request.Value<string>("code_origin_path"),
+                    ReadNow = false
+                };
+
+            string full;
+            try { full = System.IO.Path.GetFullPath(path); }
+            catch (Exception ex)
+            {
+                return new SourceResolution
+                {
+                    Error = "code_path '" + path + "' is not a usable path: " + ex.Message + ". Nothing ran."
+                };
+            }
+
+            try
+            {
+                if (!File.Exists(full))
+                    return new SourceResolution
+                    {
+                        Error = "code_path does not exist: " + full +
+                                (string.Equals(full, path, StringComparison.OrdinalIgnoreCase)
+                                    ? ""
+                                    : " (resolved from '" + path + "')") +
+                                ". The file is read on the machine RUNNING REVIT, which is this one. Nothing ran."
+                    };
+            }
+            catch (Exception ex)
+            {
+                return new SourceResolution
+                {
+                    Error = "code_path " + full + " could not be tested: " + ex.Message + ". Nothing ran."
+                };
+            }
+
+            byte[] raw;
+            try
+            {
+                // ReadWrite|Delete: the same share mode the rest of this codebase uses to
+                // read a file something else may be holding - an editor with the driver
+                // open must not be able to fail the run.
+                using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read,
+                                               FileShare.ReadWrite | FileShare.Delete))
+                using (var ms = new MemoryStream())
+                {
+                    fs.CopyTo(ms);
+                    raw = ms.ToArray();
+                }
+            }
+            catch (Exception ex)
+            {
+                return new SourceResolution
+                {
+                    Error = "code_path " + full + " could not be read: " + ex.Message + ". Nothing ran."
+                };
+            }
+
+            DecodedSource decoded = PythonSourceText.Decode(raw);
+            if (!decoded.Ok)
+                return new SourceResolution { Error = "code_path " + full + ": " + decoded.Error };
+
+            if (string.IsNullOrWhiteSpace(decoded.Text))
+                return new SourceResolution
+                {
+                    Error = "code_path " + full + " decoded to " + raw.Length + " byte(s) of nothing but " +
+                            "whitespace. An empty script is not a run. Nothing ran."
+                };
+
+            return new SourceResolution
+            {
+                Code = decoded.Text,
+                Path = full,
+                ReadNow = true,
+                Encoding = decoded.Encoding,
+                NewlinesNormalized = decoded.NewlinesNormalized
+            };
+        }
+
+        /// <summary>
+        /// The script source, NAMED. Without the path an IronPython traceback says
+        /// "&lt;string&gt;" and a 535-line driver's failure points nowhere; with it, the
+        /// traceback names the real file and line, which is the whole difference between
+        /// a stack trace you can act on and one you cannot.
+        /// </summary>
+        private static ScriptSource SourceFor(ScriptEngine engine, string code, string path)
+        {
+            var kind = Microsoft.Scripting.SourceCodeKind.Statements;
+            if (string.IsNullOrEmpty(path)) return engine.CreateScriptSourceFromString(code, kind);
+            return engine.CreateScriptSourceFromString(code, path, kind);
         }
 
         private static string SafeUser(UIApplication app)

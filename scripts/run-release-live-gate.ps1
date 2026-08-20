@@ -258,6 +258,7 @@ __output__ = {
         '-QuantityCategory', $quantityCategory,
         '-OldFile', $oldFile,
         '-ClosedWorksetDocument', $activeReleaseTitle,
+        '-ClosedWorksetName', $closedWorkset,
         '-WriteDocument', $activeReleaseTitle,
         '-WriteDocumentDisposable', $disposable,
         '-ExpectedCommit', [string]$manifestDoc.Commit,

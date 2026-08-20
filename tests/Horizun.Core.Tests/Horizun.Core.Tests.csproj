@@ -29,6 +29,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentIdentity.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorksetConfigurationEvidence.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
     <!-- The classification of a script's own success claim. The one rule it enforces -
          a "verified" claim without evidence is downgraded, never believed - is pure
@@ -45,6 +46,26 @@
          exhaustively so the commands only have to call it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FallbackDecision.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanFailure.cs" />
+    <!-- What a command actually DID to the model, and the book a plan keeps while it
+         runs. ExecutePlanCommand cannot be constructed without a Revit, so until these
+         were split out every case that matters here was unreachable by any test: a
+         child answering success over a rollback, a partial write followed by a DELETE,
+         a failure in the middle of a graph that already wrote. The Revit stays in the
+         command; the decision is proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ApplicationOutcome.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanLedger.cs" />
+    <!-- And how a command's OWN counters become that declaration. Both rules here
+         are ones review caught being got wrong: a TransactionStatus thrown away and
+         replaced with a literal, and one `failed` array fed from three places whose
+         total was then added to the request. Neither state can be asked of a live
+         Revit - a Commit that returns Pending, a batch with one refused Set and one
+         failed read-back - so both are pinned here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WriteTally.cs" />
+    <!-- Every property a request named, re-read from the committed model and
+         compared one by one. The rule worth proving is what the old boolean could
+         not say: an empty checklist is not a pass, and a property that could not be
+         read is not agreement. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PostconditionCheck.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Transport\PipeEnvelope.cs" />
     <!-- Comment/string masking for the typed-overlap advisory. A live run advised a
          script whose only mention of the API was in a comment. -->
@@ -74,6 +95,7 @@
          safe to point at a mutation. Both shipped with no test at all. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncQueue.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResultPayload.cs" />
     <!-- Job.cs reports a record it could not write through Log, and the admission rule
          both async entry points share is decided in AsyncJobAdmission. Both are
          Revit-free; the commands that call them are not, which is exactly why the rule
@@ -113,6 +135,18 @@
     <!-- Which files horizun_file_info reads (5.20). The directory listing is IO and
          injected; the refusal, the union, the dedup and the cap are proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FileInfoPaths.cs" />
+    <!-- And what the first eight bytes of an unreadable one MEAN (5.26). The read is
+         IO; the rule is bytes in, sentence out - including the two it must refuse to
+         say: a ZIP is not a Revit file, and an unknown signature is not anything. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FileSignature.cs" />
+    <!-- How a .py file's BYTES become the source that runs (5.27). The measured
+         failure was a decode ("byte 0x8f in position 2634"), so the refusal, the
+         PEP-263 line and the BOM cases are proved here rather than in a Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceText.cs" />
+    <!-- What Revit raised, shaped for a caller (5.25). Interference needs a Revit to
+         CATCH; this decides what the answer looks like, and the property that matters
+         - an unobserved run must not read like a quiet one - has no Revit in it. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RaisedRecord.cs" />
     <!-- And whether closing one would throw work away. The tri-state is the point:
          a real Revit will not produce "IsModified could not be read" on demand, and
          that is the state the rule has to get right. -->

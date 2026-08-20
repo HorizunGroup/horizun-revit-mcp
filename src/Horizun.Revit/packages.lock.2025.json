@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0-windows7.0": {
+      "IronPython": {
+        "type": "Direct",
+        "requested": "[3.4.2, )",
+        "resolved": "3.4.2",
+        "contentHash": "OPYemSbwfDtgWU24GELr0/ud7uHbNSMAPaTzatWk7Ab7X5xWquDHfQtdiFJ+3j/CoGtj7eOFhkeRYs1o3uZEmQ==",
+        "dependencies": {
+          "DynamicLanguageRuntime": "1.3.5",
+          "Mono.Unix": "7.1.0-final.1.21458.1"
+        }
+      },
+      "IronPython.StdLib": {
+        "type": "Direct",
+        "requested": "[3.4.2, )",
+        "resolved": "3.4.2",
+        "contentHash": "deehM2JDVnA3JENIaOwjn5HDqMgst7my3loSSfEmQRugCehSntGGIJwY7mxRnNl7a/vEaTeKMNOChStNCUD1pg==",
+        "dependencies": {
+          "IronPython": "[3.4.0, 3.5.0)"
+        }
+      },
+      "Newtonsoft.Json": {
+        "type": "Direct",
+        "requested": "[13.0.3, )",
+        "resolved": "13.0.3",
+        "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
+      },
+      "System.Text.Encoding.CodePages": {
+        "type": "Direct",
+        "requested": "[8.0.0, )",
+        "resolved": "8.0.0",
+        "contentHash": "OZIsVplFGaVY90G2SbpgU7EnCoOO5pw1t4ic21dBF3/1omrJFpAGoNAVpPyMVOC90/hvgkGG3VFqR13YgZMQfg=="
+      },
+      "DynamicLanguageRuntime": {
+        "type": "Transitive",
+        "resolved": "1.3.5",
+        "contentHash": "HHCVAlsIe8eBuj0bxh+0zCflYPeu+WSmP5iJ2J+oqd9wa1j7kcw70hiGPxoDPSoLM/RRLGXUdvj7ISkelxLpNw==",
+        "dependencies": {
+          "System.CodeDom": "8.0.0"
+        }
+      },
+      "Mono.Unix": {
+        "type": "Transitive",
+        "resolved": "7.1.0-final.1.21458.1",
+        "contentHash": "Rhxz4A7By8Q0wEgDqR+mioDsYXGrcYMYPiWE9bSaUKMpG8yAGArhetEQV5Ms6KhKCLdQTlPYLBKPZYoKbAvT/g=="
+      },
+      "System.CodeDom": {
+        "type": "Transitive",
+        "resolved": "8.0.0",
+        "contentHash": "WTlRjL6KWIMr/pAaq3rYqh0TJlzpouaQ/W1eelssHgtlwHAH25jXTkUphTYx9HaIIf7XA6qs/0+YhtLEQRkJ+Q=="
+      }
+    }
+  }
+}

@@ -22,12 +22,11 @@
 // effect on the next call instead of the next Revit restart. That matters most
 // for the one setting that exists today: arbitrary code execution.
 //
-// THE DEFAULTS ARE THE FULL SURFACE. During this early stage the product decision
-// is that a fresh install exposes everything, including horizun_execute_python:
-// an absent file, or a file without these keys, reads as permission_profile=
-// unsafe_code and enable_execute_python=true. An EXPLICIT choice in the file -
-// read_only, safe_write, full_write, or enable_execute_python=false - is always
-// respected.
+// THE DEFAULTS ARE SAFE FOR AN UNATTENDED AGENT. A fresh install permits typed
+// writes inside the active document, but it cannot open/close documents, write
+// external files or execute arbitrary code: an absent file, or a file without
+// these keys, reads as permission_profile=safe_write and
+// enable_execute_python=false. Elevation is always an explicit owner decision.
 //
 // One asymmetry is deliberate: a file that EXISTS but cannot be parsed falls
 // CLOSED (read_only, Python off), not open. The owner may have written an
@@ -44,7 +43,8 @@
 //                a document session, and writes NOTHING outside the model.
 //   safe_write   the above, plus typed writes INSIDE the document.
 //   full_write   the above, plus document sessions and typed external writes.
-//   unsafe_code  the above, plus horizun_execute_python. THE DEFAULT.
+//   unsafe_code  the above, plus eligibility for horizun_execute_python. It is
+//                never the implicit default.
 //
 // ToolEffect.HostState is why read_only still admits something that is not a
 // pure read: horizun_target chooses WHICH Revit every later call talks to, and a
@@ -58,7 +58,9 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
+using System.Text;
 using System.Collections.Generic;
+using System.Threading;
 using Horizun.Contracts;
 using Newtonsoft.Json.Linq;
 
@@ -66,20 +68,21 @@ namespace Horizun.Revit.Core
 {
     public static class Settings
     {
+        private static readonly object WriteLock = new object();
+
         public static string Path()
         {
             return HorizunPaths.SettingsPath();
         }
 
         /// <summary>
-        /// Is horizun_execute_python allowed to run? Default TRUE.
+        /// Is horizun_execute_python allowed to run? Default FALSE.
         ///
         /// It runs arbitrary code inside Revit, on the UI thread, with full API access
-        /// and the rights of the signed-in user. During this early stage it ships as the
-        /// standing fallback for whatever the typed commands do not cover, so an absent
-        /// file or an absent key means ON. An explicit enable_execute_python=false in
-        /// the file is always respected, and a file that exists but cannot be parsed
-        /// falls CLOSED - a corrupted explicit refusal must never read as consent.
+        /// and the rights of the signed-in user. Enabling it requires an explicit true
+        /// AND permission_profile=unsafe_code. An absent or non-boolean key means OFF.
+        /// A separate execute_python_ui_grant_until_utc written by Revit may grant a
+        /// bounded exception without leaving standing consent.
         /// </summary>
         public static bool ExecutePythonEnabled
         {
@@ -88,13 +91,30 @@ namespace Horizun.Revit.Core
                 FileState state;
                 JObject o = Read(out state);
                 if (state == FileState.Malformed) return false;
+                if (TemporaryExecutePythonGrant(o, DateTimeOffset.UtcNow, out _)) return true;
                 JToken t = o?["enable_execute_python"];
-                if (t == null || t.Type != JTokenType.Boolean) return true;
-                return (bool)t;
+                return t != null && t.Type == JTokenType.Boolean && (bool)t;
             }
         }
 
-        /// <summary>read_only | safe_write | full_write | unsafe_code (default).</summary>
+        /// <summary>
+        /// Active human grant written by the Revit ribbon. Unlike the durable admin
+        /// switch it does not change permission_profile and therefore cannot leave the
+        /// machine elevated after expiry.
+        /// </summary>
+        public static DateTimeOffset? ExecutePythonTemporaryGrantUntilUtc
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                if (state == FileState.Malformed) return null;
+                return TemporaryExecutePythonGrant(o, DateTimeOffset.UtcNow, out DateTimeOffset until)
+                    ? (DateTimeOffset?)until : null;
+            }
+        }
+
+        /// <summary>read_only | safe_write (default) | full_write | unsafe_code.</summary>
         public static string PermissionProfile
         {
             get
@@ -103,7 +123,7 @@ namespace Horizun.Revit.Core
                 JObject o = Read(out state);
                 if (state == FileState.Malformed) return "read_only"; // an unreadable choice never elevates
                 string p = o?.Value<string>("permission_profile");
-                if (string.IsNullOrWhiteSpace(p)) return "unsafe_code"; // absent key: the default-on posture
+                if (string.IsNullOrWhiteSpace(p)) return "safe_write";
                 p = p.ToLowerInvariant();
                 return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
                     ? p : "read_only"; // malformed privilege never elevates
@@ -123,6 +143,9 @@ namespace Horizun.Revit.Core
             { reason = contract.Name + " is outside the allowed_tools allowlist in " + Path() + "."; return false; }
 
             string profile = PermissionProfile;
+            bool temporaryPythonGrant = contract.Name == "horizun_execute_python" &&
+                                        profile != "read_only" &&
+                                        ExecutePythonTemporaryGrantUntilUtc != null;
 
             // ExternalSideEffect is consulted by BOTH restrictive profiles, and that is
             // the fix rather than a detail. The classification exists precisely to mean
@@ -131,7 +154,7 @@ namespace Horizun.Revit.Core
             // is one: a machine set to read_only refused to move a wall and then rewrote
             // a workbook on disk. Deciding on the ENUM rather than on a list of names is
             // what keeps the next externally-effecting tool from repeating it.
-            if (profile == "read_only" &&
+            if (!temporaryPythonGrant && profile == "read_only" &&
                 (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
                  contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect))
             {
@@ -140,7 +163,7 @@ namespace Horizun.Revit.Core
                          "written outside it.";
                 return false;
             }
-            if (profile == "safe_write" &&
+            if (!temporaryPythonGrant && profile == "safe_write" &&
                 (contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect ||
                  // Named as well as classified: these write outside the model while being
                  // classified MutatingUnlessDryRun, so the effect alone does not catch them.
@@ -155,12 +178,13 @@ namespace Horizun.Revit.Core
                 return false;
             }
             if (contract.Name == "horizun_execute_python" &&
-                (profile != "unsafe_code" || !ExecutePythonEnabled))
+                (!temporaryPythonGrant &&
+                 (profile != "unsafe_code" || !ExecutePythonEnabled)))
             {
-                reason = "horizun_execute_python requires BOTH permission_profile=unsafe_code and " +
-                         "enable_execute_python=true. Both DEFAULT to enabled, so this machine's " + Path() +
-                         " restricts one of them (or is malformed, which falls closed). That explicit " +
-                         "choice is respected; only the machine's owner reverses it.";
+                reason = "horizun_execute_python requires explicit permission_profile=unsafe_code and " +
+                         "enable_execute_python=true in " + Path() + ", OR a still-active temporary grant made " +
+                         "from the Revit ribbon. It is OFF on a fresh install. Only the machine's owner may " +
+                         "grant or renew that privilege.";
                 return false;
             }
             return true;
@@ -172,16 +196,64 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static string ExecutePythonRefusal()
         {
-            return "horizun_execute_python is DISABLED ON THIS MACHINE. It is enabled by default, so this state " +
-                   "is a deliberate choice recorded in " + Path() + " (an explicit enable_execute_python=false " +
-                   "or a permission_profile below unsafe_code), or that file exists but could not be parsed - " +
-                   "a malformed settings file falls closed rather than open. Respect the choice: do not edit the " +
-                   "file yourself. If the MACHINE'S OWNER wants it back, they can run " +
-                   "scripts/enable-execute-python.ps1, which restores exactly the two keys " +
-                   "({\"permission_profile\":\"unsafe_code\",\"enable_execute_python\":true}) while preserving " +
-                   "every other setting, and reverts with -Disable. The add-in re-reads settings on every call, " +
-                   "but the MCP client caches the tool list at startup, so restart the client for the tool to " +
-                   "appear. Meanwhile, use the typed commands: they cover most operations and verify their work.";
+            return "horizun_execute_python is DISABLED ON THIS MACHINE. This is the safe default: arbitrary " +
+                   "code requires explicit owner consent in " + Path() + ". Respect the choice: do not edit the " +
+                   "file yourself. If the MACHINE'S OWNER needs the developer escape hatch, they can grant a " +
+                   "time-limited or durable opt-in with scripts/enable-execute-python.ps1; -Disable revokes it. " +
+                   "The add-in re-reads settings on every call, and the server announces a standard " +
+                   "tools/list_changed notification. If a client does not implement that notification, restart " +
+                   "it once for the tool to appear. Meanwhile, use typed commands: they cover most operations " +
+                   "and verify their work.";
+        }
+
+        /// <summary>
+        /// Grant arbitrary Python from an explicit Revit UI action. The grant is bounded
+        /// to four hours even if a caller passes a larger duration; the ribbon currently
+        /// asks for one hour. The durable administrator switch is deliberately untouched.
+        /// </summary>
+        public static bool TryGrantExecutePythonTemporarily(
+            TimeSpan duration, out DateTimeOffset untilUtc, out string error)
+        {
+            untilUtc = default(DateTimeOffset);
+            error = null;
+            if (duration <= TimeSpan.Zero || duration > TimeSpan.FromHours(4))
+            {
+                error = "The temporary Python grant must be greater than zero and no longer than four hours.";
+                return false;
+            }
+
+            DateTimeOffset requestedUntil = DateTimeOffset.UtcNow.Add(duration);
+            untilUtc = requestedUntil;
+            return TryUpdate(o =>
+            {
+                o["execute_python_ui_grant_until_utc"] = requestedUntil.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
+        /// The Revit OFF button is an emergency stop, not merely expiry cleanup: it
+        /// revokes both the temporary UI grant and any durable enable flag. It leaves
+        /// the permission profile unchanged because an administrator may still need
+        /// full_write for typed external operations.
+        /// </summary>
+        public static bool TryRevokeExecutePython(out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["enable_execute_python"] = false;
+                o.Remove("execute_python_ui_grant_until_utc");
+                return true;
+            }, out error);
+        }
+
+        public static bool TryClearExecutePythonTemporaryGrant(out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o.Remove("execute_python_ui_grant_until_utc");
+                return true;
+            }, out error);
         }
 
         /// <summary>
@@ -217,6 +289,147 @@ namespace Horizun.Revit.Core
         {
             FileState ignored;
             return Read(out ignored);
+        }
+
+        private static bool TemporaryExecutePythonGrant(
+            JObject settings, DateTimeOffset nowUtc, out DateTimeOffset untilUtc)
+        {
+            untilUtc = default(DateTimeOffset);
+            JToken t = settings?["execute_python_ui_grant_until_utc"];
+            if (t == null) return false;
+            if (t.Type == JTokenType.Date)
+            {
+                object value = ((JValue)t).Value;
+                if (value is DateTimeOffset dto) untilUtc = dto;
+                else if (value is DateTime dt)
+                {
+                    if (dt.Kind == DateTimeKind.Unspecified)
+                        dt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+                    untilUtc = new DateTimeOffset(dt.ToUniversalTime());
+                }
+                else return false;
+                return untilUtc.ToUniversalTime() > nowUtc.ToUniversalTime();
+            }
+            if (t.Type != JTokenType.String) return false;
+            if (!DateTimeOffset.TryParse(
+                    (string)t,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AssumeUniversal |
+                    System.Globalization.DateTimeStyles.AdjustToUniversal,
+                    out untilUtc)) return false;
+            return untilUtc > nowUtc;
+        }
+
+        private static bool TryUpdate(Func<JObject, bool> update, out string error)
+        {
+            error = null;
+            lock (WriteLock)
+            {
+                using (var mutex = new Mutex(false, "Local\\Horizun.Revit.Settings.V1"))
+                {
+                    bool held = false;
+                    try
+                    {
+                        try { held = mutex.WaitOne(TimeSpan.FromSeconds(15)); }
+                        catch (AbandonedMutexException) { held = true; }
+                        if (!held)
+                        {
+                            error = "Timed out waiting for another Revit process to finish updating settings.json. Nothing changed.";
+                            return false;
+                        }
+                        return TryUpdateLocked(update, out error);
+                    }
+                    catch (Exception ex)
+                    {
+                        error = "Could not acquire the cross-process settings lock: " + ex.Message;
+                        return false;
+                    }
+                    finally { if (held) try { mutex.ReleaseMutex(); } catch { } }
+                }
+            }
+        }
+
+        private static bool TryUpdateLocked(Func<JObject, bool> update, out string error)
+        {
+            error = null;
+            string path = Path();
+            string temp = null;
+            try
+            {
+                JObject settings;
+                string originalRaw = null;
+                bool originallyExisted = File.Exists(path);
+                if (originallyExisted)
+                {
+                    originalRaw = File.ReadAllText(path);
+                    try { settings = JObject.Parse(originalRaw); }
+                    catch
+                    {
+                        error = "settings.json is malformed. It remains fail-closed and was not overwritten: " + path;
+                        return false;
+                    }
+                }
+                else settings = new JObject();
+
+                if (!update(settings))
+                {
+                    error = "The requested settings update was refused.";
+                    return false;
+                }
+
+                string directory = System.IO.Path.GetDirectoryName(path);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    error = "The settings path has no parent directory: " + path;
+                    return false;
+                }
+                Directory.CreateDirectory(directory);
+                temp = System.IO.Path.Combine(directory, ".settings-" + Guid.NewGuid().ToString("N") + ".tmp");
+                File.WriteAllText(temp, settings.ToString(Newtonsoft.Json.Formatting.Indented), new UTF8Encoding(false));
+
+                // Non-cooperating editors do not take our named mutex. Refuse their
+                // concurrent change instead of restoring an older privilege snapshot.
+                bool existsNow = File.Exists(path);
+                if (existsNow != originallyExisted ||
+                    (existsNow && !string.Equals(File.ReadAllText(path), originalRaw, StringComparison.Ordinal)))
+                {
+                    error = "settings.json changed while the Revit permission dialog was open. Nothing was overwritten; try again.";
+                    return false;
+                }
+
+                if (existsNow)
+                {
+                    string backup = path + ".horizun-ui-bak-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmssfff") +
+                                    "-" + Guid.NewGuid().ToString("N");
+                    File.Replace(temp, path, backup);
+                    PruneUiBackups(directory, System.IO.Path.GetFileName(path));
+                }
+                else File.Move(temp, path);
+                temp = null;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "Could not update " + path + ": " + ex.Message;
+                return false;
+            }
+            finally
+            {
+                if (temp != null) try { File.Delete(temp); } catch { }
+            }
+        }
+
+        private static void PruneUiBackups(string directory, string settingsFileName)
+        {
+            try
+            {
+                var backups = new DirectoryInfo(directory)
+                    .GetFiles(settingsFileName + ".horizun-ui-bak-*");
+                Array.Sort(backups, (a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
+                for (int i = 3; i < backups.Length; i++)
+                    try { backups[i].Delete(); } catch { }
+            }
+            catch { /* backup retention must never turn a successful revoke into failure */ }
         }
 
         private static HashSet<string> Strings(JArray a)

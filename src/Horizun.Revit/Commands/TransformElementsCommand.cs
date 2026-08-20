@@ -113,6 +113,9 @@ namespace Horizun.Revit.Commands
                     ["note"] = "Nothing was transformed; no transaction was opened."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // Invalid entries make this a partial rehearsal, not a clean one: the token
+                // below is already withheld for them, and a plan must read the same fact.
+                ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0 ? "the token binds the ordered operations, targets, vectors, axes and types" :
                     "no usable confirmation is issued while any operation is invalid");
@@ -167,11 +170,15 @@ namespace Horizun.Revit.Commands
             if (verified != plans.Count)
                 return CommandResult.Fail("The transaction committed, but " + (plans.Count - verified) +
                     " operation(s) failed post-commit verification. Inspect the model. " + verification.ToString(Formatting.None));
-            return CommandResult.Ok(new JObject
+            var trResult = new JObject
             {
                 ["dry_run"] = false, ["transaction_status"] = "Committed", ["transaction_name"] = txName,
                 ["operations_verified"] = verified, ["targets"] = claimed.Count, ["rows"] = verification
-            });
+            };
+            // Reached only when every planned operation passed its post-commit check.
+            ApplicationOutcome.StampApplied(trResult, ApplicationOutcome.Committed,
+                                            plans.Count, verified, verified, 0, 0, 0);
+            return CommandResult.Ok(trResult);
         }
 
         private static Plan PlanOperation(Document doc, int index, JObject o, double scale, HashSet<long> claimed,

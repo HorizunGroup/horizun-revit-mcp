@@ -24,7 +24,10 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Security.Cryptography;
 using System.Text;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -75,10 +78,24 @@ namespace Horizun.Revit.Core
 
     public sealed class Job
     {
+        // Keep ordinary progress files line-oriented and cheap to inspect. Larger
+        // terminal results are stored as one bounded, hashed artifact and the JSONL
+        // carries only its reference. Reserve room for the MCP result envelope,
+        // structuredContent wrapper, task metadata and the bounded checkpoint summary;
+        // accepting Contract.MaxReplyBytes as payload would make the final reply exceed
+        // the transport even though the artifact itself fit.
+        internal const int MaxInlineResultRecordBytes = 48 * 1024;
+        public const int ReplyEnvelopeReserveBytes = Horizun.Contracts.Contract.AsyncResultEnvelopeReserveBytes;
+        public const int MaxExternalResultBytes = Horizun.Contracts.Contract.MaxAsyncResultBytes;
+        public static readonly TimeSpan MaxRetentionLease = TimeSpan.FromMilliseconds(
+            Horizun.Contracts.Contract.MaxTaskTtlMilliseconds);
+
         private readonly object _gate = new object();
         private readonly IJobSink _sink;
         private int _checkpoints;
         private bool _running;
+        private string _lastLabel;
+        private bool _faultPublished;
 
         public string Id { get; private set; }
         public string Path { get; private set; }
@@ -100,6 +117,20 @@ namespace Horizun.Revit.Core
         /// <summary>Every line this job tried to write is in the file.</summary>
         public bool RecordIsComplete => IsDurable && WriteFault == null;
 
+        /// <summary>
+        /// The label of the most recent checkpoint, or null before the first one.
+        ///
+        /// It is here so that something raised WHILE the job runs can be attributed to
+        /// the step the job itself declared it was on - Interference asks for it when
+        /// Revit puts up a dialog, and a batch that checkpoints per model gets each
+        /// dialog labelled with the model. In memory only: the record on disk already
+        /// has every label, and this is the one that is current.
+        /// </summary>
+        public string LastCheckpoint { get { lock (_gate) { return _lastLabel; } } }
+
+        // One constructor, taking the sink: the parameterless one this branch used to
+        // carry would leave _sink null, and every call site (Start, StartBestEffort)
+        // already goes through here.
         private Job(IJobSink sink) { _sink = sink ?? FileJobSink.Instance; }
 
         /// <summary>
@@ -110,6 +141,53 @@ namespace Horizun.Revit.Core
         public static string Dir()
         {
             return HorizunPaths.JobsDir();
+        }
+
+        public static string ResultsDir() => System.IO.Path.Combine(Dir(), "results");
+        public static string LeasesDir() => System.IO.Path.Combine(Dir(), "leases");
+
+        /// <summary>
+        /// Protect this durable job from configured job retention while an MCP task is
+        /// entitled to retrieve it. The lease is written before the work is queued; an
+        /// admission that cannot persist it is refused rather than returning a task id
+        /// whose result a concurrent retention pass may delete.
+        /// </summary>
+        public void ProtectUntil(DateTimeOffset untilUtc)
+        {
+            if (!IsDurable || string.IsNullOrWhiteSpace(Id))
+                throw new InvalidOperationException("a retention lease requires an open durable job record");
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            untilUtc = untilUtc.ToUniversalTime();
+            if (untilUtc <= now || untilUtc > now.Add(MaxRetentionLease).AddMinutes(1))
+                throw new ArgumentOutOfRangeException("untilUtc", "job retention lease must be in the next seven days");
+
+            // Custom sinks are test seams and do not address the production store.
+            if (!ReferenceEquals(_sink, FileJobSink.Instance)) return;
+            using (DurableStoreRetention.AcquireJobStoreMutex())
+            {
+                // Job.Start and this call are separate operations. If a retention pass
+                // won the gap and removed the just-created record, refuse admission;
+                // otherwise the same mutex prevents deletion until the durable lease is
+                // visible and every later pass will protect the job.
+                if (string.IsNullOrEmpty(Path) || !File.Exists(Path))
+                    throw new IOException("job record disappeared before its retention lease was established");
+                Directory.CreateDirectory(LeasesDir());
+                string path = System.IO.Path.Combine(LeasesDir(), Id + ".json");
+                string temp = System.IO.Path.Combine(LeasesDir(), "." + Id + "." + Guid.NewGuid().ToString("N") + ".tmp");
+                try
+                {
+                    string json = new JObject
+                    {
+                        ["schema"] = 1,
+                        ["job_id"] = Id,
+                        ["retain_until_utc"] = untilUtc.ToString("O", CultureInfo.InvariantCulture)
+                    }.ToString(Formatting.None);
+                    WriteDurableFile(temp, Encoding.UTF8.GetBytes(json));
+                    if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+                    temp = null;
+                }
+                finally { if (temp != null) try { File.Delete(temp); } catch { } }
+            }
         }
 
         /// <summary>
@@ -279,6 +357,7 @@ namespace Horizun.Revit.Core
             lock (_gate)
             {
                 _checkpoints++;
+                _lastLabel = label;
                 Append("{\"event\":\"checkpoint\",\"n\":" + _checkpoints +
                        ",\"label\":" + Str(label) +
                        ",\"done\":" + Num(done) +
@@ -321,13 +400,99 @@ namespace Horizun.Revit.Core
         /// synchronous reply with no revit_said.
         /// </summary>
         public void Result(string payload, string revitSaidJson)
+            => Result(payload, revitSaidJson, null, null, null);
+
+        /// <summary>
+        /// Async callers need every machine-readable sibling a synchronous pipe reply
+        /// carries. The values are already serialized single-line JSON, just like
+        /// revit_said, and are embedded raw into the append-only result event.
+        /// </summary>
+        public void Result(string payload, string revitSaidJson, string fallbackJson,
+                           string capabilityGapsJson, string detailJson)
         {
             lock (_gate)
             {
                 string said = string.IsNullOrEmpty(revitSaidJson)
                     ? ""
                     : ",\"revit_said\":" + revitSaidJson;
-                Append("{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + said + ",\"at\":" + Now() + "}");
+                string fallback = string.IsNullOrEmpty(fallbackJson) ? "" : ",\"fallback\":" + fallbackJson;
+                string gaps = string.IsNullOrEmpty(capabilityGapsJson) ? "" : ",\"capability_gaps\":" + capabilityGapsJson;
+                string detail = string.IsNullOrEmpty(detailJson) ? "" : ",\"detail\":" + detailJson;
+                string inline = "{\"event\":\"result\",\"payload\":" + Str(payload ?? "") + said + fallback + gaps + detail +
+                                ",\"at\":" + Now() + "}";
+                if (!ReferenceEquals(_sink, FileJobSink.Instance) ||
+                    Encoding.UTF8.GetByteCount(inline) <= MaxInlineResultRecordBytes)
+                {
+                    Append(inline);
+                    return;
+                }
+
+                try
+                {
+                    JObject artifact = ResultArtifact(payload, revitSaidJson, fallbackJson,
+                                                      capabilityGapsJson, detailJson);
+                    byte[] bytes = new UTF8Encoding(false).GetBytes(artifact.ToString(Formatting.None));
+                    if (bytes.Length > MaxExternalResultBytes)
+                        throw new InvalidDataException("serialized async result exceeds the " +
+                            MaxExternalResultBytes + " byte reply limit");
+                    Directory.CreateDirectory(ResultsDir());
+                    string fileName = Id + ".json";
+                    string path = System.IO.Path.Combine(ResultsDir(), fileName);
+                    string temp = System.IO.Path.Combine(ResultsDir(), "." + Id + "." +
+                        Guid.NewGuid().ToString("N") + ".tmp");
+                    try
+                    {
+                        WriteDurableFile(temp, bytes);
+                        if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+                        temp = null;
+                    }
+                    finally { if (temp != null) try { File.Delete(temp); } catch { } }
+
+                    Append("{\"event\":\"result\",\"payload_ref\":" + Str(fileName) +
+                           ",\"payload_bytes\":" + bytes.Length.ToString(CultureInfo.InvariantCulture) +
+                           ",\"payload_sha256\":" + Str(Sha256(bytes)) + ",\"at\":" + Now() + "}");
+                }
+                catch (Exception ex)
+                {
+                    if (WriteFault == null) WriteFault = "external async result could not be persisted: " + ex.Message;
+                    Log.Warn("Job " + (Id ?? "(no id)") + " could not persist its external result (" + ex.Message + ").");
+                }
+            }
+        }
+
+        private static JObject ResultArtifact(string payload, string revitSaidJson, string fallbackJson,
+                                              string capabilityGapsJson, string detailJson)
+        {
+            var result = new JObject { ["payload"] = payload ?? "" };
+            AddSerialized(result, "revit_said", revitSaidJson);
+            AddSerialized(result, "fallback", fallbackJson);
+            AddSerialized(result, "capability_gaps", capabilityGapsJson);
+            AddSerialized(result, "detail", detailJson);
+            return result;
+        }
+
+        private static void AddSerialized(JObject target, string name, string json)
+        {
+            if (!string.IsNullOrEmpty(json)) target[name] = JToken.Parse(json);
+        }
+
+        private static void WriteDurableFile(string path, byte[] bytes)
+        {
+            using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush(true);
+            }
+        }
+
+        internal static string Sha256(byte[] bytes)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(bytes);
+                var text = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash) text.Append(b.ToString("x2", CultureInfo.InvariantCulture));
+                return text.ToString();
             }
         }
 
@@ -350,7 +515,20 @@ namespace Horizun.Revit.Core
         private void Append(string line)
         {
             if (string.IsNullOrEmpty(Path)) return;
-            try { _sink.Append(Path, line); }
+            try
+            {
+                // A transient append failure followed by a successful finish used to
+                // produce a clean-looking terminal record with a hole in it. Publish the
+                // sticky fault before any later event. If even the marker cannot land,
+                // do not append a misleading finish line after it.
+                if (WriteFault != null && !_faultPublished)
+                {
+                    _sink.Append(Path, "{\"event\":\"record_fault\",\"error\":" + Str(WriteFault) +
+                                      ",\"at\":" + Now() + "}");
+                    _faultPublished = true;
+                }
+                _sink.Append(Path, line);
+            }
             catch (Exception ex)
             {
                 // NOT swallowed, and NOT thrown either. Throwing here would replace the

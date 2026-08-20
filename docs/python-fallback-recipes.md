@@ -6,10 +6,33 @@ the server instructions: **typed first, Python as the fallback — never "not
 supported"**.
 
 The engine is IronPython 3 with the standard library bundled (`json`, `re`,
-`csv`, `datetime`, `math`). `doc`, `uidoc`, `uiapp` and `app` are injected;
-`checkpoint(label, done, total)` is available without import for long runs.
-Element ids are 64-bit in Revit 2024+: wrap `ElementId.Value` in `int()` before
-serializing.
+`csv`, `datetime`, `math`). Element ids are 64-bit in Revit 2024+: wrap
+`ElementId.Value` in `int()` before serializing.
+
+**What is in scope, without importing anything:**
+
+| Name | Is | Notes |
+|---|---|---|
+| `doc` | `Document` | The document `target_document` named, re-checked against the active one |
+| `uidoc` | `UIDocument` | |
+| `uiapp`, `__revit__` | `UIApplication` | `__revit__` is pyRevit's name for it, aliased so it resolves |
+| `app` | `Application` | Same object as `doc.Application` |
+| `checkpoint(label, done, total)` | | Reaches the disk immediately; readable from outside via `horizun_job_status` |
+| `revit_raised(since=0)` | | What Revit raised so far — see §6 |
+| `dialog_answer(answer)` | | Scoped modal answer — see §6 |
+
+**The source can be a file.** Send `code_path` instead of `code` for anything
+long: it is read on the machine running Revit, as UTF-8 (a BOM or a
+`# -*- coding: -*-` line is honoured), CRLF normalised, and measured and hashed
+exactly like inline code. It also makes tracebacks name the real file and line
+instead of `<string>`. Exactly one of the two, and a file that does not decode is
+refused naming the byte and the offset — never decoded leniently into a script
+nobody wrote.
+
+One thing to know about it: **idempotency is bound to the request, and the request
+names the path, not the bytes.** Re-sending the same `idempotency_key` after
+editing the file replays the original answer and runs nothing. That is
+at-most-once working; a changed script is new work and needs a new key.
 
 ## 1. When to reach for a recipe
 
@@ -350,3 +373,56 @@ evidence.append({"id": eid, "expected": "checked-by-fallback", "actual": actual,
 - Assume rollback. There is **no automatic rollback** for Python: what your
   script committed stays committed even when a later line throws. The
   `TransactionGroup` pattern in §3 is how you make "all or nothing" true.
+
+## 6. Opening models in a batch, and the dialog that stops one
+
+The bridge **cancels** every modal dialog Revit raises during a script, because
+nobody is at the keyboard. That is right, and it has a cost: all Revit tells your
+script is
+
+```
+Opening was canceled.
+```
+
+which is not a diagnosis. Three models were reported unauditable with no cause on
+2026-08-13, and four the month before, for exactly this.
+
+**Read the record.** `revit_raised(since=0)` returns what Revit has raised so far
+during this script — dialogs, warnings and errors, each with `kind`,
+`description`, `answered`, `elements` and `while`. Bookmark before the call and
+ask again after it, and you get exactly what that call raised:
+
+```python
+checkpoint(name)                    # `while` on anything raised from here on
+before = len(revit_raised())
+try:
+    opened = app.OpenDocumentFile(ModelPathUtils.ConvertUserVisiblePathToModelPath(path), opts)
+except Exception as ex:
+    reason = str(ex)
+    raised = revit_raised(before)   # the dialogs THIS open raised
+    row["failed_because"] = raised[0]["description"] if raised else reason
+```
+
+The same records come back on the reply as `dialogs` and `failures`, beside
+`__output__`, with `revit_raised_observed` — **an empty list from a run nobody
+watched is not a quiet run**, and the reply says which it was.
+
+`while` is the script's own last `checkpoint()` label at that instant. The bridge
+cannot see which API call was in flight and does not pretend to, so checkpoint per
+model if you want every dialog attributed to one.
+
+**Letting an open continue.** Some models raise a dialog whose only sensible
+unattended answer is "acknowledge and continue". Around that one call:
+
+```python
+with dialog_answer('dismiss'):
+    opened = app.OpenDocumentFile(model_path, opts)
+```
+
+Scoped deliberately, and never as a run-wide switch: `dismiss` answers OK to
+*everything*, and Revit reads OK on a close-with-changes dialog as **Save** — a
+read-only audit could write to every model it touched. Outside the block, dialogs
+cancel as before.
+
+And a model that will not open unattended is still a **finding**. `dismiss` makes
+it measurable; it does not make it fine.

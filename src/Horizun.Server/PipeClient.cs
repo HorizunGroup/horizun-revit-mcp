@@ -104,6 +104,25 @@ namespace Horizun.Server
         /// </summary>
         internal static Func<int, bool> LivenessProbe { get; set; }
 
+        /// <summary>
+        /// Legacy discovery files predate the shared contract hash. Reads may retain
+        /// best-effort compatibility; writes and session/external effects may not. An old
+        /// add-in can share a command name while silently ignoring a safety argument that
+        /// did not exist when it was built, so unknown compatibility must fail closed at
+        /// the mutation boundary.
+        /// </summary>
+        internal static string LegacyContractRefusal(Discovered discovered, ToolDef tool)
+        {
+            if (discovered == null || tool == null) return null;
+            bool contractKnown = !string.IsNullOrWhiteSpace(discovered.ContractHash) &&
+                                 discovered.ProtocolVersion != 0;
+            if (contractKnown || tool.Effect == Horizun.Contracts.ToolEffect.ReadOnly) return null;
+
+            return "The selected Revit add-in published no contract hash/protocol version, so this server cannot " +
+                   "prove that it understands the safety arguments of '" + tool.Name + "'. The tool is not read-only; " +
+                   "nothing was sent. Update/redeploy the add-in. Read-only diagnostics remain available on legacy builds.";
+        }
+
         private static string DiscoveryDir()
             => DirectoryOverride ?? Horizun.Revit.Core.HorizunPaths.DiscoveryDir();
 

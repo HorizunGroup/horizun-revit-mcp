@@ -179,6 +179,112 @@ namespace Horizun.Server.Tests
             Assert.Contains("RolledBack", text, StringComparison.Ordinal);
             // A pre-group refusal must be explicitly rejected as "not rollback tested".
             Assert.Contains("proves validation, not", text, StringComparison.Ordinal);
+
+            // Both actions must be valid during rehearsal. The failure is created only
+            // by their execution order: delete the real pipe, then try to pin that same
+            // id. An intrinsically invalid change_type merely retests rehearsal refusal.
+            Assert.Contains("key='delete'; tool='horizun_delete_verified'", text, StringComparison.Ordinal);
+            Assert.Contains("operation='pin'; element_ids=@($pipeA)", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("type_id=$levelId", text, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Dialog_probe_reads_structured_content_before_trying_to_parse_human_text()
+        {
+            string text = Script();
+            int probe = text.IndexOf("a dialog raised mid-script is named", StringComparison.Ordinal);
+            int useStructured = text.IndexOf("UseStructured = $true", probe, StringComparison.Ordinal);
+            int branch = text.IndexOf("A probe about structuredContent gets structuredContent BEFORE", useStructured,
+                                      StringComparison.Ordinal);
+            int textParse = text.IndexOf("try { $data = $text | ConvertFrom-Json }", branch,
+                                         StringComparison.Ordinal);
+
+            Assert.True(probe >= 0 && useStructured > probe,
+                "the mid-script dialog probe must opt into structuredContent");
+            Assert.True(branch > useStructured && textParse > branch,
+                "UseStructured must branch before content.text parsing; dialog narration makes that text non-JSON");
+        }
+
+        [Fact]
+        public void Closed_workset_probes_are_bracketed_by_verified_document_activation()
+        {
+            string text = Script();
+            int activate = text.IndexOf("$probes += @{ Name = $activateClosedName", StringComparison.Ordinal);
+            int scan = text.IndexOf("a CLOSED workset makes model_scan", StringComparison.Ordinal);
+            int restore = text.IndexOf("$probes += @{ Name = $restoreDocumentName", StringComparison.Ordinal);
+            int cleanup = text.IndexOf("close the closed-workset fixture opened by this harness without saving",
+                                       restore, StringComparison.Ordinal);
+
+            Assert.True(activate >= 0 && scan > activate && restore > scan,
+                "closed-workset probes must run only between activation and restoration");
+            Assert.True(cleanup > restore,
+                "cleanup must run after restoration was attempted, including when that attempt failed");
+            Assert.Contains("$ClosedWorksetActivationReady", text, StringComparison.Ordinal);
+            Assert.Contains("close_workset_names = @($ClosedWorksetName)", text, StringComparison.Ordinal);
+            Assert.Contains("Copy-Item -LiteralPath $closedMatches[0].path", text, StringComparison.Ordinal);
+            Assert.Contains("HZ_CLOSED_{0}.rvt", text, StringComparison.Ordinal);
+            Assert.Contains("$closedInspect.file.is_central -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("$activateClosed.Args.detach = $true", text, StringComparison.Ordinal);
+            Assert.Contains("$activateClosed.Args.file_path = $closedPath", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("$restoreOriginal.Args.file_path = $returnMatches[0].path", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("$d.active_document_verified -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("$d.workset_configuration_applied -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("$d.workset_configuration_evidence.applied -eq $true", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("$d.opened_now -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("close the closed-workset fixture opened by this harness without saving", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("activate_other = $true", text, StringComparison.Ordinal);
+            Assert.Contains("$d.saved_on_close -eq $false", text, StringComparison.Ordinal);
+            string cleanupBlock = text.Substring(cleanup, Math.Min(1100, text.Length - cleanup));
+            Assert.Contains("Needs = 'ClosedWorksetCleanupTarget'", cleanupBlock, StringComparison.Ordinal);
+            Assert.DoesNotContain("ErrorIsAlsoPass", cleanupBlock, StringComparison.Ordinal);
+            Assert.Contains("structuredContent", text, StringComparison.Ordinal);
+            Assert.Contains("opened -eq $true", text, StringComparison.Ordinal);
+            Assert.Contains("horizun_health", text, StringComparison.Ordinal);
+            Assert.Contains("$cleanupHealth.note -notmatch 'INCOMPLETE'", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("-not $activationReportedOpened", text, StringComparison.Ordinal);
+            Assert.Contains("$cleanupDryArgs.dry_run = $true", text, StringComparison.Ordinal);
+            Assert.Contains("$cleanupDry.would_discard_unsaved", text, StringComparison.Ordinal);
+            Assert.Contains("$p.Args.discard_unsaved = $true", text, StringComparison.Ordinal);
+            Assert.Contains("$p.Args.confirmation_token = [string]$cleanupDry.confirmation_token", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("$p.Args.save_on_close = $false", text, StringComparison.Ordinal);
+            Assert.Contains("$d.discarded_unsaved_changes -eq [bool]$closedCleanupExpectedDiscard", text,
+                            StringComparison.Ordinal);
+            Assert.DoesNotContain("close_workset_names = @('HZ_WS_CLOSED')", text, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Disabled_python_probes_are_not_reported_as_passed()
+        {
+            string text = Script();
+
+            Assert.DoesNotContain("ErrorIsAlsoPass = 'DISABLED|requires BOTH'", text,
+                                  StringComparison.Ordinal);
+            Assert.DoesNotContain("$p.ErrorIsAlsoPass", text, StringComparison.Ordinal);
+            Assert.Contains("ErrorIsNotCovered = 'DISABLED|requires BOTH'", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("Note-NotCovered $p.Name 'the capability was switched off", text,
+                            StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Delete_preview_tests_unresolved_and_real_target_semantics_separately()
+        {
+            string text = Script();
+
+            Assert.Contains("delete dry run with no resolvable target withholds confirmation", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("-not $d.confirmation_token", text, StringComparison.Ordinal);
+            Assert.Contains("delete dry run issues a confirmation token for a real target", text,
+                            StringComparison.Ordinal);
+            Assert.Contains("ids = @($pipeA)", text, StringComparison.Ordinal);
+            Assert.Contains("$deleteDry.data.application.state -eq 'rehearsed'", text,
+                            StringComparison.Ordinal);
         }
     }
 }

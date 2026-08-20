@@ -29,6 +29,9 @@ args = []
 [mcp_servers.horizun-revit.env]
 SAMPLE = "one"
 
+[[profiles]]
+name = "array-table-must-survive"
+
 [mcp_servers.keep-me]
 command = 'other.exe'
 args = ['x']
@@ -43,7 +46,10 @@ args = ['x']
 
     $codex = Get-Content (Join-Path $root '.codex\config.toml') -Raw
     if ($codex -match '\[mcp_servers\.horizun-revit(?:\]|\.)') { throw 'Codex target or nested target table remained' }
-    if ($codex -notmatch '\[mcp_servers\.keep-me\]' -or $codex -notmatch 'model\s*=\s*"gpt-test"') { throw 'Codex unrelated data changed' }
+    if ($codex -notmatch '\[mcp_servers\.keep-me\]' -or $codex -notmatch 'model\s*=\s*"gpt-test"' -or
+        $codex -notmatch '\[\[profiles\]\]' -or $codex -notmatch 'array-table-must-survive') {
+        throw 'Codex unrelated data changed, including a valid array-of-tables section'
+    }
     Write-Host '[PASS] targeted client removal preserves every unrelated JSON/TOML entry' -ForegroundColor Green
 }
 finally {

@@ -37,6 +37,18 @@ namespace Horizun.Revit.Commands
             if (!Settings.IsToolAllowed(contract, out permissionReason))
                 return CommandResult.Fail(permissionReason + " Nothing was queued.");
 
+            DateTimeOffset? retainUntilUtc = null;
+            JToken retainToken = request["retain_until_utc"];
+            if (retainToken != null && retainToken.Type != JTokenType.Null)
+            {
+                DateTimeOffset parsed;
+                if (!TryInstant(retainToken, out parsed) ||
+                    parsed <= DateTimeOffset.UtcNow ||
+                    parsed > DateTimeOffset.UtcNow.Add(Job.MaxRetentionLease).AddMinutes(1))
+                    return CommandResult.Fail("retain_until_utc must be a future UTC instant no more than seven days away. Nothing was queued.");
+                retainUntilUtc = parsed.ToUniversalTime();
+            }
+
             // The wrapper's durable idempotency claim is established by Dispatcher before
             // this method runs. The child does not need a second key; retaining one would
             // create two unrelated retry identities for one operation.
@@ -48,7 +60,7 @@ namespace Horizun.Revit.Commands
             // and a job_id that addressed nothing.
             Job job;
             string admissionRefusal;
-            if (!AsyncJobAdmission.TryOpen(tool, out job, out admissionRefusal))
+            if (!AsyncJobAdmission.TryOpenProtected(tool, retainUntilUtc, out job, out admissionRefusal))
                 return CommandResult.Fail(admissionRefusal);
 
             string refusal;
@@ -71,6 +83,25 @@ namespace Horizun.Revit.Commands
                 ["executed"] = false, ["poll_with"] = "horizun_job_status with job_id=" + job.Id,
                 ["note"] = "The command has not run yet. Its result, failure, warnings and terminal state will be written to this job record."
             });
+        }
+
+        private static bool TryInstant(JToken token, out DateTimeOffset parsed)
+        {
+            parsed = default(DateTimeOffset);
+            if (token?.Type == JTokenType.Date && token is JValue value)
+            {
+                if (value.Value is DateTimeOffset dto) { parsed = dto.ToUniversalTime(); return true; }
+                if (value.Value is DateTime dt)
+                {
+                    if (dt.Kind == DateTimeKind.Unspecified) dt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+                    parsed = new DateTimeOffset(dt).ToUniversalTime();
+                    return true;
+                }
+            }
+            return token?.Type == JTokenType.String && DateTimeOffset.TryParse((string)token,
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.AssumeUniversal |
+                System.Globalization.DateTimeStyles.AdjustToUniversal, out parsed);
         }
     }
 }

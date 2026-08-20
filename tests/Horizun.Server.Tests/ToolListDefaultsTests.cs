@@ -6,10 +6,9 @@
 // wrong here would still leave the client without the tool - and a client that
 // never saw a tool never calls it, whatever the add-in would have allowed.
 //
-// The product decision under test: with no settings.json at all, the full
-// surface INCLUDING horizun_execute_python is advertised, because Python is the
-// execution fallback. And the reverse, equally load-bearing: an explicit off
-// still removes it from the list.
+// The product decision under test: with no settings.json, only the safe_write
+// surface is advertised. Arbitrary code, document sessions and external writes
+// require explicit owner elevation.
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
@@ -26,25 +25,24 @@ namespace Horizun.Server.Tests
             Tools.List().Any(t => (string)t["name"] == tool);
 
         [Fact]
-        public void A_fresh_install_advertises_execute_python()
+        public void A_fresh_install_does_not_advertise_execute_python()
         {
             WithDataRoot(null, () =>
             {
-                Assert.True(Advertised("horizun_execute_python"),
-                    "with no settings.json, execute_python must appear in tools/list - it is the fallback a " +
-                    "client is expected to reach for, and an unadvertised tool is an unreachable one.");
-                Assert.Null(Tools.DisabledReason("horizun_execute_python"));
+                Assert.False(Advertised("horizun_execute_python"));
+                Assert.NotNull(Tools.DisabledReason("horizun_execute_python"));
             });
         }
 
         [Fact]
-        public void A_fresh_install_advertises_the_full_write_and_session_surface_too()
+        public void A_fresh_install_advertises_only_safe_write_surface()
         {
             WithDataRoot(null, () =>
             {
-                Assert.True(Advertised("horizun_export"));
-                Assert.True(Advertised("horizun_save_document"));
-                Assert.True(Advertised("horizun_create_family"));
+                Assert.False(Advertised("horizun_export"));
+                Assert.False(Advertised("horizun_save_document"));
+                Assert.False(Advertised("horizun_create_family"));
+                Assert.True(Advertised("horizun_execute_plan"));
             });
         }
 

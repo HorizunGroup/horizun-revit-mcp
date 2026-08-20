@@ -41,11 +41,92 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
 {
+    /// <summary>
+    /// Runs one host-resident handler under the same bounded-request contract as the
+    /// Revit pipe. Cancellation is checked before the handler is scheduled, propagated
+    /// into cooperative I/O, and the caller is released at the deadline even when an OS
+    /// filesystem call cannot be interrupted.
+    /// </summary>
+    internal static class HostCallRunner
+    {
+        // A timed-out Task does not stop merely because its caller received a reply.
+        // File/network APIs can ignore cancellation indefinitely, so admission must be
+        // tied to the Task's lifetime, not to Program._inFlight (which correctly releases
+        // the JSON-RPC request after answering). Otherwise a stream of deadlines creates
+        // an unbounded stream of still-running ThreadPool work behind those answers.
+        internal const int MaxOutstandingTasks = 8;
+        private static readonly SemaphoreSlim Slots = new SemaphoreSlim(MaxOutstandingTasks, MaxOutstandingTasks);
+        private static int _outstandingTasks;
+
+        internal static int OutstandingTaskCount => Volatile.Read(ref _outstandingTasks);
+
+        public static JObject Run(string tool, Func<CancellationToken, JObject> action,
+                                  CancellationToken cancellationToken, int timeoutMs)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            if (timeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!Slots.Wait(0))
+                throw new ToolRefusal(
+                    "Host-resident work is at capacity (" + MaxOutstandingTasks + " tasks). Earlier handlers " +
+                    "have passed their response deadlines but have not returned from operating-system calls, so " +
+                    "their leases remain held until those Tasks actually terminate. Nothing new was started.");
+
+            Interlocked.Increment(ref _outstandingTasks);
+
+            var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Task<JObject> task;
+            try
+            {
+                task = Task.Run(() => action(stop.Token), stop.Token);
+            }
+            catch
+            {
+                stop.Dispose();
+                Interlocked.Decrement(ref _outstandingTasks);
+                Slots.Release();
+                throw;
+            }
+
+            // This is the lease release point for EVERY path, including a caller that
+            // timed out minutes ago. ExecuteSynchronously avoids a completed fast call
+            // appearing to occupy a slot until the ThreadPool happens to run a cleanup.
+            task.ContinueWith(t =>
+            {
+                var ignored = t.Exception;
+                stop.Dispose();
+                Interlocked.Decrement(ref _outstandingTasks);
+                Slots.Release();
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+            int waited = WaitHandle.WaitAny(
+                new[] { ((IAsyncResult)task).AsyncWaitHandle, cancellationToken.WaitHandle }, timeoutMs);
+
+            if (waited == 0)
+                return task.GetAwaiter().GetResult();
+
+            stop.Cancel();
+
+            if (waited == 1)
+                throw new OperationCanceledException(
+                    "Host-resident tool '" + tool + "' was cancelled. Cooperative work was stopped; an " +
+                    "operating-system file call already in progress may take longer to return, so inspect any " +
+                    "external destination before retrying.", cancellationToken);
+
+            throw new TimeoutException(
+                "Host-resident tool '" + tool + "' exceeded its " + timeoutMs + " ms deadline. Its cancellation " +
+                "token was signalled. An operating-system file call already in progress may take longer to " +
+                "return; inspect any external destination before retrying.");
+        }
+    }
+
     /// <summary>
     /// The only thing allowed to write to the client. It serialises messages, and that
     /// is ALL it does: one lock, one complete line at a time, never a torn one.
@@ -233,6 +314,7 @@ namespace Horizun.Server
     /// </summary>
     internal sealed class InFlight
     {
+        public const int DefaultCapacity = 64;
         private sealed class Entry
         {
             public CancellationTokenSource Cts;
@@ -248,6 +330,13 @@ namespace Horizun.Server
 
         private readonly Dictionary<string, Entry> _running = new Dictionary<string, Entry>(StringComparer.Ordinal);
         private readonly object _lock = new object();
+        private readonly int _capacity;
+
+        public InFlight(int capacity = DefaultCapacity)
+        {
+            if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity));
+            _capacity = capacity;
+        }
 
         public int Count { get { lock (_lock) return _running.Count; } }
 
@@ -275,6 +364,13 @@ namespace Horizun.Server
                               " s under this same id. Ids must be unique while they are outstanding - starting the " +
                               "work again would produce two results for one id and one of them would be dropped. " +
                               "Nothing was started.";
+                    return false;
+                }
+                if (_running.Count >= _capacity)
+                {
+                    refusal = "The MCP server already has " + _running.Count + " tool calls in flight (limit " +
+                              _capacity + "). Nothing was started. Wait for outstanding calls instead of retrying: " +
+                              "the Revit-side FIFO cannot protect this process until a request reaches it.";
                     return false;
                 }
                 DateTime now = DateTime.UtcNow;

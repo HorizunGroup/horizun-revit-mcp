@@ -27,6 +27,36 @@ namespace Horizun.Server
         public McpSessionPhase Phase => _phase;
 
         /// <summary>
+        /// Read the mandatory JSON-RPC method. Missing and wrong-shaped methods are both
+        /// invalid requests; a request with an id must always receive -32600 rather than
+        /// disappearing after its id has already been reserved.
+        /// </summary>
+        public bool TryReadMethod(JObject message, out string method, out string error)
+        {
+            method = null;
+            error = null;
+            JProperty property = message?.Property("method");
+            if (property == null)
+            {
+                error = "Invalid request: required field 'method' is missing. Nothing was done.";
+                return false;
+            }
+            if (property.Value == null || property.Value.Type != JTokenType.String)
+            {
+                error = "Invalid request: 'method' must be a string. Nothing was done.";
+                return false;
+            }
+            method = (string)property.Value;
+            if (string.IsNullOrEmpty(method))
+            {
+                error = "Invalid request: 'method' cannot be empty. Nothing was done.";
+                method = null;
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>
         /// Read and reserve a request id. An absent id means notification; an explicit
         /// null does not. MCP narrows JSON-RPC ids to string or integer and forbids a
         /// requestor from reusing one anywhere in the same session, even after the first

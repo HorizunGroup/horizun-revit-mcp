@@ -9,6 +9,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
@@ -27,7 +28,7 @@ namespace Horizun.Server
         // A host-resident tool answers inside the server and never touches Revit. When Host
         // is non-null the server invokes it locally and does NOT forward to the plugin; when
         // it is null the tool forwards to Command over the pipe, exactly as before.
-        public Func<JObject, JObject> Host;
+        public Func<JObject, CancellationToken, JObject> Host;
     }
 
     internal static class Tools
@@ -38,14 +39,14 @@ namespace Horizun.Server
         // description updated on one side only. Neither drift was detectable, because
         // the copies never met. Now there is one copy and this binds the server-only
         // half to it: which host function answers a tool that never reaches Revit.
-        private static readonly Dictionary<string, Func<JObject, JObject>> Hosts =
-            new Dictionary<string, Func<JObject, JObject>>(StringComparer.Ordinal)
+        private static readonly Dictionary<string, Func<JObject, CancellationToken, JObject>> Hosts =
+            new Dictionary<string, Func<JObject, CancellationToken, JObject>>(StringComparer.Ordinal)
             {
-                { "horizun_job_status",       JobStatus.Handle },
-                { "horizun_catalog_lookup",   CatalogLookup.Handle },
-                { "horizun_excel_write_rows", ExcelWriteRows.Handle },
-                { "horizun_power_bi_push",    PowerBiPush.Handle },
-                { "horizun_target",           Targets.Handle }
+                { "horizun_job_status",       (a, ct) => JobStatus.Handle(a, ct) },
+                { "horizun_catalog_lookup",   (a, ct) => CatalogLookup.Handle(a, ct) },
+                { "horizun_excel_write_rows", (a, ct) => ExcelWriteRows.Handle(a, ct) },
+                { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
+                { "horizun_target",           (a, ct) => { ct.ThrowIfCancellationRequested(); return Targets.Handle(a); } }
             };
 
         private static readonly List<ToolDef> All = Build();
@@ -55,7 +56,7 @@ namespace Horizun.Server
             var list = new List<ToolDef>();
             foreach (Horizun.Contracts.CommandContract c in Horizun.Contracts.Contract.All)
             {
-                Func<JObject, JObject> host;
+                Func<JObject, CancellationToken, JObject> host;
                 Hosts.TryGetValue(c.Name, out host);
 
                 // A contract with no plugin command and no host function would be a tool
@@ -93,39 +94,32 @@ namespace Horizun.Server
             return Horizun.Revit.Core.Settings.IsToolAllowed(contract, out reason);
         }
 
-        public static JArray List()
+        public static JArray List(bool advertiseTaskSupport = false)
         {
             var arr = new JArray();
             foreach (var t in All)
             {
                 if (!IsEnabled(t)) continue;
-                arr.Add(new JObject
+                var published = new JObject
                 {
                     ["name"] = t.Name,
                     ["title"] = Title(t.Name),
-                    ["description"] = t.Description,
+                    ["description"] = CompactDescription(t.Description),
                     ["inputSchema"] = t.InputSchema,
                     ["outputSchema"] = t.OutputSchema,
                     ["annotations"] = Annotations(t)
 
-                    // NO execution/taskSupport BLOCK, deliberately.
-                    //
-                    // It used to be emitted here, derived from whether a tool forwards to
-                    // Revit. The derivation was sound and the field was still wrong to
-                    // send: execution.taskSupport belongs to MCP Tasks (2025-11-25), and
-                    // this server implements no tasks/* method and declares no "tasks"
-                    // capability - initialize returns capabilities {"tools":{}}. So the
-                    // hint invited a client to call tasks/create and get "method not
-                    // found" for work it believed it had submitted.
-                    //
-                    // The long-running path is real, it is just not MCP's:
-                    // horizun_submit_job returns a job_id immediately and
-                    // horizun_job_status reads the durable record WITHOUT touching Revit,
-                    // which is what lets it answer while the UI thread is busy. That is a
-                    // Horizun extension and is documented as one. If tasks/* is ever
-                    // implemented and proved against the spec, this field comes back
-                    // together with the capability and the methods - not before.
-                });
+                    // execution/taskSupport is added below only for a negotiated
+                    // 2025-11-25 session. Down-level clients never see the field. The
+                    // optional/forbidden decision is the same rule the durable submit
+                    // queue enforces, through McpTasks.Supports.
+                };
+                if (advertiseTaskSupport)
+                    published["execution"] = new JObject
+                    {
+                        ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
+                    };
+                arr.Add(published);
             }
             return arr;
         }
@@ -139,12 +133,22 @@ namespace Horizun.Server
             return string.Join(" ", words);
         }
 
-        // TaskSupport(ToolDef) lived here and derived "optional"/"forbidden" for the MCP
-        // execution hint. It is gone with the field it fed - see List(). Deleted rather
-        // than left unused: a private helper nobody calls is the seed of the field
-        // reappearing without the capability and the methods that would make it true.
-        // The rule it encoded (submit_job takes exactly the tools that forward to Revit)
-        // is still asserted, against the contract, in TaskSupportTests.
+        internal static string CompactDescription(string description)
+        {
+            const int max = 900;
+            const string suffix = " Full installed contract: horizun://contract/tools";
+            if (string.IsNullOrWhiteSpace(description)) return suffix.Trim();
+            string normalized = description.Replace("\r", " ").Replace("\n", " ").Trim();
+            if (normalized.Length + suffix.Length <= max) return normalized + suffix;
+            int limit = max - suffix.Length;
+            int cut = normalized.LastIndexOf(". ", limit, StringComparison.Ordinal);
+            if (cut < Math.Min(160, limit / 2)) cut = limit;
+            else cut += 1;
+            return normalized.Substring(0, cut).TrimEnd() + "…" + suffix;
+        }
+
+        // The task-support rule lives in McpTasks.Supports so the advertised hint and
+        // actual task admission cannot drift.
 
         private static JObject Annotations(ToolDef t)
         {

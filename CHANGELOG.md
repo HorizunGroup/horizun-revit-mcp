@@ -22,8 +22,9 @@ assumed. Dates are the day the work landed.
   installed result rather than Setup's exit code alone, registers Claude at user
   scope, preserves unrelated client configuration on removal, and produces an exact
   CycloneDX 1.6 inventory. Stable publication now requires clean artifacts and live
-  reports for Revit 2023–2027. `horizun_execute_python` remains enabled by default;
-  its evidence remains self-reported and `host_verified` remains false.
+  reports for Revit 2023–2027. `horizun_execute_python` is now disabled by default,
+  with an expiring Revit ribbon grant; its evidence remains self-reported and
+  `host_verified` remains false.
 
 - **One effective version, not merely one version file.** Server, add-in, installer,
   registry metadata and SBOM now inherit `0.9.0` from the repository root. The
@@ -38,6 +39,66 @@ assumed. Dates are the day the work landed.
   interior shell layers: Revit reports core layers as participating but rejects the
   wrapping setter on those same layers, so a core layer is treated as effectively
   non-wrapping and `wraps=true` there is refused before a transaction starts.
+
+- **`execute_python` devuelve los diálogos que Revit levantó, y el script puede leerlos
+  MIENTRAS corre (5.25).** El bridge cancela los diálogos modales —correcto: no hay nadie
+  al teclado— y lo único que le llegaba al script era el `Opening was canceled.` de Revit.
+  Medido: 3 modelos sin auditar y sin causa el 2026-08-13, después de 4 el 2026-08-07. La
+  captura existía desde siempre; el registro no viajaba hasta quien lo necesitaba. Ahora la
+  respuesta trae `dialogs` y `failures` junto a `__output__` (y como `detail` estructurado
+  cuando el script falla), más `revit_raised_observed`: una corrida que nadie vigiló no puede
+  leerse como una corrida tranquila. Pero la respuesta llega tarde para un lote —el script
+  escribe su veredicto por modelo DURANTE la corrida—, así que `revit_raised(since)` lee el
+  mismo registro desde DENTRO: `len(revit_raised())` antes de abrir, ese mismo número después,
+  y lo que vuelve es exactamente lo que levantó ESA apertura. Cada registro trae `while`, que
+  es el último `checkpoint()` del propio script: la forma honesta del campo que pedía el
+  reporte, porque el bridge no puede ver qué llamada estaba en vuelo y lo dice. El extra
+  opcional llegó ACOTADO, no como interruptor de script entero: `with dialog_answer('dismiss'):`
+  alrededor de UNA llamada — un dismiss global responde OK a todo, y Revit lee OK en el diálogo
+  de cerrar-con-cambios como GUARDAR, así que una auditoría de solo lectura podría haber
+  escrito en 250 modelos. (La forma del registro vive en `RaisedRecord`, libre de Revit y con
+  tests: la ventana `since` y la distinción observado/tranquilo. El prelude es Python y ahora
+  vive en `ScriptPrelude.cs`, donde un motor IronPython real lo parsea en los tests — encontró
+  un bug de verdad: Python MANGLEA un nombre con doble guion bajo referenciado dentro de una
+  clase, y `dialog_answer` habría fallado en cada uso.)
+
+- **`horizun_file_info` devuelve la FIRMA de los 8 primeros bytes cuando el header no se
+  deja leer (5.26).** El mensaje de Revit para ese caso ofrece dos causas y las dos hablan de
+  archivos de Revit, así que un ZIP renombrado `.rvt` se lee como "un formato más nuevo".
+  Costó dos diagnósticos falsos seguidos sobre los mismos dos archivos: "es un Revit más
+  nuevo" (escrito en la documentación de un cliente el 2026-08-07 y creído seis días) y luego
+  "la descarga se corrompió" (se volvió a bajar y llegó byte por byte idéntica, 337.648.956
+  bytes, coincidiendo con el `storageSize` de la API de la nube). La respuesta apareció al
+  leer ocho bytes a mano: `50 4b 03 04`. Ahora vienen en `signature`, con `signature_means` en
+  lenguaje llano y `is_revit_container`; el resumen cuenta `not_revit_files`. `d0cf11e0a1b11ae1`
+  es el contenedor OLE de un `.rvt` de verdad —el único caso donde la historia de la versión
+  vale— y `504b0304` es un ZIP, que no es un modelo. Cualquier otra firma vuelve en hexadecimal
+  y NO se interpreta. No es un caso aislado: un barrido de 3.252 archivos encontró 1.193 así en
+  40 proyectos. (Regla en `FileSignature`, libre de Revit y con tests, incluyendo lo que debe
+  negarse a decir.)
+
+- **`execute_python` acepta `code_path`: un `.py` en la máquina, no solo una cadena (5.27).**
+  Un driver de 535 líneas / 26 KB tenía que llegar como un stub que leyera y compilara su
+  propio archivo: tres intentos, dos perdidos en errores de IronPython que no le enseñan nada a
+  nadie (`'charmap' codec can't decode byte 0x8f in position 2634`, porque `open()` usa cp1252
+  y el driver lleva tildes; después `TypeError: expected IList[Byte], got str`). Exactamente uno
+  de `code` / `code_path`, y el handler es la puerta que dice cuál de los dos errores se cometió.
+  El archivo se lee del lado del HOST, así que no evade nada: el límite de 200.000 caracteres,
+  `submitted_source_sha256` y la huella de idempotencia miden los bytes leídos, y `run_async` lo
+  lee UNA vez, al encolar (una corrida diferida debe ejecutar el script del que se tomó su
+  huella, no lo que haya en esa ruta veinte minutos después). El decode respeta BOM, luego una
+  línea PEP-263 `# coding:`, luego UTF-8 ESTRICTO — un archivo que no decodifica se RECHAZA
+  nombrando el byte y el offset, porque un decode indulgente compila y después corre un script
+  que nadie escribió. Y el motor recibe la fuente CON NOMBRE, así que los tracebacks dicen
+  `hz_driver.py:214` y no `<string>`. (Regla en `PythonSourceText`, libre de Revit y con tests.)
+
+- **`__revit__` existe en el ámbito del script (5.28).** El reporte pedía exponer `app`; `app`
+  (el `Application`) y `uiapp` (el `UIApplication`) ya estaban inyectados, siempre lo estuvieron.
+  El hueco real es el que nombraba el propio error y nadie leyó como hueco: `__revit__` —como lo
+  llaman pyRevit y RevitPythonShell— no existía, así que lo primero que escribe quien viene de
+  cualquiera de los dos responde `NameError`, que se lee como que el bridge no tiene objeto de
+  aplicación. Ahora es alias de `uiapp`, y la descripción nombra cada variable inyectada y QUÉ es
+  cada una.
 
 - **Nuevo comando tipado `horizun_acc_upload_status` — ¿subido a ACC o pendiente? (5.15).**
   Copiar a la carpeta del Desktop Connector y hashear la copia prueba la CACHÉ LOCAL,

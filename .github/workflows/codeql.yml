@@ -18,11 +18,20 @@ permissions:
 
 jobs:
   analyze:
+    # Only the public repository. The analysis itself runs anywhere, but
+    # publishing its SARIF needs code scanning enabled, and that is an
+    # Advanced Security feature the private mirrors do not have — so there
+    # every run reached the upload and died on "Code scanning is not enabled
+    # for this repository", turning a working analysis into a red check.
+    # Skipped, not failed, is the honest outcome on those mirrors.
+    if: github.repository == 'HorizunGroup/horizun-revit-mcp'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@988661ebb5e81487b3fb31b2185d2856c0a10679 # v4
         with:
           languages: csharp
           build-mode: none
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@988661ebb5e81487b3fb31b2185d2856c0a10679 # v4

@@ -133,7 +133,24 @@ namespace Horizun.Revit.Commands
             Log.Info("open_document CLOUD opened '" + opened.Title + "' (model " + plan.CloudModel + ")");
 
             Document nowActive = app.ActiveUIDocument != null ? app.ActiveUIDocument.Document : null;
-            bool confirmed = OpenGuard.SameDocument(nowActive, opened);
+            bool activeConfirmed = OpenGuard.SameDocument(nowActive, opened);
+            Guid actualProject;
+            Guid actualModel;
+            string cloudIdentityError;
+            bool cloudIdentityConfirmed = TryReadCloudIdentity(nowActive, out actualProject, out actualModel,
+                                                               out cloudIdentityError) &&
+                                          actualProject == plan.CloudProject && actualModel == plan.CloudModel;
+
+            if (!activeConfirmed || !cloudIdentityConfirmed)
+            {
+                return CommandResult.Fail(
+                    "A DOCUMENT WAS OPENED, but the requested cloud model is not proven active. " +
+                    "active_document_matches_returned=" + activeConfirmed +
+                    ", cloud_identity_matches_request=" + cloudIdentityConfirmed +
+                    (cloudIdentityError == null ? "" : ", cloud_identity_error=" + cloudIdentityError) +
+                    ". The opened document remains in this Revit session; do not run another command until " +
+                    "you identify or close it.");
+            }
 
             string centralPath = null;
             bool? isWorkshared = null, isInCloud = null;
@@ -150,11 +167,12 @@ namespace Horizun.Revit.Commands
             return CommandResult.Ok(new
             {
                 opened = true,
-                confirmed_active = confirmed,
+                confirmed_active = true,
                 source = "cloud",
                 cloud_region = plan.Region,
-                cloud_project_guid = plan.CloudProject.ToString(),
-                cloud_model_guid = plan.CloudModel.ToString(),
+                cloud_project_guid = actualProject.ToString(),
+                cloud_model_guid = actualModel.ToString(),
+                cloud_identity_matches_request = true,
                 active_document = nowActive == null ? null : nowActive.Title,
                 // A cloud document's PathName is not a file you can open again; it is not reported as one.
                 active_path = (string)null,
@@ -174,10 +192,7 @@ namespace Horizun.Revit.Commands
                 is_model_in_cloud = isInCloud,
                 central_path = centralPath,
                 central_guard = r.Detach ? "detached" : "open_central",
-                note = confirmed
-                    ? null
-                    : "Revit opened a document but it is NOT the active one. Do not run anything that assumes " +
-                      "the active document is the model you named."
+                note = (string)null
             });
         }
 
@@ -209,15 +224,27 @@ namespace Horizun.Revit.Commands
 
             // A detached model deliberately has no path that exists, so it is confirmed by
             // identity, not by path.
-            bool confirmed = OpenGuard.SameDocument(nowActive, opened);
-            bool pathMatches = !string.IsNullOrEmpty(activePath) &&
-                               string.Equals(Path.GetFullPath(activePath), Path.GetFullPath(path),
-                                             StringComparison.OrdinalIgnoreCase);
+            bool activeConfirmed = OpenGuard.SameDocument(nowActive, opened);
+            bool pathMatches = PathsEqual(activePath, path);
+            bool sourceConfirmed = r.Detach
+                ? activeConfirmed && TitleIdentifies(opened.Title, path)
+                : pathMatches;
+
+            if (!activeConfirmed || !sourceConfirmed)
+            {
+                return CommandResult.Fail(
+                    "A DOCUMENT WAS OPENED, but the requested file is not proven active. " +
+                    "active_document_matches_returned=" + activeConfirmed +
+                    ", source_matches_request=" + sourceConfirmed +
+                    ", active_path='" + (activePath ?? "(none)") + "', requested_path='" + path + "'. " +
+                    "The opened document remains in this Revit session; do not run another command until you " +
+                    "identify or close it.");
+            }
 
             return CommandResult.Ok(new
             {
                 opened = true,
-                confirmed_active = confirmed,
+                confirmed_active = true,
                 source = "local",
                 path_matches_request = r.Detach ? (bool?)null : pathMatches,
                 requested_path = path,
@@ -240,9 +267,53 @@ namespace Horizun.Revit.Commands
                     ? "This file was saved in Revit " + plan.FileVersion + " and has now been UPGRADED to " +
                       plan.HostVersion + ". That is permanent. Saving it writes the new version to disk; closing " +
                       "without saving leaves the file on disk as it was."
-                    : (confirmed ? null : "Revit opened a document but it is NOT the active one. Do not run " +
-                                          "anything that assumes the active document is the file you named.")
+                    : null
             });
+        }
+
+        private static bool PathsEqual(string left, string right)
+        {
+            if (string.IsNullOrWhiteSpace(left) || string.IsNullOrWhiteSpace(right)) return false;
+            try
+            {
+                return string.Equals(Path.GetFullPath(left), Path.GetFullPath(right),
+                                     StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
+
+        private static bool TitleIdentifies(string title, string requestedPath)
+        {
+            if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(requestedPath)) return false;
+            string expected;
+            try { expected = Path.GetFileNameWithoutExtension(requestedPath); }
+            catch { return false; }
+            return string.Equals(title, expected, StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(title, expected + "_detached", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryReadCloudIdentity(Document doc, out Guid project, out Guid model, out string error)
+        {
+            project = Guid.Empty;
+            model = Guid.Empty;
+            error = null;
+            try
+            {
+                ModelPath path = doc == null ? null : doc.GetCloudModelPath();
+                if (path == null)
+                {
+                    error = "GetCloudModelPath returned null";
+                    return false;
+                }
+                project = path.GetProjectGUID();
+                model = path.GetModelGUID();
+                return project != Guid.Empty && model != Guid.Empty;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
         }
     }
 }

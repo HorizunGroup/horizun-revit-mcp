@@ -109,6 +109,9 @@ namespace Horizun.Revit.Commands
                     ["note"] = "Nothing was created or changed. Aliases are resolved in action order."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // Invalid entries make this a partial rehearsal, not a clean one: the token
+                // below is already withheld for them, and a plan must read the same fact.
+                ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0
                         ? "the token binds the ordered dependency graph AND what every referenced id resolves to " +
@@ -179,13 +182,17 @@ namespace Horizun.Revit.Commands
             if (verified != applied.Count)
                 return CommandResult.Fail("The transaction committed, but only " + verified + " of " + applied.Count +
                     " actions passed post-commit verification. Inspect the model: " + rows.ToString(Formatting.None));
-            return CommandResult.Ok(new JObject
+            var mvResult = new JObject
             {
                 ["transaction_status"] = "Committed", ["transaction_name"] = txName,
                 ["actions_verified"] = verified,
                 ["aliases"] = new JObject(aliases.Select(kv => new JProperty(kv.Key, Rid.Value(kv.Value)))),
                 ["rows"] = rows
-            });
+            };
+            // Reached only when every applied action passed its post-commit check.
+            ApplicationOutcome.StampApplied(mvResult, ApplicationOutcome.Committed,
+                                            applied.Count, verified, verified, 0, 0, 0);
+            return CommandResult.Ok(mvResult);
         }
 
         /// <summary>

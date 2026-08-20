@@ -398,6 +398,9 @@ namespace Horizun.Revit.Commands
                         "category bound before and absent from categories_would_bind loses its binding and the values " +
                         "stored in it. Re-run with dry_run=false and the confirmation_token below."
                 };
+                // One binding is being asked for and this rehearsal resolved it: nothing here
+                // can be half-resolved, so a clean rehearsal is the only honest verdict.
+                ApplicationOutcome.StampRehearsal(bspDry, 1, 0, 0, 0);
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(bspDry, gate, Name, bspPlan, true,
                     "the token binds this OPERATION against this EXISTING binding: if the parameter gets bound or " +
@@ -502,7 +505,7 @@ namespace Horizun.Revit.Commands
                     // case can say 'not_bound': there was nothing before, and this call added
                     // nothing.
                     bool wasBoundBefore = before.Exists == true;
-                    return CommandResult.Ok(new JObject
+                    var bspRolledBack = new JObject
                     {
                         ["outcome"] = wasBoundBefore ? OUT_UNKNOWN : OUT_NOT_BOUND,
                         ["outcome_means"] = wasBoundBefore
@@ -534,7 +537,12 @@ namespace Horizun.Revit.Commands
                                          "act on it."
                                        : " '" + (defName ?? guidText) + "' was not bound in this document before " +
                                          "this call either, so it is not bound now.")
-                    });
+                    };
+                    // The status Revit RETURNED. Nothing was bound by this call either way;
+                    // whether the DOCUMENT still carries an earlier binding is unmeasured, and
+                    // that is uncertainty, not success.
+                    ApplicationOutcome.StampApplied(bspRolledBack, ex.Status.ToString(), 1, 0, 0, 0, 0, 0);
+                    return CommandResult.Ok(bspRolledBack);
                 }
                 catch (Exception ex)
                 {
@@ -657,6 +665,16 @@ namespace Horizun.Revit.Commands
                                 kind, restoreError)
             };
 
+            // One binding requested. `confirmed` is the only outcome that was measured to be
+            // what was asked for; `categories_dropped` IS bound and is still not that, so it
+            // lands as applied-but-unverified rather than done; `unknown` keeps its
+            // uncertainty instead of being rounded to either side.
+            ApplicationOutcome.StampApplied(result, txStatus, 1,
+                                            outcome == OUT_NOT_BOUND ? 0 : 1,
+                                            outcome == OUT_CONFIRMED ? 1 : 0,
+                                            0,
+                                            outcome == OUT_NOT_BOUND ? 1 : 0,
+                                            outcome == OUT_UNKNOWN ? 1 : 0);
             return CommandResult.Ok(result);
         }
 

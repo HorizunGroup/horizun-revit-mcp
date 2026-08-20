@@ -57,6 +57,7 @@ param(
     [string]$Json
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'toml-section.lib.ps1')
 
 if ($Name -notmatch '^[A-Za-z0-9_-]{1,64}$') {
     Write-Host 'Name must contain only ASCII letters, digits, underscore or hyphen (1..64 characters).' -ForegroundColor Red
@@ -111,7 +112,7 @@ if (-not $Rollback -and -not $Remove) {
 
 function Backup($path) {
     if (-not (Test-Path $path)) { return $null }
-    $b = "$path.horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
+    $b = "$path.horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N')
     Copy-Item $path $b -Force
     return $b
 }
@@ -153,7 +154,7 @@ if ($Remove) {
                     }
                     else {
                         Act 'Claude' "removed '$Name'; backup $(Split-Path -Leaf $backup)" $true $null
-                        $successfulWrites.Add([pscustomobject]@{ Client='Claude'; Path=$claudeConfig; Backup=$backup }) | Out-Null
+                        $successfulWrites.Add([pscustomobject]@{ Client='Claude'; Path=$claudeConfig; Backup=$backup; CurrentHash=(Get-FileHash $claudeConfig -Algorithm SHA256).Hash }) | Out-Null
                     }
                 }
             }
@@ -173,17 +174,12 @@ if ($Remove) {
             try {
                 $lines = @(Get-Content $codexConfig)
                 $header = "[mcp_servers.$Name]"
-                $startIdx = -1
-                for ($i=0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -eq $header) { $startIdx=$i; break } }
+                $range = Get-HorizunTomlTableRange $lines $header $Name
+                $startIdx = if ($range) { $range.Start } else { -1 }
                 if ($startIdx -lt 0) { Act 'Codex' 'entry already absent' $true $null }
                 elseif ($WhatIfOnly) { Act 'Codex' "would remove $header" $true $null }
                 else {
-                    $endIdx = $lines.Count
-                    for ($i=$startIdx+1; $i -lt $lines.Count; $i++) {
-                        $trim = $lines[$i].Trim()
-                        if ($trim -match '^\[[^\]]+\]$' -and
-                            $trim -notmatch "^\[mcp_servers\.$([regex]::Escape($Name))\.") { $endIdx=$i; break }
-                    }
+                    $endIdx = $range.EndExclusive
                     $new = @()
                     if ($startIdx -gt 0) { $new += $lines[0..($startIdx-1)] }
                     if ($endIdx -lt $lines.Count) { $new += $lines[$endIdx..($lines.Count-1)] }
@@ -195,7 +191,7 @@ if ($Remove) {
                     }
                     else {
                         Act 'Codex' "removed '$Name'; backup $(Split-Path -Leaf $backup)" $true $null
-                        $successfulWrites.Add([pscustomobject]@{ Client='Codex'; Path=$codexConfig; Backup=$backup }) | Out-Null
+                        $successfulWrites.Add([pscustomobject]@{ Client='Codex'; Path=$codexConfig; Backup=$backup; CurrentHash=(Get-FileHash $codexConfig -Algorithm SHA256).Hash }) | Out-Null
                     }
                 }
             }
@@ -284,7 +280,7 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Claude')) {
                 }
                 else {
                     Act 'Claude' "added '$Name'; $($existing.Count) existing entries intact; backup $(Split-Path -Leaf $backup)" $true $null
-                    $successfulWrites.Add([pscustomobject]@{ Client = 'Claude'; Path = $claudeConfig; Backup = $backup }) | Out-Null
+                    $successfulWrites.Add([pscustomobject]@{ Client = 'Claude'; Path = $claudeConfig; Backup = $backup; CurrentHash = (Get-FileHash $claudeConfig -Algorithm SHA256).Hash }) | Out-Null
                 }
             }
         }
@@ -308,8 +304,8 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
         try {
             $lines = @(Get-Content $codexConfig)
             $header = "[mcp_servers.$Name]"
-            $startIdx = -1
-            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i].Trim() -eq $header) { $startIdx = $i; break } }
+            $range = Get-HorizunTomlTableRange $lines $header $Name
+            $startIdx = if ($range) { $range.Start } else { -1 }
 
             $block = @(
                 '',
@@ -329,10 +325,7 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
                 # Replace the existing table: from its header to the next
                 # top-level table header, so its keys are not left orphaned under
                 # the new one.
-                $endIdx = $lines.Count
-                for ($i = $startIdx + 1; $i -lt $lines.Count; $i++) {
-                    if ($lines[$i].Trim() -match '^\[[^\]]+\]$' -and $lines[$i].Trim() -notmatch "^\[mcp_servers\.$([regex]::Escape($Name))\.") { $endIdx = $i; break }
-                }
+                $endIdx = $range.EndExclusive
                 $new = @()
                 if ($startIdx -gt 0) { $new += $lines[0..($startIdx - 1)] }
                 $new += $block
@@ -365,7 +358,7 @@ if (-not $Remove -and ($Client -eq 'Both' -or $Client -eq 'Codex')) {
                 }
                 else {
                     Act 'Codex' "added '$Name'; $($othersAfter.Count) server table(s) present; backup $(Split-Path -Leaf $backup)" $true $null
-                    $successfulWrites.Add([pscustomobject]@{ Client = 'Codex'; Path = $codexConfig; Backup = $backup }) | Out-Null
+                    $successfulWrites.Add([pscustomobject]@{ Client = 'Codex'; Path = $codexConfig; Backup = $backup; CurrentHash = (Get-FileHash $codexConfig -Algorithm SHA256).Hash }) | Out-Null
                 }
             }
         }
@@ -387,6 +380,7 @@ if ($Json) {
         remove        = [bool]$Remove
         actions       = $actions
         problems      = $problems
+        writes        = $successfulWrites
     } | ConvertTo-Json -Depth 6 | Out-File -FilePath $Json -Encoding utf8
     Say "wrote $Json"
 }

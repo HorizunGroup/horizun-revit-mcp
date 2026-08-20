@@ -109,8 +109,10 @@ param(
     # folder for this year. It is used only by a dry run; no RFA is written.
     [string]$FamilyTemplate,
 
-    # The title of a WORKSHARED document, open in this Revit, with AT LEAST ONE
-    # WORKSET CLOSED.
+    # The title of a WORKSHARED fixture document. If it is already open, the
+    # harness copies its on-disk file to a disposable temporary path and opens
+    # THAT copy with the requested workset configuration. It never closes or
+    # reopens a document that belonged to the user before this run.
     #
     # This is the one condition in the whole product that cannot be detected from
     # inside the answer it corrupts. A closed workset's elements are not in the
@@ -124,6 +126,9 @@ param(
     # COVERED rather than quietly passing - which would be this suite making exactly
     # the substitution it exists to catch.
     [string]$ClosedWorksetDocument,
+    # Exact user-workset name the typed document_session call must keep closed.
+    # This is deliberately a fixture value, not a repository convention.
+    [string]$ClosedWorksetName,
 
     # The six above, read from outside the repository. See the header.
     [string]$Fixtures = (Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'),
@@ -177,7 +182,7 @@ if (Test-Path $Fixtures) {
     try {
         $fx = Get-Content $Fixtures -Raw | ConvertFrom-Json
         foreach ($name in 'Document','InactiveDocument','SpfPath','SpfParam','QuantityCategory','OldFile',
-                          'FamilyTemplate','ClosedWorksetDocument',
+                          'FamilyTemplate','ClosedWorksetDocument','ClosedWorksetName',
                           'WriteDocument','WriteDocumentDisposable') {
             $fromFile = $fx.$name
             if ([string]::IsNullOrWhiteSpace($fromFile)) { continue }
@@ -276,6 +281,33 @@ if ($live.Count -gt 1) {
 $target = $live[0]
 
 # ---------------------------------------------------------------------------
+# SCRATCH FILES the probes write for themselves (5.26, 5.27).
+#
+# Neither story needs a fixture, a model or a cloud account: one is about the
+# first eight bytes of a file and the other about how a .py file decodes, so the
+# evidence can be MANUFACTURED here exactly as it occurred in the field. That is
+# the difference between a story that can be verified on any machine and one that
+# waits for somebody to reproduce a 337 MB download.
+# ---------------------------------------------------------------------------
+$scratchDir = Join-Path $env:TEMP "horizun-live-$probeRun"
+New-Item -ItemType Directory -Force $scratchDir | Out-Null
+
+# A ZIP wearing a .rvt name - the measured case in four bytes. This is what cost
+# two false diagnoses ("a newer Revit", then "a corrupt download").
+$zipAsRvt = Join-Path $scratchDir 'HZ_NOT_A_MODEL.rvt'
+[System.IO.File]::WriteAllBytes($zipAsRvt,
+    [byte[]](0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00))
+
+# A driver with accents AND CRLF: the exact combination IronPython's own open()
+# could not read ("'charmap' codec can't decode byte 0x8f in position 2634").
+$driverPy = Join-Path $scratchDir 'hz_driver_con_tildes.py'
+[System.IO.File]::WriteAllBytes($driverPy,
+    [System.Text.UTF8Encoding]::new($false).GetBytes(
+        "# -*- coding: utf-8 -*-`r`n" +
+        "checkpoint('auditoria de tabiqueria')`r`n" +
+        "__output__ = {'status': 'completed_unverified', 'summary': 'leido desde code_path con tildes: ñ á é'}`r`n"))
+
+# ---------------------------------------------------------------------------
 # The probes. Each is a tool call plus a predicate over its result, so a pass
 # means "the answer said what it had to say", not merely "no exception".
 # ---------------------------------------------------------------------------
@@ -366,7 +398,7 @@ $probes = @(
        # gate fires first and says 'requires BOTH permission_profile...' - the
        # add-in sentence is unreachable when the server refuses to forward. Both
        # are the switched-off machine answering correctly.
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # PREFLIGHT EXECUTES NOTHING, and the only way to prove that is to preflight a
     # script whose execution would be visible and then see that it was not. This
@@ -385,7 +417,7 @@ $probes = @(
                  $d.would_run -eq $true -and $d.checks.syntax -eq 'ok' -and
                  -not [string]::IsNullOrWhiteSpace($d.script_sha256) -and
                  -not [string]::IsNullOrWhiteSpace($d.what_preflight_cannot_do) }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # And a preflight REPORTS a syntax error rather than discovering it mid-write.
     @{ Name = 'preflight reports a syntax error instead of running into it'
@@ -396,7 +428,7 @@ $probes = @(
        Check = { param($d)
                  $d.executed -eq $false -and $d.would_run -eq $false -and
                  $d.checks.syntax -eq 'failed' -and -not [string]::IsNullOrWhiteSpace($d.syntax_error) }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # THE EVIDENCE CONTRACT, against a real script. A claim of verified with no
     # evidence must come back DOWNGRADED - the rule that keeps an unverified Python
@@ -410,7 +442,7 @@ $probes = @(
        Check = { param($d) $d.executed -eq $true -and $d.evidence_status -eq 'completed_unverified' -and
                             $d.script_reported_status -eq 'verified' -and
                             @($d.evidence_warnings).Count -gt 0 }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # And the CEILING for arbitrary code: a claim WITH evidence is kept, but only as
     # self_reported_verified. The host never re-reads the model after Python, so this
@@ -428,7 +460,7 @@ $probes = @(
                             $d.evidence_structured -eq $true -and
                             $d.script_reported_status -eq 'verified' -and
                             $d.host_verified -eq $false }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # The typed overlap ADVISES and no longer blocks: a REAL call to one of those
     # APIs still runs, and carries the advisory beside its result. It is a real call
@@ -457,7 +489,7 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
        Check = { param($d) $d.executed -eq $true -and
                             $d.transaction_left_open -eq $false -and
                             @($d.typed_alternatives).Count -gt 0 }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # ...and the false positive that started this: prose must NOT advise. Same shape
     # as the probe above with the call demoted to a comment and a string.
@@ -474,7 +506,7 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
        # against a correct answer. Measured: it did.
        Check = { param($d) $d.executed -eq $true -and
                             ($null -eq $d.typed_alternatives -or @($d.typed_alternatives).Count -eq 0) }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # THE FALLBACK SIGNAL, from a real typed refusal. An unsupported kind is a
     # capability gap decided BEFORE any transaction, so the reply must carry
@@ -592,7 +624,7 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
        NotCovered = 'the synchronous path using durable idempotency (needs -Document)'
        Check = { param($d) $d.executed -eq $true -and $d.output -eq 1 -and
                             $d.idempotency.status -eq 'executed_once' }
-       ErrorIsAlsoPass = 'DISABLED|requires BOTH' },
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
 
     # Was Check = { $true } with AllowError: it asserted nothing and passed on an
     # error too. What it has to prove is that it describes the SAME Revit this
@@ -690,7 +722,154 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
 
     @{ Name = 'save REFUSES without target_document'
        Tool = 'horizun_save_document'; Args = @{ idempotency_key = "live-save-no-target-$probeRun" }
-       ExpectError = "'target_document' is required|hidden/refused by permission_profile" }
+       ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
+
+    # ---- 5.26: the eight bytes that end the argument -----------------------
+    # Revit's own message for an unreadable header names two causes and both are
+    # about Revit files, so a renamed ZIP is diagnosed as a version problem. This
+    # probe reproduces the field case with a file it writes itself.
+    @{ Name = 'file_info names a ZIP renamed .rvt instead of blaming the Revit version'
+       Tool = 'horizun_file_info'; Args = @{ paths = @($zipAsRvt) }
+       Check = { param($d)
+                 $f = $d.files[0]
+                 $f.signature -eq '504b030414000000' -and
+                 $f.is_revit_container -eq $false -and
+                 $f.signature_means -match 'ZIP' -and
+                 $f.signature_means -match 'NOT a Revit model' -and
+                 # The read_error is still reported - the signature CORRECTS it, it
+                 # does not replace it.
+                 -not [string]::IsNullOrWhiteSpace($f.read_error) -and
+                 $d.unreadable -eq 1 -and $d.not_revit_files -eq 1 } },
+
+    # ---- 5.27: a script from a file -----------------------------------------
+    @{ Name = 'execute_python runs a .py from code_path - accents, CRLF and all'
+       Tool = 'horizun_execute_python'
+       Args = @{ code_path = $driverPy; target_document = $Document
+                 idempotency_key = "live-codepath-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'reading a script from code_path (needs -Document)'
+       Check = { param($d)
+                 $d.executed -eq $true -and
+                 $d.source.from -eq 'code_path' -and
+                 $d.source.path -eq $driverPy -and
+                 $d.source.read_from_disk_by_this_call -eq $true -and
+                 # The two things the hand-written stub had to get right and did not.
+                 $d.source.newlines_normalized -eq $true -and
+                 $d.source.decoded_as -match 'utf-8' -and
+                 $d.output.summary -match 'leido desde code_path' }
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
+
+    @{ Name = 'execute_python refuses code AND code_path together rather than picking one'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = '__output__ = 1'; code_path = $driverPy
+                 target_document = 'ZZ_NO_SUCH_MODEL_ZZ'; idempotency_key = "live-codeboth-$probeRun" }
+       ExpectError = 'Send exactly ONE|hidden/refused by permission_profile' },
+
+    @{ Name = 'execute_python refuses with neither code nor code_path'
+       Tool = 'horizun_execute_python'
+       Args = @{ target_document = 'ZZ_NO_SUCH_MODEL_ZZ'; idempotency_key = "live-codeneither-$probeRun" }
+       ExpectError = "One of 'code'|hidden/refused by permission_profile" },
+
+    @{ Name = 'execute_python says a missing code_path is missing, and names the machine'
+       Tool = 'horizun_execute_python'
+       Args = @{ code_path = 'C:\ZZ_NO_SUCH_DRIVER_ZZ.py'; target_document = 'ZZ_NO_SUCH_MODEL_ZZ'
+                 idempotency_key = "live-codemissing-$probeRun" }
+       ExpectError = 'code_path does not exist|hidden/refused by permission_profile' },
+
+    # ---- 5.28: the name every pyRevit caller types --------------------------
+    @{ Name = '__revit__ resolves to the UIApplication, beside app, uiapp and doc'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = @'
+__output__ = {
+    'status': 'completed_unverified',
+    'summary': 'checked the injected names',
+    'has_revit': __revit__ is not None,
+    'revit_is_uiapp': __revit__.Application.VersionNumber == app.VersionNumber,
+    'doc_application_agrees': doc.Application.VersionNumber == app.VersionNumber,
+}
+'@
+                 target_document = $Document; idempotency_key = "live-revitalias-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the __revit__ alias (needs -Document)'
+       Check = { param($d)
+                 $d.output.has_revit -eq $true -and
+                 $d.output.revit_is_uiapp -eq $true -and
+                 $d.output.doc_application_agrees -eq $true }
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
+
+    # ---- 5.25: the dialog record reaches the script AND the reply ------------
+    # The measured failure this closes: a batch opens a model, Revit raises a
+    # dialog, the bridge cancels it, and all the script ever sees is "Opening was
+    # canceled". Here the script raises a dialog ON PURPOSE and must be able to
+    # name it from the inside - and the reply must carry it as structure.
+    @{ Name = 'a dialog raised mid-script is named to the script AND in the reply, with its checkpoint'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = @'
+from Autodesk.Revit.UI import TaskDialog
+checkpoint('HZ-LIVE-MOD-001')
+before = len(revit_raised())
+TaskDialog.Show('Horizun live probe',
+                'Raised on purpose. The bridge must cancel this without anyone touching it.')
+mine = revit_raised(before)
+__output__ = {
+    'status': 'completed_unverified',
+    'summary': 'raised one dialog on purpose and read it back from inside the script',
+    'seen_from_inside': len(mine),
+    'named_from_inside': (mine[0]['description'] if mine else None),
+    'while_from_inside': (mine[0]['while'] if mine else None),
+}
+'@
+                 target_document = $Document; idempotency_key = "live-dialogs-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the dialog record reaching the script and the reply (needs -Document)'
+       Check = { param($d)
+                 $d.revit_raised_observed -eq $true -and
+                 $d.dialogs.Count -ge 1 -and
+                  # Ad-hoc TaskDialogShowingEventArgs exposes Message but its DialogId
+                  # is empty; the title passed to TaskDialog.Show is not an event property.
+                  # Match the unique message that both the script and reply can observe.
+                  $d.dialogs[0].description -match 'Raised on purpose' -and
+                 $d.dialogs[0].answered -match 'cancelled by the bridge' -and
+                 # The attribution: the script's own checkpoint, stamped on the dialog.
+                 $d.dialogs[0].'while' -eq 'HZ-LIVE-MOD-001' -and
+                 # And the half no end-of-run report can give: the script saw it DURING
+                 # the run, windowed to exactly the call that raised it.
+                  $d.output.seen_from_inside -eq 1 -and
+                  $d.output.while_from_inside -eq 'HZ-LIVE-MOD-001' }
+       # Dispatcher appends its human "what Revit raised" narration to content.text.
+       # That text is intentionally not a JSON document once a dialog exists; the
+       # machine-readable reply is structuredContent, which is exactly what this
+       # probe is about.
+       UseStructured = $true
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' },
+
+    @{ Name = 'dialog_answer scopes the dismissal and refuses a word that is not cancel|dismiss'
+       Tool = 'horizun_execute_python'
+       Args = @{ code = @'
+refused = False
+try:
+    with dialog_answer('acknowledge'):
+        pass
+except Exception as e:
+    refused = 'cancel' in str(e) and 'dismiss' in str(e)
+with dialog_answer('dismiss'):
+    pass
+__output__ = {
+    'status': 'completed_unverified',
+    'summary': 'exercised the scoped dialog answer',
+    'refused_bad_word': refused,
+    'scope_opened_and_closed': True,
+}
+'@
+                 target_document = $Document; idempotency_key = "live-dialogscope-$probeRun" }
+       Needs = 'Document'
+       NotCovered = 'the scoped dialog answer inside a script (needs -Document)'
+       Check = { param($d)
+                 $d.output.refused_bad_word -eq $true -and
+                 $d.output.scope_opened_and_closed -eq $true -and
+                 # Nothing was raised, so nothing may be reported as raised.
+                 $d.revit_raised_observed -eq $true -and $d.dialogs.Count -eq 0 }
+       ErrorIsNotCovered = 'DISABLED|requires BOTH' }
 )
 
 # ---------------------------------------------------------------------------
@@ -852,12 +1031,19 @@ if ($Document) {
         $notCovered += 'bind_shared_param rehearsing without writing (needs -SpfPath and -SpfParam; until this is run live, the fix in ab94611 is NOT verified)'
     }
 
-    $probes += @{ Name = 'delete dry run issues a confirmation token and writes nothing'
+    # A nonexistent id is NOT a rehearsed delete plan. The product must report it as
+    # unresolved and withhold confirmation; issuing a token here would authorize an
+    # apply whose only target was never previewed. A separate disposable-model probe
+    # below uses a real id and proves the token-bearing path.
+    $probes += @{ Name = 'delete dry run with no resolvable target withholds confirmation and writes nothing'
                   Tool = 'horizun_delete_verified'
                   Args = @{ mode = 'ids'; ids = @(999999999); target_document = $Document; id_cap = 2 }
                   Check = { param($d)
-                            $d.dry_run -eq $true -and $d.confirmation_token -and
-                            $d.deleted_total -eq $null -and $d.elements_before -eq $d.elements_after } }
+                            $d.dry_run -eq $true -and -not $d.confirmation_token -and
+                            $d.deleted_total -eq $null -and $d.elements_before -eq $d.elements_after -and
+                            [int]$d.not_found_total -eq 1 -and
+                            $d.application.state -eq 'partial' -and
+                            $d.application.fully_applied -eq $false } }
 
     $probes += @{ Name = 'delete REFUSES a token minted for a different plan'
                   Tool = 'horizun_delete_verified'
@@ -964,11 +1150,43 @@ else {
 # answer it corrupts, and the one that cannot be simulated - it is a property of
 # how a real model was opened, so it needs a real model that has one.
 # ---------------------------------------------------------------------------
-if ($ClosedWorksetDocument) {
+$ClosedWorksetActivationReady = $null
+$ClosedWorksetActive = $null
+$ClosedWorksetCleanupTarget = $null
+$ClosedWorksetProbeTitle = $ClosedWorksetDocument
+$closedFixtureTemporaryCopy = $null
+$closedFixtureSafeToDelete = $false
+$closedCleanupExpectedDiscard = $null
+$activateClosedName = 'activate the closed-workset fixture before measuring its loaded coverage'
+$restoreDocumentName = 'restore the original active document after closed-workset probes'
+if ($ClosedWorksetDocument -and $ClosedWorksetName) {
+    # Every model-reading command correctly refuses an inactive target. The old harness
+    # queued these probes against a title that was open but NOT active, then blamed four
+    # different products for enforcing the active-document guard. Bracket the probes with
+    # typed, verified activation of the already-open documents. Paths are discovered from
+    # health after the MCP session starts; the placeholders are never usable paths.
+    $probes += @{ Name = $activateClosedName
+                  Tool = 'horizun_document_session'
+                  Args = @{ operation = 'open'; file_path = 'C:\ZZ_HORIZUN_CLOSED_WORKSET_PATH_NOT_DISCOVERED.rvt'
+                            expected_version = "$Year"; allow_upgrade = $false
+                            close_workset_names = @($ClosedWorksetName)
+                            idempotency_key = "live-activate-closed-$probeRun" }
+                  Needs = 'ClosedWorksetActivationReady'
+                  NotCovered = 'closed-workset probes need unique local paths for both the closed fixture and the original active document'
+                  Check = { param($d)
+                            $d.active_document_verified -eq $true -and
+                            $d.title -eq $ClosedWorksetProbeTitle -and
+                            $d.workset_configuration_applied -eq $true -and
+                            $d.workset_configuration_evidence.applied -eq $true -and
+                            @($d.closed_worksets_requested) -contains $ClosedWorksetName -and
+                            $d.status -eq 'opened' -and $d.opened_now -eq $true } }
+
     $probes += @{ Name = 'a CLOSED workset makes model_scan report incomplete coverage'
                   Tool = 'horizun_model_scan'
-                  Args = @{ target_document_title = $ClosedWorksetDocument
+                  Args = @{ target_document_title = $ClosedWorksetProbeTitle
                             sections = @('worksets'); top = 50 }
+                  Needs = 'ClosedWorksetActive'
+                  NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
                             $v = $d.visibility_coverage
                             $script:closedCoverage = $v
@@ -987,8 +1205,10 @@ if ($ClosedWorksetDocument) {
 
     $probes += @{ Name = 'the worksets section names WHICH worksets are closed'
                   Tool = 'horizun_model_scan'
-                  Args = @{ target_document_title = $ClosedWorksetDocument
+                  Args = @{ target_document_title = $ClosedWorksetProbeTitle
                             sections = @('worksets'); top = 50 }
+                  Needs = 'ClosedWorksetActive'
+                  NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
                             $w = $d.sections.worksets
                             $w.status -eq 'ok' -and
@@ -1003,6 +1223,8 @@ if ($ClosedWorksetDocument) {
 
     $probes += @{ Name = 'a CLOSED workset makes audit_model report incomplete coverage'
                   Tool = 'horizun_audit_model'; Args = @{ top = 1 }
+                  Needs = 'ClosedWorksetActive'
+                  NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
                             $d.visibility_coverage.coverage_complete -eq $false -and
                             # audit_model already had a coverage_complete of its own, for
@@ -1013,8 +1235,10 @@ if ($ClosedWorksetDocument) {
 
     $probes += @{ Name = 'a CLOSED workset makes clash refuse to call its zero complete'
                   Tool = 'horizun_clash'
-                  Args = @{ target_document = $ClosedWorksetDocument
+                  Args = @{ target_document = $ClosedWorksetProbeTitle
                             categories_a = @('OST_Walls'); categories_b = @('OST_Floors'); max_results = 1 }
+                  Needs = 'ClosedWorksetActive'
+                  NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
                             $d.visibility_coverage.coverage_complete -eq $false -and
                             $d.result -ne 'complete' -and
@@ -1023,18 +1247,31 @@ if ($ClosedWorksetDocument) {
     $probes += @{ Name = 'a CLOSED workset rides along with the quantity itself'
                   Tool = 'horizun_quantities'
                   Args = @{ category = $QuantityCategory; only_disagreements = $true; top = 1 }
+                  Needs = 'ClosedWorksetActive'
+                  NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
                             $d.visibility_coverage.coverage_complete -eq $false -and
                             # The headline is the sentence somebody quotes into a budget.
                             $d.headline -match 'INCOMPLETE COVERAGE' } }
+
+    $probes += @{ Name = $restoreDocumentName
+                  Tool = 'horizun_document_session'
+                  Args = @{ operation = 'open'; file_path = 'C:\ZZ_HORIZUN_ORIGINAL_PATH_NOT_DISCOVERED.rvt'
+                            expected_version = "$Year"; allow_upgrade = $false
+                            idempotency_key = "live-restore-active-$probeRun" }
+                  Needs = 'ClosedWorksetActivationReady'
+                  NotCovered = 'closed-workset probes were not run because the original document could not be restored safely'
+                  Check = { param($d)
+                            $d.active_document_verified -eq $true -and $d.title -eq $Document -and
+                            $d.status -match 'already_open' } }
 }
 else {
     $notCovered += 'a CLOSED workset making scan, audit, quantities and clash all report incomplete coverage ' +
-                   '(needs -ClosedWorksetDocument: a WORKSHARED model open in this Revit with at least one workset ' +
-                   'CLOSED). It cannot be simulated - a closed workset is a property of how the model was opened - ' +
+                   '(needs -ClosedWorksetDocument and -ClosedWorksetName: a local WORKSHARED fixture and the exact ' +
+                   'workset to keep CLOSED). It cannot be simulated - a closed workset is a property of how the model was opened - ' +
                    'and it is the one condition that leaves no trace in the answer it corrupts, so passing this off ' +
                    'a model with every workset open would be this suite making the exact substitution it exists to catch.'
-    Write-Host "  (no -ClosedWorksetDocument given: the closed-workset coverage probes are NOT COVERED)" -ForegroundColor DarkYellow
+    Write-Host "  (closed-workset fixture incomplete: -ClosedWorksetDocument and -ClosedWorksetName are both required)" -ForegroundColor DarkYellow
 }
 
 if ($OldFile) {
@@ -1092,6 +1329,98 @@ Send-Rpc @{ jsonrpc='2.0'; method='notifications/initialized' }
 Send-Rpc @{ jsonrpc='2.0'; id=999001; method='tools/list'; params=@{} }
 $listReply = Read-Rpc
 $listed = @($listReply.result.tools)
+
+# Resolve the two exact local paths used to bracket the closed-workset probes.
+# ClosedWorksetDocument is deliberately a TITLE fixture because the assertions are
+# about what Revit has loaded, but activation must never guess by title alone. Health
+# is the authoritative inventory of this Revit session; require one title match for
+# each side and a real local path, then document_session verifies the activation.
+if ($ClosedWorksetDocument -and $ClosedWorksetName -and $Document) {
+    Send-Rpc @{ jsonrpc='2.0'; id=999003; method='tools/call';
+                params=@{ name='horizun_health'; arguments=@{} } }
+    $activationHealthReply = Read-Rpc
+    $activationHealth = $null
+    if ($activationHealthReply -and -not [bool]$activationHealthReply.result.isError) {
+        try { $activationHealth = $activationHealthReply.result.content[0].text | ConvertFrom-Json } catch { }
+    }
+    $closedMatches = @($activationHealth.open_documents | Where-Object { $_.title -eq $ClosedWorksetDocument })
+    $returnMatches = @($activationHealth.open_documents | Where-Object { $_.title -eq $Document })
+    $closedPath = $null
+    if ($closedMatches.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace($closedMatches[0].path) -and
+        (Test-Path -LiteralPath $closedMatches[0].path)) {
+        # Production correctly refuses to retrofit workset options onto a live
+        # Document. Never close somebody else's document to make this probe pass:
+        # exercise the typed OPEN against a disposable byte-for-byte fixture.
+        $tempFixtureRoot = Join-Path ([IO.Path]::GetTempPath()) 'HorizunLiveFixtures'
+        New-Item -ItemType Directory -Path $tempFixtureRoot -Force | Out-Null
+        $closedFixtureTemporaryCopy = Join-Path $tempFixtureRoot ("HZ_CLOSED_{0}.rvt" -f $probeRun)
+        Copy-Item -LiteralPath $closedMatches[0].path -Destination $closedFixtureTemporaryCopy
+        $closedPath = $closedFixtureTemporaryCopy
+        $ClosedWorksetProbeTitle = [IO.Path]::GetFileNameWithoutExtension($closedPath)
+    }
+    elseif ($closedMatches.Count -eq 0 -and $returnMatches.Count -eq 1 -and
+            -not [string]::IsNullOrWhiteSpace($returnMatches[0].path)) {
+        # The fixture may be intentionally closed between runs. Its contract is a
+        # title; for local disposable fixtures the only safe automatic path is an
+        # exact sibling filename beside the original model. Require that exact file.
+        $sibling = Join-Path -Path ([IO.Path]::GetDirectoryName($returnMatches[0].path)) -ChildPath ($ClosedWorksetDocument + '.rvt')
+        if (Test-Path -LiteralPath $sibling) { $closedPath = $sibling }
+    }
+    if ($closedPath -and $returnMatches.Count -eq 1 -and
+        -not [string]::IsNullOrWhiteSpace($returnMatches[0].path) -and
+        (Test-Path -LiteralPath $returnMatches[0].path)) {
+        $activateClosed = $probes | Where-Object { $_.Name -eq $activateClosedName } | Select-Object -First 1
+        $restoreOriginal = $probes | Where-Object { $_.Name -eq $restoreDocumentName } | Select-Object -First 1
+        $activateClosed.Args.file_path = $closedPath
+        $restoreOriginal.Args.file_path = $returnMatches[0].path
+
+        # A copied central is detached, never opened as the file everybody
+        # synchronizes to. Typed inspect reads BasicFileInfo without opening it.
+        Send-Rpc @{ jsonrpc='2.0'; id=999004; method='tools/call'; params=@{
+            name='horizun_document_session'; arguments=@{ operation='inspect'; file_path=$closedPath } } }
+        $closedInspectReply = Read-Rpc
+        $closedInspect = $null
+        if ($closedInspectReply -and -not [bool]$closedInspectReply.result.isError) {
+            try { $closedInspect = $closedInspectReply.result.content[0].text | ConvertFrom-Json } catch { }
+        }
+        if ($closedInspect -and $closedInspect.file.is_central -eq $true) {
+            $activateClosed.Args.detach = $true
+        }
+        $sameDisposableFolder = [string]::Equals(
+            [IO.Path]::GetDirectoryName($closedPath),
+            [IO.Path]::GetDirectoryName($returnMatches[0].path),
+            [StringComparison]::OrdinalIgnoreCase)
+        if ($WriteDocumentDisposable -eq 'yes-this-model-is-disposable' -and $sameDisposableFolder) {
+            # This explicit machine fixture is a disposable central. The normal product
+            # guard remains intact; the harness opts in by the same strong flag that gates
+            # its committed write tier, and only for an exact sibling fixture path.
+            $activateClosed.Args.open_central = $true
+        }
+        $ClosedWorksetActivationReady = 'unique local paths discovered'
+
+        # The opened path is harness-owned whether its source was already open or
+        # initially closed, so this run owns closing it too.
+        if ($closedPath) {
+            # Restore the session shape too. The coverage probes never write and the
+            # model was opened by this harness, so after restoring the original active
+            # document it can be closed without saving or discarding user work.
+            $probes += @{ Name = 'close the closed-workset fixture opened by this harness without saving'
+                          Tool = 'horizun_document_session'
+                          Args = @{ operation = 'close'; target_document = $ClosedWorksetProbeTitle
+                                    dry_run = $false; save_on_close = $false; discard_unsaved = $false
+                                    activate_other = $true
+                                    idempotency_key = "live-close-closed-fixture-$probeRun" }
+                          Needs = 'ClosedWorksetCleanupTarget'
+                          NotCovered = 'no unique harness-owned document could be identified for cleanup after the open attempt'
+                          Check = { param($d)
+                                    $d.closed -eq $true -and $d.saved_on_close -eq $false -and
+                                    $d.title -eq $ClosedWorksetProbeTitle -and
+                                    $d.discarded_unsaved_changes -eq [bool]$closedCleanupExpectedDiscard }
+                        }
+        }
+    }
+}
+
 $requiredCurrent = @('horizun_query_model','horizun_create_elements','horizun_manage_system_types',
                      'horizun_transform_elements','horizun_manage_views','horizun_annotate',
                      'horizun_execute_plan','horizun_submit_job')
@@ -1195,9 +1524,151 @@ $id = 1
 foreach ($p in $probes) {
     $id++
     $p.Id = $id
-    Send-Rpc @{ jsonrpc='2.0'; id=$id; method='tools/call'; params=@{ name=$p.Tool; arguments=$p.Args } }
-    $m = Read-Rpc
+    # Activation is a real prerequisite, not just a reporting label. If it failed,
+    # do not execute untargeted audit/quantity calls against whichever model stayed
+    # active and then grade those unrelated answers as closed-workset failures.
+    if ($p.Needs -eq 'ClosedWorksetActive' -and
+        [string]::IsNullOrWhiteSpace($ClosedWorksetActive)) { continue }
+    if ($p.Name -eq 'close the closed-workset fixture opened by this harness without saving' -and
+        [string]::IsNullOrWhiteSpace($ClosedWorksetCleanupTarget)) { continue }
+
+    $m = $null
+    if ($p.Name -eq 'close the closed-workset fixture opened by this harness without saving') {
+        # Closing a detached model can itself report IsModified=true. The production
+        # guard correctly refuses a blind Close(false), so cleanup follows the exact
+        # safe flow a real caller must: rehearse, inspect would_discard, then spend the
+        # bound token while still asking for save_on_close=false. The model is a unique,
+        # harness-owned temporary copy; no user's pre-existing document is discarded.
+        $cleanupDryArgs = @{}
+        foreach ($key in $p.Args.Keys) { $cleanupDryArgs[$key] = $p.Args[$key] }
+        $cleanupDryArgs.dry_run = $true
+        $cleanupDryArgs.discard_unsaved = $false
+        $cleanupDryArgs.idempotency_key = "live-close-closed-fixture-dry-$probeRun"
+        [void]$cleanupDryArgs.Remove('confirmation_token')
+        Send-Rpc @{ jsonrpc='2.0'; id=999007; method='tools/call'; params=@{
+            name='horizun_document_session'; arguments=$cleanupDryArgs } }
+        $cleanupDryReply = Read-Rpc
+        if (-not $cleanupDryReply -or [bool]$cleanupDryReply.result.isError) {
+            $m = $cleanupDryReply
+            if ($m) { $m.id = $id }
+        }
+        else {
+            $cleanupDry = $cleanupDryReply.result.structuredContent
+            $closedCleanupExpectedDiscard = [bool]$cleanupDry.would_discard_unsaved
+            $p.Args.dry_run = $false
+            $p.Args.save_on_close = $false
+            $p.Args.activate_other = $true
+            $p.Args.idempotency_key = "live-close-closed-fixture-apply-$probeRun"
+            if ($closedCleanupExpectedDiscard) {
+                if ([string]::IsNullOrWhiteSpace([string]$cleanupDry.confirmation_token)) {
+                    # Preserve the successful rehearsal as a failing probe answer: a
+                    # discard without its token must never be attempted.
+                    $m = $cleanupDryReply
+                    $m.id = $id
+                }
+                else {
+                    $p.Args.discard_unsaved = $true
+                    $p.Args.confirmation_token = [string]$cleanupDry.confirmation_token
+                }
+            }
+            else {
+                $p.Args.discard_unsaved = $false
+                [void]$p.Args.Remove('confirmation_token')
+            }
+            if (-not $m) {
+                Send-Rpc @{ jsonrpc='2.0'; id=$id; method='tools/call'; params=@{ name=$p.Tool; arguments=$p.Args } }
+                $m = Read-Rpc
+            }
+        }
+    }
+    else {
+        Send-Rpc @{ jsonrpc='2.0'; id=$id; method='tools/call'; params=@{ name=$p.Tool; arguments=$p.Args } }
+        $m = Read-Rpc
+    }
     if ($m) { $byId[[int]$m.id] = $m }
+    if ($p.Name -eq $activateClosedName -and $m) {
+        $activated = $m.result.structuredContent
+        $candidateCleanupTitle = $null
+        $activationSucceeded = -not [bool]$m.result.isError
+        $activationReportedOpened = $activated -and $activated.opened -eq $true
+        $activationProvedConfiguration = $activationSucceeded -and $activated -and
+            $activated.active_document_verified -eq $true -and
+            $activated.workset_configuration_applied -eq $true -and
+            $activated.workset_configuration_evidence.applied -eq $true -and
+            @($activated.closed_worksets_requested) -contains $ClosedWorksetName -and
+            $activated.status -eq 'opened' -and $activated.opened_now -eq $true -and
+            -not [string]::IsNullOrWhiteSpace([string]$activated.title)
+
+        if ($activationReportedOpened -and
+            -not [string]::IsNullOrWhiteSpace([string]$activated.title)) {
+            # FailWithDetail carries the identity of a document that was opened before
+            # a post-open verification failed. It is cleanup evidence, not success.
+            $candidateCleanupTitle = [string]$activated.title
+        }
+        elseif ($activationSucceeded -and $activated -and
+                -not [string]::IsNullOrWhiteSpace([string]$activated.title)) {
+            $candidateCleanupTitle = [string]$activated.title
+        }
+
+        if (-not $activationSucceeded) {
+            # Backward-compatible recovery for an installed add-in that predates the
+            # structured post-open detail, and an independent check against stale detail.
+            # The temporary basename contains this run's GUID, so only one exact/prefixed
+            # match can be harness-owned. Ambiguity is NOT permission to close anything.
+            Send-Rpc @{ jsonrpc='2.0'; id=999006; method='tools/call'; params=@{
+                name='horizun_health'; arguments=@{} } }
+            $cleanupHealthReply = Read-Rpc
+            $cleanupHealth = $null
+            if ($cleanupHealthReply -and -not [bool]$cleanupHealthReply.result.isError) {
+                try { $cleanupHealth = $cleanupHealthReply.result.content[0].text | ConvertFrom-Json } catch { }
+            }
+            $temporaryBase = if ($closedPath) { [IO.Path]::GetFileNameWithoutExtension($closedPath) } else { $null }
+            $healthMatches = @($cleanupHealth.open_documents | Where-Object {
+                ($closedPath -and $_.path -and [string]::Equals([string]$_.path, [string]$closedPath,
+                    [StringComparison]::OrdinalIgnoreCase)) -or
+                ($temporaryBase -and $_.title -and
+                    ([string]::Equals([string]$_.title, $temporaryBase, [StringComparison]::OrdinalIgnoreCase) -or
+                     [string]::Equals([string]$_.title, ($temporaryBase + '_detached'), [StringComparison]::OrdinalIgnoreCase)))
+            })
+            if ($healthMatches.Count -eq 1) {
+                $candidateCleanupTitle = [string]$healthMatches[0].title
+            }
+            elseif ($healthMatches.Count -eq 0 -and $cleanupHealth -and
+                    $cleanupHealth.note -notmatch 'INCOMPLETE' -and -not $activationReportedOpened) {
+                # Health, not a close refusal, proved that no harness-owned document is
+                # open. The temporary file is safe to remove, but cleanup is not called PASS.
+                $closedFixtureSafeToDelete = $true
+            }
+            elseif ($healthMatches.Count -gt 1) {
+                $candidateCleanupTitle = $null
+                $notCovered += 'closed-workset cleanup found more than one open document matching the unique temporary fixture identity; none was closed'
+            }
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($candidateCleanupTitle)) {
+            $ClosedWorksetCleanupTarget = $candidateCleanupTitle
+            $ClosedWorksetProbeTitle = $candidateCleanupTitle
+            # Detached/opened titles are Revit's fact, not a filename convention.
+            # Retarget every later coverage and cleanup probe to the verified title.
+            foreach ($later in $probes) {
+                if ($later.Needs -eq 'ClosedWorksetActive') {
+                    if ($later.Args.ContainsKey('target_document_title')) { $later.Args.target_document_title = $ClosedWorksetProbeTitle }
+                    if ($later.Args.ContainsKey('target_document')) { $later.Args.target_document = $ClosedWorksetProbeTitle }
+                }
+                if ($later.Name -eq 'close the closed-workset fixture opened by this harness without saving') {
+                    $later.Args.target_document = $ClosedWorksetProbeTitle
+                }
+            }
+        }
+        if ($activationProvedConfiguration) {
+            $ClosedWorksetActive = 'verified active with measured workset configuration by document_session'
+        }
+    }
+    if ($p.Name -eq 'close the closed-workset fixture opened by this harness without saving' -and
+        $m -and -not [bool]$m.result.isError -and $m.result.structuredContent.closed -eq $true -and
+        $m.result.structuredContent.saved_on_close -eq $false) {
+        $closedFixtureSafeToDelete = $true
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -1402,6 +1873,7 @@ if (-not $writeGate) {
 
 $writeNames = @(
     @{ N = 'create_elements commits a typed batch and verifies every row from the model'; T = 'horizun_create_elements' }
+    @{ N = 'delete dry run issues a confirmation token for a real target and writes nothing'; T = 'horizun_delete_verified' }
     # The rollback guarantee, on a CURRENT tool. It used to be inferred from
     # whichever retired command happened to fail its own verification, which meant
     # it went unproven the moment those commands left the surface. Now it is
@@ -1461,7 +1933,7 @@ else {
     if (-not $levelId -or -not $pipeType -or -not $pipeSystem) {
         $why = ("'{0}' has no usable level, pipe type or piping system type, so no piping probe can be " -f $wDoc) +
                'staged in it. Name a model with piping content.'
-        foreach ($w in $writeNames[0..4]) { Add-Write $w.N $w.T 'not_covered' $why }
+        foreach ($w in $writeNames) { Add-Write $w.N $w.T 'not_covered' $why }
     }
     else {
         # ---- W1: create_elements. Also the fixture the next probes stand on, which
@@ -1487,6 +1959,35 @@ else {
         $pipeA = $null
         if ($a.data -and @($a.data.rows).Count -gt 0) { $pipeA = @($a.data.rows)[0].element_id }
 
+        # ---- W2: a REAL delete rehearsal. The default-tier nonexistent id above
+        # ---- correctly withholds confirmation; only a resolvable target can prove
+        # ---- the token-bearing path. This model is explicitly disposable and the
+        # ---- transaction is rolled back, then census values are compared.
+        if (-not $pipeA) {
+            Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                'create_elements did not return a pipe id, so delete could not rehearse a real target')
+        }
+        else {
+            $deleteDry = Invoke-Write 'horizun_delete_verified' @{
+                mode = 'ids'; ids = @($pipeA); target_document = $wDoc; id_cap = 10; dry_run = $true }
+            if ($deleteDry.isError -or -not $deleteDry.data) {
+                Add-Write $writeNames[1].N $writeNames[1].T 'fail' $deleteDry.text
+            }
+            elseif ($deleteDry.data.dry_run -eq $true -and $deleteDry.data.confirmation_token -and
+                    $null -eq $deleteDry.data.deleted_total -and
+                    $deleteDry.data.elements_before -eq $deleteDry.data.elements_after -and
+                    [int]$deleteDry.data.would_delete_total -ge 1 -and
+                    $deleteDry.data.application.state -eq 'rehearsed') {
+                Add-Write $writeNames[1].N $writeNames[1].T 'pass' (
+                    'real target resolved; token issued; preview transaction rolled back; census unchanged')
+            }
+            else {
+                Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    'the real-target rehearsal did not prove token + null deleted_total + unchanged census: ' +
+                    $deleteDry.text)
+            }
+        }
+
 
     # A tool absent from tools/list is a guarantee this build cannot attempt -
     # NOT COVERED by its own taxonomy, not an UNVERIFIED that reads like a broken
@@ -1497,7 +1998,7 @@ else {
         return [bool]($listed | Where-Object { $_.name -eq $n })
     }
 
-        # ---- W2: THE ROLLBACK RULE, provoked on a CURRENT tool.
+        # ---- W3: THE ROLLBACK RULE, provoked on CURRENT tools.
         #
         # "No command reports work it did not verify" is honoured everywhere. What
         # happens AFTER a failure was the part with no live evidence: one command
@@ -1512,9 +2013,10 @@ else {
         #
         # So it is PROVOKED. horizun_execute_plan composes typed writes into one
         # TransactionGroup and documents that any failure rolls the complete graph
-        # back. The plan below is a valid PIPE followed by an action that cannot
-        # succeed, and the assertion is made against the MODEL: the pipe count before
-        # and after must be identical.
+        # back. Both actions below rehearse cleanly against the same real pipe: first
+        # delete it, then pin it. During execution the delete commits inside the group,
+        # so the transform reaches an element that no longer exists and fails THERE,
+        # after the group and a real write. The pipe count before/after must be identical.
         #
         # It was anchored on walls first and went UNVERIFIED on the real fixture -
         # HZ_WRITE is an HVAC model and offers no wall type. Anchoring a probe on a
@@ -1525,23 +2027,20 @@ else {
                                                     max_rows=1; group_by=@('category') }
         if ($cw.data -and @($cw.data.groups).Count -gt 0) { $pipeCountBefore = @($cw.data.groups)[0].count }
 
-        if ($null -eq $pipeCountBefore -or -not $levelId -or -not $pipeType -or -not $pipeSystem) {
-            Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
-                'could not read a pipe count, a level, a pipe type or a piping system from this fixture, so ' +
+        if ($null -eq $pipeCountBefore -or -not $pipeA) {
+            Add-Write $writeNames[2].N $writeNames[2].T 'unverified' (
+                'could not read a pipe count or the real pipe created by W1 from this fixture, so ' +
                 'the rollback could not be provoked against a known before-state')
         }
         else {
-            # Second action fails deterministically: change_type to an id that is a
-            # LEVEL, which horizun_transform_elements must refuse. Nothing about the
-            # refusal depends on model content, so this is reproducible.
+            # Both rehearsals are valid while pipeA exists. The deterministic invalidity
+            # is introduced only by execution order inside the TransactionGroup.
             $planActions = @(
-                @{ key='w'; tool='horizun_create_elements'
-                   arguments=@{ units='mm'
-                                elements=@(@{ kind='pipe'; start=@($wx,($wy+4000),0); end=@(($wx+3000),($wy+4000),0)
-                                              level_id=$levelId; type_id=$pipeType; system_type_id=$pipeSystem }) } }
+                @{ key='delete'; tool='horizun_delete_verified'
+                   arguments=@{ mode='ids'; ids=@($pipeA); id_cap=10 } }
                 @{ key='boom'; tool='horizun_transform_elements'
                    arguments=@{ units='mm'
-                                operations=@(@{ operation='change_type'; element_ids=@($levelId); type_id=$levelId }) } }
+                                operations=@(@{ operation='pin'; element_ids=@($pipeA) }) } }
             )
             $rb = Invoke-WriteApply 'horizun_execute_plan' @{
                 target_document = $wDoc; actions = $planActions } 'rollback'
@@ -1550,7 +2049,7 @@ else {
             if ($rb.stage -eq 'dry_run') {
                 # The graph was refused before it could run. That proves validation,
                 # not rollback, and must not be reported as the latter.
-                Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                Add-Write $writeNames[2].N $writeNames[2].T 'unverified' (
                     'the plan was refused during rehearsal, so nothing was committed and nothing was rolled ' +
                     'back: ' + $ra.text)
             }
@@ -1568,60 +2067,60 @@ else {
                 # (isError AND count unchanged), which a stale-token or confirmation
                 # refusal ALSO satisfies without a rollback ever happening. Now the plan
                 # must PROVE, as data in structuredContent, that: the TransactionGroup
-                # started; the valid first action ('w') executed and returned success;
+                # started; the valid first action ('delete') executed and returned success;
                 # the invalid second ('boom') was REACHED and returned failure; and the
                 # rollback landed with status RolledBack. The model residue check stays
                 # on top of that, so both the group's own account and the model agree.
                 $s = $ra.structured
                 $trace = @()
                 if ($s -and $s.execution_trace) { $trace = @($s.execution_trace) }
-                $wRow    = $trace | Where-Object { $_.key -eq 'w' }    | Select-Object -First 1
+                $deleteRow = $trace | Where-Object { $_.key -eq 'delete' } | Select-Object -First 1
                 $boomRow = $trace | Where-Object { $_.key -eq 'boom' } | Select-Object -First 1
 
                 if ($null -eq $pipeCountAfter) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'unverified' (
                         'the pipe count could not be re-read after the plan, so residue could not be ruled out')
                 }
                 elseif (-not $ra.isError) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
                         'the plan REPORTED SUCCESS although its second action cannot succeed. Either the ' +
                         'failure was not provoked (fix this probe) or a failing action was accepted.')
                 }
                 elseif ($null -eq $s -or $null -eq $s.transaction_group_started) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'unverified' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'unverified' (
                         'the failed plan carried no structured rollback diagnostic, so a rollback that reached ' +
                         'the TransactionGroup could not be told from a refusal that never did')
                 }
                 elseif ($s.transaction_group_started -ne $true) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
                         'the plan failed BEFORE the TransactionGroup started, so this proves validation, not ' +
                         'rollback. A pre-group refusal must never count as rollback tested.')
                 }
-                elseif ($null -eq $wRow -or $wRow.success -ne $true) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
-                        "the valid first action 'w' did not execute with success=true in the trace, so the " +
+                elseif ($null -eq $deleteRow -or $deleteRow.success -ne $true) {
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
+                        "the valid first action 'delete' did not execute with success=true in the trace, so the " +
                         'rollback was not exercised on a graph that had actually written something')
                 }
                 elseif ($null -eq $boomRow -or $boomRow.success -ne $false) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
                         "the failing action 'boom' was not reached with success=false, so the failure was not " +
                         'provoked inside the group')
                 }
                 elseif ($s.rollback_status -ne 'RolledBack' -or $s.rollback_confirmed -ne $true) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
                         ("the plan did not confirm a rollback: rollback_status='{0}', rollback_confirmed='{1}'. " -f
                              $s.rollback_status, $s.rollback_confirmed) +
                         "Anything other than 'RolledBack' leaves the model state uncertain and must not pass.")
                 }
                 elseif ($pipeCountAfter -ne $pipeCountBefore) {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'fail' (
+                    Add-Write $writeNames[2].N $writeNames[2].T 'fail' (
                         ("RESIDUE: {0} pipe(s) before the failed plan, {1} after. The first action stayed " -f
                              $pipeCountBefore, $pipeCountAfter) +
                         'applied even though the group reported RolledBack - the model and the group disagree.')
                 }
                 else {
-                    Add-Write $writeNames[1].N $writeNames[1].T 'pass' (
-                        ("group started; 'w' committed and 'boom' failed inside it; rollback_status=RolledBack; " +
+                    Add-Write $writeNames[2].N $writeNames[2].T 'pass' (
+                        ("group started; 'delete' committed and 'boom' failed inside it; rollback_status=RolledBack; " +
                          "pipe count unchanged at {0} - the group's account and the model agree." -f $pipeCountBefore))
                 }
             }
@@ -1631,6 +2130,16 @@ else {
 
 $proc.StandardInput.Close()
 if (-not $proc.WaitForExit(130000)) { $proc.Kill() }
+
+if ($closedFixtureTemporaryCopy -and (Test-Path -LiteralPath $closedFixtureTemporaryCopy)) {
+    if ($closedFixtureSafeToDelete) {
+        try { Remove-Item -LiteralPath $closedFixtureTemporaryCopy -Force }
+        catch { $notCovered += "temporary closed-workset fixture cleanup failed: $($_.Exception.Message)" }
+    }
+    else {
+        $notCovered += "temporary closed-workset fixture was retained at $closedFixtureTemporaryCopy because the harness could not prove its document was closed; it was never saved"
+    }
+}
 
 # ---------------------------------------------------------------------------
 # THREE outcomes, not two.
@@ -1774,16 +2283,13 @@ foreach ($p in $probes) {
     }
 
     if ($isError) {
-        # ONE probe legitimately has two correct outcomes: a capability behind a
-        # per-machine switch. ErrorIsAlsoPass names the refusal that counts as one,
-        # so the probe asserts in BOTH states instead of assuming either. It is a
-        # named pattern, not AllowError returning under another name: the refusal
-        # text still has to match, and anything else is still UNVERIFIED.
-        if ($p.ErrorIsAlsoPass -and $text -match $p.ErrorIsAlsoPass) {
-            Note-Pass $p.Name $p.Tool 'switched off, and it refused'
+        # A disabled optional capability did not execute the behavior this probe
+        # names. Keep that as NOT COVERED rather than laundering the refusal into
+        # a PASS. There is deliberately no generic "error is also pass" escape.
+        if ($p.ErrorIsNotCovered -and $text -match $p.ErrorIsNotCovered) {
+            Note-NotCovered $p.Name 'the capability was switched off, so the asserted behavior did not execute' $p.Tool
             continue
         }
-
         # An error where an ANSWER was required. The check cannot run, so nothing
         # about this guarantee was established - and the reason is printed here
         # rather than discarded, which is what made the last one unexplainable.
@@ -1792,23 +2298,28 @@ foreach ($p in $probes) {
         continue
     }
 
-    try { $data = $text | ConvertFrom-Json } catch { $data = $null }
-    if ($null -eq $data) { Note-Unverified $p.Name "the reply was not JSON, so its check never ran" $p.Tool; continue }
-
-    if (-not $p.Check) { Note-Unverified $p.Name "this probe asserts nothing - it calls the tool and looks at neither the answer nor an error" $p.Tool; continue }
-
-    # A probe about structuredContent gets structuredContent. Without this it would
-    # have to re-parse the text, which is exactly the fragile reading the structured
-    # signal exists to replace.
+    # A probe about structuredContent gets structuredContent BEFORE content.text is
+    # parsed. A successful response may append a human diagnostic after its JSON text
+    # (notably "what Revit raised"), making text deliberately non-JSON while the MCP
+    # structure remains exact. Requiring text to parse first made UseStructured dead.
     if ($p.UseStructured) {
         if ($null -eq $structured) {
             Note-Unverified $p.Name "the reply carried no structuredContent, so the structured check never ran" $p.Tool
+            continue
+        }
+        if (-not $p.Check) {
+            Note-Unverified $p.Name "this structured probe asserts nothing" $p.Tool
             continue
         }
         if (& $p.Check $structured) { Note-Pass $p.Name $p.Tool 'read from structuredContent' }
         else { Note-Fail $p.Name $p.Tool 'structuredContent did not carry what it had to' }
         continue
     }
+
+    try { $data = $text | ConvertFrom-Json } catch { $data = $null }
+    if ($null -eq $data) { Note-Unverified $p.Name "the reply was not JSON, so its check never ran" $p.Tool; continue }
+
+    if (-not $p.Check) { Note-Unverified $p.Name "this probe asserts nothing - it calls the tool and looks at neither the answer nor an error" $p.Tool; continue }
 
     if (& $p.Check $data) { Note-Pass $p.Name $p.Tool $null }
     else { Note-Fail $p.Name $p.Tool 'the answer did not say what it had to' }
@@ -1896,9 +2407,9 @@ if (-not $Document) {
 # a fine place for a regex table and a JToken classifier, and not the same claim
 # as "it behaves this way against a running Revit".
 #
-# execute_python is enabled by DEFAULT, so this branch means the machine's owner
-# switched it off. This harness does not reverse that: it reports the gap. The
-# owner re-enables with scripts/enable-execute-python.ps1 and re-runs.
+# execute_python is disabled by DEFAULT. This harness never grants the privilege:
+# it reports the gap. The owner may use Revit's expiring Python ON/OFF button or
+# scripts/enable-execute-python.ps1 and then re-run.
 if (-not ($listed | Where-Object { $_.name -eq 'horizun_execute_python' })) {
     $notCovered += 'the execute_python fallback surface - the typed-overlap advisory, preflight, and the ' +
                    '__output__ evidence classification (execute_python is switched off on this machine, so ' +
@@ -1996,6 +2507,7 @@ $report = [pscustomobject]@{
         WriteDocument    = -not [string]::IsNullOrWhiteSpace($WriteDocument)
         WriteDocumentDisposable = -not [string]::IsNullOrWhiteSpace($WriteDocumentDisposable)
         ClosedWorksetDocument = -not [string]::IsNullOrWhiteSpace($ClosedWorksetDocument)
+        ClosedWorksetName = -not [string]::IsNullOrWhiteSpace($ClosedWorksetName)
     }
     write_tier        = @{
         requested  = [bool]$WriteProbes

@@ -215,14 +215,22 @@ if ($doc.Signature) {
     Check 'the manifest declares every own binary signed' ([bool]$doc.Signed) `
           'manifest.Signed is false - at least one own binary is unsigned'
 
-    $unsigned = @(); $thumbs = @()
+    $unsigned = @(); $invalid = @(); $untimestamped = @(); $thumbs = @()
     foreach ($p in $own) {
         $info = Get-HorizunSignatureInfo $p
         if (-not $info.Signed) { $unsigned += (Split-Path $p -Leaf) }
-        elseif ($info.Thumbprint) { $thumbs += $info.Thumbprint }
+        else {
+            if ($info.Status -ne 'Valid') { $invalid += "$(Split-Path $p -Leaf): $($info.Status)" }
+            if (-not $info.Timestamped) { $untimestamped += (Split-Path $p -Leaf) }
+            if ($info.Thumbprint) { $thumbs += $info.Thumbprint }
+        }
     }
     Check ('every staged own binary carries a signature (' + $own.Count + ' checked)') ($unsigned.Count -eq 0) `
           ('unsigned on disk: ' + ($unsigned -join ', ') + ' - the manifest cannot claim a signature the bytes do not carry')
+    Check 'every staged own signature is valid under Windows trust' ($invalid.Count -eq 0) `
+          ('invalid signatures: ' + ($invalid -join ', '))
+    Check 'every staged own signature has a trusted timestamp' ($untimestamped.Count -eq 0) `
+          ('untimestamped: ' + ($untimestamped -join ', '))
 
     $distinctThumbs = @($thumbs | Select-Object -Unique)
     Check 'all own binaries are signed by ONE certificate (no mixed signers)' ($distinctThumbs.Count -le 1) `
@@ -253,6 +261,15 @@ if (-not $Installer) {
 $installerSha = $null
 if ($Installer -and (Test-Path $Installer)) {
     $installerSha = Sha $Installer
+    $installerSignature = Get-HorizunSignatureInfo $Installer
+    if ($AllowUnsigned -and -not $installerSignature.Signed) {
+        Check 'installer signature state matches the explicit unsigned exception' $true 'unsigned by explicit pre-1.0 policy'
+    }
+    else {
+        Check 'installer carries Authenticode' $installerSignature.Signed "status $($installerSignature.Status)"
+        Check 'installer Authenticode is valid under Windows trust' ($installerSignature.Status -eq 'Valid') "status $($installerSignature.Status)"
+        Check 'installer Authenticode has a trusted timestamp' $installerSignature.Timestamped 'no trusted timestamp'
+    }
     $newerPayload = @(Get-ChildItem $Stage -Recurse -File |
                       Where-Object { $_.LastWriteTimeUtc -gt (Get-Item $Installer).LastWriteTimeUtc })
     # The installer must be NEWER than everything it wrapped. Otherwise it is a

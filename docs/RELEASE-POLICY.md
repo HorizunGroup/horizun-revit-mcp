@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year and security gates green. A disclosed 0.x release may be unsigned; 1.0+ requires a publicly trusted publisher | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year, publicly trusted signing and security gates green | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -20,10 +20,14 @@ default bootstrap cannot silently move stable users onto incomplete live evidenc
 A validation-only tag exists so the code change has a name and a diff, not so
 anybody installs it — v0.6.1 is the reference example.
 
-Every release, whatever the channel, publishes: `manifest.json` (the commit and a
-SHA-256 per payload), `sbom.json` (every redistributed component with a named
-licence) and `SHA256SUMS.txt`. A stable release additionally publishes the live
-verification report for each Revit year it claims.
+The tag names are executable policy: `vX.Y.Z` is stable,
+`vX.Y.Z-preview.N` is preview and `vX.Y.Z-validation.N` is validation-only.
+The workflow rejects every other `v*` shape. Stable and preview releases publish
+`manifest.json` (commit and SHA-256 per payload), `sbom.json` (redistributed
+components and licences) and `SHA256SUMS.txt`; validation-only releases attach no
+binaries or payload metadata. Stable additionally publishes the live verification
+report for each Revit year it claims. Preview is always GitHub pre-release and is
+never published to the MCP registry; validation-only is also never registry/latest.
 
 The repository's generic secret patterns always run in hosted CI; the private
 client/project wordlist is mandatory on the release runner. GitHub secret scanning
@@ -33,25 +37,35 @@ platform controls are on.
 
 Signing and public trust are separate facts. A self-signed or privately trusted
 certificate can prove byte identity in a controlled environment but does not make
-Windows trust the publisher on a clean machine. Every release states whether the
-payload and wrapper are unsigned, self-signed, or publicly trusted. By owner
-decision, 0.9.0 may become `latest` while correctly disclosed as unsigned; its
-manifest, SBOM, SHA-256 checksums, provenance, installed-package verification and
-complete live matrix remain release gates. For **1.0.0 and later**, CI requires a
-publicly trusted, non-self-signed Authenticode identity, signs the staged Horizun
-binaries and installer wrapper, timestamps them, re-validates public trust on a
-disposable Microsoft-hosted Windows runner, and verifies the installed bytes
-without `-AllowUnsigned`. Missing identity, signature, timestamp or trust then
-fails publication.
+Windows trust the publisher on a clean machine. Every installable release requires
+a publicly trusted, non-self-signed Authenticode identity: CI signs the staged
+Horizun binaries and installer wrapper, timestamps them, re-validates public trust
+on a disposable Microsoft-hosted Windows runner, and verifies installed bytes
+without `-AllowUnsigned`. Missing identity, signature, timestamp or trust blocks
+stable and preview binaries at every version. Validation-only remains available
+because it publishes no executable asset.
 
 The preferred no-cost public identity is SignPath Foundation. Its governance,
 team roles, privacy statement and origin requirements are defined in the
 repository [code signing policy](../CODE-SIGNING-POLICY.md). The application was
 submitted on 2026-08-15 and is awaiting review; until it is accepted and the
 clean-runner public-signature job passes, no release may claim SignPath signing.
-The SignPath signing input must originate
-entirely on GitHub-hosted runners. Self-hosted Revit jobs validate the resulting
-signed package but cannot contribute binaries to that signing request.
+The current build cannot originate entirely on a GitHub-hosted runner because the
+five RevitAPI reference assemblies are licensed machine dependencies and are not
+redistributed. The workflow therefore fails closed unless GitHub repository
+variables name two distinct runner groups: `REVIT_RUNNER_GROUP` for interactive
+integration and `SIGNING_RUNNER_GROUP` for packaging/signing, whose runner also
+has the five local Revit APIs. The signing runner carries the additional
+`signing` label and must not be registered in the integration group. Group
+membership, protected environments, non-exportable key provisioning and tag
+protection are external GitHub/Windows controls; the repository tests the names,
+labels and trigger boundary but cannot truthfully attest those external settings.
+Until administrators configure and audit them, stable publication is blocked.
+SignPath Foundation also requires GitHub-hosted jobs in the default OSS origin
+policy. Because the licensed Revit APIs currently force the package build onto a
+self-hosted runner, a SignPath-approved exception or compatible origin policy is
+an additional external prerequisite. Version 1+ tags fail closed unless the
+organization records that approval with `SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED`.
 
 ## Versioning
 
@@ -106,9 +120,9 @@ leaves the rest alone, which is the pattern every future setting follows.
 1.0 is not a date and not a feature count. Every line below has to be true, and each
 one is currently checkable rather than a matter of opinion:
 
-- [ ] Every typed write binds its confirmation to the **resolved element set**, not
-      to the request — and any command that does not says so in its own reply.
-      *(backlog 5.1: mechanism landed, per-command wiring outstanding)*
+- [x] Every typed write binds its confirmation to the **resolved element set**, not
+      to the request; orchestrated children are re-rehearsed inside their group.
+      *(backlog 5.1: source and focused live proof complete; release matrix still applies)*
 - [ ] Every typed write whose verification fails **rolls back**, or documents in its
       own description exactly what it leaves behind. *(rule adopted in 0.6.0)*
 - [ ] The live matrix passes for every supported Revit year, with the report
@@ -117,14 +131,17 @@ one is currently checkable rather than a matter of opinion:
       *(5.2)*
 - [ ] The write tier of `verify-live.ps1` is green with **no NOT COVERED probes** on
       the release machine.
-- [ ] The protocol layer is isolated and conformance-tested against the official SDK.
-      *(5.8)*
+- [ ] MCP negotiation and standard primitives are implemented through 2025-11-25;
+      official Inspector/SDK conformance and the client matrix remain. *(5.8)*
 - [ ] No hardcoded classification anywhere: annotations and effects derived from the
       contract. *(5.3 — done)*
 - [ ] Schemas frozen under the compatibility rules above, with the deprecation
       window written into the CHANGELOG.
 - [ ] Two maintainers with release rights.
 - [ ] GitHub secret scanning and push protection enabled on the public repository.
+- [ ] Public Authenticode identity and clean-machine signature validation. The
+      repository is fail-closed and ready to consume the identity; procurement is
+      external. See [production readiness](production-readiness.md).
 - [ ] Payload and installer carry a timestamped, publicly trusted Authenticode
       signature, and the stable tag pipeline verifies the installed signatures
       without an unsigned exception.

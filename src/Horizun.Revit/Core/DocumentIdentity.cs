@@ -163,6 +163,34 @@ namespace Horizun.Revit.Core
     public static class DocumentMatcher
     {
         /// <summary>
+        /// Strong equality for an operation that will immediately target one document.
+        /// Titles are deliberately absent: two open files may have the same title, and an
+        /// unsaved/detached document with no path is not made identifiable by that fact.
+        /// Native Revit identity is checked by the caller before reaching this pure rule;
+        /// here only cloud GUID pairs or normalized local paths can prove equality.
+        /// </summary>
+        public static bool SameStableIdentity(DocIdentity a, DocIdentity b,
+                                              string projectGuidA = null, string projectGuidB = null)
+        {
+            if (a == null || b == null) return false;
+
+            bool eitherCloud = !string.IsNullOrWhiteSpace(a.ModelGuid) ||
+                               !string.IsNullOrWhiteSpace(b.ModelGuid) ||
+                               !string.IsNullOrWhiteSpace(projectGuidA) ||
+                               !string.IsNullOrWhiteSpace(projectGuidB);
+            if (eitherCloud)
+                return !string.IsNullOrWhiteSpace(a.ModelGuid) &&
+                       !string.IsNullOrWhiteSpace(b.ModelGuid) &&
+                       !string.IsNullOrWhiteSpace(projectGuidA) &&
+                       !string.IsNullOrWhiteSpace(projectGuidB) &&
+                       string.Equals(a.ModelGuid, b.ModelGuid, StringComparison.OrdinalIgnoreCase) &&
+                       string.Equals(projectGuidA, projectGuidB, StringComparison.OrdinalIgnoreCase);
+
+            return a.PathNormalized != null && b.PathNormalized != null &&
+                   string.Equals(a.PathNormalized, b.PathNormalized, StringComparison.Ordinal);
+        }
+
+        /// <summary>
         /// Find <paramref name="target"/> among <paramref name="candidates"/>, strongest
         /// evidence first: model GUID, then normalized path, then title. A tier that
         /// produces more than one hit is AMBIGUOUS and stops there - falling through to a

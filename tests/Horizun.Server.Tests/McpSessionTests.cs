@@ -96,5 +96,17 @@ namespace Horizun.Server.Tests
             Assert.False(session.Allows("initialize", false, out _));
             Assert.False(session.Allows("notifications/initialized", true, out _));
         }
+
+        [Fact]
+        public void A_request_with_an_id_but_no_method_is_an_invalid_request_not_silence()
+        {
+            var session = new McpSession();
+            var request = new JObject { ["jsonrpc"] = "2.0", ["id"] = 7 };
+
+            Assert.False(session.TryReadMethod(request, out string method, out string error));
+            Assert.Null(method);
+            Assert.Contains("method", error);
+            Assert.Contains("missing", error);
+        }
     }
 }

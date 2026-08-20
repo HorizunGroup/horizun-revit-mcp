@@ -139,7 +139,10 @@ try {
 
         @{ Rule = 'email-address'
            Pattern = '(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
-           Allow   = '(?i)(noreply@|example\.(com|org)|@types/|@anthropic-ai)' }
+           # Inno Setup declares Win32 imports as Function@module.dll; that is
+           # an ABI identifier, not an e-mail address. Keep the exception pinned
+           # to a .dll suffix rather than weakening the general address rule.
+           Allow   = '(?i)(noreply@|example\.(com|org)|@types/|@anthropic-ai|@[A-Za-z0-9_-]+\.dll\b)' }
 
         @{ Rule = 'cloud-project-path'
            # Spaces are IN these paths - "Autodesk Docs://Sample Project/..." - so the

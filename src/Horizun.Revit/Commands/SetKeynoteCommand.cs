@@ -138,6 +138,14 @@ namespace Horizun.Revit.Commands
                 plans.Add(plan);
             }
 
+            // THE COUNT OF IDS THAT NEVER BECAME A TARGET, taken HERE - before the write
+            // loop appends its own refusals to the same `failed` array. Read afterwards it
+            // is a mixed bucket, and deriving anything from it then counted a refused write
+            // twice: once as a target inside byTarget, once as a "failure" outside it, which
+            // also reported a refused write as an unresolved id. The three failures are
+            // different facts and each is counted once, at the place it happens.
+            int unresolvedIds = failed.Count;
+
             // One type written once, no matter how many of its instances were named.
             var byTarget = plans
                 .GroupBy(p => p.Target.Id.ToString())
@@ -233,6 +241,12 @@ namespace Horizun.Revit.Commands
                     ["total_elements_affected"] = byTarget.Sum(p => p.IsTypeLevel ? InstancesOfType(doc, p.Target.Id).Count : 1),
                     ["note"] = "Nothing was written. Re-run with dry_run=false and the confirmation_token below."
                 };
+                // Ids that never resolved make this a partial rehearsal: the apply it
+                // authorises would be over fewer targets than the caller asked about. At
+                // this point nothing has been written, so `failed` holds resolution
+                // failures only and unresolvedIds is the same number - it is used anyway,
+                // so that moving this block later cannot silently change what it counts.
+                ApplicationOutcome.StampRehearsal(dryResult, byTarget.Count + unresolvedIds, unresolvedIds, 0, 0);
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(dryResult, gate, Name, planHash, true,
                     "the token binds the TYPES this rehearsal resolved and the keynote each one carries right now, " +
@@ -252,6 +266,12 @@ namespace Horizun.Revit.Commands
             // ---- Write. ----
             var written = new JArray();
             int confirmed = 0;
+            // Targets whose Parameter.Set threw or was refused: a PRE-COMMIT diagnostic. It
+            // answers a different question from verifyFailed - this one says the write never
+            // landed, that one says the committed model does not carry the value - and the
+            // two OVERLAP rather than partition. A refused write is normally in both, so
+            // only verifyFailed feeds any total; see the declaration at the end.
+            int writesRefused = 0;
             using (var tx = new Transaction(doc, "Horizun: set keynote"))
             {
                 tx.Start();
@@ -264,6 +284,7 @@ namespace Horizun.Revit.Commands
                         try { accepted = plan.Parameter.Set(keynote); }
                         catch (Exception ex)
                         {
+                            writesRefused++;
                             failed.Add(new JObject { ["target_id"] = plan.Target.Id.ToString(), ["error"] = ex.Message });
                             continue;
                         }
@@ -271,6 +292,7 @@ namespace Horizun.Revit.Commands
                         // Set() returning false is a refused write that does not throw.
                         if (!accepted)
                         {
+                            writesRefused++;
                             failed.Add(new JObject
                             {
                                 ["target_id"] = plan.Target.Id.ToString(),
@@ -390,7 +412,46 @@ namespace Horizun.Revit.Commands
                 ["targets_resolved"] = byTarget.Count,
                 ["writes_accepted_in_transaction"] = confirmed,
                 ["writes_verified_after_commit"] = verified,
-                ["writes_failed"] = verifyFailed + failed.Count,
+                // DISTINCT WRITE TARGETS THE COMMITTED MODEL DOES NOT CARRY. That is what a
+                // failed write is, and it is measured by the post-commit read - the only
+                // pass that sees every target once.
+                //
+                // It used to be verifyFailed + failed.Count, which double-counted: `failed`
+                // is one array appended to from three places, so a refused write was in it
+                // AND failed its read-back. It also added ids that never became targets,
+                // which are not failed writes at all. The old value is kept for one
+                // deprecation window under its own name rather than under this one.
+                ["writes_failed"] = verifyFailed,
+                ["writes_failed_legacy"] = verifyFailed + failed.Count,
+                ["writes_failed_legacy_note"] =
+                    "DEPRECATED, and wrong: it double-counts a refused write (present in the detailed 'failed' " +
+                    "array AND unverified after the commit) and adds unresolved ids, which never became write " +
+                    "targets. Read writes_failed, ids_unresolved and writes_refused_in_transaction instead. This " +
+                    "field exists only so a consumer pinned to the old number sees it change deliberately.",
+
+                // The three numbers, apart - and they are NOT disjoint, which is exactly why
+                // only one of them may be totalled:
+                //
+                //   ids_unresolved                 ids that never became a target. Disjoint
+                //                                  from the other two by construction: no
+                //                                  target exists to write to or read back.
+                //   writes_refused_in_transaction  a PRE-COMMIT diagnostic. Revit refused
+                //                                  Parameter.Set, so the old value stayed.
+                //                                  These targets normally reappear in
+                //                                  targets_unverified_after_commit - the
+                //                                  read-back is what proves it - so the two
+                //                                  overlap and must never be summed. (One
+                //                                  exception, stated because it is real: a
+                //                                  target that ALREADY carried the requested
+                //                                  keynote verifies even though its write was
+                //                                  refused. The post-commit read is right in
+                //                                  that case too, which is why it, and not
+                //                                  the refusal count, is what decides.)
+                //   targets_unverified_after_commit  the evidence. Every resolved target the
+                //                                  committed model does not carry.
+                ["ids_unresolved"] = unresolvedIds,
+                ["writes_refused_in_transaction"] = writesRefused,
+                ["targets_unverified_after_commit"] = verifyFailed,
 
                 ["elements_now_carrying_this_keynote"] = elementsCarrying,
                 ["elements_now_carrying_this_keynote_complete"] = carryingCountComplete,
@@ -401,7 +462,10 @@ namespace Horizun.Revit.Commands
                     "writes_accepted_in_transaction is what Revit accepted BEFORE the commit and is NOT evidence; " +
                     "writes_verified_after_commit is the number re-read from the committed document, which is. " +
                     "elements_now_carrying_this_keynote is counted by asking the model again after the commit, not " +
-                    "by summing what the plan expected.",
+                    "by summing what the plan expected. writes_failed counts DISTINCT write targets the committed " +
+                    "model does not carry; ids_unresolved is separate and is not a failed write, because those ids " +
+                    "never became targets; writes_refused_in_transaction overlaps writes_failed rather than adding " +
+                    "to it. Do not sum the three.",
 
                 // The verdict is over the POST-COMMIT number now. It used to be over the
                 // in-transaction one, which cannot distinguish a committed write from one
@@ -410,6 +474,25 @@ namespace Horizun.Revit.Commands
                 ["written"] = written,
                 ["failed"] = failed
             };
+            // The transaction committed or Guard.Commit would have thrown above, which is
+            // what makes the literal status honest here - it is not assumed, it is the only
+            // status that reaches this line.
+            //
+            // The counts are handed over separately and each thing asked for is counted
+            // ONCE: unresolvedIds never became targets, so they add to what was requested;
+            // verifyFailed is every resolved target the committed model does not carry, and
+            // it already covers the writesRefused ones - a refused write leaves the old
+            // value and the read-back is what proves it - so writesRefused is a diagnostic
+            // here and is deliberately NOT passed. Any target neither verified nor
+            // unverified was never measured, and WriteTally turns that into unknown rather
+            // than absorbing it; counts that cannot describe a real batch come back
+            // uncertain rather than clamped.
+            ApplicationOutcome.Stamp(result, WriteTally.PerTarget(
+                ApplicationOutcome.Committed,
+                resolvedTargets: byTarget.Count,
+                unresolvedIds: unresolvedIds,
+                verifiedTargets: verified,
+                unverifiedTargets: verifyFailed));
             DocumentGate.StampConfirmation(result, gate, Name, planHash, false);
             return CommandResult.Ok(result);
         }

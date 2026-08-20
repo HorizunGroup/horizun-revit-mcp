@@ -63,6 +63,8 @@ namespace Horizun.Server
         private static OutboundWriter _writer;
         private static readonly InFlight _inFlight = new InFlight();
         private static readonly McpSession _session = new McpSession();
+        private static string _negotiatedProtocol;
+        private static ToolListMonitor _toolListMonitor;
 
         /// <summary>
         /// Set once the response channel has failed. The read loop stops on it, so no
@@ -225,13 +227,11 @@ namespace Horizun.Server
                         continue;
                     }
 
-                    string method = msg["method"] is JValue mv ? mv.Value as string : null;
-                    if (method == null)
+                    string method;
+                    string methodError;
+                    if (!_session.TryReadMethod(msg, out method, out methodError))
                     {
-                        // A reply to something we never sent, or a malformed request. The
-                        // difference matters: one is noise, the other deserves an answer.
-                        if (msg["method"] != null && !isNotification)
-                            _writer.TryError(id, -32600, "Invalid request: 'method' must be a string.");
+                        if (!isNotification) _writer.TryError(id, -32600, methodError);
                         continue;
                     }
 
@@ -262,6 +262,12 @@ namespace Horizun.Server
                         continue;
                     }
 
+                    if (method == "tasks/result" && !isNotification)
+                    {
+                        DispatchTaskResult(id, prms);
+                        continue;
+                    }
+
                     try
                     {
                         JToken result = Handle(method, prms);
@@ -271,7 +277,20 @@ namespace Horizun.Server
                             if (delivered && method == "initialize") _session.InitializeAnswerDelivered();
                         }
                         else if (isNotification && method == "notifications/initialized")
+                        {
                             _session.InitializedNotificationAccepted();
+                            if (_toolListMonitor == null)
+                            {
+                                try { _toolListMonitor = new ToolListMonitor(_writer.Notify); }
+                                catch (Exception ex)
+                                {
+                                    // tools/list still re-reads settings. Only the
+                                    // convenience notification is lost, so startup must
+                                    // not fail over this watcher.
+                                    Log.Warn("dynamic tool-list notifications unavailable: " + ex.Message);
+                                }
+                            }
+                        }
                     }
                     catch (McpError me)
                     {
@@ -339,6 +358,7 @@ namespace Horizun.Server
                     Log.Info("all outstanding work answered in " + clock.ElapsedMilliseconds + " ms");
             }
             _inFlight.CancelAll();
+            try { _toolListMonitor?.Dispose(); } catch { }
 
             Log.Info("server down (stdin closed)");
             return 0;
@@ -358,7 +378,8 @@ namespace Horizun.Server
             string refusal;
             // The deadline this request will be drained against on shutdown - the same
             // limit the call itself is held to, so the two cannot drift apart.
-            if (!_inFlight.TryStart(key, toolName, cts, out refusal, CommandTimeoutMs))
+            int requestDeadlineMs = toolName == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs;
+            if (!_inFlight.TryStart(key, toolName, cts, out refusal, requestDeadlineMs))
             {
                 cts.Dispose();
                 Log.Warn("request id already in flight, refused for '" + toolName + "'");
@@ -378,6 +399,10 @@ namespace Horizun.Server
             Task.Run(() =>
             {
                 var clock = System.Diagnostics.Stopwatch.StartNew();
+                McpLogging.Emit("info", new JObject
+                {
+                    ["event"] = "tool_started", ["tool"] = toolName, ["request_id"] = key
+                }, _writer.Notify);
                 using (var heartbeat = StartHeartbeat(progressToken, toolName, clock, cts.Token))
                 {
                     try
@@ -391,11 +416,21 @@ namespace Horizun.Server
                             // stronger NEVER STARTED proof in either ordering.
                             string proof = CancellationProof(result);
                             reply.TryError(-32800, proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                            ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice");
                         }
                         else
+                        {
                             reply.TryReply(result);
+                            bool resultError = (bool?)result?["isError"] == true;
+                            ClientToolFinished(toolName, resultError ? "error" : "ok",
+                                clock.ElapsedMilliseconds, resultError ? "warning" : "info");
+                        }
                     }
-                    catch (McpError me) { reply.TryError(me.Code, me.Message); }
+                    catch (McpError me)
+                    {
+                        reply.TryError(me.Code, me.Message);
+                        ClientToolFinished(toolName, "protocol_error", clock.ElapsedMilliseconds, "error");
+                    }
                     catch (OperationCanceledException oce)
                     {
                         string exact = oce.Message;
@@ -403,11 +438,13 @@ namespace Horizun.Server
                             IsNeverStartedProof(exact)
                                 ? exact
                                 : CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                        ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice");
                     }
                     catch (Exception ex)
                     {
                         Log.Error("'" + toolName + "' threw", ex);
                         reply.TryError(-32603, ex.Message);
+                        ClientToolFinished(toolName, "internal_error", clock.ElapsedMilliseconds, "error");
                     }
                     finally
                     {
@@ -423,6 +460,57 @@ namespace Horizun.Server
                         }
                         // The in-flight slot is released for resource accounting. The
                         // session still remembers the id and refuses lifetime reuse.
+                        _inFlight.Finish(key);
+                    }
+                }
+            });
+        }
+
+        private static void ClientToolFinished(string tool, string outcome, long elapsedMs, string level)
+        {
+            McpLogging.Emit(level, new JObject
+            {
+                ["event"] = "tool_finished", ["tool"] = tool,
+                ["outcome"] = outcome, ["elapsed_ms"] = elapsedMs
+            }, _writer.Notify);
+        }
+
+        private static void DispatchTaskResult(object id, JObject prms)
+        {
+            if (_negotiatedProtocol != ProtocolNegotiation.Latest)
+            {
+                _writer.TryError(id, -32601,
+                    "MCP Tasks require negotiated protocol " + ProtocolNegotiation.Latest + ".");
+                return;
+            }
+            string key = OutboundWriter.Key(id);
+            var cts = new CancellationTokenSource();
+            string refusal;
+            if (!_inFlight.TryStart(key, "tasks/result", cts, out refusal, CommandTimeoutMs))
+            {
+                cts.Dispose();
+                _writer.TryError(id, -32600, refusal);
+                return;
+            }
+            ReplySlot reply = _writer.Slot(id);
+            JToken progressToken = prms?["_meta"]?["progressToken"];
+            Task.Run(() =>
+            {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                using (var heartbeat = StartHeartbeat(progressToken, "tasks/result", clock, cts.Token,
+                                                       (string)prms?["taskId"]))
+                {
+                    try { reply.TryReply(McpTasks.WaitResult(prms, CallTool, cts.Token)); }
+                    catch (McpError me) { reply.TryError(me.Code, me.Message); }
+                    catch (OperationCanceledException) { reply.TryError(-32800, "tasks/result was cancelled."); }
+                    catch (Exception ex)
+                    {
+                        Log.Error("tasks/result threw", ex);
+                        reply.TryError(-32603, ex.Message);
+                    }
+                    finally
+                    {
+                        if (!reply.Answered) reply.TryError(-32603, "tasks/result finished without an answer.");
                         _inFlight.Finish(key);
                     }
                 }
@@ -458,7 +546,8 @@ namespace Horizun.Server
         /// it names both instead of calling queued work "running". No invented percentage.
         /// </summary>
         private static IDisposable StartHeartbeat(JToken progressToken, string tool,
-                                                  System.Diagnostics.Stopwatch clock, CancellationToken ct)
+                                                  System.Diagnostics.Stopwatch clock, CancellationToken ct,
+                                                  string relatedTaskId = null)
         {
             if (progressToken == null || progressToken.Type == JTokenType.Null) return new NoHeartbeat();
 
@@ -471,7 +560,7 @@ namespace Horizun.Server
                     {
                         await Task.Delay(5000, stop.Token).ConfigureAwait(false);
                         if (stop.IsCancellationRequested) break;
-                        _writer.Notify("notifications/progress", new JObject
+                        var progress = new JObject
                         {
                             ["progressToken"] = progressToken.DeepClone(),
                             ["progress"] = clock.ElapsedMilliseconds / 1000,
@@ -479,7 +568,14 @@ namespace Horizun.Server
                                           clock.ElapsedMilliseconds / 1000 + " s). It may be waiting in the FIFO " +
                                           "queue or executing on Revit's UI thread; this side cannot distinguish " +
                                           "those states. No percentage is reported because Revit does not report one."
-                        });
+                        };
+                        if (!string.IsNullOrWhiteSpace(relatedTaskId))
+                            progress["_meta"] = new JObject
+                            {
+                                ["io.modelcontextprotocol/related-task"] =
+                                    new JObject { ["taskId"] = relatedTaskId }
+                            };
+                        _writer.Notify("notifications/progress", progress);
                     }
                 }
                 catch (OperationCanceledException) { }
@@ -509,10 +605,27 @@ namespace Horizun.Server
             {
                 case "initialize":
                     string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
+                    _negotiatedProtocol = negotiatedProtocol;
+                    var capabilities = new JObject
+                    {
+                        ["tools"] = new JObject { ["listChanged"] = true },
+                        ["resources"] = new JObject { ["subscribe"] = false, ["listChanged"] = false },
+                        ["prompts"] = new JObject { ["listChanged"] = false },
+                        ["completions"] = new JObject(),
+                        ["logging"] = new JObject()
+                    };
+                    if (negotiatedProtocol == ProtocolNegotiation.Latest)
+                        capabilities["tasks"] = new JObject
+                        {
+                            ["requests"] = new JObject
+                            {
+                                ["tools"] = new JObject { ["call"] = new JObject() }
+                            }
+                        };
                     return new JObject
                     {
                         ["protocolVersion"] = negotiatedProtocol,
-                        ["capabilities"] = new JObject { ["tools"] = new JObject() },
+                        ["capabilities"] = capabilities,
                         ["serverInfo"] = new JObject { ["name"] = ServerName, ["version"] = ServerVersion },
                         // The protocol's own slot for "how to use this server". A caller
                         // that reads it knows two things it would otherwise learn by
@@ -530,7 +643,42 @@ namespace Horizun.Server
                     return new JObject();
 
                 case "tools/list":
-                    return new JObject { ["tools"] = Tools.List() };
+                    return new JObject { ["tools"] = Tools.List(_negotiatedProtocol == ProtocolNegotiation.Latest) };
+
+                case "resources/list":
+                    return McpResources.List(prms);
+
+                case "resources/read":
+                    return McpResources.Read(prms);
+
+                case "prompts/list":
+                    return McpPrompts.List(prms);
+
+                case "prompts/get":
+                    return McpPrompts.Get(prms);
+
+                case "completion/complete":
+                    return McpCompletions.Complete(prms);
+
+                case "logging/setLevel":
+                    return McpLogging.SetLevel(prms);
+
+                case "tasks/get":
+                    RequireTasksProtocol();
+                    return McpTasks.Get(prms);
+
+                case "tasks/list":
+                    RequireTasksProtocol();
+                    // stdio has no requestor identity to bind persistent task metadata
+                    // to. The Tasks security guidance says such receivers SHOULD NOT
+                    // expose list, so task ids remain capability URLs with 128 bits of
+                    // entropy and only direct get/result access is available.
+                    throw new McpError(-32601,
+                        "tasks/list is not available on this identity-less stdio transport. Use the taskId returned when the task was created.");
+
+                case "tasks/result":
+                    throw new McpError(-32600,
+                        "tasks/result was sent as a notification (no id), so there is nowhere to return its result.");
 
                 case "tools/call":
                     // A request reaches DispatchToolCall and never gets here. Arriving here
@@ -582,6 +730,12 @@ namespace Horizun.Server
                 return TextResult("Error: " + disabled, true);
             }
 
+            if (prms?["task"] != null)
+            {
+                RequireTasksProtocol();
+                return McpTasks.Create(prms, CallTool, ct);
+            }
+
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
             // Host-resident tool: answer in this process, never touch Revit. Same result shape
@@ -590,7 +744,7 @@ namespace Horizun.Server
             {
                 try
                 {
-                    JObject data = def.Host(args);
+                    JObject data = HostCallRunner.Run(name, token => def.Host(args, token), ct, CommandTimeoutMs);
                     Log.Info(name + " (host) ok in " + clock.ElapsedMilliseconds + " ms");
                     return StructuredResult(data);
                 }
@@ -695,6 +849,13 @@ namespace Horizun.Server
                 return TextResult(msg, true);
             }
 
+            string legacyRefusal = PipeClient.LegacyContractRefusal(d, def);
+            if (legacyRefusal != null)
+            {
+                Log.Warn(name + " refused: " + legacyRefusal);
+                return TextResult("Error: " + legacyRefusal, true);
+            }
+
             if (d.ProtocolVersion != 0 && d.ProtocolVersion != Horizun.Contracts.Contract.ProtocolVersion)
             {
                 Log.Warn(name + " refused: protocol " + d.ProtocolVersion + " vs " +
@@ -786,43 +947,10 @@ namespace Horizun.Server
                                               JObject fallback = null, JArray capabilityGaps = null)
         {
             string text = (data == null ? "null" : data.ToString(Formatting.Indented)) + RevitSaidText(said);
-            string path = data is JObject obj ? (string)obj["image_path"] : null;
-            // THE SUCCESS PATH CARRIES THE VERDICT TOO. A rehearsal is a SUCCESS that
-            // found a capability gap, and this is the function the forwarder actually
-            // calls - McpResult.FromPluginReply is used by the tests, and testing a
-            // helper the production path does not call is how this shipped unnoticed.
-            if (string.IsNullOrEmpty(path))
-                return McpResult.Structured(data, text, fallback, capabilityGaps);
-
-            try
-            {
-                if (!File.Exists(path))
-                    return TextResult(text + "\n\n[the image could not be attached: " + path + " is not there]", false);
-
-                byte[] bytes = File.ReadAllBytes(path);
-                string mime = path.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
-                              path.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ? "image/jpeg" : "image/png";
-
-                return new JObject
-                {
-                    ["content"] = new JArray
-                    {
-                        new JObject { ["type"] = "text", ["text"] = text },
-                        new JObject
-                        {
-                            ["type"] = "image",
-                            ["data"] = Convert.ToBase64String(bytes),
-                            ["mimeType"] = mime
-                        }
-                    },
-                    ["isError"] = false,
-                    ["structuredContent"] = data is JObject ? data.DeepClone() : null
-                };
-            }
-            catch (Exception ex)
-            {
-                return TextResult(text + "\n\n[the image could not be attached: " + ex.Message + "]", false);
-            }
+            // THE SUCCESS PATH CARRIES THE VERDICT TOO. The helper is the production
+            // attachment path and is internal so its missing/oversized-file behavior can
+            // be exercised without starting an MCP process.
+            return McpResult.AttachImageIfAny(data, text, fallback, capabilityGaps);
         }
 
         private static JObject TextResult(string text, bool isError) => McpResult.Text(text, isError);
@@ -853,6 +981,13 @@ namespace Horizun.Server
                 ["id"] = id == null ? null : JToken.FromObject(id),
                 ["error"] = new JObject { ["code"] = code, ["message"] = message }
             };
+
+        private static void RequireTasksProtocol()
+        {
+            if (_negotiatedProtocol != ProtocolNegotiation.Latest)
+                throw new McpError(-32601,
+                    "MCP Tasks require negotiated protocol " + ProtocolNegotiation.Latest + ".");
+        }
 
     }
 }

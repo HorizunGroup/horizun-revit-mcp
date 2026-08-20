@@ -45,19 +45,30 @@ namespace Horizun.Revit.Core
     public static class Guard
     {
         /// <summary>Commit and prove it: throws on any status other than Committed.</summary>
-        public static void Commit(Transaction t, string what)
+        public static TransactionStatus Commit(Transaction t, string what)
         {
             TransactionStatus status = t.Commit();
             if (status != TransactionStatus.Committed)
                 throw new SilentRollbackException(what, status);
+            return status;
+        }
+
+        /// <summary>Commit and prove it for a nested SubTransaction too.</summary>
+        public static TransactionStatus Commit(SubTransaction t, string what)
+        {
+            TransactionStatus status = t.Commit();
+            if (status != TransactionStatus.Committed)
+                throw new SilentRollbackException(what, status);
+            return status;
         }
 
         /// <summary>Same, for a TransactionGroup.</summary>
-        public static void Assimilate(TransactionGroup g, string what)
+        public static TransactionStatus Assimilate(TransactionGroup g, string what)
         {
             TransactionStatus status = g.Assimilate();
             if (status != TransactionStatus.Committed)
                 throw new SilentRollbackException(what, status);
+            return status;
         }
 
         /// <summary>

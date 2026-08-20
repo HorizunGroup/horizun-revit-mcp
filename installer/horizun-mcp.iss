@@ -44,6 +44,7 @@
   #define AppVersion "0.0.0-unpacked"
 #endif
 #define AppExeName     "horizun-mcp.exe"
+#define HorizunAddInId "b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30"
 
 [Setup]
 AppId={{8F3B6A21-9E44-4E77-A0C5-6C1D2E9A7B10}
@@ -204,7 +205,132 @@ begin
     Result := (Code = 0);
 end;
 
+function Win32GetLastError(): LongWord;
+  external 'GetLastError@kernel32.dll stdcall';
+
+function Win32GetFileAttributes(FileName: String): LongWord;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
+
+function IsHexDigit(Value: Char): Boolean;
+begin
+  Result := ((Value >= '0') and (Value <= '9')) or
+            ((Value >= 'a') and (Value <= 'f')) or
+            ((Value >= 'A') and (Value <= 'F'));
+end;
+
+function TryNormalizeGuid(Value: String; var Normalized: String): Boolean;
+var
+  I: Integer;
+  S: String;
+begin
+  Result := False;
+  Normalized := '';
+  S := Trim(Value);
+
+  { Revit/.NET accepts the standard D, N, B and P GUID spellings. Reduce all
+    four to the same 32 lowercase hex digits, but reject every malformed value;
+    deleting punctuation from arbitrary text would not be GUID parsing. }
+  if (Length(S) = 38) and
+     (((S[1] = '{') and (S[38] = '}')) or
+      ((S[1] = '(') and (S[38] = ')'))) then
+    S := Copy(S, 2, 36);
+
+  if Length(S) = 36 then
+  begin
+    if (S[9] <> '-') or (S[14] <> '-') or (S[19] <> '-') or (S[24] <> '-') then exit;
+    Delete(S, 24, 1);
+    Delete(S, 19, 1);
+    Delete(S, 14, 1);
+    Delete(S, 9, 1);
+  end;
+
+  if Length(S) <> 32 then exit;
+  for I := 1 to Length(S) do
+    if not IsHexDigit(S[I]) then exit;
+
+  Normalized := Lowercase(S);
+  Result := True;
+end;
+
+function HasHorizunAddInIdConflict(AddinsRoot, Year, AllowedManifest: String): Boolean;
+var
+  FindRec: TFindRec;
+  Candidate, Needle, CandidateId, YearRoot: String;
+  I: Integer;
+  EnumerationError, YearRootAttributes: LongWord;
+  FoundManifest, EnumerationCompleted: Boolean;
+  XmlDocument, AddInIdNodes: Variant;
+begin
+  { Any parse/inspection failure is a conflict: an unreadable manifest cannot be
+    proven harmless before adding a second registration. MSXML 6 resolves XML
+    character references in element text, but DTDs and external entities are
+    disabled before Load so duplicate detection cannot read outside the file. }
+  Result := True;
+  if not TryNormalizeGuid('{#HorizunAddInId}', Needle) then exit;
+  YearRoot := AddinsRoot + '\' + Year;
+  YearRootAttributes := Win32GetFileAttributes(YearRoot);
+  if YearRootAttributes = $FFFFFFFF then
+  begin
+    EnumerationError := Win32GetLastError();
+    { A genuinely absent year directory is harmless. Access denied, a sharing
+      violation and every other failure cannot establish absence. }
+    if (EnumerationError = 2) or (EnumerationError = 3) then Result := False;
+    exit;
+  end;
+  if (YearRootAttributes and $10) = 0 then exit;
+  FoundManifest := FindFirst(YearRoot + '\*.addin', FindRec);
+  EnumerationError := Win32GetLastError();
+  if FoundManifest then
+  begin
+    EnumerationCompleted := False;
+    try
+      repeat
+        Candidate := AddinsRoot + '\' + Year + '\' + FindRec.Name;
+        if (AllowedManifest = '') or (CompareText(Candidate, AllowedManifest) <> 0) then
+        begin
+          try
+            XmlDocument := CreateOleObject('Msxml2.DOMDocument.6.0');
+            XmlDocument.async := False;
+            XmlDocument.validateOnParse := False;
+            XmlDocument.resolveExternals := False;
+            XmlDocument.setProperty('ProhibitDTD', True);
+            XmlDocument.setProperty('SelectionLanguage', 'XPath');
+            if not XmlDocument.load(Candidate) then exit;
+            AddInIdNodes := XmlDocument.selectNodes('//*[local-name()="AddInId"]');
+            for I := 0 to AddInIdNodes.length - 1 do
+              if TryNormalizeGuid(String(AddInIdNodes.item[I].text), CandidateId) and
+                 (CandidateId = Needle) then exit;
+          except
+            exit;
+          end;
+        end;
+        FoundManifest := FindNext(FindRec);
+        if not FoundManifest then
+        begin
+          EnumerationError := Win32GetLastError();
+          EnumerationCompleted := EnumerationError = 18;
+        end;
+      until not FoundManifest;
+    finally
+      FindClose(FindRec);
+    end;
+    if not EnumerationCompleted then exit;
+  end;
+  if not FoundManifest then
+  begin
+    { FindFirst returns False both for an empty match and for access/I/O errors.
+      Read Win32's reason immediately: only the two documented no-match results
+      prove absence. ACL denial, sharing errors and every unknown failure remain
+      the initial conflict=True and stop Setup before it writes anything. }
+    if (EnumerationError <> 2) and (EnumerationError <> 18) then exit;
+  end;
+  Result := False;
+end;
+
 function InitializeSetup: Boolean;
+var
+  I: Integer;
+  ProgramFiles64, Conflicts, UserRoot, MachineRoot, ExpectedUserManifest: String;
 begin
   Result := True;
   if RevitIsRunning then
@@ -214,6 +340,33 @@ begin
            'still running the old build without being told.' + #13#10#13#10 +
            'Close every Revit window and run this installer again. Nothing has been changed.',
            mbError, MB_OK);
+    Result := False;
+  end;
+  if not Result then exit;
+
+  { Revit reads both ProgramData and AppData. Installing the same AddInId in both
+    scopes is not an update: it is two competing add-ins. Refuse before Setup
+    writes anything. }
+  InitYears;
+  ProgramFiles64 := GetEnv('ProgramW6432');
+  if ProgramFiles64 = '' then ProgramFiles64 := ExpandConstant('{commonpf}');
+  UserRoot := ExpandConstant('{userappdata}') + '\Autodesk\Revit\Addins';
+  MachineRoot := ExpandConstant('{commonappdata}') + '\Autodesk\Revit\Addins';
+  Conflicts := '';
+  for I := 0 to YearsCount - 1 do
+    if FileExists(ProgramFiles64 + '\Autodesk\Revit ' + Years[I] + '\Revit.exe') then
+    begin
+      ExpectedUserManifest := UserRoot + '\' + Years[I] + '\Horizun.addin';
+      if HasHorizunAddInIdConflict(MachineRoot, Years[I], '') or
+         HasHorizunAddInIdConflict(UserRoot, Years[I], ExpectedUserManifest) then
+        Conflicts := Conflicts + Years[I] + ', ';
+    end;
+  if Conflicts <> '' then
+  begin
+    MsgBox('Another manifest with the Horizun AddInId already exists for Revit ' + Conflicts + #13#10#13#10 +
+      'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
+      'Remove or migrate the machine-wide installation first. Nothing has been changed.',
+      mbError, MB_OK);
     Result := False;
   end;
 end;
@@ -522,6 +675,22 @@ begin
   Result := True;
 end;
 
+function VerifyInstalledPayload: Boolean;
+var
+  ResultCode: Integer;
+begin
+  { The manifest and every rollback image still exist at this point. Verify the
+    complete server/plugin inventories plus each real .addin before Commit removes
+    those images; an existence check is not a transaction postcondition. }
+  Result := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    '-NoProfile -ExecutionPolicy Bypass -File "' +
+    ExpandConstant('{app}') + '\server\client-tools\verify-install.ps1"' +
+    ' -Client None -ServerPath "' + ExpandConstant('{app}') + '\server\{#AppExeName}" -SkipLive',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+  if not Result then
+    ServerFailure := 'exact installed-payload verification failed; the previous installation was restored';
+end;
+
 procedure CommitDeployment;
 var
   I: Integer;
@@ -570,7 +739,11 @@ begin
 
     if ServerInstalled and ((not FoundAny) or (FailedYears = '')) then
     begin
-      if WriteDeploymentManifests then CommitDeployment
+      if WriteDeploymentManifests then
+      begin
+        if VerifyInstalledPayload then CommitDeployment
+        else RollbackDeployment;
+      end
       else RollbackDeployment;
     end
     else if ServerInstalled then

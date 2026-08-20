@@ -76,26 +76,26 @@ function Get-HorizunAddinRoots {
 #>
 function Get-HorizunInstalledAddins {
     $found = @()
+    $horizunAddInId = 'b8e5a2f0-3c1d-4e6a-9f2b-7a4c8d1e5f30'
     foreach ($root in Get-HorizunAddinRoots) {
         if (-not (Test-Path $root)) { continue }
-        foreach ($yearDir in Get-ChildItem $root -Directory -ErrorAction SilentlyContinue) {
-            $manifest = Join-Path $yearDir.FullName 'Horizun.addin'
-            if (-not (Test-Path $manifest)) { continue }
-
+        foreach ($yearDir in Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue) {
             $year = 0
             if (-not [int]::TryParse($yearDir.Name, [ref]$year)) { $year = 0 }
-            $dll = Join-Path $yearDir.FullName 'Horizun\Horizun.Revit.dll'
-
-            $found += [pscustomobject]@{
-                Year       = $year
-                Root       = $root
-                AddinsDir  = $yearDir.FullName
-                Manifest   = $manifest
-                PluginDir  = Join-Path $yearDir.FullName 'Horizun'
-                Dll        = $dll
-                DllExists  = (Test-Path $dll)
-                Provenance = (Get-HorizunProvenance $dll)
-                Scope      = if ($root -like "$env:PROGRAMDATA*") { 'all-users' } else { 'per-user' }
+            if ($year -eq 0) { continue }
+            foreach ($manifest in @(Get-HorizunManifestsByAddInId -AddinsRoot $root -Year $year -AddInId $horizunAddInId)) {
+                $dll = Join-Path $yearDir.FullName 'Horizun\Horizun.Revit.dll'
+                $found += [pscustomobject]@{
+                    Year       = $year
+                    Root       = $root
+                    AddinsDir  = $yearDir.FullName
+                    Manifest   = $manifest
+                    PluginDir  = Join-Path $yearDir.FullName 'Horizun'
+                    Dll        = $dll
+                    DllExists  = (Test-Path $dll)
+                    Provenance = (Get-HorizunProvenance $dll)
+                    Scope      = if ($root -like "$env:PROGRAMDATA*") { 'all-users' } else { 'per-user' }
+                }
             }
         }
     }
@@ -112,6 +112,76 @@ function Get-HorizunLockedFiles([string]$Dir) {
         catch { $locked += $f.Name }
     }
     $locked
+}
+
+function Assert-HorizunNoReparseTree([string]$Path, [string]$Label) {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $volume = [IO.Path]::GetPathRoot($full)
+    $current = $volume.TrimEnd('\')
+    if (-not $current) { $current = $volume }
+    foreach ($component in $full.Substring($volume.Length).Split([char]'\', [StringSplitOptions]::RemoveEmptyEntries)) {
+        $current = Join-Path $current $component
+        if (-not (Test-Path -LiteralPath $current)) { break }
+        $ancestor = Get-Item -LiteralPath $current -Force
+        if (($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing $Label through a link or junction: $current"
+        }
+    }
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { return }
+    $pending = New-Object 'Collections.Generic.Queue[string]'
+    $pending.Enqueue($full)
+    while ($pending.Count -gt 0) {
+        $current = $pending.Dequeue()
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing $Label through a link or junction: $current"
+        }
+        foreach ($child in @(Get-ChildItem -LiteralPath $current -Directory -Force -ErrorAction Stop)) {
+            if (($child.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing $Label through a link or junction: $($child.FullName)"
+            }
+            $pending.Enqueue($child.FullName)
+        }
+    }
+}
+
+function Get-HorizunManifestsByAddInId {
+    param(
+        [Parameter(Mandatory)][string]$AddinsRoot,
+        [Parameter(Mandatory)][int]$Year,
+        [Parameter(Mandatory)][string]$AddInId
+    )
+    $yearRoot = Join-Path $AddinsRoot ([string]$Year)
+    Assert-HorizunNoReparseTree $yearRoot "Revit $Year add-in manifest discovery"
+    if (-not (Test-Path -LiteralPath $yearRoot -PathType Container)) { return @() }
+    $needle = [Guid]::Empty
+    if (-not [Guid]::TryParse($AddInId.Trim(), [ref]$needle)) {
+        throw "Invalid expected Revit AddInId: $AddInId"
+    }
+    $found = @()
+    foreach ($candidate in @(Get-ChildItem -LiteralPath $yearRoot -Filter '*.addin' -File -Force -ErrorAction Stop)) {
+        try {
+            $settings = New-Object Xml.XmlReaderSettings
+            $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+            $settings.XmlResolver = $null
+            $reader = [Xml.XmlReader]::Create($candidate.FullName, $settings)
+            try {
+                while ($reader.Read()) {
+                    if ($reader.NodeType -eq [Xml.XmlNodeType]::Element -and $reader.LocalName -eq 'AddInId') {
+                        $candidateId = [Guid]::Empty
+                        $candidateValue = $reader.ReadElementContentAsString().Trim()
+                        if ([Guid]::TryParse($candidateValue, [ref]$candidateId) -and $candidateId -eq $needle) {
+                            $found += $candidate.FullName
+                            break
+                        }
+                    }
+                }
+            }
+            finally { $reader.Dispose() }
+        }
+        catch { throw "Cannot safely inspect Revit add-in manifest '$($candidate.FullName)': $($_.Exception.Message)" }
+    }
+    return @($found)
 }
 
 <#
@@ -134,6 +204,7 @@ function Install-HorizunPayload {
     if (-not $AddinsRoot) { $AddinsRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$Year" }
     $pluginDir = Join-Path $AddinsRoot 'Horizun'
     New-Item -ItemType Directory -Path $pluginDir -Force | Out-Null
+    Assert-HorizunNoReparseTree $pluginDir "Revit $Year deployment"
 
     $locked = Get-HorizunLockedFiles $pluginDir
     if ($locked.Count -gt 0) {
@@ -196,6 +267,39 @@ function Install-HorizunPayload {
     }
 }
 
+<#
+  Materialise the exact add-in payload shape consumed by Install-HorizunPayload.
+  A dotnet bin directory also contains build/debug artifacts (PDB, deps.json and
+  RID assets) which are not Revit loadable payload. Manifests must be computed
+  from this projection, never from the raw bin directory, or verification will
+  describe files the installer deliberately did not deploy.
+#>
+function Copy-HorizunPluginPayloadToStage {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Destination
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Container)) {
+        throw "Plugin build output is missing: $Source"
+    }
+    if (Test-Path -LiteralPath $Destination) {
+        throw "Plugin stage must be a new directory: $Destination"
+    }
+    New-Item -ItemType Directory -Path $Destination -Force | Out-Null
+    Get-ChildItem -LiteralPath $Source -Filter '*.dll' -File |
+        ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $Destination -Force }
+    foreach ($directory in 'lib','Resources','Recipes') {
+        $from = Join-Path $Source $directory
+        if (Test-Path -LiteralPath $from -PathType Container) {
+            Copy-Item -LiteralPath $from -Destination (Join-Path $Destination $directory) -Recurse -Force
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Destination 'Horizun.Revit.dll') -PathType Leaf)) {
+        throw "Projected plugin payload has no Horizun.Revit.dll: $Destination"
+    }
+}
+
 # SHA-256 of a file, for proving a copy landed intact rather than assuming it did.
 function Get-HorizunFileHash([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
@@ -223,11 +327,12 @@ function Get-HorizunFileHash([string]$Path) {
 #>
 function Get-HorizunPayloadListing([string]$Root) {
     if (-not (Test-Path $Root)) { return $null }
+    Assert-HorizunNoReparseTree $Root 'payload inventory'
     $rootFull = (Resolve-Path $Root).Path.TrimEnd('\') + '\'
 
     $files = @()
     $stdlib = @()
-    foreach ($f in Get-ChildItem $Root -Recurse -File | Sort-Object FullName) {
+    foreach ($f in Get-ChildItem -LiteralPath $Root -Recurse -File -Force | Sort-Object FullName) {
         $rel = $f.FullName.Substring($rootFull.Length).Replace('\', '/')
         if ($rel -like 'lib/*') { $stdlib += [pscustomobject]@{ Rel = $rel; File = $f } ; continue }
         $files += [pscustomobject]@{
@@ -439,7 +544,7 @@ function Update-HorizunManifestToStage([string]$Stage) {
     $thumb = $null; $subject = $null
     foreach ($p in $own) {
         $info = Get-HorizunSignatureInfo $p
-        if (-not $info.Signed) { $allSigned = $false }
+        if (-not $info.Signed -or $info.Status -ne 'Valid' -or -not $info.Timestamped) { $allSigned = $false }
         elseif (-not $thumb) { $thumb = $info.Thumbprint; $subject = $info.Subject }
         $sigFiles += [pscustomobject]@{
             File = ($p.Substring($Stage.Length).TrimStart('\') -replace '\\', '/')

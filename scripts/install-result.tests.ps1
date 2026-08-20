@@ -2,6 +2,12 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install-release.ps1')
 
+$quoted = @(New-HorizunSetupArguments 'C:\Users\<user name>\Temp\install-result.txt' 'Codex')
+if ($quoted[0] -ne '/HORIZUNRESULT="C:\Users\<user name>\Temp\install-result.txt"') {
+    throw "HORIZUNRESULT path with spaces is not preserved as one quoted Windows argument: $($quoted[0])"
+}
+Write-Host '  PASS  result path with spaces is quoted for Setup'
+
 $failed = 0
 function Assert($name, $condition, $detail) {
     if ($condition) { Write-Host "  PASS  $name" -ForegroundColor Green }
@@ -27,6 +33,18 @@ try {
       'any_revit_found=yes','succeeded=2025, 2026','failed=','fully_installed=yes') | Set-Content $good
     $result = Read-HorizunInstallResult $good $start $finish 'v0.9.0'
     Assert 'a fresh complete result passes' ($result.fully_installed -eq 'yes') $null
+
+    $preview = Join-Path $root 'preview.txt'
+    @("version=0.9.0-preview.1","installed_local=$stamp","server_installed=yes","server_failure=",
+      'any_revit_found=yes','succeeded=2025, 2026','failed=','fully_installed=yes') | Set-Content $preview
+    $previewResult = Read-HorizunInstallResult $preview $start $finish 'v0.9.0-preview.1'
+    Assert 'preview result preserves and verifies the full prerelease identity' `
+        ($previewResult.version -eq '0.9.0-preview.1') $previewResult.version
+    $previewMismatch = $null
+    try { Read-HorizunInstallResult $good $start $finish 'v0.9.0-preview.1' | Out-Null }
+    catch { $previewMismatch = $_.Exception.Message }
+    Assert 'preview refuses a base-version-only installed payload' `
+        ([bool]($previewMismatch -match "version '0\.9\.0'.*expected 'v0\.9\.0-preview\.1'")) $previewMismatch
 
     Refuses 'partial Revit deployment is refused' {
         param($p) @("version=0.9.0","installed_local=$stamp","server_installed=yes",'server_failure=',

@@ -3,6 +3,9 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
@@ -69,6 +72,109 @@ namespace Horizun.Revit.Core
             }
             return token.DeepClone();
         }
+
+        /// <summary>
+        /// Bind every reference in an action to the exact canonical arguments its rehearsal
+        /// produced. Object-property order is ignored; array order and scalar types are not.
+        /// </summary>
+        public static JObject DescribeBinding(JToken original, JToken resolved)
+        {
+            var references = new JArray();
+            CollectReferences(original, resolved, "", references);
+            return new JObject
+            {
+                ["original_hash"] = CanonicalFingerprint(original),
+                ["resolved_hash"] = CanonicalFingerprint(resolved),
+                ["references"] = references
+            };
+        }
+
+        /// <summary>Compare apply-time resolved arguments with the exact approved binding.</summary>
+        public static JObject CompareBinding(JObject expected, JToken original, JToken actual)
+        {
+            string expectedHash = expected?.Value<string>("resolved_hash");
+            string actualHash = CanonicalFingerprint(actual);
+            var now = DescribeBinding(original, actual);
+            return new JObject
+            {
+                ["code"] = "reference_binding_changed",
+                ["matches"] = !string.IsNullOrEmpty(expectedHash) &&
+                              string.Equals(expectedHash, actualHash, StringComparison.Ordinal),
+                ["expected_resolved_hash"] = expectedHash,
+                ["actual_resolved_hash"] = actualHash,
+                ["expected_references"] = expected?["references"]?.DeepClone() ?? new JArray(),
+                ["actual_references"] = now["references"]
+            };
+        }
+
+        public static string CanonicalFingerprint(JToken token)
+            => ConfirmationStore.HashPlan("json=" + Canonical(token));
+
+        private static string Canonical(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null || token.Type == JTokenType.Undefined)
+                return "null";
+            var o = token as JObject;
+            if (o != null)
+            {
+                var sb = new StringBuilder("{");
+                bool first = true;
+                foreach (JProperty p in o.Properties().OrderBy(p => p.Name, StringComparer.Ordinal))
+                {
+                    if (!first) sb.Append(',');
+                    first = false;
+                    sb.Append(JsonConvert.ToString(p.Name)).Append(':').Append(Canonical(p.Value));
+                }
+                return sb.Append('}').ToString();
+            }
+            var a = token as JArray;
+            if (a != null)
+            {
+                var sb = new StringBuilder("[");
+                for (int i = 0; i < a.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append(Canonical(a[i]));
+                }
+                return sb.Append(']').ToString();
+            }
+            return token.ToString(Formatting.None);
+        }
+
+        private static void CollectReferences(JToken original, JToken resolved, string pointer, JArray rows)
+        {
+            if (original == null) return;
+            string key, path;
+            if (original.Type == JTokenType.String && TryParse((string)original, out key, out path))
+            {
+                rows.Add(new JObject
+                {
+                    ["pointer"] = pointer.Length == 0 ? "/" : pointer,
+                    ["expression"] = (string)original,
+                    ["source_action"] = key,
+                    ["source_path"] = path,
+                    ["resolved_value"] = resolved?.DeepClone() ?? JValue.CreateNull()
+                });
+                return;
+            }
+            var oo = original as JObject;
+            var ro = resolved as JObject;
+            if (oo != null)
+            {
+                foreach (JProperty p in oo.Properties())
+                    CollectReferences(p.Value, ro?[p.Name], pointer + "/" + EscapePointer(p.Name), rows);
+                return;
+            }
+            var oa = original as JArray;
+            var ra = resolved as JArray;
+            if (oa != null)
+                for (int i = 0; i < oa.Count; i++)
+                    CollectReferences(oa[i], ra != null && i < ra.Count ? ra[i] : null,
+                                      pointer + "/" + i, rows);
+        }
+
+        private static string EscapePointer(string value)
+            => (value ?? "").Replace("~", "~0").Replace("/", "~1");
 
         private static bool TryParse(string value, out string key, out string path)
         {

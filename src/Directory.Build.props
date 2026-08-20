@@ -7,6 +7,18 @@
   <Import Project="$(MSBuildThisFileDirectory)../Directory.Build.props"
           Condition="Exists('$(MSBuildThisFileDirectory)../Directory.Build.props')" />
 
+  <!-- The Revit project is restored and built once per supported host year.
+       Conditional target frameworks cannot safely share obj/: generated
+       assembly attributes and project.assets.json from one year otherwise leak
+       into the next build. Set these before Microsoft.Common.props consumes the
+       paths, and exclude every legacy obj subtree from default Compile globs. -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Horizun.Revit'">
+    <RevitYear Condition="'$(RevitYear)' == ''">2026</RevitYear>
+    <BaseIntermediateOutputPath>obj\$(RevitYear)\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>obj\$(RevitYear)\</MSBuildProjectExtensionsPath>
+    <DefaultItemExcludes>$(DefaultItemExcludes);obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+
   <!--
     PROVENANCE, stamped by the build rather than typed by a person.
 

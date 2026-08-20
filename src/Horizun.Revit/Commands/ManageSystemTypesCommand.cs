@@ -131,6 +131,9 @@ namespace Horizun.Revit.Commands
                     ["note"] = "No type was duplicated and no transaction was opened."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // Invalid entries make this a partial rehearsal, not a clean one: the token
+                // below is already withheld for them, and a plan must read the same fact.
+                ApplicationOutcome.StampRehearsal(result, actions.Count, errors.Count, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, errors.Count == 0,
                     errors.Count == 0
                         ? "the token binds every source type, new name and requested parameter value, AND the value " +
@@ -213,11 +216,16 @@ namespace Horizun.Revit.Commands
             if (verified != plans.Count)
                 return CommandResult.Fail("The transaction committed, but only " + verified + " of " + plans.Count +
                     " system types passed post-commit verification. Inspect the model: " + rows.ToString(Formatting.None));
-            return CommandResult.Ok(new JObject
+            var mstResult = new JObject
             {
                 ["transaction_status"] = "Committed", ["transaction_name"] = txName,
                 ["created_verified"] = verified, ["rows"] = rows
-            });
+            };
+            // Reached only when verified == plans.Count; anything less returned a failure
+            // above. The declaration states that fact where a composing caller can read it.
+            ApplicationOutcome.StampApplied(mstResult, ApplicationOutcome.Committed,
+                                            plans.Count, verified, verified, 0, 0, 0);
+            return CommandResult.Ok(mstResult);
         }
 
         private static Parameter ResolveParameter(Element element, string spec, out string why)

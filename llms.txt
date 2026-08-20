@@ -22,11 +22,11 @@ quantities, clashes, model edits, views, sheets, schedules, families, exports
 and Power BI ingestion. Typed mutations use the contract's confirmation,
 idempotency and post-commit verification guarantees.
 
-`horizun_execute_python` is enabled by default as the low-level fallback when no
-typed operation covers the objective. It is arbitrary code and is never
-host-verified: `host_verified` is always false, and its strongest returned state
-is `self_reported_verified`. A machine owner can explicitly disable it; clients
-must respect that choice and must fall back only when a typed response carries
+`horizun_execute_python` is disabled by default. A machine owner may grant it for
+60 minutes from Revit or enable it durably as the low-level fallback. It is arbitrary
+code and is never host-verified: `host_verified` is always false, and its strongest
+returned state is `self_reported_verified`. Clients must respect the effective
+local policy and must fall back only when a typed response carries
 `fallback.allowed: true`.
 
 ## Installation facts

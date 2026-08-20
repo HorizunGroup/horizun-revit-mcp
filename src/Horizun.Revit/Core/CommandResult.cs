@@ -127,6 +127,23 @@ namespace Horizun.Revit.Core
             => new CommandResult { Success = false, Error = error, Detail = detail };
 
         /// <summary>
+        /// A structured failure that also preserves the child's machine-readable fallback
+        /// verdict. Atomic-plan rehearsal/recheck failures use this: flattening the child
+        /// to prose would force the caller to infer permission from an English message.
+        /// </summary>
+        public static CommandResult FailWithDetail(string error, Newtonsoft.Json.Linq.JObject detail,
+                                                   FallbackSignal fallback,
+                                                   Newtonsoft.Json.Linq.JArray capabilityGaps)
+            => new CommandResult
+            {
+                Success = false,
+                Error = error,
+                Detail = detail,
+                Fallback = fallback,
+                CapabilityGaps = capabilityGaps
+            };
+
+        /// <summary>
         /// A refusal carrying an already-decided signal - granted or refused - plus the
         /// per-action gaps behind it. Built by FallbackDecision, which is the only place
         /// the rule lives; a command that assembled this itself would be the fourth copy

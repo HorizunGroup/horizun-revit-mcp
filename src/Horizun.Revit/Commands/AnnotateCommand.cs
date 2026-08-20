@@ -86,6 +86,9 @@ namespace Horizun.Revit.Commands
                 var result = new JObject { ["dry_run"] = true, ["valid"] = plans.Count, ["invalid"] = errors.Count,
                     ["errors"] = errors, ["plan"] = new JArray(plans.Select(p => new JObject { ["index"] = p.Index, ["operation"] = p.Operation, ["references"] = p.References?.Size })) };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
+                // Invalid entries make this a partial rehearsal, not a clean one: the token
+                // below is already withheld for them, and a plan must read the same fact.
+                ApplicationOutcome.StampRehearsal(result, plans.Count + errors.Count, errors.Count, 0, 0);
                 DocumentGate.StampConfirmation(result, gate, Name, hash, errors.Count == 0,
                     errors.Count == 0
                         ? "the token binds views, geometry, text, AND the identity of every view and target as " +
@@ -137,7 +140,11 @@ namespace Horizun.Revit.Commands
                 rows.Add(new JObject { ["index"] = p.Index, ["operation"] = p.Operation, ["element_id"] = p.Created == null ? JValue.CreateNull() : new JValue(Rid.Value(p.Created)), ["verified"] = ok });
             }
             if (verified != plans.Count) return CommandResult.Fail("Committed, but annotation verification failed: " + rows.ToString(Formatting.None));
-            return CommandResult.Ok(new JObject { ["transaction_status"] = "Committed", ["annotations_verified"] = verified, ["rows"] = rows });
+            var anResult = new JObject { ["transaction_status"] = "Committed", ["annotations_verified"] = verified, ["rows"] = rows };
+            // Reached only when verified == plans.Count; a shortfall failed above.
+            ApplicationOutcome.StampApplied(anResult, ApplicationOutcome.Committed,
+                                            plans.Count, verified, verified, 0, 0, 0);
+            return CommandResult.Ok(anResult);
         }
 
         private static Plan PlanAction(Document doc, int index, JObject a, double scale, out string error,

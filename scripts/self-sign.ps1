@@ -35,11 +35,13 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$Subject = 'CN=Horizun Group (self-signed add-in signing)',
+    [string]$Thumbprint,
     [int[]]$Years,
     [switch]$Report,
     [switch]$Remove
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'horizun-deploy.lib.ps1')
 
 function Say($m, $c = 'Gray') { Write-Host "    $m" -ForegroundColor $c }
 Write-Host "[sign] $Subject" -ForegroundColor Cyan
@@ -62,7 +64,7 @@ $serverDll = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mc
 if (Test-Path -LiteralPath $serverDll) { $targets += $serverDll }
 
 $existing = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue |
-    Where-Object { $_.Subject -eq $Subject })
+    Where-Object { $_.Subject -eq $Subject -and (-not $Thumbprint -or $_.Thumbprint -eq $Thumbprint) })
 
 if ($Report) {
     Write-Host "[sign] certificate:" -ForegroundColor Cyan
@@ -111,6 +113,7 @@ if ($cert -and $cert.NotAfter -gt (Get-Date).AddDays(30)) {
     Say ("reusing certificate {0} (expires {1:yyyy-MM-dd})" -f $cert.Thumbprint, $cert.NotAfter) 'DarkGray'
 }
 else {
+    if ($Thumbprint) { throw "The explicitly selected certificate $Thumbprint is missing or expires within 30 days; refusing to create or trust a replacement implicitly." }
     if (-not $PSCmdlet.ShouldProcess('CurrentUser\My', "create a self-signed code-signing certificate")) { exit 0 }
     # CodeSigningCert, five years, key NOT exportable: the point of this key is that
     # it never leaves this machine. A copyable signing key is a signing key somebody
@@ -191,6 +194,45 @@ foreach ($t in $targets) {
     }
     if ($sig.Status -eq 'Valid') { $ok++; Say "$name : Valid" 'Green' }
     else { $bad += ("$name : signed but reads back $($sig.Status) after 5 tries") }
+}
+
+# Authenticode changes the bytes it signs. Source installs carry an exact
+# per-file manifest, so refresh that manifest atomically after every signing
+# attempt (including a partial/locked one) before any completion verifier reads
+# it. Release manifests are immutable and are deliberately never rewritten.
+try {
+    $installedMcpRoot = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP'
+    $installedManifest = Join-Path $installedMcpRoot 'manifest.json'
+    if (Test-Path -LiteralPath $installedManifest -PathType Leaf) {
+        $doc = Get-Content -LiteralPath $installedManifest -Raw | ConvertFrom-Json
+        if ([bool]$doc.SourceInstall) {
+            $installedServerRoot = Join-Path $installedMcpRoot 'server'
+            $installedServerExe = Join-Path $installedServerRoot 'horizun-mcp.exe'
+            $serverListing = Get-HorizunPayloadListing $installedServerRoot
+            $doc.Server.Sha256 = Get-HorizunFileHash $installedServerExe
+            $doc.Server.Payload = $serverListing.Files
+            foreach ($pluginRow in @($doc.Plugins)) {
+                $pluginRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$($pluginRow.Year)\Horizun"
+                $pluginDll = Join-Path $pluginRoot 'Horizun.Revit.dll'
+                if (-not (Test-Path -LiteralPath $pluginDll -PathType Leaf)) {
+                    throw "Cannot refresh source manifest: installed Revit $($pluginRow.Year) payload is missing."
+                }
+                $listing = Get-HorizunPayloadListing $pluginRoot
+                $pluginRow.Sha256 = Get-HorizunFileHash $pluginDll
+                $pluginRow.Files = $listing.FileCount
+                $pluginRow.StdLibFiles = $listing.StdLibFiles
+                $pluginRow.StdLibDigest = $listing.StdLibDigest
+                $pluginRow.Payload = $listing.Files
+            }
+            $tempManifest = "$installedManifest.tmp-$([guid]::NewGuid().ToString('N'))"
+            $doc | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $tempManifest -Encoding UTF8
+            Move-Item -LiteralPath $tempManifest -Destination $installedManifest -Force
+            Say 'refreshed the exact source-install manifest after signing' 'DarkGray'
+        }
+    }
+}
+catch {
+    $bad += "installed source manifest: $($_.Exception.Message)"
 }
 
 Write-Host ""

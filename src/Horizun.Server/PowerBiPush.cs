@@ -11,6 +11,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
@@ -25,17 +26,25 @@ namespace Horizun.Server
         private const int MaxStringChars = 4000;
         private const int MaxPayloadBytes = 8 * 1024 * 1024;
 
-        public static JObject Handle(JObject request)
+        public static JObject Handle(JObject request) => Handle(request, CancellationToken.None);
+
+        public static JObject Handle(JObject request, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(90) })
                 return Handle(request, client,
                     new DurableCommandLedger(retentionLog: message => Log.Info(message)),
-                    Environment.GetEnvironmentVariable);
+                    Environment.GetEnvironmentVariable, cancellationToken);
         }
 
         internal static JObject Handle(JObject request, HttpClient client, DurableCommandLedger ledger,
-                                       Func<string, string> environment)
+                                       Func<string, string> environment) =>
+            Handle(request, client, ledger, environment, CancellationToken.None);
+
+        internal static JObject Handle(JObject request, HttpClient client, DurableCommandLedger ledger,
+                                       Func<string, string> environment, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             request = request ?? new JObject();
             string datasetId = GuidField(request, "dataset_id", true);
             string workspaceId = GuidField(request, "workspace_id", false);
@@ -108,7 +117,7 @@ namespace Horizun.Server
             // rotated or removed. Token acquisition cannot insert rows; any failure here
             // is therefore safe to record as a terminal failure rather than in-doubt.
             string token;
-            try { token = ResolveAccessToken(client, environment, authMode); }
+            try { token = ResolveAccessToken(client, environment, authMode, cancellationToken); }
             catch (Exception ex)
             {
                 string error = ex is ToolRefusal ? ex.Message :
@@ -125,7 +134,8 @@ namespace Horizun.Server
                     message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                     message.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                     message.Content = new StringContent(payload, Encoding.UTF8, "application/json");
-                    response = client.SendAsync(message).GetAwaiter().GetResult();
+                    cancellationToken.ThrowIfCancellationRequested();
+                    response = client.SendAsync(message, cancellationToken).GetAwaiter().GetResult();
                 }
             }
             catch (Exception ex)
@@ -224,8 +234,10 @@ namespace Horizun.Server
             return "not_configured";
         }
 
-        private static string ResolveAccessToken(HttpClient client, Func<string, string> environment, string authMode)
+        private static string ResolveAccessToken(HttpClient client, Func<string, string> environment, string authMode,
+                                                 CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (authMode == "access_token") return environment("HORIZUN_POWER_BI_ACCESS_TOKEN").Trim();
             string tenant = environment("HORIZUN_POWER_BI_TENANT_ID");
             string clientId = environment("HORIZUN_POWER_BI_CLIENT_ID");
@@ -240,7 +252,7 @@ namespace Horizun.Server
                 ["scope"] = "https://analysis.windows.net/powerbi/api/.default",
                 ["grant_type"] = "client_credentials"
             }))
-            using (HttpResponseMessage response = client.PostAsync(endpoint, content).GetAwaiter().GetResult())
+            using (HttpResponseMessage response = client.PostAsync(endpoint, content, cancellationToken).GetAwaiter().GetResult())
             {
                 if (!response.IsSuccessStatusCode)
                     throw new ToolRefusal("Microsoft Entra token acquisition returned HTTP " + (int)response.StatusCode +

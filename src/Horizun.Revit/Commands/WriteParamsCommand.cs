@@ -311,6 +311,19 @@ namespace Horizun.Revit.Commands
                                    : "") +
                                "Re-run with dry_run=false and the confirmation_token below."
                 };
+                // What this rehearsal IS, for a caller that composes it - execute_plan above
+                // all. Unresolved rows make it a partial rehearsal rather than a clean one.
+                //
+                // THIS DOES NOT WITHHOLD THIS COMMAND'S OWN TOKEN, and deliberately so: on
+                // its own, write_params with unresolved rows is a legitimate request - the
+                // rows that resolved are previewed, the rest carry their error, and applying
+                // it writes exactly the previewed ones. The declaration is what lets a
+                // COMPOSING caller take a stricter line, and execute_plan does: inside a
+                // graph, one action that only half-resolved means the graph was never
+                // previewed as a whole, so the plan withholds ITS outer confirmation
+                // (ExecutePlanCommand, `rehearsedCleanly`). Two different questions, two
+                // different answers, and only the outer one is tightened here.
+                ApplicationOutcome.StampRehearsal(dryResult, rows.Count, unresolved, 0, 0);
                 DocumentGate.StampConfirmation(dryResult, gate, Name, planHash, true,
                     "the token ALSO binds the elements this rehearsal resolved and their current values - a model " +
                     "that moves before you spend it is refused as a stale plan. elements_that_would_change " +
@@ -328,7 +341,7 @@ namespace Horizun.Revit.Commands
             {
                 // Nothing resolved. Opening a transaction here would let us report a
                 // clean Committed over a batch that touched nothing.
-                return CommandResult.Ok(new JObject
+                var nothingResolved = new JObject
                 {
                     ["mode"] = mode,
                     ["transaction_status"] = "not_started",
@@ -346,7 +359,10 @@ namespace Horizun.Revit.Commands
                     ["rows"] = new JArray(rows.Take(maxRows).Select(r => (JToken)r.ToJson(true))),
                     ["note"] = "No transaction was opened: not one of the " + rows.Count +
                                " row(s) resolved to a writable parameter. The model is untouched."
-                });
+                };
+                // Ok, because the command answered; NOT applied, because nothing was.
+                ApplicationOutcome.StampApplied(nothingResolved, "not_started", rows.Count, 0, 0, unresolved, 0, 0);
+                return CommandResult.Ok(nothingResolved);
             }
 
             using (var tx = new Transaction(doc, txName))
@@ -442,7 +458,7 @@ namespace Horizun.Revit.Commands
                     // Revit rolled back and returned a status instead of throwing. Every
                     // counter above is now fiction; say so and report nothing written.
                     foreach (var r in rows) { r.Written = null; r.Accepted = false; }
-                    return CommandResult.Ok(new JObject
+                    var rolledBack = new JObject
                     {
                         ["mode"] = mode,
                         ["transaction_status"] = ex.Status.ToString(),
@@ -459,7 +475,11 @@ namespace Horizun.Revit.Commands
                         ["rows_truncated"] = rows.Count > maxRows,
                         ["rows"] = new JArray(rows.Take(maxRows).Select(r => (JToken)r.ToJson(true))),
                         ["note"] = ex.Message + " Every row reports changed:false regardless of what the write loop saw."
-                    });
+                    };
+                    // The status Revit RETURNED, not the one we hoped for: RolledBack reads as
+                    // rolled_back, and a Pending or an Error reads as uncertain rather than clean.
+                    ApplicationOutcome.StampApplied(rolledBack, ex.Status.ToString(), rows.Count, 0, 0, unresolved, 0, 0);
+                    return CommandResult.Ok(rolledBack);
                 }
                 catch (Exception ex)
                 {
@@ -539,7 +559,7 @@ namespace Horizun.Revit.Commands
             // elements the model actually carries the write on.
             var reached = committed ? ReachedBy(doc, rows.Where(r => r.Confirmed)) : new HashSet<ElementId>();
 
-            return CommandResult.Ok(new JObject
+            var result = new JObject
             {
                 ["mode"] = mode,
                 ["transaction_status"] = txStatus,
@@ -581,7 +601,19 @@ namespace Horizun.Revit.Commands
                 ["rows_truncated"] = rows.Count > maxRows,
                 ["rows"] = new JArray(rows.Take(maxRows).Select(r => (JToken)r.ToJson(true))),
                 ["note"] = txNote ?? BatchNote(mode, rows.Count, confirmed, failed, unknown)
-            });
+            };
+
+            // WHAT THIS BATCH DID, in the one vocabulary a composing caller may branch on.
+            // `applied` is what the model was measured to carry; `verified` is the STRICTER
+            // count - rows re-read after the commit that matched the value the caller
+            // passed - which is the same bar this reply's own `verification.verified` uses.
+            // An atomic rollback arrives here with txStatus set to what Revit returned, so
+            // it classifies as rolled_back without anyone re-deciding that here; a
+            // best_effort batch that kept some rows classifies as partial, which is what it
+            // is, even though this command was asked to behave that way.
+            ApplicationOutcome.StampApplied(result, txStatus, rows.Count, confirmed,
+                                       confirmedAgainstCallerValue, unresolved, failed, unknown);
+            return CommandResult.Ok(result);
         }
 
         // ---- The three-way split. -------------------------------------------------

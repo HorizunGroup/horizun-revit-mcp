@@ -55,7 +55,9 @@ namespace Horizun.Core.Tests
 
             int gate = text.IndexOf("DocumentGate.ForMutation", StringComparison.Ordinal);
             // Where the caller's Python is actually handed to the engine.
-            int run = text.IndexOf("source.Execute(scope)", StringComparison.Ordinal);
+            // `script`, not `source`: since 5.27 `source` is where the code CAME from
+            // (inline or code_path) and `script` is what the engine is handed.
+            int run = text.IndexOf("script.Execute(scope)", StringComparison.Ordinal);
 
             Assert.True(gate >= 0, "the gate must be called");
             Assert.True(run >= 0, "the script execution site moved; this test needs updating");
@@ -330,7 +332,9 @@ namespace Horizun.Core.Tests
             int gate = text.IndexOf("DocumentGate.ForMutation", StringComparison.Ordinal);
             int preflightBlock = text.IndexOf("if (preflight)", StringComparison.Ordinal);
             int queue = text.IndexOf("AsyncQueue.TryAdd", StringComparison.Ordinal);
-            int run = text.IndexOf("source.Execute(scope)", StringComparison.Ordinal);
+            // `script`, not `source`: since 5.27 `source` is where the code CAME from
+            // (inline or code_path) and `script` is what the engine is handed.
+            int run = text.IndexOf("script.Execute(scope)", StringComparison.Ordinal);
 
             Assert.True(preflightBlock >= 0, "the preflight block must exist");
             Assert.True(gate < preflightBlock,

@@ -10,9 +10,10 @@
 // reading a DLL. For a tool people are meant to adopt, invisible is indistinct
 // from absent.
 //
-// So: one tab, one panel, two buttons. STATUS answers the support question
+// So: one tab, one panel, three buttons. STATUS answers the support question
 // without leaving Revit — loaded, which version, which commit, is the bridge
-// listening, where is the log. HUB is where the layer above this one lives.
+// listening, where is the log. PYTHON makes arbitrary-code consent a local,
+// visible, expiring human action. HUB is where the layer above this one lives.
 //
 // A ribbon must never be the reason Revit fails to start: everything here is
 // wrapped, and a failure is logged and swallowed. The bridge does not depend on
@@ -27,6 +28,8 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
+using Horizun.Contracts;
+using BridgeSettings = Horizun.Revit.Core.Settings;
 
 namespace Horizun.Revit
 {
@@ -71,10 +74,22 @@ namespace Horizun.Revit
                     "clasificación, homologación de familias, control de calidad de entrega — viven en Horizun Hub."
             };
 
+            var python = new PushButtonData(
+                "HorizunPythonPermission", "Python\nON/OFF", asm, typeof(PythonPermissionCommand).FullName)
+            {
+                ToolTip = "Activar temporalmente o revocar la ejecución Python",
+                LongDescription =
+                    "horizun_execute_python ejecuta código arbitrario con los permisos del usuario. Está " +
+                    "apagado por defecto. Este botón permite al dueño presente en Revit activarlo durante " +
+                    "60 minutos o revocarlo inmediatamente; nunca deja una elevación permanente implícita."
+            };
+
             AddImages(status, "status");
             AddImages(hub, "hub");
+            AddImages(python, "status");
 
             panel.AddItem(status);
+            panel.AddItem(python);
             panel.AddItem(hub);
         }
 
@@ -122,6 +137,8 @@ namespace Horizun.Revit
                         "Commit: " + (Build.Commit ?? "desconocido") +
                         (Build.BuiltFromCleanTree ? "" : "  (árbol con cambios sin confirmar)") + "\n" +
                         "Revit: " + year + "\n\n" +
+                        "Perfil: " + BridgeSettings.PermissionProfile + "\n" +
+                        PythonStatusLine() + "\n\n" +
                         (published
                             ? "Descubrimiento: " + discovery + "\n\nUn cliente MCP que arranque ahora encontrará " +
                               "este Revit. Si aun así falla, casi siempre es que el servidor y el add-in vienen " +
@@ -154,6 +171,110 @@ namespace Horizun.Revit
             // application". Set explicitly so both runtimes behave the same.
             try { Process.Start(new ProcessStartInfo(target) { UseShellExecute = true }); }
             catch (Exception ex) { Log.Warn("could not open '" + target + "': " + ex.Message); }
+        }
+
+        internal static string PythonStatusLine()
+        {
+            bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _);
+            DateTimeOffset? until = BridgeSettings.ExecutePythonTemporaryGrantUntilUtc;
+            if (!allowed) return "Python: OFF";
+            if (until != null)
+                return "Python: ON temporal hasta " + until.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+            return "Python: ON por configuración administrativa";
+        }
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class PythonPermissionCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string refusal);
+                if (allowed) return Disable(ref message);
+                return Enable(ref message, refusal);
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
+        }
+
+        private static Result Enable(ref string message, string currentRefusal)
+        {
+            var dialog = new TaskDialog("Horizun — permiso Python")
+            {
+                MainInstruction = "Python está OFF.",
+                MainContent =
+                    "Activarlo permite que un cliente MCP ejecute código arbitrario dentro de Revit con sus " +
+                    "permisos de Windows. Las herramientas tipadas verifican sus cambios; Python no puede " +
+                    "ofrecer esa garantía.\n\nLa autorización expirará automáticamente en 60 minutos. " +
+                    "Los clientes MCP compatibles refrescan tools/list automáticamente. Si el suyo no lo hace, " +
+                    "reinícielo una vez.",
+                ExpandedContent = currentRefusal ?? "",
+                CommonButtons = TaskDialogCommonButtons.Cancel,
+                VerificationText = "Entiendo que esta capacidad ejecuta código arbitrario"
+            };
+            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Activar Python durante 60 minutos");
+            TaskDialogResult choice = dialog.Show();
+            if (choice != TaskDialogResult.CommandLink1) return Result.Cancelled;
+            if (!dialog.WasVerificationChecked())
+            {
+                TaskDialog.Show("Horizun — permiso Python",
+                    "No se activó. Marque la casilla de comprensión para conceder el permiso.");
+                return Result.Cancelled;
+            }
+
+            if (!BridgeSettings.TryGrantExecutePythonTemporarily(
+                    TimeSpan.FromMinutes(60), out DateTimeOffset until, out string error))
+            {
+                message = error;
+                TaskDialog.Show("Horizun — permiso Python", error);
+                return Result.Failed;
+            }
+
+            if (!BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string stillRefused))
+            {
+                BridgeSettings.TryClearExecutePythonTemporaryGrant(out _);
+                message = stillRefused;
+                TaskDialog.Show("Horizun — permiso Python",
+                    "No se activó porque otra política de la máquina lo prohíbe:\n\n" + stillRefused);
+                return Result.Failed;
+            }
+
+            TaskDialog.Show("Horizun — permiso Python",
+                "Python está ON hasta " + until.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") +
+                ".\n\nLos clientes compatibles actualizarán la herramienta automáticamente; si el suyo " +
+                "no lo hace, reinícielo una vez.");
+            return Result.Succeeded;
+        }
+
+        private static Result Disable(ref string message)
+        {
+            var dialog = new TaskDialog("Horizun — permiso Python")
+            {
+                MainInstruction = "Python está ON.",
+                MainContent = BridgeStatusCommand.PythonStatusLine() +
+                    "\n\nDesactivarlo se aplica a la siguiente llamada incluso si el cliente MCP todavía " +
+                    "muestra la herramienta.",
+                CommonButtons = TaskDialogCommonButtons.Cancel
+            };
+            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Desactivar Python ahora");
+            if (dialog.Show() != TaskDialogResult.CommandLink1) return Result.Cancelled;
+
+            if (!BridgeSettings.TryRevokeExecutePython(out string error))
+            {
+                message = error;
+                TaskDialog.Show("Horizun — permiso Python", error);
+                return Result.Failed;
+            }
+
+            TaskDialog.Show("Horizun — permiso Python",
+                "Python está OFF. Los clientes compatibles retirarán la herramienta automáticamente; si el suyo " +
+                "no lo hace, reinícielo una vez.");
+            return Result.Succeeded;
         }
     }
 

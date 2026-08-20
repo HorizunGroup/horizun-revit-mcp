@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using Horizun.Contracts;
 using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Horizun.Core.Tests
@@ -33,33 +34,31 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
-        /// The default-on posture: no settings file at all reads as unsafe_code plus
-        /// enable_execute_python=true, so a fresh install advertises the full surface -
-        /// Tools.List() filters on exactly this predicate, so what is proved here is
-        /// what tools/list shows.
+        /// A fresh install permits typed in-document writes, but neither external/session
+        /// effects nor arbitrary code. Consent must be explicit.
         /// </summary>
         [Fact]
-        public void AbsentFileDefaultsToUnsafeCodeWithPythonEnabled()
+        public void AbsentFileDefaultsToSafeWriteWithPythonDisabled()
         {
             WithoutSettingsFile(() =>
             {
-                Assert.Equal("unsafe_code", Settings.PermissionProfile);
-                Assert.True(Settings.ExecutePythonEnabled);
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
+                Assert.Equal("safe_write", Settings.PermissionProfile);
+                Assert.False(Settings.ExecutePythonEnabled);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_save_document"), out _));
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_plan"), out _));
             });
         }
 
         /// <summary>A file that exists but omits the keys is the same absence, key by key.</summary>
         [Fact]
-        public void AbsentKeysDefaultToEnabledEvenWhenOtherKeysExist()
+        public void AbsentKeysDefaultToSafeEvenWhenOtherKeysExist()
         {
             WithSettings(@"{""denied_tools"":[""horizun_export""]}", () =>
             {
-                Assert.Equal("unsafe_code", Settings.PermissionProfile);
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
-                // The explicit deny still wins over the permissive default.
+                Assert.Equal("safe_write", Settings.PermissionProfile);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
             });
         }
@@ -85,19 +84,101 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
-        /// unsafe_code alone used to be insufficient; with enable_execute_python
-        /// defaulting to true, the profile alone now admits Python - and an explicit
-        /// false beside it still wins.
+        /// Both explicit switches are required. A profile alone is not consent.
         /// </summary>
         [Fact]
-        public void UnsafeProfileAloneNowAdmitsPythonAndExplicitFalseStillWins()
+        public void UnsafeProfileStillRequiresExplicitPythonOptIn()
         {
             WithSettings(@"{""permission_profile"":""unsafe_code""}", () =>
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
             WithSettings(@"{""permission_profile"":""unsafe_code"",""enable_execute_python"":true}", () =>
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
             WithSettings(@"{""permission_profile"":""unsafe_code"",""enable_execute_python"":false}", () =>
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
+        }
+
+        [Fact]
+        public void TemporaryPythonUnlockExpiresFailClosed()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""execute_python_ui_grant_until_utc"":""2999-01-01T00:00:00Z""}", () =>
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
+            WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""execute_python_ui_grant_until_utc"":""2000-01-01T00:00:00Z""}", () =>
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
+            WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""execute_python_ui_grant_until_utc"":""not-a-date""}", () =>
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
+        }
+
+        [Fact]
+        public void RevitTemporaryGrantDoesNotPermanentlyElevateSafeWriteProfile()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""denied_tools"":[]}", () =>
+            {
+                Assert.True(Settings.TryGrantExecutePythonTemporarily(
+                    TimeSpan.FromMinutes(60), out DateTimeOffset until, out string grantError), grantError);
+                Assert.True(until > DateTimeOffset.UtcNow);
+                Assert.Equal("safe_write", Settings.PermissionProfile);
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string reason), reason);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+
+                JObject persisted = JObject.Parse(File.ReadAllText(HorizunPaths.SettingsPath()));
+                Assert.Equal("safe_write", (string)persisted["permission_profile"]);
+                Assert.NotNull(persisted["execute_python_ui_grant_until_utc"]);
+                Assert.NotNull(persisted["denied_tools"]);
+
+                Assert.True(Settings.TryRevokeExecutePython(out string revokeError), revokeError);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
+                Assert.Equal("safe_write", Settings.PermissionProfile);
+            });
+        }
+
+        [Fact]
+        public void RevitGrantRefusesToOverwriteMalformedSettings()
+        {
+            WithSettings("{ not json", () =>
+            {
+                Assert.False(Settings.TryGrantExecutePythonTemporarily(
+                    TimeSpan.FromMinutes(60), out _, out string error));
+                Assert.Contains("malformed", error);
+                Assert.Equal("{ not json", File.ReadAllText(HorizunPaths.SettingsPath()));
+            });
+        }
+
+        [Fact]
+        public void RevitPermissionUpdatesKeepOnlyThreeRecoverableBackups()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write""}", () =>
+            {
+                for (int i = 0; i < 6; i++)
+                {
+                    Assert.True(Settings.TryGrantExecutePythonTemporarily(
+                        TimeSpan.FromMinutes(10), out _, out string grantError), grantError);
+                    Assert.True(Settings.TryRevokeExecutePython(out string revokeError), revokeError);
+                }
+                string directory = Path.GetDirectoryName(HorizunPaths.SettingsPath());
+                Assert.True(Directory.GetFiles(directory, "settings.json.horizun-ui-bak-*").Length <= 3);
+            });
+        }
+
+        [Fact]
+        public void RevitPermissionUpdatesWaitForTheCrossProcessMutex()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write""}", () =>
+            {
+                using (var mutex = new System.Threading.Mutex(false, "Local\\Horizun.Revit.Settings.V1"))
+                {
+                    Assert.True(mutex.WaitOne(TimeSpan.FromSeconds(2)));
+                    var update = System.Threading.Tasks.Task.Run(() =>
+                    {
+                        bool ok = Settings.TryGrantExecutePythonTemporarily(
+                            TimeSpan.FromMinutes(10), out _, out string error);
+                        return Tuple.Create(ok, error);
+                    });
+                    Assert.False(update.Wait(250));
+                    mutex.ReleaseMutex();
+                    Assert.True(update.Wait(TimeSpan.FromSeconds(3)));
+                    Assert.True(update.Result.Item1, update.Result.Item2);
+                }
+            });
         }
 
         [Fact]
@@ -112,9 +193,9 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
-        /// The asymmetry the default-on posture must keep: a file that EXISTS but does
+        /// The fail-closed posture: a file that EXISTS but does
         /// not parse may be a corrupted explicit restriction, so it falls CLOSED - the
-        /// opposite of the absent-file default. Corruption never converts "I turned
+        /// stricter than the absent-file safe_write default. Corruption never converts "I turned
         /// this off" into "everything is enabled".
         /// </summary>
         [Fact]

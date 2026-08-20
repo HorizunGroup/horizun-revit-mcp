@@ -1,6 +1,6 @@
 # Revit MCP benchmark
 
-Updated: 2026-08-01. This benchmark measures useful outcomes, not the number of
+Updated: 2026-08-20. This benchmark measures useful outcomes, not the number of
 tool names. One broad, composable and verified operation can be more valuable
 than twenty thin wrappers.
 
@@ -79,45 +79,74 @@ is public code signing. Cases marked “L pending” are not called live-verifie
 until the release gate runs them; their score describes the implemented contract
 and fail conditions, while the evidence column states the remaining proof.
 
-## Competitor baseline
+## Market baseline
 
-The comparison set is pinned by repository, not by recollection:
+The market changed materially in June 2026: Autodesk now ships an official Revit
+Public MCP Server technical preview. “Best” therefore cannot mean one scalar or
+“has the most tool names”. Official support, safe read access, workflow breadth,
+verified mutation, version coverage, extensibility and distribution are distinct
+axes and sometimes conflict.
 
-- [SAM AEC Model Bridge at `bc31aef`](https://github.com/Sam-AEC/aec-model-bridge/tree/bc31aeffece0f1d5cb9812f46e80462b3b0f93cd): publishes 100+ tools,
-  Revit 2024–2027, async orchestration, IFC/Speckle, reflection/Python and an MCPB package;
-  its public roadmap lists Navisworks and Power BI as in progress at this review, and its latest
-  commit publishes a bundled Windows installer.
-- [Demolinator Revit MCP Server at `40af5a7`](https://github.com/Demolinator/revit-mcp-server/tree/40af5a7860b4470ad8f80ea327cf4a9cd31ca0a6): publishes 48
-  tools over pyRevit for Revit 2024–2027, broad element/view/MEP creation and PDF/image/IFC export.
-- [revit-mcp-server](https://github.com/mcp-servers-for-revit/revit-mcp): archived predecessor,
-  retained only as historical context.
+The public comparison set was re-pinned on 2026-08-20:
 
-Published breadth is not converted automatically into levels 4–5. To receive
-those points a competitor run must capture the post-operation model/file/API
-measurement and repeat the same idempotency key after a deliberately lost
-reply. This rule applies equally to Horizun.
+- [Autodesk Revit Public MCP Server](https://www.autodesk.com/blogs/aec/2026/06/17/revit-public-mcp-server/):
+  official and supported for Revit 2027, automatically configures Claude Desktop
+  or Cursor, and deliberately exposes seven read/navigation/export operations.
+- [Shuotao Revit MCP at `bae94d9`](https://github.com/shuotao/REVIT_MCP_study/tree/bae94d961d5f5d7d0f7124232a7c7b0204abc8e1):
+  the largest documented public surface in this pass: 173 MCP tools and 76 BIM SOPs,
+  Revit 2022–2026, distributed through npm.
+- [KenLP RevitMCPServer at `a248bb8`](https://github.com/KenLP/RevitMCPServer/tree/a248bb85021f3d97798348710133537ffe249648):
+  93 exposed tools, Revit 2025–2027, schema validation, dry-runs and one-transaction
+  multi-step batches.
+- [LuDattilo revit-mcp-server at `2c33b84`](https://github.com/LuDattilo/revit-mcp-server/tree/2c33b848602ca56a4043de603f2914d6fdf0c104):
+  124 documented MCP tools (the README header also says 138 exposed), Revit
+  2023–2027 and prebuilt release installation.
+- [BIMwright rvt-mcp at `47d3619`](https://github.com/bimwright/rvt-mcp/tree/47d36194d35cac787c199d5b45be49dd4039b7f7):
+  widest documented Revit-year range, 2022–2027, with an end-to-end C# server/plugin.
+- [Revit MCP v2 at `95880f4`](https://github.com/mskim274/revit-mcp-v2/tree/95880f480da15158d56d674c4089434a8a6314bb):
+  smaller 37-tool surface but notable hot-reloadable command set, session routing,
+  checksums, attestations and bounded responses.
+- [SAM Autodesk Revit MCP Server at `bc31aef`](https://github.com/Sam-AEC/Autodesk-Revit-MCP-Server/tree/bc31aeffece0f1d5cb9812f46e80462b3b0f93cd):
+  100+ documented tools, Revit 2024–2027 and a reflection escape hatch.
+- [Demolinator at `11bd37a`](https://github.com/Demolinator/revit-mcp-plugin/tree/11bd37a5f98868a458508c381d4da52af623fa72):
+  48 documented tools for Revit 2024–2027.
 
-### Current public-interface comparison
+Repository statements are discovery evidence, not automatically proof of a
+postcondition. A level 4–5 mutation still requires the same fixture, model/file/API
+re-read and lost-response replay for every product, including Horizun.
 
-| Capability | Horizun candidate | SAM public repository | Demolinator public repository |
+### Where Horizun leads, ties and does not lead yet
+
+| Axis | Strongest market evidence | Horizun position on 2026-08-20 | What remains |
 | --- | --- | --- | --- |
-| Revit years | 2023–2027, per-year binary | 2024–2027 | 2024–2027 |
-| Typed breadth | Broad batched authoring + specialized QA | Broadest published tool count | Broad 48-tool surface |
-| Post-commit invariant | Repository-wide typed-write rule | Not established from README claim alone | Not established from README claim alone |
-| Durable at-most-once | Revit + host external mutation ledger | Not established from public README | Not established from public README |
-| NWC | Implemented natively | Roadmap/in progress | Not established |
-| FBX | Implemented natively | Not established | Not established |
-| Direct Power BI rows | Implemented with fixed endpoints and durable replay | Roadmap/in progress | Not established |
-| Loaded RFA compiler | Parameters/types/reference skeleton/sweeps/nested RFA/MEP connectors | Family capabilities require pinned case run | Family creation claim requires pinned case run |
-| System-family types | Dedicated verified operation, including host compound layers | Requires pinned case run | Requires pinned case run |
-| Installation | One paste; no Git/SDK; checksum/manifest/SBOM; automatic safe post-exit Codex/Claude registration; durable first-Revit health verification | Bundled Windows installer, MCPB and source workflow | Source/pyRevit workflow |
-| Publicly trusted signing | No | Must be checked per asset | Must be checked per asset |
+| Vendor trust/support | Autodesk official server | Cannot honestly beat Autodesk on vendor identity or Revit entitlement support | Complement it; publish signed binaries and independent evidence |
+| Safe default | Autodesk read-oriented preview | Typed in-model writes available, Python and external/session effects off by default; Revit Python ON/OFF grant expires | Live adversarial proof and modeless approval history |
+| Raw breadth/SOP library | Shuotao 173 tools / 76 SOPs | Lower raw count; broader verified verticals in family authoring, exports and Power BI | Versioned recipe/SOP marketplace, without compiling client standards into the bridge |
+| Version range | BIMwright 2022–2027 | 2023–2027 | Revit 2022 only if demand justifies a separately tested payload |
+| Atomic multi-step writes | KenLP documents one-transaction batches | `horizun_execute_plan`, dry-run, stale-plan binding, rollback trace and postcondition re-read | Publish common live fixtures against both products |
+| At-most-once recovery | No stronger public evidence found in this pass | Durable idempotency ledger and MCP Tasks backed by durable Revit jobs | Crash/kill matrix and task cancellation before start |
+| MCP protocol surface | Varies by repository | Tools, Resources, Prompts, Completions, progress, opt-in Logging and 2025-11-25 Tasks | Official Inspector/SDK conformance and multi-client matrix |
+| Extensibility | Revit MCP v2 hot-reload; Shuotao SOP library | Typed source extension plus bounded Python escape hatch | Signed plugin/recipe SDK and isolated hot reload |
+| Install/provenance | Autodesk entitlement install; several prebuilt community packages | Manifest/SBOM/checksum/attestation pipeline; public identity absent | Public Authenticode identity and clean-machine install evidence |
+| Performance | No comparable public fixture series found | Queue/backpressure and response budgets are tested | Publish latency, peak memory and longest continuous UI block by model size/year |
 
-This table does not say that an undocumented competitor feature is impossible;
-it says it is not benchmark evidence yet. Before publishing an overall
-competitor score, the harness must pin commits, install each server on a clean
-machine, execute the same fixtures and attach raw outputs. Horizun's own live-
-pending rows are subject to the same rule.
+### Definition of “better than all” used here
+
+Horizun may claim leadership only per axis with reproducible evidence. It must not
+claim universal superiority while any of these remain open:
+
+1. public Authenticode identity and clean-machine verification;
+2. live certification matrix for Revit 2023–2027, with failures and uncovered
+   cases published rather than omitted;
+3. modeless Revit approval/history UI for high-risk operations;
+4. cooperative progress/cancellation for operations explicitly safe to chunk;
+5. signed extension/recipe SDK with compatibility and isolation policy;
+6. common-fixture performance and outcome runs against pinned competitors;
+7. MCP Inspector plus Codex, Claude, Cursor and VS Code compatibility evidence.
+
+Public certification procurement is external. Everything else above can be built
+or evidenced in this repository, and the release gate must stay fail-closed where
+external proof is absent.
 
 ## Reproduction
 

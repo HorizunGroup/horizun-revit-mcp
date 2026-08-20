@@ -68,7 +68,7 @@ namespace Horizun.Core.Tests
                 },
 
                 // The above, plus horizun_execute_python - which is gated by NAME, not by
-                // effect, and is asserted separately. THE DEFAULT PROFILE.
+                // effect, and is asserted separately. This rung is explicit-only.
                 [UnsafeCode] = new[]
                 {
                     ToolEffect.ReadOnly, ToolEffect.HostState,
@@ -199,18 +199,17 @@ namespace Horizun.Core.Tests
 
         /// <summary>
         /// THE PRODUCT DECISION, pinned. execute_python is gated by name and needs BOTH
-        /// unsafe_code and enable_execute_python - and unsafe_code is what an install with
-        /// no settings file reads as, so a fresh machine exposes it. This test exists so
-        /// that a future tightening of the ladder cannot switch it off as a side effect.
+        /// unsafe_code and enable_execute_python are both explicit owner decisions. A
+        /// fresh machine must not expose arbitrary code.
         /// </summary>
         [Fact]
-        public void Execute_python_remains_available_on_a_default_install()
+        public void Execute_python_is_unavailable_on_a_default_install()
         {
             WithoutSettingsFile(() =>
             {
-                Assert.Equal(UnsafeCode, Settings.PermissionProfile);
-                Assert.True(Settings.ExecutePythonEnabled);
-                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
+                Assert.Equal(SafeWrite, Settings.PermissionProfile);
+                Assert.False(Settings.ExecutePythonEnabled);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
             });
         }
 

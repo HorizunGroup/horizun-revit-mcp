@@ -16,7 +16,11 @@ on:
   push:
     branches: [ main ]
     tags: [ 'v*' ]
-  pull_request:
+
+# SECURITY BOUNDARY: this workflow is deliberately push/tag only. It contains
+# jobs that execute repository code on persistent self-hosted Revit machines and
+# a release path that can use the signing key. Pull requests run only through
+# pr.yml, which contains hosted-runner jobs and no route to this workflow.
 
 permissions:
   contents: read
@@ -28,9 +32,11 @@ jobs:
   revit-free:
     runs-on: ubuntu-latest    # the Revit-free surface is plain net8.0
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '8.0.x'
 
@@ -49,26 +55,51 @@ jobs:
           case "$GITHUB_REF" in
             refs/tags/v*)
               tag="${GITHUB_REF#refs/tags/v}"
-              if [ "$tag" != "$version" ]; then
-                echo "::error::Tag v$tag but <Version> is $version. Bump Directory.Build.props (and the CHANGELOG) before cutting the tag."
+              if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$|^[0-9]+\.[0-9]+\.[0-9]+-(preview|validation)\.[1-9][0-9]*$ ]]; then
+                echo "::error::Release tags must be vX.Y.Z, vX.Y.Z-preview.N or vX.Y.Z-validation.N."
                 exit 1
-              fi ;;
+              fi
+              case "$tag" in
+                *-validation.*)
+                  base="${tag%%-*}"
+                  if [ "$base" != "${version%%-*}" ]; then
+                    echo "::error::Validation tag v$tag has base $base but <Version> is $version."
+                    exit 1
+                  fi ;;
+                *)
+                  if [ "$tag" != "$version" ]; then
+                    echo "::error::Installable tag v$tag must exactly match <Version> $version, including preview suffix."
+                    exit 1
+                  fi ;;
+              esac ;;
           esac
 
       - name: Tagged releases require the live Revit gate
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
         shell: bash
         run: |
           if [ "${{ vars.HAS_REVIT_RUNNER }}" != "true" ]; then
             echo "::error::A release tag cannot pass without the self-hosted Revit runner. Publish a preview from a non-tag build or restore the full live gate first."
             exit 1
           fi
+          if [ -z "${{ vars.REVIT_RUNNER_GROUP }}" ] || [ -z "${{ vars.SIGNING_RUNNER_GROUP }}" ]; then
+            echo "::error::Stable releases require explicit REVIT_RUNNER_GROUP and SIGNING_RUNNER_GROUP repository variables."
+            exit 1
+          fi
+          if [ "${{ vars.REVIT_RUNNER_GROUP }}" = "${{ vars.SIGNING_RUNNER_GROUP }}" ]; then
+            echo "::error::The signing runner group must be distinct from the Revit integration runner group."
+            exit 1
+          fi
+          if [ "${{ vars.SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED }}" != "true" ]; then
+            echo "::error::SignPath Foundation OSS origin rules require hosted build jobs by default. This Revit build needs licensed APIs on a self-hosted runner; stable signing remains blocked until SignPath explicitly approves that origin and SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED=true records the external decision."
+            exit 1
+          fi
 
       - name: Restore
         run: |
-          dotnet restore src/Horizun.Server/Horizun.Server.csproj
-          dotnet restore tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj
-          dotnet restore tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj
+          dotnet restore src/Horizun.Server/Horizun.Server.csproj --locked-mode
+          dotnet restore tests/Horizun.Core.Tests/Horizun.Core.Tests.csproj --locked-mode
+          dotnet restore tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj --locked-mode
 
       # Warnings as errors HERE and not in the csproj: a developer mid-change
       # should not be blocked by a warning, and main should not accumulate them.
@@ -116,14 +147,19 @@ jobs:
       - name: Test release scripts and public metadata consistency
         shell: pwsh
         run: |
+          pwsh scripts/workflow-security.tests.ps1
+          pwsh scripts/deployment-security.tests.ps1
           pwsh scripts/install-arguments.tests.ps1
           pwsh scripts/install-result.tests.ps1
           pwsh scripts/install-completion.tests.ps1
+          pwsh scripts/verify-install.tests.ps1
+          pwsh scripts/uninstall-cleanup.tests.ps1
           pwsh scripts/manifest-integrity.tests.ps1
           pwsh scripts/register-client.tests.ps1
           pwsh scripts/scan-sensitive.tests.ps1
           pwsh scripts/server-update.tests.ps1
           pwsh scripts/public-consistency.tests.ps1
+          pwsh scripts/python-permission.tests.ps1
 
       - name: Whitespace and line-ending hygiene
         run: |
@@ -145,14 +181,14 @@ jobs:
 
       - name: Publish the client-name scan
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sensitive-scan
           path: artifacts/scan
 
       - name: Publish test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-results
           path: artifacts/tests
@@ -162,8 +198,15 @@ jobs:
   # and the skip is the point - it is visible rather than assumed.
   # ---------------------------------------------------------------------------
   revit-addin:
-    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
-    runs-on: [self-hosted, windows, revit]
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' && vars.REVIT_RUNNER_GROUP != '' }}
+    runs-on:
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
+    env:
+      # A persistent runner's global package cache is mutable state outside the
+      # locked graph. Give each run/year a fresh extraction root so an old job
+      # cannot replace a DLL under an otherwise-correct packages.lock.json.
+      NUGET_PACKAGES: ${{ runner.temp }}\horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.year }}
     strategy:
       fail-fast: false
       # One Windows desktop can host one unattended Revit session safely. Running
@@ -173,12 +216,14 @@ jobs:
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Build the add-in for Revit ${{ matrix.year }} against its own RevitAPI
         shell: pwsh
         run: |
-          dotnet build src/Horizun.Revit/Horizun.Revit.csproj -c Release -p:RevitYear=${{ matrix.year }} -warnaserror
+          dotnet build src/Horizun.Revit/Horizun.Revit.csproj -c Release -p:RevitYear=${{ matrix.year }} -p:RestoreLockedMode=true -warnaserror
 
       # The framework is re-read from the produced bytes rather than trusted from
       # the build log: bin is shared across years and a leftover is invisible.
@@ -199,16 +244,29 @@ jobs:
   # Revit (each year is compiled against its own API) plus Inno Setup.
   # ---------------------------------------------------------------------------
   package:
-    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' && vars.SIGNING_RUNNER_GROUP != '' && vars.SIGNING_RUNNER_GROUP != vars.REVIT_RUNNER_GROUP && (!startsWith(github.ref, 'refs/tags/v') || !contains(github.ref_name, '-validation.')) }}
     needs: [revit-free, revit-addin]
-    runs-on: [self-hosted, windows, revit]
+    # This group must contain a dedicated signing runner, not the interactive
+    # Revit integration runner. GitHub enforces group membership externally;
+    # the hosted tag gate above fails closed when the two configured names match.
+    runs-on:
+      group: ${{ vars.SIGNING_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit, signing]
+    env:
+      NUGET_PACKAGES: ${{ runner.temp }}\horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-package
     permissions:
       contents: read
       id-token: write
       attestations: write
       artifact-metadata: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build and scan the exact public projection
+        shell: pwsh
+        run: pwsh scripts/validate-public-projection.ps1 -Output dist/public/ci
 
       - name: Build and stage every supported year
         shell: pwsh
@@ -234,7 +292,7 @@ jobs:
           $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
           if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
           if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
-          foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1') {
+          foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1') {
             if (-not (Test-Path "$stage/server/client-tools/$helper")) {
               throw "installer client helper is missing: $helper"
             }
@@ -294,21 +352,19 @@ jobs:
           & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
           if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
 
-      - name: Compile the installer and sign releases from 1.0 onward
+      - name: Compile the installer and sign every installable release
         shell: pwsh
         run: |
           $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
-          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          $requiresPublicSignature = $releaseTag
           $thumbprint = '${{ vars.SIGNING_CERT_THUMBPRINT }}'.Trim()
           if ($requiresPublicSignature -and -not $thumbprint) {
-            throw 'Horizun 1.0 and later require repository variable SIGNING_CERT_THUMBPRINT and its private key on the release runner. There is no unsigned exception from 1.0 onward.'
+            throw 'Every installable Horizun release requires SIGNING_CERT_THUMBPRINT and its private key on the dedicated signing runner. Validation-only tags are the no-binary channel while public signing is unavailable.'
           }
           try {
             if ($requiresPublicSignature) {
               pwsh scripts/sign.ps1 -Thumbprint $thumbprint
               if ($LASTEXITCODE -ne 0) { throw "staged payload signing failed ($LASTEXITCODE)" }
-            } elseif ($releaseTag) {
-              Write-Host '::warning::This 0.x release is intentionally unsigned. Verify SHA256SUMS.txt before installation. Public signing becomes mandatory at 1.0.0.'
             }
 
             pwsh scripts/pack.ps1 -InstallerOnly
@@ -365,14 +421,13 @@ jobs:
           )
           if (-not (Test-Path $archive)) { throw 'stage.zip was not created' }
 
-      # 0.x releases may ship unsigned while the public identity is pending, but
-      # they must say so. Starting with 1.0, unknown-publisher distribution is a
-      # hard release failure with no bypass.
-      - name: Enforce versioned signing policy
+      # Branch artifacts may remain unsigned developer evidence. Every tagged
+      # installable artifact must match the bootstrap's public-trust requirement.
+      - name: Enforce release signing policy
         shell: pwsh
         run: |
           $releaseTag = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
-          $requiresPublicSignature = $releaseTag -and ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          $requiresPublicSignature = $releaseTag
           $unsigned = @()
           $selfSigned = @()
           $untimestamped = @()
@@ -385,20 +440,22 @@ jobs:
             elseif ($sig.SignerCertificate -and $sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer) {
               $selfSigned += "$($f.FullName): $($sig.SignerCertificate.Subject)"
             }
+            elseif ($sig.SignerCertificate) {
+              $identity = $sig.SignerCertificate.Subject
+              if ($identity -notmatch '(?i)SignPath Foundation') {
+                $unsigned += "$($f.FullName): unexpected publisher $identity"
+              }
+            }
             if ($sig.Status -eq 'Valid' -and -not $sig.TimeStamperCertificate) {
               $untimestamped += $f.FullName
             }
           }
           if ($requiresPublicSignature -and ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0)) {
             $details = @($unsigned) + @($selfSigned) + @($untimestamped | ForEach-Object { "${_}: no trusted timestamp" })
-            throw "Horizun 1.0+ release contains unsigned, invalid, self-signed or untimestamped own binaries:`n  - $($details -join "`n  - ")"
+            throw "Installable release contains unsigned, invalid, self-signed or untimestamped own binaries:`n  - $($details -join "`n  - ")"
           }
           if ($unsigned.Count -gt 0 -or $selfSigned.Count -gt 0 -or $untimestamped.Count -gt 0) {
-            if ($releaseTag) {
-              Write-Host "::warning::0.x release is not publicly signed; users must verify SHA256SUMS.txt. Version 1.0+ enforces this as a failure"
-            } else {
-              Write-Host "::warning::branch package is not publicly signed"
-            }
+            Write-Host "::warning::branch package is not publicly signed and cannot be published as an installable release"
             $unsigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
             $selfSigned | Select-Object -First 10 | ForEach-Object { Write-Host "  $_" }
             $untimestamped | Select-Object -First 10 | ForEach-Object { Write-Host "  $_ : no trusted timestamp" }
@@ -449,7 +506,7 @@ jobs:
 
       - name: Attest build provenance for tagged artifacts
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             dist/*setup.exe
@@ -457,13 +514,13 @@ jobs:
 
       - name: Attest the CycloneDX SBOM for the installer
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
       - name: Publish the installer, timestamped stage, manifest and SBOM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: horizun-mcp-package
           path: |
@@ -475,17 +532,19 @@ jobs:
             dist/stage/manifest.json
 
   # The release's stated trust state is re-evaluated on a disposable
-  # Microsoft-hosted machine. For 0.x every own binary must be honestly unsigned.
-  # From 1.0 onward every own binary must be publicly trusted and timestamped.
+  # Microsoft-hosted machine. Every installable tag must be publicly trusted and
+  # timestamped, exactly as the public bootstrap requires before executing Setup.
   public-signature:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
     needs: package
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Download the exact signed package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: horizun-mcp-package
           path: dist
@@ -500,18 +559,6 @@ jobs:
           if ($targets.Count -ne 8) {
             throw "Expected server exe+dll, five Revit DLLs and setup; found $($targets.Count)."
           }
-          $major = ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major
-          if ($major -lt 1) {
-            foreach ($file in $targets) {
-              $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
-              if ($sig.Status -ne 'NotSigned') {
-                throw "$($file.FullName) does not match the 0.x unsigned disclosure: $($sig.Status) - $($sig.StatusMessage)"
-              }
-              Write-Host "  disclosed unsigned $($file.Name)"
-            }
-            Write-Host '::warning::Horizun 0.x is distributed without a publicly trusted publisher. Verify SHA256SUMS.txt before running Setup.'
-            exit 0
-          }
           foreach ($file in $targets) {
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
             if ($sig.Status -ne 'Valid') {
@@ -523,6 +570,10 @@ jobs:
             if ($sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer) {
               throw "$($file.FullName) is self-signed, not a public publisher identity."
             }
+            $identity = $sig.SignerCertificate.Subject
+            if ($identity -notmatch '(?i)SignPath Foundation') {
+              throw "$($file.FullName) is not signed by the SignPath Foundation release publisher: $identity"
+            }
             Write-Host "  trusted $($file.Name) - $($sig.SignerCertificate.Subject)"
           }
 
@@ -533,11 +584,15 @@ jobs:
   # proven here; the next job exercises it in each supported Revit API.
   # ---------------------------------------------------------------------------
   install-package:
-    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' && vars.REVIT_RUNNER_GROUP != '' && (!startsWith(github.ref, 'refs/tags/v') || !contains(github.ref_name, '-validation.')) }}
     needs: package
-    runs-on: [self-hosted, windows, revit]
+    runs-on:
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       # DOWNLOAD THE ARTIFACT. This job used to read dist/ straight off the runner
       # and call it "the packaged artifact". On a self-hosted runner that directory
@@ -547,7 +602,7 @@ jobs:
       # all. The job that exists to prove the SHIPPED package works was testing a
       # directory, and on a good day the two were the same thing.
       - name: Get the package this run built
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: horizun-mcp-package
           path: dist
@@ -663,13 +718,12 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Branch builds and disclosed 0.x releases keep the explicit unsigned
-        # exception. From 1.0 onward the installed artifact must be publicly signed.
+        # Branch builds keep an explicit unsigned development exception. Every
+        # tagged binary release must be publicly signed, matching the bootstrap.
         # The result path is the exact per-run file requested in the install step,
         # never the global result left by an earlier install.
         run: |
-          $requiresPublicSignature = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true' -and `
-            ([version]('${{ github.ref_name }}'.TrimStart('v'))).Major -ge 1
+          $requiresPublicSignature = '${{ startsWith(github.ref, 'refs/tags/v') }}' -eq 'true'
           if ($requiresPublicSignature) {
             pwsh scripts/verify-release.ps1 -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
           } else {
@@ -677,7 +731,7 @@ jobs:
           }
 
       - name: Publish the installed release-chain evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: installed-release-chain
           # Every live job starts from a clean checkout. The orchestrator needs
@@ -693,9 +747,11 @@ jobs:
   # a substitute for opening the payload in that Revit API.
   # ---------------------------------------------------------------------------
   revit-integration:
-    if: ${{ vars.HAS_REVIT_RUNNER == 'true' }}
+    if: ${{ vars.HAS_REVIT_RUNNER == 'true' && vars.REVIT_RUNNER_GROUP != '' && (!startsWith(github.ref, 'refs/tags/v') || !contains(github.ref_name, '-validation.')) }}
     needs: install-package
-    runs-on: [self-hosted, windows, revit]
+    runs-on:
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
     strategy:
       fail-fast: false
       # This matrix shares one interactive Windows desktop. Two simultaneous
@@ -705,10 +761,12 @@ jobs:
       matrix:
         year: [2023, 2024, 2025, 2026, 2027]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Get the proven install manifest
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: installed-release-chain
           path: .
@@ -724,7 +782,7 @@ jobs:
       # actually needs. Publishing only the green ones is publishing nothing.
       - name: Publish the live-verification results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: live-verification-${{ matrix.year }}
           path: artifacts/live
@@ -733,12 +791,12 @@ jobs:
   # release job consumes this artifact; it cannot substitute a skipped year or
   # an old local report.
   stable-release-evidence:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-')
     needs: revit-integration
     runs-on: ubuntu-latest
     steps:
       - name: Download every live report from this run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: live-verification-*
           path: live
@@ -758,26 +816,26 @@ jobs:
           }
 
       - name: Publish the complete stable matrix
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: stable-live-matrix-${{ github.ref_name }}
           path: live/live-*.json
 
   publish-stable-release:
-    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
     needs: [package, public-signature, stable-release-evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Download the exact package from this run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: horizun-mcp-package
           path: release
 
       - name: Download the complete live matrix from this run
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: stable-live-matrix-${{ github.ref_name }}
           path: release/live
@@ -796,54 +854,112 @@ jobs:
             printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
+          expected=$(printf '%s\n' "${files[@]##*/}" | sort)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            remote=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+            extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$remote"))
+            if [ -n "$extra" ]; then
+              printf 'Existing release has unauthorized assets; refusing to preserve them:\n%s\n' "$extra" >&2
+              exit 1
+            fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
             gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false
           else
             gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
+          actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+          if [ "$actual" != "$expected" ]; then
+            printf 'Published stable asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
 
-      # THE RELEASE PAGE IS WHERE SOMEBODY WHO WANTS TO INSTALL ACTUALLY LANDS.
-      # --generate-notes alone leaves them a list of merged PRs and ten assets
-      # with no hint of which one to download, how to verify it, or why Windows
-      # is about to call the publisher unknown. The preamble goes ABOVE the
-      # generated changelog, and this step is idempotent: a re-run that finds it
-      # already there leaves the notes alone.
-      #
-      # Non-fatal on purpose. The binaries, their hashes and the live reports are
-      # the release; prose that failed to attach must not fail a publish that
-      # already succeeded - it must say so and let the job stand.
-      - name: Put the install instructions above the generated changelog
-        continue-on-error: true
+  publish-preview-release:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-preview.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    needs: [package, public-signature]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the exact preview package from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: horizun-mcp-package
+          path: release
+
+      - name: Create or complete the preview GitHub release
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          set -uo pipefail
-          preamble='.github/release-preamble.md'
-          if [ ! -f "$preamble" ]; then
-            echo "::warning::$preamble is missing; the release keeps the generated notes only"
-            exit 0
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release/*setup.exe release/SHA256SUMS.txt release/sbom.json release/package-hashes.json release/stage/manifest.json)
+          if [ "${#files[@]}" -ne 5 ]; then
+            printf 'Expected preview installer + 4 metadata files; found %s\n' "${#files[@]}" >&2
+            exit 1
           fi
-          body=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body) || {
-            echo "::warning::could not read the release notes back; leaving them as generated"; exit 0; }
-          case "$body" in
-            *'## Install'*) echo "install instructions already present; leaving the notes alone"; exit 0 ;;
-          esac
-          { cat "$preamble"; printf '\n'; printf '%s\n' "$body"; } > release-notes.md
-          gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md ||
-            echo "::warning::could not update the release notes; the assets are published and correct"
+          expected=$(printf '%s\n' "${files[@]##*/}" | sort)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            remote=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+            extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$remote"))
+            if [ -n "$extra" ]; then
+              printf 'Existing preview has unauthorized assets; refusing to preserve them:\n%s\n' "$extra" >&2
+              exit 1
+            fi
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --prerelease --latest=false --draft=false
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --prerelease --title "Horizun Revit MCP $GITHUB_REF_NAME"
+          fi
+          actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
+          if [ "$actual" != "$expected" ]; then
+            printf 'Published preview asset inventory is not exact.\nExpected:\n%s\nActual:\n%s\n' "$expected" "$actual" >&2
+            exit 1
+          fi
+
+  publish-validation-release:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-validation.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    needs: revit-free
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish a validation-only release with no binary assets
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          note='Validation-only tag: source tests, harness, documentation or CI evidence. No installable binaries are attached and this release is never latest.'
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            assets=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')
+            if [ "$assets" -ne 0 ]; then
+              echo "Existing validation-only release has $assets asset(s); refusing to claim no binaries." >&2
+              exit 1
+            fi
+            gh release edit "$GITHUB_REF_NAME" --prerelease --latest=false --draft=false --notes "$note"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --prerelease --title "Horizun Revit MCP $GITHUB_REF_NAME" --notes "$note"
+          fi
+          assets=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets | length')
+          if [ "$assets" -ne 0 ]; then
+            echo "Validation-only release unexpectedly contains $assets asset(s)." >&2
+            exit 1
+          fi
 
   publish-mcp-registry:
-    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'HorizunGroup/horizun-revit-mcp'
+    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
     needs: publish-stable-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Generate registry metadata from the canonical version
         shell: pwsh
@@ -870,7 +986,7 @@ jobs:
   # ---------------------------------------------------------------------------
   coverage-statement:
     if: ${{ always() }}
-    needs: [revit-free]
+    needs: [revit-free, revit-addin, package, install-package, revit-integration]
     runs-on: ubuntu-latest
     steps:
       - name: What this run did and did not cover
@@ -880,14 +996,15 @@ jobs:
           echo "Also here: the structural half of the sensitive-name scan. The NAME half needs"
           echo "a wordlist that is deliberately not in this repository, so on a hosted runner it"
           echo "reports NOT RUN - which is not the same as passing, and is not printed as if it were."
-          if [ "${{ vars.HAS_REVIT_RUNNER }}" = "true" ]; then
-            echo "Revit jobs: RAN (a self-hosted runner with Revit is configured)."
+          echo "Job results: revit-free=${{ needs.revit-free.result }}, add-in=${{ needs.revit-addin.result }}, package=${{ needs.package.result }}, install=${{ needs.install-package.result }}, integration=${{ needs.revit-integration.result }}."
+          if [ "${{ needs.revit-integration.result }}" = "success" ]; then
+            echo "Revit jobs: RAN and completed successfully."
             echo "Integration ran against the INSTALLED artifact on Revit 2023 through 2027, with the"
             echo "commit and full SHA-256 of the server and that year's add-in checked against the"
             echo "release manifest. NOT COVERED exits 3 under -ReleaseGate."
           else
-            echo "::warning::Revit jobs were SKIPPED - no self-hosted runner with Revit is configured."
+            echo "::warning::The complete Revit integration matrix did not run successfully in this workflow."
             echo "NOT covered by this run: the add-in for any year, packaging, the installer,"
-            echo "and every command that touches a model. Those are verified on a developer"
-            echo "machine with Revit, and that verification is not represented by this tick."
+            echo "and every command that touches a model. A configured flag is not execution evidence;"
+            echo "the individual job results above are the authoritative record for this run."
           fi

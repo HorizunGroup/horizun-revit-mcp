@@ -76,7 +76,8 @@
   "VoidFamilyDocument": "",
 
   "_ClosedWorksetDocument": [
-    "Title of a WORKSHARED model, open in the Revit under test, with AT LEAST ONE WORKSET CLOSED.",
+    "Title of a local WORKSHARED fixture model. It may already be open: the harness copies its saved file",
+    "to a disposable temporary path and opens that copy with ClosedWorksetName kept closed.",
     "",
     "This is the one condition in the product that cannot be detected from inside the answer it",
     "corrupts. A closed workset's elements are not in the document, so a scan does not skip them -",
@@ -85,9 +86,9 @@
     "presented as a statement about the building.",
     "",
     "It cannot be simulated either: whether a workset is open is a property of how the model was",
-    "opened. To produce one, open a workshared model and clear a workset in the Worksets dialog, or",
-    "open it with 'Specify' and leave one unchecked. Any workshared model will do - it does not have",
-    "to be the same one as Document."
+    "opened. Any local workshared fixture will do; it does not have to be the same one as Document."
   ],
-  "ClosedWorksetDocument": ""
+  "ClosedWorksetDocument": "",
+  "_ClosedWorksetName": "Exact user-workset name the typed open must keep closed.",
+  "ClosedWorksetName": ""
 }

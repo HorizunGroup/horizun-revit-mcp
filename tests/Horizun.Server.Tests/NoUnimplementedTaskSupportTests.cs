@@ -1,23 +1,10 @@
 // -----------------------------------------------------------------------------
-// Horizun Server tests - do not advertise a protocol feature we do not implement.
+// Horizun Server tests - advertise MCP Tasks only when the negotiated protocol and
+// the underlying durable queue can support them.
 //
-// `execution.taskSupport` is part of MCP Tasks (2025-11-25). A tool carrying
-// taskSupport:"optional" is telling a client "you may run me as a task", and the
-// way a client acts on that is tasks/create - which this server does not
-// implement, and never declared: initialize returns capabilities {"tools":{}}
-// with no "tasks" member at all.
-//
-// So the server was making a promise in one field that it withdrew in another.
-// The safe-looking reading is the wrong one: a client that trusts the per-tool
-// hint over the server-level capability calls a method that does not exist, and
-// what it gets back is a JSON-RPC "method not found" for work it believes it
-// submitted.
-//
-// The honest position for this release is that the bridge has ITS OWN queue -
-// horizun_submit_job plus horizun_job_status, which are real, tested and
-// documented - and that this is NOT MCP Tasks. If tasks/* is ever implemented
-// and proved against the spec, the hint comes back with the capability beside
-// it, and these tests are what will have to be deliberately changed.
+// Down-level clients see no execution block. 2025-11-25 clients see optional
+// exactly for Revit-forwarding tools accepted by submit_job, and forbidden for
+// host tools plus the two explicit exclusions.
 // -----------------------------------------------------------------------------
 using System.Linq;
 using Newtonsoft.Json.Linq;
@@ -27,9 +14,8 @@ namespace Horizun.Server.Tests
 {
     public class NoUnimplementedTaskSupportTests
     {
-        /// <summary>Not one tool claims task support while tasks/* is unimplemented.</summary>
         [Fact]
-        public void No_tool_advertises_execution_taskSupport()
+        public void Downlevel_tool_list_does_not_advertise_task_support()
         {
             JArray tools = Tools.List();
             Assert.NotEmpty(tools);
@@ -40,9 +26,21 @@ namespace Horizun.Server.Tests
                                  .ToList();
 
             Assert.True(offenders.Count == 0,
-                "These tools advertise an execution/taskSupport block while this server implements no " +
-                "tasks/* method and declares no \"tasks\" capability: " + string.Join(", ", offenders) +
-                ". Either implement MCP Tasks fully and declare the capability, or do not hint at it.");
+                "Down-level MCP clients must not receive a 2025-11-25 execution block: " +
+                string.Join(", ", offenders));
+        }
+
+        [Fact]
+        public void Current_tool_list_marks_exactly_supported_tasks_optional()
+        {
+            JArray tools = Tools.List(true);
+            Assert.NotEmpty(tools);
+            foreach (JObject tool in tools)
+            {
+                ToolDef def = Tools.Find((string)tool["name"]);
+                string expected = McpTasks.Supports(def) ? "optional" : "forbidden";
+                Assert.Equal(expected, (string)tool["execution"]["taskSupport"]);
+            }
         }
 
         /// <summary>

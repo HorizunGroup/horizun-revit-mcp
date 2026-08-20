@@ -64,10 +64,15 @@ foreach ($path in $installDocs) {
 $settings = Get-Content (Join-Path $repo 'src/Horizun.Revit/Core/Settings.cs') -Raw
 $evidence = Get-Content (Join-Path $repo 'src/Horizun.Revit/Core/ScriptEvidence.cs') -Raw
 $contract = Get-Content (Join-Path $repo 'src/Horizun.Contracts/Contract.cs') -Raw
-if ($settings -notmatch 'return\s+"unsafe_code"') { Fail 'execute_python default profile is no longer unsafe_code' }
-if ($settings -notmatch 'if\s*\(t\s*==\s*null\s*\|\|\s*t\.Type\s*!=\s*JTokenType\.Boolean\)\s*return\s+true') { Fail 'enable_execute_python no longer defaults to true' }
+if ($settings -notmatch 'return\s+"safe_write"') { Fail 'fresh-install permission profile is no longer safe_write' }
+if ($settings -notmatch 'return\s+t\s*!=\s*null\s*&&\s*t\.Type\s*==\s*JTokenType\.Boolean\s*&&\s*\(bool\)t') { Fail 'enable_execute_python no longer defaults to false' }
 if ($evidence -notmatch 'HostVerified\s*=>\s*false') { Fail 'Python evidence no longer pins HostVerified=false' }
-if ($contract -notmatch 'Enabled by default' -or $contract -notmatch 'host_verified is always false') { Fail 'tool contract no longer states the Python decision/evidence ceiling' }
+if ($contract -notmatch 'Disabled by default' -or $contract -notmatch 'host_verified is always false') { Fail 'tool contract no longer states the Python decision/evidence ceiling' }
+$defaultOnPattern = '(?i)execute_python.{0,80}(enabled by default|(?<!des)habilitado por defecto)|default-on change'
+foreach ($policyFile in @('AGENTS.md','CHANGELOG.md','CONTRIBUTING.md','SECURITY.md','llms.txt','docs/security-model.md','scripts/verify-live.ps1','src/Horizun.Revit/Commands/ExecutePythonCommand.cs')) {
+    $policyText = Get-Content (Join-Path $repo $policyFile) -Raw
+    if ($policyText -match $defaultOnPattern) { Fail "$policyFile still describes execute_python as default-on" }
+}
 
 # The public CI must own the real Revit lifecycle and opt into the committing
 # tier. A direct verify-live invocation against no running Revit was present for
@@ -97,9 +102,9 @@ if ($ci -notmatch 'verify-release\.ps1 -Installed -AllowUnsigned -InstallResult'
     Fail 'CI no longer verifies the exact per-run install result with an explicit signing policy'
 }
 if ($ci -notmatch 'SIGNING_CERT_THUMBPRINT' -or
-    $ci -notmatch '\.Major -ge 1' -or
-    $ci -notmatch 'Horizun 1\.0\+ release contains unsigned, invalid, self-signed or untimestamped') {
-    Fail '1.0+ tags no longer fail closed on missing or non-public Authenticode signing'
+    $ci -notmatch '\$requiresPublicSignature\s*=\s*\$releaseTag' -or
+    $ci -notmatch 'Installable release contains unsigned, invalid, self-signed or untimestamped') {
+    Fail 'installable tags no longer fail closed on missing or non-public Authenticode signing'
 }
 if ($ci -notmatch 'runs-on: windows-latest' -or
     $ci -notmatch 'not publicly trusted on a clean Windows runner' -or
@@ -109,8 +114,26 @@ if ($ci -notmatch 'runs-on: windows-latest' -or
 if ($ci -notmatch '(?s)Create or complete the stable GitHub release.*?GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}.*?gh release') {
     Fail 'stable release publication can no longer identify the repository without a checkout'
 }
-if ($ci -notmatch '(?s)requiresPublicSignature.*?\.Major -ge 1.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
-    Fail 'installed release verification no longer allows unsigned only before 1.0'
+if ($ci -notmatch '(?s)requiresPublicSignature.*?startsWith\(github\.ref.*?verify-release\.ps1 -Installed -InstallResult.*?else.*?-AllowUnsigned') {
+    Fail 'installed verification no longer reserves AllowUnsigned for untagged branch packages'
+}
+if ($ci -notmatch 'publish-preview-release:' -or $ci -notmatch '--prerelease' -or
+    $ci -notmatch 'publish-validation-release:' -or
+    $ci -notmatch "contains\(github\.ref_name, '-validation\.'\)" -or
+    $ci -notmatch "!contains\(github\.ref_name, '-'\)") {
+    Fail 'CI no longer implements distinct stable, preview and validation-only release channels'
+}
+if ($ci -notmatch 'python-permission\.tests\.ps1' -or
+    $ci -notmatch 'validate-public-projection\.ps1 -Output dist/public/ci') {
+    Fail 'CI no longer proves inter-process Python revocation and the exact exported public tree'
+}
+if (Test-Path (Join-Path $repo 'publish/make-public-package.ps1')) {
+    $projector = Get-Content (Join-Path $repo 'publish/make-public-package.ps1') -Raw
+    foreach ($legalFile in 'LICENSE','NOTICE') {
+        if ($projector -notmatch "(?m)'$legalFile'") {
+            Fail "the public projection omits required legal file $legalFile"
+        }
+    }
 }
 
 $readme = Get-Content (Join-Path $repo 'README.md') -Raw
@@ -146,8 +169,8 @@ if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code
     Fail 'README no longer exposes the required SignPath code-signing statement and policy'
 }
 if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or
-    $signingPolicy -notmatch 'Version 1\.0\.0 and every later release is blocked' -or
-    $signingPolicy -notmatch 'GitHub-hosted runners' -or
+    $signingPolicy -notmatch 'only source and validation-only releases without binary assets are allowed' -or
+    $signingPolicy -notmatch 'separate GitHub runner groups' -or
     $signingPolicy -notmatch 'docs/PRIVACY\.md') {
     Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'
 }
@@ -174,7 +197,8 @@ if ($stopHelper -notmatch 'GetFullPath\(\$_\.ExecutablePath\).*?-ieq \$target' -
 $installerSource = Get-Content (Join-Path $repo 'installer\horizun-mcp.iss') -Raw
 if ($installerSource -notmatch 'procedure RollbackDeployment' -or
     $installerSource -notmatch 'function WriteDeploymentManifests' -or
-    $installerSource -notmatch 'if WriteDeploymentManifests then CommitDeployment' -or
+    $installerSource -notmatch 'if WriteDeploymentManifests then' -or
+    $installerSource -notmatch 'if VerifyInstalledPayload then CommitDeployment' -or
     $installerSource -match 'Source: "\.\.\\dist\\stage\\manifest\.json"; DestDir: "\{app\}"') {
     Fail 'Setup no longer promotes server, add-ins and identity manifests as one transaction'
 }
@@ -182,10 +206,10 @@ if ($installerSource -notmatch 'procedure RollbackDeployment' -or
 # Resolve every local link that will appear in the public repository. Anchors are
 # deliberately ignored here; missing files are the high-cost publication defect.
 $publicDocs = @(
-    'README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','THIRD-PARTY-NOTICES.md','llms.txt',
+    'README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','LICENSE','NOTICE','THIRD-PARTY-NOTICES.md','llms.txt',
     'publish/overlay/README.md','publish/overlay/AGENTS.md',
     'CODE_OF_CONDUCT.md','CODE-SIGNING-POLICY.md',
-    'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md','docs/PRIVACY.md',
+    'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md','docs/PRIVACY.md','docs/production-readiness.md',
     'docs/RELEASE-POLICY.md','docs/requirement-set.md','docs/security-model.md','docs/TOOLS.md'
 ) | Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
 foreach ($path in $publicDocs) {

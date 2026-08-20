@@ -27,7 +27,7 @@ and it is labelled as such everywhere it appears.
 | `horizun_save_document` | Save, then prove it: the file's timestamp and size before and after. On a workshared model it says, loudly, that this is not a synchronize. |
 | `horizun_relinquish_all` | Give back everything this user owns, and count what is still owned afterwards rather than assume zero. |
 | `horizun_capture_view` | Export a view and hand the IMAGE back, so the caller can look at the model instead of only reading it. |
-| `horizun_execute_python` | The execution fallback: Python against the whole API on the UI thread, stdlib included. **Enabled by default**; an explicit off in `settings.json` is respected. `preflight=true` validates permission, document, size, hash and syntax without executing. Results are **self-reported, not host-verified**: the structured `__output__` contract classifies each run as `self_reported_verified`, `completed_unverified`, `partial` or `failed` — there is no `verified` state on this path, `host_verified` is always false, and a verified claim without evidence is downgraded. It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. |
+| `horizun_execute_python` | The execution fallback: Python against the whole API on the UI thread, stdlib included. **Disabled by default**. The owner may grant a 60-minute exception from the **Python ON/OFF** ribbon button, or configure a durable developer opt-in explicitly. `preflight=true` validates permission, document, size, hash and syntax without executing. Results are **self-reported, not host-verified**: the structured `__output__` contract classifies each run as `self_reported_verified`, `completed_unverified`, `partial` or `failed` — there is no `verified` state on this path, `host_verified` is always false, and a verified claim without evidence is downgraded. It detects an open transaction but cannot safely close or roll it back, and it has no typed command's dry-run, confirmation or post-commit guarantee. Long scripts arrive as `code_path` (a `.py` on this machine, decoded properly and named in tracebacks) instead of an inline string; what Revit raised comes back as `dialogs` and `failures` beside `__output__`, and `revit_raised(since)` reads the same record from inside the running script — which is how a batch learns that "Opening was canceled" was a dialog nobody was there to answer. |
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. |
@@ -109,10 +109,16 @@ the command ran** — warnings, errors and modal dialogs — on success and fail
 
 ## Permission profiles
 
-`read_only` hides and refuses model mutations. `safe_write` allows typed,
+`read_only` hides and refuses model mutations. `safe_write` is the fresh-install
+default and allows typed,
 reversible model edits but refuses opening/saving/relinquishing, document-session
 changes and external export. `full_write` enables those. `unsafe_code` is the
-fresh-install default and additionally exposes `horizun_execute_python`.
+explicit administrative profile eligible for durable `horizun_execute_python`.
 `allowed_tools` and `denied_tools` narrow any profile. The complete rules, and
 what the bridge deliberately does not defend against, are in
 [security-model.md](security-model.md).
+
+The Revit ribbon's **Python ON/OFF** button grants a 60-minute exception without
+changing the profile and revokes it immediately on the next press. The server
+announces the effective change with `notifications/tools/list_changed`; restart
+only clients that do not implement that standard notification.

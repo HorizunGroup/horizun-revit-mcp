@@ -179,7 +179,7 @@ namespace Horizun.Revit.Commands
                                     referencePlanes[referencePlan.Key] = referencePlane;
                                     createdReferencePlanes.Add(new JObject { ["key"] = referencePlan.Key, ["element_id"] = Rid.Value(referencePlane.Id) });
                                 }
-                                referenceTx.Commit();
+                                Guard.Commit(referenceTx, "create family reference planes");
                             }
                             catch
                             {

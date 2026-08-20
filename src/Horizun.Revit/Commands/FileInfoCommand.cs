@@ -29,7 +29,9 @@ namespace Horizun.Revit.Commands
             "Read Revit files' headers off disk (format/saved version, is_workshared, is_central, is_local, " +
             "central path) WITHOUT opening any of them and without an active document - the folder triage every " +
             "batch starts with. Pass 'paths' (a list) or 'folder' (swept for 'pattern', default *.rvt). Nothing " +
-            "is opened, so nothing is upgraded. Read-only.";
+            "is opened, so nothing is upgraded. A file whose header cannot be read also comes back with its " +
+            "first 8 bytes (signature/signature_means/is_revit_container), because Revit's own message for that " +
+            "case only offers Revit-file causes and a ZIP renamed .rvt is not one. Read-only.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -52,7 +54,7 @@ namespace Horizun.Revit.Commands
             if (!plan.Ok) return CommandResult.Fail(plan.Error);
 
             var files = new JArray();
-            int readable = 0, unreadable = 0, missing = 0;
+            int readable = 0, unreadable = 0, missing = 0, notRevitFiles = 0;
             foreach (string p in plan.Files)
             {
                 JObject probe = BasicFileProbe.Read(p);
@@ -60,7 +62,15 @@ namespace Horizun.Revit.Commands
 
                 bool? exists = probe["exists"]?.Type == JTokenType.Boolean ? (bool?)probe.Value<bool>("exists") : null;
                 if (exists == false) missing++;
-                else if (probe["read_error"] != null && probe["read_error"].Type != JTokenType.Null) unreadable++;
+                else if (probe["read_error"] != null && probe["read_error"].Type != JTokenType.Null)
+                {
+                    unreadable++;
+                    // Counted separately because it is a DIFFERENT finding, and the one
+                    // Revit's own error message hides: a file whose bytes are not a Revit
+                    // container at all is not an unreadable model, it is not a model.
+                    if (probe["is_revit_container"]?.Type == JTokenType.Boolean &&
+                        probe.Value<bool>("is_revit_container") == false) notRevitFiles++;
+                }
                 else readable++;
             }
 
@@ -71,6 +81,7 @@ namespace Horizun.Revit.Commands
                 ["readable"] = readable,
                 ["unreadable"] = unreadable,
                 ["missing"] = missing,
+                ["not_revit_files"] = notRevitFiles,
                 ["total_matched"] = plan.TotalMatched,
                 ["truncated"] = plan.Truncated,
                 ["truncated_note"] = plan.Truncated
@@ -78,7 +89,15 @@ namespace Horizun.Revit.Commands
                       FileInfoPaths.MaxFiles + " were read. Narrow the folder or pattern, or pass paths explicitly."
                     : null,
                 ["note"] = "Read from disk with BasicFileInfo. NOTHING was opened, so nothing was upgraded, and no " +
-                           "document needed to be open. Each file's read_error names why it could not be read, when it could not."
+                           "document needed to be open. Each file's read_error names why it could not be read, when it could not.",
+                ["unreadable_note"] =
+                    "Every file with a read_error also carries 'signature' (its first " + FileSignature.Bytes +
+                    " bytes in hex), 'signature_means' and 'is_revit_container'. READ THOSE BEFORE BELIEVING THE " +
+                    "read_error: Revit's message for an unreadable header offers two causes and both are about " +
+                    "Revit files, so a ZIP renamed .rvt reads as 'a newer format file'. " +
+                    FileSignature.Ole + " is the OLE container a real .rvt/.rfa uses - only there is the version " +
+                    "story worth believing. " + FileSignature.Zip + " is a ZIP and is not a model at all; " +
+                    "not_revit_files counts those. Anything else comes back as hex with nothing claimed about it."
             });
         }
 

@@ -95,11 +95,10 @@ reports every write probe as NOT COVERED by name rather than passing quietly —
   to review that could not do their job: refusals prove the guards, dry runs prove
   the arithmetic, and neither one executes the Revit half. Add a probe to the write
   tier of `scripts/verify-live.ps1` (`-WriteProbes`) and run it before the PR.
-- **Respect an explicit `horizun_execute_python` off-switch.** The tool is
-  enabled by default and serves as the execution fallback, but a machine whose
-  owner disabled it (`enable_execute_python=false` or a profile below
-  `unsafe_code`) made a deliberate choice — never edit their `settings.json` to
-  reverse it. The owner re-enables it with `scripts/enable-execute-python.ps1`.
+- **Respect the default-off `horizun_execute_python` gate.** The tool is an
+  explicitly granted execution fallback. A machine whose owner left it off or
+  revoked it (`enable_execute_python=false` or a profile below `unsafe_code`)
+  made a deliberate choice — never edit their `settings.json` to turn it on.
 - Every new typed command that overlaps `execute_python` gets an entry in its
   typed-overlap **advisory** table — the advisory recommends the verified typed
   command; it does not block the script.

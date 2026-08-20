@@ -24,6 +24,12 @@
          answer breaks every client at the first message, silently from this side. -->
     <Compile Include="..\..\src\Horizun.Server\ProtocolNegotiation.cs" Link="ProtocolNegotiation.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpSession.cs" Link="McpSession.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpResources.cs" Link="McpResources.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpLogging.cs" Link="McpLogging.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ToolListMonitor.cs" Link="ToolListMonitor.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpTasks.cs" Link="McpTasks.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
@@ -40,6 +46,7 @@
          of the shared-root property is under test with the same source the add-in
          compiles. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResultPayload.cs" Link="AsyncResultPayload.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" Link="DiscoverySweep.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
     <!-- CommandResult now carries the fallback signal, so its type comes with it. -->
@@ -59,6 +66,13 @@
          and it is the path the command actually takes - the hand scanner is only the
          fallback and is proved separately in Horizun.Core.Tests. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonTokenMask.cs" Link="PythonTokenMask.cs" />
+    <!-- The Python every execute_python script starts with (5.25). It is a string in
+         C#, so no compiler in the build can see a syntax error in it - and a broken
+         prelude breaks EVERY script on the machine. The same engine that will run it
+         inside Revit parses it here, and the behaviour a script leans on (the
+         since-window, the refusal to call an unwatched run quiet, and a dialog scope
+         that is released even when the block throws) is exercised against stand-ins. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptPrelude.cs" Link="ScriptPrelude.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Idempotency.cs" Link="Idempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableCommandIdempotency.cs" Link="DurableCommandIdempotency.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" Link="DurableStoreRetention.cs" />
@@ -104,6 +118,11 @@
          inside Revit, on a real model. The same engine that runs them parses them
          here — which needs no Revit, so CI can do it. -->
     <PackageReference Include="IronPython" Version="3.4.2" />
+    <!-- The prelude imports io and json, exactly as it does inside Revit, so the
+         standard library has to be here too - the add-in ships it beside the plugin
+         and points the engine's search path at it. Without this the prelude tests
+         would prove that a prelude PARSES and never that it runs. -->
+    <PackageReference Include="IronPython.StdLib" Version="3.4.2" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />

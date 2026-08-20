@@ -14,6 +14,12 @@
 // read but could not turn into a year are three different facts, and a batch that
 // triages formats has to tell them apart.
 //
+// And when the header could not be read, the first eight bytes come back too
+// (5.26). Revit's own message for that case offers two causes, both of them about
+// Revit files, so a ZIP renamed .rvt is diagnosed as "a newer format" - which is
+// what happened, twice, to the same two files. FileSignature reads the bytes and
+// names them; it interprets nothing it does not recognise.
+//
 // A private ProbeFile in DocumentSessionCommand reads the same header for the
 // open/save guards; it is coupled to that command's stat/error shaping and left
 // as is. This is the canonical reader for the file-info surface.
@@ -99,7 +105,47 @@ namespace Horizun.Revit.Core
                 result["read_error"] = "BasicFileInfo could not read this file: " + ex.Message;
             }
 
+            // WHENEVER THE HEADER COULD NOT BE READ, say what the bytes actually are
+            // (5.26). Revit's own message names two Revit-file causes and no third, so
+            // it reads as a version problem even when the file is not a Revit file at
+            // all - a ZIP renamed .rvt is diagnosed as "a newer format" by that
+            // sentence, and was, twice, on 2026-08-13. Eight bytes settle it.
+            if (result["read_error"] != null && result["read_error"].Type != JTokenType.Null)
+                Sign(path, result);
+
             return result;
+        }
+
+        /// <summary>
+        /// Attach the leading bytes and their meaning. Never throws and never leaves a
+        /// blank that reads like "checked, nothing there": a head that could not be read
+        /// says so in signature_error, with signature null.
+        /// </summary>
+        private static void Sign(string path, JObject result)
+        {
+            try
+            {
+                var head = new byte[FileSignature.Bytes];
+                int got;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                               FileShare.ReadWrite | FileShare.Delete))
+                    got = fs.Read(head, 0, head.Length);
+
+                var real = new byte[Math.Max(0, got)];
+                Array.Copy(head, real, real.Length);
+
+                string hex = FileSignature.ToHex(real);
+                result["signature"] = hex;
+                result["signature_means"] = FileSignature.Describe(hex);
+                result["is_revit_container"] = FileSignature.LooksLikeRevit(hex);
+            }
+            catch (Exception ex)
+            {
+                result["signature"] = null;
+                result["signature_means"] = null;
+                result["signature_error"] = "The first " + FileSignature.Bytes +
+                                            " bytes could not be read either: " + ex.Message;
+            }
         }
 
         private static JToken Safe(Func<string> read) { try { return read(); } catch { return null; } }

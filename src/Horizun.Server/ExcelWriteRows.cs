@@ -32,6 +32,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Xml.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
@@ -344,11 +345,21 @@ namespace Horizun.Server
         internal static string LedgerScopeOf(JObject args)
             => "xlsx:" + ((string)args?["file_path"] ?? "(none)");
 
-        internal static JObject Handle(JObject args) =>
-            Handle(args, new DurableCommandLedger(retentionLog: message => Log.Info(message)));
+        internal static JObject Handle(JObject args) => Handle(args, CancellationToken.None);
 
-        internal static JObject Handle(JObject args, DurableCommandLedger ledger)
+        internal static JObject Handle(JObject args, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Handle(args, new DurableCommandLedger(retentionLog: message => Log.Info(message)), cancellationToken);
+        }
+
+        internal static JObject Handle(JObject args, DurableCommandLedger ledger) =>
+            Handle(args, ledger, CancellationToken.None);
+
+        internal static JObject Handle(JObject args, DurableCommandLedger ledger,
+                                       CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
             string filePath = (string)args?["file_path"];
             string sheetName = (string)args?["sheet"];
             JToken rowsTok = args?["rows"];
@@ -411,6 +422,7 @@ namespace Horizun.Server
             string backupPath = filePath + "." + stamp + ".horizunbak";
             string tmp = filePath + "." + stamp + ".horizuntmp";
 
+            cancellationToken.ThrowIfCancellationRequested();
             FileStream lockHandle = AcquireWorkbookLock(lockPath);
 
             byte[] onDisk;
@@ -423,6 +435,7 @@ namespace Horizun.Server
             bool writeStarted = false;
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 // THE KEY IS CLAIMED AFTER THE LOCK, deliberately. A caller refused the
                 // lock has been told "somebody else is writing, nothing was read, nothing
                 // was written" - and a claim written before that refusal would leave the
@@ -466,8 +479,13 @@ namespace Horizun.Server
 
                 hasTable = SheetHasTable(entries, sheet.PartPath);
 
+                // Last cooperative boundary before any external artefact is written.
+                // Once replacement starts the operation must run through verification
+                // and durable completion; aborting there would manufacture ambiguity.
+                cancellationToken.ThrowIfCancellationRequested();
                 File.Copy(filePath, backupPath, true);
                 File.WriteAllBytes(tmp, produced);
+                cancellationToken.ThrowIfCancellationRequested();
 
                 // From here the original may already have been replaced. Everything above
                 // is a read or a write to a file nobody else is going to open, so a failure

@@ -108,6 +108,8 @@ namespace Horizun.Revit.Commands
                     "the token is bound to this category AS RESOLVED (not just the text you typed), the schedule " +
                     "name, field list and link/itemization settings. A category text that starts resolving to a " +
                     "different category refuses as a stale plan.");
+                // One schedule, resolved end to end or this line is not reached.
+                ApplicationOutcome.StampRehearsal(rehearsal, 1, 0, 0, 0);
                 return CommandResult.Ok(rehearsal);
             }
 
@@ -117,7 +119,14 @@ namespace Horizun.Revit.Commands
                                                                     resolvedPlan, null);
             if (refusal != null) return refusal;
 
-            ElementId createdId;
+            ElementId createdId = ElementId.InvalidElementId;
+            // The status the commit RETURNED. Revit's Transaction.Commit() answers
+            // RolledBack or Pending without throwing - that is the whole reason Guard
+            // exists - so this is read and carried, never assumed. Uninitialized is the
+            // value that means "no commit has been read yet", and it is the one state that
+            // must never survive to a declaration.
+            TransactionStatus commitStatus = TransactionStatus.Uninitialized;
+            SilentRollbackException commitFailure = null;
             var missing = new List<string>();
             var expectedFields = new List<FieldIdentity>();
             using (var tx = new Transaction(doc, "Horizun: create schedule"))
@@ -162,7 +171,15 @@ namespace Horizun.Revit.Commands
                     }
 
                     createdId = schedule.Id;
-                    tx.Commit();
+                    // Guard refuses RolledBack and Pending. Only after it returns can this
+                    // command enter a success/postcondition path, so the declaration never
+                    // treats an in-flight or silently rolled-back transaction as applied.
+                    try { commitStatus = Guard.Commit(tx, "create schedule"); }
+                    catch (SilentRollbackException ex)
+                    {
+                        commitStatus = ex.Status;
+                        commitFailure = ex;
+                    }
                 }
                 catch
                 {
@@ -171,33 +188,161 @@ namespace Horizun.Revit.Commands
                 }
             }
 
-            ViewSchedule verified = doc.GetElement(createdId) as ViewSchedule;
-            if (verified == null)
-                return CommandResult.Fail("The transaction committed but the schedule could not be re-read from the model.");
-
-            List<ScheduleField> actualFields = verified.Definition.GetFieldOrder()
-                .Select(id => verified.Definition.GetField(id)).ToList();
-            var verifiedFields = new JArray(actualFields.Select(field => (JToken)field.GetName()));
-            bool fieldsMatch = actualFields.Count == expectedFields.Count &&
-                actualFields.Select(FieldIdentity.From).SequenceEqual(expectedFields);
-            if (!fieldsMatch || verified.Definition.IncludeLinkedFiles != includeLinks || verified.Definition.IsItemized != itemized)
-                return CommandResult.Fail("The transaction committed, but post-commit verification did not match the requested fields, include_links or itemized setting.");
-            int bodyRows = verified.GetTableData().GetSectionData(SectionType.Body).NumberOfRows;
-
-            return CommandResult.Ok(new JObject
+            if (commitStatus != TransactionStatus.Committed)
             {
-                ["created"] = true,
-                ["schedule_id"] = Rid.Value(verified.Id),
-                ["name"] = verified.Name,
-                ["category"] = category.Name,
-                ["include_links_verified"] = verified.Definition.IncludeLinkedFiles,
-                ["itemized_verified"] = verified.Definition.IsItemized,
-                ["fields_verified"] = verifiedFields,
-                ["fields_missing"] = new JArray(missing),
-                ["body_rows"] = bodyRows,
-                ["has_body_rows"] = bodyRows > 0,
-                ["federated_coverage"] = FederatedVisibility.Measure(doc, includeLinks)
-            });
+                ApplicationState state = commitStatus == TransactionStatus.RolledBack
+                    ? ApplicationState.RolledBack
+                    : ApplicationState.Uncertain;
+                JObject detail = ScheduleFailureDetail(createdId, commitStatus, state,
+                    "transaction_commit", scheduleReread: false, postcondition: null);
+                return CommandResult.FailWithDetail(
+                    (commitFailure == null ? "The schedule transaction did not commit." : commitFailure.Message) +
+                    " The exact status was " + commitStatus + "; " +
+                    (state == ApplicationState.RolledBack
+                        ? "Revit confirmed rollback."
+                        : "this is not a terminal committed/rolled-back state, so model state is uncertain."),
+                    detail);
+            }
+
+            ViewSchedule verified;
+            try { verified = doc.GetElement(createdId) as ViewSchedule; }
+            catch (Exception ex)
+            {
+                return CommandResult.FailWithDetail(
+                    "The transaction committed, but the schedule could not be re-read: " + ex.Message,
+                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
+                        "schedule_reread", scheduleReread: false, postcondition: null));
+            }
+            if (verified == null)
+                return CommandResult.FailWithDetail(
+                    "The transaction committed but the schedule could not be re-read from the model.",
+                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
+                        "schedule_reread", scheduleReread: false, postcondition: null));
+
+            // ---- EVERY property the request named, re-read from the COMMITTED schedule.
+            //
+            // The three that used to be checked here were fields, include_links and
+            // itemized. The request also carries a NAME and a CATEGORY, and neither was
+            // ever re-read - the reply reported `category` off the Category object resolved
+            // before the commit, which is the request talking back rather than the model.
+            // A schedule that committed under a different name, or against a category Revit
+            // resolved differently, was reported as fully verified.
+            //
+            // Nothing below is compared against a value kept from before the commit: every
+            // `found` side comes off `verified`, which is a fresh GetElement of the id.
+            // The five properties this request carries, named ONCE, here. A check deleted
+            // from below, or one key recorded twice while another is dropped, now fails
+            // coverage instead of passing on the checks that happen to remain.
+            var postcondition = new PostconditionCheck("name", "category", "fields",
+                                                       "include_links", "itemized");
+
+            // (a) NAME.
+            try { postcondition.Compare("name", scheduleName, verified.Name); }
+            catch (Exception ex) { postcondition.Unreadable("name", scheduleName, "the committed schedule's name could not be read: " + ex.Message); }
+
+            // (b) CATEGORY, as the committed definition reports it - not as the text
+            // resolved before the commit. Compared by id, because two categories can share
+            // a display name across disciplines.
+            try
+            {
+                ElementId actualCategoryId = verified.Definition.CategoryId;
+                postcondition.Record("category",
+                    new JObject { ["id"] = Rid.Value(category.Id), ["name"] = category.Name },
+                    new JObject { ["id"] = Rid.Value(actualCategoryId), ["name"] = SafePlanCatName(Category.GetCategory(doc, actualCategoryId)) },
+                    actualCategoryId == category.Id);
+            }
+            catch (Exception ex)
+            {
+                postcondition.Unreadable("category", Rid.Value(category.Id),
+                    "the committed schedule's category could not be read: " + ex.Message);
+            }
+
+            // (c) FIELDS, in order and by identity.
+            List<ScheduleField> actualFields;
+            JArray verifiedFields;
+            try
+            {
+                actualFields = verified.Definition.GetFieldOrder()
+                    .Select(id => verified.Definition.GetField(id)).ToList();
+                verifiedFields = new JArray(actualFields.Select(field => (JToken)field.GetName()));
+                bool fieldsMatch = actualFields.Count == expectedFields.Count &&
+                    actualFields.Select(FieldIdentity.From).SequenceEqual(expectedFields);
+                postcondition.Record("fields", new JArray(requestedFields.Select(f => (JToken)f)),
+                                     verifiedFields, fieldsMatch);
+            }
+            catch (Exception ex)
+            {
+                actualFields = new List<ScheduleField>();
+                verifiedFields = new JArray();
+                postcondition.Unreadable("fields", new JArray(requestedFields.Select(f => (JToken)f)),
+                                         "the committed schedule's fields could not be read: " + ex.Message);
+            }
+
+            // (d) INCLUDE_LINKS and (e) ITEMIZED.
+            try { postcondition.Compare("include_links", includeLinks, verified.Definition.IncludeLinkedFiles); }
+            catch (Exception ex) { postcondition.Unreadable("include_links", includeLinks, "could not be read: " + ex.Message); }
+
+            try { postcondition.Compare("itemized", itemized, verified.Definition.IsItemized); }
+            catch (Exception ex) { postcondition.Unreadable("itemized", itemized, "could not be read: " + ex.Message); }
+
+            bool postconditionVerified = postcondition.AllVerified;
+            if (!postconditionVerified)
+            {
+                ApplicationState state = postcondition.AllMeasured
+                    ? ApplicationState.Partial
+                    : ApplicationState.Uncertain;
+                JObject evidence = postcondition.ToJson();
+                return CommandResult.FailWithDetail(
+                    "The transaction committed, but post-commit verification did not match the request. " +
+                    "The schedule EXISTS and may require correction; these are the comparisons: " +
+                    evidence.ToString(Newtonsoft.Json.Formatting.None),
+                    ScheduleFailureDetail(createdId, commitStatus, state, "postcondition",
+                        scheduleReread: true, postcondition: evidence));
+            }
+
+            try
+            {
+                int bodyRows = verified.GetTableData().GetSectionData(SectionType.Body).NumberOfRows;
+
+                var csResult = new JObject
+                {
+                    ["created"] = true,
+                    ["schedule_id"] = Rid.Value(verified.Id),
+                    // Read off the committed schedule, never echoed from the request.
+                    ["name"] = verified.Name,
+                    ["category"] = SafePlanCatName(Category.GetCategory(doc, verified.Definition.CategoryId)),
+                    ["category_id"] = Rid.Value(verified.Definition.CategoryId),
+                    ["include_links_verified"] = verified.Definition.IncludeLinkedFiles,
+                    ["itemized_verified"] = verified.Definition.IsItemized,
+                    ["fields_verified"] = verifiedFields,
+                    ["postcondition"] = postcondition.ToJson(),
+                    ["fields_missing"] = new JArray(missing),
+                    ["body_rows"] = bodyRows,
+                    ["has_body_rows"] = bodyRows > 0,
+                    ["federated_coverage"] = FederatedVisibility.Measure(doc, includeLinks)
+                };
+                ApplicationOutcome.Stamp(csResult, WriteTally.OneObject(commitStatus.ToString(), postconditionVerified));
+                return CommandResult.Ok(csResult);
+            }
+            catch (Exception ex)
+            {
+                return CommandResult.FailWithDetail(
+                    "The schedule committed and its requested properties matched, but a later result read failed: " +
+                    ex.Message + ". The write is not hidden behind this reporting failure.",
+                    ScheduleFailureDetail(createdId, commitStatus, ApplicationState.Uncertain,
+                        "result_read", scheduleReread: true, postcondition: postcondition.ToJson()));
+            }
+        }
+
+        private static JObject ScheduleFailureDetail(ElementId scheduleId, TransactionStatus status,
+                                                      ApplicationState state, string stage,
+                                                      bool scheduleReread, JObject postcondition)
+        {
+            long? id = scheduleId == null || scheduleId == ElementId.InvalidElementId
+                ? (long?)null
+                : Rid.Value(scheduleId);
+            return ApplicationOutcome.FailureAfterWrite(
+                "schedule_id", id, stage, status.ToString(), state, scheduleReread, postcondition);
         }
 
         private static List<string> ReadFields(JArray array)

@@ -44,12 +44,48 @@ if ($PurgeState) {
     $state = if ($env:HORIZUN_DATA_ROOT) { [IO.Path]::GetFullPath($env:HORIZUN_DATA_ROOT) }
              else { [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.horizun')) }
     $profile = [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\')
-    if ($state.TrimEnd('\') -eq $profile -or $state.Length -le 3) {
+    $defaultState = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.horizun')).TrimEnd('\')
+    $canonicalState = if (Test-Path -LiteralPath $state) { (Resolve-Path -LiteralPath $state).Path.TrimEnd('\') } else { $state.TrimEnd('\') }
+    if ($canonicalState -eq $profile -or $canonicalState.Length -le 3) {
         throw "Refusing an unsafe state path: $state"
     }
+    if ($canonicalState -ne $defaultState) {
+        $marker = Join-Path $canonicalState '.horizun-data-root'
+        $markerText = if (Test-Path -LiteralPath $marker -PathType Leaf) { (Get-Content -LiteralPath $marker -Raw).Trim() } else { '' }
+        if ($markerText -ne 'Horizun data root v1') {
+            throw ("Refusing to purge custom HORIZUN_DATA_ROOT '$canonicalState': it does not contain the " +
+                   "ownership marker .horizun-data-root with content 'Horizun data root v1'. Unset the variable " +
+                   'to purge the default profile state, or inspect and mark the custom root deliberately.')
+        }
+    }
+    # Windows PowerShell 5.1 has historically differed in how recursive deletion
+    # treats junctions. Never let a state tree redirect cleanup into another
+    # directory: walk one level at a time and refuse every reparse point instead
+    # of recursing through it.
+    if (Test-Path -LiteralPath $canonicalState -PathType Container) {
+        $stateItem = Get-Item -LiteralPath $canonicalState -Force
+        if (($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to purge a state root that is a link or junction: $canonicalState"
+        }
+        $pending = New-Object 'Collections.Generic.Queue[string]'
+        $pending.Enqueue($canonicalState)
+        $reparse = @()
+        while ($pending.Count -gt 0) {
+            $current = $pending.Dequeue()
+            foreach ($entry in @(Get-ChildItem -LiteralPath $current -Force -ErrorAction Stop)) {
+                if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    $reparse += $entry.FullName
+                }
+                elseif ($entry.PSIsContainer) { $pending.Enqueue($entry.FullName) }
+            }
+        }
+        if ($reparse.Count -gt 0) {
+            throw "Refusing to purge a state tree containing links or junctions: $($reparse -join '; ')"
+        }
+    }
     if ((Test-Path -LiteralPath $state) -and $PSCmdlet.ShouldProcess($state, 'permanently remove settings, logs, jobs and ledgers')) {
-        Remove-Item -LiteralPath $state -Recurse -Force
-        if (Test-Path -LiteralPath $state) { throw "State directory still exists after deletion: $state" }
+        Remove-Item -LiteralPath $canonicalState -Recurse -Force
+        if (Test-Path -LiteralPath $canonicalState) { throw "State directory still exists after deletion: $canonicalState" }
     }
 }
 

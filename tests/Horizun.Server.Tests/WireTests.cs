@@ -329,5 +329,85 @@ namespace Horizun.Server.Tests
         {
             Assert.Equal("nothing is running", new InFlight().Describe());
         }
+
+        [Fact]
+        public void In_flight_admission_is_bounded_before_tasks_are_spawned()
+        {
+            var f = new InFlight(2);
+            string refusal;
+            Assert.True(f.TryStart("1", "one", new CancellationTokenSource(), out refusal));
+            Assert.True(f.TryStart("2", "two", new CancellationTokenSource(), out refusal));
+            Assert.False(f.TryStart("3", "three", new CancellationTokenSource(), out refusal));
+            Assert.Contains("limit 2", refusal);
+            Assert.Contains("Nothing was started", refusal);
+            Assert.Equal(2, f.Count);
+        }
+
+        [Fact]
+        public void A_cancelled_host_call_never_starts_its_handler()
+        {
+            var cts = new CancellationTokenSource();
+            cts.Cancel();
+            bool entered = false;
+
+            Assert.Throws<OperationCanceledException>(() => HostCallRunner.Run(
+                "host", ct => { entered = true; return new JObject(); }, cts.Token, 1000));
+            Assert.False(entered);
+        }
+
+        [Fact]
+        public void A_host_handler_has_a_real_response_deadline_and_receives_cancellation()
+        {
+            bool observedCancellation = false;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+
+            Assert.Throws<TimeoutException>(() => HostCallRunner.Run("host", ct =>
+            {
+                ct.WaitHandle.WaitOne();
+                observedCancellation = ct.IsCancellationRequested;
+                ct.ThrowIfCancellationRequested();
+                return new JObject();
+            }, CancellationToken.None, 50));
+
+            Assert.True(SpinWait.SpinUntil(() => observedCancellation, 1000));
+            Assert.True(clock.ElapsedMilliseconds < 1000, "deadline did not release the caller promptly");
+        }
+
+        [Fact]
+        public void Non_cooperative_timed_out_host_handlers_keep_their_leases_and_apply_backpressure()
+        {
+            using (var release = new ManualResetEventSlim(false))
+            {
+                int entered = 0;
+                for (int i = 0; i < HostCallRunner.MaxOutstandingTasks; i++)
+                {
+                    Assert.Throws<TimeoutException>(() => HostCallRunner.Run("blocked", ct =>
+                    {
+                        Interlocked.Increment(ref entered);
+                        // Deliberately ignores ct: this models an OS call already in progress.
+                        release.Wait();
+                        return new JObject();
+                    }, CancellationToken.None, 20));
+                }
+
+                Assert.Equal(HostCallRunner.MaxOutstandingTasks, entered);
+                Assert.Equal(HostCallRunner.MaxOutstandingTasks, HostCallRunner.OutstandingTaskCount);
+
+                bool extraEntered = false;
+                ToolRefusal refusal = Assert.Throws<ToolRefusal>(() => HostCallRunner.Run("blocked", ct =>
+                {
+                    extraEntered = true;
+                    return new JObject();
+                }, CancellationToken.None, 20));
+                Assert.False(extraEntered);
+                Assert.Contains("capacity", refusal.Message, StringComparison.OrdinalIgnoreCase);
+                Assert.Contains("Nothing new was started", refusal.Message);
+
+                release.Set();
+                Assert.True(SpinWait.SpinUntil(
+                    () => HostCallRunner.OutstandingTaskCount == 0, 3000),
+                    "leases were not released when the residual Tasks terminated");
+            }
+        }
     }
 }

@@ -22,7 +22,6 @@
 
   Then:
 
-    pwsh scripts/sign.ps1 -PfxPath C:\path\horizun.pfx          # prompts for the password
     pwsh scripts/sign.ps1 -Thumbprint A1B2...                   # cert already in the store
 
   ORDER MATTERS:
@@ -43,8 +42,11 @@ $repo = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot 'horizun-deploy.lib.ps1')
 $stage = Join-Path $repo 'dist\stage'
 
-if (-not $PfxPath -and -not $Thumbprint) {
-    throw "Give either -PfxPath (a .pfx file) or -Thumbprint (a certificate already installed). Nothing was signed."
+if ($PfxPath) {
+    throw 'PfxPath is no longer accepted: signtool exposes its password in the process command line. Import the PFX into the protected certificate store, then pass -Thumbprint.'
+}
+if (-not $Thumbprint) {
+    throw "Give -Thumbprint for a code-signing certificate already installed in the protected certificate store. Nothing was signed."
 }
 
 # signtool ships with the Windows SDK; there is no single fixed path, so look.
@@ -77,18 +79,16 @@ if (-not $targets) {
 
 if ($signtool) {
     $args = @('sign', '/fd', 'SHA256', '/tr', $TimestampUrl, '/td', 'SHA256')
-    if ($Thumbprint) { $args += @('/sha1', $Thumbprint) }
-    else {
-        $pw = Read-Host -AsSecureString "Password for $PfxPath"
-        $plain = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($pw))
-        $args += @('/f', $PfxPath, '/p', $plain)
-    }
+    $args += @('/sha1', $Thumbprint)
 
     foreach ($t in $targets) {
         Write-Host "[sign] $($t.FullName)" -ForegroundColor Cyan
         & $signtool.FullName @args $t.FullName
         if ($LASTEXITCODE -ne 0) { throw "signtool failed on $($t.FullName)" }
+        $check = Get-AuthenticodeSignature -LiteralPath $t.FullName
+        if ($check.Status -ne 'Valid' -or -not $check.TimeStamperCertificate) {
+            throw "signtool returned success but Authenticode read-back is $($check.Status) or lacks a trusted timestamp on $($t.FullName)"
+        }
     }
 }
 else {

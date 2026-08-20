@@ -47,15 +47,19 @@ the add-in on every use. `permission_profile` has four values:
 - `safe_write`: typed, reversible model edits are allowed; opening,
   saving, relinquishing, document-session changes and exports are refused.
 - `full_write`: the session/file operations above are also allowed.
-- `unsafe_code` (default): full write plus eligibility for arbitrary Python.
+- `unsafe_code`: full write plus eligibility for arbitrary Python.
   Python is additionally controlled by the independent `enable_execute_python`
-  switch, which also defaults to true.
+  switch, which defaults to false.
 
-**The defaults are deliberately the full surface.** During this early stage a
-fresh install — no settings file, or one without these keys — exposes every
-capability including `horizun_execute_python`, because the product decision is
-that the bridge's fallback path must work out of the box. An **explicit** value
-in the file is always respected; the defaults only fill absence.
+**The default is `safe_write`, with Python off.** A fresh install can use typed,
+verified writes inside the active document, but cannot change document sessions,
+write external files or execute arbitrary code. Elevation is an explicit owner
+decision. Revit's **Python ON/OFF** button may write a bounded
+`execute_python_ui_grant_until_utc`; it expires automatically without changing
+the underlying profile. A durable enable requires both `unsafe_code` and an
+explicit `enable_execute_python=true`. Changes are announced as
+`notifications/tools/list_changed`; this is a discovery convenience only, because
+both halves still re-check the permission on every call.
 
 Three fail-closed rules survive that decision. A `permission_profile` string
 that is present but not one of the four values falls back to `read_only`, never
@@ -73,27 +77,25 @@ already read the models directly.
 ## 3. Arbitrary code execution
 
 `horizun_execute_python` runs arbitrary Python inside Revit on the UI thread. It
-is **enabled by default** during this early stage: it is the execution fallback
-the client is expected to use when no typed command covers an operation, so a
-fresh install advertises it. It can be switched off per machine in
-`%USERPROFILE%\.horizun\settings.json` — an explicit
-`"enable_execute_python":false`, or any `permission_profile` below
-`unsafe_code`, disables it and that choice is respected.
+is **disabled by default**. The preferred interactive grant is the Revit ribbon:
+the owner acknowledges the risk and enables it for 60 minutes, after which the
+grant fails closed. Pressing the button while enabled revokes both temporary and
+durable enable flags immediately. A durable developer machine can opt in with
+`permission_profile=unsafe_code` plus `enable_execute_python=true`.
 
-This default is a real widening of the exposed surface, accepted deliberately:
+Enabling it is a real widening of the exposed surface:
 an agent that reads untrusted content (a linked DWG, a PDF, an email) and holds
 this tool can be prompt-injected into running code with the signed-in user's
-rights. The compensating controls are the ones below plus the explicit off
-switch; a machine that processes untrusted content or runs unattended should
-turn it off.
+rights. The compensating controls are the ones below, an explicit human grant,
+automatic expiry and the independent far-end gate.
 
 Gated in **both halves**: when disabled, the server does not advertise it and
 refuses it if called anyway; the add-in refuses it independently. The two ship
 separately, so neither may be the only gate — a stale server must not be able to
 run code on a machine whose owner turned it off. A settings file that exists but
 is unreadable or malformed falls **closed** (Python off, `read_only`), so a
-corrupted explicit restriction never reads as consent; only genuine absence
-reads as the default-on posture.
+corrupted explicit restriction never reads as consent; genuine absence reads as
+the safe-write/Python-off posture.
 
 Scripts are capped at 200,000 characters, and every run writes an audit line with
 the user, the document, the script length, the duration and the outcome. **Never
@@ -172,10 +174,9 @@ than in each command, and every structural refusal in the typed surface is
 classified in a test-enforced inventory as granted, argument-fixable, or
 reachable after a write.
 
-The risk is accepted because every one of the seven workflows this bridge exists
-to serve depends on it, and — since the default-on change — because the fallback
-path from "no typed capability" to "run through Python and self-reported" is now
-part of the product's core promise. Note the wording: the Python path is never
+The capability exists because some advanced workflows still need a fallback from
+"no typed capability" to "run through Python and self-reported", but it is off by
+default and requires an owner-controlled grant. Note the wording: the Python path is never
 host-verified. What comes back is the script's own testimony
 (`self_reported_verified`, `completed_unverified`, `partial` or `failed`), and
 `host_verified` is always false — the bridge does not re-read the model after a
@@ -313,18 +314,19 @@ installer also supports an explicit, per-user self-signing workflow
 
 A self-signed certificate is useful only on accounts that explicitly trust it; it
 does not establish publisher identity on a clean third-party machine. Until a
-public signing identity is provisioned, branches and previews may be tested with
-an explicit unsigned exception, but **0.9.0 may not be tagged stable or published**.
+public signing identity is provisioned, branch artifacts may use the explicit
+unsigned development policy, but **no stable or preview binary may be published
+without public trust**. Validation-only tags contain no executable assets.
 SHA-256, manifest and attestations complement publisher identity; they do not
 replace it.
 
 ## 9. Known gaps, stated
 
-- Arbitrary Python execution is **enabled by default** (§3). A machine that
-  feeds untrusted content to its MCP client, or runs unattended, should disable
-  it explicitly; the default optimises for capability, not for that deployment.
+- Arbitrary Python remains an explicit privileged bypass (§3), but is off by
+  default and temporary ribbon grants expire automatically.
 - Nothing audits the Python standard library that ships in every payload.
-- The confirmation token binds a request, not a resolved element set (§4).
+- Confirmation binds the request and the rehearsed resolved element set; the live
+  release matrix still has to prove that invariant for every supported Revit year (§4).
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
 - No publicly trusted code-signing identity (§8).

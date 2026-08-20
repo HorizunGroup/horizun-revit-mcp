@@ -3,14 +3,12 @@
   Administer horizun_execute_python: restore it ON, or turn it OFF.
 
   execute_python runs arbitrary code inside Revit with the full API and the
-  rights of the signed-in user. It is ENABLED BY DEFAULT — a machine with no
-  settings.json, or one without these keys, already exposes it — so this script
-  is NOT the activation step it used to be. It exists for administration:
+  rights of the signed-in user. It is DISABLED BY DEFAULT. The preferred
+  interactive path is Revit's Python ON/OFF button, whose grant expires after
+  60 minutes. This script exists for durable developer administration:
 
-    - RE-ENABLE / RESTORE a machine where somebody explicitly disabled it
-      (enable_execute_python=false, or a profile below unsafe_code).
-    - DISABLE it deliberately with -Disable, which is the switch the defaults
-      respect: an explicit false always wins over the default-on posture.
+    - ENABLE a machine deliberately with unsafe_code plus an explicit true.
+    - DISABLE it deliberately with -Disable; an explicit false always wins.
 
   WHY A SCRIPT AND NOT "edit settings.json". The gate reads BOTH
   "permission_profile" AND "enable_execute_python" from
@@ -25,8 +23,8 @@
   enabled. Disabling is this same script with -Disable.
 
   The add-in re-reads settings on every call, so no Revit restart is needed for
-  the gate itself. The MCP SERVER decides whether to advertise the tool when it
-  starts, so RESTART YOUR MCP CLIENT once for the tool to appear or disappear.
+  the gate itself. Compatible MCP clients receive notifications/tools/list_changed;
+  restart the client only when it does not support dynamic tool-list refresh.
 
     scripts/enable-execute-python.ps1              # show the warning, ask, re-enable/restore
     scripts/enable-execute-python.ps1 -Yes         # re-enable without the prompt (automation)
@@ -69,36 +67,38 @@ function Resolve-DataRoot {
 
 $root = Resolve-DataRoot
 $settingsPath = Join-Path $root 'settings.json'
+$settingsMutexName = 'Local\Horizun.Revit.Settings.V1'
+
+function Read-Settings([string]$Path) {
+    $result = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $result }
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    if (-not $raw.Trim()) { return $result }
+    try { $parsed = $raw | ConvertFrom-Json }
+    catch {
+        throw "settings.json exists but is not valid JSON: $Path`nRefusing to overwrite it. Fix or move it aside, then run this again. Nothing was changed."
+    }
+    foreach ($p in $parsed.PSObject.Properties) { $result[$p.Name] = $p.Value }
+    return $result
+}
 
 # ---- Read what is there now, WITHOUT clobbering it. --------------------------
 # A malformed file falls back to read_only on the add-in side (safe), so we must
 # not silently overwrite one: that would throw away real settings we could not
 # read. Stop and let a human look instead.
-$settings = [ordered]@{}
-if (Test-Path $settingsPath) {
-    $raw = Get-Content $settingsPath -Raw -Encoding UTF8
-    if ($raw.Trim()) {
-        try {
-            $parsed = $raw | ConvertFrom-Json
-        } catch {
-            Write-Host "settings.json exists but is not valid JSON: $settingsPath" -ForegroundColor Red
-            Write-Host 'Refusing to overwrite it. Fix or move it aside, then run this again. Nothing was changed.' -ForegroundColor Red
-            exit 1
-        }
-        foreach ($p in $parsed.PSObject.Properties) { $settings[$p.Name] = $p.Value }
-    }
-}
+try { $settings = Read-Settings $settingsPath }
+catch { Write-Host $_.Exception.Message -ForegroundColor Red; exit 1 }
 
-$currentProfile = if ($settings.Contains('permission_profile')) { [string]$settings['permission_profile'] } else { '(unset -> unsafe_code default)' }
-$currentEnabled = if ($settings.Contains('enable_execute_python')) { [bool]$settings['enable_execute_python'] } else { $true }
+$currentProfile = if ($settings.Contains('permission_profile')) { [string]$settings['permission_profile'] } else { '(unset -> safe_write default)' }
+$currentEnabled = if ($settings.Contains('enable_execute_python')) { [bool]$settings['enable_execute_python'] } else { $false }
 
 # ---- The warning: what to weigh BEFORE restoring it. ------------------------
 if (-not $Disable) {
     Write-Host ''
-    Write-Host '  You are about to re-enable horizun_execute_python (advanced / unsafe code).' -ForegroundColor Yellow
+    Write-Host '  You are about to enable horizun_execute_python durably (advanced / unsafe code).' -ForegroundColor Yellow
     Write-Host ''
-    Write-Host '  It is enabled by default on a fresh install; if it is off on this machine,'
-    Write-Host '  somebody chose that. It runs ARBITRARY CODE inside Revit with the full API'
+    Write-Host '  It is disabled by default. This durable administrative opt-in runs ARBITRARY'
+    Write-Host '  CODE inside Revit with the full API'
     Write-Host '  and your Windows rights. Before you continue, weigh this:'
     Write-Host ''
     Write-Host '   - TRUSTED CLIENTS AND PROMPTS ONLY. An agent that reads untrusted content' -ForegroundColor Gray
@@ -140,50 +140,78 @@ if (-not $Yes) {
     }
 }
 
-# ---- Apply. -----------------------------------------------------------------
-if ($Disable) {
-    $settings['enable_execute_python'] = $false
-} else {
-    $settings['permission_profile']    = 'unsafe_code'
-    $settings['enable_execute_python'] = $true
+# ---- Apply under the SAME inter-process mutex as Revit. ---------------------
+# The preview above is informational. Re-read only after taking the mutex: two
+# Revit processes and this admin script may all update the same file, and an OFF
+# action must never be overwritten by an older temporary-grant snapshot.
+$mutex = $null
+$held = $false
+$tempPath = $null
+try {
+    $mutex = New-Object Threading.Mutex($false, $settingsMutexName)
+    try { $held = $mutex.WaitOne([TimeSpan]::FromSeconds(15)) }
+    catch [Threading.AbandonedMutexException] { $held = $true }
+    if (-not $held) { throw 'Timed out waiting for another Horizun settings writer. Nothing was changed.' }
+
+    $settings = Read-Settings $settingsPath
+    if ($Disable) {
+        $settings['enable_execute_python'] = $false
+        $settings.Remove('execute_python_ui_grant_until_utc')
+    } else {
+        $settings['permission_profile']    = 'unsafe_code'
+        $settings['enable_execute_python'] = $true
+        $settings.Remove('execute_python_ui_grant_until_utc')
+    }
+
+    if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
+    if (Test-Path -LiteralPath $settingsPath) {
+        $backup = "$settingsPath.horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N')
+        Copy-Item -LiteralPath $settingsPath -Destination $backup -Force
+        Write-Host "  Backed up existing settings to: $backup" -ForegroundColor DarkGray
+    }
+
+    $json = $settings | ConvertTo-Json -Depth 20
+    $tempPath = Join-Path $root ('.settings.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    [IO.File]::WriteAllText($tempPath, $json, (New-Object Text.UTF8Encoding($false)))
+    if (Test-Path -LiteralPath $settingsPath) {
+        # Windows PowerShell 5.1's overload binder rejects a null backup path
+        # even though File.Replace accepts it. Use a private same-volume backup
+        # and remove it immediately; the timestamped user backup above remains.
+        $replaceBackup = Join-Path $root ('.settings-replace.' + [Guid]::NewGuid().ToString('N') + '.bak')
+        [IO.File]::Replace($tempPath, $settingsPath, $replaceBackup)
+        Remove-Item -LiteralPath $replaceBackup -Force -ErrorAction SilentlyContinue
+    } else {
+        [IO.File]::Move($tempPath, $settingsPath)
+    }
+    $tempPath = $null
+
+    # Verify while still owning the writer mutex. OFF means both durable false
+    # and no live temporary grant; checking only the first key was a false green.
+    $check = (Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8) | ConvertFrom-Json
+    $grantPresent = $null -ne $check.PSObject.Properties['execute_python_ui_grant_until_utc']
+    if ($Disable) {
+        if ($check.enable_execute_python -ne $false -or $grantPresent) {
+            throw 'Wrote the file but the durable switch or temporary grant did not read back as OFF.'
+        }
+    } elseif ($check.permission_profile -ne 'unsafe_code' -or $check.enable_execute_python -ne $true -or $grantPresent) {
+        throw 'Wrote the file but the durable unsafe-code opt-in did not read back exactly.'
+    }
 }
-
-if (-not (Test-Path $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
-
-# Back up an existing file before writing, newest-wins, so nothing here is a
-# one-way door.
-if (Test-Path $settingsPath) {
-    $backup = "$settingsPath.horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss')
-    Copy-Item $settingsPath $backup -Force
-    Write-Host "  Backed up existing settings to: $backup" -ForegroundColor DarkGray
+catch {
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    exit 1
 }
-
-$json = ($settings | ConvertTo-Json -Depth 20)
-# ConvertTo-Json on a single-key object can emit a bare value on 5.1; force an
-# object shape by round-tripping only when needed is overkill — settings always
-# has >=1 key here and ConvertTo-Json wraps ordered dictionaries as objects.
-Set-Content -Path $settingsPath -Value $json -Encoding UTF8
-
-# ---- Verify by reading it back. ---------------------------------------------
-$check = (Get-Content $settingsPath -Raw -Encoding UTF8) | ConvertFrom-Json
-$okProfile = (-not $Disable) -eq ($check.permission_profile -eq 'unsafe_code')
-$okEnabled = $check.enable_execute_python -eq (-not $Disable)
+finally {
+    if ($tempPath -and (Test-Path -LiteralPath $tempPath)) { Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue }
+    if ($held) { try { $mutex.ReleaseMutex() } catch { } }
+    if ($mutex) { $mutex.Dispose() }
+}
 
 Write-Host ''
 if ($Disable) {
-    if ($check.enable_execute_python -eq $false) {
-        Write-Host 'horizun_execute_python is now DISABLED.' -ForegroundColor Green
-    } else {
-        Write-Host 'Wrote the file but read back an unexpected value. Check it by hand.' -ForegroundColor Red
-        exit 1
-    }
+    Write-Host 'horizun_execute_python is now DISABLED.' -ForegroundColor Green
 } else {
-    if ($check.permission_profile -eq 'unsafe_code' -and $check.enable_execute_python -eq $true) {
-        Write-Host 'horizun_execute_python is now ENABLED.' -ForegroundColor Green
-    } else {
-        Write-Host 'Wrote the file but read back an unexpected value. Check it by hand.' -ForegroundColor Red
-        exit 1
-    }
+    Write-Host 'horizun_execute_python is now ENABLED.' -ForegroundColor Green
 }
-Write-Host 'RESTART YOUR MCP CLIENT once so the tool appears or disappears in its tool list.' -ForegroundColor Yellow
+Write-Host 'Compatible MCP clients refresh the tool list automatically. Restart once only if yours does not.' -ForegroundColor Yellow
 exit 0

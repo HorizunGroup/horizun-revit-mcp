@@ -118,6 +118,11 @@ namespace Horizun.Revit.Commands
                 // this is the first thing a caller sends; without the block here they
                 // got success=true, invalid=1 and no way to tell a capability gap from
                 // a typo except by sending an apply they had no reason to send.
+                // Invalid entries make this a partial rehearsal, not a clean one: the token
+                // below is already withheld for them, and a plan must read the same fact.
+                ApplicationOutcome.StampRehearsal(result, input.Count, errors.Count, 0, 0);
+                // Stamp before constructing CommandResult. The previous order happened to
+                // work only because Ok retained the mutable JObject reference.
                 CommandResult rehearsal = FallbackDecision.Attach(
                     CommandResult.Ok(result),
                     FallbackDecision.Decide(outcomes, writeStarted: false));
@@ -203,13 +208,18 @@ namespace Horizun.Revit.Commands
                     " created ids were re-read as the requested kinds. Inspect the model; success is not claimed. Verification: " +
                     rows.ToString(Formatting.None));
 
-            return CommandResult.Ok(new JObject
+            var ceResult = new JObject
             {
                 ["dry_run"] = false, ["transaction_status"] = "Committed", ["transaction_name"] = txName,
                 ["requested"] = input.Count, ["created_verified"] = verified,
                 ["verification"] = new JObject { ["intended"] = plans.Count, ["actual"] = verified, ["verified"] = verified == plans.Count },
                 ["rows"] = rows
-            });
+            };
+            // Entries that never became a plan are unresolved: they were asked for and no
+            // element was created for them, which is not the same as a creation that failed.
+            ApplicationOutcome.StampApplied(ceResult, ApplicationOutcome.Committed, input.Count, verified,
+                                            verified, input.Count - plans.Count, 0, 0);
+            return CommandResult.Ok(ceResult);
         }
 
         private static Plan PlanItem(Document doc, int index, JObject item, double scale, out string error,

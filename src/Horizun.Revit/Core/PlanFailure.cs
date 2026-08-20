@@ -60,7 +60,8 @@ namespace Horizun.Revit.Core
             bool rollbackAttempted,
             string rollbackStatus,
             JArray executionTrace,
-            string error)
+            string error,
+            JObject failedAction = null)
         {
             bool confirmed = IsConfirmedRollback(transactionGroupStatus);
             return new JObject
@@ -71,6 +72,34 @@ namespace Horizun.Revit.Core
                 ["rollback_status"] = rollbackStatus,
                 ["rollback_confirmed"] = confirmed,
                 ["execution_trace"] = executionTrace ?? new JArray(),
+                // WHICH action stopped the graph, as the row itself rather than as a name to
+                // look up in the trace. An explicit null means the plan failed without
+                // reaching an action (a refusal, a group that would not start) - which is a
+                // different world from "an action failed and we did not say which".
+                ["failed_action"] = failedAction ?? (JToken)JValue.CreateNull(),
+                ["error"] = error
+            };
+        }
+
+        /// <summary>
+        /// A plan that failed while rehearsing or rechecking, before a TransactionGroup
+        /// existed. It is deliberately a separate constructor: "nothing ran" is evidence
+        /// about control flow, not a rollback claim.
+        /// </summary>
+        public static JObject BeforeGroup(string phase, JArray trace, JObject failedAction, string error)
+        {
+            return new JObject
+            {
+                ["phase"] = phase,
+                ["transaction_group_started"] = false,
+                ["transaction_group_status"] = "not_started",
+                ["rollback_attempted"] = false,
+                ["rollback_status"] = NotAttempted,
+                ["rollback_confirmed"] = false,
+                ["nothing_ran"] = true,
+                ["rehearsal_trace"] = trace ?? new JArray(),
+                ["execution_trace"] = new JArray(),
+                ["failed_action"] = failedAction ?? (JToken)JValue.CreateNull(),
                 ["error"] = error
             };
         }
