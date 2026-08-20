@@ -206,7 +206,9 @@ jobs:
       # A persistent runner's global package cache is mutable state outside the
       # locked graph. Give each run/year a fresh extraction root so an old job
       # cannot replace a DLL under an otherwise-correct packages.lock.json.
-      NUGET_PACKAGES: ${{ runner.temp }}\horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.year }}
+      # runner.* is unavailable while GitHub evaluates a job-level env block.
+      # The run/year-qualified directory is still fresh and checkout cleans it.
+      NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.year }}
     strategy:
       fail-fast: false
       # One Windows desktop can host one unattended Revit session safely. Running
@@ -253,7 +255,7 @@ jobs:
       group: ${{ vars.SIGNING_RUNNER_GROUP }}
       labels: [self-hosted, windows, revit, signing]
     env:
-      NUGET_PACKAGES: ${{ runner.temp }}\horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-package
+      NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-package
     permissions:
       contents: read
       id-token: write

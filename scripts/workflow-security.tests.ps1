@@ -37,7 +37,7 @@ Assert-True ($ci -match 'SIGNING_RUNNER_GROUP.*!=.*REVIT_RUNNER_GROUP|SIGNING_RU
     'The workflow must fail closed unless signing and integration runner groups differ.'
 Assert-True ($ci -match 'SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED.*!=.*true') `
     'Stable signing must fail closed until SignPath approves the self-hosted Revit origin.'
-Assert-True ([regex]::Matches($ci, '(?m)^\s+NUGET_PACKAGES:\s*\$\{\{\s*runner\.temp\s*\}\}').Count -ge 2) `
+Assert-True ([regex]::Matches($ci, '(?m)^\s+NUGET_PACKAGES:\s*\$\{\{\s*github\.workspace\s*\}\}.*?github\.run_id').Count -ge 2) `
     'Every self-hosted build/package route must use a run-isolated NuGet extraction root.'
 
 $workflowFiles = Get-ChildItem -LiteralPath $workflowDir -Filter '*.yml' -File
