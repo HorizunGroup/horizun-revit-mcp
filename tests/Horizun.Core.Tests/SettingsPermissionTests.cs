@@ -98,7 +98,7 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void TemporaryPythonUnlockExpiresFailClosed()
+        public void LegacyTemporaryPythonUnlockStillExpiresFailClosedAfterUpgrade()
         {
             WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""execute_python_ui_grant_until_utc"":""2999-01-01T00:00:00Z""}", () =>
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _)));
@@ -109,25 +109,30 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void RevitTemporaryGrantDoesNotPermanentlyElevateSafeWriteProfile()
+        public void RevitPersistentGrantStaysOnUntilOwnerRevokesIt()
         {
             WithSettings(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""denied_tools"":[]}", () =>
             {
-                Assert.True(Settings.TryGrantExecutePythonTemporarily(
-                    TimeSpan.FromMinutes(60), out DateTimeOffset until, out string grantError), grantError);
-                Assert.True(until > DateTimeOffset.UtcNow);
+                Assert.True(Settings.TryGrantExecutePythonPersistently(out string grantError), grantError);
                 Assert.Equal("safe_write", Settings.PermissionProfile);
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string reason), reason);
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
 
                 JObject persisted = JObject.Parse(File.ReadAllText(HorizunPaths.SettingsPath()));
                 Assert.Equal("safe_write", (string)persisted["permission_profile"]);
-                Assert.NotNull(persisted["execute_python_ui_grant_until_utc"]);
+                Assert.True((bool)persisted["execute_python_ui_granted"]);
+                Assert.False((bool)persisted["enable_execute_python"]);
+                Assert.NotNull(persisted["execute_python_ui_granted_at_utc"]);
+                Assert.Null(persisted["execute_python_ui_grant_until_utc"]);
                 Assert.NotNull(persisted["denied_tools"]);
 
                 Assert.True(Settings.TryRevokeExecutePython(out string revokeError), revokeError);
                 Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
                 Assert.Equal("safe_write", Settings.PermissionProfile);
+                JObject revoked = JObject.Parse(File.ReadAllText(HorizunPaths.SettingsPath()));
+                Assert.False((bool)revoked["enable_execute_python"]);
+                Assert.Null(revoked["execute_python_ui_granted"]);
+                Assert.Null(revoked["execute_python_ui_granted_at_utc"]);
             });
         }
 
@@ -136,8 +141,7 @@ namespace Horizun.Core.Tests
         {
             WithSettings("{ not json", () =>
             {
-                Assert.False(Settings.TryGrantExecutePythonTemporarily(
-                    TimeSpan.FromMinutes(60), out _, out string error));
+                Assert.False(Settings.TryGrantExecutePythonPersistently(out string error));
                 Assert.Contains("malformed", error);
                 Assert.Equal("{ not json", File.ReadAllText(HorizunPaths.SettingsPath()));
             });
@@ -150,8 +154,7 @@ namespace Horizun.Core.Tests
             {
                 for (int i = 0; i < 6; i++)
                 {
-                    Assert.True(Settings.TryGrantExecutePythonTemporarily(
-                        TimeSpan.FromMinutes(10), out _, out string grantError), grantError);
+                    Assert.True(Settings.TryGrantExecutePythonPersistently(out string grantError), grantError);
                     Assert.True(Settings.TryRevokeExecutePython(out string revokeError), revokeError);
                 }
                 string directory = Path.GetDirectoryName(HorizunPaths.SettingsPath());
@@ -169,8 +172,7 @@ namespace Horizun.Core.Tests
                     Assert.True(mutex.WaitOne(TimeSpan.FromSeconds(2)));
                     var update = System.Threading.Tasks.Task.Run(() =>
                     {
-                        bool ok = Settings.TryGrantExecutePythonTemporarily(
-                            TimeSpan.FromMinutes(10), out _, out string error);
+                        bool ok = Settings.TryGrantExecutePythonPersistently(out string error);
                         return Tuple.Create(ok, error);
                     });
                     Assert.False(update.Wait(250));

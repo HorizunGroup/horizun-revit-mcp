@@ -5,8 +5,8 @@
 // no set of typed tools ever covers the whole API, this does.
 //
 // DISABLED BY DEFAULT: when a typed command cannot cover a request, the owner may
-// grant a bounded exception from Revit's Python ON/OFF button, or configure a
-// durable developer opt-in. It runs arbitrary code inside Revit with the full API
+// grant persistent access from Revit's Python ON/OFF button until they revoke it,
+// or configure the same durable opt-in administratively. It runs arbitrary code inside Revit with the full API
 // and the rights of the signed-in user, so the per-machine switch is checked here
 // AND in the server, because the two halves ship separately and neither may be
 // the only gate.

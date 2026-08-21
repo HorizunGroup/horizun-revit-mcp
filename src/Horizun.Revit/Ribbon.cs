@@ -13,7 +13,7 @@
 // So: one tab, one panel, three buttons. STATUS answers the support question
 // without leaving Revit — loaded, which version, which commit, is the bridge
 // listening, where is the log. PYTHON makes arbitrary-code consent a local,
-// visible, expiring human action. HUB is where the layer above this one lives.
+// visible, persistent human action. HUB is where the layer above this one lives.
 //
 // A ribbon must never be the reason Revit fails to start: everything here is
 // wrapped, and a failure is logged and swallowed. The bridge does not depend on
@@ -53,6 +53,7 @@ namespace Horizun.Revit
 
             RibbonPanel panel = app.CreateRibbonPanel(TabName, PanelName);
             string asm = Assembly.GetExecutingAssembly().Location;
+            bool spanish = PythonPermissionCommand.IsSpanishLanguage(app.ControlledApplication.Language);
 
             var status = new PushButtonData(
                 "HorizunBridgeStatus", "Estado\ndel puente", asm, typeof(BridgeStatusCommand).FullName)
@@ -77,11 +78,17 @@ namespace Horizun.Revit
             var python = new PushButtonData(
                 "HorizunPythonPermission", "Python\nON/OFF", asm, typeof(PythonPermissionCommand).FullName)
             {
-                ToolTip = "Activar temporalmente o revocar la ejecución Python",
-                LongDescription =
-                    "horizun_execute_python ejecuta código arbitrario con los permisos del usuario. Está " +
-                    "apagado por defecto. Este botón permite al dueño presente en Revit activarlo durante " +
-                    "60 minutos o revocarlo inmediatamente; nunca deja una elevación permanente implícita."
+                ToolTip = spanish
+                    ? "Activar persistentemente o revocar la ejecución Python"
+                    : "Persistently enable or revoke Python execution",
+                LongDescription = spanish
+                    ? "horizun_execute_python ejecuta código arbitrario con los permisos del usuario. Está " +
+                      "apagado por defecto. Este botón permite al dueño presente en Revit activarlo hasta que " +
+                      "él mismo lo desactive, o revocarlo inmediatamente. La activación nunca puede concedérsela " +
+                      "un cliente MCP por sí solo."
+                    : "horizun_execute_python runs arbitrary code with the user's Windows permissions. It is " +
+                      "off by default. This button lets the owner present in Revit enable it until they disable " +
+                      "it themselves, or revoke it immediately. An MCP client can never grant itself access."
             };
 
             AddImages(status, "status");
@@ -138,7 +145,8 @@ namespace Horizun.Revit
                         (Build.BuiltFromCleanTree ? "" : "  (árbol con cambios sin confirmar)") + "\n" +
                         "Revit: " + year + "\n\n" +
                         "Perfil: " + BridgeSettings.PermissionProfile + "\n" +
-                        PythonStatusLine() + "\n\n" +
+                        PythonStatusLine(PythonPermissionCommand.IsSpanishLanguage(
+                            data.Application.Application.Language)) + "\n\n" +
                         (published
                             ? "Descubrimiento: " + discovery + "\n\nUn cliente MCP que arranque ahora encontrará " +
                               "este Revit. Si aun así falla, casi siempre es que el servidor y el add-in vienen " +
@@ -173,14 +181,19 @@ namespace Horizun.Revit
             catch (Exception ex) { Log.Warn("could not open '" + target + "': " + ex.Message); }
         }
 
-        internal static string PythonStatusLine()
+        internal static string PythonStatusLine(bool spanish)
         {
             bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _);
             DateTimeOffset? until = BridgeSettings.ExecutePythonTemporaryGrantUntilUtc;
             if (!allowed) return "Python: OFF";
             if (until != null)
-                return "Python: ON temporal hasta " + until.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
-            return "Python: ON por configuración administrativa";
+                return (spanish
+                    ? "Python: ON por un permiso temporal heredado hasta "
+                    : "Python: ON under a legacy temporary grant until ") +
+                    until.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
+            return spanish
+                ? "Python: ON persistente hasta que el usuario lo desactive"
+                : "Python: persistently ON until the user disables it";
         }
     }
 
@@ -192,8 +205,9 @@ namespace Horizun.Revit
             try
             {
                 bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string refusal);
-                if (allowed) return Disable(ref message);
-                return Enable(ref message, refusal);
+                bool spanish = IsSpanishLanguage(data.Application.Application.Language);
+                if (allowed) return Disable(ref message, spanish);
+                return Enable(ref message, refusal, null, spanish);
             }
             catch (Exception ex)
             {
@@ -202,79 +216,122 @@ namespace Horizun.Revit
             }
         }
 
-        private static Result Enable(ref string message, string currentRefusal)
+        internal static Result Enable(
+            ref string message, string currentRefusal, string requestReason, bool spanish)
         {
-            var dialog = new TaskDialog("Horizun — permiso Python")
+            string title = spanish ? "Horizun — permiso Python" : "Horizun — Python permission";
+            var dialog = new TaskDialog(title)
             {
-                MainInstruction = "Python está OFF.",
-                MainContent =
-                    "Activarlo permite que un cliente MCP ejecute código arbitrario dentro de Revit con sus " +
-                    "permisos de Windows. Las herramientas tipadas verifican sus cambios; Python no puede " +
-                    "ofrecer esa garantía.\n\nLa autorización expirará automáticamente en 60 minutos. " +
-                    "Los clientes MCP compatibles refrescan tools/list automáticamente. Si el suyo no lo hace, " +
-                    "reinícielo una vez.",
-                ExpandedContent = currentRefusal ?? "",
+                MainInstruction = spanish ? "Python está OFF." : "Python is OFF.",
+                MainContent = spanish
+                    ? "Activarlo permite que un cliente MCP ejecute código arbitrario dentro de Revit con sus " +
+                      "permisos de Windows. Las herramientas tipadas verifican sus cambios; Python no puede " +
+                      "ofrecer esa garantía.\n\nLa autorización NO EXPIRA: permanecerá activa entre archivos, " +
+                      "lotes y reinicios de Revit hasta que este usuario la desactive manualmente. " +
+                      "Los clientes MCP compatibles refrescan tools/list automáticamente. Si el suyo no lo hace, " +
+                      "reinícielo una vez."
+                    : "Enabling it allows an MCP client to run arbitrary code inside Revit with your Windows " +
+                      "permissions. Typed tools verify their changes; Python cannot provide that guarantee.\n\n" +
+                      "This permission DOES NOT EXPIRE: it remains active across files, batches and Revit " +
+                      "restarts until this user manually disables it. Compatible MCP clients refresh tools/list " +
+                      "automatically. If yours does not, restart it once.",
+                ExpandedContent =
+                    (string.IsNullOrWhiteSpace(requestReason)
+                        ? ""
+                        : (spanish
+                            ? "Solicitud declarada por el cliente MCP (texto no verificado):\n"
+                            : "Reason declared by the MCP client (unverified text):\n") + requestReason + "\n\n") +
+                    (currentRefusal ?? ""),
                 CommonButtons = TaskDialogCommonButtons.Cancel,
-                VerificationText = "Entiendo que esta capacidad ejecuta código arbitrario"
+                VerificationText = spanish
+                    ? "Entiendo que ejecuta código arbitrario y permanecerá activo hasta que yo lo desactive"
+                    : "I understand this runs arbitrary code and remains active until I disable it"
             };
-            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Activar Python durante 60 minutos");
-            TaskDialogResult choice = dialog.Show();
+            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+                spanish ? "Activar Python hasta que yo lo desactive" : "Enable Python until I disable it");
+            TaskDialogResult choice = ShowForHuman(dialog);
             if (choice != TaskDialogResult.CommandLink1) return Result.Cancelled;
             if (!dialog.WasVerificationChecked())
             {
-                TaskDialog.Show("Horizun — permiso Python",
-                    "No se activó. Marque la casilla de comprensión para conceder el permiso.");
+                ShowForHuman(title, spanish
+                    ? "No se activó. Marque la casilla de comprensión para conceder el permiso."
+                    : "Python was not enabled. Check the acknowledgement box to grant permission.");
                 return Result.Cancelled;
             }
 
-            if (!BridgeSettings.TryGrantExecutePythonTemporarily(
-                    TimeSpan.FromMinutes(60), out DateTimeOffset until, out string error))
+            if (!BridgeSettings.TryGrantExecutePythonPersistently(out string error))
             {
                 message = error;
-                TaskDialog.Show("Horizun — permiso Python", error);
+                ShowForHuman(title, error);
                 return Result.Failed;
             }
 
             if (!BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string stillRefused))
             {
-                BridgeSettings.TryClearExecutePythonTemporaryGrant(out _);
+                BridgeSettings.TryRevokeExecutePython(out _);
                 message = stillRefused;
-                TaskDialog.Show("Horizun — permiso Python",
-                    "No se activó porque otra política de la máquina lo prohíbe:\n\n" + stillRefused);
+                ShowForHuman(title, (spanish
+                    ? "No se activó porque otra política de la máquina lo prohíbe:\n\n"
+                    : "Python was not enabled because another machine policy prohibits it:\n\n") + stillRefused);
                 return Result.Failed;
             }
 
-            TaskDialog.Show("Horizun — permiso Python",
-                "Python está ON hasta " + until.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") +
-                ".\n\nLos clientes compatibles actualizarán la herramienta automáticamente; si el suyo " +
-                "no lo hace, reinícielo una vez.");
+            ShowForHuman(title, spanish
+                ? "Python está ON de forma persistente. Permanecerá activo hasta que este usuario lo desactive " +
+                  "desde el botón Python ON/OFF o con el comando administrativo -Disable.\n\nLos clientes " +
+                  "compatibles actualizarán la herramienta automáticamente; si el suyo no lo hace, reinícielo una vez."
+                : "Python is persistently ON. It remains active until this user disables it from the Python " +
+                  "ON/OFF button or with the administrative -Disable command.\n\nCompatible clients update the " +
+                  "tool automatically; if yours does not, restart it once.");
             return Result.Succeeded;
         }
 
-        private static Result Disable(ref string message)
+        private static TaskDialogResult ShowForHuman(TaskDialog dialog)
         {
-            var dialog = new TaskDialog("Horizun — permiso Python")
+            // Calls originating in MCP run under the global dialog watcher. Its normal
+            // fail-safe answer is Cancel; this narrowly scoped policy tells it to observe
+            // this consent UI but never answer it for the human.
+            using (Interference.WithDialogAnswer(DialogAnswer.Human)) return dialog.Show();
+        }
+
+        private static void ShowForHuman(string title, string content)
+        {
+            using (Interference.WithDialogAnswer(DialogAnswer.Human)) TaskDialog.Show(title, content);
+        }
+
+        private static Result Disable(ref string message, bool spanish)
+        {
+            string title = spanish ? "Horizun — permiso Python" : "Horizun — Python permission";
+            var dialog = new TaskDialog(title)
             {
-                MainInstruction = "Python está ON.",
-                MainContent = BridgeStatusCommand.PythonStatusLine() +
-                    "\n\nDesactivarlo se aplica a la siguiente llamada incluso si el cliente MCP todavía " +
-                    "muestra la herramienta.",
+                MainInstruction = spanish ? "Python está ON." : "Python is ON.",
+                MainContent = BridgeStatusCommand.PythonStatusLine(spanish) +
+                    (spanish
+                        ? "\n\nDesactivarlo se aplica a la siguiente llamada incluso si el cliente MCP todavía muestra la herramienta."
+                        : "\n\nDisabling it applies to the next call even if the MCP client still displays the tool."),
                 CommonButtons = TaskDialogCommonButtons.Cancel
             };
-            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Desactivar Python ahora");
+            dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+                spanish ? "Desactivar Python ahora" : "Disable Python now");
             if (dialog.Show() != TaskDialogResult.CommandLink1) return Result.Cancelled;
 
             if (!BridgeSettings.TryRevokeExecutePython(out string error))
             {
                 message = error;
-                TaskDialog.Show("Horizun — permiso Python", error);
+                TaskDialog.Show(title, error);
                 return Result.Failed;
             }
 
-            TaskDialog.Show("Horizun — permiso Python",
-                "Python está OFF. Los clientes compatibles retirarán la herramienta automáticamente; si el suyo " +
-                "no lo hace, reinícielo una vez.");
+            TaskDialog.Show(title, spanish
+                ? "Python está OFF. Los clientes compatibles retirarán la herramienta automáticamente; si el suyo no lo hace, reinícielo una vez."
+                : "Python is OFF. Compatible clients remove the tool automatically; if yours does not, restart it once.");
             return Result.Succeeded;
+        }
+
+        internal static bool IsSpanishLanguage(object language)
+        {
+            string value = language == null ? "" : language.ToString();
+            return value.IndexOf("Spanish", StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 

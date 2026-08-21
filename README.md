@@ -48,7 +48,7 @@ guessing.
 // horizun_health, abbreviated
 {
   "status": "healthy",
-  "horizun_version": "0.9.5",
+  "horizun_version": "0.9.6",
   "horizun_commit": "ced1aa1",
   "built_from_clean_tree": true,
   "revit_version": "2026",
@@ -324,10 +324,11 @@ respected — `read_only`, `safe_write`, `full_write` or
 `enable_execute_python: false` keep arbitrary code off, `allowed_tools` and
 `denied_tools` narrow any profile, and a settings file that exists but cannot be
 parsed falls **closed** (`read_only`, Python off) so a corrupted restriction
-never reads as consent. The **Python ON/OFF** button in Revit grants a visible
-60-minute exception without permanently elevating the profile; pressing it
-again revokes the permission immediately. `scripts/enable-execute-python.ps1`
-remains the explicit administrative path for a durable developer setup and
+never reads as consent. A client may call `horizun_request_python_access` to put
+the question visibly in Revit, but it cannot answer it. The machine owner can use
+the **Python ON/OFF** button to grant persistent access until that same user
+revokes it; pressing it again revokes the permission immediately.
+`scripts/enable-execute-python.ps1` remains the explicit administrative path and
 reverts with `-Disable`. The server emits `notifications/tools/list_changed` when
 the effective permission changes, so compatible clients update automatically;
 clients that ignore the notification need one restart.

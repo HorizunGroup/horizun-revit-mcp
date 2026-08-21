@@ -171,7 +171,14 @@ namespace Horizun.Revit.Core
             string answered;
             try
             {
-                if (_openDialogPolicy == DialogAnswer.Dismiss)
+                if (_openDialogPolicy == DialogAnswer.Human)
+                {
+                    // Exactly one compiled command uses this: the Python permission
+                    // request. Do not call OverrideResult at all; the person in Revit is
+                    // the security boundary and must make the decision themselves.
+                    answered = "left open for the machine owner to answer; the bridge did not choose";
+                }
+                else if (_openDialogPolicy == DialogAnswer.Dismiss)
                 {
                     // on_open_dialog=dismiss: acknowledge and continue. 1 == IDOK for a
                     // plain dialog box; TaskDialogResult.Ok is 1 too. Best effort - a

@@ -13,7 +13,7 @@ try {
     New-Item -ItemType Directory -Path $temp -Force | Out-Null
     $settingsPath = Join-Path $temp 'settings.json'
     [IO.File]::WriteAllText($settingsPath,
-        '{"permission_profile":"unsafe_code","enable_execute_python":true,"execute_python_ui_grant_until_utc":"2099-01-01T00:00:00Z","unrelated":42}',
+        '{"permission_profile":"unsafe_code","enable_execute_python":true,"execute_python_ui_granted":true,"execute_python_ui_grant_until_utc":"2099-01-01T00:00:00Z","execute_python_ui_granted_at_utc":"2026-01-01T00:00:00Z","unrelated":42}',
         (New-Object Text.UTF8Encoding($false)))
 
     # A different process owns the exact production mutex. The admin operation
@@ -58,6 +58,8 @@ try {
     $disabled = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
     Assert-True ($disabled.enable_execute_python -eq $false) 'durable Python switch was not disabled'
     Assert-True ($null -eq $disabled.PSObject.Properties['execute_python_ui_grant_until_utc']) 'temporary grant survived disable'
+    Assert-True ($null -eq $disabled.PSObject.Properties['execute_python_ui_granted']) 'persistent UI grant survived disable'
+    Assert-True ($null -eq $disabled.PSObject.Properties['execute_python_ui_granted_at_utc']) 'persistent UI metadata survived disable'
     Assert-True ($disabled.unrelated -eq 42) 'unrelated setting was not preserved'
 
     & $shell -NoProfile -File $admin -Yes -DataRoot $temp
@@ -66,6 +68,8 @@ try {
     Assert-True ($enabled.permission_profile -eq 'unsafe_code') 'durable enable did not select unsafe_code'
     Assert-True ($enabled.enable_execute_python -eq $true) 'durable enable did not set explicit true'
     Assert-True ($null -eq $enabled.PSObject.Properties['execute_python_ui_grant_until_utc']) 'durable enable left a temporary grant'
+    Assert-True ($null -eq $enabled.PSObject.Properties['execute_python_ui_granted']) 'admin enable left a persistent UI grant'
+    Assert-True ($null -eq $enabled.PSObject.Properties['execute_python_ui_granted_at_utc']) 'admin enable impersonated a Revit UI grant'
     Assert-True ($enabled.unrelated -eq 42) 'durable enable lost unrelated settings'
 
     Write-Host '[PASS] Python permission administration is inter-process serialized, reversible and preserving' -ForegroundColor Green

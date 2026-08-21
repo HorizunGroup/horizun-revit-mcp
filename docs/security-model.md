@@ -54,10 +54,11 @@ the add-in on every use. `permission_profile` has four values:
 **The default is `safe_write`, with Python off.** A fresh install can use typed,
 verified writes inside the active document, but cannot change document sessions,
 write external files or execute arbitrary code. Elevation is an explicit owner
-decision. Revit's **Python ON/OFF** button may write a bounded
-`execute_python_ui_grant_until_utc`; it expires automatically without changing
-the underlying profile. A durable enable requires both `unsafe_code` and an
-explicit `enable_execute_python=true`. Changes are announced as
+decision. `horizun_request_python_access` may display the question inside Revit,
+but the MCP caller cannot answer it. Revit's **Python ON/OFF** button writes a
+persistent `execute_python_ui_granted=true` specific to Python; it does not
+elevate the underlying profile or enable other external/session tools. It remains
+active until that same Windows user revokes it. Changes are announced as
 `notifications/tools/list_changed`; this is a discovery convenience only, because
 both halves still re-check the permission on every call.
 
@@ -78,16 +79,16 @@ already read the models directly.
 
 `horizun_execute_python` runs arbitrary Python inside Revit on the UI thread. It
 is **disabled by default**. The preferred interactive grant is the Revit ribbon:
-the owner acknowledges the risk and enables it for 60 minutes, after which the
-grant fails closed. Pressing the button while enabled revokes both temporary and
-durable enable flags immediately. A durable developer machine can opt in with
+the owner acknowledges that the permission does not expire and enables it until
+they explicitly turn it off. Pressing the button while enabled revokes all enable
+flags immediately. A developer machine can make the same durable choice with
 `permission_profile=unsafe_code` plus `enable_execute_python=true`.
 
 Enabling it is a real widening of the exposed surface:
 an agent that reads untrusted content (a linked DWG, a PDF, an email) and holds
 this tool can be prompt-injected into running code with the signed-in user's
 rights. The compensating controls are the ones below, an explicit human grant,
-automatic expiry and the independent far-end gate.
+a persistent visible ON/OFF state, immediate owner revocation and the independent far-end gate.
 
 Gated in **both halves**: when disabled, the server does not advertise it and
 refuses it if called anyway; the add-in refuses it independently. The two ship
@@ -344,7 +345,7 @@ replace it.
 ## 9. Known gaps, stated
 
 - Arbitrary Python remains an explicit privileged bypass (§3), but is off by
-  default and temporary ribbon grants expire automatically.
+  default and a client can request—but never approve—the persistent ribbon grant.
 - The shipped Python standard library has deterministic file/hash and static-risk
   triage, but not a comprehensive semantic audit or Python-specific vulnerability
   feed. A clean scan is evidence for its explicit rules, not a safety guarantee.

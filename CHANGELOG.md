@@ -3,6 +3,21 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v0.9.6 — 2026-08-20
+
+- **Persistent, owner-controlled Python permission.** Revit's **Python ON/OFF**
+  button now grants access until the machine owner explicitly turns it off,
+  instead of expiring after 60 minutes. The permission remains specific to
+  `horizun_execute_python`; read-only profiles, allowlists and denylists still
+  take precedence.
+- **Consent can be requested without sacrificing automation.** MCP clients can
+  call `horizun_request_python_access` to bring the consent prompt to Revit, but
+  they cannot approve it. Once the owner grants access, it remains available
+  across documents and compatible clients refresh their tool list automatically.
+- **Localized consent UI.** The ribbon dialog follows Revit's language: English
+  on English installations, Spanish on Spanish installations, with English as
+  the safe fallback.
+
 ## v0.9.5 — 2026-08-20
 
 - **Deep multi-agent hardening.** Typed plan execution now fails closed on

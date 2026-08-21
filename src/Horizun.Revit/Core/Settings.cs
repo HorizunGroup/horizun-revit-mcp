@@ -81,8 +81,10 @@ namespace Horizun.Revit.Core
         /// It runs arbitrary code inside Revit, on the UI thread, with full API access
         /// and the rights of the signed-in user. Enabling it requires an explicit true
         /// AND permission_profile=unsafe_code. An absent or non-boolean key means OFF.
-        /// A separate execute_python_ui_grant_until_utc written by Revit may grant a
-        /// bounded exception without leaving standing consent.
+        /// The Revit ribbon writes a separate persistent UI grant which authorizes only
+        /// this tool and does not silently elevate the rest of permission_profile.
+        /// A legacy execute_python_ui_grant_until_utc is still honoured until its old
+        /// expiry so an in-place upgrade never revokes an already-approved running batch.
         /// </summary>
         public static bool ExecutePythonEnabled
         {
@@ -92,15 +94,17 @@ namespace Horizun.Revit.Core
                 JObject o = Read(out state);
                 if (state == FileState.Malformed) return false;
                 if (TemporaryExecutePythonGrant(o, DateTimeOffset.UtcNow, out _)) return true;
+                JToken ui = o?["execute_python_ui_granted"];
+                if (ui != null && ui.Type == JTokenType.Boolean && (bool)ui) return true;
                 JToken t = o?["enable_execute_python"];
                 return t != null && t.Type == JTokenType.Boolean && (bool)t;
             }
         }
 
         /// <summary>
-        /// Active human grant written by the Revit ribbon. Unlike the durable admin
-        /// switch it does not change permission_profile and therefore cannot leave the
-        /// machine elevated after expiry.
+        /// Legacy bounded grant written by versions before the ribbon became a persistent
+        /// owner switch. New code never creates this key; it is read only for a safe
+        /// in-place upgrade and removed by either ON or OFF.
         /// </summary>
         public static DateTimeOffset? ExecutePythonTemporaryGrantUntilUtc
         {
@@ -143,9 +147,13 @@ namespace Horizun.Revit.Core
             { reason = contract.Name + " is outside the allowed_tools allowlist in " + Path() + "."; return false; }
 
             string profile = PermissionProfile;
-            bool temporaryPythonGrant = contract.Name == "horizun_execute_python" &&
-                                        profile != "read_only" &&
-                                        ExecutePythonTemporaryGrantUntilUtc != null;
+            JToken persistentUiToken = settings?["execute_python_ui_granted"];
+            bool persistentUiGrant = persistentUiToken != null &&
+                                     persistentUiToken.Type == JTokenType.Boolean &&
+                                     (bool)persistentUiToken;
+            bool humanPythonGrant = contract.Name == "horizun_execute_python" &&
+                                    profile != "read_only" &&
+                                    (persistentUiGrant || ExecutePythonTemporaryGrantUntilUtc != null);
 
             // ExternalSideEffect is consulted by BOTH restrictive profiles, and that is
             // the fix rather than a detail. The classification exists precisely to mean
@@ -154,7 +162,7 @@ namespace Horizun.Revit.Core
             // is one: a machine set to read_only refused to move a wall and then rewrote
             // a workbook on disk. Deciding on the ENUM rather than on a list of names is
             // what keeps the next externally-effecting tool from repeating it.
-            if (!temporaryPythonGrant && profile == "read_only" &&
+            if (!humanPythonGrant && profile == "read_only" &&
                 (contract.Effect == ToolEffect.Mutating || contract.Effect == ToolEffect.MutatingUnlessDryRun ||
                  contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect))
             {
@@ -163,7 +171,7 @@ namespace Horizun.Revit.Core
                          "written outside it.";
                 return false;
             }
-            if (!temporaryPythonGrant && profile == "safe_write" &&
+            if (!humanPythonGrant && profile == "safe_write" &&
                 (contract.Effect == ToolEffect.DocumentSession || contract.Effect == ToolEffect.ExternalSideEffect ||
                  // Named as well as classified: these write outside the model while being
                  // classified MutatingUnlessDryRun, so the effect alone does not catch them.
@@ -178,13 +186,13 @@ namespace Horizun.Revit.Core
                 return false;
             }
             if (contract.Name == "horizun_execute_python" &&
-                (!temporaryPythonGrant &&
+                (!humanPythonGrant &&
                  (profile != "unsafe_code" || !ExecutePythonEnabled)))
             {
                 reason = "horizun_execute_python requires explicit permission_profile=unsafe_code and " +
-                         "enable_execute_python=true in " + Path() + ", OR a still-active temporary grant made " +
-                         "from the Revit ribbon. It is OFF on a fresh install. Only the machine's owner may " +
-                         "grant or renew that privilege.";
+                         "enable_execute_python=true in " + Path() + ", OR a persistent owner grant made from " +
+                         "Revit's Python ON/OFF button. It is OFF on a fresh install. Only the machine's owner " +
+                         "may grant that privilege, and it remains OFF until that owner does so.";
                 return false;
             }
             return true;
@@ -199,7 +207,8 @@ namespace Horizun.Revit.Core
             return "horizun_execute_python is DISABLED ON THIS MACHINE. This is the safe default: arbitrary " +
                    "code requires explicit owner consent in " + Path() + ". Respect the choice: do not edit the " +
                    "file yourself. If the MACHINE'S OWNER needs the developer escape hatch, they can grant a " +
-                   "time-limited or durable opt-in with scripts/enable-execute-python.ps1; -Disable revokes it. " +
+                   "persistent opt-in from Revit's Python ON/OFF button or with " +
+                   "scripts/enable-execute-python.ps1; -Disable revokes it. " +
                    "The add-in re-reads settings on every call, and the server announces a standard " +
                    "tools/list_changed notification. If a client does not implement that notification, restart " +
                    "it once for the tool to appear. Meanwhile, use typed commands: they cover most operations " +
@@ -207,26 +216,19 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Grant arbitrary Python from an explicit Revit UI action. The grant is bounded
-        /// to four hours even if a caller passes a larger duration; the ribbon currently
-        /// asks for one hour. The durable administrator switch is deliberately untouched.
+        /// Grant arbitrary Python from an explicit human action inside Revit. This is a
+        /// durable owner switch and remains enabled until that same Windows user revokes
+        /// it. It authorizes only execute_python; it deliberately does not elevate the
+        /// underlying profile or enable other external/session tools. The old expiring UI
+        /// key is removed so there is one unambiguous source of truth after the decision.
         /// </summary>
-        public static bool TryGrantExecutePythonTemporarily(
-            TimeSpan duration, out DateTimeOffset untilUtc, out string error)
+        public static bool TryGrantExecutePythonPersistently(out string error)
         {
-            untilUtc = default(DateTimeOffset);
-            error = null;
-            if (duration <= TimeSpan.Zero || duration > TimeSpan.FromHours(4))
-            {
-                error = "The temporary Python grant must be greater than zero and no longer than four hours.";
-                return false;
-            }
-
-            DateTimeOffset requestedUntil = DateTimeOffset.UtcNow.Add(duration);
-            untilUtc = requestedUntil;
             return TryUpdate(o =>
             {
-                o["execute_python_ui_grant_until_utc"] = requestedUntil.ToString("O");
+                o["execute_python_ui_granted"] = true;
+                o["execute_python_ui_granted_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                o.Remove("execute_python_ui_grant_until_utc");
                 return true;
             }, out error);
         }
@@ -242,16 +244,9 @@ namespace Horizun.Revit.Core
             return TryUpdate(o =>
             {
                 o["enable_execute_python"] = false;
+                o.Remove("execute_python_ui_granted");
                 o.Remove("execute_python_ui_grant_until_utc");
-                return true;
-            }, out error);
-        }
-
-        public static bool TryClearExecutePythonTemporaryGrant(out string error)
-        {
-            return TryUpdate(o =>
-            {
-                o.Remove("execute_python_ui_grant_until_utc");
+                o.Remove("execute_python_ui_granted_at_utc");
                 return true;
             }, out error);
         }

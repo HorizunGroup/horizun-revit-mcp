@@ -202,8 +202,17 @@ if (Test-Path $Fixtures) {
 if ([string]::IsNullOrWhiteSpace($FamilyTemplate)) {
     $templateRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Year)
     if (Test-Path $templateRoot) {
-        $candidateTemplate = Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue |
+        # Prefer an ASCII path. Some older Revit generations report localized
+        # template paths as "illegal characters" through NewFamilyDocument even
+        # though Windows itself can open them; this probe is about the typed plan,
+        # not localization support.
+        $templates = @(Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue)
+        $candidateTemplate = $templates |
+                             Where-Object { $_.FullName -cmatch '^[\x20-\x7E]+$' } |
                              Sort-Object FullName | Select-Object -First 1
+        if (-not $candidateTemplate) {
+            $candidateTemplate = $templates | Sort-Object FullName | Select-Object -First 1
+        }
         if ($candidateTemplate) {
             $FamilyTemplate = $candidateTemplate.FullName
             $fixtureSource['FamilyTemplate'] = 'auto-discovered'
@@ -2431,7 +2440,8 @@ if (-not $Document) {
 # as "it behaves this way against a running Revit".
 #
 # execute_python is disabled by DEFAULT. This harness never grants the privilege:
-# it reports the gap. The owner may use Revit's expiring Python ON/OFF button or
+# it reports the gap. A client may request the visible dialog, but only the owner
+# may approve persistent access with Revit's Python ON/OFF button or
 # scripts/enable-execute-python.ps1 and then re-run.
 if (-not ($listed | Where-Object { $_.name -eq 'horizun_execute_python' })) {
     $notCovered += 'the execute_python fallback surface - the typed-overlap advisory, preflight, and the ' +

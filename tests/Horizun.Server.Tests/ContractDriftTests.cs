@@ -77,6 +77,20 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Python_permission_request_can_only_ask_a_visible_human_for_persistent_consent()
+        {
+            CommandContract request = Contract.Find("horizun_request_python_access");
+            Assert.NotNull(request);
+            Assert.Equal("horizun_request_python_access", request.Command);
+            Assert.Equal(ToolEffect.HostState, request.Effect);
+            Assert.False(request.Destructive);
+            Assert.Equal(500, (int)request.InputSchema["properties"]?["reason"]?["maxLength"]);
+            Assert.Contains("NEVER SELF-GRANT", request.Description);
+            Assert.Contains("indefinite", request.Description);
+            Assert.DoesNotContain("expires_at", request.InputSchema.ToString());
+        }
+
+        [Fact]
         public void Every_model_mutation_advertises_the_shared_idempotency_key()
         {
             foreach (CommandContract c in Contract.All.Where(c =>

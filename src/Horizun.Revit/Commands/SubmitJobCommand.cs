@@ -27,7 +27,8 @@ namespace Horizun.Revit.Commands
             if (string.IsNullOrWhiteSpace(tool)) return CommandResult.Fail("tool is required. Nothing was queued.");
             if (arguments == null) return CommandResult.Fail("arguments must be an object. Nothing was queued.");
             if (string.Equals(tool, Name, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(tool, "horizun_execute_python", StringComparison.OrdinalIgnoreCase))
+                string.Equals(tool, "horizun_execute_python", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(tool, "horizun_request_python_access", StringComparison.OrdinalIgnoreCase))
                 return CommandResult.Fail("'" + tool + "' cannot be submitted through this generic queue. Nothing was queued.");
             ICommand command = _resolve(tool);
             CommandContract contract = Contract.Find(tool);

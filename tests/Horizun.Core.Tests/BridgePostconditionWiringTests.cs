@@ -77,6 +77,21 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Python_permission_ui_follows_the_revit_language_with_english_fallback()
+        {
+            string ribbon = Source("src/Horizun.Revit/Ribbon.cs");
+            string request = Source("src/Horizun.Revit/Commands/RequestPythonAccessCommand.cs");
+
+            Assert.Contains("ControlledApplication.Language", ribbon);
+            Assert.Contains("data.Application.Application.Language", ribbon);
+            Assert.Contains("app.Application.Language", request);
+            Assert.Contains("Horizun — Python permission", ribbon);
+            Assert.Contains("Enable Python until I disable it", ribbon);
+            Assert.Contains("Activar Python hasta que yo lo desactive", ribbon);
+            Assert.Contains("return value.IndexOf(\"Spanish\"", ribbon);
+        }
+
+        [Fact]
         public void Create_schedule_has_guarded_commit_and_only_then_sets_committed()
         {
             string src = Source("src/Horizun.Revit/Commands/CreateScheduleCommand.cs");

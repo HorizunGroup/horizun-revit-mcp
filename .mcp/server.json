@@ -3,7 +3,7 @@
     "name":  "io.github.HorizunGroup/horizun-revit-mcp",
     "title":  "Horizun Revit MCP",
     "description":  "Open-source MCP server for Autodesk Revit: typed BIM edits, families, exports and Power BI.",
-    "version":  "0.9.5",
+    "version":  "0.9.6",
     "repository":  {
                        "url":  "https://github.com/HorizunGroup/horizun-revit-mcp",
                        "source":  "github"

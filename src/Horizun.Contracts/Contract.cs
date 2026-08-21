@@ -770,7 +770,8 @@ namespace Horizun.Contracts
                 Name = "horizun_submit_job",
                 Command = "horizun_submit_job",
                 Description =
-                    "Submit any installed Revit-side tool except execute_python or submit_job itself to the bounded " +
+                    "Submit any installed Revit-side tool except execute_python, request_python_access or " +
+                    "submit_job itself to the bounded " +
                     "asynchronous queue and return a persistent job_id immediately. The submission is durably " +
                     "idempotent, queued work alternates fairly with interactive calls, permissions are checked " +
                     "again when execution begins, and horizun_job_status exposes queued/running/result/failure or " +
@@ -778,7 +779,7 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""tool"", ""arguments""],
   ""properties"": {
-    ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python and horizun_submit_job are refused."" },
+    ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python, horizun_request_python_access and horizun_submit_job are refused."" },
     ""arguments"": { ""type"": ""object"", ""description"": ""The exact typed arguments, including target_document, dry_run/confirmation_token where that tool requires them."" },
     ""retain_until_utc"": { ""type"": ""string"", ""format"": ""date-time"", ""description"": ""Optional durable-retention lease for MCP Tasks. Must be a future UTC instant no more than seven days away; it protects this job record from configured retention but does not extend execution."" }
   }, ""additionalProperties"": false
@@ -822,12 +823,34 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_request_python_access",
+                Command = "horizun_request_python_access",
+                Description =
+                    "REQUEST, NEVER SELF-GRANT, persistent arbitrary-Python permission. Opens a visible consent " +
+                    "dialog inside Revit and waits for the machine owner to approve or reject it. Approval is " +
+                    "indefinite across files, batches and Revit restarts until that Windows user turns Python " +
+                    "OFF from the ribbon or the administrator -Disable command. The MCP caller cannot press the " +
+                    "button, cannot bypass the acknowledgement and cannot disable the owner's refusal. Do not " +
+                    "call this when nobody is at the Revit keyboard.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""reason"": { ""type"": ""string"", ""maxLength"": 500,
+      ""description"": ""Optional human-readable reason shown as UNVERIFIED caller text in the Revit consent dialog. It never grants permission."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_execute_python",
                 Command = "horizun_execute_python",
                 Description =
                     "Run Python directly against the Revit API on the UI thread - THE EXECUTION FALLBACK for " +
                     "everything the typed commands do not cover. Disabled by default; the machine owner must " +
-                    "explicitly grant unsafe_code plus enable_execute_python, optionally until a UTC expiry. " +
+                    "explicitly approve the persistent Revit UI grant, or configure unsafe_code plus " +
+                    "enable_execute_python administratively. It remains enabled until that Windows user revokes " +
+                    "it; the MCP client cannot grant itself permission. " +
                     "POLICY: prefer a typed command when it fully covers the " +
                     "operation. When none exists, or a failed typed call returns fallback.allowed=true - its " +
                     "machine-readable signal that no typed capability covers the request AND nothing was " +
@@ -1814,7 +1837,7 @@ namespace Horizun.Contracts
             // read_only has to keep horizun_target or it cannot choose the Revit it reads.
             var hostState = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_navigate", "horizun_target"
+                "horizun_navigate", "horizun_target", "horizun_request_python_access"
             };
 
             // MCP's destructiveHint, where every other classification already lives.

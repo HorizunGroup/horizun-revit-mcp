@@ -5,7 +5,7 @@
 //
 // The same rule drives execution.taskSupport, task admission and the compatible
 // horizun_submit_job extension: Revit-forwarding tools are eligible, host tools,
-// execute_python and submit_job itself are not.
+// execute_python, request_python_access and submit_job itself are not.
 // -----------------------------------------------------------------------------
 using System.Linq;
 using Horizun.Contracts;
@@ -49,7 +49,7 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
-        /// The two submit_job refuses BY NAME. Offering these as tasks would advertise
+        /// The three submit_job refuses BY NAME. Offering these as tasks would advertise
         /// something the queue rejects, and the caller would only find out at submit time.
         /// </summary>
         [Fact]
@@ -58,11 +58,12 @@ namespace Horizun.Server.Tests
             CommandContract submit = Contract.Find("horizun_submit_job");
             Assert.NotNull(submit);
             // The exclusion is stated in the tool's own description - "except
-            // execute_python or submit_job itself" - and this test's whole premise rests
+            // execute_python, request_python_access or submit_job itself" - and this test's whole premise rests
             // on it, so the wording is asserted rather than assumed. If somebody widens
             // the queue to accept execute_python, this fails and TaskSupport() has to be
             // revisited in the same change.
-            Assert.Contains("except execute_python or submit_job itself", submit.Description);
+            Assert.Contains("except execute_python, request_python_access or submit_job itself", submit.Description);
+            Assert.False(McpTasks.Supports(Tools.Find("horizun_request_python_access")));
         }
 
         /// <summary>

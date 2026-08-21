@@ -160,8 +160,8 @@ namespace Horizun.Server.Tests
                     monitor.CheckNow();
                     Assert.Equal(0, notifications);
 
-                    Assert.True(Horizun.Revit.Core.Settings.TryGrantExecutePythonTemporarily(
-                        TimeSpan.FromMinutes(10), out _, out string error), error);
+                    Assert.True(Horizun.Revit.Core.Settings.TryGrantExecutePythonPersistently(
+                        out string error), error);
                     monitor.CheckNow();
                     Assert.Equal(1, notifications);
                     monitor.CheckNow();
