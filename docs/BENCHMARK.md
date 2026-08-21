@@ -120,7 +120,7 @@ re-read and lost-response replay for every product, including Horizun.
 | Axis | Strongest market evidence | Horizun position on 2026-08-20 | What remains |
 | --- | --- | --- | --- |
 | Vendor trust/support | Autodesk official server | Cannot honestly beat Autodesk on vendor identity or Revit entitlement support | Complement it; publish signed binaries and independent evidence |
-| Safe default | Autodesk read-oriented preview | Typed in-model writes available, Python and external/session effects off by default; Revit Python ON/OFF grant expires | Live adversarial proof and modeless approval history |
+| Safe default | Autodesk read-oriented preview | Typed in-model writes available, Python and external/session effects off by default; MCP may request but only the Revit user may persistently enable or revoke Python | Live adversarial proof and approval history |
 | Raw breadth/SOP library | Shuotao 173 tools / 76 SOPs | Lower raw count; broader verified verticals in family authoring, exports and Power BI | Versioned recipe/SOP marketplace, without compiling client standards into the bridge |
 | Version range | BIMwright 2022–2027 | 2023–2027 | Revit 2022 only if demand justifies a separately tested payload |
 | Atomic multi-step writes | KenLP documents one-transaction batches | `horizun_execute_plan`, dry-run, stale-plan binding, rollback trace and postcondition re-read | Publish common live fixtures against both products |

@@ -4,8 +4,9 @@
 
   execute_python runs arbitrary code inside Revit with the full API and the
   rights of the signed-in user. It is DISABLED BY DEFAULT. The preferred
-  interactive path is Revit's Python ON/OFF button, whose grant expires after
-  60 minutes. This script exists for durable developer administration:
+  interactive path is Revit's Python ON/OFF button, whose owner-approved grant
+  remains active until that same user revokes it. This script provides the same
+  durable choice for explicit administration:
 
     - ENABLE a machine deliberately with unsafe_code plus an explicit true.
     - DISABLE it deliberately with -Disable; an explicit false always wins.
@@ -156,11 +157,15 @@ try {
     $settings = Read-Settings $settingsPath
     if ($Disable) {
         $settings['enable_execute_python'] = $false
+        $settings.Remove('execute_python_ui_granted')
         $settings.Remove('execute_python_ui_grant_until_utc')
+        $settings.Remove('execute_python_ui_granted_at_utc')
     } else {
         $settings['permission_profile']    = 'unsafe_code'
         $settings['enable_execute_python'] = $true
+        $settings.Remove('execute_python_ui_granted')
         $settings.Remove('execute_python_ui_grant_until_utc')
+        $settings.Remove('execute_python_ui_granted_at_utc')
     }
 
     if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Force -Path $root | Out-Null }
@@ -189,11 +194,13 @@ try {
     # and no live temporary grant; checking only the first key was a false green.
     $check = (Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8) | ConvertFrom-Json
     $grantPresent = $null -ne $check.PSObject.Properties['execute_python_ui_grant_until_utc']
+    $persistentUiGrantPresent = $null -ne $check.PSObject.Properties['execute_python_ui_granted']
+    $uiMetadataPresent = $null -ne $check.PSObject.Properties['execute_python_ui_granted_at_utc']
     if ($Disable) {
-        if ($check.enable_execute_python -ne $false -or $grantPresent) {
-            throw 'Wrote the file but the durable switch or temporary grant did not read back as OFF.'
+        if ($check.enable_execute_python -ne $false -or $grantPresent -or $persistentUiGrantPresent -or $uiMetadataPresent) {
+            throw 'Wrote the file but the durable switch or UI grant metadata did not read back as OFF.'
         }
-    } elseif ($check.permission_profile -ne 'unsafe_code' -or $check.enable_execute_python -ne $true -or $grantPresent) {
+    } elseif ($check.permission_profile -ne 'unsafe_code' -or $check.enable_execute_python -ne $true -or $grantPresent -or $persistentUiGrantPresent -or $uiMetadataPresent) {
         throw 'Wrote the file but the durable unsafe-code opt-in did not read back exactly.'
     }
 }

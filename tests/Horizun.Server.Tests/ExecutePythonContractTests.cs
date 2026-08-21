@@ -151,7 +151,8 @@ namespace Horizun.Server.Tests
 
             Assert.Contains("EXECUTION FALLBACK", d);
             Assert.Contains("Disabled by default", d);
-            Assert.Contains("explicitly grant", d);
+            Assert.Contains("explicitly approve", d);
+            Assert.Contains("client cannot grant itself permission", d);
             Assert.Contains("instead of answering 'not supported'", d);
             Assert.Contains("second write", d);
             // The four evidence states, in the description a caller actually reads.

@@ -4,7 +4,7 @@
 //
 // Down-level clients see no execution block. 2025-11-25 clients see optional
 // exactly for Revit-forwarding tools accepted by submit_job, and forbidden for
-// host tools plus the two explicit exclusions.
+// host tools plus the three explicit exclusions.
 // -----------------------------------------------------------------------------
 using System.Linq;
 using Newtonsoft.Json.Linq;

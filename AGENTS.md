@@ -192,9 +192,11 @@ and run `install.ps1` again.
   Save. A model that will not open unattended remains a finding either way.
 - **`horizun_execute_python` is disabled by default.** A fresh install uses
   `safe_write`: typed in-model writes are available, but arbitrary code is not.
-  The machine owner may use Revit's **Python ON/OFF** button for a 60-minute
-  grant, or the admin script `scripts/enable-execute-python.ps1` for a durable
-  developer opt-in; `-Disable` revokes it. Never edit settings to reverse the
+  A client may call `horizun_request_python_access` to show the question in Revit,
+  but only the machine owner can approve it. The **Python ON/OFF** button grants
+  persistent access until that same user revokes it; the admin script
+  `scripts/enable-execute-python.ps1` provides the same durable opt-in and
+  `-Disable` revokes it. Never edit settings to reverse the
   owner's choice. Compatible MCP clients refresh tools/list automatically after a
   change; restart once only when the client does not implement list-change notifications.
 - This bridge is **organisation-neutral by design**: no company's standards or
@@ -389,10 +391,12 @@ anterior: cierra Revit y vuelve a correr `install.ps1`.
   `with dialog_answer('dismiss'):` — alrededor de esa llamada y nada más, nunca de
   una corrida entera, porque Revit lee OK en el diálogo de cerrar-con-cambios como
   Guardar. Un modelo que no abre desatendido sigue siendo un hallazgo igual.
-- **`horizun_execute_python` viene deshabilitado por defecto.** El dueño de la
-  máquina puede habilitarlo durante 60 minutos con el botón **Python ON/OFF** de
-  Revit o administrarlo de forma durable con
-  `scripts/enable-execute-python.ps1`; `-Disable` revoca ambas rutas. Un
+- **`horizun_execute_python` viene deshabilitado por defecto.** Un cliente puede
+  llamar `horizun_request_python_access` para mostrar la solicitud en Revit, pero
+  solo el dueño de la máquina puede aprobarla. El botón **Python ON/OFF** concede
+  acceso persistente hasta que ese mismo usuario lo revoque; el script
+  `scripts/enable-execute-python.ps1` ofrece el mismo opt-in durable y `-Disable`
+  revoca ambas rutas. Un
   `enable_execute_python=false` explícito o un perfil por debajo de
   `unsafe_code` siempre se respeta, y no debes editar `settings.json` para
   revertirlo. Los clientes compatibles refrescan la lista automáticamente;

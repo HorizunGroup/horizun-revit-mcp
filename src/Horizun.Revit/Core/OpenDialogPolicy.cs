@@ -15,7 +15,16 @@ namespace Horizun.Revit.Core
     /// dialog whose only unattended answer is "acknowledge and continue" - 6 of 123
     /// models in one batch could not be audited for want of it.
     /// </summary>
-    public enum DialogAnswer { Cancel, Dismiss }
+    public enum DialogAnswer
+    {
+        Cancel,
+        Dismiss,
+
+        // Never accepted from an MCP argument. Compiled Horizun consent UI uses this
+        // internal policy so the global dialog watcher observes the prompt without
+        // answering it on the machine owner's behalf.
+        Human
+    }
 
     public static class OpenDialogPolicy
     {

@@ -38,7 +38,8 @@ namespace Horizun.Server
 
         public static bool Supports(ToolDef def) =>
             def != null && def.Host == null &&
-            def.Name != "horizun_submit_job" && def.Name != "horizun_execute_python";
+            def.Name != "horizun_submit_job" && def.Name != "horizun_execute_python" &&
+            def.Name != "horizun_request_python_access";
 
         public static JObject Create(
             JObject toolCall, Func<JObject, CancellationToken, JToken> invokeTool, CancellationToken cancellationToken)
@@ -50,8 +51,8 @@ namespace Horizun.Server
             ToolDef def = Tools.Find(tool);
             if (!Supports(def))
                 throw new McpError(-32602,
-                    "'" + tool + "' does not support MCP task augmentation. Host-resident tools, execute_python " +
-                    "and submit_job itself must be called normally.");
+                    "'" + tool + "' does not support MCP task augmentation. Host-resident tools, execute_python, " +
+                    "request_python_access and submit_job itself must be called normally.");
             JToken argumentsToken = toolCall?["arguments"];
             if (argumentsToken != null && argumentsToken.Type != JTokenType.Object &&
                 argumentsToken.Type != JTokenType.Null)

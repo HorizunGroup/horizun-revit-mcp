@@ -116,6 +116,7 @@ namespace Horizun.Revit
         private static void RegisterCommands(Dispatcher d)
         {
             d.Register(new GetDocumentInfoCommand());
+            d.Register(new RequestPythonAccessCommand());
             d.Register(new ExecutePythonCommand());
             d.Register(new ModelScanCommand());
             d.Register(new WriteParamsCommand());

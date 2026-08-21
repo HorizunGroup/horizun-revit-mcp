@@ -30,7 +30,8 @@ is a public release.
 - Separation between untrusted pull-request jobs, Revit integration runners and the
   signing runner, with immutable GitHub Actions references.
 - Safe capability defaults: typed in-model writes available, document/external side
-  effects gated, arbitrary Python off; a visible Revit ON/OFF grant expires.
+  effects gated, arbitrary Python off; a visible Revit ON/OFF grant remains active
+  only after explicit owner consent and until that owner revokes it.
 - Bounded queues, requests, responses, images, task records and retention stores.
 - MCP protocol negotiation through 2025-11-25 with Tools, Resources, Prompts,
   Completions, progress, opt-in Logging and durable task-augmented tool calls.

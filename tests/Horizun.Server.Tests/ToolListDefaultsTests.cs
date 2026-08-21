@@ -31,6 +31,19 @@ namespace Horizun.Server.Tests
             {
                 Assert.False(Advertised("horizun_execute_python"));
                 Assert.NotNull(Tools.DisabledReason("horizun_execute_python"));
+                Assert.True(Advertised("horizun_request_python_access"));
+            });
+        }
+
+        [Fact]
+        public void Persistent_ribbon_grant_exposes_only_python_not_the_rest_of_unsafe_code()
+        {
+            WithDataRoot(@"{""permission_profile"":""safe_write"",""enable_execute_python"":false,""execute_python_ui_granted"":true}", () =>
+            {
+                Assert.True(Advertised("horizun_execute_python"));
+                Assert.True(Advertised("horizun_request_python_access"));
+                Assert.False(Advertised("horizun_export"));
+                Assert.False(Advertised("horizun_save_document"));
             });
         }
 
