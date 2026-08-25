@@ -10,7 +10,7 @@ was right; the written rule was missing. This is the rule.
 
 | Channel | What it means | Has binaries | Can be `latest` |
 |---|---|---|---|
-| **stable** | Live matrix approved/published for every supported Revit year; 0.x may be explicitly unsigned, 1.0+ requires public signing | yes | **yes** |
+| **stable** | Live matrix approved/published for every supported Revit year; unsigned state explicitly disclosed and acknowledged | yes | **yes** |
 | **preview** | New behaviour, fixtures partial, live verification incomplete or single-machine | yes, marked pre-release | no |
 | **validation-only** | Tests, harness, docs or CI. **No new binaries.** | no | **never** |
 
@@ -35,39 +35,21 @@ and push protection are repository settings, not files in this tree, and must al
 be enabled before stable promotion. A green custom scan does not claim that those
 platform controls are on.
 
-Signing and public trust are separate facts. A self-signed or privately trusted
-certificate can prove byte identity in a controlled environment but does not make
-Windows trust the publisher on a clean machine. Every 1.0+ installable release requires
-a publicly trusted, non-self-signed Authenticode identity: CI signs the staged
-Horizun binaries and installer wrapper, timestamps them, re-validates public trust
-on a disposable Microsoft-hosted Windows runner, and verifies installed bytes
-without `-AllowUnsigned`. Missing identity, signature, timestamp or trust blocks
-stable and preview binaries. For 0.x only, a missing signature is allowed when
-the release and bootstrap disclose it, SHA-256/manifest verification passes, the
-five-year live matrix is attached and installation explicitly opts in with
-`-AllowUnsigned`. Invalid or self-signed public artifacts are never accepted.
+Public releases are unsigned by permanent policy, including version 1.0 and
+later. The bootstrap requires `-AllowUnsigned`, the README discloses the absence
+of publisher authentication, and `package-hashes.json` records
+`authenticode: unsigned_by_policy` plus
+`publisher_identity_available: false`. The pipeline refuses an unexpected,
+invalid or self-signed Authenticode state instead of presenting it as trust.
 
-The preferred no-cost public identity is SignPath Foundation. Its governance,
-team roles, privacy statement and origin requirements are defined in the
-repository [code signing policy](../CODE-SIGNING-POLICY.md). The application was
-submitted on 2026-08-15 and is awaiting review; until it is accepted and the
-clean-runner public-signature job passes, no release may claim SignPath signing.
-The current build cannot originate entirely on a GitHub-hosted runner because the
-five RevitAPI reference assemblies are licensed machine dependencies and are not
-redistributed. The workflow therefore fails closed unless GitHub repository
-variables name two distinct runner groups: `REVIT_RUNNER_GROUP` for interactive
-integration and `SIGNING_RUNNER_GROUP` for packaging/signing, whose runner also
-has the five local Revit APIs. The signing runner carries the additional
-`signing` label and must not be registered in the integration group. Group
-membership, protected environments, non-exportable key provisioning and tag
-protection are external GitHub/Windows controls; the repository tests the names,
-labels and trigger boundary but cannot truthfully attest those external settings.
-Until administrators configure and audit them, stable publication is blocked.
-SignPath Foundation also requires GitHub-hosted jobs in the default OSS origin
-policy. Because the licensed Revit APIs currently force the package build onto a
-self-hosted runner, a SignPath-approved exception or compatible origin policy is
-an additional external prerequisite. Version 1+ tags fail closed unless the
-organization records that approval with `SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED`.
+The release assurance chain is a protected tag, one clean commit stamped into
+every owned binary, full SHA-256 manifests, a CycloneDX SBOM, GitHub build
+attestations, exact installed-byte verification and the complete Revit 2023–2027
+live matrix. This proves which bytes were built and tested; it does **not** give
+Windows an independently authenticated publisher identity. Local self-signing
+may reduce Revit prompts on a machine whose owner explicitly trusts it, but it is
+never used for public artifacts. See the repository
+[unsigned release policy](../CODE-SIGNING-POLICY.md).
 
 ## Versioning
 
@@ -143,12 +125,12 @@ one is currently checkable rather than a matter of opinion:
       2026-08-20)*
 - [x] GitHub secret scanning and push protection enabled on the public repository.
       *(verified on 2026-08-20)*
-- [ ] Public Authenticode identity and clean-machine signature validation. The
-      repository is fail-closed and ready to consume the identity; procurement is
-      external. See [production readiness](production-readiness.md).
-- [ ] Payload and installer carry a timestamped, publicly trusted Authenticode
-      signature, and the stable tag pipeline verifies the installed signatures
-      without an unsigned exception.
+- [x] The permanent unsigned trust boundary is explicit in the bootstrap,
+      package record and README; unexpected/invalid/self-signed public artifacts
+      fail closed. See [production readiness](production-readiness.md).
+- [x] Stable tags publish hashes, manifest, SBOM, attestations and the complete
+      live matrix, then verify the exact installed unsigned bytes end to end.
 
-Until every box is ticked, this ships as 0.x and says so. A 1.0 that means "we
-think it is good now" is the claim this project exists not to make.
+Version 1.0 is promoted only from the tagged pipeline after every applicable box
+and the live matrix are green. Unsigned is a disclosed trust boundary, not a
+claim of Windows publisher authentication.

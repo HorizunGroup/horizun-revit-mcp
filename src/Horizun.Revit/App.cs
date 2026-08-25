@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit add-in entry point. On startup we build the dispatcher, register the
@@ -146,6 +146,17 @@ namespace Horizun.Revit
             d.Register(new ManageViewsCommand());
             d.Register(new ExportCommand());
             d.Register(new AnnotateCommand());
+            d.Register(new DimensionReferencesCommand());
+            d.Register(new QueryDimensionsCommand());
+            d.Register(new EditDimensionsCommand());
+            d.Register(new QueryDetail2DCommand());
+            d.Register(new Detail2DCommand());
+            d.Register(new QueryPlanimetryCommand());
+            d.Register(new AuditPlanimetryCommand());
+            d.Register(new FixPlanimetryCommand());
+            d.Register(new PackSheetsCommand());
+            d.Register(new PlanAnnotationsCommand());
+            d.Register(new ManageRevisionsCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());
 

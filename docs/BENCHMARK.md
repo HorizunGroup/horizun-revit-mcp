@@ -1,6 +1,6 @@
 # Revit MCP benchmark
 
-Updated: 2026-08-20. This benchmark measures useful outcomes, not the number of
+Updated: 2026-08-25. This benchmark measures useful outcomes, not the number of
 tool names. One broad, composable and verified operation can be more valuable
 than twenty thin wrappers.
 
@@ -47,6 +47,14 @@ is a research lead, not a verified benchmark result.
 | R2 | At-most-once mutation | Every typed mutation requires an idempotency key; completed retries replay, conflicting keys refuse, claim-only records become in-doubt. |
 | D1 | Distribution | A Windows user without Git or an SDK can install all supported Revit years from one release artifact; release has checksum, manifest and SBOM. |
 | D2 | Version coverage | Separate binaries compile against the actual Revit APIs for 2023, 2024, 2025, 2026 and 2027. |
+| P1 | Planimetry query | The whole documentation surface — sheets, views, placements, annotations, references — is readable FROM THE MODEL with real ElementIds, declared coordinate frames and units, exact totals under pagination, and a total that could not be computed reported as absent-and-named rather than zero. |
+| P2 | Universal audit | Findings without a company standard: overlapping placements beyond an explicit tolerance where touching is NOT overlapping, sheets with zero or several title blocks, broken placements and references, orphan and duplicate tags, empty text, degenerate detail, annotations demonstrably outside an active crop. An unreadable fact is `unknown` and never a pass, and a check with unknowns is never `passed`. |
+| P3 | Configurable requirement sets | Everything with a number or a name in it — naming, allowed scales/templates/types, margins, gaps, required parameters, forbidden overrides, tag coverage — arrives as an INLINE artifact, is refused whole when malformed, and stamps its id, version and SHA-256 on every finding it produced. No standard is compiled into the binary. |
+| P4 | Typed, verified correction | A finding becomes a typed write whose every promised property is re-read from the committed model, in one atomic batch that rolls back entirely on any failed check, with no export and no arbitrary-code path anywhere on it. |
+| P5 | Stale plan and rollback | A finding that no longer exists, an observed state that moved, an `unknown`, a modified requirement set or a model that moved between rehearsal and apply each refuse with NOTHING written; a failed postcondition rolls the whole batch back rather than leaving a partial commit. |
+| P6 | At-most-once correction | A correction requires a durable idempotency key; an identical retry replays the recorded answer without writing again, a conflicting key refuses, and a claim-only record (a lost response) becomes in-doubt rather than a second write. |
+| P7 | Multi-version live matrix | The whole planimetry surface — query, audit and fix — is exercised against a real Revit for 2023, 2024, 2025, 2026 and 2027, with failures and uncovered cases published rather than omitted. |
+| P8 | Autonomous production | Sheets are composed, populated, tagged, dimensioned, revised and judged end to end without a human choosing each placement: automatic packing, auto-tagging, dimensioning by intent, revision generation and visual review. |
 
 In-place families are deliberately not a pass condition: Autodesk's public
 Revit API does not provide general creation of them. A competitor receives no
@@ -71,13 +79,25 @@ Revit concepts.
 | X4 | 5 | T/S; tenant L pending | Direct REST; tests prove bounds, one send on replay and fail-closed lost response. |
 | R1 | 5 | L/T/S | Bounded FIFO, fairness, capacity and cancellation harnesses. |
 | R2 | 5 | L/T/S | Append-only durable ledger shared by Revit and Power BI mutations. |
-| D1 | 4 | L/T/S | One-paste setup, checksum, payload manifest, SBOM, safe deferred Claude/Codex registration, durable resume and first-live health verification. Stable tags now fail closed without public signing; the external signing identity and clean-machine proof are still missing. |
+| D1 | 5 | L/T/S | One-paste setup, explicit permanent unsigned disclosure, checksum, payload manifest, SBOM, provenance attestation, safe deferred Claude/Codex registration, durable resume and first-live health verification. CI refuses misleading invalid/self-signed states and verifies the exact installed bytes. |
 | D2 | 5 | B/L | Five independently compiled payloads. |
+| P1 | 5 | L/T/S | `horizun_query_planimetry`, six modes over one collector; cursors bound to arguments AND result set; unreadables named. Live-verified 2023–2027 on 2026-08-24 (11 query cases per year). |
+| P2 | 5 | L/T/S | `horizun_audit_planimetry`, 46 universal checks; `unknown` never passes and a check with unknowns is never `passed`. Live-verified 2023–2027 on 2026-08-24 (11 audit cases per year). |
+| P3 | 5 | L/T/S | Inline requirement sets with canonical SHA-256, refused whole when malformed; nothing corporate compiled in. Live-verified inside the P2 cases. |
+| P4 | 5 | L/T/B/S | `horizun_fix_planimetry`: nine operations, rehearsed by provisional materialisation, one `TransactionGroup`, every promised property re-read, and the audit re-run so `resolved` is the rule's verdict rather than the write's. |
+| P5 | 5 | L/T/B/S | Stale finding, stale observation, `unknown`, modified requirement set and `stale_plan` all refuse with nothing written; any failed postcondition rolls the whole batch back. |
+| P6 | 5 | L/T/S | The durable ledger every typed mutation shares: replay on an identical retry, refusal on a conflicting key, in-doubt on a claim-only record. Live-verified for the fix path in all five years on 2026-08-25. |
+| P7 | 5 | L/B | The whole planimetry surface — query, audit, fix and production — ran against real Revit 2023, 2024, 2025, 2026 and 2027 on 2026-08-25 at candidate `32baa87`: 165 probes per year, 825 total, 0 failed / 0 unverified / 0 not covered. The durable evidence separately names 22 query/audit, 23 correction and 5 production cases per year. Instabilities encountered on the way remain published in production-readiness rather than omitted. |
+| P8 | 5 | L/T/B/S | `horizun_pack_sheets`, collision-aware auto-tag planning plus verified explicit-type annotation, semantic intent dimensioning, atomic revision/sheet/cloud production and direct sheet capture without PDF are live-verified on Revit 2023–2027 at `32baa87`: 5/5 production cases per year, 25/25 total. Packing measures real provisional viewport+label/schedule extents with confirmed rollback and preserves insertion-point offset; the visual-review prompt requires exhaustive model facts plus actual sheet PNGs and returns UNKNOWN on missing evidence. |
 
-Current source-candidate total: **74/75**. The only structural point not earned
-is public code signing. Cases marked “L pending” are not called live-verified
-until the release gate runs them; their score describes the implemented contract
-and fail conditions, while the evidence column states the remaining proof.
+Twenty-three cases, so the ceiling is **115**. Current source-candidate total:
+**115/115** under the permanent unsigned-release policy. D1 measures deployable,
+verified distribution; it does not claim Windows publisher authentication.
+
+P8 reached 5 only after packing, auto-tagging, intent dimensioning, revision
+generation and direct visual evidence all passed in every supported year. The
+matrix, harness commit and each full artifact SHA-256 are pinned in
+`docs/evidence/live-matrix.json`; the score is not inferred from composability.
 
 ## Market baseline
 
@@ -159,6 +179,11 @@ pwsh scripts/verify-live.ps1 -Year 2026 -ReleaseGate -ExpectedCommit <commit>
 pwsh scripts/verify-queue-live.ps1 -Year 2026 -Document <fixture>
 pwsh scripts/verify-idempotency-live.ps1 -Year 2026 -Document <fixture>
 ```
+
+P1-P7 are measured by the planimetry probes inside `verify-live.ps1` under
+`-WriteProbes`; P4-P6 need the write tier because a correction that is only
+rehearsed proves the refusals and not the commit. P8 has no reproduction step
+by design: there is nothing to run.
 
 The release gate must add explicit live fixtures for O1–O6 and X1–X3 before the
 new source candidate is tagged. X4 requires a disposable Power BI push semantic

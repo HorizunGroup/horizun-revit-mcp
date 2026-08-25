@@ -90,6 +90,23 @@ namespace Horizun.Server.Tests
                 "that answers 'not published by this build' is not coverage - it is a gap that is not a gap.");
         }
 
+        [Fact]
+        public void Delete_mode_fail_closed_behavior_is_in_the_final_live_gate()
+        {
+            string text = Script();
+            int probe = text.IndexOf(
+                "delete REFUSES a missing mode instead of selecting purge_unused",
+                StringComparison.Ordinal);
+
+            Assert.True(probe >= 0, "the final matrix must exercise omission of delete's scope discriminator");
+            int nextProbe = text.IndexOf("@{ Name =", probe + 1, StringComparison.Ordinal);
+            Assert.True(nextProbe > probe, "the missing-mode probe has no bounded registry row");
+            string block = text.Substring(probe, nextProbe - probe);
+            Assert.Contains("ids = @(999999999)", block, StringComparison.Ordinal);
+            Assert.DoesNotContain("mode =", block, StringComparison.Ordinal);
+            Assert.Contains("ExpectError = 'mode is REQUIRED'", block, StringComparison.Ordinal);
+        }
+
         /// <summary>
         /// The four that were retired must STAY retired, with their history intact. A
         /// probe silently revived would start reporting a permanent gap again.

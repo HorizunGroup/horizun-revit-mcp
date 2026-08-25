@@ -66,6 +66,12 @@ namespace Horizun.Server
                     case "verified-change":
                         throw new McpError(-32602,
                             "Prompt '" + prompt + "' has no argument named '" + argumentName + "'.");
+                    case "planimetry-review" when argumentName == "scope":
+                        candidates = Array.Empty<string>();
+                        break;
+                    case "planimetry-review":
+                        throw new McpError(-32602,
+                            "Prompt 'planimetry-review' has no argument named '" + argumentName + "'.");
                     default:
                         throw new McpError(-32602, "Unknown Horizun prompt: '" + prompt + "'.");
                 }

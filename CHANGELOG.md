@@ -3,6 +3,276 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — 2026-08-25
+
+- **Version 1.0.0 and permanent unsigned-release policy.** The shared product
+  version is now 1.0.0. Public Windows artifacts remain intentionally unsigned:
+  the bootstrap requires `-AllowUnsigned`, CI enforces `NotSigned` on every
+  Horizun-owned binary and Setup, and package metadata discloses that publisher
+  identity is unavailable. SHA-256 manifests, SBOM, GitHub attestations, exact
+  installed-byte verification and the full Revit matrix remain mandatory.
+
+- **End-to-end planimetry production.** The direct-model audit now feeds a full
+  typed production surface: deterministic whole-sheet packing
+  (`horizun_pack_sheets`), read-only collision-aware tag and semantic
+  intent-dimension planning (`horizun_plan_annotations`) through the existing
+  rehearsed `horizun_annotate` writer, atomic revision/sheet/cloud production
+  (`horizun_manage_revisions`), and the `planimetry-review` MCP prompt for visual
+  judgement over real sheet PNGs without a PDF intermediary. Explicit tag types
+  and the pre-existing tag count are bound into the materialised plan. Production
+  annotation discovery uses document-wide class sweeps filtered by
+  `OwnerViewId`, avoiding Revit 2023's measured unopened-view collector gap.
+  Unplaced sheet content is measured through a real provisional viewport or
+  schedule instance (including the viewport label) with a confirmed rollback;
+  apply spends approval before that measurement transaction and preserves the
+  measured offset between the paper rectangle and Revit's insertion point.
+
+- **Deletion now fails closed when its discriminator is missing.**
+  `horizun_delete_verified` requires an explicit `mode`; omitting both `mode`
+  and `ids` no longer selects the broader `purge_unused` branch. `dry_run` had
+  prevented an immediate deletion, but a malformed request must not even
+  rehearse a destructive scope the caller did not name.
+- **Live evidence now identifies its harness.** New release-gate reports carry
+  the committed `verify-live.ps1` commit, Git blob and SHA-256, and the evidence generator
+  requires the same clean harness across all five years. Historical schema-2
+  evidence remains valid. The completed schema-4 matrix pins candidate
+  `32baa87`: Revit 2023–2027 each passed 165/165 probes (825/825 total), and
+  separately records 23 correction plus 5 autonomous-production cases per year.
+
+- **Planimetry corrections — `horizun_fix_planimetry`.** The auditor had eyes;
+  this is the hands, and they never guess. Nine typed operations —
+  `set_view_template`, `set_view_scale`, `rename_view`, `rename_sheet`,
+  `place_title_block`, `move_viewport`, `move_schedule`,
+  `clear_element_override`, `set_crop` — with every final value explicit in the
+  request. A missing instruction is a refusal, not a choice.
+  - **A finding is the only licence to write.** Every action cites the finding
+    it repairs (rule id, requirement set with version and SHA-256, element ids,
+    and the `observed` block verbatim). Before any transaction opens the whole
+    audit is recomputed through the auditor's OWN collector and rules, and the
+    action is refused when the finding is gone (`STALE FINDING`), when the
+    model no longer shows what was observed (`STALE OBSERVATION`, printing both
+    states), when the finding is currently `unknown` — an unmeasured fact is
+    never corrected — when the operation does not address that rule, or when an
+    inline requirement set hashes differently from the one the finding cites.
+  - **Rehearsed by materialisation, not by prediction.** `dry_run` defaults to
+    true and CREATES the whole batch provisionally inside a transaction,
+    measures every postcondition there, and rolls back; a rollback Revit does
+    not confirm withholds the token and reports the call `uncertain` rather
+    than clean. The token binds the request AND the resolved elements'
+    before-state, so a model that moved refuses as `stale_plan`.
+  - **Atomic, then re-read.** The apply commits ONE `TransactionGroup`; any
+    failed action or postcondition rolls the ENTIRE batch back. Every promised
+    property is then re-read from the committed model — including the sheet
+    field that was *not* renamed (whose expected value is its before-value, so
+    a fix that quietly moved it fails), a title-block count that must stay at
+    exactly one, and proof that clearing an element override left the CATEGORY
+    override and the view template untouched.
+  - **`resolved` is the auditor's verdict, not the writer's.** After the commit
+    the full audit runs again — a partial re-evaluation of only the affected
+    checks is not demonstrably equivalent when overlap and coverage are
+    cross-entity — and the reply separates findings resolved, persistent and
+    NEW, with coverage before and after. A verified postcondition does not by
+    itself resolve a finding, and resolving one cannot hide that another
+    appeared. If the re-audit fails, nothing is declared resolved.
+  - No export, no PDF and no arbitrary-code path anywhere on this surface, each
+    pinned by a source-scanning test. Packing, auto-tagging, dimensioning by
+    intent, revision generation and visual judgement are refused BY NAME in
+    every reply's `not_covered` rather than approximated.
+
+- **A description cap that did not hold.** `Tools.CompactDescription` promised
+  900 characters and could return 901: the ellipsis it appends was never
+  counted against the budget, so a description whose sentence boundary fell
+  exactly on the limit came back one over. The only coverage was an aggregate
+  assertion over the descriptions that happened to exist, every one of which cut
+  earlier — so the defect was waiting for the next tool, and the planimetry fix
+  was the next tool. Fixed, and pinned by a sweep across every input length
+  through the boundary instead of a sample of the current table.
+
+- **The pinned-runtime check compared a version against a type name.** Every
+  self-contained publish failed with `expected pinned System.Xml.XmlElement`
+  while the publish itself was correct. PowerShell's XML adapter returns the
+  `XmlElement` rather than its text once the element carries an attribute, and
+  `RuntimeFrameworkVersion` carries `Condition`. `pack.ps1` and `sbom.ps1` now
+  read through `SelectNodes` + `InnerText`, which does not depend on whether an
+  element happens to be attributed.
+
+## Unreleased — 2026-08-24
+
+- **Planimetry, read and audited from the model — `horizun_query_planimetry`
+  and `horizun_audit_planimetry`.** The documentation surface (sheets, views,
+  viewports, schedule placements, dimensions, tags, text, 2D detail,
+  view-to-view references) is now queryable and auditable directly from the
+  database, with real ids, sheet-coordinate and view-plane geometry, explicit
+  coverage and no PDF anywhere in the loop. Both tools are read-only by
+  construction — no `Transaction` on the whole path, enforced by a
+  source-scanning test — and both consume ONE shared collector
+  (`PlanimetryInventory`), so the query and the audit cannot disagree about
+  what is on a sheet.
+  - The query answers in six explicit modes (`inventory`, `sheets`, `views`,
+    `placements`, `annotations`, `references`), deterministically ordered and
+    paginated with cursors bound to both the arguments and the result set; a
+    total the inventory could not compute is absent and named, never zero, and
+    a reference the API cannot resolve is an explicit `unknown` with the
+    reason, never inferred from a name.
+  - The auditor returns findings — `blocking`, `advisory` or `unknown`, no
+    0–100 score — from a universal catalog of 46 checks that are true without
+    any company standard (touching placements are NOT overlapping; references
+    into links are NOT broken; a view without a template is advisory, not a
+    defect), plus an INLINE requirement set for everything with a number or a
+    name in it: naming, allowed scales/templates/types, margins and gaps,
+    required parameters, forbidden overrides, and tag coverage that counts
+    only elements visible in the view, separates host from linked, names the
+    exact untagged ElementId and honours explicit exclusions. A malformed set
+    is refused whole; every regex runs under a match timeout; every finding
+    cites the set's id, version and SHA-256.
+  - An unreadable fact is ALWAYS `unknown` and never a pass, a check with
+    unknowns is never `passed`, and incomplete coverage (a died pass, an
+    unreadable field, a closed workset, an unloaded link) is stated in words
+    on the reply. This phase applies no correction: `fixable` is false on
+    every finding, and the deliberate non-judgements (which walls should be
+    dimensioned, whether a sheet "looks right") are published per reply in
+    `not_covered`.
+  - The five-year live matrix is green WITH the planimetry section: 136
+    probes per year (114 previous + the 22 planimetry cases, split 11 query /
+    11 audit), 0 failed / 0 unverified / 0 not covered on Revit 2023-2027,
+    dimensions still 17/17 and 2D detail still 11/11, all bound to one
+    candidate. Three product facts fell out of getting there, each measured
+    live before a line changed: TextNote.Text appends a terminating CR and
+    re-encodes line separators (the annotate text verification refused every
+    correct note ever created - fixed via a pure, 13-case-pinned
+    normalisation that undoes exactly Revit's re-encoding and nothing more);
+    the view-scoped FilteredElementCollector omits elements that are
+    demonstrably in a not-yet-regenerated view (tag coverage now decides
+    visibility by substance: un-hidden + bounding box in the view +
+    crop intersection); and Viewport.Create returns null - without throwing -
+    for an EMPTY drafting view, which manage_views only discovers after its
+    commit (recorded in the backlog).
+  - Everything except the Revit read is proved Revit-free: 163 Core cases
+    (layout geometry where touching is not overlapping and an unreadable box
+    is not an empty one at the origin; loader refusals; universal and
+    configurable rules; determinism; contract and permission visibility) plus
+    4 Server cases for the published tools/list entries. The live gate gains a
+    22-case planimetry section per Revit year — staged sheets with a known
+    overlap, a deliberately untagged pipe, a stale cursor refused by name, a
+    byte-compared twin audit, an unloaded link proving coverage degradation —
+    and the durable evidence manifest moves to schema 2, refusing any year
+    whose planimetry cases are not all green across BOTH tools. Measured on
+    the way in: the members this surface uses are identical across all five
+    RevitAPI.dll generations, except the `GuideGrid` class, which exists in
+    none of them (the guide grid is read via
+    `BuiltInParameter.SHEET_GUIDE_GRID`). Full reference:
+    `docs/PLANIMETRY-AUDIT.md`.
+- **The live matrix has a durable, sanitized in-tree record.** The full
+  verify-live reports never enter Git (they carry machine-local paths and ids;
+  per release they travel as attached artifacts), which left the green matrix
+  with no durable record at all. `scripts/generate-live-evidence.ps1` now
+  distills the five artifacts into `docs/evidence/live-matrix.json` — per-year
+  probe counts, case totals, Revit builds, and the SHA-256 of every artifact,
+  server and add-in, bound to one candidate commit — and refuses to write
+  anything that is not a complete green five-year matrix. The committed file is
+  independently held to the same contract (green, coherent, machine-local-free)
+  by `EvidenceManifestTests` in the Server suite.
+- **The five-year live matrix is green at one commit.** The full release gate —
+  114 probes, 31 committing, 17 dimension cases, 11 2D-detail cases, 0 failed /
+  0 unverified / 0 not covered — passed on Revit 2023, 2024, 2025, 2026 and
+  2027 against the same installed candidate, each artifact binding the server
+  and add-in hashes to the release manifest. Three defects had to fall first,
+  each measured rather than patched around:
+  - The redistributed-runtime pin (`RuntimeFrameworkVersion` 8.0.30) was
+    unconditional, so the ordinary framework-dependent server build — the one
+    the test suite launches — demanded a runtime patch the machine did not
+    carry and 14 wire tests reported their codes untested. The pin is now
+    self-contained-only (the only route that ships a runtime), a regression
+    test reads the built runtimeconfig and refuses any exact-patch demand, and
+    the self-contained publish still resolves the exact pinned runtime pack
+    that `pack.ps1`/`sbom.ps1` verify.
+  - A shipped live report said `probes=112` beside 114 rows: the summary was a
+    formula frozen before the manifest-hash checks existed. The summary is now
+    computed from the definitive row collection, the harness refuses to write
+    a report that disagrees with itself (counters vs rows, sums, duplicate
+    names), and the gate independently re-checks the written JSON.
+  - Measured year split: Revit 2023 exposes NO reference-carrying pipe
+    centerline under any geometry `Options` combination — the discovery row is
+    the negative `no_stable_centerline` there, while 2024–2027 expose the
+    reference and carry the measured `mep_centerline_rejected_by_dimension_api`.
+    The centerline probe accepts exactly one uniform measured branch per run,
+    and the link-refusal probe stages its own `RevitLinkInstance` (a same-year
+    copy, never-saved model) when the fixture ships without one.
+- **Typed, verified 2D detail production.** Two new tools close the gap real use
+  reported in 2026-08-04 ("the bridge can model a building and annotate it, and
+  cannot draw a line on a sheet"):
+  - `horizun_query_detail_2d` (read-only): one view's drawable resources - line
+    styles, filled-region types with `IsMasking` read from each type, placeable
+    view-based symbols with activation state - and its existing detail elements
+    with normalised geometry and deterministic 0.1 mm signatures. Resources are
+    never resolved by name: every answer is ids, so ambiguity cannot happen.
+  - `horizun_detail_2d`: atomic batches of detail lines, arcs (two unambiguous
+    forms), polylines under one key, filled and masking regions (both
+    type-vs-operation mismatches refused, from the type's own flag), view-based
+    detail components and generic annotations (activated inside the
+    transaction), and line-style edits over existing curves or same-batch keys.
+    Loops are proven pure before Revit is asked - closed, non-degenerate,
+    non-self-intersecting, exactly one exterior containing every hole, in exact
+    integer arithmetic on the signature grid. The rehearsal CREATES the batch
+    provisionally and rolls it back; the token binds views, types, styles and
+    normalised geometry; the apply verifies everything inside a TransactionGroup
+    and rolls the whole batch back on any failed check. Coordinates are
+    view-plane, and a non-zero third component is refused rather than silently
+    projected.
+- **What the dimension live bring-up measured, folded back into the product:**
+  Revit materialises dimension references and values only for a DISPLAYED view -
+  so `horizun_annotate` requires the active view for dimension operations,
+  refused at plan time naming `horizun_navigate` as the fix; computed facts
+  (values, `AreReferencesAvailable`, EQ) materialise after commit+regenerate, so
+  creation AND `horizun_edit_dimensions` verify after a materialising
+  regeneration inside the still-open TransactionGroup; the availability flag is
+  computed lazily on instance-geometry references and reopened RFAs, so where
+  every substantive check passes the row stands on substance and reports the
+  flag as observed; a document whose default-type table is wrong falls back to
+  the lowest-id type of the right style; and `NewDimension` refuses MEP-curve
+  centerline references outright, so discovery marks them incompatible with the
+  measured structured code instead of promising a creation Revit will refuse.
+
+- **Dimension production became a verified workflow instead of a primitive.**
+  Four connected surfaces, all typed:
+  - `horizun_get_dimension_references` (new, read-only): semantic discovery of
+    dimensionable references — wall side faces via `HostObjectUtils`,
+    centerlines, grids, levels, reference planes, edges, endpoints,
+    nearest/farthest planar face from an explicit probe point. Every candidate
+    carries its stable representation, the geometry that justified it, a 0.1 mm
+    quantised fingerprint and a structured incompatibility reason; equivalent
+    candidates return marked `ambiguous` instead of one being chosen silently.
+  - `horizun_annotate` (rebuilt dimension path): linear simple and chains,
+    angular, radial, diameter, arc-length, spot elevation/coordinate. The dry
+    run CREATES the batch provisionally and rolls it back — `constructible` is
+    Revit's answer, and the reported rollback status is Revit's too. The token
+    binds view, effective dimension type (materialised default included), every
+    reference's stable representation, owner and geometry fingerprint, and the
+    measured value; drift refuses as `stale_plan`. Apply verifies in a
+    still-reversible state inside a TransactionGroup and rolls the WHOLE batch
+    back on any failed check, `expected_value` included. Closed outcome set:
+    `committed_verified`, `rolled_back`, `refused`, `stale_plan`, `uncertain`.
+  - `horizun_query_dimensions` / `horizun_edit_dimensions` (new): complete
+    reads, and atomic edits — type, line move, overrides per dimension or per
+    segment, EQ/lock — each read back requested/read/match, stale-refusing,
+    with total rollback.
+  - `horizun_create_family`: family dimensions gained view selection, explicit
+    linear type, lock and EQ; the saved RFA is CLOSED, REOPENED and every
+    dimension re-read from the file on disk before the RFA may be called
+    verified or loaded into the project.
+  What the API does not offer is refused by name rather than imitated:
+  radial/diameter/arc-length on 2023/2024 (the classes arrive in 2025), spot
+  slope everywhere, reference replacement everywhere, linked references, and a
+  leader option on linear dimensions — none of these grants a Python fallback,
+  because Python calls the same absent API. Measured against the RevitAPI.dll
+  metadata of all five installed generations before a line was written.
+- **`horizun_health` reports `revit_language`** — a live-matrix row that cannot
+  say which localization it measured cannot be compared with anybody else's.
+- **`JsonRpcErrorCodeTests` runs the server of its own build configuration**,
+  never the newest binary found lying around: a Debug test run answered by last
+  week's Release apphost was a claim about bytes the run never built. Missing
+  builds fail naming the exact `dotnet build` command.
+
 ## v0.9.6 — 2026-08-20
 
 - **Persistent, owner-controlled Python permission.** Revit's **Python ON/OFF**

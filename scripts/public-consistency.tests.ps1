@@ -111,25 +111,19 @@ if ($hzCall -notmatch 'reply\.result\.structuredContent') { Fail 'hz-call no lon
 if ($ci -notmatch '\(\?m\)\^failed\[ \\t\]\*=\[ \\t\]\*\\S') {
     Fail 'CI install-result parsing can again read the line after an empty failed= as a failed year'
 }
-if ($ci -notmatch 'verify-release\.ps1 -Installed -InstallResult' -or $ci -match 'verify-release\.ps1[^\r\n]*-AllowUnsigned') {
-    Fail 'tag-only package CI no longer verifies the exact signed install result without an unsigned fallback'
+if ($ci -notmatch 'verify-release\.ps1 -AllowUnsigned -Installed -InstallResult') {
+    Fail 'tag-only package CI no longer verifies the exact installed result under the explicit unsigned policy'
 }
-if ([regex]::Matches($ci, 'signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627').Count -ne 2 -or
-    [regex]::Matches($ci, 'secrets\.SIGNPATH_API_TOKEN').Count -ne 2 -or
-    $ci -notmatch '(?s)sign-payload:.*?environment:\s*release-signing.*?runs-on:\s*windows-latest.*?SIGNPATH_API_TOKEN' -or
-    $ci -notmatch '(?s)sign-installer:.*?environment:\s*release-signing.*?runs-on:\s*windows-latest.*?SIGNPATH_API_TOKEN' -or
-    $ci -notmatch '(?s)build-stage:.*?runs-on:.*?self-hosted.*?(?:sign-payload:)' -or
-    $ci -notmatch '(?s)compile-installer:.*?runs-on:.*?self-hosted.*?(?:sign-installer:)' -or
-    $ci -match 'SIGNING_CERT_THUMBPRINT' -or
-    $ci -notmatch 'Installable release contains unsigned, invalid, self-signed or untimestamped') {
-    Fail 'two-request hosted SignPath boundary or public Authenticode refusal has drifted'
+if ($ci -match 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:' -or
+    $ci -notmatch "authenticode = 'unsigned_by_policy'" -or
+    $ci -notmatch 'publisher_identity_available = \$false' -or
+    $ci -notmatch "Status -ne 'NotSigned'") {
+    Fail 'permanent unsigned release boundary or its machine-readable disclosure has drifted'
 }
 foreach ($handoff in
     'needs.build-stage.outputs.payload-artifact-id',
-    'needs.sign-payload.outputs.signed-payload-artifact-id',
-    'needs.compile-installer.outputs.installer-artifact-id',
-    'needs.compile-installer.outputs.package-support-artifact-id',
-    'needs.sign-installer.outputs.signed-installer-artifact-id') {
+    'needs.compile-installer.outputs.package-input-artifact-id',
+    'needs.package.outputs.package-artifact-id') {
     if ($ci -notmatch [regex]::Escape($handoff)) { Fail "release artifact-id chain is missing $handoff" }
 }
 if ([regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{').Count -ne
@@ -138,21 +132,19 @@ if ([regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{').Count -ne
 }
 foreach ($selfHostedJob in 'build-stage','compile-installer') {
     $block = [regex]::Match($ci, "(?ms)^  ${selfHostedJob}:\s*\r?\n(?:(?!^  [a-zA-Z0-9_-]+:\s*$).)*").Value
-    if (-not $block -or $block -match 'SIGNPATH_API_TOKEN|secrets\.|environment:\s*release-signing') {
-        Fail "$selfHostedJob can receive signing credentials or its protected environment"
+    if (-not $block -or $block -match 'secrets\.|environment:\s*release-signing') {
+        Fail "$selfHostedJob can receive release credentials or a protected secret environment"
     }
 }
-if ($ci -notmatch 'runs-on: windows-latest' -or
-    $ci -notmatch 'not publicly trusted on a clean Windows runner' -or
-    $ci -notmatch 'needs: \[package, public-signature, stable-release-evidence\]') {
-    Fail 'stable publication no longer proves public trust on a clean hosted Windows runner'
+if ($ci -notmatch '(?s)public-integrity:.*?runs-on:\s*windows-latest.*?unsigned_by_policy' -or
+    $ci -notmatch 'needs: \[package, public-integrity, stable-release-evidence\]') {
+    Fail 'stable publication no longer proves the permanent unsigned integrity contract on a clean hosted runner'
 }
 if ($ci -notmatch '(?s)Create or complete the stable GitHub release.*?GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}.*?gh release') {
     Fail 'stable release publication can no longer identify the repository without a checkout'
 }
-if ($ci -notmatch '(?s)install-package:.*?startsWith\(github\.ref,\s*''refs/tags/v''\).*?verify-release\.ps1 -Installed -InstallResult' -or
-    $ci -match '(?s)install-package:.*?-AllowUnsigned') {
-    Fail 'installed verification is no longer tag-only and publicly signed'
+if ($ci -notmatch '(?s)install-package:.*?startsWith\(github\.ref,\s*''refs/tags/v''\).*?verify-release\.ps1 -AllowUnsigned -Installed -InstallResult') {
+    Fail 'installed verification is no longer tag-only and explicitly unsigned'
 }
 if ($ci -notmatch 'publish-preview-release:' -or $ci -notmatch '--prerelease' -or
     $ci -notmatch 'publish-validation-release:' -or
@@ -203,15 +195,16 @@ foreach ($overlayFile in @(if (Test-Path $overlayDir) { Get-ChildItem $overlayDi
 $signingPolicy = Get-Content (Join-Path $repo 'CODE-SIGNING-POLICY.md') -Raw
 $privacyPolicy = Get-Content (Join-Path $repo 'docs/PRIVACY.md') -Raw
 $codeowners = Get-Content (Join-Path $repo '.github/CODEOWNERS') -Raw
-if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'Free code signing provided by SignPath\.io, certificate\s+by SignPath Foundation') {
-    Fail 'README no longer exposes the required SignPath code-signing statement and policy'
+if ($readme -notmatch 'CODE-SIGNING-POLICY\.md' -or $readme -notmatch 'intentionally[\s>]*\*\*unsigned\*\*' -or
+    $readme -notmatch 'do not authenticate a Windows[\s>]+publisher') {
+    Fail 'README no longer exposes the permanent unsigned trust boundary'
 }
-if ($signingPolicy -notmatch 'application was submitted on 2026-08-15' -or
-    $signingPolicy -notmatch 'Official 0\.x releases may carry an unsigned installer' -or
-    $signingPolicy -notmatch 'Version\s+1\.0 and later fail closed' -or
-    $signingPolicy -notmatch 'separate GitHub runner groups' -or
+if ($signingPolicy -notmatch 'including version 1\.0' -or
+    $signingPolicy -notmatch 'authenticode: unsigned_by_policy' -or
+    $signingPolicy -notmatch 'publisher_identity_available: false' -or
+    $signingPolicy -notmatch 'must never describe an invalid, expired, privately trusted or\s+self-signed signature as public trust' -or
     $signingPolicy -notmatch 'docs/PRIVACY\.md') {
-    Fail 'code-signing policy no longer states its submitted status, trusted origin and privacy boundary'
+    Fail 'unsigned release policy no longer states its trust, integrity and privacy boundaries'
 }
 if ($privacyPolicy -notmatch 'does not automatically upload' -or $privacyPolicy -notmatch 'horizun_power_bi_push' -or $privacyPolicy -notmatch 'horizun_execute_python') {
     Fail 'privacy policy no longer names the automatic and user-requested data boundaries'

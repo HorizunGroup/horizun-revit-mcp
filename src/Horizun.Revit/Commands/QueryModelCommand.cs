@@ -258,6 +258,21 @@ namespace Horizun.Revit.Commands
                     new ElementIsElementTypeFilter(true))).Cast<Element>()
                 : collector.WhereElementIsNotElementType().Cast<Element>();
 
+            // TextNoteType is a real document type, but Revit's generic category
+            // collector does not return it under OST_TextNotes (measured on 2023:
+            // hundreds of note instances, zero styles). A caller asking explicitly
+            // for types in that category must not receive a false empty set. Sweep the
+            // class as the API's authoritative route and union by ElementId. This is
+            // deliberately narrow: no other category gets a guessed substitute.
+            bool supplementTextTypes = includeTypes && RequestsTextNotes(categories);
+            if (supplementTextTypes)
+            {
+                IEnumerable<Element> textTypes = new FilteredElementCollector(source)
+                    .OfClass(typeof(TextNoteType)).Cast<Element>();
+                candidates = candidates.Concat(textTypes)
+                    .GroupBy(e => Rid.Value(e.Id)).Select(g => g.First());
+            }
+
             foreach (Element element in candidates)
             {
                 long id = Rid.Value(element.Id);
@@ -265,7 +280,7 @@ namespace Horizun.Revit.Commands
                 {
                     if (categoryIds != null)
                     {
-                        long? categoryId = element.Category == null ? (long?)null : Rid.Value(element.Category.Id);
+                        long? categoryId = CategoryId(source, element);
                         if (categoryId == null || !categoryIds.Contains(categoryId.Value)) continue;
                     }
 
@@ -307,7 +322,8 @@ namespace Horizun.Revit.Commands
                     // and at ~741 measured characters per row they were most of the bill.
                     var json = new JObject { ["element_id"] = id };
                     if (fields == null || fields.Contains("unique_id")) json["unique_id"] = Safe(() => element.UniqueId);
-                    if (fields == null || fields.Contains("category")) json["category"] = Safe(() => element.Category?.Name);
+                    string categoryName = CategoryName(source, element);
+                    if (fields == null || fields.Contains("category")) json["category"] = categoryName;
                     if (fields == null || fields.Contains("name")) json["name"] = elementName;
                     if (fields == null || fields.Contains("family")) json["family"] = family;
                     if (fields == null || fields.Contains("type")) json["type"] = typeName;
@@ -331,7 +347,7 @@ namespace Horizun.Revit.Commands
                     rows.Add(new Row
                     {
                         Id = id, SourceKind = sourceKind, SourceModel = sourceName,
-                        LinkInstanceId = linkId, Category = Safe(() => element.Category?.Name),
+                        LinkInstanceId = linkId, Category = categoryName,
                         TypeName = typeName, Family = family, Level = level, Json = json
                     });
                 }
@@ -340,6 +356,38 @@ namespace Horizun.Revit.Commands
                     AddUnreadable(unreadable, ref unreadableTotal, Error(sourceName, linkId, id, ex.Message));
                 }
             }
+        }
+
+        private static bool RequestsTextNotes(IEnumerable<string> categories)
+            => categories != null && categories.Any(c =>
+                string.Equals(c, "OST_TextNotes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(c, "Text Notes", StringComparison.OrdinalIgnoreCase));
+
+        private static long? CategoryId(Document doc, Element element)
+        {
+            try
+            {
+                if (element?.Category != null) return Rid.Value(element.Category.Id);
+                if (element is TextNoteType)
+                {
+                    Category c = Category.GetCategory(doc, BuiltInCategory.OST_TextNotes);
+                    return c == null ? (long?)null : Rid.Value(c.Id);
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string CategoryName(Document doc, Element element)
+        {
+            try
+            {
+                if (element?.Category != null) return element.Category.Name;
+                if (element is TextNoteType)
+                    return Category.GetCategory(doc, BuiltInCategory.OST_TextNotes)?.Name ?? "OST_TextNotes";
+            }
+            catch { }
+            return null;
         }
 
         private static HashSet<long> ResolveCategories(Document doc, List<string> names, JArray errors,

@@ -106,7 +106,27 @@ namespace Horizun.Core.Tests
         /// </summary>
         public static readonly string[] ExpectedEmitters =
             { "CreateElementsCommand.cs", "AnnotateCommand.cs",
-              "TransformElementsCommand.cs", "ManageViewsCommand.cs" };
+              "TransformElementsCommand.cs", "ManageViewsCommand.cs",
+              // Checked 2026-08-24: the unsupported-action-field refusal is raised while
+              // planning, every action lands in an ActionOutcome, and both Decide calls
+              // pass writeStarted:false before the first `new Transaction(`. The
+              // reference-replacement refusal deliberately stays an ArgumentException so
+              // it can never reach the decision at all.
+              "EditDimensionsCommand.cs",
+              // Checked 2026-08-24: same shape as AnnotateCommand - one
+              // UnsupportedCapability for operations outside the enum, whole-batch
+              // ActionOutcome collection, Decide(writeStarted:false) on both the dry-run
+              // Attach and the invalid-batch Refuse, all before any transaction.
+              "Detail2DCommand.cs",
+              // Checked 2026-08-25: UnsupportedCapability only for an operation outside
+              // the closed fix catalog and for a non-rectangular crop, both raised while
+              // planning; every action lands in an ActionOutcome; the dry run Attaches
+              // and the invalid batch carries the same Decide(writeStarted:false)
+              // verdict through FailWithDetail, all before any transaction. The
+              // API-absent move_schedule refusal deliberately stays an
+              // ArgumentException so a Python script facing the same absent setter is
+              // never suggested.
+              "FixPlanimetryCommand.cs" };
 
         [Fact]
         public void No_other_command_emits_the_fallback()

@@ -98,11 +98,11 @@ $sign = Get-Content (Join-Path $repo 'scripts/sign.ps1') -Raw
 $selfSign = Get-Content (Join-Path $repo 'scripts/self-sign.ps1') -Raw
 $completion = Get-Content (Join-Path $repo 'scripts/complete-install.ps1') -Raw
 $installer = Get-Content (Join-Path $repo 'installer/horizun-mcp.iss') -Raw
-Check 'release bootstrap allows only explicitly acknowledged unsigned 0.x or independently trusted signing' `
-    ($bootstrap -match 'Status -ne ''Valid''' -and $bootstrap -match 'SignPath Foundation' -and
-     $bootstrap -match 'Status -eq ''NotSigned''' -and $bootstrap -match 'UnsignedAllowed' -and
-     $bootstrap -match "notmatch '\^0\\\.'" -and $bootstrap -match 'CompanyName' -and
-     $bootstrap -match 'ProductName' -and $bootstrap -match 'TimeStamperCertificate') 'missing fail-closed trust checks or bounded 0.x exception'
+Check 'release bootstrap requires explicit acknowledgement and exact unsigned state for every version' `
+    ($bootstrap -match "Status -ne 'NotSigned'" -and $bootstrap -match 'UnsignedAllowed' -and
+     $bootstrap -notmatch "notmatch '\^0\\\.'" -and $bootstrap -match 'CompanyName' -and
+     $bootstrap -match 'ProductName' -and $bootstrap -match 'must be unsigned by policy') `
+    'missing fail-closed permanent unsigned trust checks'
 Check 'source install refuses duplicate AddInId under any manifest name or scope' `
     ($sourceInstall -match 'addinIdentityConflicts' -and $sourceInstall -match 'Get-HorizunManifestsByAddInId' -and
      $sourceInstall -match 'same AddInId') 'identity conflict is not a preflight refusal'

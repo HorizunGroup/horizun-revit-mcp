@@ -184,6 +184,19 @@ namespace Horizun.Core.Tests
             return Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands");
         }
 
+        /// <summary>Source with line comments removed, so a guard about code is not
+        /// defeated - or tripped - by prose that quotes the very thing it forbids.</summary>
+        private static string CodeOnly(string source)
+        {
+            var kept = new List<string>();
+            foreach (string line in source.Split('\n'))
+            {
+                int comment = line.IndexOf("//", StringComparison.Ordinal);
+                kept.Add(comment < 0 ? line : line.Substring(0, comment));
+            }
+            return string.Join("\n", kept);
+        }
+
         /// <summary>
         /// THE DEFECT, MEASURED: eleven commands called RollBack() and threw away the
         /// TransactionStatus it returns, then asserted the clean case in prose. Two were
@@ -197,10 +210,18 @@ namespace Horizun.Core.Tests
             var offenders = new List<string>();
             foreach (string path in Directory.EnumerateFiles(CommandsDir(), "*Command.cs"))
             {
-                string text = File.ReadAllText(path);
                 // "x.RollBack()" with empty parens is the raw call. Guard.RollBack(tx) has
                 // an argument, so it never matches this.
-                if (text.Contains(".RollBack()")) offenders.Add(Path.GetFileName(path));
+                //
+                // COMMENTS ARE NOT CODE. The scan used to read the whole file, so a
+                // comment EXPLAINING the hazard - "Transaction.RollBack() can throw" -
+                // failed the guard, and the only way to keep it green was to stop
+                // writing the sentence. A guard that punishes its own documentation
+                // teaches people to delete the documentation. Line comments are
+                // stripped from the end of `//` onward, so code before a trailing
+                // comment is still scanned and nothing can hide behind one.
+                if (CodeOnly(File.ReadAllText(path)).Contains(".RollBack()"))
+                    offenders.Add(Path.GetFileName(path));
             }
 
             Assert.True(offenders.Count == 0,

@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Live verification against a REAL Revit.
 
@@ -130,6 +130,13 @@ param(
     # This is deliberately a fixture value, not a repository convention.
     [string]$ClosedWorksetName,
 
+    # Path to a same-year .rvt the link-refusal probe may LINK into the disposable
+    # write model when the fixture carries no RevitLinkInstance of its own. Pass a
+    # COPY of a fixture file, never a file that is open in this Revit - Revit
+    # refuses to link an open document's file. Staging needs execute_python to be
+    # advertised; without either, the probe stays NOT COVERED and names why.
+    [string]$LinkSourceFile,
+
     # The six above, read from outside the repository. See the header.
     [string]$Fixtures = (Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'),
 
@@ -174,6 +181,52 @@ param(
 $probeRun = [guid]::NewGuid().ToString('N')
 $ErrorActionPreference = 'Stop'
 
+# A green report must identify the TEST that produced it, not only the product
+# it exercised. The product candidate and the harness intentionally can be
+# different commits (the harness often learns how to measure a candidate), so
+# both identities are recorded independently. A release gate refuses a dirty or
+# unresolvable harness: otherwise five reports could share a product commit while
+# silently using five different tests.
+$harnessFile = 'scripts/verify-live.ps1'
+$harnessPath = $PSCommandPath
+$harnessSha256 = (Get-FileHash -LiteralPath $harnessPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$harnessCommit = $null
+$harnessGitBlob = $null
+$harnessTrackedClean = $false
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
+$expectedHarnessPath = [IO.Path]::GetFullPath((Join-Path $repositoryRoot $harnessFile))
+$harnessPathMatchesRepository = [string]::Equals(
+    [IO.Path]::GetFullPath($harnessPath), $expectedHarnessPath,
+    [StringComparison]::OrdinalIgnoreCase)
+try {
+    $headLines = @(& git -C $repositoryRoot rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $headLines.Count -eq 1 -and
+        [string]$headLines[0] -match '^[0-9a-fA-F]{40}$') {
+        $harnessCommit = ([string]$headLines[0]).ToLowerInvariant()
+        $statusLines = @(& git -C $repositoryRoot status --porcelain --untracked-files=no -- $harnessFile 2>$null)
+        $harnessTrackedClean = ($LASTEXITCODE -eq 0 -and $statusLines.Count -eq 0)
+        $harnessSpec = $harnessCommit + ':' + $harnessFile
+        $blobLines = @(& git -C $repositoryRoot rev-parse $harnessSpec 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $blobLines.Count -eq 1 -and
+            [string]$blobLines[0] -match '^[0-9a-fA-F]{40,64}$') {
+            $harnessGitBlob = ([string]$blobLines[0]).ToLowerInvariant()
+        }
+    }
+}
+catch {
+    $harnessCommit = $null
+    $harnessGitBlob = $null
+    $harnessTrackedClean = $false
+}
+if ($ReleaseGate -and
+    ($harnessCommit -notmatch '^[0-9a-f]{40}$' -or
+     $harnessGitBlob -notmatch '^[0-9a-f]{40,64}$' -or
+     $harnessSha256 -notmatch '^[0-9a-f]{64}$' -or
+     -not $harnessPathMatchesRepository -or
+     -not $harnessTrackedClean)) {
+    throw 'The release gate harness is not pinned to a clean Git commit. Commit scripts/verify-live.ps1 before running the matrix; no live report was produced.'
+}
+
 # ---------------------------------------------------------------------------
 # Fixtures. An explicit parameter always wins; the file fills the rest.
 # ---------------------------------------------------------------------------
@@ -183,7 +236,7 @@ if (Test-Path $Fixtures) {
         $fx = Get-Content $Fixtures -Raw | ConvertFrom-Json
         foreach ($name in 'Document','InactiveDocument','SpfPath','SpfParam','QuantityCategory','OldFile',
                           'FamilyTemplate','ClosedWorksetDocument','ClosedWorksetName',
-                          'WriteDocument','WriteDocumentDisposable') {
+                          'WriteDocument','WriteDocumentDisposable','LinkSourceFile') {
             $fromFile = $fx.$name
             if ([string]::IsNullOrWhiteSpace($fromFile)) { continue }
             # QuantityCategory has a default, so "was it passed" cannot be read off
@@ -703,6 +756,14 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
     @{ Name = 'create_schedule REFUSES without target_document'
        Tool = 'horizun_create_schedule'; Args = @{ category = 'OST_Walls'; name = 'HZ_REFUSAL_ONLY' }
        ExpectError = "'target_document' is required|hidden/refused by permission_profile" },
+
+    # This discriminator selects between exact ids and a document-wide purge.
+    # Exercise the command itself, not only tools/list: a client that does not
+    # pre-validate JSON Schema must receive the same fail-closed refusal.
+    @{ Name = 'delete REFUSES a missing mode instead of selecting purge_unused'
+       Tool = 'horizun_delete_verified'
+       Args = @{ ids = @(999999999); target_document = $Document }
+       ExpectError = 'mode is REQUIRED' },
 
     @{ Name = 'delete REFUSES without target_document'
        Tool = 'horizun_delete_verified'; Args = @{ mode = 'ids'; ids = @(999999999) }
@@ -1329,7 +1390,11 @@ $psi.UseShellExecute = $false
 $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $proc = [System.Diagnostics.Process]::Start($psi)
 
-function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 8 -Compress)); $proc.StandardInput.Flush() }
+# Production calls such as manage_revisions carry arrays nested below the
+# JSON-RPC envelope (actions -> clouds -> loops -> points).  Depth 8 truncates
+# those valid payloads only after the envelope is added, so keep the transport
+# comfortably above every closed tool schema's maximum nesting.
+function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 32 -Compress)); $proc.StandardInput.Flush() }
 function Read-Rpc([int]$TimeoutMs = 620000) {
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ($true) {
@@ -1911,7 +1976,182 @@ $writeNames = @(
     # it went unproven the moment those commands left the surface. Now it is
     # provoked deliberately - see W6.
     @{ N = 'execute_plan rolls the WHOLE graph back when a later action fails';           T = 'horizun_execute_plan' }
+
+    # ---- W4+: DIMENSIONS. Named here FIRST so a gated run reports every probe
+    # ---- as NOT COVERED by name instead of quietly shrinking the denominator.
+    @{ N = 'get_dimension_references discovers pipe centerlines deterministically';                          T = 'horizun_get_dimension_references' }
+    @{ N = 'a two-reference dimension commits with the materialised default type and is verified field by field'; T = 'horizun_annotate' }
+    @{ N = 'a three-reference chain commits with an explicit type';                                          T = 'horizun_annotate' }
+    @{ N = 'mm, m and feet measure the same pair identically';                                               T = 'horizun_annotate' }
+    @{ N = 'an angular dimension commits between two grids';                                                 T = 'horizun_annotate' }
+    @{ N = 'radial and diameter follow the Revit year';                                                      T = 'horizun_annotate' }
+    @{ N = 'arc_length follows the Revit year';                                                              T = 'horizun_annotate' }
+    @{ N = 'spot elevation and spot coordinate commit on the box top face';                                  T = 'horizun_annotate' }
+    @{ N = 'spot_slope is refused naming the missing API and nothing is written';                            T = 'horizun_annotate' }
+    @{ N = 'a failed expected_value rolls the WHOLE mixed batch back';                                       T = 'horizun_annotate' }
+    @{ N = 'moving a referenced element between dry-run and apply refuses as a stale plan';                  T = 'horizun_annotate' }
+    @{ N = 'a deleted reference between dry-run and apply refuses, nothing written';                         T = 'horizun_annotate' }
+    @{ N = 'a schedule view is refused for dimensions';                                                      T = 'horizun_annotate' }
+    @{ N = 'duplicated references are refused';                                                              T = 'horizun_annotate' }
+    @{ N = 'linked references are refused with the structured reason';                                       T = 'horizun_get_dimension_references' }
+    @{ N = 'query and edit round-trip: overrides, EQ and a stale refusal';                                   T = 'horizun_edit_dimensions' }
+    @{ N = 'a family RFA dimension survives save, close, reopen and re-read';                                T = 'horizun_create_family' }
+
+    # ---- W6+: 2D DETAIL. Same rule as the dimensions: named here FIRST so a
+    # ---- gated run reports every probe as NOT COVERED by name instead of
+    # ---- quietly shrinking the denominator.
+    @{ N = 'query_detail_2d lists the resources of a fresh drafting view';                                   T = 'horizun_query_detail_2d' }
+    @{ N = 'detail_2d commits two lines, an arc and a closed polyline, verified field by field';             T = 'horizun_detail_2d' }
+    @{ N = 'a filled region with a hole commits and re-reads loops and signature';                           T = 'horizun_detail_2d' }
+    @{ N = "masking follows the TYPE's IsMasking, both directions";                                          T = 'horizun_detail_2d' }
+    @{ N = 'a self-provisioned detail component and symbol place and verify';                                T = 'horizun_detail_2d' }
+    @{ N = 'set_line_style changes an existing curve and a same-batch key';                                  T = 'horizun_detail_2d' }
+    @{ N = 'an idempotent replay returns the recorded result and creates nothing';                           T = 'horizun_detail_2d' }
+    @{ N = "a stale token refuses after the target's style moved underneath it";                             T = 'horizun_detail_2d' }
+    @{ N = 'the incompatible views and the broken loops are refused by name';                                T = 'horizun_detail_2d' }
+    @{ N = 'the drafting view is captured as visual evidence';                                               T = 'horizun_capture_view' }
+    @{ N = "delete_verified cleans exactly the probe's 2D elements";                                         T = 'horizun_delete_verified' }
+
+    # ---- W7+: PLANIMETRY. Same rule again: named here FIRST so a gated run
+    # ---- reports every probe as NOT COVERED by name instead of quietly
+    # ---- shrinking the denominator.
+    @{ N = 'query_planimetry inventory returns exact totals with named unreadables';            T = 'horizun_query_planimetry' }
+    @{ N = 'query_planimetry sheets returns title blocks and placements per sheet';             T = 'horizun_query_planimetry' }
+    @{ N = 'query_planimetry views returns template, scale, crop and sheet placement';          T = 'horizun_query_planimetry' }
+    @{ N = 'query_planimetry placements returns sheet-coordinate outlines with a known overlap'; T = 'horizun_query_planimetry' }
+    @{ N = 'query_planimetry annotations returns dimensions, tags and text with view-plane boxes'; T = 'horizun_query_planimetry' }
+    @{ N = 'query_planimetry references answers with real targets or an explicit unknown';      T = 'horizun_query_planimetry' }
+    @{ N = 'audit_planimetry finds the sheet without a title block';                            T = 'horizun_audit_planimetry' }
+    @{ N = 'audit_planimetry reports the staged viewport overlap with the measured extent';     T = 'horizun_audit_planimetry' }
+    @{ N = 'audit_planimetry does not call separated placements overlapping';                   T = 'horizun_audit_planimetry' }
+    @{ N = 'a dimension override is an ADVISORY finding by default';                            T = 'horizun_audit_planimetry' }
+    @{ N = 'a requirement set turns the same override into a BLOCKING finding';                 T = 'horizun_audit_planimetry' }
+    @{ N = 'a naming rule catches the sheet whose number is wrong';                             T = 'horizun_audit_planimetry' }
+    @{ N = 'a template rule catches the view whose template is not allowed';                    T = 'horizun_audit_planimetry' }
+    @{ N = 'a tag rule names the exact visible element left untagged';                          T = 'horizun_audit_planimetry' }
+    @{ N = 'incomplete coverage blocks a clean verdict';                                        T = 'horizun_audit_planimetry' }
+    @{ N = 'planimetry pagination returns every row exactly once with a constant total';        T = 'horizun_query_planimetry' }
+    @{ N = 'a stale planimetry cursor is refused after the model moved';                        T = 'horizun_query_planimetry' }
+    @{ N = 'two identical audits produce the same order and fingerprint';                       T = 'horizun_audit_planimetry' }
+    @{ N = 'the planimetry tools leave Document.IsModified untouched';                          T = 'horizun_query_planimetry' }
+    @{ N = 'planimetry counts, ids and geometry re-read independently agree';                   T = 'horizun_query_planimetry' }
+    @{ N = 'the planimetry surface writes no file and exports nothing';                         T = 'horizun_audit_planimetry' }
+    @{ N = 'the disposable document ends the planimetry section with no unplanned change';      T = 'horizun_query_planimetry' }
+
+    # ---- W8+: FIX PLANIMETRY. Same rule once more: named here FIRST so a gated
+    # ---- run reports every probe as NOT COVERED by name instead of quietly
+    # ---- shrinking the denominator.
+    @{ N = 'fix_planimetry is published with write annotations and a closed contract';         T = 'horizun_fix_planimetry' }
+    @{ N = 'a dry run rehearses, rolls back, and leaves IsModified and the census untouched'; T = 'horizun_fix_planimetry' }
+    @{ N = 'set_view_template assigns the template and ViewTemplateId is re-read';             T = 'horizun_fix_planimetry' }
+    @{ N = 'set_view_scale writes the explicit scale and View.Scale is re-read';               T = 'horizun_fix_planimetry' }
+    @{ N = 'rename_view lands the exact name and it is re-read';                               T = 'horizun_fix_planimetry' }
+    @{ N = 'rename_sheet lands number and name, and BOTH are re-read';                         T = 'horizun_fix_planimetry' }
+    @{ N = 'place_title_block adds exactly one and its family, type and sheet are re-read';    T = 'horizun_fix_planimetry' }
+    @{ N = 'move_viewport lands the point and GetBoxCenter is re-read within tolerance';       T = 'horizun_fix_planimetry' }
+    @{ N = 'move_schedule lands the point and the placement is re-read within tolerance';      T = 'horizun_fix_planimetry' }
+    @{ N = 'clear_element_override clears only that override and proves the others unmoved';   T = 'horizun_fix_planimetry' }
+    @{ N = 'set_crop writes a rectangular crop and the committed shape is re-read';            T = 'horizun_fix_planimetry' }
+    @{ N = 'a finding the model no longer shows is refused with nothing written';              T = 'horizun_fix_planimetry' }
+    @{ N = 'a token whose resolved elements moved is refused as a stale plan';                 T = 'horizun_fix_planimetry' }
+    @{ N = 'an unknown finding cannot become a correction';                                    T = 'horizun_fix_planimetry' }
+    @{ N = 'one invalid action refuses the WHOLE batch and writes none of it';                 T = 'horizun_fix_planimetry' }
+    @{ N = 'a failed postcondition abandons the whole batch, including its valid action';      T = 'horizun_fix_planimetry' }
+    @{ N = 'an identical replay returns the recorded answer and corrects nothing twice';       T = 'horizun_fix_planimetry' }
+    @{ N = 'the same idempotency key with a different payload is refused';                     T = 'horizun_fix_planimetry' }
+    @{ N = 'a lost response replays instead of applying the correction again';                 T = 'horizun_fix_planimetry' }
+    @{ N = 'the audit run afterwards no longer produces the corrected finding';                T = 'horizun_audit_planimetry' }
+    @{ N = 'the reply separates resolved, persistent and NEW findings';                        T = 'horizun_fix_planimetry' }
+    @{ N = 'reverting the section returns the census to its reference';                        T = 'horizun_fix_planimetry' }
+    @{ N = 'no model was saved by the correction section';                                     T = 'horizun_fix_planimetry' }
+
+    # ---- W9+: AUTONOMOUS PLANIMETRY PRODUCTION.
+    @{ N = 'automatic packing commits one complete obstacle-aware sheet arrangement';          T = 'horizun_pack_sheets' }
+    @{ N = 'auto-tag planning feeds an explicit-type tag through the verified writer';         T = 'horizun_plan_annotations' }
+    @{ N = 'intent dimensioning resolves semantic references and commits the planned chain';   T = 'horizun_plan_annotations' }
+    @{ N = 'revision production creates the record, sheet assignment and cloud atomically';    T = 'horizun_manage_revisions' }
+    @{ N = 'a real sheet is captured as direct visual-review evidence without PDF';             T = 'horizun_capture_view' }
 )
+
+# The dimension probes are addressed by CASE NUMBER 1..17, the 2D-detail probes
+# by 1..11, the planimetry read probes by 1..22 and the planimetry FIX probes by
+# 1..23, each against its own slice of the tail of $writeNames. Computed from the
+# end backwards, not hard-coded, so inserting a probe above cannot silently
+# misattribute every verdict to its neighbour's name - and each base is derived
+# from the one after it, so adding a section means adding one line here.
+$productionNameBase = $writeNames.Count - 5
+$fixNameBase = $productionNameBase - 23
+$planNameBase = $fixNameBase - 22
+$d2dNameBase = $planNameBase - 11
+$dimNameBase = $d2dNameBase - 17
+
+# The synthetic dimension fixture as ONE canonical JSON constant. Its SHA-256
+# travels in the report so two runs can prove they measured the SAME geometry
+# spec rather than "something similar". Coordinates are mm at x~510000 - far
+# from real content and from the W1 pipes at x=500000. HZ_DIM_CYL is a 180-degree
+# REVOLUTION rather than the literal "circular extrusion": the typed
+# create_family profile is a point loop, so a revolution is the only typed route
+# to arc edges - and a half revolution gives those arcs ENDPOINTS, which the
+# arc_length case needs.
+$dimensionFixtureSpec = '{"boxes":{"name":"HZ_DIM_BOX","size_mm":[1000,600,400],"instances_mm":[[510000,0],[510000,2000]],"reference_planes_mm":{"left":-500,"mid":0,"right":500,"lock_a":-200,"lock_b":200},"label_parameter":"HZ_W","dimensions":["label:left-right","lock:lock_a-lock_b","eq:left-mid-right"]},"cylinder":{"name":"HZ_DIM_CYL","kind":"revolution","radius_mm":300,"sweep_degrees":180,"instance_mm":[514000,0]},"pipes":{"x_mm":[510000,513000],"y_mm":[6000,6600,7800]},"grids_mm":[[[510000,10000],[513000,10000]],[[510000,8500],[513000,11500]]],"grid_intersection_mm":[511500,10000],"views":["floor_plan","section"]}'
+$dimensionFixtureSpecSha256 = [BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($dimensionFixtureSpec))).Replace('-', '').ToLower()
+
+# Evidence the dimension probes leave behind for the report, initialised HERE so
+# the $report block can read them on every path - including a run whose write
+# gate never let the section execute.
+$script:dimensionEvidence = @()
+$script:dimFamilyPaths = @()
+$script:dimRevitLanguage = $null
+$script:dimRevitBuild = $null
+
+# The synthetic 2D-detail fixture as ONE canonical JSON constant, hashed for the
+# report exactly like the dimension spec: two runs that carry the same SHA-256
+# drew the SAME geometry. Everything lives in a drafting view created by this
+# run, in view-plane mm, and the last probe deletes every element it committed.
+$detail2dFixtureSpec = '{"view":{"kind":"drafting","name_prefix":"HZ_D2D_"},"lines_mm":[[[0,0],[3000,0]],[[0,600],[3000,600]]],"arc_mm":{"start":[0,1200],"end":[3000,1200],"point_on_arc":[1500,2700]},"polyline_mm":{"points":[[5000,0],[8000,0],[6500,2000]],"closed":true},"filled_region_mm":{"exterior":[[10000,0],[14000,3000]],"hole":[[11000,800],[12000,1800]]},"masking_region_mm":{"exterior":[[10000,4000],[12000,5500]]},"style_line_mm":[[0,3500],[2000,3500]],"families":{"detail_item":{"name":"HZ_D2D_DI","template":"Metric Detail Item.rft","cross_mm":200},"generic_annotation":{"name":"HZ_D2D_GA","template":"Metric Generic Annotation.rft","cross_mm":200}},"placements_mm":{"detail_component":{"point":[16000,1000],"rotation_degrees":30},"symbol":{"point":[16000,2500]}}}'
+$detail2dFixtureSpecSha256 = [BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($detail2dFixtureSpec))).Replace('-', '').ToLower()
+
+# Evidence the 2D-detail probes leave behind, initialised HERE for the same
+# reason as the dimension evidence: the $report block reads it on every path.
+$script:detail2dEvidence = @()
+$script:d2dFamilyPaths = @()
+
+# The planimetry fixture as ONE canonical JSON constant, hashed for the report
+# exactly like the dimension and 2D-detail specs: two runs carrying the same
+# SHA-256 staged the SAME documentation surface. It reuses the dimension
+# fixture's plan, section, pipes and dims, and adds two sheets, the known
+# viewport overlap, a clear schedule placement, staged tags with one pipe
+# deliberately untagged and one duplicated, an overridden dimension, text
+# inside and outside an activated crop, and - last - an unloaded link.
+$planimetryFixtureSpec = '{"sheets":{"a":{"number_prefix":"HZP-A-","titleblock":"model type or authored A1 metric"},"b":{"number_prefix":"HZP-B-","titleblock":"none, deliberately"}},"placements":{"overlap":{"views":["dim_plan","dim_section"],"point_mm":[300,300]},"clear_schedule":{"category":"OST_PipeCurves","point_mm":[700,120]},"clear_viewport":{"view":"d2d_drafting","sheet":"b","point_mm":[300,300]}},"crop_mm":{"view":"dim_plan","min":[505000,-8000],"max":[518000,14000],"annotation_crop":true},"tags":{"mode":"multi_category","tagged_pipes":[1,1,2],"untagged_pipe":3},"texts_mm":{"near":[511000,4500],"far_outside_crop":[540000,4500],"whitespace_attempted":[511000,3800]},"override":{"value":"VARIES","on":"first simple linear dim of the plan"},"coverage_fixture":"unload the first RevitLinkType"}'
+$planimetryFixtureSpecSha256 = [BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($planimetryFixtureSpec))).Replace('-', '').ToLower()
+
+# Evidence the planimetry probes leave behind, initialised HERE for the same
+# reason as the other two sections: the $report block reads it on every path.
+$script:planimetryEvidence = @()
+$script:productionEvidence = @()
+
+# The planimetry FIX fixture as ONE canonical JSON constant, hashed like the
+# other three. It reuses the planimetry fixture wholesale - the two sheets, the
+# overlapping viewports, the clear schedule placement, the crop and the far text
+# are exactly the findings this section corrects - and adds only what a
+# CORRECTION needs that a read does not: a view template to assign, an element
+# override to clear, and an inline requirement set whose rules produce findings
+# for the operations the universal catalog has no remedy for.
+$fixFixtureSpec = '{"reuses":"the planimetry fixture, uncorrected","adds":{"view_template":"authored from the dimension plan view","element_override":"halftone on the near text note","requirement_set":{"id":"horizun-live-fix-set","version":"1.0.0","rules":["view name pattern","view allowed_scale","sheet number pattern","schedule_placement inside_extent","text_note has_view_overrides"]}},"corrections":{"set_view_template":"the section view","set_view_scale":"the section view","rename_view":"the section view","rename_sheet":"sheet B","place_title_block":"sheet B, which the read fixture left deliberately bare","move_viewport":"the overlapping section viewport","move_schedule":"the placed schedule","clear_element_override":"the near text note","set_crop":"the plan view, enlarged"},"reverted_before_census":["the placed title block","the authored view template"]}'
+$fixFixtureSpecSha256 = [BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($fixFixtureSpec))).Replace('-', '').ToLower()
+
+# Evidence the fix probes leave behind, initialised HERE for the same reason as
+# the other three sections: the $report block reads it on every path.
+$script:fixEvidence = @()
 
 if ($writeGate) {
     foreach ($w in $writeNames) { Add-Write $w.N $w.T 'not_covered' $writeGate }
@@ -2157,6 +2397,4830 @@ else {
                 }
             }
         }
+
+        # ---- W4+: DIMENSIONS -------------------------------------------------
+        #
+        # A dimension is the annotation somebody prints and builds from, and the
+        # fixture is an HVAC derivative that offers no dimensionable geometry of
+        # its own at a known place - so EVERYTHING these probes measure is
+        # synthetic and self-provisioned at x~510000, far from the model's own
+        # content and from the W1 pipes at x=500000: two generic-model RFAs (the
+        # RFA creation IS the case-17 probe), their placed instances, three
+        # parallel pipes, two grids at 45 degrees, and a floor plan plus a
+        # section created for this run. Ids are discovered in THIS run, never
+        # cached: the disposable model is reopened between runs and a cached id
+        # is a coincidence waiting to be believed.
+        #
+        # Every commit is believed only after a re-read - the command's own
+        # requested/read/match table, or an independent horizun_query_dimensions
+        # call - and every dependency that fails degrades its dependents by name
+        # instead of letting them pass over geometry that is not there.
+        # ---------------------------------------------------------------------
+        if ($h -and $h.data) {
+            $script:dimRevitLanguage = $h.data.revit_language
+            $script:dimRevitBuild = $h.data.revit_build
+        }
+        $script:dimCasesDone = @{}
+        $script:dimCenterline = @{}
+
+        function Get-DimShortText($t) {
+            if ([string]::IsNullOrWhiteSpace($t)) { return '(no text)' }
+            $flat = ($t -replace "`r", ' ') -replace "`n", ' '
+            if ($flat.Length -gt 600) { return $flat.Substring(0, 600) }
+            return $flat
+        }
+
+        # The NAMES of the checks that did not match, from a parsed apply/refusal
+        # answer. A truncated sentence cost two whole gate iterations; the field
+        # names are the diagnosis and they are two lines to extract.
+        function Get-DimFailedChecks($answer) {
+            $bits = @()
+            # FailWithDetail spreads the detail at the TOP of structuredContent; the
+            # text may not carry the JSON at all. Look in both places.
+            $src = $null
+            if ($answer -and $answer.structured -and $answer.structured.rows) { $src = $answer.structured }
+            elseif ($answer -and $answer.data -and $answer.data.rows) { $src = $answer.data }
+            if ($src) {
+                foreach ($fr in @($src.rows)) {
+                    if (-not $fr.verification -or -not $fr.verification.checks) { continue }
+                    foreach ($fc in @($fr.verification.checks)) {
+                        if ($fc.match -ne $true) {
+                            $bits += ("row{0}:{1}(req={2} read={3})" -f $fr.index, $fc.field,
+                                      (("$($fc.requested)") -replace '\s+', ' ').Substring(0, [Math]::Min(60, ("$($fc.requested)").Length)),
+                                      (("$($fc.read)") -replace '\s+', ' ').Substring(0, [Math]::Min(60, ("$($fc.read)").Length)))
+                        }
+                    }
+                }
+            }
+            if ($bits.Count -eq 0) { return '(no failing checks parsed from the reply)' }
+            return ($bits -join '; ')
+        }
+
+        function Get-DimTx($answer) {
+            if ($answer -and $answer.data) {
+                if ($answer.data.transaction_group_status) { return $answer.data.transaction_group_status }
+                if ($answer.data.transaction_status) { return $answer.data.transaction_status }
+            }
+            return $null
+        }
+
+        # One verdict per case, exactly once: the outcome goes to the shared
+        # write-tier accounting AND to the evidence block the report publishes.
+        function Complete-DimCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail,
+                  $TransactionStatus = $null, $Evidence = $null, $Warnings = $null)
+            if ($script:dimCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:dimCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$dimNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:dimensionEvidence += @{
+                case = $CaseNumber; name = $entry.N; tool = $entry.T
+                started_utc = $Started.ToUniversalTime().ToString('o')
+                duration_ms = [int][math]::Round(((Get-Date) - $Started).TotalMilliseconds)
+                transaction_status = $TransactionStatus
+                outcome = $Outcome
+                detail = $Detail
+                evidence = $Evidence
+                warnings = $Warnings
+            }
+        }
+
+        # The house contract for an annotate apply, asserted whole: null when the
+        # answer proves committed_verified with every row verified and every
+        # requested/read check matched, otherwise the exact reason it did not.
+        function Test-DimCommitted($applyAnswer) {
+            if ($applyAnswer.isError) { return 'the apply errored: ' + (Get-DimShortText $applyAnswer.text) + ' | failing checks: ' + (Get-DimFailedChecks $applyAnswer) }
+            $d = $applyAnswer.data
+            if (-not $d) { return 'the apply reply carried no parseable JSON' }
+            if ($d.state -ne 'committed_verified') { return ("state was '{0}', not committed_verified" -f $d.state) }
+            if (-not (All-Rows $d.rows { param($r) $r.verified -eq $true })) { return 'not every row re-read verified=true' }
+            foreach ($r in @($d.rows)) {
+                # match=null + verified_by=substance is the command's HONEST tri-state
+                # for facts Revit computes lazily (measured live: AreReferencesAvailable
+                # on instance-geometry references, EQ after a committed edit) - the row
+                # passed on substance and says so; a probe reading that honesty as a
+                # failure would be asserting the flag over the measurement.
+                if (-not (All-Rows $r.verification.checks { param($c)
+                        $c.match -eq $true -or ($null -eq $c.match -and $c.verified_by -eq 'substance') })) {
+                    return 'a verification check did not match (requested vs read disagree)'
+                }
+            }
+            return $null
+        }
+
+        function Get-DimCount($viewId) {
+            $q = Invoke-Write 'horizun_query_dimensions' @{ view_id = $viewId; max_rows = 1 }
+            if ($q.isError -or -not $q.data) { return $null }
+            return [int]$q.data.total_matched
+        }
+
+        # ---- the synthetic fixture, provisioned piece by piece. Each gap is a
+        # ---- named reason, so a dependent probe degrades with the true cause.
+        $dimX = 510000
+        $dimTag = $probeRun.Substring(0, 8)
+        $dimPlanViewId = $null; $dimSectionViewId = $null
+        $dimViewGap = $null; $dimPipeGap = $null; $dimGridGap = $null
+        $dimBoxGap = $null; $dimCylGap = $null
+        $dimPipes = @(); $dimGridIds = @()
+        $boxAId = $null; $boxBId = $null; $cylId = $null; $boxTypeId = $null; $cylTypeId = $null
+        $dimBoxAnswer = $null
+
+        # Views first: the plan view is the home of every dimension below, and
+        # reference compatibility is a property OF the view.
+        $mvDim = Invoke-WriteApply 'horizun_manage_views' @{
+            target_document = $wDoc; units = 'mm'
+            actions = @(
+                @{ operation = 'create_floor_plan'; key = 'hzdimplan'; name = "HZ_DIM_PLAN_$dimTag"; level_id = $levelId },
+                @{ operation = 'create_section'; key = 'hzdimsec'; name = "HZ_DIM_SEC_$dimTag"
+                   start = @(($dimX - 2000), -3000, 0); end = @(($dimX + 6000), -3000, 0); depth = 20000 })
+        } 'dim-views'
+        if ($mvDim.stage -eq 'apply' -and -not $mvDim.answer.isError -and $mvDim.answer.data) {
+            $dimPlanViewId = $mvDim.answer.data.aliases.hzdimplan
+            $dimSectionViewId = $mvDim.answer.data.aliases.hzdimsec
+        }
+        if (-not $dimPlanViewId) {
+            $dimViewGap = 'the synthetic floor plan could not be created and verified: ' + (Get-DimShortText $mvDim.answer.text)
+        }
+        if (-not $dimViewGap) {
+            # MEASURED precondition: Revit materialises dimension references and values
+            # only for a DISPLAYED view, and horizun_annotate refuses dimensions aimed
+            # at an inactive view at plan time. The probe does what a caller does:
+            # opens the view first.
+            $nav = Invoke-Write 'horizun_navigate' @{ operation = 'open_view'; view_id = $dimPlanViewId }
+            if ($nav.isError -or -not $nav.data -or
+                $nav.data.active_view_verified -ne $true -or [long]$nav.data.view_id -ne [long]$dimPlanViewId) {
+                $dimViewGap = 'the synthetic plan view could not be ACTIVATED (dimensions require the displayed view): ' + (Get-DimShortText $nav.text)
+            }
+        }
+
+        # Three parallel pipes: a 600 mm and a 1200 mm bay, the chain every
+        # linear case below measures.
+        $dimPipeYs = @(6000, 6600, 7800)
+        for ($pi = 0; $pi -lt $dimPipeYs.Count; $pi++) {
+            $mkD = New-ProbePipe $dimX $dimPipeYs[$pi] 0 (($dimX + 3000)) $dimPipeYs[$pi] 0 $pipeType ("dim-pipe-{0}" -f ($pi + 1))
+            if ($mkD.stage -eq 'apply' -and -not $mkD.answer.isError -and $mkD.answer.data -and
+                @($mkD.answer.data.rows).Count -gt 0 -and @($mkD.answer.data.rows)[0].verified -eq $true) {
+                $dimPipes += @($mkD.answer.data.rows)[0].element_id
+            }
+        }
+        if (@($dimPipes).Count -ne 3) {
+            $dimPipeGap = ('only {0} of the 3 parallel probe pipes were created and verified' -f @($dimPipes).Count)
+        }
+
+        # Two grids crossing at exactly 45 degrees at (dimX+1500, 10000).
+        $grDim = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document = $wDoc; units = 'mm'
+            elements = @(
+                @{ kind = 'grid'; name = "HZD1_$dimTag"; start = @($dimX, 10000, 0); end = @(($dimX + 3000), 10000, 0) },
+                @{ kind = 'grid'; name = "HZD2_$dimTag"; start = @($dimX, 8500, 0); end = @(($dimX + 3000), 11500, 0) })
+        } 'dim-grids'
+        if ($grDim.stage -eq 'apply' -and -not $grDim.answer.isError -and $grDim.answer.data) {
+            $dimGridIds = @(@($grDim.answer.data.rows) | Where-Object { $_.verified -eq $true } |
+                            ForEach-Object { $_.element_id })
+        }
+        if (@($dimGridIds).Count -ne 2) {
+            $dimGridGap = 'the two 45-degree probe grids were not created and verified: ' + (Get-DimShortText $grDim.answer.text)
+        }
+
+        # Three PARALLEL grids at the same 600/1200 bays as the pipes. They are the
+        # LINEAR dimension targets: measured live (2025, 2026-08-24), NewDimension
+        # refuses MEP-curve centerline references outright while accepting grid
+        # references - so the pipes prove discovery (case 1, including the measured
+        # structured incompatibility) and the grids prove creation.
+        $dimParGridIds = @(); $dimParGridGap = $null
+        $pgDim = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document = $wDoc; units = 'mm'
+            elements = @(
+                @{ kind = 'grid'; name = "HZP1_$dimTag"; start = @($dimX, 6000, 0); end = @(($dimX + 3000), 6000, 0) },
+                @{ kind = 'grid'; name = "HZP2_$dimTag"; start = @($dimX, 6600, 0); end = @(($dimX + 3000), 6600, 0) },
+                @{ kind = 'grid'; name = "HZP3_$dimTag"; start = @($dimX, 7800, 0); end = @(($dimX + 3000), 7800, 0) })
+        } 'dim-parallel-grids'
+        if ($pgDim.stage -eq 'apply' -and -not $pgDim.answer.isError -and $pgDim.answer.data) {
+            $dimParGridIds = @(@($pgDim.answer.data.rows) | Where-Object { $_.verified -eq $true } |
+                               ForEach-Object { $_.element_id })
+        }
+        if (@($dimParGridIds).Count -ne 3) {
+            $dimParGridGap = 'the three parallel probe grids were not created and verified: ' + (Get-DimShortText $pgDim.answer.text)
+        }
+
+        # The family template. Localized installs name it differently, so the
+        # exact metric name first, then the documented pattern - and NO template
+        # is a named fixture gap, never a silent skip.
+        $dimTemplatePath = $null
+        $dimTemplateRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Year)
+        if (Test-Path $dimTemplateRoot) {
+            $rftAll = @(Get-ChildItem -LiteralPath $dimTemplateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue)
+            $rftExact = $rftAll | Where-Object { $_.Name -eq 'Metric Generic Model.rft' } |
+                        Sort-Object FullName | Select-Object -First 1
+            if ($rftExact) { $dimTemplatePath = $rftExact.FullName }
+            else {
+                $rftPattern = $rftAll | Where-Object { $_.BaseName -match '(?i)generic model(?!.*adaptive)|gen[eé]rico(?!.*adaptativ)' } |
+                              Sort-Object FullName | Select-Object -First 1
+                if ($rftPattern) { $dimTemplatePath = $rftPattern.FullName }
+            }
+        }
+
+        $dimRfaDir = Join-Path $scratchDir 'dimension-families'
+        New-Item -ItemType Directory -Force $dimRfaDir | Out-Null
+
+        if (-not $dimTemplatePath) {
+            $dimBoxGap = ('no Generic Model family template (.rft) was found under {0}, so no probe RFA could be authored' -f $dimTemplateRoot)
+            $dimCylGap = $dimBoxGap
+        }
+        else {
+            # HZ_DIM_BOX: one RFA exercising label + lock + eq. The labeled and
+            # locked dimensions use DIFFERENT plane pairs on purpose - a locked
+            # dimension between planes a label already constrains would
+            # over-constrain the family and fail for a reason that is not the
+            # product's.
+            $boxRfa = Join-Path $dimRfaDir 'HZ_DIM_BOX.rfa'
+            $bfDim = Invoke-WriteApply 'horizun_create_family' @{
+                target_document = $wDoc; template_path = $dimTemplatePath; output_path = $boxRfa
+                units = 'mm'; overwrite = $true; load_into_project = $true
+                parameters = @(@{ name = 'HZ_W'; data_type = 'length'; group = 'geometry' })
+                types = @(@{ name = 'HZ_DIM_BOX'; values = @{ HZ_W = 1000 } })
+                forms = @(@{ key = 'body'; kind = 'extrusion'; plane = 'xy'; depth = 400
+                             profile = @(, @(@(-500, -300, 0), @(500, -300, 0), @(500, 300, 0), @(-500, 300, 0))) })
+                reference_planes = @(
+                    @{ key = 'left';   name = 'HZ Left';   bubble_end = @(-500, -800, 0); free_end = @(-500, 800, 0); cut_vector = @(0, 0, 1) },
+                    @{ key = 'mid';    name = 'HZ Mid';    bubble_end = @(0, -800, 0);    free_end = @(0, 800, 0);    cut_vector = @(0, 0, 1) },
+                    @{ key = 'right';  name = 'HZ Right';  bubble_end = @(500, -800, 0);  free_end = @(500, 800, 0);  cut_vector = @(0, 0, 1) },
+                    @{ key = 'lock_a'; name = 'HZ Lock A'; bubble_end = @(-200, -800, 0); free_end = @(-200, 800, 0); cut_vector = @(0, 0, 1) },
+                    @{ key = 'lock_b'; name = 'HZ Lock B'; bubble_end = @(200, -800, 0);  free_end = @(200, 800, 0);  cut_vector = @(0, 0, 1) })
+                dimensions = @(
+                    @{ key = 'labeled'; reference_plane_keys = @('left', 'right')
+                       line_start = @(-500, -900, 0); line_end = @(500, -900, 0); label_parameter = 'HZ_W' },
+                    @{ key = 'locked'; reference_plane_keys = @('lock_a', 'lock_b')
+                       line_start = @(-200, -1100, 0); line_end = @(200, -1100, 0); lock = $true },
+                    @{ key = 'equalised'; reference_plane_keys = @('left', 'mid', 'right')
+                       line_start = @(-500, -1300, 0); line_end = @(500, -1300, 0); eq = $true })
+            } 'dim-box-family'
+            if ($bfDim.stage -eq 'apply' -and -not $bfDim.answer.isError -and $bfDim.answer.data) {
+                $dimBoxAnswer = $bfDim.answer
+                $script:dimFamilyPaths += $boxRfa
+                if ($bfDim.answer.data.loaded_family -and
+                    @($bfDim.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                    $boxTypeId = @($bfDim.answer.data.loaded_family.symbol_ids)[0]
+                }
+            }
+            if (-not $dimBoxAnswer) {
+                $dimBoxGap = 'HZ_DIM_BOX.rfa could not be created and verified: ' + (Get-DimShortText $bfDim.answer.text)
+            }
+            elseif (-not $boxTypeId) {
+                $dimBoxGap = 'HZ_DIM_BOX.rfa was created but its loaded FamilySymbol id did not come back, so no instance can be placed'
+            }
+
+            # HZ_DIM_CYL: a HALF revolution (180 degrees) about a vertical axis.
+            # The typed profile is a point loop, so a revolution is the only
+            # typed route to arc edges - and a half revolution gives those arcs
+            # ENDPOINTS, which arc_length needs. Radius 300 mm.
+            $cylRfa = Join-Path $dimRfaDir 'HZ_DIM_CYL.rfa'
+            $cfDim = Invoke-WriteApply 'horizun_create_family' @{
+                target_document = $wDoc; template_path = $dimTemplatePath; output_path = $cylRfa
+                units = 'mm'; overwrite = $true; load_into_project = $true
+                types = @(@{ name = 'HZ_DIM_CYL' })
+                forms = @(@{ key = 'drum'; kind = 'revolution'; plane = 'xz'
+                             profile = @(, @(@(100, 0, 0), @(300, 0, 0), @(300, 0, 400), @(100, 0, 400)))
+                             axis_start = @(0, 0, 0); axis_end = @(0, 0, 400)
+                             start_angle_degrees = 0; end_angle_degrees = 180 })
+            } 'dim-cyl-family'
+            if ($cfDim.stage -eq 'apply' -and -not $cfDim.answer.isError -and $cfDim.answer.data) {
+                $script:dimFamilyPaths += $cylRfa
+                if ($cfDim.answer.data.loaded_family -and
+                    @($cfDim.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                    $cylTypeId = @($cfDim.answer.data.loaded_family.symbol_ids)[0]
+                }
+            }
+            if (-not $cylTypeId) {
+                $dimCylGap = 'HZ_DIM_CYL.rfa could not be created, verified and loaded: ' + (Get-DimShortText $cfDim.answer.text)
+            }
+        }
+
+        # Instances: BOX_A and BOX_B parallel 2000 mm apart, CYL off to the side.
+        if (-not $dimBoxGap) {
+            $instDim = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'
+                elements = @(
+                    @{ kind = 'family_instance'; type_id = $boxTypeId; point = @($dimX, 0, 0); level_id = $levelId },
+                    @{ kind = 'family_instance'; type_id = $boxTypeId; point = @($dimX, 2000, 0); level_id = $levelId })
+            } 'dim-box-instances'
+            if ($instDim.stage -eq 'apply' -and -not $instDim.answer.isError -and $instDim.answer.data -and
+                (All-Rows $instDim.answer.data.rows { param($r) $r.verified -eq $true }) -and
+                @($instDim.answer.data.rows).Count -eq 2) {
+                $boxAId = @($instDim.answer.data.rows)[0].element_id
+                $boxBId = @($instDim.answer.data.rows)[1].element_id
+            }
+            else {
+                $dimBoxGap = 'the HZ_DIM_BOX instances could not be placed and verified: ' + (Get-DimShortText $instDim.answer.text)
+            }
+        }
+        if (-not $dimCylGap) {
+            $instCyl = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'
+                elements = @(@{ kind = 'family_instance'; type_id = $cylTypeId; point = @(($dimX + 4000), 0, 0); level_id = $levelId })
+            } 'dim-cyl-instance'
+            if ($instCyl.stage -eq 'apply' -and -not $instCyl.answer.isError -and $instCyl.answer.data -and
+                @($instCyl.answer.data.rows).Count -gt 0 -and @($instCyl.answer.data.rows)[0].verified -eq $true) {
+                $cylId = @($instCyl.answer.data.rows)[0].element_id
+            }
+            else {
+                $dimCylGap = 'the HZ_DIM_CYL instance could not be placed and verified: ' + (Get-DimShortText $instCyl.answer.text)
+            }
+        }
+
+        # ---- case 1: deterministic centerline discovery -----------------------
+        $t0 = Get-Date
+        if ($dimViewGap) { Complete-DimCase 1 $t0 'unverified' $dimViewGap }
+        elseif ($dimPipeGap) { Complete-DimCase 1 $t0 'unverified' $dimPipeGap }
+        else {
+            $refArgs = @{ view_id = $dimPlanViewId; element_ids = @($dimPipes)
+                          selectors = @('centerline'); units = 'mm'; max_results = 50 }
+            $c1a = Invoke-Write 'horizun_get_dimension_references' $refArgs
+            $c1b = Invoke-Write 'horizun_get_dimension_references' $refArgs
+            if ($c1a.isError -or -not $c1a.data) {
+                Complete-DimCase 1 $t0 'unverified' ('the discovery call errored, so nothing was discovered: ' + (Get-DimShortText $c1a.text))
+            }
+            else {
+                # Every centerline row of an MEP curve must say, structurally, that a
+                # dimension cannot use it - a row claiming compatible here would be the
+                # false promise this run exists to catch. TWO measured branches, both
+                # structured refusals, and every row of one run must sit in ONE of them:
+                #  - Revit 2025 (measured 2026-08-24): the referenced centerline is
+                #    exposed in non-visible geometry and NewDimension rejects it, so the
+                #    row carries its stable representation plus the code
+                #    mep_centerline_rejected_by_dimension_api.
+                #  - Revit 2023 (measured 2026-08-24, live): NO Options combination
+                #    (view/fine/medium/coarse, non-visible on or off) returns a
+                #    reference-carrying curve coinciding with a pipe's location curve.
+                #    There is no reference to hand out, and the honest row is the
+                #    negative one: stable_representation null and the code
+                #    no_stable_centerline. A mixed answer fails both branches.
+                $rows1 = @($c1a.data.rows | Where-Object { $_.selector -eq 'centerline' })
+                $reps1 = @($rows1 | ForEach-Object { $_.stable_representation })
+                $fps1 = @($rows1 | ForEach-Object { $_.geometry_fingerprint })
+                $reps2 = @(); $fps2 = @()
+                if ($c1b.data) {
+                    $rows1b = @($c1b.data.rows | Where-Object { $_.selector -eq 'centerline' })
+                    $reps2 = @($rows1b | ForEach-Object { $_.stable_representation })
+                    $fps2 = @($rows1b | ForEach-Object { $_.geometry_fingerprint })
+                }
+                $fpsUnique = (@($fps1 | Select-Object -Unique).Count -eq @($fps1).Count)
+                # Determinism must hold for the negative branch too, where every
+                # stable representation is null - so the fingerprints, which exist in
+                # both branches, are part of the order check.
+                $sameOrder = ((($reps1 -join '|') -eq ($reps2 -join '|')) -and (($fps1 -join '|') -eq ($fps2 -join '|')))
+                $mepBranch = All-Rows $rows1 { param($r)
+                    -not [string]::IsNullOrWhiteSpace($r.stable_representation) -and
+                    $r.compatible_with_dimension -eq $false -and
+                    $r.incompatibility_reason -and
+                    $r.incompatibility_reason.code -eq 'mep_centerline_rejected_by_dimension_api' }
+                $noRefBranch = All-Rows $rows1 { param($r)
+                    [string]::IsNullOrWhiteSpace($r.stable_representation) -and
+                    $r.compatible_with_dimension -eq $false -and
+                    $r.incompatibility_reason -and
+                    $r.incompatibility_reason.code -eq 'no_stable_centerline' }
+                if ($rows1.Count -ge 3 -and $fpsUnique -and $sameOrder -and ($mepBranch -or $noRefBranch)) {
+                    $branch1 = if ($mepBranch) { 'mep_centerline_rejected_by_dimension_api' } else { 'no_stable_centerline' }
+                    Complete-DimCase 1 $t0 'pass' ("{0} centerline rows discovered with unique fingerprints, identical order across two calls, and every row carrying the MEASURED structured refusal of this Revit's branch ({1})" -f $rows1.Count, $branch1) `
+                        -Evidence @{ rows = $rows1.Count; fingerprints_unique = $fpsUnique; deterministic_order = $sameOrder; refusal_branch = $branch1 }
+                }
+                else {
+                    Complete-DimCase 1 $t0 'fail' ("rows={0} (need >=3), fingerprints_unique={1}, deterministic_order={2}, uniform_mep_branch={3}, uniform_no_reference_branch={4} - every row must sit in ONE structured-refusal branch" -f $rows1.Count, $fpsUnique, $sameOrder, $mepBranch, $noRefBranch) `
+                        -Evidence @{ rows = $rows1.Count; fingerprints_unique = $fpsUnique; deterministic_order = $sameOrder; uniform_mep_branch = $mepBranch; uniform_no_reference_branch = $noRefBranch }
+                }
+            }
+        }
+
+        # The LINEAR dimension targets: grid references from the three parallel grids.
+        # Discovered, never cached across runs; the pipes above prove discovery, the
+        # grids prove creation (the API refuses MEP centerlines - measured live).
+        $repP1 = $null; $repP2 = $null; $repP3 = $null
+        if (-not $dimParGridGap -and -not $dimViewGap) {
+            $cg = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = $dimPlanViewId; element_ids = @($dimParGridIds)
+                selectors = @('grid'); units = 'mm'; max_results = 10 }
+            if ($cg.data) {
+                $gridRep = @{}
+                foreach ($rowG in @($cg.data.rows | Where-Object { $_.compatible_with_dimension -eq $true })) {
+                    $gridRep[[long]$rowG.element_id] = $rowG.stable_representation
+                }
+                if (@($dimParGridIds).Count -eq 3) {
+                    $repP1 = $gridRep[[long]$dimParGridIds[0]]
+                    $repP2 = $gridRep[[long]$dimParGridIds[1]]
+                    $repP3 = $gridRep[[long]$dimParGridIds[2]]
+                }
+            }
+        }
+        $repGap = $null
+        if ($dimViewGap) { $repGap = $dimViewGap }
+        elseif ($dimParGridGap) { $repGap = $dimParGridGap }
+        elseif (-not $repP1 -or -not $repP2 -or -not $repP3) {
+            $repGap = 'grid reference discovery did not return a compatible reference for each of the three parallel grids'
+        }
+
+        # ---- case 2: the default type, committed and verified field by field --
+        $t0 = Get-Date
+        $dim2Id = $null
+        if ($repGap) {
+            Complete-DimCase 2 $t0 'unverified' $repGap
+        }
+        else {
+            $an2 = Invoke-WriteApply 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'
+                actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                               line_start = @(($dimX + 1500), 5700, 0); line_end = @(($dimX + 1500), 8100, 0)
+                               references = @($repP1, $repP2); expected_value = 600 })
+            } 'dim-case2'
+            if ($an2.stage -eq 'dry_run') {
+                Complete-DimCase 2 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an2.answer.text))
+            }
+            else {
+                $why2 = Test-DimCommitted $an2.answer
+                if ($why2) { Complete-DimCase 2 $t0 'fail' $why2 -TransactionStatus (Get-DimTx $an2.answer) }
+                else {
+                    $dim2Id = @($an2.answer.data.rows)[0].element_id
+                    Complete-DimCase 2 $t0 'pass' 'committed_verified with the materialised default type; every requested/read check matched; expected_value 600 mm held' `
+                        -TransactionStatus (Get-DimTx $an2.answer) `
+                        -Evidence @{ element_id = $dim2Id; expected_mm = 600 }
+                }
+            }
+        }
+
+        # ---- case 3: a chain with an explicit type, segments proven -----------
+        $t0 = Get-Date
+        $dim3Id = $null; $dim2TypeId = $null
+        if ($repGap) {
+            Complete-DimCase 3 $t0 'unverified' $repGap
+        }
+        elseif (-not $dim2Id) {
+            Complete-DimCase 3 $t0 'unverified' 'case 2 did not commit, so there is no created dimension to read the explicit type from'
+        }
+        else {
+            $q3 = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($dim2Id); units = 'mm'; max_rows = 1 }
+            if ($q3.isError -or -not $q3.data -or @($q3.data.rows).Count -ne 1 -or -not @($q3.data.rows)[0].type.id) {
+                Complete-DimCase 3 $t0 'unverified' ('query_dimensions could not read the type of the case-2 dimension: ' + (Get-DimShortText $q3.text))
+            }
+            else {
+                $dim2TypeId = [long]@($q3.data.rows)[0].type.id
+                $an3 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                                   line_start = @(($dimX + 2000), 5700, 0); line_end = @(($dimX + 2000), 8100, 0)
+                                   references = @($repP1, $repP2, $repP3); dimension_type_id = $dim2TypeId })
+                } 'dim-case3'
+                if ($an3.stage -eq 'dry_run') {
+                    Complete-DimCase 3 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an3.answer.text))
+                }
+                else {
+                    $why3 = Test-DimCommitted $an3.answer
+                    if ($why3) { Complete-DimCase 3 $t0 'fail' $why3 -TransactionStatus (Get-DimTx $an3.answer) }
+                    else {
+                        # Independent re-read: the chain must carry exactly the
+                        # bays the pipes were placed at, under the explicit type.
+                        $dim3Id = @($an3.answer.data.rows)[0].element_id
+                        $q3b = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($dim3Id); units = 'mm'; max_rows = 1 }
+                        $chainOk = $false; $segMin = $null; $segMax = $null
+                        if ($q3b.data -and @($q3b.data.rows).Count -eq 1) {
+                            $chainRow = @($q3b.data.rows)[0]
+                            $segMm = @($chainRow.segments | ForEach-Object { [double]$_.value_internal_feet * 304.8 })
+                            if (@($segMm).Count -eq 2) {
+                                $segMin = ($segMm | Measure-Object -Minimum).Minimum
+                                $segMax = ($segMm | Measure-Object -Maximum).Maximum
+                                $chainOk = ([int]$chainRow.number_of_segments -eq 2) -and
+                                           ([math]::Abs($segMin - 600) -le 0.1) -and
+                                           ([math]::Abs($segMax - 1200) -le 0.1) -and
+                                           ([long]$chainRow.type.id -eq $dim2TypeId)
+                            }
+                        }
+                        if ($chainOk) {
+                            Complete-DimCase 3 $t0 'pass' 'committed_verified under the explicit type; the re-read chain carries 2 segments measuring 600 and 1200 mm' `
+                                -TransactionStatus (Get-DimTx $an3.answer) `
+                                -Evidence @{ element_id = $dim3Id; type_id = $dim2TypeId; segments_mm = @($segMin, $segMax) }
+                        }
+                        else {
+                            Complete-DimCase 3 $t0 'fail' ("the committed chain did not re-read as 2 segments of 600/1200 mm under type {0} (read min={1} max={2})" -f $dim2TypeId, $segMin, $segMax) `
+                                -TransactionStatus (Get-DimTx $an3.answer)
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 4: mm, m and feet agree about one pair ----------------------
+        # The three duplicates are LEFT in the model on purpose: it is disposable
+        # and never saved, every later count assertion is relative within its own
+        # probe, and deleting them would only re-run the path W2 already proves.
+        $t0 = Get-Date
+        if ($repGap) {
+            Complete-DimCase 4 $t0 'unverified' $repGap
+        }
+        else {
+            $case4 = @(
+                @{ label = 'mm';   units = 'mm';   scale = 1.0;           expected = 600;    tolerance = 0.1;    x = 2500 }
+                @{ label = 'm';    units = 'm';    scale = 0.001;         expected = 0.6;    tolerance = 0.0001; x = 2600 }
+                @{ label = 'feet'; units = 'feet'; scale = (1.0 / 304.8); expected = 1.9685; tolerance = 0.001;  x = 2700 })
+            $ids4 = @(); $why4 = $null
+            foreach ($uc in $case4) {
+                if ($why4) { continue }
+                $s4 = [double]$uc.scale
+                $an4 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = $uc.units
+                    actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                                   line_start = @((($dimX + $uc.x) * $s4), (5700 * $s4), 0)
+                                   line_end = @((($dimX + $uc.x) * $s4), (8100 * $s4), 0)
+                                   references = @($repP1, $repP2)
+                                   expected_value = $uc.expected; expected_tolerance = $uc.tolerance })
+                } ('dim-case4-' + $uc.label)
+                if ($an4.stage -eq 'dry_run') {
+                    $why4 = ($uc.label + ': the rehearsal issued no token: ' + (Get-DimShortText $an4.answer.text))
+                    continue
+                }
+                $bad4 = Test-DimCommitted $an4.answer
+                if ($bad4) { $why4 = ($uc.label + ': ' + $bad4); continue }
+                $ids4 += @($an4.answer.data.rows)[0].element_id
+            }
+            if ($why4) { Complete-DimCase 4 $t0 'fail' $why4 }
+            else {
+                $q4 = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($ids4); units = 'mm'; max_rows = 10 }
+                $vals4 = @()
+                if ($q4.data) {
+                    $vals4 = @($q4.data.rows | Where-Object { $null -ne $_.value_internal_feet } |
+                               ForEach-Object { [double]$_.value_internal_feet })
+                }
+                $agree4 = $false
+                if (@($vals4).Count -eq 3) {
+                    $spread4 = ($vals4 | Measure-Object -Maximum).Maximum - ($vals4 | Measure-Object -Minimum).Minimum
+                    $agree4 = ($spread4 -le 0.000001)
+                }
+                if ($agree4) {
+                    Complete-DimCase 4 $t0 'pass' 'three units, three committed_verified dimensions, and the three re-read internal values agree; the duplicates stay in the disposable model by design' `
+                        -Evidence @{ element_ids = @($ids4); value_internal_feet = @($vals4) }
+                }
+                else {
+                    Complete-DimCase 4 $t0 'fail' ("all three committed but the re-read internal values did not agree: {0}" -f (@($vals4) -join ', '))
+                }
+            }
+        }
+
+        # ---- case 5: angular between two 45-degree grids ----------------------
+        $t0 = Get-Date
+        if ($dimViewGap) { Complete-DimCase 5 $t0 'unverified' $dimViewGap }
+        elseif ($dimGridGap) { Complete-DimCase 5 $t0 'unverified' $dimGridGap }
+        else {
+            $gRefs = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = $dimPlanViewId; element_ids = @($dimGridIds); selectors = @('grid'); units = 'mm'; max_results = 20 }
+            $gridReps = @{}
+            if ($gRefs.data) {
+                foreach ($grow in @($gRefs.data.rows)) {
+                    if ($grow.compatible_with_dimension -ne $true) { continue }
+                    $gid = [long]$grow.element_id
+                    if (-not $gridReps.ContainsKey($gid)) { $gridReps[$gid] = $grow.stable_representation }
+                }
+            }
+            $g1 = $gridReps[[long]$dimGridIds[0]]; $g2 = $gridReps[[long]$dimGridIds[1]]
+            if (-not $g1 -or -not $g2) {
+                Complete-DimCase 5 $t0 'unverified' ('get_dimension_references produced no compatible grid reference for both grids: ' + (Get-DimShortText $gRefs.text))
+            }
+            else {
+                $an5 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'angular_dimension'; view_id = $dimPlanViewId
+                                   arc_center = @(($dimX + 1500), 10000, 0); arc_radius = 1000
+                                   references = @($g1, $g2)
+                                   expected_value = 45; expected_tolerance = 0.1 })
+                } 'dim-case5'
+                if ($an5.stage -eq 'dry_run') {
+                    Complete-DimCase 5 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an5.answer.text))
+                }
+                else {
+                    $why5 = Test-DimCommitted $an5.answer
+                    if ($why5) { Complete-DimCase 5 $t0 'fail' $why5 -TransactionStatus (Get-DimTx $an5.answer) }
+                    else {
+                        Complete-DimCase 5 $t0 'pass' 'committed_verified; the angular postcondition of 45 degrees (0.1 tolerance, degrees by contract) held' `
+                            -TransactionStatus (Get-DimTx $an5.answer) `
+                            -Evidence @{ element_id = @($an5.answer.data.rows)[0].element_id; expected_degrees = 45 }
+                    }
+                }
+            }
+        }
+
+        # ---- cases 6 and 7: the Revit-year split ------------------------------
+        # 2025+ has RadialDimension.Create / ArcLengthDimension.Create; 2023/24
+        # does not, and Python cannot call an absent class either - so on the old
+        # years the CORRECT product answer is a refusal that names the API and
+        # the year, with NO fallback grant. Both halves are asserted; neither is
+        # assumed from the year alone.
+        $dimArcRow = $null; $dimArcEndpoints = @()
+        if ($Year -ge 2025) {
+            $t0 = Get-Date
+            if ($dimViewGap) { Complete-DimCase 6 $t0 'unverified' $dimViewGap }
+            elseif ($dimCylGap) { Complete-DimCase 6 $t0 'not_covered' $dimCylGap }
+            else {
+                $eRefs = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = $dimPlanViewId; element_ids = @($cylId)
+                    selectors = @('edge', 'endpoint'); units = 'mm'; max_results = 200 }
+                if ($eRefs.data) {
+                    $dimArcRow = @($eRefs.data.rows | Where-Object {
+                        $_.selector -eq 'edge' -and $_.compatible_with_dimension -eq $true -and
+                        $_.geometry -and $_.geometry.kind -eq 'arc' }) | Select-Object -First 1
+                }
+                if (-not $dimArcRow) {
+                    Complete-DimCase 6 $t0 'unverified' ('the half-cylinder exposed no compatible arc edge in the plan view: ' + (Get-DimShortText $eRefs.text))
+                }
+                else {
+                    # The endpoints of THAT arc, for case 7: same z as its centre,
+                    # one radius away from it, distinct fingerprints.
+                    $arcC = $dimArcRow.geometry.center
+                    $arcR = [double]$dimArcRow.geometry.radius
+                    if ($arcC) {
+                        # A point ON the arc: same z as the centre, one radius out.
+                        $onArc = { param($pt)
+                            if (-not $pt) { return $false }
+                            if ([math]::Abs([double]$pt[2] - [double]$arcC[2]) -gt 0.5) { return $false }
+                            $dist = [math]::Sqrt(([double]$pt[0] - [double]$arcC[0]) * ([double]$pt[0] - [double]$arcC[0]) +
+                                                 ([double]$pt[1] - [double]$arcC[1]) * ([double]$pt[1] - [double]$arcC[1]))
+                            return ([math]::Abs($dist - $arcR) -le 1.0) }
+                        foreach ($erow in @($eRefs.data.rows)) {
+                            if ($erow.compatible_with_dimension -ne $true) { continue }
+                            $hit = $false
+                            if ($erow.selector -eq 'endpoint') {
+                                $pt = $null
+                                if ($erow.geometry -and $erow.geometry.point) { $pt = $erow.geometry.point }
+                                elseif ($erow.representative_point) { $pt = $erow.representative_point }
+                                $hit = (& $onArc $pt)
+                            }
+                            elseif ($erow.selector -eq 'edge' -and $erow.geometry -and $erow.geometry.kind -eq 'line') {
+                                # The flat end faces of the half revolution meet the arc AT
+                                # its endpoints: a straight edge with an endpoint on the arc
+                                # is a legitimate delimiting reference when the geometry
+                                # exposes no endpoint references of its own.
+                                $hit = (& $onArc $erow.geometry.start) -or (& $onArc $erow.geometry.end)
+                            }
+                            if (-not $hit) { continue }
+                            $already = @($dimArcEndpoints | Where-Object { $_.geometry_fingerprint -eq $erow.geometry_fingerprint })
+                            if ($already.Count -eq 0 -and @($dimArcEndpoints).Count -lt 2) { $dimArcEndpoints += $erow }
+                        }
+                    }
+                    $an6 = Invoke-WriteApply 'horizun_annotate' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(
+                            @{ operation = 'radial_dimension'; view_id = $dimPlanViewId
+                               reference = $dimArcRow.stable_representation
+                               expected_value = 300; expected_tolerance = 0.1 },
+                            @{ operation = 'diameter_dimension'; view_id = $dimPlanViewId
+                               reference = $dimArcRow.stable_representation
+                               expected_value = 600; expected_tolerance = 0.1 })
+                    } 'dim-case6'
+                    if ($an6.stage -eq 'dry_run') {
+                        Complete-DimCase 6 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an6.answer.text))
+                    }
+                    else {
+                        $why6 = Test-DimCommitted $an6.answer
+                        if ($why6) { Complete-DimCase 6 $t0 'fail' $why6 -TransactionStatus (Get-DimTx $an6.answer) }
+                        else {
+                            Complete-DimCase 6 $t0 'pass' 'radial (300 mm) and diameter (600 mm) both committed_verified on the arc edge of the revolved half-cylinder' `
+                                -TransactionStatus (Get-DimTx $an6.answer) `
+                                -Evidence @{ arc_radius_mm = $arcR; rows = @($an6.answer.data.rows).Count }
+                        }
+                    }
+                }
+            }
+        }
+        else {
+            $t0 = Get-Date
+            # The year guard fires before view or reference resolution, so this
+            # probe needs no cylinder - only a syntactically complete request.
+            $v6 = $dimPlanViewId; if (-not $v6) { $v6 = 1 }
+            $ref6 = $null
+            if ($repP1) { $ref6 = $repP1 } else { $ref6 = 'HZ-UNRESOLVED-REFERENCE-PROBE' }
+            $an6r = Invoke-Write 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $false
+                idempotency_key = "live-write-dim-case6-refusal-$probeRun"
+                actions = @(@{ operation = 'radial_dimension'; view_id = $v6; reference = $ref6 }) }
+            $granted6 = $false
+            if ($an6r.structured -and $an6r.structured.fallback -and $an6r.structured.fallback.allowed -eq $true) { $granted6 = $true }
+            if ($an6r.text -like '*"allowed": true*') { $granted6 = $true }
+            if ($an6r.isError -and $an6r.text -match 'RadialDimension\.Create' -and $an6r.text -match '2025' -and
+                $an6r.text -match 'Nothing was written' -and -not $granted6) {
+                Complete-DimCase 6 $t0 'pass' ("Revit {0} refused by name: RadialDimension.Create exists only from 2025, nothing was written, and no Python fallback was granted" -f $Year) `
+                    -Evidence @{ refusal = (Get-DimShortText $an6r.text) }
+            }
+            else {
+                Complete-DimCase 6 $t0 'fail' ("expected a typed refusal naming RadialDimension.Create and 2025 with no fallback grant; got isError={0}, fallback_granted={1}: {2}" -f $an6r.isError, $granted6, (Get-DimShortText $an6r.text))
+            }
+        }
+
+        $t0 = Get-Date
+        if ($Year -ge 2025) {
+            if ($dimViewGap) { Complete-DimCase 7 $t0 'unverified' $dimViewGap }
+            elseif ($dimCylGap) { Complete-DimCase 7 $t0 'not_covered' $dimCylGap }
+            elseif (-not $dimArcRow) {
+                Complete-DimCase 7 $t0 'unverified' 'case 6 found no compatible arc edge, so there is no arc to measure the length of'
+            }
+            elseif (@($dimArcEndpoints).Count -lt 2) {
+                Complete-DimCase 7 $t0 'unverified' ('only {0} endpoint reference(s) of the arc edge were discovered; arc_length needs its two endpoints' -f @($dimArcEndpoints).Count)
+            }
+            else {
+                $arcC7 = $dimArcRow.geometry.center
+                $an7 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'arc_length_dimension'; view_id = $dimPlanViewId
+                                   arc_center = @([double]$arcC7[0], [double]$arcC7[1], [double]$arcC7[2])
+                                   arc_radius = [double]$dimArcRow.geometry.radius
+                                   arc_reference = $dimArcRow.stable_representation
+                                   references = @(@($dimArcEndpoints)[0].stable_representation,
+                                                  @($dimArcEndpoints)[1].stable_representation) })
+                } 'dim-case7'
+                if ($an7.stage -eq 'dry_run' -and
+                    $an7.answer.text -match 'no DimensionType of style ArcLength') {
+                    # A fact of the FIXTURE, verified live: this document carries no
+                    # ArcLength dimension type at all (the style-fallback scan found
+                    # zero), and no public API creates one from nothing. The typed
+                    # refusal naming exactly that is the correct behaviour, and it is
+                    # what this branch proves; a fixture that carries the style takes
+                    # the creation branch below instead.
+                    Complete-DimCase 7 $t0 'pass' 'the document has no ArcLength dimension type and no API can mint one: the typed refusal named the missing style and the fallback scan, and nothing was written' `
+                        -Evidence @{ branch = 'typed_refusal_no_style_in_document'; refusal = (Get-DimShortText $an7.answer.text) }
+                }
+                elseif ($an7.stage -eq 'dry_run') {
+                    Complete-DimCase 7 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an7.answer.text))
+                }
+                else {
+                    $why7 = Test-DimCommitted $an7.answer
+                    if ($why7) { Complete-DimCase 7 $t0 'fail' $why7 -TransactionStatus (Get-DimTx $an7.answer) }
+                    else {
+                        Complete-DimCase 7 $t0 'pass' 'arc_length committed_verified over the arc edge and its two endpoint references' `
+                            -TransactionStatus (Get-DimTx $an7.answer) `
+                            -Evidence @{ element_id = @($an7.answer.data.rows)[0].element_id }
+                    }
+                }
+            }
+        }
+        else {
+            $v7 = $dimPlanViewId; if (-not $v7) { $v7 = 1 }
+            $ref7a = $null; $ref7b = $null
+            if ($repP1) { $ref7a = $repP1 } else { $ref7a = 'HZ-UNRESOLVED-REFERENCE-PROBE-A' }
+            if ($repP2) { $ref7b = $repP2 } else { $ref7b = 'HZ-UNRESOLVED-REFERENCE-PROBE-B' }
+            $an7r = Invoke-Write 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $false
+                idempotency_key = "live-write-dim-case7-refusal-$probeRun"
+                actions = @(@{ operation = 'arc_length_dimension'; view_id = $v7
+                               arc_center = @($dimX, 0, 0); arc_radius = 100
+                               arc_reference = 'HZ-UNRESOLVED-ARC-REFERENCE-PROBE'
+                               references = @($ref7a, $ref7b) }) }
+            $granted7 = $false
+            if ($an7r.structured -and $an7r.structured.fallback -and $an7r.structured.fallback.allowed -eq $true) { $granted7 = $true }
+            if ($an7r.text -like '*"allowed": true*') { $granted7 = $true }
+            if ($an7r.isError -and $an7r.text -match 'ArcLengthDimension\.Create' -and $an7r.text -match '2025' -and
+                $an7r.text -match 'Nothing was written' -and -not $granted7) {
+                Complete-DimCase 7 $t0 'pass' ("Revit {0} refused by name: ArcLengthDimension.Create exists only from 2025, nothing was written, and no Python fallback was granted" -f $Year) `
+                    -Evidence @{ refusal = (Get-DimShortText $an7r.text) }
+            }
+            else {
+                Complete-DimCase 7 $t0 'fail' ("expected a typed refusal naming ArcLengthDimension.Create and 2025 with no fallback grant; got isError={0}, fallback_granted={1}: {2}" -f $an7r.isError, $granted7, (Get-DimShortText $an7r.text))
+            }
+        }
+
+        # ---- case 8: spots on the box top face --------------------------------
+        $t0 = Get-Date
+        $dimFaceRep = $null
+        if ($dimViewGap) { Complete-DimCase 8 $t0 'unverified' $dimViewGap }
+        elseif ($dimBoxGap) { Complete-DimCase 8 $t0 'not_covered' $dimBoxGap }
+        else {
+            $fRefs = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = $dimPlanViewId; element_ids = @($boxAId)
+                selectors = @('nearest_face'); probe_point = @($dimX, 0, 5000); units = 'mm'; max_results = 20 }
+            $faceRow = $null
+            if ($fRefs.data) {
+                $faceRow = @($fRefs.data.rows | Where-Object {
+                    $_.selector -eq 'nearest_face' -and $_.compatible_with_dimension -eq $true }) | Select-Object -First 1
+            }
+            if (-not $faceRow) {
+                Complete-DimCase 8 $t0 'unverified' ('nearest_face from a probe point above BOX_A produced no compatible face: ' + (Get-DimShortText $fRefs.text))
+            }
+            else {
+                $dimFaceRep = $faceRow.stable_representation
+                # The face's own z, read from the discovery answer, so the spot
+                # origin lands ON the reference wherever the level actually is.
+                $faceZ = $null
+                if ($faceRow.geometry -and $faceRow.geometry.origin) { $faceZ = [double]@($faceRow.geometry.origin)[2] }
+                elseif ($faceRow.representative_point) { $faceZ = [double]@($faceRow.representative_point)[2] }
+                if ($null -eq $faceZ) {
+                    Complete-DimCase 8 $t0 'unverified' 'the discovered face carried no usable origin/representative point, so no on-face spot origin could be computed'
+                }
+                else {
+                    $an8 = Invoke-WriteApply 'horizun_annotate' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(
+                            @{ operation = 'spot_elevation'; view_id = $dimPlanViewId
+                               reference = $dimFaceRep; point = @(($dimX - 200), -100, $faceZ); leader = $false },
+                            @{ operation = 'spot_coordinate'; view_id = $dimPlanViewId
+                               reference = $dimFaceRep; point = @(($dimX + 200), 100, $faceZ); leader = $false })
+                    } 'dim-case8'
+                    if ($an8.stage -eq 'dry_run') {
+                        Complete-DimCase 8 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $an8.answer.text))
+                    }
+                    else {
+                        $why8 = Test-DimCommitted $an8.answer
+                        if ($why8) { Complete-DimCase 8 $t0 'fail' $why8 -TransactionStatus (Get-DimTx $an8.answer) }
+                        else {
+                            Complete-DimCase 8 $t0 'pass' 'spot_elevation and spot_coordinate both committed_verified on the discovered top face, checks compared against the rehearsal' `
+                                -TransactionStatus (Get-DimTx $an8.answer) `
+                                -Evidence @{ face_z_mm = $faceZ; rows = @($an8.answer.data.rows).Count }
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 9: spot_slope has no API anywhere, and nothing is written ---
+        $t0 = Get-Date
+        $q9a = Invoke-Write 'horizun_query_dimensions' @{ shapes = @('spot_slope'); max_rows = 1 }
+        $slopeBefore = $null
+        if (-not $q9a.isError -and $q9a.data) { $slopeBefore = [int]$q9a.data.total_matched }
+        if ($null -eq $slopeBefore) {
+            Complete-DimCase 9 $t0 'unverified' ('the spot_slope census could not be read before the refusal, so "nothing was written" could not be proven: ' + (Get-DimShortText $q9a.text))
+        }
+        else {
+            $v9 = $dimPlanViewId; if (-not $v9) { $v9 = 1 }
+            $ref9 = $dimFaceRep
+            if (-not $ref9 -and $repP1) { $ref9 = $repP1 }
+            if (-not $ref9) { $ref9 = 'HZ-UNRESOLVED-REFERENCE-PROBE' }
+            $an9 = Invoke-Write 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $false
+                idempotency_key = "live-write-dim-case9-refusal-$probeRun"
+                actions = @(@{ operation = 'spot_slope'; view_id = $v9; reference = $ref9; point = @($dimX, 0, 0) }) }
+            $granted9 = $false
+            if ($an9.structured -and $an9.structured.fallback -and $an9.structured.fallback.allowed -eq $true) { $granted9 = $true }
+            if ($an9.text -like '*"allowed": true*') { $granted9 = $true }
+            $q9b = Invoke-Write 'horizun_query_dimensions' @{ shapes = @('spot_slope'); max_rows = 1 }
+            $slopeAfter = $null
+            if (-not $q9b.isError -and $q9b.data) { $slopeAfter = [int]$q9b.data.total_matched }
+            if ($an9.isError -and $an9.text -match 'not supported on any Revit' -and -not $granted9 -and
+                $slopeAfter -eq $slopeBefore) {
+                Complete-DimCase 9 $t0 'pass' ("refused naming the absent creation API for every supported year, no fallback granted, and the spot_slope census is unchanged at {0}" -f $slopeBefore) `
+                    -Evidence @{ census_before = $slopeBefore; census_after = $slopeAfter }
+            }
+            else {
+                Complete-DimCase 9 $t0 'fail' ("expected a no-API-any-year refusal with no fallback and an unchanged census; got isError={0}, fallback_granted={1}, census {2}->{3}: {4}" -f $an9.isError, $granted9, $slopeBefore, $slopeAfter, (Get-DimShortText $an9.text))
+            }
+        }
+
+        # ---- case 10: one failing postcondition takes the WHOLE batch down ----
+        $t0 = Get-Date
+        if ($repGap) {
+            Complete-DimCase 10 $t0 'unverified' $repGap
+        }
+        else {
+            $before10 = Get-DimCount $dimPlanViewId
+            if ($null -eq $before10) {
+                Complete-DimCase 10 $t0 'unverified' 'the dimension census of the plan view could not be read before the batch'
+            }
+            else {
+                $an10 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(
+                        @{ operation = 'dimension'; view_id = $dimPlanViewId
+                           line_start = @(($dimX + 2820), 5700, 0); line_end = @(($dimX + 2820), 8100, 0)
+                           references = @($repP1, $repP2); expected_value = 600 },
+                        @{ operation = 'dimension'; view_id = $dimPlanViewId
+                           line_start = @(($dimX + 2880), 5700, 0); line_end = @(($dimX + 2880), 8100, 0)
+                           references = @($repP1, $repP3)
+                           expected_value = 9999; expected_tolerance = 0.1 })
+                } 'dim-case10'
+                if ($an10.stage -eq 'dry_run') {
+                    Complete-DimCase 10 $t0 'unverified' ('the rehearsal withheld the token, so the failing postcondition was never provoked at apply: ' + (Get-DimShortText $an10.answer.text))
+                }
+                elseif (-not $an10.answer.isError) {
+                    Complete-DimCase 10 $t0 'fail' 'the apply REPORTED SUCCESS although the second action expects 9999 mm from a 1800 mm bay - the postcondition did not fire'
+                }
+                else {
+                    # The verdict travels as JSON embedded in the error text; the
+                    # object that carries `state` is the one that speaks for the
+                    # transaction.
+                    $rb10 = $null
+                    if ($an10.answer.structured -and $an10.answer.structured.PSObject.Properties.Name -contains 'state') { $rb10 = $an10.answer.structured }
+                    elseif ($an10.answer.data -and $an10.answer.data.PSObject.Properties.Name -contains 'state') { $rb10 = $an10.answer.data }
+                    if (-not $rb10) {
+                        foreach ($cand10 in (Get-JsonObjects $an10.answer.text)) {
+                            try { $obj10 = $cand10 | ConvertFrom-Json } catch { continue }
+                            if ($obj10.PSObject.Properties.Name -contains 'state') { $rb10 = $obj10; break }
+                        }
+                    }
+                    $after10 = Get-DimCount $dimPlanViewId
+                    if (-not $rb10) {
+                        Complete-DimCase 10 $t0 'unverified' ('the refusal carried no extractable state object, so the rollback could not be told from a refusal that never wrote: ' + (Get-DimShortText $an10.answer.text))
+                    }
+                    elseif ($rb10.state -eq 'rolled_back' -and $rb10.rollback_confirmed -eq $true -and
+                            "$($rb10.transaction_group_status)" -match 'RolledBack' -and
+                            $after10 -eq $before10) {
+                        Complete-DimCase 10 $t0 'pass' ("state=rolled_back, rollback_confirmed=true, transaction_group_status=RolledBack, and the view still holds {0} dimension(s) - the VALID action did not survive either" -f $before10) `
+                            -TransactionStatus "$($rb10.transaction_group_status)" `
+                            -Evidence @{ census_before = $before10; census_after = $after10; state = $rb10.state }
+                    }
+                    else {
+                        Complete-DimCase 10 $t0 'fail' ("expected state=rolled_back with a confirmed RolledBack group and an unchanged census; got state='{0}', rollback_confirmed='{1}', group='{2}', census {3}->{4}" -f $rb10.state, $rb10.rollback_confirmed, $rb10.transaction_group_status, $before10, $after10) `
+                            -TransactionStatus "$($rb10.transaction_group_status)"
+                    }
+                }
+            }
+        }
+
+        # ---- case 11: the model moves between rehearsal and apply -------------
+        $t0 = Get-Date
+        if ($dimViewGap) { Complete-DimCase 11 $t0 'unverified' $dimViewGap }
+        else {
+            # Primary geometry: the two boxes. Fallback when the boxes are not
+            # there: an ad-hoc pipe that is MOVED, chosen so pipes 1-3 - which
+            # case 16 still measures - are never disturbed.
+            $ref11a = $null; $ref11b = $null; $moveId = $null; $line11 = $null; $whyStage11 = $null
+            if (-not $dimBoxGap) {
+                $fa11 = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = $dimPlanViewId; element_ids = @($boxAId)
+                    selectors = @('nearest_face'); probe_point = @($dimX, 1000, 200); units = 'mm'; max_results = 10 }
+                $fb11 = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = $dimPlanViewId; element_ids = @($boxBId)
+                    selectors = @('nearest_face'); probe_point = @($dimX, 1000, 200); units = 'mm'; max_results = 10 }
+                if ($fa11.data) {
+                    $rowA11 = @($fa11.data.rows | Where-Object { $_.compatible_with_dimension -eq $true }) | Select-Object -First 1
+                    if ($rowA11) { $ref11a = $rowA11.stable_representation }
+                }
+                if ($fb11.data) {
+                    $rowB11 = @($fb11.data.rows | Where-Object { $_.compatible_with_dimension -eq $true }) | Select-Object -First 1
+                    if ($rowB11) { $ref11b = $rowB11.stable_representation }
+                }
+                $moveId = $boxBId
+                $line11 = @(@(($dimX - 700), 300, 0), @(($dimX - 700), 1700, 0))
+                if (-not $ref11a -or -not $ref11b) { $whyStage11 = 'the facing box faces could not be discovered'; $ref11a = $null; $ref11b = $null }
+            }
+            if (-not $ref11a -and -not $repGap) {
+                # Ad-hoc GRID, not pipe: MEP centerlines are refused by the dimension
+                # API (measured live), and a grid moves just as provably.
+                $mk11 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document = $wDoc; units = 'mm'
+                    elements = @(@{ kind = 'grid'; name = "HZM11_$dimTag"
+                                    start = @($dimX, 9000, 0); end = @(($dimX + 3000), 9000, 0) })
+                } 'dim-case11-grid'
+                if ($mk11.stage -eq 'apply' -and -not $mk11.answer.isError -and $mk11.answer.data -and
+                    @($mk11.answer.data.rows).Count -gt 0 -and @($mk11.answer.data.rows)[0].verified -eq $true) {
+                    $moveId = @($mk11.answer.data.rows)[0].element_id
+                    $cl11 = Invoke-Write 'horizun_get_dimension_references' @{
+                        view_id = $dimPlanViewId; element_ids = @($moveId)
+                        selectors = @('grid'); units = 'mm'; max_results = 10 }
+                    if ($cl11.data) {
+                        $rowM11 = @($cl11.data.rows | Where-Object { $_.compatible_with_dimension -eq $true }) | Select-Object -First 1
+                        if ($rowM11) {
+                            $ref11a = $repP3; $ref11b = $rowM11.stable_representation
+                            $line11 = @(@(($dimX + 1200), 7600, 0), @(($dimX + 1200), 9400, 0))
+                        }
+                    }
+                }
+            }
+            if (-not $ref11a -or -not $ref11b) {
+                $why11gap = 'neither the box faces nor an ad-hoc grid reference could be staged'
+                if ($whyStage11) { $why11gap = $why11gap + ' (' + $whyStage11 + ')' }
+                Complete-DimCase 11 $t0 'unverified' $why11gap
+            }
+            else {
+                $before11 = Get-DimCount $dimPlanViewId
+                $args11 = @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true
+                    actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                                   line_start = $line11[0]; line_end = $line11[1]
+                                   references = @($ref11a, $ref11b) }) }
+                $dry11 = Invoke-Write 'horizun_annotate' $args11
+                $tok11 = $null
+                if (-not $dry11.isError -and $dry11.data) { $tok11 = $dry11.data.confirmation_token }
+                if (-not $tok11) {
+                    Complete-DimCase 11 $t0 'unverified' ('the rehearsal issued no token to go stale: ' + (Get-DimShortText $dry11.text))
+                }
+                else {
+                    $mv11 = Invoke-WriteApply 'horizun_transform_elements' @{
+                        target_document = $wDoc; units = 'mm'
+                        operations = @(@{ operation = 'move'; element_ids = @($moveId); vector = @(0, 50, 0) })
+                    } 'dim-case11-move'
+                    if ($mv11.stage -ne 'apply' -or $mv11.answer.isError) {
+                        Complete-DimCase 11 $t0 'unverified' ('the referenced element could not be moved between rehearsal and apply: ' + (Get-DimShortText $mv11.answer.text))
+                    }
+                    else {
+                        $args11apply = @{
+                            target_document = $wDoc; units = 'mm'; dry_run = $false
+                            confirmation_token = $tok11
+                            idempotency_key = "live-write-dim-case11-$probeRun"
+                            actions = $args11.actions }
+                        $ap11 = Invoke-Write 'horizun_annotate' $args11apply
+                        $after11 = Get-DimCount $dimPlanViewId
+                        if ($ap11.isError -and $ap11.text -match 'THE MODEL MOVED AFTER THE DRY RUN' -and
+                            $after11 -eq $before11) {
+                            Complete-DimCase 11 $t0 'pass' ("the element moved 50 mm after the rehearsal and the stale token was refused with THE MODEL MOVED AFTER THE DRY RUN; census unchanged at {0}" -f $before11) `
+                                -Evidence @{ moved_element = $moveId; census_before = $before11; census_after = $after11 }
+                        }
+                        else {
+                            Complete-DimCase 11 $t0 'fail' ("expected the stale-plan refusal and an unchanged census; got isError={0}, census {1}->{2}: {3}" -f $ap11.isError, $before11, $after11, (Get-DimShortText $ap11.text))
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 12: a reference DELETED between rehearsal and apply ---------
+        $t0 = Get-Date
+        if ($repGap) {
+            Complete-DimCase 12 $t0 'unverified' $repGap
+        }
+        else {
+            # Ad-hoc GRID, not pipe: MEP centerlines are refused by the dimension API
+            # (measured live), and deleting a grid goes stale just as provably.
+            $mk12 = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'
+                elements = @(@{ kind = 'grid'; name = "HZM12_$dimTag"
+                                start = @($dimX, 10500, 0); end = @(($dimX + 3000), 10500, 0) })
+            } 'dim-case12-grid'
+            $pipe12 = $null
+            if ($mk12.stage -eq 'apply' -and -not $mk12.answer.isError -and $mk12.answer.data -and
+                @($mk12.answer.data.rows).Count -gt 0 -and @($mk12.answer.data.rows)[0].verified -eq $true) {
+                $pipe12 = @($mk12.answer.data.rows)[0].element_id
+            }
+            if (-not $pipe12) {
+                Complete-DimCase 12 $t0 'unverified' ('the ad-hoc grid whose deletion goes stale could not be created: ' + (Get-DimShortText $mk12.answer.text))
+            }
+            else {
+                $cl12 = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = $dimPlanViewId; element_ids = @($pipe12)
+                    selectors = @('grid'); units = 'mm'; max_results = 10 }
+                $rep12 = $null
+                if ($cl12.data) {
+                    $row12 = @($cl12.data.rows | Where-Object { $_.compatible_with_dimension -eq $true }) | Select-Object -First 1
+                    if ($row12) { $rep12 = $row12.stable_representation }
+                }
+                if (-not $rep12) {
+                    Complete-DimCase 12 $t0 'unverified' ('no compatible grid reference was discovered on the ad-hoc grid: ' + (Get-DimShortText $cl12.text))
+                }
+                else {
+                    $before12 = Get-DimCount $dimPlanViewId
+                    $args12 = @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true
+                        actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                                       line_start = @(($dimX + 1800), 5800, 0); line_end = @(($dimX + 1800), 10700, 0)
+                                       references = @($repP1, $rep12) }) }
+                    $dry12 = Invoke-Write 'horizun_annotate' $args12
+                    $tok12 = $null
+                    if (-not $dry12.isError -and $dry12.data) { $tok12 = $dry12.data.confirmation_token }
+                    if (-not $tok12) {
+                        Complete-DimCase 12 $t0 'unverified' ('the rehearsal issued no token to go stale: ' + (Get-DimShortText $dry12.text))
+                    }
+                    else {
+                        $del12 = Invoke-WriteApply 'horizun_delete_verified' @{
+                            mode = 'ids'; ids = @($pipe12); target_document = $wDoc; id_cap = 10 } 'dim-case12-delete'
+                        if ($del12.stage -ne 'apply' -or $del12.answer.isError) {
+                            Complete-DimCase 12 $t0 'unverified' ('the referenced grid could not be deleted between rehearsal and apply: ' + (Get-DimShortText $del12.answer.text))
+                        }
+                        else {
+                            $args12apply = @{
+                                target_document = $wDoc; units = 'mm'; dry_run = $false
+                                confirmation_token = $tok12
+                                idempotency_key = "live-write-dim-case12-$probeRun"
+                                actions = $args12.actions }
+                            $ap12 = Invoke-Write 'horizun_annotate' $args12apply
+                            $after12 = Get-DimCount $dimPlanViewId
+                            # Both wordings are correct refusals here: the stale
+                            # fingerprint or the reference that no longer resolves.
+                            if ($ap12.isError -and $after12 -eq $before12) {
+                                Complete-DimCase 12 $t0 'pass' ("the apply against a deleted reference was refused and the census is unchanged at {0}" -f $before12) `
+                                    -Evidence @{ deleted_reference_element = $pipe12; census_before = $before12; census_after = $after12; refusal = (Get-DimShortText $ap12.text) }
+                            }
+                            else {
+                                Complete-DimCase 12 $t0 'fail' ("expected a refusal and an unchanged census; got isError={0}, census {1}->{2}: {3}" -f $ap12.isError, $before12, $after12, (Get-DimShortText $ap12.text))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 13: a schedule is not a place a dimension can live ----------
+        $t0 = Get-Date
+        $ls13 = Invoke-Write 'horizun_list_schedules' @{ max_rows = 1 }
+        $sched13 = $null
+        if (-not $ls13.isError -and $ls13.data -and @($ls13.data.rows).Count -gt 0) {
+            $sched13 = @($ls13.data.rows)[0].schedule_id
+        }
+        if (-not $sched13) {
+            Complete-DimCase 13 $t0 'not_covered' 'the disposable fixture has no schedule to aim a dimension at'
+        }
+        else {
+            $ref13a = $repP1; $ref13b = $repP2
+            if (-not $ref13a) { $ref13a = 'HZ-FAKE-REFERENCE-A' }
+            if (-not $ref13b) { $ref13b = 'HZ-FAKE-REFERENCE-B' }
+            $d13 = Invoke-Write 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $true
+                actions = @(@{ operation = 'dimension'; view_id = $sched13
+                               line_start = @(0, 0, 0); line_end = @(1000, 0, 0)
+                               references = @($ref13a, $ref13b) }) }
+            $tok13 = $null
+            if ($d13.data) { $tok13 = $d13.data.confirmation_token }
+            if (-not $tok13 -and $d13.text -match '(?i)schedule') {
+                Complete-DimCase 13 $t0 'pass' 'the rehearsal refused the schedule view by name and withheld the token' `
+                    -Evidence @{ schedule_id = $sched13 }
+            }
+            else {
+                Complete-DimCase 13 $t0 'fail' ("expected an invalid row naming the schedule and no token; got token_present={0}: {1}" -f [bool]$tok13, (Get-DimShortText $d13.text))
+            }
+        }
+
+        # ---- case 14: the same reference twice is refused ---------------------
+        $t0 = Get-Date
+        if ($repGap) {
+            Complete-DimCase 14 $t0 'unverified' $repGap
+        }
+        else {
+            $d14 = Invoke-Write 'horizun_annotate' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $true
+                actions = @(@{ operation = 'dimension'; view_id = $dimPlanViewId
+                               line_start = @(($dimX + 1000), 5700, 0); line_end = @(($dimX + 1000), 8100, 0)
+                               references = @($repP1, $repP1) }) }
+            $tok14 = $null
+            if ($d14.data) { $tok14 = $d14.data.confirmation_token }
+            if (-not $tok14 -and $d14.text -match 'duplicates references') {
+                Complete-DimCase 14 $t0 'pass' 'the duplicated stable representation was refused by index and the token withheld'
+            }
+            else {
+                Complete-DimCase 14 $t0 'fail' ("expected an invalid row naming the duplicate and no token; got token_present={0}: {1}" -f [bool]$tok14, (Get-DimShortText $d14.text))
+            }
+        }
+
+        # ---- case 15: a link instance is unreadable WITH the structured code --
+        $t0 = Get-Date
+        $lq15 = Invoke-Write 'horizun_query_model' @{ categories = @('OST_RvtLinks'); include_links = $false; max_rows = 1 }
+        $link15 = $null
+        $staged15 = $false
+        $stageWhy15 = $null
+        if (-not $lq15.isError -and $lq15.data -and @($lq15.data.rows).Count -gt 0) {
+            $link15 = @($lq15.data.rows)[0].element_id
+        }
+        if (-not $link15) {
+            # Not every fixture ships with a RevitLinkInstance, and a run that skips
+            # the link refusal reads exactly like one that proved it. When the gate
+            # names a same-year link source (-LinkSourceFile, a COPY so the original
+            # is never the one loaded) and this Revit advertises execute_python, the
+            # harness stages its own link in the never-saved disposable model -
+            # measured live on Revit 2023 (2026-08-24: RevitLinkType.Create +
+            # RevitLinkInstance.Create, zero dialogs) - and the probe then runs
+            # against an instance the TYPED query rediscovered, exactly as a client
+            # would find it.
+            $pythonListed15 = @($listed | Where-Object { $_.name -eq 'horizun_execute_python' }).Count -gt 0
+            if ([string]::IsNullOrWhiteSpace($LinkSourceFile)) {
+                $stageWhy15 = 'no -LinkSourceFile was supplied'
+            }
+            elseif (-not (Test-Path $LinkSourceFile)) {
+                $stageWhy15 = "the link source file does not exist: $LinkSourceFile"
+            }
+            elseif (-not $pythonListed15) {
+                $stageWhy15 = 'execute_python is not advertised, so the harness cannot stage a link'
+            }
+            else {
+                $stageCode = @'
+from Autodesk.Revit.DB import (RevitLinkType, RevitLinkInstance, RevitLinkOptions,
+                               ModelPathUtils, Transaction, FilteredElementCollector)
+
+def _ids(collector):
+    out = []
+    for e in collector:
+        out.append(e.Id.IntegerValue if hasattr(e.Id, 'IntegerValue') else e.Id.Value)
+    return out
+
+mp = ModelPathUtils.ConvertUserVisiblePathToModelPath(r'__LINK_SOURCE__')
+before = _ids(FilteredElementCollector(doc).OfClass(RevitLinkInstance))
+t = Transaction(doc, 'HZ live gate: stage link fixture')
+t.Start()
+try:
+    res = RevitLinkType.Create(doc, mp, RevitLinkOptions(False))
+    inst = RevitLinkInstance.Create(doc, res.ElementId)
+    t.Commit()
+except Exception as ex:
+    t.RollBack()
+    __output__ = {'status': 'failed', 'error': str(ex)}
+else:
+    after = _ids(FilteredElementCollector(doc).OfClass(RevitLinkInstance))
+    new_ids = [i for i in after if i not in before]
+    iid = inst.Id.IntegerValue if hasattr(inst.Id, 'IntegerValue') else inst.Id.Value
+    ok = (len(new_ids) == 1 and new_ids[0] == iid)
+    __output__ = {'status': 'self_reported_verified' if ok else 'partial',
+                  'link_instance_id': iid, 'reread_new_instances': new_ids}
+'@
+                $stageCode = $stageCode.Replace('__LINK_SOURCE__', $LinkSourceFile)
+                if (-not (Test-Path $scratchDir)) { New-Item -ItemType Directory -Force $scratchDir | Out-Null }
+                $stagePath = Join-Path $scratchDir 'stage-link-fixture.py'
+                [IO.File]::WriteAllText($stagePath, $stageCode, [Text.UTF8Encoding]::new($false))
+                $st15 = Invoke-Write 'horizun_execute_python' @{
+                    code_path = $stagePath; target_document = $wDoc
+                    idempotency_key = "live-dim15-stage-link-$probeRun" }
+                $stOut = $null
+                if (-not $st15.isError -and $st15.data) { $stOut = $st15.data.output }
+                if ($stOut -and $stOut.status -eq 'self_reported_verified' -and $stOut.link_instance_id) {
+                    $lq15b = Invoke-Write 'horizun_query_model' @{ categories = @('OST_RvtLinks'); include_links = $false; max_rows = 1 }
+                    if (-not $lq15b.isError -and $lq15b.data -and @($lq15b.data.rows).Count -gt 0) {
+                        $link15 = @($lq15b.data.rows)[0].element_id
+                        $staged15 = $true
+                    }
+                    else {
+                        $stageWhy15 = 'the staged link was not rediscovered by the typed query: ' + (Get-DimShortText $lq15b.text)
+                    }
+                }
+                else {
+                    $stageStatus = if ($stOut) { [string]$stOut.status + ' ' + [string]$stOut.error } else { Get-DimShortText $st15.text }
+                    $stageWhy15 = 'the staging script did not verify its own link: ' + $stageStatus
+                }
+            }
+        }
+        if (-not $link15) {
+            Complete-DimCase 15 $t0 'not_covered' ('the disposable fixture has no RevitLinkInstance and the harness could not stage one (' + $stageWhy15 + '), so the structured link refusal could not be provoked')
+        }
+        elseif ($dimViewGap) { Complete-DimCase 15 $t0 'unverified' $dimViewGap }
+        else {
+            $lr15 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = $dimPlanViewId; element_ids = @($link15); units = 'mm'; max_results = 10 }
+            if ($lr15.isError -or -not $lr15.data) {
+                Complete-DimCase 15 $t0 'fail' ('the call errored instead of reporting the link in coverage.unreadable: ' + (Get-DimShortText $lr15.text))
+            }
+            else {
+                $unread15 = @($lr15.data.coverage.unreadable | Where-Object { [long]$_.element_id -eq [long]$link15 })
+                if ($unread15.Count -ge 1 -and $unread15[0].code -eq 'link_references_not_supported') {
+                    $how15 = if ($staged15) { 'a link staged by this run in the never-saved disposable model' } else { "the fixture's own link instance" }
+                    Complete-DimCase 15 $t0 'pass' ("the link instance ({0}) landed in coverage.unreadable carrying code link_references_not_supported" -f $how15) `
+                        -Evidence @{ link_instance = $link15; code = $unread15[0].code; staged_by_harness = $staged15 }
+                }
+                else {
+                    Complete-DimCase 15 $t0 'fail' ("the link instance was not reported unreadable with the structured code; unreadable entries for it: {0}" -f $unread15.Count)
+                }
+            }
+        }
+
+        # ---- case 16: query + edit round trip, and an edit token gone stale ---
+        $t0 = Get-Date
+        if ($repGap) {
+            Complete-DimCase 16 $t0 'unverified' $repGap
+        }
+        elseif (-not $dim2Id -or -not $dim3Id) {
+            Complete-DimCase 16 $t0 'unverified' 'cases 2 and 3 did not both commit, so there is nothing to query, edit or make stale'
+        }
+        else {
+            $why16 = $null; $ev16 = @{}
+            # a) the independent read-back of both created dimensions.
+            $qa16 = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($dim2Id, $dim3Id); units = 'mm'; max_rows = 10 }
+            if ($qa16.isError -or -not $qa16.data -or @($qa16.data.rows).Count -ne 2) {
+                $why16 = 'read-back: query_dimensions did not return exactly the two created dimensions: ' + (Get-DimShortText $qa16.text)
+            }
+            else {
+                foreach ($qrow16 in @($qa16.data.rows)) {
+                    if ($why16) { continue }
+                    if (-not (All-Rows $qrow16.references { param($rr) -not [string]::IsNullOrWhiteSpace($rr.stable_representation) })) {
+                        $why16 = 'read-back: a reference came back without its stable representation'
+                    }
+                    elseif ($qrow16.references_available -ne $true) { $why16 = 'read-back: references_available was not true' }
+                    elseif ([int]$qrow16.broken_references -ne 0) { $why16 = 'read-back: broken_references was not 0' }
+                }
+                if (-not $why16) {
+                    $chain16 = @($qa16.data.rows | Where-Object { [long]$_.element_id -eq [long]$dim3Id }) | Select-Object -First 1
+                    $seg16 = @()
+                    if ($chain16) { $seg16 = @($chain16.segments | ForEach-Object { [double]$_.value_internal_feet * 304.8 }) }
+                    $segOk16 = $false
+                    if (@($seg16).Count -eq 2) {
+                        $sMin16 = ($seg16 | Measure-Object -Minimum).Minimum
+                        $sMax16 = ($seg16 | Measure-Object -Maximum).Maximum
+                        $segOk16 = ([math]::Abs($sMin16 - 600) -le 0.1) -and ([math]::Abs($sMax16 - 1200) -le 0.1)
+                    }
+                    if (-not $segOk16) { $why16 = ('read-back: the chain did not carry segments of 600 and 1200 mm (read: ' + (@($seg16) -join ', ') + ')') }
+                    else { $ev16.read_back = 'both rows complete; chain segments 600/1200 mm' }
+                }
+            }
+            # b) prefix + value_override on the single-segment dimension.
+            if (-not $why16) {
+                $ed16a = Invoke-WriteApply 'horizun_edit_dimensions' @{
+                    target_document = $wDoc
+                    actions = @(@{ element_id = $dim2Id; prefix = [char]0x00B1; value_override = 'VERIFIED' })
+                } 'dim-case16-override'
+                $fields16a = $null
+                if ($ed16a.stage -eq 'apply' -and -not $ed16a.answer.isError -and $ed16a.answer.data -and
+                    @($ed16a.answer.data.rows).Count -gt 0) {
+                    $fields16a = @($ed16a.answer.data.rows)[0].fields
+                }
+                if (-not $fields16a -or $ed16a.answer.data.state -ne 'verified_applied' -or
+                    -not (All-Rows $fields16a { param($f) $f.match -eq $true })) {
+                    $why16 = 'override: the prefix/value_override edit did not come back verified_applied with every field matched: ' + (Get-DimShortText $ed16a.answer.text)
+                }
+                else { $ev16.override = 'prefix and VERIFIED override applied and re-read' }
+            }
+            # c) EQ on the chain.
+            if (-not $why16) {
+                $ed16b = Invoke-WriteApply 'horizun_edit_dimensions' @{
+                    target_document = $wDoc
+                    actions = @(@{ element_id = $dim3Id; eq = $true })
+                } 'dim-case16-eq'
+                $fields16b = $null
+                if ($ed16b.stage -eq 'apply' -and -not $ed16b.answer.isError -and $ed16b.answer.data -and
+                    @($ed16b.answer.data.rows).Count -gt 0) {
+                    $fields16b = @($ed16b.answer.data.rows)[0].fields
+                }
+                if (-not $fields16b -or $ed16b.answer.data.state -ne 'verified_applied' -or
+                    -not (All-Rows $fields16b { param($f)
+                        $f.match -eq $true -or ($null -eq $f.match -and $f.verified_by -eq 'substance') })) {
+                    $why16 = 'eq: the EQ edit on the chain did not come back verified_applied with every field matched: ' + (Get-DimShortText $ed16b.answer.text)
+                }
+                else { $ev16.eq = 'EQ applied to the chain and re-read' }
+            }
+            # d) an edit token minted before ANOTHER edit of the same dimension
+            #    must refuse as stale, not overwrite.
+            if (-not $why16) {
+                $actions16a = @(@{ element_id = $dim2Id; suffix = 'HZA' })
+                $dry16a = Invoke-Write 'horizun_edit_dimensions' @{
+                    target_document = $wDoc; dry_run = $true; actions = $actions16a }
+                $tok16a = $null
+                if (-not $dry16a.isError -and $dry16a.data) { $tok16a = $dry16a.data.confirmation_token }
+                if (-not $tok16a) {
+                    $why16 = 'stale: the first edit rehearsal issued no token: ' + (Get-DimShortText $dry16a.text)
+                }
+                else {
+                    $ed16c = Invoke-WriteApply 'horizun_edit_dimensions' @{
+                        target_document = $wDoc
+                        actions = @(@{ element_id = $dim2Id; below = 'HZB' })
+                    } 'dim-case16-b'
+                    if ($ed16c.stage -ne 'apply' -or $ed16c.answer.isError -or
+                        $ed16c.answer.data.state -ne 'verified_applied') {
+                        $why16 = 'stale: the interleaved edit did not commit, so the first token was never made stale: ' + (Get-DimShortText $ed16c.answer.text)
+                    }
+                    else {
+                        $ap16a = Invoke-Write 'horizun_edit_dimensions' @{
+                            target_document = $wDoc; dry_run = $false
+                            confirmation_token = $tok16a
+                            idempotency_key = "live-write-dim-case16-stale-$probeRun"
+                            actions = $actions16a }
+                        if ($ap16a.isError -and $ap16a.text -match 'THE MODEL MOVED AFTER THE DRY RUN') {
+                            $ev16.stale = 'the pre-edit token was refused with THE MODEL MOVED AFTER THE DRY RUN'
+                        }
+                        else {
+                            $why16 = 'stale: the outdated token was NOT refused as a stale plan: ' + (Get-DimShortText $ap16a.text)
+                        }
+                    }
+                }
+            }
+            # e) value_override '' CLEARS, and the model says so.
+            if (-not $why16) {
+                $ed16d = Invoke-WriteApply 'horizun_edit_dimensions' @{
+                    target_document = $wDoc
+                    actions = @(@{ element_id = $dim2Id; value_override = '' })
+                } 'dim-case16-clear'
+                $clearOk = $false
+                if ($ed16d.stage -eq 'apply' -and -not $ed16d.answer.isError -and $ed16d.answer.data -and
+                    $ed16d.answer.data.state -eq 'verified_applied') {
+                    $ovField = @(@($ed16d.answer.data.rows)[0].fields | Where-Object { $_.field -eq 'value_override' }) | Select-Object -First 1
+                    if ($ovField -and $ovField.match -eq $true) { $clearOk = $true }
+                }
+                if ($clearOk) {
+                    $qe16 = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($dim2Id); units = 'mm'; max_rows = 1 }
+                    if ($qe16.data -and @($qe16.data.rows).Count -eq 1 -and
+                        "$(@($qe16.data.rows)[0].value_presented)" -ne 'VERIFIED') {
+                        $ev16.clear = 'the empty override cleared and the re-read presentation is a value again'
+                    }
+                    else { $why16 = 'clear: the override was reported cleared but the re-read presentation still shows VERIFIED' }
+                }
+                else { $why16 = 'clear: the empty value_override did not come back verified_applied with a matched read-back: ' + (Get-DimShortText $ed16d.answer.text) }
+            }
+            if ($why16) { Complete-DimCase 16 $t0 'fail' $why16 -Evidence $ev16 }
+            else {
+                Complete-DimCase 16 $t0 'pass' 'read-back complete; override, EQ and the cleared override all verified_applied field by field; a pre-edit token refused as THE MODEL MOVED' `
+                    -Evidence $ev16
+            }
+        }
+
+        # ---- case 17: the RFA dimension survives the reopen ------------------
+        # Provisioned by the fixture step: the HZ_DIM_BOX create_family above IS
+        # this probe's call - here its reopened_verification is held to account.
+        $t0 = Get-Date
+        if (-not $dimBoxAnswer) {
+            $why17 = $dimBoxGap
+            if (-not $why17) { $why17 = 'HZ_DIM_BOX was not created, so there is no reopened verification to inspect' }
+            Complete-DimCase 17 $t0 'not_covered' $why17
+        }
+        else {
+            $d17 = $dimBoxAnswer.data
+            $rv17 = $d17.reopened_verification
+            $rows17 = @()
+            if ($rv17) { $rows17 = @($rv17.dimensions) }
+            $why17 = $null
+            if (-not $rv17 -or $rv17.reopened -ne $true) { $why17 = 'reopened_verification did not report reopened=true' }
+            elseif ([int]$d17.dimensions_verified -lt 1) { $why17 = 'dimensions_verified was not positive' }
+            elseif ($rows17.Count -lt 3) { $why17 = ('the reopened file re-read only {0} of the 3 authored dimensions' -f $rows17.Count) }
+            else {
+                foreach ($r17 in $rows17) {
+                    if ($why17) { continue }
+                    # references_available may verify BY SUBSTANCE: under an API-side
+                    # reopen Revit can report the flag false on a correct file (measured
+                    # live; a UI-activated open of the same bytes reads true). The row
+                    # then carries match=null + verified_by='substance', and the
+                    # substantive fields beside it are what this probe holds to account.
+                    $avail17ok = ($r17.references_available.match -eq $true) -or
+                                 ($r17.references_available.verified_by -eq 'substance')
+                    if ($r17.references.match -ne $true -or -not $avail17ok -or
+                        $r17.label_parameter.match -ne $true -or $r17.value_internal_feet.match -ne $true) {
+                        $why17 = ("dimension '{0}' did not match field by field in the reopened file" -f $r17.key)
+                    }
+                }
+                if (-not $why17) {
+                    $lock17 = @($rows17 | Where-Object { $_.key -eq 'locked' }) | Select-Object -First 1
+                    $eq17 = @($rows17 | Where-Object { $_.key -eq 'equalised' }) | Select-Object -First 1
+                    if (-not $lock17 -or $lock17.locked.match -ne $true) { $why17 = "the 'locked' dimension did not re-read IsLocked=true from the reopened file" }
+                    elseif (-not $eq17 -or $eq17.segments_equal.match -ne $true) { $why17 = "the 'equalised' dimension did not re-read its EQ constraint from the reopened file" }
+                }
+            }
+            if ($why17) { Complete-DimCase 17 $t0 'fail' $why17 -TransactionStatus (Get-DimTx $dimBoxAnswer) }
+            else {
+                Complete-DimCase 17 $t0 'pass' 'the saved RFA was closed, reopened from disk, and label, lock, EQ, references and measured value all re-read matching' `
+                    -TransactionStatus (Get-DimTx $dimBoxAnswer) `
+                    -Evidence @{ rfa = $d17.output_path; dimensions_verified = [int]$d17.dimensions_verified; reopened = $true }
+            }
+        }
+
+        # Every case number reports exactly once. A case the flow above never
+        # reached is a HARNESS defect, and it must read as one - never as a
+        # silently shrunk denominator.
+        for ($dimCase = 1; $dimCase -le 17; $dimCase++) {
+            if (-not $script:dimCasesDone.ContainsKey($dimCase)) {
+                Complete-DimCase $dimCase (Get-Date) 'unverified' 'the dimensions section ended before this probe ran - a harness bug, not a product verdict'
+            }
+        }
+
+        # ---- W6+: 2D DETAIL --------------------------------------------------
+        #
+        # The 2D probes clone the dimension pattern deliberately: everything they
+        # measure is synthetic and self-provisioned - a drafting view created and
+        # ACTIVATED by this run, resources discovered from that view rather than
+        # hard-coded, two RFAs authored from the machine's own family templates -
+        # and every commit is believed only after a re-read, either the command's
+        # own requested/read/match table or an independent horizun_query_detail_2d
+        # call. Coordinates are view-plane (x along RightDirection, y along
+        # UpDirection from the view origin), which in a drafting view is simply
+        # the sheet plane. The last probe deletes exactly what the section
+        # committed, and proves it by census, so the disposable model ends the
+        # section as 2D-empty as it began.
+        # ----------------------------------------------------------------------
+        $script:d2dCasesDone = @{}
+
+        # One verdict per case, exactly once: the outcome goes to the shared
+        # write-tier accounting AND to the evidence block the report publishes.
+        function Complete-D2dCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail,
+                  $TransactionStatus = $null, $Evidence = $null, $Warnings = $null)
+            if ($script:d2dCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:d2dCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$d2dNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:detail2dEvidence += @{
+                case = $CaseNumber; name = $entry.N; tool = $entry.T
+                started_utc = $Started.ToUniversalTime().ToString('o')
+                duration_ms = [int][math]::Round(((Get-Date) - $Started).TotalMilliseconds)
+                transaction_status = $TransactionStatus
+                outcome = $Outcome
+                detail = $Detail
+                evidence = $Evidence
+                warnings = $Warnings
+            }
+        }
+
+        # The house contract for a detail_2d apply, asserted whole: null when the
+        # answer proves committed_verified with every row verified and every
+        # requested/read check matched, otherwise the exact reason it did not.
+        function Test-D2dCommitted($applyAnswer) {
+            if ($applyAnswer.isError) { return 'the apply errored: ' + (Get-DimShortText $applyAnswer.text) + ' | failing checks: ' + (Get-DimFailedChecks $applyAnswer) }
+            $d = $applyAnswer.data
+            if (-not $d) { return 'the apply reply carried no parseable JSON' }
+            if ($d.state -ne 'committed_verified') { return ("state was '{0}', not committed_verified" -f $d.state) }
+            if (-not (All-Rows $d.rows { param($r) $r.verified -eq $true })) { return 'not every row re-read verified=true' }
+            foreach ($r in @($d.rows)) {
+                # match=null + verified_by=substance is the command's HONEST tri-state
+                # for facts Revit computes lazily (measured live: AreReferencesAvailable
+                # on instance-geometry references, EQ after a committed edit) - the row
+                # passed on substance and says so; a probe reading that honesty as a
+                # failure would be asserting the flag over the measurement.
+                if (-not (All-Rows $r.verification.checks { param($c)
+                        $c.match -eq $true -or ($null -eq $c.match -and $c.verified_by -eq 'substance') })) {
+                    return 'a verification check did not match (requested vs read disagree)'
+                }
+            }
+            return $null
+        }
+
+        # The 2D census of one view, from the independent read surface.
+        function Get-D2dCount($viewId) {
+            $q = Invoke-Write 'horizun_query_detail_2d' @{ mode = 'elements'; view_id = $viewId; units = 'mm'; max_rows = 1 }
+            if ($q.isError -or -not $q.data) { return $null }
+            return [int]$q.data.total_matched
+        }
+
+        # A family template by its exact metric name first, then the documented
+        # localized pattern. NO template is a named fixture gap, never a skip.
+        function Find-D2dTemplate([string]$Root, [string]$ExactName, [string]$Pattern) {
+            if (-not (Test-Path -LiteralPath $Root)) { return $null }
+            $rft = @(Get-ChildItem -LiteralPath $Root -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue)
+            $hit = @($rft | Where-Object { $_.Name -eq $ExactName } | Sort-Object FullName) | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+            $hit = @($rft | Where-Object { $_.BaseName -match $Pattern } | Sort-Object FullName) | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+            return $null
+        }
+
+        $d2dTag = $probeRun.Substring(0, 8)
+        $d2dViewId = $null; $d2dViewGap = $null; $d2dResourceGap = $null
+        $d2dStyleRows = @(); $d2dFillTypeId = $null; $d2dMaskTypeId = $null
+        $d2dCreatedIds = @()
+        $d2dBaselineCount = $null
+        $d2dTemplateRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates" -f $Year)
+
+        # ---- case 1: the fresh drafting view and its resources ----------------
+        $t0 = Get-Date
+        $mvD2d = Invoke-WriteApply 'horizun_manage_views' @{
+            target_document = $wDoc; units = 'mm'
+            actions = @(@{ operation = 'create_drafting'; key = 'hzd2d'; name = "HZ_D2D_$d2dTag" })
+        } 'd2d-view'
+        if ($mvD2d.stage -eq 'apply' -and -not $mvD2d.answer.isError -and $mvD2d.answer.data) {
+            $d2dViewId = $mvD2d.answer.data.aliases.hzd2d
+        }
+        if (-not $d2dViewId) {
+            $d2dViewGap = 'the synthetic drafting view could not be created and verified: ' + (Get-DimShortText $mvD2d.answer.text)
+        }
+        if (-not $d2dViewGap) {
+            $navD2d = Invoke-Write 'horizun_navigate' @{ operation = 'open_view'; view_id = $d2dViewId }
+            if ($navD2d.isError -or -not $navD2d.data -or
+                $navD2d.data.active_view_verified -ne $true -or [long]$navD2d.data.view_id -ne [long]$d2dViewId) {
+                $d2dViewGap = 'the drafting view could not be ACTIVATED: ' + (Get-DimShortText $navD2d.text)
+            }
+        }
+        if (-not $d2dViewGap) { $d2dBaselineCount = Get-D2dCount $d2dViewId }
+
+        if ($d2dViewGap) { Complete-D2dCase 1 $t0 'unverified' $d2dViewGap }
+        else {
+            $rs1 = Invoke-Write 'horizun_query_detail_2d' @{ mode = 'resources'; view_id = $d2dViewId; units = 'mm' }
+            if ($rs1.isError -or -not $rs1.data) {
+                $d2dResourceGap = 'query_detail_2d mode=resources errored on the fresh drafting view: ' + (Get-DimShortText $rs1.text)
+                Complete-D2dCase 1 $t0 'unverified' $d2dResourceGap
+            }
+            else {
+                $d2dStyleRows = @($rs1.data.line_styles.rows)
+                $frRows1 = @($rs1.data.filled_region_types.rows)
+                $fillRow1 = @($frRows1 | Where-Object { $_.is_masking -eq $false }) | Select-Object -First 1
+                $maskRow1 = @($frRows1 | Where-Object { $_.is_masking -eq $true }) | Select-Object -First 1
+                if ($fillRow1) { $d2dFillTypeId = [long]$fillRow1.id }
+                if ($maskRow1) { $d2dMaskTypeId = [long]$maskRow1.id }
+                $accepts1 = ($rs1.data.view -and $rs1.data.view.accepts_detail_2d -eq $true)
+                $stylesOk1 = All-Rows $d2dStyleRows { param($r) $r.id -and -not [string]::IsNullOrWhiteSpace($r.name) }
+                $frOk1 = All-Rows $frRows1 { param($r) $r.id -and ($r.is_masking -is [bool]) }
+                $symbolsListed1 = ($null -ne $rs1.data.placeable_symbols)
+                $symCount1 = 0
+                $script:d2dSymbolRows = @()
+                if ($symbolsListed1 -and $rs1.data.placeable_symbols.rows) {
+                    $script:d2dSymbolRows = @($rs1.data.placeable_symbols.rows)
+                    $symCount1 = $script:d2dSymbolRows.Count
+                }
+                if ($accepts1 -and $stylesOk1 -and $frOk1 -and $symbolsListed1) {
+                    Complete-D2dCase 1 $t0 'pass' ("accepts_detail_2d=true; {0} line style(s) with ids and names; {1} filled-region type(s) each carrying a boolean IsMasking; the placeable-symbol listing is present with {2} row(s)" -f $d2dStyleRows.Count, $frRows1.Count, $symCount1) `
+                        -Evidence @{ view_id = $d2dViewId; line_styles = $d2dStyleRows.Count; filled_region_types = $frRows1.Count
+                                     masking_types = @($frRows1 | Where-Object { $_.is_masking -eq $true }).Count
+                                     placeable_symbols = $symCount1 }
+                }
+                else {
+                    $d2dResourceGap = ("the resource answer did not hold: accepts_detail_2d={0}, line_styles_ok={1} (rows={2}), filled_region_types_ok={3} (rows={4}), placeable_symbols_listed={5}" -f $accepts1, $stylesOk1, $d2dStyleRows.Count, $frOk1, $frRows1.Count, $symbolsListed1)
+                    Complete-D2dCase 1 $t0 'fail' $d2dResourceGap
+                }
+            }
+        }
+
+        # A fixture whose every filled-region type is masking (this HVAC derivative,
+        # measured) still has to prove the ordinary fill: duplicate a masking type
+        # and turn its Masking parameter off through the typed system-type surface,
+        # then BELIEVE only the re-queried IsMasking. A duplicate that still reads
+        # masking leaves the gap honestly named.
+        if (-not $d2dFillTypeId -and $d2dMaskTypeId -and -not $d2dViewGap -and -not $d2dResourceGap) {
+            $mkFill = Invoke-WriteApply 'horizun_manage_system_types' @{
+                target_document = $wDoc; actions = @(@{
+                    source_type_id = $d2dMaskTypeId; new_name = "HZ_D2D_FILL_$dimTag"
+                    values = @{ Masking = $false } })
+            } 'd2d-fill-type'
+            if ($mkFill.stage -eq 'apply' -and -not $mkFill.answer.isError) {
+                $rsF = Invoke-Write 'horizun_query_detail_2d' @{ mode = 'resources'; view_id = $d2dViewId; units = 'mm' }
+                if ($rsF.data -and $rsF.data.filled_region_types) {
+                    $newFill = @($rsF.data.filled_region_types.rows |
+                                 Where-Object { $_.name -eq "HZ_D2D_FILL_$dimTag" -and $_.is_masking -eq $false }) |
+                               Select-Object -First 1
+                    if ($newFill) { $d2dFillTypeId = [long]$newFill.id }
+                }
+            }
+        }
+
+        # ---- case 2: lines, an arc and a closed polyline in ONE batch ---------
+        $t0 = Get-Date
+        $d2dLine1Id = $null; $d2dLine2Id = $null
+        $d2dBatch2Args = $null; $d2dBatch2Token = $null; $d2dBatch2Committed = $false
+        if ($d2dViewGap) { Complete-D2dCase 2 $t0 'unverified' $d2dViewGap }
+        else {
+            $d2dBatch2Args = @{
+                target_document = $wDoc; units = 'mm'
+                actions = @(
+                    @{ operation = 'create_detail_line'; view_id = $d2dViewId; start = @(0, 0); end = @(3000, 0); key = 'ln1' },
+                    @{ operation = 'create_detail_line'; view_id = $d2dViewId; start = @(0, 600); end = @(3000, 600); key = 'ln2' },
+                    @{ operation = 'create_detail_arc'; view_id = $d2dViewId
+                       start = @(0, 1200); end = @(3000, 1200); point_on_arc = @(1500, 2700); key = 'arc' },
+                    @{ operation = 'create_detail_polyline'; view_id = $d2dViewId
+                       points = @(@(5000, 0), @(8000, 0), @(6500, 2000)); closed = $true; key = 'poly' })
+            }
+            $mk2 = Invoke-WriteApply 'horizun_detail_2d' $d2dBatch2Args 'd2d-case2'
+            if ($mk2.stage -eq 'dry_run') {
+                Complete-D2dCase 2 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $mk2.answer.text))
+            }
+            else {
+                $why2d = Test-D2dCommitted $mk2.answer
+                if ($why2d) { Complete-D2dCase 2 $t0 'fail' $why2d -TransactionStatus (Get-DimTx $mk2.answer) }
+                else {
+                    $d2dBatch2Token = $mk2.dry.data.confirmation_token
+                    $d2dBatch2Committed = $true
+                    $ids2 = @{}
+                    foreach ($row2 in @($mk2.answer.data.rows)) {
+                        if ($row2.element_ids) { $d2dCreatedIds += @($row2.element_ids) }
+                        if ($row2.key) { $ids2[[string]$row2.key] = @($row2.element_ids) }
+                    }
+                    if ($ids2.ContainsKey('ln1')) { $d2dLine1Id = @($ids2['ln1'])[0] }
+                    if ($ids2.ContainsKey('ln2')) { $d2dLine2Id = @($ids2['ln2'])[0] }
+                    $arcCount2 = 0; if ($ids2.ContainsKey('arc')) { $arcCount2 = @($ids2['arc']).Count }
+                    $polyCount2 = 0; if ($ids2.ContainsKey('poly')) { $polyCount2 = @($ids2['poly']).Count }
+                    if ($d2dLine1Id -and $d2dLine2Id -and $arcCount2 -ge 1 -and $polyCount2 -eq 3) {
+                        Complete-D2dCase 2 $t0 'pass' "committed_verified: two lines, a three-point arc and a closed triangle polyline whose 3 curves came back grouped under the key 'poly'; every row verified and every requested/read check matched" `
+                            -TransactionStatus (Get-DimTx $mk2.answer) `
+                            -Evidence @{ element_ids_by_key = $ids2 }
+                    }
+                    else {
+                        Complete-D2dCase 2 $t0 'fail' ("committed_verified, but the keyed rows did not carry the expected ids: ln1={0}, ln2={1}, arc rows={2}, poly curves={3} (need 3 for a closed triangle)" -f [bool]$d2dLine1Id, [bool]$d2dLine2Id, $arcCount2, $polyCount2) `
+                            -TransactionStatus (Get-DimTx $mk2.answer) -Evidence @{ element_ids_by_key = $ids2 }
+                    }
+                }
+            }
+        }
+
+        # ---- case 3: a filled region with a hole, re-read by signature --------
+        $t0 = Get-Date
+        if ($d2dViewGap) { Complete-D2dCase 3 $t0 'unverified' $d2dViewGap }
+        elseif ($d2dResourceGap) { Complete-D2dCase 3 $t0 'unverified' $d2dResourceGap }
+        elseif (-not $d2dFillTypeId) { Complete-D2dCase 3 $t0 'not_covered' 'the document offers no non-masking filled-region type, so no ordinary fill can be drawn' }
+        else {
+            $fr3 = Invoke-WriteApply 'horizun_detail_2d' @{
+                target_document = $wDoc; units = 'mm'
+                actions = @(@{ operation = 'create_filled_region'; view_id = $d2dViewId
+                               filled_region_type_id = $d2dFillTypeId
+                               loops = @(
+                                   @(@(10000, 0), @(14000, 0), @(14000, 3000), @(10000, 3000)),
+                                   @(@(11000, 800), @(12000, 800), @(12000, 1800), @(11000, 1800)))
+                               key = 'region' })
+            } 'd2d-case3'
+            if ($fr3.stage -eq 'dry_run') {
+                Complete-D2dCase 3 $t0 'unverified' ('the rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $fr3.answer.text))
+            }
+            else {
+                $why3d = Test-D2dCommitted $fr3.answer
+                if ($why3d) { Complete-D2dCase 3 $t0 'fail' $why3d -TransactionStatus (Get-DimTx $fr3.answer) }
+                else {
+                    $regionRow3 = @($fr3.answer.data.rows | Where-Object { $_.key -eq 'region' }) | Select-Object -First 1
+                    $regionId3 = $null
+                    if ($regionRow3 -and $regionRow3.element_ids) {
+                        $regionId3 = @($regionRow3.element_ids)[0]
+                        $d2dCreatedIds += @($regionRow3.element_ids)
+                    }
+                    if (-not $regionId3) {
+                        Complete-D2dCase 3 $t0 'fail' 'committed_verified, but no element id came back under the key region' -TransactionStatus (Get-DimTx $fr3.answer)
+                    }
+                    else {
+                        $qr3 = Invoke-Write 'horizun_query_detail_2d' @{
+                            mode = 'elements'; view_id = $d2dViewId; element_ids = @($regionId3); units = 'mm'; max_rows = 5 }
+                        $row3 = $null
+                        if ($qr3.data) {
+                            $row3 = @($qr3.data.rows | Where-Object { [long]$_.element_id -eq [long]$regionId3 }) | Select-Object -First 1
+                        }
+                        if (-not $row3) {
+                            Complete-D2dCase 3 $t0 'fail' ('the committed region could not be independently re-read: ' + (Get-DimShortText $qr3.text)) -TransactionStatus (Get-DimTx $fr3.answer)
+                        }
+                        else {
+                            $cpl3 = @($row3.curves_per_loop)
+                            $cplOk3 = ($cpl3.Count -eq 2 -and [int]$cpl3[0] -eq 4 -and [int]$cpl3[1] -eq 4)
+                            if ($row3.kind -eq 'filled_region' -and [int]$row3.loops -eq 2 -and
+                                $row3.is_masking -eq $false -and
+                                -not [string]::IsNullOrWhiteSpace($row3.region_signature) -and $cplOk3) {
+                                Complete-D2dCase 3 $t0 'pass' 'committed_verified, and the independent re-read carries 2 loops of 4 curves each (exterior plus hole), is_masking=false and a non-empty region signature' `
+                                    -TransactionStatus (Get-DimTx $fr3.answer) `
+                                    -Evidence @{ element_id = $regionId3; loops = [int]$row3.loops; curves_per_loop = $cpl3
+                                                 region_signature = $row3.region_signature }
+                            }
+                            else {
+                                Complete-D2dCase 3 $t0 'fail' ("the re-read did not hold: kind={0}, loops={1}, is_masking={2}, signature_present={3}, curves_per_loop=[{4}]" -f $row3.kind, $row3.loops, $row3.is_masking, (-not [string]::IsNullOrWhiteSpace($row3.region_signature)), ($cpl3 -join ',')) `
+                                    -TransactionStatus (Get-DimTx $fr3.answer)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 4: masking follows the TYPE, in both directions -------------
+        $t0 = Get-Date
+        if ($d2dViewGap) { Complete-D2dCase 4 $t0 'unverified' $d2dViewGap }
+        elseif ($d2dResourceGap) { Complete-D2dCase 4 $t0 'unverified' $d2dResourceGap }
+        elseif (-not $d2dMaskTypeId -and -not $d2dFillTypeId) {
+            Complete-D2dCase 4 $t0 'not_covered' 'the document offers no filled-region type at all, so neither masking direction can be exercised'
+        }
+        else {
+            $why4d = $null; $ev4 = @{}
+            if ($d2dMaskTypeId) {
+                # The type IS masking: create_masking_region must commit and
+                # verify, and the SAME type as an ordinary fill must refuse.
+                $ev4.branch = 'masking_type_available'
+                $mr4 = Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'create_masking_region'; view_id = $d2dViewId
+                                   masking_region_type_id = $d2dMaskTypeId
+                                   loops = @(, @(@(10000, 4000), @(12000, 4000), @(12000, 5500), @(10000, 5500)))
+                                   key = 'mask' })
+                } 'd2d-case4-mask'
+                if ($mr4.stage -eq 'dry_run') {
+                    $why4d = 'the masking-region rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $mr4.answer.text)
+                }
+                else {
+                    $bad4 = Test-D2dCommitted $mr4.answer
+                    if ($bad4) { $why4d = 'masking region: ' + $bad4 }
+                    else {
+                        foreach ($row4 in @($mr4.answer.data.rows)) {
+                            if ($row4.element_ids) { $d2dCreatedIds += @($row4.element_ids) }
+                        }
+                        $ev4.masking_region = 'committed_verified with the IsMasking=true type'
+                    }
+                }
+                if (-not $why4d) {
+                    $fr4 = Invoke-Write 'horizun_detail_2d' @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true
+                        actions = @(@{ operation = 'create_filled_region'; view_id = $d2dViewId
+                                       filled_region_type_id = $d2dMaskTypeId
+                                       loops = @(, @(@(10000, 6000), @(11000, 6000), @(11000, 6800), @(10000, 6800))) }) }
+                    $tokF4 = $null
+                    if ($fr4.data) { $tokF4 = $fr4.data.confirmation_token }
+                    if (-not $tokF4 -and $fr4.text -match '(?i)IsMasking is TRUE') {
+                        $ev4.filled_with_masking_type = 'refused naming IsMasking is TRUE, token withheld'
+                    }
+                    else {
+                        $why4d = ("the masking type drawn as an ordinary filled region was not refused naming IsMasking is TRUE (token_present={0}): {1}" -f [bool]$tokF4, (Get-DimShortText $fr4.text))
+                    }
+                }
+            }
+            else {
+                # No masking type exists, so the only honest direction is the
+                # inverse: a non-masking type offered as a masking region.
+                $ev4.branch = 'no_masking_type_in_document'
+                $mr4b = Invoke-Write 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true
+                    actions = @(@{ operation = 'create_masking_region'; view_id = $d2dViewId
+                                   masking_region_type_id = $d2dFillTypeId
+                                   loops = @(, @(@(10000, 4000), @(12000, 4000), @(12000, 5500), @(10000, 5500))) }) }
+                $tokM4 = $null
+                if ($mr4b.data) { $tokM4 = $mr4b.data.confirmation_token }
+                if (-not $tokM4 -and $mr4b.text -match '(?i)IsMasking is FALSE') {
+                    $ev4.masking_with_filled_type = 'refused naming IsMasking is FALSE, token withheld'
+                }
+                else {
+                    $why4d = ("the non-masking type offered as a masking region was not refused naming IsMasking is FALSE (token_present={0}): {1}" -f [bool]$tokM4, (Get-DimShortText $mr4b.text))
+                }
+            }
+            if ($why4d) { Complete-D2dCase 4 $t0 'fail' $why4d -Evidence $ev4 }
+            else {
+                Complete-D2dCase 4 $t0 'pass' ("every direction the document's types allow behaved: the evidence names the branch ({0})" -f $ev4.branch) -Evidence $ev4
+            }
+        }
+
+        # ---- case 5: a detail component and/or symbol place and verify --------
+        # Existing loaded symbols FIRST (the fixture's own), self-provisioning as
+        # the fallback - and the fallback has a MEASURED limit: create_family
+        # refuses 2D family templates ('Sketch plane creation is not allowed in
+        # this family'), a real product gap named in the evidence rather than
+        # retried into. One verified placement of either kind proves the path;
+        # whatever could not be staged is named.
+        $t0 = Get-Date
+        if ($d2dViewGap) { Complete-D2dCase 5 $t0 'unverified' $d2dViewGap }
+        else {
+            $gap5notes = @(); $diSym5 = $null; $gaSym5 = $null
+            $diRow5 = @($script:d2dSymbolRows | Where-Object { $_.placement -eq 'detail_component' }) | Select-Object -First 1
+            $gaRow5 = @($script:d2dSymbolRows | Where-Object { $_.placement -eq 'generic_annotation' }) | Select-Object -First 1
+            if ($diRow5) { $diSym5 = [long]$diRow5.id }
+            if ($gaRow5) { $gaSym5 = [long]$gaRow5.id }
+            $d2dRfaDir = Join-Path $scratchDir 'detail2d-families'
+            New-Item -ItemType Directory -Force $d2dRfaDir | Out-Null
+            if (-not $diSym5) {
+                $diTpl5 = Find-D2dTemplate $d2dTemplateRoot 'Metric Detail Item.rft' '(?i)detail item|elemento de detalle'
+                if (-not $diTpl5) { $gap5notes += 'no loaded detail component and no Detail Item template to author one' }
+                else {
+                    $diRfa5 = Join-Path $d2dRfaDir 'HZ_D2D_DI.rfa'
+                    $df5 = Invoke-WriteApply 'horizun_create_family' @{
+                        target_document = $wDoc; template_path = $diTpl5; output_path = $diRfa5
+                        units = 'mm'; overwrite = $true; load_into_project = $true
+                        types = @(@{ name = 'HZ_D2D_DI' })
+                        family_lines = @(
+                            @{ kind = 'symbolic'; start = @(-100, 0, 0); end = @(100, 0, 0) },
+                            @{ kind = 'symbolic'; start = @(0, -100, 0); end = @(0, 100, 0) })
+                    } 'd2d-di-family'
+                    if ($df5.stage -eq 'apply' -and -not $df5.answer.isError -and $df5.answer.data -and
+                        $df5.answer.data.loaded_family -and @($df5.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                        $diSym5 = @($df5.answer.data.loaded_family.symbol_ids)[0]
+                        $script:d2dFamilyPaths += $diRfa5
+                    }
+                    else {
+                        $gap5notes += ('no loaded detail component, and self-provisioning hit the measured create_family limit on 2D templates: ' + (Get-DimShortText $df5.answer.text))
+                    }
+                }
+            }
+            if (-not $gaSym5) {
+                $gaTpl5 = Find-D2dTemplate $d2dTemplateRoot 'Metric Generic Annotation.rft' '(?i)generic annotation|anotaci[oó]n gen[eé]rica'
+                if (-not $gaTpl5) { $gap5notes += 'no loaded generic annotation and no Generic Annotation template to author one' }
+                else {
+                    $gaRfa5 = Join-Path $d2dRfaDir 'HZ_D2D_GA.rfa'
+                    $gf5 = Invoke-WriteApply 'horizun_create_family' @{
+                        target_document = $wDoc; template_path = $gaTpl5; output_path = $gaRfa5
+                        units = 'mm'; overwrite = $true; load_into_project = $true
+                        types = @(@{ name = 'HZ_D2D_GA' })
+                        family_lines = @(
+                            @{ kind = 'symbolic'; start = @(-100, 0, 0); end = @(100, 0, 0) },
+                            @{ kind = 'symbolic'; start = @(0, -100, 0); end = @(0, 100, 0) })
+                    } 'd2d-ga-family'
+                    if ($gf5.stage -eq 'apply' -and -not $gf5.answer.isError -and $gf5.answer.data -and
+                        $gf5.answer.data.loaded_family -and @($gf5.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                        $gaSym5 = @($gf5.answer.data.loaded_family.symbol_ids)[0]
+                        $script:d2dFamilyPaths += $gaRfa5
+                    }
+                    else {
+                        $gap5notes += ('no loaded generic annotation, and self-provisioning hit the measured create_family limit on 2D templates: ' + (Get-DimShortText $gf5.answer.text))
+                    }
+                }
+            }
+            if (-not $diSym5 -and -not $gaSym5) {
+                Complete-D2dCase 5 $t0 'not_covered' ('neither placement kind could be staged: ' + ($gap5notes -join ' | '))
+            }
+            else {
+                $acts5 = @()
+                if ($diSym5) { $acts5 += @{ operation = 'place_detail_component'; view_id = $d2dViewId
+                                            family_symbol_id = $diSym5; point = @(16000, 1000); rotation_degrees = 30; key = 'dc' } }
+                if ($gaSym5) { $acts5 += @{ operation = 'place_symbol'; view_id = $d2dViewId
+                                            family_symbol_id = $gaSym5; point = @(16000, 2500); key = 'ga' } }
+                $pl5 = Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'; actions = $acts5
+                } 'd2d-case5-place'
+                if ($pl5.stage -eq 'dry_run') {
+                    $reh5 = '(no rehearsal actions parsed)'
+                    if ($pl5.answer.data -and $pl5.answer.data.rehearsal -and $pl5.answer.data.rehearsal.actions) {
+                        $reh5bits = @($pl5.answer.data.rehearsal.actions | Where-Object { $_.constructible -ne $true } |
+                                      ForEach-Object { ('action{0}: {1} | checks: {2}' -f $_.index, $_.reason,
+                                          (@(@($_.verification.checks) | Where-Object { $_.match -ne $true } |
+                                             ForEach-Object { ('{0}(req={1} read={2})' -f $_.field, $_.requested, $_.read) }) -join '; ')) })
+                        if ($reh5bits.Count -gt 0) { $reh5 = ($reh5bits -join ' || ') }
+                    }
+                    Complete-D2dCase 5 $t0 'unverified' ('the placement rehearsal issued no token: ' + $reh5 + ' | staged: ' + ($gap5notes -join ' | '))
+                }
+                else {
+                    $why5d = Test-D2dCommitted $pl5.answer
+                    if ($why5d) { Complete-D2dCase 5 $t0 'fail' $why5d -TransactionStatus (Get-DimTx $pl5.answer) }
+                        else {
+                            $ids5 = @()
+                            foreach ($row5 in @($pl5.answer.data.rows)) {
+                                if ($row5.element_ids) { $d2dCreatedIds += @($row5.element_ids); $ids5 += @($row5.element_ids) }
+                            }
+                            $branch5 = @()
+                            if ($diSym5) { $branch5 += 'detail component at 30 degrees' }
+                            if ($gaSym5) { $branch5 += 'generic annotation' }
+                            $suffix5 = ''
+                            if ($gap5notes.Count -gt 0) { $suffix5 = '; not staged: ' + ($gap5notes -join ' | ') }
+                            Complete-D2dCase 5 $t0 'pass' (('placed committed_verified: {0}; category, point and rotation re-read by the command{1}' -f ($branch5 -join ' and '), $suffix5)) `
+                                -TransactionStatus (Get-DimTx $pl5.answer) `
+                                -Evidence @{ detail_component_symbol = $diSym5; generic_annotation_symbol = $gaSym5
+                                             placed_element_ids = $ids5; staging_notes = $gap5notes }
+                        }
+                    }
+                }
+            }
+
+        # ---- the style pair the style probes stand on. Discovered, not cached:
+        # ---- the DEFAULT style is whatever Revit gave the committed line 1, and
+        # ---- style B is any OTHER style the view's own resource answer lists.
+        $d2dDefaultStyleId = $null; $d2dStyleB = $null; $d2dStyleC = $null; $d2dStyleGap = $null
+        if ($d2dViewGap) { $d2dStyleGap = $d2dViewGap }
+        elseif ($d2dResourceGap) { $d2dStyleGap = $d2dResourceGap }
+        elseif (-not $d2dLine1Id -or -not $d2dLine2Id) {
+            $d2dStyleGap = 'case 2 did not commit both detail lines, so there is no curve to restyle'
+        }
+        else {
+            $q6 = Invoke-Write 'horizun_query_detail_2d' @{
+                mode = 'elements'; view_id = $d2dViewId; element_ids = @($d2dLine1Id); units = 'mm'; max_rows = 5 }
+            if ($q6.data) {
+                $row61 = @($q6.data.rows | Where-Object { [long]$_.element_id -eq [long]$d2dLine1Id }) | Select-Object -First 1
+                if ($row61 -and $row61.line_style_id) { $d2dDefaultStyleId = [long]$row61.line_style_id }
+            }
+            if (-not $d2dDefaultStyleId) {
+                $d2dStyleGap = 'the committed line 1 could not be re-read with its line_style_id: ' + (Get-DimShortText $q6.text)
+            }
+            else {
+                $others6 = @($d2dStyleRows | Where-Object { [long]$_.id -ne $d2dDefaultStyleId })
+                if ($others6.Count -ge 1) { $d2dStyleB = [long]$others6[0].id }
+                if ($others6.Count -ge 2) { $d2dStyleC = [long]$others6[1].id }
+                if (-not $d2dStyleB) {
+                    $d2dStyleGap = 'the document exposes no line style different from the default, so no style change can be proven'
+                }
+            }
+        }
+
+        # ---- case 6: set_line_style on an existing curve and a same-batch key -
+        $t0 = Get-Date
+        if ($d2dStyleGap) { Complete-D2dCase 6 $t0 'unverified' $d2dStyleGap }
+        else {
+            $sb6 = Invoke-WriteApply 'horizun_detail_2d' @{
+                target_document = $wDoc; units = 'mm'
+                actions = @(
+                    @{ operation = 'create_detail_line'; view_id = $d2dViewId; start = @(0, 3500); end = @(2000, 3500); key = 'k' },
+                    @{ operation = 'set_line_style'; element_key = 'k'; line_style_id = $d2dStyleB })
+            } 'd2d-case6-batch'
+            if ($sb6.stage -eq 'dry_run') {
+                Complete-D2dCase 6 $t0 'unverified' ('the same-batch rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $sb6.answer.text))
+            }
+            else {
+                $why6d = Test-D2dCommitted $sb6.answer
+                if ($why6d) { Complete-D2dCase 6 $t0 'fail' ('same-batch key: ' + $why6d) -TransactionStatus (Get-DimTx $sb6.answer) }
+                else {
+                    $newLine6 = $null
+                    $rowK6 = @($sb6.answer.data.rows | Where-Object { $_.key -eq 'k' }) | Select-Object -First 1
+                    if ($rowK6 -and $rowK6.element_ids) {
+                        $newLine6 = @($rowK6.element_ids)[0]
+                        $d2dCreatedIds += @($rowK6.element_ids)
+                    }
+                    if (-not $newLine6) {
+                        Complete-D2dCase 6 $t0 'fail' 'committed_verified, but no element id came back under the same-batch key' -TransactionStatus (Get-DimTx $sb6.answer)
+                    }
+                    else {
+                        $st6 = Invoke-WriteApply 'horizun_detail_2d' @{
+                            target_document = $wDoc; units = 'mm'
+                            actions = @(@{ operation = 'set_line_style'; element_id = $d2dLine1Id; line_style_id = $d2dStyleB })
+                        } 'd2d-case6-existing'
+                        if ($st6.stage -eq 'dry_run') {
+                            Complete-D2dCase 6 $t0 'unverified' ('the existing-curve rehearsal issued no token, so nothing was committed: ' + (Get-DimShortText $st6.answer.text))
+                        }
+                        else {
+                            $why6b = Test-D2dCommitted $st6.answer
+                            if ($why6b) { Complete-D2dCase 6 $t0 'fail' ('existing curve: ' + $why6b) -TransactionStatus (Get-DimTx $st6.answer) }
+                            else {
+                                $qc6 = Invoke-Write 'horizun_query_detail_2d' @{
+                                    mode = 'elements'; view_id = $d2dViewId
+                                    element_ids = @($newLine6, $d2dLine1Id); units = 'mm'; max_rows = 10 }
+                                $row6a = $null; $row6b = $null
+                                if ($qc6.data) {
+                                    $row6a = @($qc6.data.rows | Where-Object { [long]$_.element_id -eq [long]$newLine6 }) | Select-Object -First 1
+                                    $row6b = @($qc6.data.rows | Where-Object { [long]$_.element_id -eq [long]$d2dLine1Id }) | Select-Object -First 1
+                                }
+                                if ($row6a -and $row6b -and
+                                    [long]$row6a.line_style_id -eq $d2dStyleB -and [long]$row6b.line_style_id -eq $d2dStyleB) {
+                                    Complete-D2dCase 6 $t0 'pass' ("both routes committed_verified, and the independent re-read confirms line_style_id={0} on the same-batch key AND on the pre-existing case-2 line" -f $d2dStyleB) `
+                                        -Evidence @{ style_b = $d2dStyleB; default_style = $d2dDefaultStyleId
+                                                     same_batch_line = $newLine6; existing_line = $d2dLine1Id }
+                                }
+                                else {
+                                    $read6a = $null; $read6b = $null
+                                    if ($row6a) { $read6a = $row6a.line_style_id }
+                                    if ($row6b) { $read6b = $row6b.line_style_id }
+                                    Complete-D2dCase 6 $t0 'fail' ("the independent re-read did not confirm style {0} on both curves (same-batch read={1}, existing read={2})" -f $d2dStyleB, $read6a, $read6b)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- case 7: the idempotent replay of the case-2 apply ----------------
+        $t0 = Get-Date
+        if (-not $d2dBatch2Committed) {
+            Complete-D2dCase 7 $t0 'unverified' 'case 2 did not commit, so there is no recorded apply to replay'
+        }
+        else {
+            $before7 = Get-D2dCount $d2dViewId
+            if ($null -eq $before7) {
+                Complete-D2dCase 7 $t0 'unverified' 'the 2D census could not be read before the replay, so "creates nothing" could not be proven'
+            }
+            else {
+                # The SAME arguments, the SAME spent token and the SAME
+                # idempotency key Invoke-WriteApply used for case 2: the ledger
+                # must return the recorded result without executing twice.
+                $replay7 = $d2dBatch2Args.Clone()
+                $replay7['dry_run'] = $false
+                $replay7['confirmation_token'] = $d2dBatch2Token
+                $replay7['idempotency_key'] = "live-write-d2d-case2-$probeRun"
+                $rep7 = Invoke-Write 'horizun_detail_2d' $replay7
+                $after7 = Get-D2dCount $d2dViewId
+                $stamp7 = $null
+                if ($rep7.data -and $rep7.data.PSObject.Properties.Name -contains 'idempotency') { $stamp7 = $rep7.data.idempotency }
+                if (-not $rep7.isError -and $rep7.data -and $rep7.data.state -eq 'committed_verified' -and
+                    $after7 -eq $before7) {
+                    Complete-D2dCase 7 $t0 'pass' ("the replay returned the recorded committed_verified result without executing twice, and the census is unchanged at {0}" -f $before7) `
+                        -Evidence @{ census_before = $before7; census_after = $after7; idempotency = $stamp7 }
+                }
+                else {
+                    Complete-D2dCase 7 $t0 'fail' ("expected the recorded result and an unchanged census; got isError={0}, state='{1}', census {2}->{3}: {4}" -f $rep7.isError, $rep7.data.state, $before7, $after7, (Get-DimShortText $rep7.text)) `
+                        -Evidence @{ census_before = $before7; census_after = $after7; idempotency = $stamp7 }
+                }
+            }
+        }
+
+        # ---- case 8: the style moves underneath a minted token ----------------
+        $t0 = Get-Date
+        if ($d2dStyleGap) { Complete-D2dCase 8 $t0 'unverified' $d2dStyleGap }
+        else {
+            $ev8 = @{}
+            $moveStyle8 = $d2dStyleC
+            if ($null -eq $moveStyle8) {
+                $moveStyle8 = $d2dStyleB
+                $ev8.branch = 'two_styles_only: the intermediate write reuses style B, so the refusal must be fingerprint-based rather than outcome-based'
+            }
+            else {
+                $ev8.branch = 'three_styles: the intermediate write moves the curve to a third style'
+            }
+            $before8 = Get-D2dCount $d2dViewId
+            $actions8 = @(@{ operation = 'set_line_style'; element_id = $d2dLine2Id; line_style_id = $d2dStyleB })
+            $dry8 = Invoke-Write 'horizun_detail_2d' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $true; actions = $actions8 }
+            $tok8 = $null
+            if (-not $dry8.isError -and $dry8.data) { $tok8 = $dry8.data.confirmation_token }
+            if (-not $tok8) {
+                Complete-D2dCase 8 $t0 'unverified' ('the rehearsal issued no token to go stale: ' + (Get-DimShortText $dry8.text))
+            }
+            else {
+                $mv8 = Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'set_line_style'; element_id = $d2dLine2Id; line_style_id = $moveStyle8 })
+                } 'd2d-case8-move'
+                if ($mv8.stage -ne 'apply' -or $mv8.answer.isError) {
+                    Complete-D2dCase 8 $t0 'unverified' ("the target's style could not be moved between rehearsal and apply: " + (Get-DimShortText $mv8.answer.text))
+                }
+                else {
+                    $ap8 = Invoke-Write 'horizun_detail_2d' @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $false
+                        confirmation_token = $tok8
+                        idempotency_key = "live-write-d2d-case8-stale-$probeRun"
+                        actions = $actions8 }
+                    $after8 = Get-D2dCount $d2dViewId
+                    if ($ap8.isError -and $ap8.text -match 'THE MODEL MOVED AFTER THE DRY RUN' -and
+                        $after8 -eq $before8) {
+                        Complete-D2dCase 8 $t0 'pass' ("the independent style change made the token stale and it was refused with THE MODEL MOVED AFTER THE DRY RUN; census unchanged at {0}" -f $before8) `
+                            -Evidence ($ev8 + @{ moved_element = $d2dLine2Id; census_before = $before8; census_after = $after8 })
+                    }
+                    else {
+                        Complete-D2dCase 8 $t0 'fail' ("expected the stale-plan refusal and an unchanged census; got isError={0}, census {1}->{2}: {3}" -f $ap8.isError, $before8, $after8, (Get-DimShortText $ap8.text)) `
+                            -Evidence $ev8
+                    }
+                }
+            }
+        }
+
+        # ---- case 9: the refusals, each named by its cause --------------------
+        # All rehearsals: dry_run stays true, no token is ever spent, and each
+        # sub-refusal the fixture cannot stage is a NAMED gap in the evidence
+        # rather than a silent skip.
+        $t0 = Get-Date
+        $ev9 = @{}; $bad9 = @(); $neg9 = @()
+        $ev9.view_template = 'fixture gap: no cheap typed discovery exists for a view-template id, so this sub-refusal was not exercised'
+        $sq9 = Invoke-Write 'horizun_query_model' @{ categories = @('OST_Sheets'); include_links = $false; max_rows = 1 }
+        $sheet9 = $null
+        if (-not $sq9.isError -and $sq9.data -and @($sq9.data.rows).Count -gt 0) { $sheet9 = @($sq9.data.rows)[0].element_id }
+        if ($sheet9) {
+            $neg9 += @{ Label = 'sheet'; Pattern = '(?i)sheet'
+                        Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                  actions = @(@{ operation = 'create_detail_line'; view_id = $sheet9
+                                                 start = @(0, 0); end = @(1000, 0) }) } }
+        }
+        else { $ev9.sheet = 'fixture gap: the disposable model has no sheet (OST_Sheets returned none)' }
+        $ls9 = Invoke-Write 'horizun_list_schedules' @{ max_rows = 1 }
+        $sched9 = $null
+        if (-not $ls9.isError -and $ls9.data -and @($ls9.data.rows).Count -gt 0) { $sched9 = @($ls9.data.rows)[0].schedule_id }
+        if ($sched9) {
+            $neg9 += @{ Label = 'schedule'; Pattern = '(?i)schedule'
+                        Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                  actions = @(@{ operation = 'create_detail_line'; view_id = $sched9
+                                                 start = @(0, 0); end = @(1000, 0) }) } }
+        }
+        else { $ev9.schedule = 'fixture gap: the disposable model has no schedule' }
+        if ($d2dViewGap) {
+            $ev9.view_bound_negatives = 'the drafting-view gap blocked the loop, coplanarity and symbol sub-refusals: ' + $d2dViewGap
+        }
+        else {
+            if ($d2dFillTypeId) {
+                $neg9 += @{ Label = 'open_loop'; Pattern = '(?i)open_loop|3\.\.200 vertices'
+                            Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                      actions = @(@{ operation = 'create_filled_region'; view_id = $d2dViewId
+                                                     filled_region_type_id = $d2dFillTypeId
+                                                     loops = @(, @(@(20000, 0), @(21000, 0))) }) } }
+                $neg9 += @{ Label = 'self_intersection'; Pattern = 'self_intersection'
+                            Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                      actions = @(@{ operation = 'create_filled_region'; view_id = $d2dViewId
+                                                     filled_region_type_id = $d2dFillTypeId
+                                                     loops = @(, @(@(20000, 2000), @(21000, 3000), @(21000, 2000), @(20000, 3000))) }) } }
+            }
+            else {
+                $ev9.open_loop = 'fixture gap: no non-masking filled-region type, so the loop refusals could not be staged'
+                $ev9.self_intersection = $ev9.open_loop
+            }
+            $neg9 += @{ Label = 'non_coplanar'; Pattern = '(?i)non-zero third component'
+                        Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                  actions = @(@{ operation = 'create_detail_line'; view_id = $d2dViewId
+                                                 start = @(20000, 5000, 50); end = @(21000, 5000, 50) }) } }
+            # The wrong-placement refusal needs a REAL FamilySymbol that is not
+            # ViewBased - a MODEL family's type. A pipe TYPE is a system-family
+            # ElementType, not a FamilySymbol, and correctly refuses for a
+            # DIFFERENT reason (measured in the first live run) - which is not
+            # this probe's claim. A sprinkler/accessory/equipment symbol is.
+            $modelSym9 = $null
+            foreach ($cat9 in @('OST_Sprinklers', 'OST_PipeAccessory', 'OST_MechanicalEquipment')) {
+                if ($modelSym9) { continue }
+                $qs9 = Invoke-Write 'horizun_query_model' @{ categories = @($cat9); include_types = $true
+                                                             max_rows = 50; include_links = $false }
+                if ($qs9.data) {
+                    $t9 = @($qs9.data.rows | Where-Object { $_.is_element_type }) | Select-Object -First 1
+                    if ($t9) { $modelSym9 = [long]$t9.element_id }
+                }
+            }
+            if ($modelSym9) {
+                $neg9 += @{ Label = 'model_based_symbol'; Pattern = '(?i)ViewBased'
+                            Args = @{ target_document = $wDoc; units = 'mm'; dry_run = $true
+                                      actions = @(@{ operation = 'place_detail_component'; view_id = $d2dViewId
+                                                     family_symbol_id = $modelSym9; point = @(20000, 6000) }) } }
+            }
+            else {
+                $ev9.model_based_symbol = 'fixture gap: no model FamilySymbol (sprinkler/accessory/equipment) to aim the not-ViewBased refusal at'
+            }
+        }
+        foreach ($n9 in $neg9) {
+            $r9 = Invoke-Write 'horizun_detail_2d' $n9.Args
+            $tok9 = $null
+            if ($r9.data) { $tok9 = $r9.data.confirmation_token }
+            if (-not $tok9 -and $r9.text -match $n9.Pattern) {
+                $ev9[$n9.Label] = ("refused without a token, naming its cause (matched '{0}')" -f $n9.Pattern)
+            }
+            else {
+                $bad9 += ("{0}: expected a token-less refusal matching '{1}'; got token_present={2}: {3}" -f $n9.Label, $n9.Pattern, [bool]$tok9, (Get-DimShortText $r9.text))
+            }
+        }
+        if (@($neg9).Count -eq 0) {
+            Complete-D2dCase 9 $t0 'unverified' 'no negative sub-case could be staged at all - the view gap and the fixture gaps are named in the evidence' -Evidence $ev9
+        }
+        elseif ($bad9.Count -eq 0) {
+            Complete-D2dCase 9 $t0 'pass' ("{0} sub-refusal(s) exercised and every one refused without a token naming its cause; the unavailable ones are named fixture gaps in the evidence" -f @($neg9).Count) -Evidence $ev9
+        }
+        else {
+            Complete-D2dCase 9 $t0 'fail' ($bad9 -join ' | ') -Evidence $ev9
+        }
+
+        # ---- case 10: the drafting view as a real PNG on disk -----------------
+        $t0 = Get-Date
+        if ($d2dViewGap) { Complete-D2dCase 10 $t0 'unverified' $d2dViewGap }
+        else {
+            $cap10 = Invoke-Write 'horizun_capture_view' @{ view_id = $d2dViewId; pixel_size = 1600 }
+            if ($cap10.isError -or -not $cap10.data) {
+                Complete-D2dCase 10 $t0 'unverified' ('the capture errored, so no file could be inspected: ' + (Get-DimShortText $cap10.text))
+            }
+            else {
+                $capPath10 = $null
+                foreach ($pf10 in @('output_path', 'file_path', 'image_path', 'png_path', 'path', 'file')) {
+                    if ($capPath10) { continue }
+                    if ($cap10.data.PSObject.Properties.Name -contains $pf10 -and $cap10.data.$pf10) {
+                        $capPath10 = [string]$cap10.data.$pf10
+                    }
+                }
+                if (-not $capPath10) {
+                    Complete-D2dCase 10 $t0 'unverified' ('the reply carried no recognisable file-path field, so the file could not be found: ' + (Get-DimShortText $cap10.text))
+                }
+                elseif (-not (Test-Path -LiteralPath $capPath10)) {
+                    Complete-D2dCase 10 $t0 'fail' ("the reported file does not exist on disk: {0}" -f $capPath10)
+                }
+                else {
+                    # What the file IS, from its own bytes: the PNG signature and
+                    # the IHDR dimensions, not the reply's account of them.
+                    $bytes10 = [System.IO.File]::ReadAllBytes($capPath10)
+                    $sig10 = ($bytes10.Length -ge 24 -and $bytes10[0] -eq 137 -and $bytes10[1] -eq 80 -and
+                              $bytes10[2] -eq 78 -and $bytes10[3] -eq 71)
+                    $w10 = 0; $h10 = 0
+                    if ($sig10) {
+                        $w10 = ([int]$bytes10[16] -shl 24) -bor ([int]$bytes10[17] -shl 16) -bor ([int]$bytes10[18] -shl 8) -bor [int]$bytes10[19]
+                        $h10 = ([int]$bytes10[20] -shl 24) -bor ([int]$bytes10[21] -shl 16) -bor ([int]$bytes10[22] -shl 8) -bor [int]$bytes10[23]
+                    }
+                    if ($sig10 -and $w10 -gt 0 -and $h10 -gt 0) {
+                        Complete-D2dCase 10 $t0 'pass' ("a real PNG: {0} bytes at {1}, {2}x{3} measured from its own IHDR header" -f $bytes10.Length, $capPath10, $w10, $h10) `
+                            -Evidence @{ path = $capPath10; bytes = $bytes10.Length; width = $w10; height = $h10 }
+                    }
+                    else {
+                        Complete-D2dCase 10 $t0 'fail' ("the file at {0} is not a readable PNG (signature={1}, {2}x{3})" -f $capPath10, $sig10, $w10, $h10)
+                    }
+                }
+            }
+        }
+
+        # ---- case 11: delete_verified cleans exactly what this section made ---
+        $t0 = Get-Date
+        if ($d2dViewGap) { Complete-D2dCase 11 $t0 'unverified' $d2dViewGap }
+        else {
+            $ids11 = @($d2dCreatedIds | Where-Object { $_ } | Select-Object -Unique)
+            if ($ids11.Count -eq 0) {
+                Complete-D2dCase 11 $t0 'unverified' 'no probe committed a 2D element, so there is nothing to prove the cleanup on'
+            }
+            else {
+                $before11 = Get-D2dCount $d2dViewId
+                $del11 = Invoke-WriteApply 'horizun_delete_verified' @{
+                    mode = 'ids'; ids = $ids11; target_document = $wDoc; id_cap = 200 } 'd2d-cleanup'
+                if ($del11.stage -eq 'dry_run') {
+                    Complete-D2dCase 11 $t0 'unverified' ('the delete rehearsal issued no token, so nothing was deleted: ' + (Get-DimShortText $del11.answer.text))
+                }
+                elseif ($del11.answer.isError) {
+                    Complete-D2dCase 11 $t0 'fail' ('the delete errored: ' + (Get-DimShortText $del11.answer.text))
+                }
+                else {
+                    $after11 = Get-D2dCount $d2dViewId
+                    $expected11 = 0
+                    if ($null -ne $d2dBaselineCount) { $expected11 = $d2dBaselineCount }
+                    $deleted11 = $null
+                    if ($del11.answer.data) { $deleted11 = $del11.answer.data.deleted_total }
+                    if ($null -eq $after11) {
+                        Complete-D2dCase 11 $t0 'unverified' 'the 2D census could not be re-read after the delete, so the cleanup could not be proven'
+                    }
+                    elseif ($after11 -eq $expected11) {
+                        Complete-D2dCase 11 $t0 'pass' ("{0} probe id(s) deleted and the view's 2D census returned to its baseline of {1}" -f $ids11.Count, $expected11) `
+                            -Evidence @{ requested_ids = $ids11.Count; deleted_total = $deleted11
+                                         census_before = $before11; census_after = $after11; baseline = $expected11 }
+                    }
+                    else {
+                        Complete-D2dCase 11 $t0 'fail' ("the view still holds {0} 2D element(s) where the baseline was {1} (census before the delete: {2})" -f $after11, $expected11, $before11) `
+                            -Evidence @{ requested_ids = $ids11.Count; deleted_total = $deleted11
+                                         census_before = $before11; census_after = $after11; baseline = $expected11 }
+                    }
+                }
+            }
+        }
+
+        # Every case number reports exactly once - the same harness rule the
+        # dimension probes live under.
+        for ($d2dCase = 1; $d2dCase -le 11; $d2dCase++) {
+            if (-not $script:d2dCasesDone.ContainsKey($d2dCase)) {
+                Complete-D2dCase $d2dCase (Get-Date) 'unverified' 'the 2D-detail section ended before this probe ran - a harness bug, not a product verdict'
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # W7+: PLANIMETRY. The read-only documentation surface, proved against a
+        # fixture THIS run stages: two sheets (one with a title block, one
+        # without), the dimension fixture's plan and section placed with a KNOWN
+        # overlap, a schedule placement placed clear of both, tags staged so one
+        # visible pipe is deliberately left untagged and one pipe carries a
+        # duplicate, a dimension given a value override, text inside and outside
+        # an activated annotation crop, and - last, because it degrades coverage
+        # on purpose - an unloaded link.
+        #
+        # The two tools under test are READ-ONLY; every write below is fixture,
+        # made with the typed write tools whose own probes precede this section.
+        # execute_python appears exactly twice, both times as FIXTURE PREP (the
+        # crop state and the unloaded link have no typed writer), and what it
+        # reports is treated as staging evidence, never as the auditor's finding.
+        # ----------------------------------------------------------------------
+        $script:planCasesDone = @{}
+
+        function Complete-PlanCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail,
+                  $Evidence = $null)
+            if ($script:planCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:planCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$planNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:planimetryEvidence += @{
+                case = $CaseNumber; name = $entry.N; tool = $entry.T
+                started_utc = $Started.ToUniversalTime().ToString('o')
+                duration_ms = [int][math]::Round(((Get-Date) - $Started).TotalMilliseconds)
+                outcome = $Outcome
+                detail = $Detail
+                evidence = $Evidence
+            }
+        }
+
+        function Invoke-PlanQuery($arguments) { return Invoke-Write 'horizun_query_planimetry' $arguments }
+        function Invoke-PlanAudit($arguments) { return Invoke-Write 'horizun_audit_planimetry' $arguments }
+
+        # The same overlap arithmetic the auditor publishes, re-derived here from
+        # the QUERY's returned geometry, so the audit's verdict in case 8 is
+        # checked against an independent measurement instead of against itself.
+        function Test-BoxesOverlap($a, $b) {
+            if (-not $a -or -not $b) { return $false }
+            $ax = @($a.extent); $bx = @($b.extent)
+            if ($ax.Count -ne 4 -or $bx.Count -ne 4) { return $false }
+            $ox = [math]::Min([double]$ax[2], [double]$bx[2]) - [math]::Max([double]$ax[0], [double]$bx[0])
+            $oy = [math]::Min([double]$ax[3], [double]$bx[3]) - [math]::Max([double]$ax[1], [double]$bx[1])
+            return ($ox -gt 0.1 -and $oy -gt 0.1)
+        }
+
+        # Findings of one rule id, from a parsed audit reply.
+        function Get-PlanFindings($answer, [string]$ruleId, [string]$status) {
+            if ($answer.isError -or -not $answer.data) { return @() }
+            $rows = @($answer.data.findings | Where-Object { $_.rule_id -eq $ruleId })
+            if ($status) { $rows = @($rows | Where-Object { $_.status -eq $status }) }
+            return $rows
+        }
+
+        $planTag = $probeRun.Substring(0, 8)
+        $planGap = $null
+        if ($dimViewGap) { $planGap = 'the dimension fixture is missing, and every planimetry case stands on it: ' + $dimViewGap }
+        elseif (@($dimPipes).Count -lt 3) { $planGap = ('the dimension fixture staged only {0} pipe(s); the tag cases need 3' -f @($dimPipes).Count) }
+
+        # ---- staging state, filled below and reported in the evidence ---------
+        $planTbTypeId = $null; $planTbHow = 'none'
+        $planSchedId = $null
+        $planSheetAId = $null; $planSheetBId = $null
+        $planSheetANumber = "HZP-A-$planTag"; $planSheetBNumber = "HZP-B-$planTag"
+        $planVpPlanId = $null; $planVpSecId = $null; $planVpD2dId = $null; $planSchedPlacementId = $null
+        $planTagIds = @(); $planTagTypeHow = 'none'
+        $planNearTextId = $null; $planFarTextId = $null; $planBlankTextId = $null; $planBlankTextWhy = $null
+        $planOverrideDimId = $null
+        $planCropStaged = $false; $planCropDetail = 'not attempted'
+        $planTextTypeId = $null
+        $planScratchBefore = $null
+        $planCensusReference = $null
+
+        if (-not $planGap) {
+            # ---- F1: a title-block TYPE - from the model when it has one, else
+            # ---- authored from this machine's own titleblock template.
+            $planTbTypeId = First-Type 'OST_TitleBlocks' $null
+            if ($planTbTypeId) { $planTbHow = 'found in the model' }
+            else {
+                $tbTpl = Find-D2dTemplate $d2dTemplateRoot 'A1 metric.rft' '(?i)titleblock|title ?block|rotulaci|A[01] '
+                if ($tbTpl) {
+                    $tbRfaDir = Join-Path $scratchDir 'planimetry-families'
+                    New-Item -ItemType Directory -Force $tbRfaDir | Out-Null
+                    $tbRfa = Join-Path $tbRfaDir 'HZ_PLM_TB.rfa'
+                    $tbMk = Invoke-WriteApply 'horizun_create_family' @{
+                        target_document = $wDoc; template_path = $tbTpl; output_path = $tbRfa
+                        units = 'mm'; overwrite = $true; load_into_project = $true
+                        types = @(@{ name = 'HZ_PLM_TB' })
+                        family_lines = @(
+                            @{ kind = 'symbolic'; start = @(10, 10, 0); end = @(820, 10, 0) },
+                            @{ kind = 'symbolic'; start = @(820, 10, 0); end = @(820, 580, 0) },
+                            @{ kind = 'symbolic'; start = @(820, 580, 0); end = @(10, 580, 0) },
+                            @{ kind = 'symbolic'; start = @(10, 580, 0); end = @(10, 10, 0) })
+                    } 'plm-tb-family'
+                    if ($tbMk.stage -eq 'apply' -and -not $tbMk.answer.isError -and $tbMk.answer.data -and
+                        $tbMk.answer.data.loaded_family -and @($tbMk.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                        $planTbTypeId = @($tbMk.answer.data.loaded_family.symbol_ids)[0]
+                        $planTbHow = 'authored from ' + (Split-Path -Leaf $tbTpl)
+                    }
+                    else { $planTbHow = 'authoring failed: ' + (Get-DimShortText $tbMk.answer.text) }
+                }
+                else { $planTbHow = 'no titleblock template found under ' + $d2dTemplateRoot }
+            }
+
+            # ---- F2: one native schedule, to be placed on sheet A -----------------
+            $schedMk = Invoke-WriteApply 'horizun_create_schedule' @{
+                target_document = $wDoc; category = 'OST_PipeCurves'; name = "HZ_PLM_SCHED_$planTag"
+            } 'plm-schedule'
+            if ($schedMk.stage -eq 'apply' -and -not $schedMk.answer.isError -and $schedMk.answer.data -and
+                $schedMk.answer.data.schedule_id) {
+                $planSchedId = [long]$schedMk.answer.data.schedule_id
+            }
+
+            # ---- F3: the CROP, before anything is placed, so the plan viewport has
+            # ---- a small, controlled extent and the visible pipe set is exactly the
+            # ---- fixture's. No typed tool writes a crop; this is Python AS FIXTURE.
+            # CropBox.Min/Max are coordinates LOCAL to the box's own Transform, not
+            # model coordinates - measured on Revit 2023 (2026-08-24), where assigning
+            # model XY into them put the crop somewhere else entirely and the
+            # view-scoped collector saw 1 of the 3 fixture pipes. The corners are
+            # therefore taken through Transform.Inverse, and the script verifies its
+            # own work by the only fact the section actually depends on: the collector
+            # of the cropped view must see exactly the three fixture pipes.
+            $cropCode = @"
+from Autodesk.Revit.DB import (ElementId, XYZ, BuiltInParameter, Transaction,
+                               FilteredElementCollector, BuiltInCategory)
+v = doc.GetElement(ElementId($dimPlanViewId))
+t = Transaction(doc, 'HZ planimetry crop fixture')
+t.Start()
+v.CropBoxActive = True
+v.CropBoxVisible = True
+bb = v.CropBox
+inv = bb.Transform.Inverse
+a = inv.OfPoint(XYZ(505000.0 / 304.8, -8000.0 / 304.8, 0.0))
+b = inv.OfPoint(XYZ(518000.0 / 304.8, 14000.0 / 304.8, 0.0))
+bb.Min = XYZ(min(a.X, b.X), min(a.Y, b.Y), bb.Min.Z)
+bb.Max = XYZ(max(a.X, b.X), max(a.Y, b.Y), bb.Max.Z)
+v.CropBox = bb
+ann = False
+p = v.get_Parameter(BuiltInParameter.VIEWER_ANNOTATION_CROP_ACTIVE)
+if p is not None and not p.IsReadOnly:
+    p.Set(1)
+    ann = True
+t.Commit()
+v2 = doc.GetElement(ElementId($dimPlanViewId))
+# The self-check uses SUBSTANCE, the same convention the auditor uses: each
+# fixture pipe must be un-hidden in the view and answer a bounding box in it.
+# The view-scoped collector is deliberately NOT the referee here - measured
+# twice on 2023, it omits elements that are demonstrably in the view until
+# the view's graphics regenerate.
+ok_pipes = []
+for raw in [$(@($dimPipes) -join ', ')]:
+    e = doc.GetElement(ElementId(raw))
+    good = e is not None and not e.IsHidden(v2) and e.get_BoundingBox(v2) is not None
+    ok_pipes.append(bool(good))
+ok = bool(v2.CropBoxActive) and all(ok_pipes)
+__output__ = {'status': 'self_reported_verified' if ok else 'failed',
+              'summary': 'crop fixture staged; each fixture pipe answers a bounding box in the cropped view',
+              'verification': {'checked': True,
+                               'evidence': ['CropBoxActive=' + str(v2.CropBoxActive),
+                                            'annotation_crop_set=' + str(ann),
+                                            'pipes_boxed_in_view=' + str(ok_pipes)]}}
+"@
+            $cropRun = Invoke-Write 'horizun_execute_python' @{
+                code = $cropCode; target_document = $wDoc
+                idempotency_key = "live-plm-crop-$probeRun"
+            }
+            if (-not $cropRun.isError -and $cropRun.data -and $cropRun.data.executed -eq $true -and
+                $cropRun.data.evidence_status -eq 'self_reported_verified') {
+                $planCropStaged = $true
+                $planCropDetail = 'staged by fixture python (self-reported, treated as staging only)'
+            }
+            else { $planCropDetail = 'python crop staging did not verify: ' + (Get-DimShortText $cropRun.text) }
+
+            # ---- F4: sheets and placements, one atomic batch ----------------------
+            # MEASURED on Revit 2023 (2026-08-24, this machine): Viewport.Create
+            # returns NULL - without throwing - for an EMPTY drafting view, while
+            # CanAddViewToSheet answers true for the same pair; one detail line
+            # makes the same view placeable and verified. The d2d section's
+            # drafting view ends its section deliberately empty (its last probe
+            # deletes everything it committed), so it gets one fixture line here
+            # or it is not placed at all.
+            $planD2dPlaceable = $false
+            if ($d2dViewId) {
+                $d2dLine = Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'create_detail_line'; view_id = $d2dViewId
+                                   start = @(0, 0); end = @(1000, 0); key = 'plmline' })
+                } 'plm-d2d-line'
+                if ($d2dLine.stage -eq 'apply' -and -not $d2dLine.answer.isError -and
+                    $d2dLine.answer.data -and $d2dLine.answer.data.state -eq 'committed_verified') {
+                    $planD2dPlaceable = $true
+                }
+            }
+
+            $shActions = @()
+            $shA = @{ operation = 'create_sheet'; key = 'shA'; name = "HZ_PLM_SHEET_A_$planTag"; number = $planSheetANumber }
+            if ($planTbTypeId) { $shA['title_block_type_id'] = [long]$planTbTypeId }
+            $shActions += $shA
+            $shActions += @{ operation = 'create_sheet'; key = 'shB'; name = "HZ_PLM_SHEET_B_$planTag"; number = $planSheetBNumber }
+            $shActions += @{ operation = 'place_view'; sheet_key = 'shA'; view_id = $dimPlanViewId; point = @(300, 300); key = 'vpPlan' }
+            $shActions += @{ operation = 'place_view'; sheet_key = 'shA'; view_id = $dimSectionViewId; point = @(300, 300); key = 'vpSec' }
+            if ($planD2dPlaceable) { $shActions += @{ operation = 'place_view'; sheet_key = 'shB'; view_id = $d2dViewId; point = @(300, 300); key = 'vpD2d' } }
+            if ($planSchedId) { $shActions += @{ operation = 'place_schedule'; sheet_key = 'shA'; schedule_id = $planSchedId; point = @(700, 120); key = 'siA' } }
+
+            $shMk = Invoke-WriteApply 'horizun_manage_views' @{
+                target_document = $wDoc; units = 'mm'; actions = $shActions
+            } 'plm-sheets'
+            if ($shMk.stage -eq 'apply' -and -not $shMk.answer.isError -and $shMk.answer.data) {
+                $aliases = $shMk.answer.data.aliases
+                $planSheetAId = $aliases.shA
+                $planSheetBId = $aliases.shB
+                $planVpPlanId = $aliases.vpPlan
+                $planVpSecId = $aliases.vpSec
+                if ($planD2dPlaceable) { $planVpD2dId = $aliases.vpD2d }
+                if ($planSchedId) { $planSchedPlacementId = $aliases.siA }
+            }
+            if (-not $planSheetAId -or -not $planSheetBId -or -not $planVpPlanId -or -not $planVpSecId) {
+                $planGap = 'the sheet fixture could not be staged: ' + (Get-DimShortText $shMk.answer.text)
+            }
+        }
+
+        if (-not $planGap) {
+            # ---- F5: a multi-category tag type, then the tags and texts -----------
+            $planTagTypeId = First-Type 'OST_MultiCategoryTags' $null
+            if ($planTagTypeId) { $planTagTypeHow = 'found in the model' }
+            else {
+                $tagTpl = Find-D2dTemplate $d2dTemplateRoot 'Metric Multi-Category Tag.rft' '(?i)multi-?category tag|varias categor'
+                if ($tagTpl) {
+                    $tagRfaDir = Join-Path $scratchDir 'planimetry-families'
+                    New-Item -ItemType Directory -Force $tagRfaDir | Out-Null
+                    $tagRfa = Join-Path $tagRfaDir 'HZ_PLM_TAG.rfa'
+                    # MEASURED on Revit 2023: the multi-category tag template refuses
+                    # SketchPlane creation ("Sketch plane creation is not allowed in
+                    # this family"), which is what family_lines needs - and a tag
+                    # symbol needs no geometry to BE a tag target, so none is drawn.
+                    $tagMk = Invoke-WriteApply 'horizun_create_family' @{
+                        target_document = $wDoc; template_path = $tagTpl; output_path = $tagRfa
+                        units = 'mm'; overwrite = $true; load_into_project = $true
+                        types = @(@{ name = 'HZ_PLM_TAG' })
+                    } 'plm-tag-family'
+                    if ($tagMk.stage -eq 'apply' -and -not $tagMk.answer.isError -and $tagMk.answer.data -and
+                        $tagMk.answer.data.loaded_family -and @($tagMk.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                        $planTagTypeId = @($tagMk.answer.data.loaded_family.symbol_ids)[0]
+                        $planTagTypeHow = 'authored from ' + (Split-Path -Leaf $tagTpl)
+                    }
+                    else { $planTagTypeHow = 'authoring failed: ' + (Get-DimShortText $tagMk.answer.text) }
+                }
+                else { $planTagTypeHow = 'no multi-category tag template found under ' + $d2dTemplateRoot }
+            }
+
+            $pipe1 = [long]@($dimPipes)[0]; $pipe2 = [long]@($dimPipes)[1]; $pipe3 = [long]@($dimPipes)[2]
+            if ($planTagTypeId) {
+                # Pipes 1 and 2 tagged; pipe 3 DELIBERATELY not. Pipe 1 tagged twice
+                # with the same type in the same view: the staged duplicate.
+                $tagMk2 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(
+                        @{ operation = 'tag'; view_id = $dimPlanViewId; element_id = $pipe1
+                           tag_mode = 'multi_category'; point = @(510500, 6300, 0) },
+                        @{ operation = 'tag'; view_id = $dimPlanViewId; element_id = $pipe1
+                           tag_mode = 'multi_category'; point = @(512500, 6300, 0) },
+                        @{ operation = 'tag'; view_id = $dimPlanViewId; element_id = $pipe2
+                           tag_mode = 'multi_category'; point = @(510500, 6900, 0) })
+                } 'plm-tags'
+                if ($tagMk2.stage -eq 'apply' -and -not $tagMk2.answer.isError -and $tagMk2.answer.data) {
+                    foreach ($row in @($tagMk2.answer.data.rows)) {
+                        if ($row.element_id) { $planTagIds += [long]$row.element_id }
+                    }
+                }
+            }
+
+            # MEASURED on Revit 2023: query_model include_types answers ZERO
+            # TextNoteTypes under OST_TextNotes (355 instance rows, 0 type rows),
+            # so the generic First-Type route cannot find one. An existing note
+            # names its own type through the planimetry read itself; a model with
+            # no note at all falls back to a fixture-python READ of the first
+            # TextNoteType - staging, not auditor evidence.
+            $planTextTypeId = First-Type 'OST_TextNotes' $null
+            if (-not $planTextTypeId) {
+                $tq = Invoke-PlanQuery @{ mode = 'annotations'; categories = @('text_notes'); units = 'mm'; max_rows = 1 }
+                if (-not $tq.isError -and $tq.data) {
+                    $tRow = @($tq.data.rows) | Select-Object -First 1
+                    if ($tRow -and $tRow.type_id) { $planTextTypeId = [long]$tRow.type_id }
+                }
+            }
+            if (-not $planTextTypeId) {
+                $ttCode = @"
+from Autodesk.Revit.DB import FilteredElementCollector, TextNoteType
+t = None
+for x in FilteredElementCollector(doc).OfClass(TextNoteType):
+    t = x
+    break
+try:
+    v = None if t is None else t.Id.Value
+except Exception:
+    v = None if t is None else t.Id.IntegerValue
+__output__ = {'status': 'completed_unverified', 'summary': 'read the first TextNoteType id', 'type_id': v}
+"@
+                $ttRun = Invoke-Write 'horizun_execute_python' @{
+                    code = $ttCode; target_document = $wDoc
+                    idempotency_key = "live-plm-texttype-$probeRun"
+                }
+                if (-not $ttRun.isError -and $ttRun.data -and $ttRun.data.executed -eq $true -and
+                    $ttRun.data.output.type_id) {
+                    $planTextTypeId = [long]$ttRun.data.output.type_id
+                }
+            }
+            if ($planTextTypeId) {
+                $txtMk = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(
+                        @{ operation = 'text'; view_id = $dimPlanViewId; point = @(511000, 4500, 0)
+                           text = "HZ_PLM_NOTA_$planTag"; text_type_id = [long]$planTextTypeId },
+                        @{ operation = 'text'; view_id = $dimPlanViewId; point = @(540000, 4500, 0)
+                           text = "HZ_PLM_FUERA_$planTag"; text_type_id = [long]$planTextTypeId })
+                } 'plm-texts'
+                if ($txtMk.stage -eq 'apply' -and -not $txtMk.answer.isError -and $txtMk.answer.data) {
+                    $txtRows = @($txtMk.answer.data.rows)
+                    if ($txtRows.Count -ge 1 -and $txtRows[0].element_id) { $planNearTextId = [long]$txtRows[0].element_id }
+                    if ($txtRows.Count -ge 2 -and $txtRows[1].element_id) { $planFarTextId = [long]$txtRows[1].element_id }
+                }
+                # The whitespace note, alone so a refusal cannot sink the real ones.
+                # Revit may refuse all-whitespace text; either outcome is recorded.
+                $blankMk = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'text'; view_id = $dimPlanViewId; point = @(511000, 3800, 0)
+                                   text = ' '; text_type_id = [long]$planTextTypeId })
+                } 'plm-blank-text'
+                if ($blankMk.stage -eq 'apply' -and -not $blankMk.answer.isError -and $blankMk.answer.data) {
+                    $blankRows = @($blankMk.answer.data.rows)
+                    if ($blankRows.Count -ge 1 -and $blankRows[0].element_id) { $planBlankTextId = [long]$blankRows[0].element_id }
+                }
+                if (-not $planBlankTextId) {
+                    $planBlankTextWhy = 'Revit (or the bridge) refused an all-whitespace TextNote: ' + (Get-DimShortText $blankMk.answer.text) +
+                                        ' - the pure empty-text branch stays proved by unit test, and the live audit asserts on real notes instead.'
+                }
+            }
+
+            # ---- F6: one dimension gets a value override --------------------------
+            $qd = Invoke-Write 'horizun_query_dimensions' @{ view_id = $dimPlanViewId; max_rows = 200 }
+            if (-not $qd.isError -and $qd.data) {
+                $simple = @($qd.data.rows | Where-Object {
+                    $_.number_of_segments -le 1 -and $_.is_view_specific -eq $true -and $_.shape -eq 'linear' }) |
+                    Select-Object -First 1
+                if ($simple) {
+                    $ov = Invoke-WriteApply 'horizun_edit_dimensions' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(@{ element_id = [long]$simple.element_id; value_override = 'VARIES' })
+                    } 'plm-override'
+                    if ($ov.stage -eq 'apply' -and -not $ov.answer.isError) {
+                        $planOverrideDimId = [long]$simple.element_id
+                    }
+                }
+            }
+
+            # The reference census the closing case compares against, and the file
+            # census the no-file-output case compares against. Taken AFTER staging,
+            # BEFORE the first read, so only the read surface is being measured.
+            $planScratchBefore = @(Get-ChildItem -Path $scratchDir -Recurse -File -ErrorAction SilentlyContinue).Count
+        }
+
+        if ($planGap) {
+            for ($pc = 1; $pc -le 22; $pc++) { Complete-PlanCase $pc (Get-Date) 'not_covered' $planGap }
+        }
+        else {
+            # ---- case 19 (opens here): IsModified before the first read -----------
+            $t19 = Get-Date
+            $planModifiedBefore = $null
+            $mod1 = Invoke-Write 'horizun_execute_python' @{
+                code = "__output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified', 'verification': {'checked': True, 'evidence': ['IsModified=' + str(doc.IsModified)]}, 'modified': bool(doc.IsModified)}"
+                target_document = $wDoc; idempotency_key = "live-plm-mod1-$probeRun"
+            }
+            if (-not $mod1.isError -and $mod1.data -and $mod1.data.executed -eq $true) {
+                $planModifiedBefore = [bool]$mod1.data.output.modified
+            }
+
+            # ---- case 1: the inventory census -------------------------------------
+            $t0 = Get-Date
+            $inv1 = Invoke-PlanQuery @{ mode = 'inventory'; units = 'mm' }
+            if ($inv1.isError -or -not $inv1.data) {
+                Complete-PlanCase 1 $t0 'unverified' ('the inventory call errored: ' + (Get-DimShortText $inv1.text))
+            }
+            else {
+                $totals = $inv1.data.totals
+                $shq = Invoke-PlanQuery @{ mode = 'sheets'; units = 'mm'; max_rows = 500 }
+                $plq = Invoke-PlanQuery @{ mode = 'placements'; units = 'mm'; max_rows = 500 }
+                $sheetsExact = ($shq.data -and [int]$totals.sheets_total -eq [int]$shq.data.matched_total)
+                $vpRows = @()
+                if ($plq.data) { $vpRows = @($plq.data.rows | Where-Object { $_.class -eq 'viewport' }) }
+                $vpExact = ($plq.data -and [int]$totals.viewports_total -eq $vpRows.Count -and
+                            $plq.data.truncated -eq $false)
+                $coverageBlock = ($null -ne $inv1.data.coverage_complete -and $null -ne $inv1.data.checks_failed)
+                if ($sheetsExact -and $vpExact -and $coverageBlock -and
+                    [int]$totals.sheets_total -ge 2 -and [int]$totals.dimensions_total -ge 1 -and
+                    [int]$totals.tags_total -ge $planTagIds.Count) {
+                    Complete-PlanCase 1 $t0 'pass' ("totals are exact against independent re-reads: sheets_total={0} matches mode=sheets, viewports_total={1} matches mode=placements; the coverage block is present" -f $totals.sheets_total, $totals.viewports_total) `
+                        -Evidence @{ totals = $totals; coverage_complete = $inv1.data.coverage_complete }
+                }
+                else {
+                    Complete-PlanCase 1 $t0 'fail' ("the census does not hold: sheets_exact={0} viewports_exact={1} coverage_block={2} (sheets_total={3}, dimensions_total={4}, tags_total={5})" -f $sheetsExact, $vpExact, $coverageBlock, $totals.sheets_total, $totals.dimensions_total, $totals.tags_total)
+                }
+            }
+
+            # ---- case 2: sheets ---------------------------------------------------
+            $t0 = Get-Date
+            $sh2 = Invoke-PlanQuery @{ mode = 'sheets'; sheet_ids = @([long]$planSheetAId, [long]$planSheetBId); units = 'mm' }
+            if ($sh2.isError -or -not $sh2.data) {
+                Complete-PlanCase 2 $t0 'unverified' ('mode=sheets errored: ' + (Get-DimShortText $sh2.text))
+            }
+            else {
+                $rowA = @($sh2.data.rows | Where-Object { [long]$_.sheet_id -eq [long]$planSheetAId }) | Select-Object -First 1
+                $rowB = @($sh2.data.rows | Where-Object { [long]$_.sheet_id -eq [long]$planSheetBId }) | Select-Object -First 1
+                $aOk = ($rowA -and $rowA.sheet_number -eq $planSheetANumber -and
+                        @($rowA.viewport_ids).Count -eq 2 -and
+                        (@($rowA.viewport_ids) -contains [long]$planVpPlanId) -and
+                        (@($rowA.viewport_ids) -contains [long]$planVpSecId))
+                if ($aOk -and $planSchedPlacementId) {
+                    $aOk = (@($rowA.schedule_placement_ids) -contains [long]$planSchedPlacementId)
+                }
+                $tbOk = $true
+                if ($planTbTypeId) { $tbOk = ($rowA -and [int]$rowA.titleblock_count -eq 1 -and $rowA.titleblock_type) }
+                $bOk = ($rowB -and [int]$rowB.titleblock_count -eq 0 -and $rowB.placeholder -eq $false)
+                if ($aOk -and $tbOk -and $bOk) {
+                    Complete-PlanCase 2 $t0 'pass' ("sheet A carries its two viewports{0}{1}; sheet B reads titleblock_count=0" -f $(if ($planSchedPlacementId) { ', its schedule placement' } else { '' }), $(if ($planTbTypeId) { ' and one title block with its type' } else { '' })) `
+                        -Evidence @{ sheet_a = $rowA; sheet_b = $rowB; titleblock = $planTbHow }
+                }
+                else {
+                    Complete-PlanCase 2 $t0 'fail' ("the sheet rows do not hold: A_ok={0} titleblock_ok={1} B_ok={2} (titleblock staging: {3})" -f $aOk, $tbOk, $bOk, $planTbHow)
+                }
+            }
+
+            # ---- case 3: views ----------------------------------------------------
+            $t0 = Get-Date
+            $vw3 = Invoke-PlanQuery @{ mode = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm' }
+            if ($vw3.isError -or -not $vw3.data) {
+                Complete-PlanCase 3 $t0 'unverified' ('mode=views errored: ' + (Get-DimShortText $vw3.text))
+            }
+            else {
+                $vRow = @($vw3.data.rows) | Select-Object -First 1
+                $baseOk = ($vRow -and $vRow.view_type -eq 'FloorPlan' -and [int]$vRow.scale -gt 0 -and
+                           $vRow.placed_on_sheet -eq $true -and
+                           (@($vRow.sheet_ids) -contains [long]$planSheetAId) -and
+                           ($null -ne $vRow.template_id -or $vRow.template_readable -eq $true))
+                $cropOk = $true
+                if ($planCropStaged) {
+                    $cropOk = ($vRow.crop_box_active -eq $true -and $null -ne $vRow.crop_box)
+                }
+                if ($baseOk -and $cropOk) {
+                    Complete-PlanCase 3 $t0 'pass' ("the plan row carries view_type, scale {0}, template state, sheet placement on the fixture sheet{1}" -f $vRow.scale, $(if ($planCropStaged) { ' and the ACTIVE crop with its geometry' } else { ' (crop fixture was not staged: ' + $planCropDetail + ')' })) `
+                        -Evidence @{ view = $vRow; crop_staged = $planCropStaged }
+                }
+                else {
+                    Complete-PlanCase 3 $t0 'fail' ("the view row does not hold: base={0} crop={1} ({2})" -f $baseOk, $cropOk, $planCropDetail)
+                }
+            }
+
+            # ---- case 4: placements in sheet coordinates, with the KNOWN overlap --
+            $t0 = Get-Date
+            $pl4 = Invoke-PlanQuery @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId, [long]$planSheetBId); units = 'mm' }
+            $planVpPlanRow = $null; $planVpSecRow = $null; $planSchedRow = $null
+            if ($pl4.isError -or -not $pl4.data) {
+                Complete-PlanCase 4 $t0 'unverified' ('mode=placements errored: ' + (Get-DimShortText $pl4.text))
+            }
+            else {
+                $planVpPlanRow = @($pl4.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpPlanId }) | Select-Object -First 1
+                $planVpSecRow = @($pl4.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpSecId }) | Select-Object -First 1
+                if ($planSchedPlacementId) {
+                    $planSchedRow = @($pl4.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planSchedPlacementId }) | Select-Object -First 1
+                }
+                $bothReadable = ($planVpPlanRow -and $planVpSecRow -and
+                                 $planVpPlanRow.bounds_readable -eq $true -and $planVpSecRow.bounds_readable -eq $true -and
+                                 $planVpPlanRow.coordinate_system -eq 'sheet' -and @($planVpPlanRow.box_outline).Count -eq 4)
+                $overlapMeasured = Test-BoxesOverlap $planVpPlanRow $planVpSecRow
+                $schedClear = $true
+                if ($planSchedRow) {
+                    $schedClear = (-not (Test-BoxesOverlap $planSchedRow $planVpPlanRow)) -and
+                                  (-not (Test-BoxesOverlap $planSchedRow $planVpSecRow))
+                }
+                if ($bothReadable -and $overlapMeasured -and $schedClear) {
+                    Complete-PlanCase 4 $t0 'pass' 'both viewports read their sheet-coordinate outlines, the harness measures their staged overlap from the returned geometry, and the schedule placement is measurably clear of both' `
+                        -Evidence @{ viewport_plan = $planVpPlanRow; viewport_section = $planVpSecRow; schedule = $planSchedRow }
+                }
+                else {
+                    Complete-PlanCase 4 $t0 'fail' ("the placement geometry does not hold: bounds_readable={0} staged_overlap_measured={1} schedule_clear={2}" -f $bothReadable, $overlapMeasured, $schedClear)
+                }
+            }
+
+            # ---- case 5: annotations ----------------------------------------------
+            $t0 = Get-Date
+            $an5 = Invoke-PlanQuery @{ mode = 'annotations'; view_ids = @([long]$dimPlanViewId); units = 'mm'; max_rows = 500 }
+            if ($an5.isError -or -not $an5.data) {
+                Complete-PlanCase 5 $t0 'unverified' ('mode=annotations errored: ' + (Get-DimShortText $an5.text))
+            }
+            else {
+                $rows5 = @($an5.data.rows)
+                $dims5 = @($rows5 | Where-Object { $_.kind -eq 'dimension' })
+                $tags5 = @($rows5 | Where-Object { $_.kind -eq 'tag' })
+                $texts5 = @($rows5 | Where-Object { $_.kind -eq 'text_note' })
+                $dimOk = ($dims5.Count -ge 1 -and $null -ne $dims5[0].reference_count)
+                $tagOk = $true
+                if ($planTagIds.Count -gt 0) {
+                    $tag5 = @($tags5 | Where-Object { [long]$_.element_id -eq [long]$planTagIds[0] }) | Select-Object -First 1
+                    $tagOk = ($tag5 -and (@($tag5.tagged_element_ids) -contains [long]@($dimPipes)[0]) -and
+                              $tag5.orphaned -eq $false)
+                }
+                $textOk = $true
+                if ($planNearTextId) {
+                    $near5 = @($texts5 | Where-Object { [long]$_.element_id -eq [long]$planNearTextId }) | Select-Object -First 1
+                    $textOk = ($near5 -and $near5.empty_or_whitespace -eq $false -and $near5.text)
+                }
+                $kindsDiscriminated = (@($rows5 | Where-Object { -not $_.kind }).Count -eq 0)
+                if ($dimOk -and $tagOk -and $textOk -and $kindsDiscriminated) {
+                    Complete-PlanCase 5 $t0 'pass' ("{0} dimension(s) with reference counts, the staged tag naming its pipe, the real text with empty=false, and every row discriminated by kind" -f $dims5.Count) `
+                        -Evidence @{ dimensions = $dims5.Count; tags = $tags5.Count; texts = $texts5.Count
+                                     blank_text = $planBlankTextId; blank_text_note = $planBlankTextWhy }
+                }
+                else {
+                    Complete-PlanCase 5 $t0 'fail' ("the annotation rows do not hold: dimensions={0} tag={1} text={2} discriminated={3}" -f $dimOk, $tagOk, $textOk, $kindsDiscriminated)
+                }
+            }
+
+            # ---- case 6: references -----------------------------------------------
+            $t0 = Get-Date
+            $rf6 = Invoke-PlanQuery @{ mode = 'references'; units = 'mm'; max_rows = 500 }
+            if ($rf6.isError -or -not $rf6.data) {
+                Complete-PlanCase 6 $t0 'unverified' ('mode=references errored: ' + (Get-DimShortText $rf6.text))
+            }
+            else {
+                $refRows = @($rf6.data.rows)
+                $legalStates = @('resolved', 'missing', 'unknown', 'unreadable')
+                $allLegal = (@($refRows | Where-Object { $legalStates -notcontains $_.target_state }).Count -eq 0)
+                $resolvedToSec = @($refRows | Where-Object {
+                    $_.target_state -eq 'resolved' -and [long]$_.target_view_id -eq [long]$dimSectionViewId })
+                $unknownWithReason = @($refRows | Where-Object {
+                    $_.target_state -eq 'unknown' -and -not [string]::IsNullOrWhiteSpace($_.target_state_reason) })
+                $bareUnknown = @($refRows | Where-Object {
+                    $_.target_state -eq 'unknown' -and [string]::IsNullOrWhiteSpace($_.target_state_reason) })
+                if ($allLegal -and $bareUnknown.Count -eq 0 -and ($resolvedToSec.Count -ge 1 -or $unknownWithReason.Count -ge 1)) {
+                    $secDetail = 'no marker resolved to the fixture section; every unknown carries its reason'
+                    if ($resolvedToSec.Count -ge 1) {
+                        $secDetail = ("a marker resolves to the fixture section view (placed={0})" -f $resolvedToSec[0].target_placed)
+                    }
+                    Complete-PlanCase 6 $t0 'pass' ("{0} reference row(s), every target_state legal, none unknown without a reason; {1}" -f $refRows.Count, $secDetail) `
+                        -Evidence @{ rows = $refRows.Count; resolved_to_section = $resolvedToSec.Count; unknown_with_reason = $unknownWithReason.Count }
+                }
+                else {
+                    Complete-PlanCase 6 $t0 'fail' ("the reference rows do not hold: all_states_legal={0} bare_unknowns={1} resolved_to_section={2} unknown_with_reason={3}" -f $allLegal, $bareUnknown.Count, $resolvedToSec.Count, $unknownWithReason.Count)
+                }
+            }
+
+            # ---- cases 7, 8, 9: ONE audit of the two fixture sheets ---------------
+            $auditSheetsArgs = @{ scope = 'sheets'; sheet_ids = @([long]$planSheetAId, [long]$planSheetBId); units = 'mm'; max_findings = 500 }
+            $au7 = Invoke-PlanAudit $auditSheetsArgs
+
+            $t0 = Get-Date
+            if ($au7.isError -or -not $au7.data) {
+                Complete-PlanCase 7 $t0 'unverified' ('the sheet audit errored: ' + (Get-DimShortText $au7.text))
+            }
+            else {
+                $noTb = Get-PlanFindings $au7 'sheet.no-titleblock' 'failed'
+                $forB = @($noTb | Where-Object { [long]$_.sheet_id -eq [long]$planSheetBId })
+                $wrongA = @()
+                if ($planTbTypeId) { $wrongA = @($noTb | Where-Object { [long]$_.sheet_id -eq [long]$planSheetAId }) }
+                if ($forB.Count -eq 1 -and $forB[0].severity -eq 'blocking' -and $wrongA.Count -eq 0) {
+                    Complete-PlanCase 7 $t0 'pass' ("sheet B ({0}) is the blocking no-titleblock finding{1}" -f $planSheetBNumber, $(if ($planTbTypeId) { '; sheet A, which carries one, is not' } else { ' (sheet A also has none: ' + $planTbHow + ')' })) `
+                        -Evidence @{ finding = $forB[0]; titleblock_staging = $planTbHow }
+                }
+                else {
+                    Complete-PlanCase 7 $t0 'fail' ("no-titleblock findings do not hold: for_B={0} for_A={1} (staging: {2})" -f $forB.Count, $wrongA.Count, $planTbHow)
+                }
+            }
+
+            $t0 = Get-Date
+            if ($au7.isError -or -not $au7.data) {
+                Complete-PlanCase 8 $t0 'unverified' 'the sheet audit errored (see case 7)'
+            }
+            else {
+                $ov8 = Get-PlanFindings $au7 'sheet.viewport-overlap' 'failed'
+                $pair8 = @($ov8 | Where-Object {
+                    (@($_.element_ids) -contains [long]$planVpPlanId) -and (@($_.element_ids) -contains [long]$planVpSecId) })
+                if ($pair8.Count -eq 1 -and $pair8[0].severity -eq 'blocking' -and
+                    [double]$pair8[0].observed.overlap_x -gt 0 -and [double]$pair8[0].observed.overlap_y -gt 0 -and
+                    $pair8[0].location.coordinate_system -eq 'sheet') {
+                    Complete-PlanCase 8 $t0 'pass' ("the staged pair is reported once, blocking, with the measured extent: overlap_x={0}mm overlap_y={1}mm at a sheet-coordinate point" -f $pair8[0].observed.overlap_x, $pair8[0].observed.overlap_y) `
+                        -Evidence @{ finding = $pair8[0] }
+                }
+                else {
+                    Complete-PlanCase 8 $t0 'fail' ("the staged overlap is not reported as it must be: findings_for_pair={0} (all viewport-overlap findings: {1})" -f $pair8.Count, $ov8.Count)
+                }
+            }
+
+            $t0 = Get-Date
+            if ($au7.isError -or -not $au7.data) {
+                Complete-PlanCase 9 $t0 'unverified' 'the sheet audit errored (see case 7)'
+            }
+            else {
+                $allOverlap = @()
+                $allOverlap += Get-PlanFindings $au7 'sheet.viewport-overlap' 'failed'
+                $allOverlap += Get-PlanFindings $au7 'sheet.viewport-schedule-overlap' 'failed'
+                $allOverlap += Get-PlanFindings $au7 'sheet.schedule-overlap' 'failed'
+                $involvingSched = @()
+                if ($planSchedPlacementId) {
+                    $involvingSched = @($allOverlap | Where-Object { @($_.element_ids) -contains [long]$planSchedPlacementId })
+                }
+                $involvingD2d = @()
+                if ($planVpD2dId) {
+                    $involvingD2d = @($allOverlap | Where-Object { @($_.element_ids) -contains [long]$planVpD2dId })
+                }
+                if ($involvingSched.Count -eq 0 -and $involvingD2d.Count -eq 0) {
+                    Complete-PlanCase 9 $t0 'pass' 'the separated schedule placement and the lone viewport on sheet B appear in NO overlap finding' `
+                        -Evidence @{ overlap_findings_total = $allOverlap.Count }
+                }
+                else {
+                    Complete-PlanCase 9 $t0 'fail' ("separated placements were reported as overlapping: schedule_in={0} d2d_in={1}" -f $involvingSched.Count, $involvingD2d.Count)
+                }
+            }
+
+            # ---- case 10: the override is ADVISORY by default ---------------------
+            $t0 = Get-Date
+            if (-not $planOverrideDimId) {
+                Complete-PlanCase 10 $t0 'unverified' 'no fixture dimension could be given a value override, so the advisory default could not be proved live'
+            }
+            else {
+                $au10 = Invoke-PlanAudit @{ scope = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm'; max_findings = 500 }
+                if ($au10.isError -or -not $au10.data) {
+                    Complete-PlanCase 10 $t0 'unverified' ('the view audit errored: ' + (Get-DimShortText $au10.text))
+                }
+                else {
+                    $ovF = @((Get-PlanFindings $au10 'dimension.value-override' 'failed') | Where-Object {
+                        @($_.element_ids) -contains [long]$planOverrideDimId })
+                    $blankOk = $true; $blankDetail = ''
+                    if ($planBlankTextId) {
+                        $blankF = @((Get-PlanFindings $au10 'text.empty' 'failed') | Where-Object {
+                            @($_.element_ids) -contains [long]$planBlankTextId })
+                        $blankOk = ($blankF.Count -eq 1 -and $blankF[0].severity -eq 'blocking')
+                        $blankDetail = ("; the staged whitespace note is the blocking text.empty finding" )
+                    }
+                    elseif ($planBlankTextWhy) { $blankDetail = '; ' + $planBlankTextWhy }
+                    if ($ovF.Count -eq 1 -and $ovF[0].severity -eq 'advisory' -and $blankOk) {
+                        Complete-PlanCase 10 $t0 'pass' ("the override on dimension {0} is reported once, severity=advisory, recommending {1}{2}" -f $planOverrideDimId, $ovF[0].recommended_tool, $blankDetail) `
+                            -Evidence @{ finding = $ovF[0]; blank_text = $planBlankTextId; blank_text_note = $planBlankTextWhy }
+                    }
+                    else {
+                        Complete-PlanCase 10 $t0 'fail' ("the advisory default does not hold: override_findings={0} severity={1} blank_ok={2}" -f $ovF.Count, $(if ($ovF.Count -gt 0) { $ovF[0].severity } else { '(none)' }), $blankOk)
+                    }
+                }
+            }
+
+            # ---- case 11: a requirement set makes the SAME override blocking ------
+            $t0 = Get-Date
+            if (-not $planOverrideDimId) {
+                Complete-PlanCase 11 $t0 'unverified' 'no fixture override exists (see case 10)'
+            }
+            else {
+                $set11 = @{
+                    requirement_set = @{ id = 'hz-live-planimetry'; version = '1.0.0'; title = 'Live gate set' }
+                    rules = @(@{ id = 'no-overrides'; entity = 'dimension'; severity = 'blocking'
+                                 selector = @{ applies_to = @([long]$planOverrideDimId) }
+                                 assertion = @{ operator = 'forbid_numeric_override' } })
+                }
+                $au11 = Invoke-PlanAudit @{ scope = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm'
+                                            max_findings = 500; requirement_set = $set11 }
+                if ($au11.isError -or -not $au11.data) {
+                    Complete-PlanCase 11 $t0 'unverified' ('the requirement-set audit errored: ' + (Get-DimShortText $au11.text))
+                }
+                else {
+                    $f11 = @((Get-PlanFindings $au11 'no-overrides' 'failed') | Where-Object {
+                        @($_.element_ids) -contains [long]$planOverrideDimId })
+                    $cites = ($f11.Count -eq 1 -and $f11[0].requirement_set -eq 'hz-live-planimetry' -and
+                              $f11[0].requirement_set_version -eq '1.0.0' -and
+                              $au11.data.requirement_set_sha256 -match '^[0-9a-f]{64}$' -and
+                              $f11[0].requirement_set_sha256 -eq $au11.data.requirement_set_sha256)
+                    if ($cites -and $f11[0].severity -eq 'blocking') {
+                        Complete-PlanCase 11 $t0 'pass' 'the same override is BLOCKING under the inline set, and the finding cites the set id, version and sha256 the reply published' `
+                            -Evidence @{ finding = $f11[0]; sha256 = $au11.data.requirement_set_sha256 }
+                    }
+                    else {
+                        Complete-PlanCase 11 $t0 'fail' ("the configurable severity does not hold: findings={0} cites_set={1}" -f $f11.Count, $cites)
+                    }
+                }
+            }
+
+            # ---- case 12: a naming rule catches the wrong sheet number ------------
+            $t0 = Get-Date
+            $set12 = @{
+                requirement_set = @{ id = 'hz-live-naming'; version = '1.0.0' }
+                rules = @(@{ id = 'sheet-number-format'; entity = 'sheet'; severity = 'blocking'
+                             selector = @{ applies_to = @([long]$planSheetAId, [long]$planSheetBId) }
+                             assertion = @{ field = 'sheet_number'; operator = 'matches'; value = '^HZP-A-' } })
+            }
+            $au12 = Invoke-PlanAudit @{ scope = 'sheets'; sheet_ids = @([long]$planSheetAId, [long]$planSheetBId)
+                                        units = 'mm'; max_findings = 500; requirement_set = $set12 }
+            if ($au12.isError -or -not $au12.data) {
+                Complete-PlanCase 12 $t0 'unverified' ('the naming audit errored: ' + (Get-DimShortText $au12.text))
+            }
+            else {
+                $f12 = Get-PlanFindings $au12 'sheet-number-format' 'failed'
+                $onlyB = ($f12.Count -eq 1 -and [long]$f12[0].sheet_id -eq [long]$planSheetBId -and
+                          $f12[0].observed.value -eq $planSheetBNumber)
+                if ($onlyB) {
+                    Complete-PlanCase 12 $t0 'pass' ("exactly sheet B fails ^HZP-A- with its observed number {0}; sheet A passes" -f $planSheetBNumber) `
+                        -Evidence @{ finding = $f12[0] }
+                }
+                else {
+                    Complete-PlanCase 12 $t0 'fail' ("the naming rule does not hold: findings={0}" -f $f12.Count)
+                }
+            }
+
+            # ---- case 13: a template rule catches the not-allowed template --------
+            $t0 = Get-Date
+            $set13 = @{
+                requirement_set = @{ id = 'hz-live-templates'; version = '1.0.0' }
+                rules = @(@{ id = 'plan-template'; entity = 'view'; severity = 'blocking'
+                             selector = @{ applies_to = @([long]$dimPlanViewId) }
+                             assertion = @{ operator = 'allowed_template'; value = @("HZ_TEMPLATE_THAT_DOES_NOT_EXIST_$planTag") } })
+            }
+            $au13 = Invoke-PlanAudit @{ scope = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm'
+                                        max_findings = 500; requirement_set = $set13 }
+            if ($au13.isError -or -not $au13.data) {
+                Complete-PlanCase 13 $t0 'unverified' ('the template audit errored: ' + (Get-DimShortText $au13.text))
+            }
+            else {
+                $f13 = @((Get-PlanFindings $au13 'plan-template' 'failed') | Where-Object {
+                    @($_.element_ids) -contains [long]$dimPlanViewId })
+                if ($f13.Count -eq 1 -and $f13[0].severity -eq 'blocking') {
+                    Complete-PlanCase 13 $t0 'pass' 'the fixture plan fails allowed_template against a list its template is not in, with the observed template in the finding' `
+                        -Evidence @{ finding = $f13[0] }
+                }
+                else {
+                    Complete-PlanCase 13 $t0 'fail' ("the template rule does not hold: findings={0}" -f $f13.Count)
+                }
+            }
+
+            # ---- case 14: requires_tag names the exact untagged pipe --------------
+            $t0 = Get-Date
+            if ($planTagIds.Count -lt 3) {
+                Complete-PlanCase 14 $t0 'unverified' ('the tag fixture was not staged (' + $planTagTypeHow + '), so tag coverage cannot be proved live')
+            }
+            else {
+                $set14 = @{
+                    requirement_set = @{ id = 'hz-live-tags'; version = '1.0.0' }
+                    rules = @(@{ id = 'pipes-tagged'; entity = 'view'; severity = 'blocking'
+                                 selector = @{ applies_to = @([long]$dimPlanViewId) }
+                                 assertion = @{ operator = 'requires_tag'; value = @('OST_PipeCurves') } })
+                }
+                $au14 = Invoke-PlanAudit @{ scope = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm'
+                                            max_findings = 500; requirement_set = $set14 }
+                if ($au14.isError -or -not $au14.data) {
+                    Complete-PlanCase 14 $t0 'unverified' ('the tag audit errored: ' + (Get-DimShortText $au14.text))
+                }
+                else {
+                    $f14 = Get-PlanFindings $au14 'pipes-tagged' 'failed'
+                    $pipe3Named = @($f14 | Where-Object { @($_.element_ids) -contains [long]$pipe3 })
+                    $pipe1Blamed = @($f14 | Where-Object { @($_.element_ids) -contains [long]$pipe1 })
+                    $pipe2Blamed = @($f14 | Where-Object { @($_.element_ids) -contains [long]$pipe2 })
+                    if ($pipe3Named.Count -eq 1 -and $pipe1Blamed.Count -eq 0 -and $pipe2Blamed.Count -eq 0) {
+                        Complete-PlanCase 14 $t0 'pass' ("the untagged pipe {0} is named exactly once; the two tagged pipes are in no finding ({1} untagged finding(s) total in the cropped view)" -f $pipe3, $f14.Count) `
+                            -Evidence @{ untagged_finding = $pipe3Named[0]; findings_total = $f14.Count; tag_staging = $planTagTypeHow }
+                    }
+                    else {
+                        Complete-PlanCase 14 $t0 'fail' ("tag coverage does not hold: pipe3_named={0} pipe1_blamed={1} pipe2_blamed={2}" -f $pipe3Named.Count, $pipe1Blamed.Count, $pipe2Blamed.Count)
+                    }
+                }
+            }
+
+            # ---- case 16: pagination returns every row exactly once ----------------
+            $t0 = Get-Date
+            $pageArgs = @{ mode = 'annotations'; view_ids = @([long]$dimPlanViewId); units = 'mm'; max_rows = 5 }
+            $page1 = Invoke-PlanQuery $pageArgs
+            $planStaleCursor = $null
+            if ($page1.isError -or -not $page1.data) {
+                Complete-PlanCase 16 $t0 'unverified' ('the first page errored: ' + (Get-DimShortText $page1.text))
+            }
+            else {
+                $planStaleCursor = $page1.data.next_cursor
+                $expectedTotal = [int]$page1.data.matched_total
+                $seenIds = @{}
+                $dupes = 0
+                $totalDrift = $false
+                $pages = 0
+                $current = $page1
+                while ($true) {
+                    $pages++
+                    foreach ($row in @($current.data.rows)) {
+                        $key = [string]$row.element_id
+                        if ($seenIds.ContainsKey($key)) { $dupes++ } else { $seenIds[$key] = $true }
+                    }
+                    if ([int]$current.data.matched_total -ne $expectedTotal) { $totalDrift = $true }
+                    if (-not $current.data.next_cursor -or $pages -ge 200) { break }
+                    $nextArgs = @{ mode = 'annotations'; view_ids = @([long]$dimPlanViewId); units = 'mm'
+                                   max_rows = 5; cursor = [string]$current.data.next_cursor }
+                    $current = Invoke-PlanQuery $nextArgs
+                    if ($current.isError -or -not $current.data) { break }
+                }
+                if ($seenIds.Count -eq $expectedTotal -and $dupes -eq 0 -and -not $totalDrift -and $expectedTotal -gt 5) {
+                    Complete-PlanCase 16 $t0 'pass' ("{0} rows paged in {1} page(s) of 5: no duplicate, no missing row, matched_total constant" -f $expectedTotal, $pages) `
+                        -Evidence @{ total = $expectedTotal; pages = $pages }
+                }
+                else {
+                    Complete-PlanCase 16 $t0 'fail' ("pagination does not hold: unique={0} expected={1} duplicates={2} total_drift={3}" -f $seenIds.Count, $expectedTotal, $dupes, $totalDrift)
+                }
+            }
+
+            # ---- case 17: a stale cursor is refused after the model moved ---------
+            $t0 = Get-Date
+            if (-not $planStaleCursor) {
+                Complete-PlanCase 17 $t0 'unverified' 'the first page produced no cursor to go stale (fewer than 6 annotations?)'
+            }
+            elseif (-not $planTextTypeId) {
+                Complete-PlanCase 17 $t0 'unverified' 'no text type exists to move the model with'
+            }
+            else {
+                $mv17 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'text'; view_id = $dimPlanViewId; point = @(511000, 3200, 0)
+                                   text = "HZ_PLM_STALE_$planTag"; text_type_id = [long]$planTextTypeId })
+                } 'plm-stale-text'
+                if ($mv17.stage -ne 'apply' -or $mv17.answer.isError) {
+                    Complete-PlanCase 17 $t0 'unverified' ('the model could not be moved between pages: ' + (Get-DimShortText $mv17.answer.text))
+                }
+                else {
+                    $stale = Invoke-PlanQuery @{ mode = 'annotations'; view_ids = @([long]$dimPlanViewId); units = 'mm'
+                                                 max_rows = 5; cursor = [string]$planStaleCursor }
+                    if ($stale.isError -and $stale.text -match 'stale|changed since') {
+                        Complete-PlanCase 17 $t0 'pass' 'the cursor from before the change is refused by name, not silently repaged' `
+                            -Evidence @{ refusal = (Get-DimShortText $stale.text) }
+                    }
+                    else {
+                        Complete-PlanCase 17 $t0 'fail' ("the stale cursor was not refused: isError={0} text={1}" -f $stale.isError, (Get-DimShortText $stale.text))
+                    }
+                }
+            }
+
+            # The reference census for the closing case: AFTER the deliberate stale-
+            # cursor write, BEFORE the remaining read-only calls.
+            $censusQ = Invoke-PlanQuery @{ mode = 'inventory'; units = 'mm' }
+            if (-not $censusQ.isError -and $censusQ.data) {
+                $planCensusReference = $censusQ.data.totals | ConvertTo-Json -Compress -Depth 4
+            }
+
+            # ---- case 18: two identical audits agree to the byte ------------------
+            $t0 = Get-Date
+            $au18a = Invoke-PlanAudit $auditSheetsArgs
+            $au18b = Invoke-PlanAudit $auditSheetsArgs
+            if ($au18a.isError -or $au18b.isError -or -not $au18a.data -or -not $au18b.data) {
+                Complete-PlanCase 18 $t0 'unverified' 'one of the twin audits errored'
+            }
+            else {
+                $fpEqual = ($au18a.data.finding_set_fingerprint -eq $au18b.data.finding_set_fingerprint)
+                $totalEqual = ([int]$au18a.data.findings_total -eq [int]$au18b.data.findings_total)
+                $seqA = @($au18a.data.findings | ForEach-Object { $_.rule_id + ':' + (@($_.element_ids) -join ',') }) -join '|'
+                $seqB = @($au18b.data.findings | ForEach-Object { $_.rule_id + ':' + (@($_.element_ids) -join ',') }) -join '|'
+                if ($fpEqual -and $totalEqual -and $seqA -eq $seqB) {
+                    Complete-PlanCase 18 $t0 'pass' ("both runs: fingerprint {0}, {1} finding(s), identical order" -f $au18a.data.finding_set_fingerprint, $au18a.data.findings_total) `
+                        -Evidence @{ fingerprint = $au18a.data.finding_set_fingerprint; findings_total = $au18a.data.findings_total }
+                }
+                else {
+                    Complete-PlanCase 18 $t0 'fail' ("two identical audits disagree: fingerprints_equal={0} totals_equal={1} order_equal={2}" -f $fpEqual, $totalEqual, ($seqA -eq $seqB))
+                }
+            }
+
+            # ---- case 20: counts, ids and geometry re-read independently ----------
+            $t0 = Get-Date
+            $qd20 = Invoke-Write 'horizun_query_dimensions' @{ view_id = $dimPlanViewId; max_rows = 1 }
+            $qp20 = Invoke-PlanQuery @{ mode = 'annotations'; view_ids = @([long]$dimPlanViewId)
+                                        categories = @('dimensions'); units = 'mm'; max_rows = 1 }
+            $pl20a = Invoke-PlanQuery @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId); units = 'mm'; max_rows = 500 }
+            $pl20b = Invoke-PlanQuery @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId); units = 'mm'; max_rows = 500 }
+            if ($qd20.isError -or -not $qd20.data -or $qp20.isError -or -not $qp20.data -or
+                $pl20a.isError -or -not $pl20a.data -or $pl20b.isError -or -not $pl20b.data) {
+                Complete-PlanCase 20 $t0 'unverified' 'one of the four independent reads errored'
+            }
+            else {
+                $dimAgree = ([int]$qd20.data.total_matched -eq [int]$qp20.data.matched_total)
+                $rowA20 = @($pl20a.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpPlanId }) | Select-Object -First 1
+                $rowB20 = @($pl20b.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpPlanId }) | Select-Object -First 1
+                $geoA = ''
+                $geoB = 'different'
+                if ($rowA20 -and $rowB20) {
+                    $geoA = (@($rowA20.box_outline) -join ',')
+                    $geoB = (@($rowB20.box_outline) -join ',')
+                }
+                if ($dimAgree -and $geoA -ne '' -and $geoA -eq $geoB) {
+                    Complete-PlanCase 20 $t0 'pass' ("horizun_query_dimensions and horizun_query_planimetry agree on {0} dimension(s) in the plan; two placement reads return byte-identical geometry" -f $qd20.data.total_matched) `
+                        -Evidence @{ dimensions_both = $qd20.data.total_matched; box_outline = $geoA }
+                }
+                else {
+                    Complete-PlanCase 20 $t0 'fail' ("independent re-reads disagree: dimensions {0} vs {1}; geometry_equal={2}" -f $qd20.data.total_matched, $qp20.data.matched_total, ($geoA -eq $geoB))
+                }
+            }
+
+            # ---- case 21: no file, no export --------------------------------------
+            $t0 = Get-Date
+            $planScratchAfter = @(Get-ChildItem -Path $scratchDir -Recurse -File -ErrorAction SilentlyContinue).Count
+            $repliesClean = $true
+            foreach ($reply in @($au7, $au18a, $au18b)) {
+                if ($reply.data -and $reply.text -match '"output_path"') { $repliesClean = $false }
+            }
+            if ($null -ne $planScratchBefore -and $planScratchAfter -eq $planScratchBefore -and $repliesClean) {
+                Complete-PlanCase 21 $t0 'pass' ("the harness scratch directory holds the same {0} file(s) it held before the first read, and no audit reply names an output_path" -f $planScratchAfter) `
+                    -Evidence @{ files_before = $planScratchBefore; files_after = $planScratchAfter }
+            }
+            else {
+                Complete-PlanCase 21 $t0 'fail' ("the read surface left a trace: files {0} -> {1}, replies_clean={2}" -f $planScratchBefore, $planScratchAfter, $repliesClean)
+            }
+
+            # ---- case 19 (closes): IsModified unchanged by the read surface -------
+            if ($null -eq $planModifiedBefore) {
+                Complete-PlanCase 19 $t19 'unverified' 'Document.IsModified could not be read before the section (execute_python unavailable?), so the property could not be measured live; the no-Transaction guarantee stays proved at source level'
+            }
+            else {
+                $mod2 = Invoke-Write 'horizun_execute_python' @{
+                    code = "__output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified', 'verification': {'checked': True, 'evidence': ['IsModified=' + str(doc.IsModified)]}, 'modified': bool(doc.IsModified)}"
+                    target_document = $wDoc; idempotency_key = "live-plm-mod2-$probeRun"
+                }
+                if ($mod2.isError -or -not $mod2.data -or $mod2.data.executed -ne $true) {
+                    Complete-PlanCase 19 $t19 'unverified' 'Document.IsModified could not be re-read after the section'
+                }
+                else {
+                    $planModifiedAfter = [bool]$mod2.data.output.modified
+                    if ($planModifiedAfter -eq $planModifiedBefore) {
+                        Complete-PlanCase 19 $t19 'pass' ("Document.IsModified is {0} before and after every query and audit (read via fixture python, labelled self-reported; the fixture writes preceding the section legitimately set it)" -f $planModifiedBefore) `
+                            -Evidence @{ before = $planModifiedBefore; after = $planModifiedAfter; measured_by = 'execute_python fixture read, self-reported' }
+                    }
+                    else {
+                        Complete-PlanCase 19 $t19 'fail' ("Document.IsModified moved across the read-only section: {0} -> {1}" -f $planModifiedBefore, $planModifiedAfter)
+                    }
+                }
+            }
+
+            # ---- case 15: incomplete coverage blocks a clean verdict --------------
+            # LAST of the audits, because it degrades coverage on purpose.
+            $t0 = Get-Date
+            $unloadCode = @"
+from Autodesk.Revit.DB import FilteredElementCollector, RevitLinkType, RevitLinkInstance
+lt = None
+for x in FilteredElementCollector(doc).OfClass(RevitLinkType):
+    lt = x
+    break
+if lt is None:
+    __output__ = {'status': 'failed', 'summary': 'no RevitLinkType exists in this document to unload'}
+else:
+    lt.Unload(None)
+    loaded = 0
+    for inst in FilteredElementCollector(doc).OfClass(RevitLinkInstance):
+        if inst.GetLinkDocument() is not None:
+            loaded += 1
+    __output__ = {'status': 'self_reported_verified' if loaded == 0 else 'failed',
+                  'summary': 'link unloaded as coverage fixture',
+                  'verification': {'checked': True, 'evidence': ['loaded_instances=' + str(loaded)]}}
+"@
+            $unload = Invoke-Write 'horizun_execute_python' @{
+                code = $unloadCode; target_document = $wDoc
+                idempotency_key = "live-plm-unload-$probeRun"
+            }
+            if ($unload.isError -or -not $unload.data -or $unload.data.evidence_status -ne 'self_reported_verified') {
+                Complete-PlanCase 15 $t0 'unverified' ('the coverage fixture (an unloaded link) could not be staged: ' + (Get-DimShortText $unload.text))
+            }
+            else {
+                $au15 = Invoke-PlanAudit @{ scope = 'sheets'; sheet_ids = @([long]$planSheetAId); units = 'mm'; max_findings = 100 }
+                if ($au15.isError -or -not $au15.data) {
+                    Complete-PlanCase 15 $t0 'unverified' ('the post-unload audit errored: ' + (Get-DimShortText $au15.text))
+                }
+                else {
+                    $covFalse = ($au15.data.coverage_complete -eq $false)
+                    $noteSays = ($au15.data.note -and $au15.data.note -match 'INCOMPLETE|not.*clean|link')
+                    $linkCov = ($au15.data.link_coverage -and $au15.data.link_coverage.coverage_complete -eq $false)
+                    if ($covFalse -and $noteSays -and $linkCov) {
+                        Complete-PlanCase 15 $t0 'pass' 'with one link unloaded, coverage_complete=false, link_coverage names it, and the note forbids reading the model as clean' `
+                            -Evidence @{ coverage_complete = $au15.data.coverage_complete; note = $au15.data.note }
+                    }
+                    else {
+                        Complete-PlanCase 15 $t0 'fail' ("incomplete coverage is not surfaced: coverage_false={0} note_ok={1} link_coverage_false={2}" -f $covFalse, $noteSays, $linkCov)
+                    }
+                }
+            }
+
+            # ---- case 22: the disposable document ends with no unplanned change ---
+            $t0 = Get-Date
+            $censusEnd = Invoke-PlanQuery @{ mode = 'inventory'; units = 'mm' }
+            if ($censusEnd.isError -or -not $censusEnd.data -or -not $planCensusReference) {
+                Complete-PlanCase 22 $t0 'unverified' 'the closing census could not be read, or the reference census was never taken'
+            }
+            else {
+                $endTotals = $censusEnd.data.totals | ConvertTo-Json -Compress -Depth 4
+                if ($endTotals -eq $planCensusReference) {
+                    Complete-PlanCase 22 $t0 'pass' 'the closing inventory census is byte-identical to the reference census taken before the read-only calls: the section read, audited and changed nothing it did not stage' `
+                        -Evidence @{ census = $censusEnd.data.totals }
+                }
+                else {
+                    Complete-PlanCase 22 $t0 'fail' ('the census moved across the read-only calls. reference=' + $planCensusReference + ' end=' + $endTotals)
+                }
+            }
+        }
+
+        # Every case number reports exactly once - the same harness rule the
+        # dimension and 2D-detail probes live under.
+        for ($planCase = 1; $planCase -le 22; $planCase++) {
+            if (-not $script:planCasesDone.ContainsKey($planCase)) {
+                Complete-PlanCase $planCase (Get-Date) 'unverified' 'the planimetry section ended before this probe ran - a harness bug, not a product verdict'
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # W8+: FIX PLANIMETRY. The write half of the documentation surface.
+        #
+        # It runs LAST and on purpose reuses the planimetry fixture UNCORRECTED:
+        # sheet B still has no title block, the two viewports still overlap, the
+        # far text still sits outside the crop. Those are real findings the read
+        # section already proved the auditor produces, so correcting them here
+        # tests the whole loop - audit, cite, rehearse, confirm, commit, re-read,
+        # re-audit - rather than a fixture invented to be easy.
+        #
+        # Three things this section adds, because a CORRECTION needs what a read
+        # does not: a view template to assign, one element override to clear, and
+        # an inline requirement set whose rules produce findings for the
+        # operations the universal catalog deliberately has no remedy for
+        # (scale, naming, margins, overrides). The set is passed inline on every
+        # call that cites one of its findings, exactly as a caller must.
+        #
+        # execute_python appears only as FIXTURE PREP (the element override and
+        # the file timestamp read have no typed writer) and what it reports is
+        # staging evidence, never the corrector's finding.
+        # ----------------------------------------------------------------------
+        $script:fixCasesDone = @{}
+
+        function Complete-FixCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail,
+                  $Evidence = $null)
+            if ($script:fixCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:fixCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$fixNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:fixEvidence += @{
+                case = $CaseNumber; name = $entry.N; tool = $entry.T
+                started_utc = $Started.ToUniversalTime().ToString('o')
+                duration_ms = [int][math]::Round(((Get-Date) - $Started).TotalMilliseconds)
+                outcome = $Outcome
+                detail = $Detail
+                evidence = $Evidence
+            }
+        }
+
+        function Invoke-Fix($arguments) { return Invoke-Write 'horizun_fix_planimetry' $arguments }
+
+        # A fix DRY RUN, returning the parsed answer. Nothing is applied.
+        function Invoke-FixDry($arguments) {
+            $dry = $arguments.Clone()
+            $dry['dry_run'] = $true
+            return Invoke-Fix $dry
+        }
+
+        # Rehearse then apply, with an explicit idempotency key so the replay and
+        # conflict cases can re-use it deliberately.
+        function Invoke-FixApply($arguments, [string]$KeyName) {
+            $d = Invoke-FixDry $arguments
+            if ($d.isError -or -not $d.data -or -not $d.data.confirmation_token) {
+                return @{ stage = 'dry_run'; dry = $d; answer = $d; key = $null }
+            }
+            $apply = $arguments.Clone()
+            $apply['dry_run'] = $false
+            $apply['confirmation_token'] = $d.data.confirmation_token
+            $key = ("live-fix-{0}-{1}" -f $KeyName, $probeRun)
+            $apply['idempotency_key'] = $key
+            return @{ stage = 'apply'; dry = $d; answer = (Invoke-Fix $apply); key = $key
+                      applied = $apply }
+        }
+
+        # One action's finding block, copied from an audit finding verbatim. The
+        # command refuses a block that is edited, so this must not "tidy" it.
+        function New-FixFinding($finding) {
+            $block = @{
+                rule_id                 = $finding.rule_id
+                requirement_set         = $finding.requirement_set
+                requirement_set_version = $finding.requirement_set_version
+                element_ids             = @($finding.element_ids | ForEach-Object { [long]$_ })
+                observed                = $finding.observed
+            }
+            if ($finding.requirement_set_sha256) { $block['requirement_set_sha256'] = $finding.requirement_set_sha256 }
+            if ($finding.entity_kind) { $block['entity_kind'] = $finding.entity_kind }
+            if ($null -ne $finding.sheet_id) { $block['sheet_id'] = [long]$finding.sheet_id }
+            if ($null -ne $finding.view_id) { $block['view_id'] = [long]$finding.view_id }
+            return $block
+        }
+
+        # Every postcondition row of a fix reply verified. An empty rows list is
+        # NOT agreement - the same rule All-Rows enforces everywhere else.
+        function Test-FixVerified($answer) {
+            if ($answer.isError -or -not $answer.data) { return $false }
+            if ($answer.data.state -ne 'verified_applied') { return $false }
+            return (All-Rows $answer.data.rows { param($r) $r.verified -eq $true })
+        }
+
+        # The inventory census as ONE comparable string.
+        function Get-FixCensus() {
+            $c = Invoke-Write 'horizun_query_planimetry' @{ mode = 'inventory'; units = 'mm' }
+            if ($c.isError -or -not $c.data) { return $null }
+            return ($c.data.totals | ConvertTo-Json -Compress -Depth 4)
+        }
+
+        # ---- staging state ----------------------------------------------------
+        $fixGap = $planGap
+        $fixTemplateId = $null
+        $fixSet = $null
+        $fixCensusReference = $null
+        $fixPlacedTitleBlockId = $null
+        $fixSectionViewFinalName = $null
+        $fixModifiedBefore = $null
+        $fixFileStampBefore = $null
+        $fixFilePath = $null
+
+        if (-not $fixGap -and -not $planSheetBId) {
+            $fixGap = 'the planimetry sheet fixture is missing, and every correction case stands on it'
+        }
+
+        if (-not $fixGap) {
+            # ---- The reference census, taken BEFORE this section stages or
+            # ---- corrects anything. Case 22 returns to it.
+            $fixCensusReference = Get-FixCensus
+            if (-not $fixCensusReference) { $fixGap = 'the reference census could not be read' }
+
+            # The dimension ids as they stand BEFORE the section touches anything.
+            # The closing census compares totals; when they disagree, a total says
+            # only THAT something appeared. The ids say WHAT, which is the half a
+            # reader can act on.
+            $fixDimIdsBefore = @()
+            $qd0 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'annotations'; categories = @('dimensions'); units = 'mm'; max_rows = 500 }
+            if ($qd0.data) { $fixDimIdsBefore = @($qd0.data.rows | ForEach-Object { [long]$_.element_id }) }
+
+            # And the plan view's crop, so the revert can put back what set_crop
+            # deliberately changed. A section that claims to revert itself has to
+            # revert the display state it altered, not only the elements it added.
+            $fixCropBefore = $null
+            $qv0 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @([long]$dimPlanViewId); units = 'mm' }
+            if ($qv0.data -and @($qv0.data.rows).Count -gt 0) { $fixCropBefore = @($qv0.data.rows)[0].crop_box }
+        }
+
+        if (-not $fixGap) {
+            # ---- F1: a view TEMPLATE to assign. Authored from the dimension plan
+            # ---- view so it is this run's own, never a template the model relies on.
+            $tplCode = @"
+from Autodesk.Revit.DB import Transaction, ElementId
+src = doc.GetElement(ElementId($dimPlanViewId))
+made = None
+why = None
+# View.CreateViewTemplate() returns a VIEW, not an ElementId - checked against
+# RevitAPI.dll metadata for 2023-2027. Passing its result to Document.GetElement
+# throws, and an except that only recorded "could not be authored" hid the reason
+# behind a fixture that had actually run.
+if not src.IsViewValidForTemplateCreation():
+    why = 'the source view is not valid for template creation'
+else:
+    t = Transaction(doc, 'HZ fix live: author a view template')
+    t.Start()
+    try:
+        made = src.CreateViewTemplate()
+        made.Name = 'HZ_FIX_TPL_$planTag'
+        t.Commit()
+    except Exception as ex:
+        t.RollBack()
+        made = None
+        why = type(ex).__name__ + ': ' + str(ex)
+if made is None:
+    __output__ = {'status': 'failed',
+                  'summary': 'the view template could not be authored: ' + (why or 'no reason reported')}
+else:
+    back = doc.GetElement(made.Id)
+    ok = back is not None and back.IsTemplate
+    __output__ = {'status': 'self_reported_verified' if ok else 'failed',
+                  'summary': 'authored a view template from the dimension plan view',
+                  'template_id': back.Id.Value if hasattr(back.Id, 'Value') else back.Id.IntegerValue,
+                  'verification': {'checked': True, 'evidence': ['IsTemplate=' + str(back.IsTemplate)]}}
+"@
+            $tplMk = Invoke-Write 'horizun_execute_python' @{
+                code = $tplCode; target_document = $wDoc
+                idempotency_key = "live-fix-tpl-$probeRun"
+            }
+            if ($tplMk.isError -or -not $tplMk.data -or $tplMk.data.evidence_status -ne 'self_reported_verified') {
+                # The SCRIPT's own summary first. Rendering the whole reply envelope
+                # and truncating it at a few hundred characters buried the one
+                # sentence that says what went wrong under the boilerplate that says
+                # nothing did.
+                $why = $null
+                if ($tplMk.data -and $tplMk.data.output -and $tplMk.data.output.summary) { $why = [string]$tplMk.data.output.summary }
+                if (-not $why) { $why = Get-DimShortText $tplMk.text }
+                $fixGap = 'the view template fixture could not be staged: ' + $why
+            }
+            else { $fixTemplateId = [long]$tplMk.data.output.template_id }
+        }
+
+        if (-not $fixGap) {
+            # ---- F2: an ELEMENT OVERRIDE on the near text note, so
+            # ---- clear_element_override has something real to clear. There is no
+            # ---- typed writer for a per-view graphic override; this is prep.
+            if (-not $planNearTextId) {
+                $fixGap = 'the planimetry fixture staged no near text note to override'
+            }
+            else {
+                $ovCode = @"
+from Autodesk.Revit.DB import Transaction, ElementId, OverrideGraphicSettings
+view = doc.GetElement(ElementId($dimPlanViewId))
+target = ElementId($planNearTextId)
+t = Transaction(doc, 'HZ fix live: stage an element override')
+t.Start()
+ogs = OverrideGraphicSettings()
+ogs.SetHalftone(True)
+view.SetElementOverrides(target, ogs)
+t.Commit()
+back = view.GetElementOverrides(target)
+__output__ = {'status': 'self_reported_verified' if back.Halftone else 'failed',
+              'summary': 'staged a halftone element override on the near text note',
+              'verification': {'checked': True, 'evidence': ['Halftone=' + str(back.Halftone)]}}
+"@
+                $ovMk = Invoke-Write 'horizun_execute_python' @{
+                    code = $ovCode; target_document = $wDoc
+                    idempotency_key = "live-fix-ovr-$probeRun"
+                }
+                if ($ovMk.isError -or -not $ovMk.data -or $ovMk.data.evidence_status -ne 'self_reported_verified') {
+                    $why = $null
+                    if ($ovMk.data -and $ovMk.data.output -and $ovMk.data.output.summary) { $why = [string]$ovMk.data.output.summary }
+                    if (-not $why) { $why = Get-DimShortText $ovMk.text }
+                    $fixGap = 'the element-override fixture could not be staged: ' + $why
+                }
+            }
+        }
+
+        if (-not $fixGap) {
+            # ---- F3: the inline requirement set. Its rules exist to PRODUCE the
+            # ---- findings the universal catalog has no remedy for, each pinned to
+            # ---- the exact element by id so the set cannot accidentally match the
+            # ---- rest of the model.
+            $fixSet = @{
+                requirement_set = @{ id = 'horizun-live-fix-set'; version = '1.0.0'
+                                     title = 'Horizun live fix gate' }
+                rules = @(
+                    @{ id = 'section-view-name'; entity = 'view'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$dimSectionViewId) }
+                       assertion = @{ field = 'name'; operator = 'matches'; value = '^HZFIX-' } },
+                    @{ id = 'section-view-scale'; entity = 'view'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$dimSectionViewId) }
+                       assertion = @{ operator = 'allowed_scale'; value = @(25) } },
+                    @{ id = 'sheet-b-number'; entity = 'sheet'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$planSheetBId) }
+                       assertion = @{ field = 'sheet_number'; operator = 'matches'; value = '^HZFIX-' } },
+                    @{ id = 'near-text-no-override'; entity = 'text_note'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$planNearTextId) }
+                       assertion = @{ field = 'has_view_overrides'; operator = 'equals'; value = $false } },
+                    # The template rule. Fails until case 3 assigns the template this
+                    # run authored, and passes afterwards - so it licenses the
+                    # correction AND proves the resolution, in every year's model.
+                    @{ id = 'section-view-template'; entity = 'view'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$dimSectionViewId) }
+                       assertion = @{ operator = 'allowed_template'; value = @("HZ_FIX_TPL_$planTag") } },
+                    # A name nothing satisfies, for the batch that must write nothing.
+                    @{ id = 'plan-view-never'; entity = 'view'; severity = 'blocking'
+                       selector = @{ applies_to = @([long]$dimPlanViewId) }
+                       assertion = @{ field = 'name'; operator = 'matches'; value = '^HZNEVER-' } }
+                )
+            }
+            if ($planSchedPlacementId) {
+                $fixSet.rules += @{ id = 'schedule-margin'; entity = 'schedule_placement'; severity = 'blocking'
+                                    selector = @{ applies_to = @([long]$planSchedPlacementId) }
+                                    assertion = @{ operator = 'inside_extent'; value = 200 } }
+            }
+
+            # ---- F5: a REACHABLE outside-crop finding -------------------------
+            # See the note above: only detail_2d.outside-crop can be staged, and it
+            # needs a detail element between the model crop and the annotation crop.
+            $fixCropLineId = $null
+            $fixCropDetail = 'not attempted'
+            $offsetCode = @"
+from Autodesk.Revit.DB import ElementId, Transaction
+v = doc.GetElement(ElementId($dimPlanViewId))
+mgr = v.GetCropRegionShapeManager()
+t = Transaction(doc, 'HZ fix live: widen the annotation crop')
+t.Start()
+applied = []
+for name in ('LeftAnnotationCropOffset', 'RightAnnotationCropOffset',
+             'TopAnnotationCropOffset', 'BottomAnnotationCropOffset'):
+    if hasattr(mgr, name):
+        try:
+            setattr(mgr, name, 6000.0 / 304.8)
+            applied.append(name)
+        except Exception as ex:
+            applied.append(name + '!' + type(ex).__name__)
+t.Commit()
+v2 = doc.GetElement(ElementId($dimPlanViewId))
+mgr2 = v2.GetCropRegionShapeManager()
+got = []
+for name in ('LeftAnnotationCropOffset', 'RightAnnotationCropOffset'):
+    if hasattr(mgr2, name):
+        got.append(name + '=' + str(round(getattr(mgr2, name) * 304.8, 1)))
+ok = len(applied) > 0
+__output__ = {'status': 'self_reported_verified' if ok else 'failed',
+              'summary': 'widened the annotation crop so a detail element can sit outside the MODEL crop and still be drawn',
+              'verification': {'checked': True, 'evidence': applied + got}}
+"@
+            $offsetRun = Invoke-Write 'horizun_execute_python' @{
+                code = $offsetCode; target_document = $wDoc
+                idempotency_key = "live-fix-annoff-$probeRun"
+            }
+            if ($offsetRun.isError -or -not $offsetRun.data -or $offsetRun.data.evidence_status -ne 'self_reported_verified') {
+                $fixCropDetail = 'the annotation-crop offsets could not be widened'
+            }
+            else {
+                # A detail line just OUTSIDE the model crop (which the planimetry
+                # fixture set to x 505000..518000 mm) and well inside the widened
+                # annotation crop. View-plane millimetres, the convention detail_2d
+                # publishes.
+                $lineMk = Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ operation = 'create_detail_line'; view_id = [long]$dimPlanViewId
+                                   start = @(519000, 2000); end = @(521000, 2000); key = 'cropline' })
+                } 'fix-cropline'
+                if ($lineMk.stage -eq 'apply' -and -not $lineMk.answer.isError -and $lineMk.answer.data) {
+                    # element_idS, plural and an ARRAY - one action can create several
+                    # curves (a polyline comes back as three). Reading the singular
+                    # left the id null, the line was never reverted, and the closing
+                    # census carried it.
+                    $rows = @($lineMk.answer.data.rows)
+                    if ($rows.Count -ge 1 -and $rows[0].element_ids -and @($rows[0].element_ids).Count -ge 1) {
+                        $fixCropLineId = [long]@($rows[0].element_ids)[0]
+                        $fixCropDetail = 'a detail line was drawn outside the model crop and inside the widened annotation crop'
+                    }
+                }
+                if (-not $fixCropLineId) { $fixCropDetail = 'the detail line could not be drawn: ' + (Get-DimShortText $lineMk.answer.text) }
+            }
+
+            # ---- F4: IsModified and the file's timestamp, for cases 2 and 23.
+            $stampCode = @"
+import os
+p = doc.PathName
+stamp = ''
+if p and os.path.exists(p):
+    stamp = str(os.path.getmtime(p)) + '|' + str(os.path.getsize(p))
+__output__ = {'status': 'self_reported_verified', 'summary': 'read IsModified and the file stamp',
+              'verification': {'checked': True, 'evidence': ['IsModified=' + str(doc.IsModified), 'stamp=' + stamp]},
+              'modified': bool(doc.IsModified), 'stamp': stamp, 'path': p or ''}
+"@
+            $st1 = Invoke-Write 'horizun_execute_python' @{
+                code = $stampCode; target_document = $wDoc
+                idempotency_key = "live-fix-stamp1-$probeRun"
+            }
+            if (-not $st1.isError -and $st1.data -and $st1.data.executed -eq $true) {
+                $fixModifiedBefore = [bool]$st1.data.output.modified
+                $fixFileStampBefore = [string]$st1.data.output.stamp
+                $fixFilePath = [string]$st1.data.output.path
+            }
+        }
+
+        if ($fixGap) {
+            for ($fc = 1; $fc -le 23; $fc++) { Complete-FixCase $fc (Get-Date) 'not_covered' $fixGap }
+        }
+        else {
+            # ---- case 1: the contract, as a client sees it --------------------
+            $t0 = Get-Date
+            # $listed is the tools/list this run negotiated at startup - the SAME
+            # answer a client receives, not a second read that could disagree.
+            if (@($listed).Count -eq 0) {
+                Complete-FixCase 1 $t0 'unverified' 'tools/list produced no tools at negotiation'
+            }
+            else {
+                $entry = @($listed | Where-Object { $_.name -eq 'horizun_fix_planimetry' })
+                if ($entry.Count -ne 1) {
+                    Complete-FixCase 1 $t0 'fail' 'horizun_fix_planimetry is not published exactly once in tools/list'
+                }
+                else {
+                    $e = $entry[0]
+                    $ann = $e.annotations
+                    $ops = @($e.inputSchema.properties.actions.items.properties.operation.enum)
+                    $okAnn = ($ann.readOnlyHint -eq $false -and $ann.destructiveHint -eq $false -and
+                              $ann.idempotentHint -eq $true -and $ann.openWorldHint -eq $false)
+                    $okSchema = ($e.inputSchema.additionalProperties -eq $false -and
+                                 $ops.Count -eq 9 -and
+                                 ($ops -contains 'set_view_template') -and ($ops -contains 'set_crop') -and
+                                 -not ($ops -contains 'pack_sheet') -and
+                                 $null -ne $e.inputSchema.properties.confirmation_token -and
+                                 $null -ne $e.inputSchema.properties.idempotency_key -and
+                                 $e.inputSchema.properties.dry_run.default -eq $true)
+                    if ($okAnn -and $okSchema) {
+                        Complete-FixCase 1 $t0 'pass' ("published with readOnlyHint=false, idempotentHint=true, a closed schema, dry_run defaulting to true and exactly {0} operations" -f $ops.Count) `
+                            -Evidence @{ annotations = $ann; operations = $ops }
+                    }
+                    else {
+                        Complete-FixCase 1 $t0 'fail' ("annotations_ok={0} schema_ok={1}; operations={2}" -f $okAnn, $okSchema, ($ops -join ','))
+                    }
+                }
+            }
+
+            # ---- The audit this section corrects from. Recomputed here so every
+            # ---- cited finding is one the auditor produces RIGHT NOW.
+            function Get-FixAudit() {
+                return Invoke-Write 'horizun_audit_planimetry' @{
+                    scope = 'model'; units = 'mm'; max_findings = 500
+                    include_advisory = $true; requirement_set = $fixSet
+                }
+            }
+            $au = Get-FixAudit
+            if ($au.isError -or -not $au.data) {
+                for ($fc = 2; $fc -le 23; $fc++) {
+                    Complete-FixCase $fc (Get-Date) 'unverified' ('the audit these corrections cite could not be read: ' + (Get-DimShortText $au.text))
+                }
+            }
+            else {
+                $fixFingerprint = $au.data.finding_set_fingerprint
+                function Find-FixFinding($answer, [string]$ruleId, $elementId) {
+                    $rows = @($answer.data.findings | Where-Object { $_.rule_id -eq $ruleId -and $_.status -eq 'failed' })
+                    if ($null -ne $elementId) {
+                        $rows = @($rows | Where-Object { @($_.element_ids) -contains [long]$elementId })
+                    }
+                    if ($rows.Count -eq 0) { return $null }
+                    return $rows[0]
+                }
+                function New-FixSource() { return @{ finding_set_fingerprint = $fixFingerprint; units = 'mm' } }
+
+                # ---- case 2: a dry run changes nothing --------------------------
+                $t0 = Get-Date
+                $f2 = Find-FixFinding $au 'sheet.no-titleblock' $planSheetBId
+                if (-not $f2) {
+                    Complete-FixCase 2 $t0 'unverified' 'the audit produced no sheet.no-titleblock finding for the bare sheet, so there was nothing to rehearse'
+                }
+                elseif (-not $planTbTypeId) {
+                    Complete-FixCase 2 $t0 'not_covered' 'no title-block type is available on this machine, so the rehearsal has nothing to place'
+                }
+                else {
+                    $censusBeforeDry = Get-FixCensus
+                    $dry2 = Invoke-FixDry @{
+                        target_document = $wDoc; units = 'mm'; source_audit = (New-FixSource)
+                        actions = @(@{ operation = 'place_title_block'; sheet_id = [long]$planSheetBId
+                                       title_block_type_id = [long]$planTbTypeId
+                                       finding = (New-FixFinding $f2) })
+                    }
+                    $censusAfterDry = Get-FixCensus
+                    $st2 = Invoke-Write 'horizun_execute_python' @{
+                        code = $stampCode; target_document = $wDoc
+                        idempotency_key = "live-fix-stamp2-$probeRun"
+                    }
+                    $modAfterDry = $null
+                    if (-not $st2.isError -and $st2.data -and $st2.data.executed -eq $true) {
+                        $modAfterDry = [bool]$st2.data.output.modified
+                    }
+                    if ($dry2.isError -or -not $dry2.data) {
+                        Complete-FixCase 2 $t0 'fail' ('the dry run errored: ' + (Get-DimShortText $dry2.text))
+                    }
+                    else {
+                        $rehearsed = ($dry2.data.rehearsal -and $dry2.data.rehearsal.materialised_provisionally -eq $true -and
+                                      $dry2.data.rehearsal.rolled_back -eq $true)
+                        $tokened = [bool]$dry2.data.confirmation_token
+                        $censusSame = ($censusBeforeDry -eq $censusAfterDry)
+                        $modSame = ($null -eq $modAfterDry) -or ($null -eq $fixModifiedBefore) -or ($modAfterDry -eq $fixModifiedBefore)
+                        if ($rehearsed -and $tokened -and $censusSame -and $modSame) {
+                            Complete-FixCase 2 $t0 'pass' ("the rehearsal MATERIALISED the batch inside a transaction, rolled it back ({0}), issued a token, and left the census byte-identical and IsModified at {1}" -f $dry2.data.rehearsal.rollback_status, $fixModifiedBefore) `
+                                -Evidence @{ rehearsal = $dry2.data.rehearsal; census_unchanged = $censusSame
+                                             is_modified_before = $fixModifiedBefore; is_modified_after = $modAfterDry }
+                        }
+                        else {
+                            Complete-FixCase 2 $t0 'fail' ("rehearsed={0} token={1} census_unchanged={2} is_modified_unchanged={3}" -f $rehearsed, $tokened, $censusSame, $modSame)
+                        }
+                    }
+                }
+
+                # ---- case 14 (early, it must run before its finding is corrected):
+                # ---- an unknown-severity rule can never be cited.
+                $t0 = Get-Date
+                $unk = Invoke-Fix @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true; source_audit = (New-FixSource)
+                    actions = @(@{ operation = 'set_view_scale'; view_id = [long]$dimSectionViewId; scale = 50
+                                   finding = @{ rule_id = 'view.template-unreadable'
+                                                requirement_set = 'horizun-universal-planimetry'
+                                                requirement_set_version = '1.0.0'
+                                                entity_kind = 'view'
+                                                view_id = [long]$dimSectionViewId
+                                                element_ids = @([long]$dimSectionViewId)
+                                                observed = @{ reason = 'staged' } } })
+                }
+                $unkRefused = ($unk.isError -or ($unk.data -and $unk.data.invalid_actions -ge 1))
+                $unkSays = ($unk.text -match 'could NOT be measured|unknown')
+                if ($unkRefused -and $unkSays) {
+                    Complete-FixCase 14 $t0 'pass' 'citing a check whose severity is `unknown` is refused by name: an unmeasured fact is not a defect and cannot be corrected' `
+                        -Evidence @{ refusal = (Get-DimShortText $unk.text) }
+                }
+                else {
+                    Complete-FixCase 14 $t0 'fail' ("an unknown-severity rule was not refused: refused={0} named={1}: {2}" -f $unkRefused, $unkSays, (Get-DimShortText $unk.text))
+                }
+
+                # ---- case 7: place_title_block (and the finding cases hang off it)
+                $t0 = Get-Date
+                $f7 = Find-FixFinding $au 'sheet.no-titleblock' $planSheetBId
+                $fix7 = $null
+                if (-not $f7) {
+                    Complete-FixCase 7 $t0 'unverified' 'no sheet.no-titleblock finding to correct'
+                }
+                elseif (-not $planTbTypeId) {
+                    Complete-FixCase 7 $t0 'not_covered' 'no title-block type is available on this machine'
+                }
+                else {
+                    $act7 = @{ operation = 'place_title_block'; sheet_id = [long]$planSheetBId
+                               title_block_type_id = [long]$planTbTypeId
+                               finding = (New-FixFinding $f7) }
+                    $fix7 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = (New-FixSource)
+                        actions = @($act7)
+                    } 'titleblock'
+                    if ($fix7.stage -ne 'apply') {
+                        Complete-FixCase 7 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix7.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix7.answer) {
+                        $row = @($fix7.answer.data.rows)[0]
+                        $props = @($row.postconditions.properties | ForEach-Object { $_.property })
+                        $covers = (($props -contains 'instance_present') -and ($props -contains 'owner_sheet') -and
+                                   ($props -contains 'symbol') -and ($props -contains 'category') -and
+                                   ($props -contains 'titleblock_count'))
+                        if ($covers -and $row.postconditions.all_verified -eq $true) {
+                            Complete-FixCase 7 $t0 'pass' 'one title block placed on the bare sheet; instance, owner sheet, symbol, category and a count of exactly 1 all re-read from the committed model' `
+                                -Evidence @{ postconditions = $row.postconditions; state = $fix7.answer.data.state }
+                        }
+                        else {
+                            Complete-FixCase 7 $t0 'fail' ("the postcondition checklist did not cover the promise: properties={0}" -f ($props -join ','))
+                        }
+                    }
+                    else {
+                        Complete-FixCase 7 $t0 'fail' ('the correction did not verify: ' + (Get-DimShortText $fix7.answer.text))
+                    }
+                }
+
+                # ---- case 20: the audit afterwards no longer produces the finding
+                $t0 = Get-Date
+                if (-not $fix7 -or $fix7.stage -ne 'apply' -or -not (Test-FixVerified $fix7.answer)) {
+                    Complete-FixCase 20 $t0 'unverified' 'the title-block correction did not commit, so there is nothing to re-audit'
+                }
+                else {
+                    $au20 = Get-FixAudit
+                    if ($au20.isError -or -not $au20.data) {
+                        Complete-FixCase 20 $t0 'unverified' 'the follow-up audit could not be read'
+                    }
+                    else {
+                        $still = Find-FixFinding $au20 'sheet.no-titleblock' $planSheetBId
+                        if ($null -eq $still) {
+                            Complete-FixCase 20 $t0 'pass' 'an INDEPENDENT horizun_audit_planimetry run no longer reports sheet.no-titleblock for that sheet: the rule stopped producing the finding' `
+                                -Evidence @{ before = $f7.rule_id; after = 'absent'
+                                             fingerprint_before = $fixFingerprint
+                                             fingerprint_after = $au20.data.finding_set_fingerprint }
+                        }
+                        else {
+                            Complete-FixCase 20 $t0 'fail' 'the corrected finding is still reported by a fresh audit'
+                        }
+                    }
+                }
+
+                # ---- case 21: resolved / persistent / new are told apart --------
+                $t0 = Get-Date
+                if (-not $fix7 -or $fix7.stage -ne 'apply' -or $fix7.answer.isError -or -not $fix7.answer.data) {
+                    Complete-FixCase 21 $t0 'unverified' 'no committed correction to read a reconciliation from'
+                }
+                else {
+                    $rec = $fix7.answer.data.reconciliation
+                    if (-not $rec) {
+                        Complete-FixCase 21 $t0 'fail' 'the reply carries no reconciliation block'
+                    }
+                    else {
+                        $hasAll = (($null -ne $rec.resolved) -and ($null -ne $rec.persistent) -and
+                                   ($null -ne $rec.new_findings) -and ($null -ne $rec.coverage_before) -and
+                                   ($null -ne $rec.coverage_after))
+                        $resolvedOne = ([int]$rec.resolved_total -eq 1)
+                        $rerun = ($rec.audit_rerun -eq 'full')
+                        if ($hasAll -and $resolvedOne -and $rerun) {
+                            Complete-FixCase 21 $t0 'pass' ("the reply separates {0} resolved, {1} persistent and {2} new finding(s), with coverage before and after, from a FULL re-run of the rules" -f $rec.resolved_total, $rec.persistent_total, $rec.new_total) `
+                                -Evidence @{ resolved = $rec.resolved_total; persistent = $rec.persistent_total
+                                             new = $rec.new_total; audit_rerun = $rec.audit_rerun }
+                        }
+                        else {
+                            Complete-FixCase 21 $t0 'fail' ("blocks_present={0} resolved_total={1} audit_rerun={2}" -f $hasAll, $rec.resolved_total, $rec.audit_rerun)
+                        }
+                    }
+                }
+
+                # ---- case 12: the same action again is now a STALE FINDING ------
+                $t0 = Get-Date
+                if (-not $fix7 -or $fix7.stage -ne 'apply' -or -not (Test-FixVerified $fix7.answer)) {
+                    Complete-FixCase 12 $t0 'unverified' 'the correction that would make the finding stale did not commit'
+                }
+                else {
+                    $tbBefore = (Invoke-Write 'horizun_query_planimetry' @{ mode = 'sheets'; sheet_ids = @([long]$planSheetBId); units = 'mm' })
+                    $stale = Invoke-Fix @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true; source_audit = (New-FixSource)
+                        actions = @($act7)
+                    }
+                    $tbAfter = (Invoke-Write 'horizun_query_planimetry' @{ mode = 'sheets'; sheet_ids = @([long]$planSheetBId); units = 'mm' })
+                    $countBefore = if ($tbBefore.data) { @($tbBefore.data.rows)[0].titleblock_count } else { $null }
+                    $countAfter = if ($tbAfter.data) { @($tbAfter.data.rows)[0].titleblock_count } else { $null }
+                    $refused = ($stale.isError -or ($stale.data -and $stale.data.invalid_actions -ge 1))
+                    $named = ($stale.text -match 'STALE FINDING')
+                    $noWrite = ($countBefore -eq $countAfter)
+                    if ($refused -and $named -and $noWrite) {
+                        Complete-FixCase 12 $t0 'pass' ("re-sending the corrected action is refused as STALE FINDING and the sheet still carries {0} title block(s) - nothing was written" -f $countAfter) `
+                            -Evidence @{ refusal = (Get-DimShortText $stale.text); titleblocks = $countAfter }
+                    }
+                    else {
+                        Complete-FixCase 12 $t0 'fail' ("refused={0} named={1} titleblocks {2}->{3}" -f $refused, $named, $countBefore, $countAfter)
+                    }
+                }
+
+                # ---- case 17 + 19: idempotent replay, and a lost response -------
+                $t0 = Get-Date
+                if (-not $fix7 -or $fix7.stage -ne 'apply' -or -not (Test-FixVerified $fix7.answer)) {
+                    Complete-FixCase 17 $t0 'unverified' 'no committed correction to replay'
+                    Complete-FixCase 19 $t0 'unverified' 'no committed correction whose response could be lost'
+                }
+                else {
+                    # A client that never saw the answer re-sends the IDENTICAL
+                    # request, token and key included. That is the lost response.
+                    $replay = Invoke-Fix $fix7.applied
+                    $countNow = $null
+                    $q = Invoke-Write 'horizun_query_planimetry' @{ mode = 'sheets'; sheet_ids = @([long]$planSheetBId); units = 'mm' }
+                    if ($q.data) { $countNow = @($q.data.rows)[0].titleblock_count }
+                    $replayed = (-not $replay.isError -and $replay.data -and $replay.data.idempotency -and
+                                 $replay.data.idempotency.status -eq 'replayed' -and
+                                 $replay.data.idempotency.command_executed_in_this_call -eq $false)
+                    $oneOnly = ($countNow -eq 1)
+                    if ($replayed -and $oneOnly) {
+                        Complete-FixCase 17 $t0 'pass' 'an identical retry replays the recorded answer with command_executed_in_this_call=false, and the sheet still carries exactly one title block' `
+                            -Evidence @{ idempotency = $replay.data.idempotency; titleblocks = $countNow }
+                        Complete-FixCase 19 $t0 'pass' 'the same retry IS the lost-response case - the caller never saw the first answer, re-sent it verbatim, and received the recorded result instead of a second correction' `
+                            -Evidence @{ idempotency = $replay.data.idempotency; titleblocks = $countNow }
+                    }
+                    else {
+                        $detail = ("replayed={0} titleblocks={1}: {2}" -f $replayed, $countNow, (Get-DimShortText $replay.text))
+                        Complete-FixCase 17 $t0 'fail' $detail
+                        Complete-FixCase 19 $t0 'fail' $detail
+                    }
+                }
+
+                # ---- case 18: the same key, a different payload ----------------
+                $t0 = Get-Date
+                if (-not $fix7 -or $fix7.stage -ne 'apply' -or -not $fix7.key) {
+                    Complete-FixCase 18 $t0 'unverified' 'no key was claimed, so no conflict can be provoked'
+                }
+                else {
+                    $f18 = Find-FixFinding $au 'sheet.viewport-overlap' $planVpSecId
+                    $conflictAction = if ($f18) {
+                        @{ operation = 'move_viewport'; viewport_id = [long]$planVpSecId; point = @(300, 900)
+                           finding = (New-FixFinding $f18) }
+                    } else { $act7 }
+                    $conflict = Invoke-Fix @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $false
+                        source_audit = (New-FixSource)
+                        actions = @($conflictAction)
+                        confirmation_token = 'hz-deliberately-not-a-real-token'
+                        idempotency_key = $fix7.key
+                    }
+                    $refused = $conflict.isError
+                    $named = ($conflict.text -match 'idempotency_key|DIFFERENT operation|already identifies')
+                    if ($refused -and $named) {
+                        Complete-FixCase 18 $t0 'pass' 'the key already claimed for the title-block correction is refused for a different payload, naming the conflict' `
+                            -Evidence @{ refusal = (Get-DimShortText $conflict.text) }
+                    }
+                    else {
+                        Complete-FixCase 18 $t0 'fail' ("refused={0} named={1}: {2}" -f $refused, $named, (Get-DimShortText $conflict.text))
+                    }
+                }
+
+                # ---- Geometry the moves stand on: the sheet's own outline and the
+                # ---- viewport's extent, both in mm, read from the query rather than
+                # ---- assumed. A point chosen without them is a guess about paper
+                # ---- size, and an A1 sheet is 841x594.
+                $fixSheetBox = $null; $fixVpBox = $null
+                $qs8 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'sheets'; sheet_ids = @([long]$planSheetAId); units = 'mm' }
+                if ($qs8.data -and @($qs8.data.rows).Count -gt 0) {
+                    $r = @($qs8.data.rows)[0]
+                    $fixSheetBox = if ($r.titleblock_extent) { @($r.titleblock_extent) } else { @($r.sheet_outline) }
+                }
+                $qp8 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId); units = 'mm' }
+                if ($qp8.data) {
+                    $vpRow = @($qp8.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpSecId })
+                    if ($vpRow.Count -eq 1) { $fixVpBox = @($vpRow[0].extent) }
+                }
+
+                # A point that keeps the viewport inside the sheet, and one that
+                # certainly does not. Both derived, so neither depends on paper size.
+                $fixInsidePoint = $null; $fixOutsidePoint = $null
+                if ($fixSheetBox -and $fixSheetBox.Count -eq 4 -and $fixVpBox -and $fixVpBox.Count -eq 4) {
+                    $vpW = [double]$fixVpBox[2] - [double]$fixVpBox[0]
+                    $vpH = [double]$fixVpBox[3] - [double]$fixVpBox[1]
+                    $shW = [double]$fixSheetBox[2] - [double]$fixSheetBox[0]
+                    $shH = [double]$fixSheetBox[3] - [double]$fixSheetBox[1]
+                    if ($vpW -lt $shW -and $vpH -lt $shH) {
+                        $fixInsidePoint = @(
+                            [math]::Round([double]$fixSheetBox[0] + ($vpW / 2) + 5, 1),
+                            [math]::Round([double]$fixSheetBox[1] + ($vpH / 2) + 5, 1))
+                    }
+                    $fixOutsidePoint = @(
+                        [math]::Round([double]$fixSheetBox[2] + $vpW + 1000, 1),
+                        [math]::Round([double]$fixSheetBox[3] + $vpH + 1000, 1))
+                }
+
+                # ---- case 16: a failed postcondition abandons the whole batch ---
+                # RUNS BEFORE case 8, and that ordering is load-bearing: case 8
+                # corrects the viewport overlap, and a resolved finding licenses
+                # nothing. Placed after it, this probe had no finding to build a
+                # failing batch around and reported UNVERIFIED - which was the
+                # honest answer to a harness that had eaten its own fixture.
+                # PROVOKED, NOT HOPED FOR. The first attempt leaned on a view
+                # template controlling the scale, and this Revit accepted the write -
+                # a provocation that does not provoke proves nothing, which is why it
+                # reported UNVERIFIED rather than passed.
+                #
+                # This one is deterministic and uses a guarantee the product actually
+                # makes: move_viewport declares `inside_sheet_extent` a postcondition
+                # whenever both extents are readable, so a point off the sheet fails a
+                # postcondition by construction. The batch also carries a rename that
+                # would otherwise succeed, and the assertion is that it did not - which
+                # is what "the WHOLE batch" means.
+                $t0 = Get-Date
+                $auP = Get-FixAudit
+                $f16 = if ($auP.data) { Find-FixFinding $auP 'sheet.viewport-overlap' $planVpSecId } else { $null }
+                if (-not $f16) { $f16 = if ($auP.data) { Find-FixFinding $auP 'sheet.placement-outside-extent' $planVpSecId } else { $null } }
+                $f16b = if ($auP.data) { Find-FixFinding $auP 'section-view-name' $dimSectionViewId } else { $null }
+                if (-not $f16b) { $f16b = if ($auP.data) { Find-FixFinding $auP 'view.no-template' $dimSectionViewId } else { $null } }
+
+                if (-not $f16 -or -not $fixOutsidePoint) {
+                    Complete-FixCase 16 $t0 'unverified' 'no viewport finding, or no sheet geometry, to build the failing batch around'
+                }
+                else {
+                    $srcP = @{ finding_set_fingerprint = $auP.data.finding_set_fingerprint; units = 'mm' }
+                    $nameBefore16 = $null
+                    $qv16 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @([long]$dimSectionViewId); units = 'mm' }
+                    if ($qv16.data -and @($qv16.data.rows).Count -gt 0) { $nameBefore16 = @($qv16.data.rows)[0].name }
+                    $centreBefore16 = $null
+                    $qc16 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId); units = 'mm' }
+                    if ($qc16.data) {
+                        $row16 = @($qc16.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpSecId })
+                        if ($row16.Count -eq 1) { $centreBefore16 = ($row16[0].box_center -join ',') }
+                    }
+
+                    $actions16 = @(@{ operation = 'move_viewport'; viewport_id = [long]$planVpSecId
+                                      point = $fixOutsidePoint; finding = (New-FixFinding $f16) })
+                    $renameIncluded = $false
+                    if ($f16b) {
+                        $actions16 += @{ operation = 'rename_view'; view_id = [long]$dimSectionViewId
+                                         new_name = "HZ_FIX_MUST_NOT_LAND_$planTag"; finding = (New-FixFinding $f16b) }
+                        $renameIncluded = $true
+                    }
+
+                    $r16 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcP
+                        requirement_set = $fixSet; actions = $actions16
+                    } 'postfail'
+
+                    $qa16 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @([long]$dimSectionViewId); units = 'mm' }
+                    $nameAfter16 = if ($qa16.data -and @($qa16.data.rows).Count -gt 0) { @($qa16.data.rows)[0].name } else { $null }
+                    $qd16 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'placements'; sheet_ids = @([long]$planSheetAId); units = 'mm' }
+                    $centreAfter16 = $null
+                    if ($qd16.data) {
+                        $rowA16 = @($qd16.data.rows | Where-Object { [long]$_.placement_id -eq [long]$planVpSecId })
+                        if ($rowA16.Count -eq 1) { $centreAfter16 = ($rowA16[0].box_center -join ',') }
+                    }
+                    $nothingMoved = ($centreBefore16 -eq $centreAfter16) -and ($nameBefore16 -eq $nameAfter16)
+
+                    if ($r16.stage -ne 'apply') {
+                        # The rehearsal MATERIALISED both actions, measured the
+                        # containment postcondition, found it false, rolled the
+                        # transaction back and withheld the token. Nothing was written.
+                        $reh = $r16.answer.data.rehearsal
+                        $rolled = ($reh -and $reh.rolled_back -eq $true)
+                        $notConstructible = if ($reh) { [int]$reh.not_constructible } else { -1 }
+                        if ($rolled -and $notConstructible -ge 1 -and $nothingMoved) {
+                            Complete-FixCase 16 $t0 'pass' ("a point off the sheet fails move_viewport's inside_sheet_extent postcondition: the rehearsal materialised {0} action(s), measured {1} as not constructible, rolled back ({2}) and issued NO token. The viewport is still at {3} and the view is still named '{4}' - the batch's OTHER action, which would have succeeded, did not land." -f $actions16.Count, $notConstructible, $reh.rollback_status, $centreAfter16, $nameAfter16) `
+                                -Evidence @{ rehearsal = $reh; rename_included = $renameIncluded
+                                             centre_before = $centreBefore16; centre_after = $centreAfter16
+                                             name_before = $nameBefore16; name_after = $nameAfter16 }
+                        }
+                        else {
+                            Complete-FixCase 16 $t0 'fail' ("rolled_back={0} not_constructible={1} nothing_moved={2} (centre {3}->{4}, name {5}->{6})" -f $rolled, $notConstructible, $nothingMoved, $centreBefore16, $centreAfter16, $nameBefore16, $nameAfter16)
+                        }
+                    }
+                    elseif ($r16.answer.isError) {
+                        $detail16 = $r16.answer.data
+                        if ($nothingMoved) {
+                            Complete-FixCase 16 $t0 'pass' ("the apply committed, the post-write re-read found the placement off the sheet, and the WHOLE batch rolled back (state={0}); neither the viewport nor the view moved" -f $detail16.state) `
+                                -Evidence @{ state = $detail16.state
+                                             transaction_group_status = $detail16.transaction_group_status
+                                             centre_after = $centreAfter16; name_after = $nameAfter16 }
+                        }
+                        else {
+                            Complete-FixCase 16 $t0 'fail' ("the batch reported a rollback but something moved: centre {0}->{1}, name {2}->{3}" -f $centreBefore16, $centreAfter16, $nameBefore16, $nameAfter16)
+                        }
+                    }
+                    else {
+                        Complete-FixCase 16 $t0 'fail' ("a viewport moved wholly off the sheet was ACCEPTED: the containment postcondition did not fire. centre {0}->{1}" -f $centreBefore16, $centreAfter16)
+                    }
+                }
+
+                # ---- case 8: move_viewport --------------------------------------
+                $t0 = Get-Date
+                $auNow = Get-FixAudit
+                $f8 = if ($auNow.data) { Find-FixFinding $auNow 'sheet.viewport-overlap' $planVpSecId } else { $null }
+                if (-not $f8) {
+                    Complete-FixCase 8 $t0 'unverified' 'the audit produced no viewport-overlap finding to correct'
+                }
+                elseif (-not $fixInsidePoint) {
+                    Complete-FixCase 8 $t0 'unverified' ("no point can keep this viewport inside the sheet: sheet extent={0} viewport extent={1}" -f ($fixSheetBox -join ','), ($fixVpBox -join ','))
+                }
+                else {
+                    $srcNow = @{ finding_set_fingerprint = $auNow.data.finding_set_fingerprint; units = 'mm' }
+                    $fix8 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcNow
+                        actions = @(@{ operation = 'move_viewport'; viewport_id = [long]$planVpSecId
+                                       point = $fixInsidePoint; finding = (New-FixFinding $f8) })
+                    } 'moveviewport'
+                    if ($fix8.stage -ne 'apply') {
+                        Complete-FixCase 8 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix8.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix8.answer) {
+                        $row = @($fix8.answer.data.rows)[0]
+                        $reread = @($row.postconditions.properties | Where-Object { $_.property -eq 'box_center' })
+                        $contain = @($row.postconditions.properties | Where-Object { $_.property -eq 'inside_sheet_extent' })
+                        if ($reread.Count -eq 1 -and $reread[0].measured -eq $true -and $reread[0].matches -eq $true) {
+                            Complete-FixCase 8 $t0 'pass' ("the viewport moved to the explicit point and Viewport.GetBoxCenter() re-read as {0} within the declared tolerance; containment was {1}" -f $reread[0].found_in_committed_model, $(if ($contain.Count -eq 1) { 'a measured postcondition and it held' } else { 'not measurable and is reported as such, not as a pass' })) `
+                                -Evidence @{ postconditions = $row.postconditions; inside_sheet_extent = $row.inside_sheet_extent
+                                             tolerance = $fix8.answer.data.tolerance }
+                        }
+                        else {
+                            Complete-FixCase 8 $t0 'fail' 'box_center was not re-read and compared'
+                        }
+                    }
+                    else {
+                        Complete-FixCase 8 $t0 'fail' ('the move did not verify: ' + (Get-DimShortText $fix8.answer.text))
+                    }
+                }
+
+                # ---- case 9: move_schedule --------------------------------------
+                $t0 = Get-Date
+                if (-not $planSchedPlacementId) {
+                    Complete-FixCase 9 $t0 'not_covered' 'the planimetry fixture staged no schedule placement on this machine'
+                }
+                else {
+                    $auS = Get-FixAudit
+                    $f9 = if ($auS.data) { Find-FixFinding $auS 'schedule-margin' $planSchedPlacementId } else { $null }
+                    if (-not $f9) {
+                        Complete-FixCase 9 $t0 'unverified' 'the requirement set produced no schedule_placement finding to correct'
+                    }
+                    else {
+                        $srcS = @{ finding_set_fingerprint = $auS.data.finding_set_fingerprint; units = 'mm' }
+                        $fix9 = Invoke-FixApply @{
+                            target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcS
+                            requirement_set = $fixSet
+                            actions = @(@{ operation = 'move_schedule'; schedule_instance_id = [long]$planSchedPlacementId
+                                           point = @(500, 400); finding = (New-FixFinding $f9) })
+                        } 'moveschedule'
+                        if ($fix9.stage -ne 'apply') {
+                            Complete-FixCase 9 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix9.answer.text))
+                        }
+                        elseif (Test-FixVerified $fix9.answer) {
+                            $row = @($fix9.answer.data.rows)[0]
+                            $reread = @($row.postconditions.properties | Where-Object { $_.property -eq 'point' })
+                            if ($reread.Count -eq 1 -and $reread[0].measured -eq $true -and $reread[0].matches -eq $true) {
+                                Complete-FixCase 9 $t0 'pass' ("the schedule placement moved to the explicit point and ScheduleSheetInstance.Point re-read as {0} within tolerance" -f $reread[0].found_in_committed_model) `
+                                    -Evidence @{ postconditions = $row.postconditions }
+                            }
+                            else {
+                                Complete-FixCase 9 $t0 'fail' 'the placement point was not re-read and compared'
+                            }
+                        }
+                        else {
+                            Complete-FixCase 9 $t0 'fail' ('the move did not verify: ' + (Get-DimShortText $fix9.answer.text))
+                        }
+                    }
+                }
+
+                # ---- case 10: clear_element_override ----------------------------
+                $t0 = Get-Date
+                $auO = Get-FixAudit
+                $f10 = if ($auO.data) { Find-FixFinding $auO 'near-text-no-override' $planNearTextId } else { $null }
+                if (-not $f10) {
+                    Complete-FixCase 10 $t0 'unverified' 'the requirement set produced no element-override finding to correct'
+                }
+                else {
+                    $srcO = @{ finding_set_fingerprint = $auO.data.finding_set_fingerprint; units = 'mm' }
+                    $fix10 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcO; requirement_set = $fixSet
+                        actions = @(@{ operation = 'clear_element_override'; view_id = [long]$dimPlanViewId
+                                       element_id = [long]$planNearTextId; finding = (New-FixFinding $f10) })
+                    } 'clearoverride'
+                    if ($fix10.stage -ne 'apply') {
+                        Complete-FixCase 10 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix10.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix10.answer) {
+                        $row = @($fix10.answer.data.rows)[0]
+                        $props = @($row.postconditions.properties | ForEach-Object { $_.property })
+                        $proves = (($props -contains 'element_override_cleared') -and
+                                   ($props -contains 'category_override_unchanged') -and
+                                   ($props -contains 'view_template_unchanged'))
+                        if ($proves -and $row.postconditions.all_verified -eq $true) {
+                            Complete-FixCase 10 $t0 'pass' 'the element override is re-read as defaults, and the CATEGORY override and the view template are re-read as unchanged - the fix touched only what it named' `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 10 $t0 'fail' ("the checklist did not prove the neighbours were left alone: properties={0}" -f ($props -join ','))
+                        }
+                    }
+                    else {
+                        Complete-FixCase 10 $t0 'fail' ('clearing the override did not verify: ' + (Get-DimShortText $fix10.answer.text))
+                    }
+                }
+
+                # ---- case 11: set_crop ------------------------------------------
+                $t0 = Get-Date
+                $auC = Get-FixAudit
+                $f11 = $null
+                if ($auC.data) {
+                    foreach ($rule in @('text.outside-annotation-crop', 'detail_2d.outside-crop', 'tag.outside-annotation-crop')) {
+                        $f11 = Find-FixFinding $auC $rule $null
+                        if ($f11) { break }
+                    }
+                }
+                if (-not $f11) {
+                    # WHY there is none is the useful half. Revit withholds the
+                    # bounding box of an element hidden by an ACTIVE crop, and the
+                    # auditor then reports that element `unknown` (bounds unreadable)
+                    # rather than "outside the crop" - which is correct, and which
+                    # makes the outside-crop rules hard to stage. Report the measured
+                    # statuses so the next run does not have to guess.
+                    $cropStatuses = @()
+                    if ($auC.data) {
+                        foreach ($rule in @('text.outside-annotation-crop', 'text.bounds-unreadable',
+                                            'tag.outside-annotation-crop', 'dimension.outside-annotation-crop',
+                                            'detail_2d.outside-crop', 'view.crop-geometry-unreadable')) {
+                            $chk = @($auC.data.checks | Where-Object { $_.rule_id -eq $rule })
+                            if ($chk.Count -eq 1) {
+                                $cropStatuses += ('{0}={1}(pop {2}, findings {3}, unknowns {4})' -f
+                                    $rule, $chk[0].status, $chk[0].population, $chk[0].findings, $chk[0].unknowns)
+                            }
+                        }
+                    }
+                    Complete-FixCase 11 $t0 'unverified' ('the audit produced no outside-crop finding, so no crop correction is licensed. Measured check statuses: ' + ($cropStatuses -join '; ')) `
+                        -Evidence @{ crop_check_statuses = $cropStatuses }
+                }
+                else {
+                    $srcC = @{ finding_set_fingerprint = $auC.data.finding_set_fingerprint; units = 'mm' }
+                    $cropView = if ($null -ne $f11.view_id) { [long]$f11.view_id } else { [long]$dimPlanViewId }
+                    $fix11 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; tolerance = 1.0; source_audit = $srcC
+                        actions = @(@{ operation = 'set_crop'; view_id = $cropView
+                                       crop = @{ min = @(-20000, -20000); max = @(20000, 20000) }
+                                       finding = (New-FixFinding $f11) })
+                    } 'setcrop'
+                    if ($fix11.stage -ne 'apply') {
+                        Complete-FixCase 11 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix11.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix11.answer) {
+                        $row = @($fix11.answer.data.rows)[0]
+                        $props = @($row.postconditions.properties | ForEach-Object { $_.property })
+                        $proves = (($props -contains 'crop_active') -and ($props -contains 'crop_shape') -and
+                                   ($props -contains 'crop_visible_unchanged'))
+                        if ($proves -and $row.postconditions.all_verified -eq $true) {
+                            Complete-FixCase 11 $t0 'pass' 'the rectangular crop committed and was re-read: active, shape within the declared tolerance, and visibility unchanged' `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 11 $t0 'fail' ("the crop checklist is incomplete: properties={0}" -f ($props -join ','))
+                        }
+                    }
+                    else {
+                        Complete-FixCase 11 $t0 'fail' ('the crop did not verify: ' + (Get-DimShortText $fix11.answer.text))
+                    }
+                }
+
+                # ---- case 6: rename_sheet ---------------------------------------
+                $t0 = Get-Date
+                $auR = Get-FixAudit
+                $f6 = if ($auR.data) { Find-FixFinding $auR 'sheet-b-number' $planSheetBId } else { $null }
+                if (-not $f6) {
+                    Complete-FixCase 6 $t0 'unverified' 'the requirement set produced no sheet-number finding to correct'
+                }
+                else {
+                    $srcR = @{ finding_set_fingerprint = $auR.data.finding_set_fingerprint; units = 'mm' }
+                    $newNumber = "HZFIX-B-$planTag"
+                    $newSheetName = "HZ_FIX_SHEET_B_$planTag"
+                    $fix6 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcR; requirement_set = $fixSet
+                        actions = @(@{ operation = 'rename_sheet'; sheet_id = [long]$planSheetBId
+                                       new_number = $newNumber; new_name = $newSheetName
+                                       finding = (New-FixFinding $f6) })
+                    } 'renamesheet'
+                    if ($fix6.stage -ne 'apply') {
+                        Complete-FixCase 6 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix6.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix6.answer) {
+                        $row = @($fix6.answer.data.rows)[0]
+                        $num = @($row.postconditions.properties | Where-Object { $_.property -eq 'sheet_number' })
+                        $nam = @($row.postconditions.properties | Where-Object { $_.property -eq 'name' })
+                        if ($num.Count -eq 1 -and $nam.Count -eq 1 -and
+                            $num[0].found_in_committed_model -eq $newNumber -and
+                            $nam[0].found_in_committed_model -eq $newSheetName) {
+                            Complete-FixCase 6 $t0 'pass' ("the sheet is re-read as number '{0}' and name '{1}' - BOTH fields, not only the one the caller cared about" -f $num[0].found_in_committed_model, $nam[0].found_in_committed_model) `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 6 $t0 'fail' 'the sheet fields were not both re-read and matched'
+                        }
+                    }
+                    else {
+                        Complete-FixCase 6 $t0 'fail' ('the rename did not verify: ' + (Get-DimShortText $fix6.answer.text))
+                    }
+                }
+
+                # ---- case 5: rename_view ----------------------------------------
+                $t0 = Get-Date
+                $auV = Get-FixAudit
+                $f5 = if ($auV.data) { Find-FixFinding $auV 'section-view-name' $dimSectionViewId } else { $null }
+                if (-not $f5) {
+                    Complete-FixCase 5 $t0 'unverified' 'the requirement set produced no view-name finding to correct'
+                }
+                else {
+                    $srcV = @{ finding_set_fingerprint = $auV.data.finding_set_fingerprint; units = 'mm' }
+                    $fixSectionViewFinalName = "HZFIX-SECTION-$planTag"
+                    $fix5 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcV; requirement_set = $fixSet
+                        actions = @(@{ operation = 'rename_view'; view_id = [long]$dimSectionViewId
+                                       new_name = $fixSectionViewFinalName; finding = (New-FixFinding $f5) })
+                    } 'renameview'
+                    if ($fix5.stage -ne 'apply') {
+                        Complete-FixCase 5 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix5.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix5.answer) {
+                        $row = @($fix5.answer.data.rows)[0]
+                        $nam = @($row.postconditions.properties | Where-Object { $_.property -eq 'name' })
+                        if ($nam.Count -eq 1 -and $nam[0].found_in_committed_model -eq $fixSectionViewFinalName) {
+                            Complete-FixCase 5 $t0 'pass' ("the view is re-read as '{0}' - the exact name the request named, never a name the bridge chose" -f $nam[0].found_in_committed_model) `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 5 $t0 'fail' 'the view name was not re-read and matched'
+                        }
+                    }
+                    else {
+                        Complete-FixCase 5 $t0 'fail' ('the rename did not verify: ' + (Get-DimShortText $fix5.answer.text))
+                    }
+                }
+
+                # ---- case 4: set_view_scale -------------------------------------
+                $t0 = Get-Date
+                $auSc = Get-FixAudit
+                $f4 = if ($auSc.data) { Find-FixFinding $auSc 'section-view-scale' $dimSectionViewId } else { $null }
+                $fix4 = $null
+                if (-not $f4) {
+                    Complete-FixCase 4 $t0 'unverified' 'the requirement set produced no allowed_scale finding to correct'
+                }
+                else {
+                    $srcSc = @{ finding_set_fingerprint = $auSc.data.finding_set_fingerprint; units = 'mm' }
+                    $fix4 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcSc; requirement_set = $fixSet
+                        actions = @(@{ operation = 'set_view_scale'; view_id = [long]$dimSectionViewId
+                                       scale = 25; finding = (New-FixFinding $f4) })
+                    } 'setscale'
+                    if ($fix4.stage -ne 'apply') {
+                        Complete-FixCase 4 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix4.answer.text))
+                    }
+                    elseif (Test-FixVerified $fix4.answer) {
+                        $row = @($fix4.answer.data.rows)[0]
+                        $sc = @($row.postconditions.properties | Where-Object { $_.property -eq 'scale' })
+                        if ($sc.Count -eq 1 -and [int]$sc[0].found_in_committed_model -eq 25) {
+                            Complete-FixCase 4 $t0 'pass' 'View.Scale is re-read as the explicit 25 the request named' `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 4 $t0 'fail' 'the scale was not re-read as requested'
+                        }
+                    }
+                    else {
+                        Complete-FixCase 4 $t0 'fail' ('the scale change did not verify: ' + (Get-DimShortText $fix4.answer.text))
+                    }
+                }
+
+                # ---- case 13: a token whose resolved elements moved -------------
+                # Rehearse a rename, then rename the SAME view underneath the token
+                # by another route, and spend it. The request is identical and the
+                # document is the same; only the answer moved.
+                $t0 = Get-Date
+                $auT = Get-FixAudit
+                $f13 = if ($auT.data) { Find-FixFinding $auT 'section-view-template' $dimSectionViewId } else { $null }
+                if (-not $f13) {
+                    $f13 = if ($auT.data) { Find-FixFinding $auT 'view.no-template' $dimSectionViewId } else { $null }
+                }
+                if (-not $f13 -or -not $fixTemplateId) {
+                    Complete-FixCase 13 $t0 'unverified' ("no finding/template pair to rehearse a stale plan against: finding={0} template_id={1}" -f $(if ($f13) { 'present' } else { 'ABSENT' }), $(if ($fixTemplateId) { $fixTemplateId } else { 'ABSENT' }))
+                }
+                else {
+                    $srcT = @{ finding_set_fingerprint = $auT.data.finding_set_fingerprint; units = 'mm' }
+                    $args13 = @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcT; requirement_set = $fixSet
+                        actions = @(@{ operation = 'set_view_template'; view_id = [long]$dimSectionViewId
+                                       template_id = [long]$fixTemplateId; finding = (New-FixFinding $f13) })
+                    }
+                    $dry13 = Invoke-FixDry $args13
+                    if ($dry13.isError -or -not $dry13.data -or -not $dry13.data.confirmation_token) {
+                        Complete-FixCase 13 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $dry13.text))
+                    }
+                    else {
+                        # Move the model underneath the token: rename the template the
+                        # plan resolved. The id still resolves; the NAME the person
+                        # read when they approved does not.
+                        $driftCode = @"
+from Autodesk.Revit.DB import Transaction, ElementId
+tpl = doc.GetElement(ElementId($fixTemplateId))
+t = Transaction(doc, 'HZ fix live: move the model under the token')
+t.Start()
+tpl.Name = 'HZ_FIX_TPL_MOVED_$planTag'
+t.Commit()
+__output__ = {'status': 'self_reported_verified', 'summary': 'renamed the referenced template',
+              'verification': {'checked': True, 'evidence': ['Name=' + tpl.Name]}}
+"@
+                        $drift = Invoke-Write 'horizun_execute_python' @{
+                            code = $driftCode; target_document = $wDoc
+                            idempotency_key = "live-fix-drift-$probeRun"
+                        }
+                        if ($drift.isError -or -not $drift.data -or $drift.data.evidence_status -ne 'self_reported_verified') {
+                            Complete-FixCase 13 $t0 'unverified' ('the drift could not be staged: ' + (Get-DimShortText $drift.text))
+                        }
+                        else {
+                            $spend = $args13.Clone()
+                            $spend['dry_run'] = $false
+                            $spend['confirmation_token'] = $dry13.data.confirmation_token
+                            $spend['idempotency_key'] = "live-fix-stale-$probeRun"
+                            $stalePlan = Invoke-Fix $spend
+                            $refused = $stalePlan.isError
+                            $named = ($stalePlan.text -match 'stale|MODEL MOVED')
+                            $vt = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @([long]$dimSectionViewId); units = 'mm' }
+                            $tplAfter = if ($vt.data) { @($vt.data.rows)[0].template_id } else { 'unreadable' }
+                            $noWrite = ($null -eq $tplAfter -or $tplAfter -ne $fixTemplateId)
+                            if ($refused -and $named -and $noWrite) {
+                                Complete-FixCase 13 $t0 'pass' 'the token was refused after the referenced template was renamed underneath it - the request was identical and the document the same, so only a materialised plan could catch it; the view still carries no template' `
+                                    -Evidence @{ refusal = (Get-DimShortText $stalePlan.text); template_after = $tplAfter }
+                            }
+                            else {
+                                Complete-FixCase 13 $t0 'fail' ("refused={0} named={1} template_after={2}" -f $refused, $named, $tplAfter)
+                            }
+                        }
+                    }
+                }
+
+                # ---- case 3: set_view_template ---------------------------------
+                $t0 = Get-Date
+                $auTpl = Get-FixAudit
+                $f3 = if ($auTpl.data) { Find-FixFinding $auTpl 'section-view-template' $dimSectionViewId } else { $null }
+                if (-not $f3 -and $auTpl.data) { $f3 = Find-FixFinding $auTpl 'view.no-template' $dimSectionViewId }
+                $fix3 = $null
+                if (-not $f3 -or -not $fixTemplateId) {
+                    # Which half is missing, not "one of two things". The first
+                    # version said neither and cost a run to disambiguate.
+                    Complete-FixCase 3 $t0 'unverified' ("no template correction could be licensed: finding={0} template_id={1}" -f $(if ($f3) { 'present' } else { 'ABSENT' }), $(if ($fixTemplateId) { $fixTemplateId } else { 'ABSENT' }))
+                }
+                else {
+                    $srcTpl = @{ finding_set_fingerprint = $auTpl.data.finding_set_fingerprint; units = 'mm' }
+                    $fix3 = Invoke-FixApply @{
+                        target_document = $wDoc; units = 'mm'; source_audit = $srcTpl; requirement_set = $fixSet
+                        actions = @(@{ operation = 'set_view_template'; view_id = [long]$dimSectionViewId
+                                       template_id = [long]$fixTemplateId; finding = (New-FixFinding $f3) })
+                    } 'settemplate'
+                    if ($fix3.stage -ne 'apply') {
+                        $sentBlock = (New-FixFinding $f3) | ConvertTo-Json -Depth 8 -Compress
+                        $auditRow = $f3 | ConvertTo-Json -Depth 8 -Compress
+                        Complete-FixCase 3 $t0 'unverified' ('the rehearsal issued no token: ' + (Get-DimShortText $fix3.answer.text)) `
+                            -Evidence @{ sent_finding = $sentBlock; audit_finding = $auditRow
+                                         refusal = $fix3.answer.text }
+                    }
+                    elseif (Test-FixVerified $fix3.answer) {
+                        $row = @($fix3.answer.data.rows)[0]
+                        $tp = @($row.postconditions.properties | Where-Object { $_.property -eq 'view_template_id' })
+                        if ($tp.Count -eq 1 -and [long]$tp[0].found_in_committed_model -eq [long]$fixTemplateId) {
+                            Complete-FixCase 3 $t0 'pass' 'ViewTemplateId is re-read from the committed model as the explicit template ElementId the request named' `
+                                -Evidence @{ postconditions = $row.postconditions }
+                        }
+                        else {
+                            Complete-FixCase 3 $t0 'fail' 'ViewTemplateId was not re-read as the requested template'
+                        }
+                    }
+                    else {
+                        Complete-FixCase 3 $t0 'fail' ('the template assignment did not verify: ' + (Get-DimShortText $fix3.answer.text))
+                    }
+                }
+
+                # ---- case 15: one invalid action refuses the WHOLE batch --------
+                $t0 = Get-Date
+                $auB = Get-FixAudit
+                $f15 = if ($auB.data) { Find-FixFinding $auB 'plan-view-never' $dimPlanViewId } else { $null }
+                if (-not $f15) { $f15 = if ($auB.data) { Find-FixFinding $auB 'view.not-placed' $null } else { $null } }
+                if (-not $f15) { $f15 = if ($auB.data) { Find-FixFinding $auB 'view.no-template' $null } else { $null } }
+                if (-not $f15) {
+                    Complete-FixCase 15 $t0 'unverified' 'no view finding was available to build a mixed batch around'
+                }
+                else {
+                    $srcB = @{ finding_set_fingerprint = $auB.data.finding_set_fingerprint; units = 'mm' }
+                    $validTarget = [long]@($f15.element_ids)[0]
+                    $nameBefore = $null
+                    $qv = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @($validTarget); units = 'mm' }
+                    if ($qv.data -and @($qv.data.rows).Count -gt 0) { $nameBefore = @($qv.data.rows)[0].name }
+                    $mixed = Invoke-Fix @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $false
+                        source_audit = $srcB; requirement_set = $fixSet
+                        confirmation_token = 'hz-deliberately-not-a-real-token'
+                        idempotency_key = "live-fix-mixed-$probeRun"
+                        actions = @(
+                            @{ operation = 'rename_view'; view_id = $validTarget
+                               new_name = "HZ_FIX_MIXED_$planTag"; finding = (New-FixFinding $f15) },
+                            # INVALID: a scale Revit does not accept. A value the
+                            # caller can fix, so it must NOT grant the fallback.
+                            @{ operation = 'set_view_scale'; view_id = $validTarget; scale = 99999
+                               finding = (New-FixFinding $f15) })
+                    }
+                    $qa = Invoke-Write 'horizun_query_planimetry' @{ mode = 'views'; view_ids = @($validTarget); units = 'mm' }
+                    $nameAfter = if ($qa.data -and @($qa.data.rows).Count -gt 0) { @($qa.data.rows)[0].name } else { $null }
+                    $refused = $mixed.isError
+                    $unchanged = ($nameBefore -eq $nameAfter)
+                    if ($refused -and $unchanged) {
+                        Complete-FixCase 15 $t0 'pass' ("one invalid action refused the whole batch; the valid action's view is still named '{0}' - none of it was written" -f $nameAfter) `
+                            -Evidence @{ refusal = (Get-DimShortText $mixed.text); name_before = $nameBefore; name_after = $nameAfter }
+                    }
+                    else {
+                        Complete-FixCase 15 $t0 'fail' ("refused={0} name {1}->{2}" -f $refused, $nameBefore, $nameAfter)
+                    }
+                }
+
+                # ---- case 22: revert, and return the census -------------------
+                $t0 = Get-Date
+                $revertNotes = @()
+                if ($fix7 -and $fix7.stage -eq 'apply' -and (Test-FixVerified $fix7.answer)) {
+                    $tbq = Invoke-Write 'horizun_query_planimetry' @{ mode = 'sheets'; sheet_ids = @([long]$planSheetBId); units = 'mm' }
+                    if ($tbq.data -and @($tbq.data.rows).Count -gt 0) {
+                        $tbIds = @(@($tbq.data.rows)[0].titleblock_instance_ids)
+                        if ($tbIds.Count -gt 0) {
+                            $del = Invoke-WriteApply 'horizun_delete_verified' @{
+                                mode = 'ids'; target_document = $wDoc; id_cap = 50
+                                ids = @($tbIds | ForEach-Object { [long]$_ })
+                            } 'fix-revert-tb'
+                            if ($del.stage -eq 'apply' -and -not $del.answer.isError) { $revertNotes += 'title block deleted' }
+                            else { $revertNotes += 'title block NOT deleted: ' + (Get-DimShortText $del.answer.text) }
+                        }
+                    }
+                }
+                if ($fixCropLineId) {
+                    $delLine = Invoke-WriteApply 'horizun_delete_verified' @{
+                        mode = 'ids'; target_document = $wDoc; id_cap = 50
+                        ids = @([long]$fixCropLineId)
+                    } 'fix-revert-line'
+                    if ($delLine.stage -eq 'apply' -and -not $delLine.answer.isError) { $revertNotes += 'crop detail line deleted' }
+                    else { $revertNotes += 'crop detail line NOT deleted: ' + (Get-DimShortText $delLine.answer.text) }
+                }
+                if ($fixTemplateId) {
+                    $delTpl = Invoke-WriteApply 'horizun_delete_verified' @{
+                        mode = 'ids'; target_document = $wDoc; id_cap = 50
+                        ids = @([long]$fixTemplateId)
+                    } 'fix-revert-tpl'
+                    if ($delTpl.stage -eq 'apply' -and -not $delTpl.answer.isError) { $revertNotes += 'view template deleted' }
+                    else { $revertNotes += 'view template NOT deleted: ' + (Get-DimShortText $delTpl.answer.text) }
+                }
+                # Put the crop back where the section found it. set_crop is a
+                # deliberate display change, and reverting the section means
+                # reverting that too - otherwise the census carries whatever Revit
+                # keeps alongside a crop shape.
+                if ($fixCropBefore -and @($fixCropBefore).Count -eq 4) {
+                    $restoreCode = @"
+from Autodesk.Revit.DB import ElementId, Transaction, XYZ
+# CropBox, not SetCropShape. Setting a crop SHAPE installs a sketch whose
+# constraints Revit models as two non-view-specific Dimension elements - measured
+# in this very gate, and the reason set_crop itself now writes the rectangle
+# through CropBox. A restore that used the shape API would put back the elements
+# it is supposed to be removing.
+v = doc.GetElement(ElementId($dimPlanViewId))
+mgr = v.GetCropRegionShapeManager()
+o, r, u = v.Origin, v.RightDirection, v.UpDirection
+mm = 1.0 / 304.8
+x0, y0, x1, y1 = $(@($fixCropBefore) -join ', ')
+t = Transaction(doc, 'HZ fix live: restore the crop the section changed')
+t.Start()
+if mgr.ShapeSet:
+    mgr.RemoveCropRegionShape()
+bb = v.CropBox
+inv = bb.Transform.Inverse
+a = inv.OfPoint(o + r.Multiply(x0 * mm) + u.Multiply(y0 * mm))
+b = inv.OfPoint(o + r.Multiply(x1 * mm) + u.Multiply(y1 * mm))
+bb.Min = XYZ(min(a.X, b.X), min(a.Y, b.Y), bb.Min.Z)
+bb.Max = XYZ(max(a.X, b.X), max(a.Y, b.Y), bb.Max.Z)
+v.CropBox = bb
+t.Commit()
+v2 = doc.GetElement(ElementId($dimPlanViewId))
+__output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-section crop through CropBox',
+              'verification': {'checked': True,
+                               'evidence': ['ShapeSet=' + str(v2.GetCropRegionShapeManager().ShapeSet)]}}
+"@
+                    $restore = Invoke-Write 'horizun_execute_python' @{
+                        code = $restoreCode; target_document = $wDoc
+                        idempotency_key = "live-fix-cropback-$probeRun"
+                    }
+                    if (-not $restore.isError -and $restore.data -and $restore.data.evidence_status -eq 'self_reported_verified') {
+                        $revertNotes += 'crop restored'
+                    }
+                    else { $revertNotes += 'crop NOT restored: ' + (Get-DimShortText $restore.text) }
+                }
+
+                $censusEnd = Get-FixCensus
+                if (-not $censusEnd -or -not $fixCensusReference) {
+                    Complete-FixCase 22 $t0 'unverified' 'the closing or the reference census could not be read'
+                }
+                elseif ($censusEnd -eq $fixCensusReference) {
+                    Complete-FixCase 22 $t0 'pass' ("after deleting exactly what this section created ({0}), the inventory census is byte-identical to the reference taken before it: every other correction changed a property, not the model's population" -f ($revertNotes -join '; ')) `
+                        -Evidence @{ reverted = $revertNotes; census = $censusEnd }
+                }
+                else {
+                    # WHICH elements appeared, not merely that a total moved.
+                    $appeared = @()
+                    $qd1 = Invoke-Write 'horizun_query_planimetry' @{ mode = 'annotations'; categories = @('dimensions'); units = 'mm'; max_rows = 500 }
+                    if ($qd1.data) {
+                        $after = @($qd1.data.rows)
+                        foreach ($row in $after) {
+                            if (@($fixDimIdsBefore) -notcontains [long]$row.element_id) {
+                                $appeared += ('dimension {0} type={1} owner_view={2} view_specific={3}' -f
+                                    $row.element_id, $row.type, $row.owner_view_name, $row.view_specific)
+                            }
+                        }
+                    }
+                    Complete-FixCase 22 $t0 'fail' ("the census did not return. reverted={0}. Appeared since the reference: {1}. reference={2} end={3}" -f ($revertNotes -join '; '), $(if ($appeared.Count -gt 0) { $appeared -join ' | ' } else { '(no new dimension rows)' }), $fixCensusReference, $censusEnd) `
+                        -Evidence @{ reverted = $revertNotes; appeared = $appeared }
+                }
+
+                # ---- case 23: nothing was saved --------------------------------
+                $t0 = Get-Date
+                $st3 = Invoke-Write 'horizun_execute_python' @{
+                    code = $stampCode; target_document = $wDoc
+                    idempotency_key = "live-fix-stamp3-$probeRun"
+                }
+                if ($st3.isError -or -not $st3.data -or $st3.data.executed -ne $true) {
+                    Complete-FixCase 23 $t0 'unverified' 'the file stamp could not be re-read after the section'
+                }
+                else {
+                    $stampAfter = [string]$st3.data.output.stamp
+                    $modAfter = [bool]$st3.data.output.modified
+                    if ([string]::IsNullOrWhiteSpace($fixFileStampBefore) -and [string]::IsNullOrWhiteSpace($stampAfter)) {
+                        Complete-FixCase 23 $t0 'pass' 'the disposable document has never been written to disk at all, before or after the corrections: there is no file for a save to have touched' `
+                            -Evidence @{ path = $fixFilePath; is_modified_after = $modAfter; stamp = '(never saved)' }
+                    }
+                    elseif ($stampAfter -eq $fixFileStampBefore) {
+                        Complete-FixCase 23 $t0 'pass' ("the model file's timestamp and size are byte-identical before and after every correction, while IsModified is {0}: the section wrote to the MODEL and never to the FILE" -f $modAfter) `
+                            -Evidence @{ path = $fixFilePath; stamp_before = $fixFileStampBefore
+                                         stamp_after = $stampAfter; is_modified_after = $modAfter }
+                    }
+                    else {
+                        Complete-FixCase 23 $t0 'fail' ("the file changed on disk: {0} -> {1}" -f $fixFileStampBefore, $stampAfter)
+                    }
+                }
+            }
+        }
+
+        # Every case number reports exactly once - the same harness rule the other
+        # three sections live under.
+        for ($fixCase = 1; $fixCase -le 23; $fixCase++) {
+            if (-not $script:fixCasesDone.ContainsKey($fixCase)) {
+                Complete-FixCase $fixCase (Get-Date) 'unverified' 'the fix section ended before this probe ran - a harness bug, not a product verdict'
+            }
+        }
+
+        # ----------------------------------------------------------------------
+        # W9+: AUTONOMOUS PLANIMETRY PRODUCTION.
+        # Reuses the disposable, already-measured fixture after correction. Every
+        # write still runs dry-run -> token -> apply, and the temporary tag and
+        # dimension are removed again. The sheet arrangement/revision remain only
+        # in the disposable unsaved document.
+        # ----------------------------------------------------------------------
+        $script:productionCasesDone = @{}
+        function Complete-ProductionCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:productionCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:productionCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$productionNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:productionEvidence += @{
+                case=$CaseNumber; name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+
+        $productionGap = $null
+        if (-not $planSheetAId -or -not $planVpPlanId -or -not $planVpSecId) {
+            $productionGap = 'the planimetry fixture did not retain sheet A and its two viewport ids'
+        }
+        elseif (-not $dimPlanViewId -or @($dimPipes).Count -lt 3 -or @($dimParGridIds).Count -lt 2) {
+            $productionGap = 'the dimension fixture did not retain its plan view, three pipes and two parallel grids'
+        }
+
+        if ($productionGap) {
+            for ($pc=1; $pc -le 5; $pc++) { Complete-ProductionCase $pc (Get-Date) 'unverified' $productionGap }
+        }
+        else {
+            # 1. Provision a clean sheet and a bounded unplaced drafting view,
+            # then let the packer choose its placement. The two model views on
+            # sheet A are larger than its usable paper on the synthetic fixture;
+            # their correct refusal is not a packing success case.
+            $t0=Get-Date
+            $packSheet=$null; $packView=$null
+            if ($planTbTypeId) {
+                $ps=Invoke-WriteApply 'horizun_manage_views' @{
+                    target_document=$wDoc; units='mm'; actions=@(@{
+                        operation='create_sheet'; key='packSheet'; name="HZ_PACK_SHEET_$planTag"
+                        number="HZPACK-$planTag"; title_block_type_id=[long]$planTbTypeId })
+                } 'production-pack-sheet'
+                if ($ps.stage -eq 'apply' -and -not $ps.answer.isError) { $packSheet=$ps.answer.data.aliases.packSheet }
+            }
+            $pv=Invoke-WriteApply 'horizun_manage_views' @{
+                target_document=$wDoc; units='mm'; actions=@(@{
+                    operation='create_drafting'; key='packView'; name="HZ_PACK_VIEW_$planTag" })
+            } 'production-pack-view'
+            if ($pv.stage -eq 'apply' -and -not $pv.answer.isError) { $packView=$pv.answer.data.aliases.packView }
+            if ($packView) {
+                # A real detail line gives Viewport.Create a bounded graphical
+                # extent. An empty drafting view is not placeable on every
+                # supported Revit year, while a schedule's automatic width
+                # varies with localized table formatting.
+                $pvg=Invoke-WriteApply 'horizun_detail_2d' @{
+                    target_document=$wDoc; units='mm'; actions=@(@{
+                        operation='create_detail_line'; view_id=[long]$packView
+                        start=@(0,0); end=@(1000,0); key='pack-line' })
+                } 'production-pack-view-geometry'
+                if ($pvg.stage -ne 'apply' -or $pvg.answer.isError) { $packView=$null }
+            }
+            if ($packSheet -and $packView) {
+                $packed=Invoke-WriteApply 'horizun_pack_sheets' @{
+                    target_document=$wDoc; sheet_id=[long]$packSheet; units='mm'; margin=5; gap=5
+                    items=@(@{ key='view'; view_id=[long]$packView })
+                } 'production-pack'
+            } else {
+                $packed=@{ stage='fixture'; answer=@{ isError=$true; text='could not create the clean sheet and bounded unplaced drafting view'; data=$null } }
+            }
+            if ($packed.stage -eq 'apply' -and -not $packed.answer.isError -and
+                $packed.answer.data.state -eq 'committed_verified' -and $packed.answer.data.host_verified -eq $true -and
+                @($packed.answer.data.rows).Count -eq 1) {
+                Complete-ProductionCase 1 $t0 'pass' 'a bounded unplaced drafting view was automatically placed on a clean titled sheet as one committed_verified arrangement' `
+                    -Evidence @{ sheet_id=$packSheet; view_id=$packView; rows=$packed.answer.data.rows }
+            } else {
+                Complete-ProductionCase 1 $t0 'fail' ('packing did not reach committed_verified: stage=' + $packed.stage + ' ' + (Get-DimShortText $packed.answer.text))
+            }
+
+            # 2. Plan the untagged third pipe, then commit exactly the returned intent
+            # through annotate with an explicit multi-category tag type.
+            $t0=Get-Date
+            if (-not $planTagTypeId) {
+                Complete-ProductionCase 2 $t0 'unverified' ('no multi-category tag type was available: ' + $planTagTypeHow)
+            } else {
+                $pipe3=[long]@($dimPipes)[2]
+                $tagPlan=Invoke-Write 'horizun_plan_annotations' @{
+                    operation='auto_tags'; view_id=[long]$dimPlanViewId; element_ids=@($pipe3); units='mm'
+                    tag_type_id=[long]$planTagTypeId; tag_mode='multi_category'; skip_existing=$true; add_leader=$true }
+                if ($tagPlan.isError -or -not $tagPlan.data -or $tagPlan.data.safe_to_execute -ne $true -or @($tagPlan.data.next_arguments.actions).Count -ne 1) {
+                    Complete-ProductionCase 2 $t0 'fail' ('auto-tag planner did not produce one complete safe action: ' + (Get-DimShortText $tagPlan.text))
+                } else {
+                    $pa=@($tagPlan.data.next_arguments.actions)[0]
+                    $tagWrite=Invoke-WriteApply 'horizun_annotate' @{
+                        target_document=$wDoc; units='mm'; actions=@(@{
+                            operation='tag'; view_id=[long]$pa.view_id; element_id=[long]$pa.element_id
+                            point=@([double]$pa.point[0],[double]$pa.point[1],[double]$pa.point[2])
+                            add_leader=[bool]$pa.add_leader; tag_mode=[string]$pa.tag_mode
+                            orientation=[string]$pa.orientation; tag_type_id=[long]$pa.tag_type_id })
+                    } 'production-tag'
+                    $tagId=$null
+                    if ($tagWrite.answer.data -and @($tagWrite.answer.data.rows).Count -eq 1) { $tagId=@($tagWrite.answer.data.rows)[0].element_id }
+                    if ($tagWrite.stage -eq 'apply' -and -not $tagWrite.answer.isError -and $tagWrite.answer.data.state -eq 'committed_verified' -and $tagId) {
+                        Complete-ProductionCase 2 $t0 'pass' 'the read-only planner chose the point; annotate committed and verified the target and explicit tag type' `
+                            -Evidence @{ target_id=$pipe3; tag_id=$tagId; tag_type_id=$planTagTypeId; planner=$tagPlan.data }
+                        $null=Invoke-WriteApply 'horizun_delete_verified' @{ target_document=$wDoc; mode='ids'; ids=@([long]$tagId); id_cap=10 } 'production-tag-cleanup'
+                    } else {
+                        Complete-ProductionCase 2 $t0 'fail' ('planned tag did not reach committed_verified: stage=' + $tagWrite.stage + ' ' + (Get-DimShortText $tagWrite.answer.text))
+                    }
+                }
+            }
+
+            # 3. Semantic intent dimension: activate the measured view, resolve one
+            # centerline per pipe, let the planner choose line/order, then annotate.
+            $t0=Get-Date
+            $navProd=Invoke-Write 'horizun_navigate' @{ operation='open_view'; view_id=[long]$dimPlanViewId }
+            $dimTargets=@([long]@($dimParGridIds)[0],[long]@($dimParGridIds)[1])
+            $dimPlan=Invoke-Write 'horizun_plan_annotations' @{
+                operation='intent_dimension'; view_id=[long]$dimPlanViewId; element_ids=$dimTargets
+                units='mm'; selector='grid'; axis='auto'; side='positive'; offset=15 }
+            if ($navProd.isError -or $dimPlan.isError -or -not $dimPlan.data -or $dimPlan.data.safe_to_execute -ne $true) {
+                Complete-ProductionCase 3 $t0 'fail' ('intent planner could not produce a safe action: ' + (Get-DimShortText $dimPlan.text))
+            } else {
+                $da=@($dimPlan.data.next_arguments.actions)[0]
+                $dimWrite=Invoke-WriteApply 'horizun_annotate' @{
+                    target_document=$wDoc; units='mm'; actions=@(@{
+                        operation='dimension'; view_id=[long]$da.view_id
+                        line_start=@([double]$da.line_start[0],[double]$da.line_start[1],[double]$da.line_start[2])
+                        line_end=@([double]$da.line_end[0],[double]$da.line_end[1],[double]$da.line_end[2])
+                        references=@($da.references | ForEach-Object { [string]$_ }) })
+                } 'production-dimension'
+                $dimId=$null
+                if ($dimWrite.answer.data -and @($dimWrite.answer.data.rows).Count -eq 1) { $dimId=@($dimWrite.answer.data.rows)[0].element_id }
+                if ($dimWrite.stage -eq 'apply' -and -not $dimWrite.answer.isError -and $dimWrite.answer.data.state -eq 'committed_verified' -and $dimId) {
+                    Complete-ProductionCase 3 $t0 'pass' 'semantic grid references were unambiguous; the planned chain committed with host verification' `
+                        -Evidence @{ dimension_id=$dimId; targets=$dimTargets; planner=$dimPlan.data }
+                    $null=Invoke-WriteApply 'horizun_delete_verified' @{ target_document=$wDoc; mode='ids'; ids=@([long]$dimId); id_cap=10 } 'production-dimension-cleanup'
+                } else {
+                    Complete-ProductionCase 3 $t0 'fail' ('planned dimension did not reach committed_verified: stage=' + $dimWrite.stage + ' ' + (Get-DimShortText $dimWrite.answer.text))
+                }
+            }
+
+            # 4. One action creates the revision, assigns it to sheet A and creates a
+            # cloud in the plan view. The writer re-reads all three facts.
+            $t0=Get-Date
+            $revision=Invoke-WriteApply 'horizun_manage_revisions' @{
+                target_document=$wDoc; units='mm'; actions=@(@{
+                    key='production-revision'; operation='create_revision'; description="HZ production $planTag"
+                    revision_date='2026-08-25'; issued_by='Horizun live gate'; issued_to='Verification'; issued=$false
+                    sheet_ids=@([long]$planSheetAId); clouds=@(@{
+                        view_id=[long]$dimPlanViewId; loops=@(,@(
+                            @(509500,-500), @(513500,-500), @(513500,8500), @(509500,8500))) }) })
+            } 'production-revision'
+            if ($revision.stage -eq 'apply' -and -not $revision.answer.isError -and
+                $revision.answer.data.state -eq 'committed_verified' -and $revision.answer.data.host_verified -eq $true -and
+                @($revision.answer.data.rows).Count -eq 1 -and @(@($revision.answer.data.rows)[0].revision_cloud_ids).Count -eq 1) {
+                Complete-ProductionCase 4 $t0 'pass' 'revision fields, sheet assignment and one cloud owner/revision were committed and re-read atomically' `
+                    -Evidence @{ row=@($revision.answer.data.rows)[0] }
+            } else {
+                Complete-ProductionCase 4 $t0 'fail' ('revision production did not reach committed_verified: stage=' + $revision.stage + ' ' + (Get-DimShortText $revision.answer.text))
+            }
+
+            # 5. Direct image of the actual Revit sheet, with real bytes/pixels/hash.
+            $t0=Get-Date
+            $capture=Invoke-Write 'horizun_capture_view' @{ view_id=[long]$planSheetAId; pixel_size=1600 }
+            if (-not $capture.isError -and $capture.data -and $capture.data.captured -eq $true -and
+                $capture.data.is_sheet -eq $true -and [long]$capture.data.bytes -gt 0 -and
+                [int]$capture.data.pixel_width -gt 0 -and -not [string]::IsNullOrWhiteSpace([string]$capture.data.sha256) -and
+                (Test-Path -LiteralPath ([string]$capture.data.image_path))) {
+                Complete-ProductionCase 5 $t0 'pass' 'Revit exported the real sheet PNG; path, nonzero bytes, dimensions and SHA-256 were read from the produced file' `
+                    -Evidence @{ sheet_id=$planSheetAId; image_path=$capture.data.image_path; bytes=$capture.data.bytes; width=$capture.data.pixel_width; height=$capture.data.pixel_height; sha256=$capture.data.sha256 }
+            } else {
+                Complete-ProductionCase 5 $t0 'fail' ('sheet capture did not produce verifiable visual evidence: ' + (Get-DimShortText $capture.text))
+            }
+        }
+        for ($pc=1; $pc -le 5; $pc++) {
+            if (-not $script:productionCasesDone.ContainsKey($pc)) { Complete-ProductionCase $pc (Get-Date) 'unverified' 'the production section ended before this probe ran - a harness bug' }
+        }
+
     }
 }
 
@@ -2518,8 +7582,14 @@ Write-Host ("  {0} passed, {1} failed, {2} UNVERIFIED, {3} NOT COVERED" -f `
 # printed from - two renderings of one run are two things that can disagree.
 # ---------------------------------------------------------------------------
 $report = [pscustomobject]@{
-    schema            = 1
+    schema            = 2
     generated_utc     = (Get-Date).ToUniversalTime().ToString('o')
+    harness_file      = $harnessFile
+    harness_commit    = $harnessCommit
+    harness_git_blob  = $harnessGitBlob
+    harness_sha256    = $harnessSha256
+    harness_path_matches_repository = $harnessPathMatchesRepository
+    harness_tracked_clean = $harnessTrackedClean
     revit_year        = $Year
     revit_pid         = $target.pid
     addin_version     = $target.addin_version
@@ -2541,6 +7611,7 @@ $report = [pscustomobject]@{
         WriteDocumentDisposable = -not [string]::IsNullOrWhiteSpace($WriteDocumentDisposable)
         ClosedWorksetDocument = -not [string]::IsNullOrWhiteSpace($ClosedWorksetDocument)
         ClosedWorksetName = -not [string]::IsNullOrWhiteSpace($ClosedWorksetName)
+        LinkSourceFile   = -not [string]::IsNullOrWhiteSpace($LinkSourceFile)
     }
     write_tier        = @{
         requested  = [bool]$WriteProbes
@@ -2550,16 +7621,111 @@ $report = [pscustomobject]@{
         document   = $WriteDocument
         probes     = $writeResults.Count
     }
+    # The dimension probes' own record: WHAT geometry they measured (as a spec
+    # hash two runs can compare), WHICH localization measured it, and the
+    # per-case evidence with requested/read values. Empty cases mean the write
+    # gate never let the section run - the gate above says why.
+    dimensions        = @{
+        fixture = @{
+            description = 'synthetic: 2 generic-model RFAs + instances + 3 pipes + 2 grids + plan/section views, all created by this run at x~510000'
+            spec_json   = $dimensionFixtureSpec
+            spec_sha256 = $dimensionFixtureSpecSha256
+            families    = @($script:dimFamilyPaths)
+        }
+        revit_language = $script:dimRevitLanguage
+        revit_build    = $script:dimRevitBuild
+        cases          = @($script:dimensionEvidence)
+    }
+    # The 2D-detail probes' own record, the same shape for the same reason: the
+    # spec hash proves two runs drew the SAME geometry, and empty cases mean the
+    # write gate never let the section run.
+    detail_2d         = @{
+        fixture = @{
+            description = 'synthetic: one drafting view + 2 lines, an arc, a closed polyline, a holed filled region, a masking region, 2 self-provisioned RFAs (detail item + generic annotation) with placed instances and a restyled line, all created by this run and deleted by its last probe'
+            spec_json   = $detail2dFixtureSpec
+            spec_sha256 = $detail2dFixtureSpecSha256
+            families    = @($script:d2dFamilyPaths)
+        }
+        cases = @($script:detail2dEvidence)
+    }
+    # The planimetry probes' record, same shape again: the spec hash proves two
+    # runs staged the SAME documentation fixture, and empty cases mean the write
+    # gate never let the section run.
+    planimetry        = @{
+        fixture = @{
+            description = 'synthetic: two sheets (one with a title block, one deliberately without), the dimension plan and section placed with a KNOWN overlap, a clear schedule placement, multi-category tags with one pipe untagged and one duplicated, an overridden dimension, text inside and outside an activated crop, and an unloaded link as the coverage fixture'
+            spec_json   = $planimetryFixtureSpec
+            spec_sha256 = $planimetryFixtureSpecSha256
+        }
+        cases = @($script:planimetryEvidence)
+    }
+    # And the CORRECTION probes' record. Separate from planimetry above because
+    # they answer a different question: the read section proves the model was
+    # measured, this one proves it was changed - once, atomically, and only where
+    # a finding licensed it.
+    fix_planimetry    = @{
+        fixture = @{
+            description = 'synthetic: the planimetry fixture left uncorrected, plus a view template to assign, one element override to clear, and an inline requirement set whose rules produce the findings the universal catalog has no remedy for. The placed title block and the authored template are deleted before the closing census.'
+            spec_json   = $fixFixtureSpec
+            spec_sha256 = $fixFixtureSpecSha256
+        }
+        cases = @($script:fixEvidence)
+    }
+    planimetry_production = @{
+        fixture = @{
+            description = 'reuses the measured planimetry/dimension fixture: two existing viewports packed on sheet A, the deliberately untagged third pipe, two semantic pipe centerlines, one created revision assigned to sheet A with a plan-view cloud, and a direct PNG of sheet A'
+            source_fixture_sha256 = $planimetryFixtureSpecSha256
+        }
+        cases = @($script:productionEvidence)
+    }
     summary           = @{
         passed      = $passed
         failed      = $failed
         unverified  = $unverified
         not_covered = $notCovered.Count
-        probes      = ($probes.Count + $writeResults.Count)
-        asserting   = $assertingProbes
+        # From the DEFINITIVE probe collection, after every verification -
+        # including the manifest-hash checks - has been recorded. It used to be
+        # `$probes.Count + $writeResults.Count`, a formula frozen before those
+        # checks existed: a report could say probes=112 while carrying 114 rows
+        # and passed=114, and a reader comparing the two numbers had every right
+        # to distrust the whole file.
+        # $results is read WITHOUT the usual @() wrapper here and below: it is a
+        # typed List[object], never null, and pwsh 7.6.5 throws 'Argument types
+        # do not match' on @(<generic list>).Count (measured 2026-08-24 in the
+        # 2023 gate; JSON arrays, object[] and ArrayList are unaffected).
+        probes      = $results.Count
+        asserting   = @($results | Where-Object { $_.outcome -ne 'not_covered' }).Count
     }
     probes            = $results
     not_covered       = $notCovered
+}
+
+# THE REPORT MAY NOT DISAGREE WITH ITSELF. The incremental counters and the row
+# collection are two accounts of one run; before anything is written, they must
+# reconcile exactly - a drift here is a harness bug (a Note-* path that skipped
+# Add-Result, or a close that ran twice and double-counted), and a machine-read
+# gate built on inconsistent numbers is worse than no gate at all.
+$rowCounts = @{}
+foreach ($resultRow in $results) {
+    if (-not $rowCounts.ContainsKey($resultRow.outcome)) { $rowCounts[$resultRow.outcome] = 0 }
+    $rowCounts[$resultRow.outcome]++
+}
+foreach ($pair in @(@('pass', $passed), @('fail', $failed), @('unverified', $unverified))) {
+    $fromRows = 0; if ($rowCounts.ContainsKey($pair[0])) { $fromRows = $rowCounts[$pair[0]] }
+    if ($fromRows -ne $pair[1]) {
+        throw ("REPORT SELF-CHECK FAILED: the incremental counter says {0} '{1}' probe(s) but the row " -f $pair[1], $pair[0]) +
+              ("collection carries {0}. The report was NOT written - fix the harness before trusting a run." -f $fromRows)
+    }
+}
+$rowsNotCovered = 0; if ($rowCounts.ContainsKey('not_covered')) { $rowsNotCovered = $rowCounts['not_covered'] }
+if (($passed + $failed + $unverified + $rowsNotCovered) -ne $results.Count) {
+    throw ("REPORT SELF-CHECK FAILED: pass({0}) + fail({1}) + unverified({2}) + not_covered rows({3}) do not " -f $passed, $failed, $unverified, $rowsNotCovered) +
+          ("add up to the {0} probe rows. The report was NOT written." -f $results.Count)
+}
+$duplicateNames = @($results | Group-Object -Property name | Where-Object { $_.Count -gt 1 })
+if ($duplicateNames.Count -gt 0) {
+    throw ("REPORT SELF-CHECK FAILED: {0} probe name(s) were recorded more than once ({1}) - a close that " -f $duplicateNames.Count, (@($duplicateNames | ForEach-Object { $_.Name }) -join '; ')) +
+          "ran twice writes every verdict twice. The report was NOT written."
 }
 
 if ($Json) {
