@@ -23,6 +23,39 @@ namespace Horizun.Core.Tests
                 "Revit throws when a FilteredElementCollector is iterated without a native ElementFilter.");
         }
 
+        [Fact]
+        public void Text_note_types_have_an_explicit_class_sweep_when_types_are_requested()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src", "Horizun.Revit", "Commands")))
+                dir = dir.Parent;
+            Assert.NotNull(dir);
+            string source = File.ReadAllText(Path.Combine(
+                dir.FullName, "src", "Horizun.Revit", "Commands", "QueryModelCommand.cs"));
+
+            Assert.Contains("RequestsTextNotes(categories)", source, StringComparison.Ordinal);
+            Assert.Contains(".OfClass(typeof(TextNoteType))", source, StringComparison.Ordinal);
+            Assert.Contains("GroupBy(e => Rid.Value(e.Id))", source, StringComparison.Ordinal);
+            Assert.Contains("element is TextNoteType", source, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Manage_views_refuses_a_null_result_before_commit_and_verifies_reversibly()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src", "Horizun.Revit", "Commands")))
+                dir = dir.Parent;
+            Assert.NotNull(dir);
+            string source = File.ReadAllText(Path.Combine(
+                dir.FullName, "src", "Horizun.Revit", "Commands", "ManageViewsCommand.cs"));
+
+            int nullGuard = source.IndexOf("returned no element", StringComparison.Ordinal);
+            int reversible = source.IndexOf("failed verification while the transaction", StringComparison.Ordinal);
+            int commit = source.IndexOf("Guard.Commit(tx, txName);", nullGuard, StringComparison.Ordinal);
+            Assert.True(nullGuard >= 0 && reversible > nullGuard && commit > reversible,
+                "null and postcondition failures must be refused while the transaction can still roll back");
+        }
+
         [Theory]
         [InlineData(null)]
         [InlineData("")]

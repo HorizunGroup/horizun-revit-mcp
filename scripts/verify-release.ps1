@@ -36,9 +36,8 @@ param(
     # Also check what is installed on THIS machine. Off by default so the script
     # can validate a package before it is installed.
     [switch]$Installed,
-    # Stable releases may be unsigned until a publicly trusted CA identity exists;
-    # the release policy requires that state to be explicit, not disguised as a
-    # broken signature. Without this switch, unsigned remains a hard failure.
+    # Stable releases are permanently unsigned; this explicit acknowledgement
+    # prevents absence of publisher identity from being mistaken for trust.
     [switch]$AllowUnsigned,
     # The installer can write a per-run result file. CI must pass the exact file
     # it asked Setup to create instead of reading a global leftover in {app}.
@@ -185,64 +184,28 @@ $dupes = $stagedHashes.GetEnumerator() | Group-Object Value | Where-Object { $_.
 Check 'every staged add-in is a DISTINCT binary' ($dupes.Count -eq 0) `
       (($dupes | ForEach-Object { 'years ' + (($_.Group | ForEach-Object { $_.Key }) -join ' and ') + ' are identical' }) -join '; ')
 
-# --- signatures of our OWN binaries ------------------------------------------
+# --- permanent unsigned state of our OWN binaries -----------------------------
 #
-# A release stakes its identity on the server (apphost AND horizun-mcp.dll, its
-# real code) and each Horizun.Revit.dll being signed BY US. Third-party DLLs are
-# signed by their publishers and not re-signed. The manifest was recomputed AFTER
-# signing, so its hashes already describe the signed bytes - the staged-hash
-# checks above therefore prove "signed bytes, not a stale hash". This section adds
-# the other half: the files must actually CARRY a signature, by ONE certificate,
-# and the manifest must not merely claim it.
-#
-# No manifest signature block means the stage was never signed (or was re-staged
-# after signing). It remains a failure unless the caller opts into the repository's
-# documented unsigned-release policy explicitly with -AllowUnsigned.
+# Public releases deliberately carry no Authenticode publisher identity. The
+# switch is an acknowledgement, not a temporary compatibility exception.
 $own = @(Get-HorizunOwnBinaries $Stage)
-if ($doc.Signature) {
-    Check 'the manifest was recomputed after signing (it carries a signature block)' $true $null
-}
-elseif ($AllowUnsigned) {
-    Check 'the package signature state is explicit' $true `
-          'UNSIGNED by explicit release-policy exception; no public CA identity exists, so users verify SHA-256 and provenance attestations'
+if (-not $AllowUnsigned) {
+    Check 'the caller explicitly acknowledges the unsigned release policy' $false `
+          'pass -AllowUnsigned only after accepting that Windows cannot authenticate the publisher'
 }
 else {
-    Check 'the manifest was recomputed after signing (it carries a signature block)' $false `
-          'no Signature block in manifest.json: pass -AllowUnsigned only when the published release will state this exception'
-}
-
-if ($doc.Signature) {
-    Check 'the manifest declares every own binary signed' ([bool]$doc.Signed) `
-          'manifest.Signed is false - at least one own binary is unsigned'
-
-    $unsigned = @(); $invalid = @(); $untimestamped = @(); $thumbs = @()
+    Check 'the caller explicitly acknowledges the unsigned release policy' $true $null
+    Check 'the manifest declares the package unsigned' (-not [bool]$doc.Signed) `
+          'manifest.Signed is true, but public Horizun releases must be unsigned'
+    $unexpected = @()
     foreach ($p in $own) {
         $info = Get-HorizunSignatureInfo $p
-        if (-not $info.Signed) { $unsigned += (Split-Path $p -Leaf) }
-        else {
-            if ($info.Status -ne 'Valid') { $invalid += "$(Split-Path $p -Leaf): $($info.Status)" }
-            if (-not $info.Timestamped) { $untimestamped += (Split-Path $p -Leaf) }
-            if ($info.Thumbprint) { $thumbs += $info.Thumbprint }
+        if ($info.Status -ne 'NotSigned') {
+            $unexpected += "$(Split-Path $p -Leaf): $($info.Status)"
         }
     }
-    Check ('every staged own binary carries a signature (' + $own.Count + ' checked)') ($unsigned.Count -eq 0) `
-          ('unsigned on disk: ' + ($unsigned -join ', ') + ' - the manifest cannot claim a signature the bytes do not carry')
-    Check 'every staged own signature is valid under Windows trust' ($invalid.Count -eq 0) `
-          ('invalid signatures: ' + ($invalid -join ', '))
-    Check 'every staged own signature has a trusted timestamp' ($untimestamped.Count -eq 0) `
-          ('untimestamped: ' + ($untimestamped -join ', '))
-
-    $distinctThumbs = @($thumbs | Select-Object -Unique)
-    Check 'all own binaries are signed by ONE certificate (no mixed signers)' ($distinctThumbs.Count -le 1) `
-          ('signer thumbprints seen: ' + ($distinctThumbs -join ', '))
-
-    # The manifest's recorded signer must be the one actually on the files, so a
-    # signature block cannot be copied from an earlier, differently-signed release.
-    if ($doc.Signature.SignerThumbprint -and $distinctThumbs.Count -eq 1) {
-        Check 'the signer on disk is the signer the manifest records' `
-              ($distinctThumbs[0] -eq $doc.Signature.SignerThumbprint) `
-              ("on disk {0}, manifest {1}" -f $distinctThumbs[0], $doc.Signature.SignerThumbprint)
-    }
+    Check ('every staged own binary is unsigned by policy (' + $own.Count + ' checked)') ($unexpected.Count -eq 0) `
+          ('unexpected Authenticode states: ' + ($unexpected -join ', '))
 }
 
 # --- no mixing: the stage matches its manifest, by the SAME function the -----
@@ -262,14 +225,8 @@ $installerSha = $null
 if ($Installer -and (Test-Path $Installer)) {
     $installerSha = Sha $Installer
     $installerSignature = Get-HorizunSignatureInfo $Installer
-    if ($AllowUnsigned -and -not $installerSignature.Signed) {
-        Check 'installer signature state matches the explicit unsigned exception' $true 'unsigned by explicit pre-1.0 policy'
-    }
-    else {
-        Check 'installer carries Authenticode' $installerSignature.Signed "status $($installerSignature.Status)"
-        Check 'installer Authenticode is valid under Windows trust' ($installerSignature.Status -eq 'Valid') "status $($installerSignature.Status)"
-        Check 'installer Authenticode has a trusted timestamp' $installerSignature.Timestamped 'no trusted timestamp'
-    }
+    Check 'installer is unsigned by public-release policy' ($installerSignature.Status -eq 'NotSigned') `
+          "unexpected Authenticode state $($installerSignature.Status)"
     $newerPayload = @(Get-ChildItem $Stage -Recurse -File |
                       Where-Object { $_.LastWriteTimeUtc -gt (Get-Item $Installer).LastWriteTimeUtc })
     # The installer must be NEWER than everything it wrapped. Otherwise it is a
@@ -468,7 +425,7 @@ $report = [pscustomobject]@{
     stage             = $Stage
     installer         = $Installer
     installer_sha256  = $installerSha
-    signature_policy  = $(if ($doc.Signature) { 'signed' } elseif ($AllowUnsigned) { 'unsigned_explicit_exception' } else { 'unsigned_refused' })
+    signature_policy  = $(if ($AllowUnsigned) { 'unsigned_by_policy' } else { 'unsigned_unacknowledged' })
     install_result    = $InstallResult
     checked_installed = [bool]$Installed
     installed         = $installedReport

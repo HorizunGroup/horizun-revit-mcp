@@ -69,9 +69,10 @@ namespace Horizun.Revit.Commands
 
         public string ParametersSchema => @"{
   ""type"": ""object"",
+  ""required"": [""mode""],
   ""properties"": {
     ""mode"": { ""type"": ""string"", ""enum"": [""ids"", ""purge_unused""],
-                ""description"": ""ids: delete exactly the ids given. purge_unused: ask Revit for unused elements and delete them, repeating until a pass finds none."" },
+                ""description"": ""REQUIRED. ids: delete exactly the ids given. purge_unused: ask Revit for unused elements and delete them, repeating until a pass finds none. Omission is refused; it never selects the broader purge operation."" },
     ""ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
                ""description"": ""Required for mode='ids'. Ids that do not resolve are reported as not_found, never dropped."" },
     ""protect_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
@@ -256,7 +257,10 @@ namespace Horizun.Revit.Commands
             if (doc.IsReadOnly) return CommandResult.Fail("The document is read-only; nothing can be deleted.");
 
             var mode = (request.Value<string>("mode") ?? "").ToLowerInvariant();
-            if (mode.Length == 0) mode = request["ids"] != null ? "ids" : "purge_unused";
+            if (mode.Length == 0)
+                return CommandResult.Fail(
+                    "mode is REQUIRED: send 'ids' to delete exactly the explicit ids, or 'purge_unused' to " +
+                    "request the broader purge operation. Omission never chooses a destructive scope.");
             if (mode != "ids" && mode != "purge_unused")
                 return CommandResult.Fail("mode must be 'ids' or 'purge_unused'.");
 

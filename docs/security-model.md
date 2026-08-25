@@ -305,17 +305,15 @@ small documented set of high-confidence static risk rules. JSON and SARIF make
 the result archivable. This is deterministic triage, not proof that the library
 is vulnerability-free or safe under arbitrary runtime inputs.
 
-## 8. Code signing and public trust
+## 8. Unsigned releases and local trust
 
-The package pipeline reports the signature state; a release must never imply a
-public trust chain it does not carry. Version 1.0+ tags fail closed unless every
-own payload binary and the setup wrapper have a valid, non-self-signed
-Authenticode signature. A disclosed 0.x release may be unsigned and requires an
-explicit bootstrap opt-in; its hashes prove byte identity but not publisher
-identity. The signing key is provisioned outside the repository on the release
-runner. Public trust and timestamps are then checked again on a clean Microsoft-
-hosted Windows runner. The source
-installer also supports an explicit, per-user self-signing workflow
+The package pipeline reports the signature state and never implies a public trust
+chain it does not carry. Public releases, including 1.0+, are permanently
+unsigned by policy: every owned payload binary and Setup must report
+`NotSigned`, the package declares that publisher identity is unavailable, and
+the bootstrap requires explicit `-AllowUnsigned`. Hashes, manifests and GitHub
+attestations prove byte identity and workflow provenance, not publisher identity.
+The source installer also supports an explicit, per-user self-signing workflow
 (`scripts/self-sign.ps1`):
 
 - Revit raises `Security - Unsigned Add-In` on first load, per add-in per year.
@@ -334,13 +332,11 @@ installer also supports an explicit, per-user self-signing workflow
   uninstall-cleanup helper can remove that trust and private certificate
   separately; uninstall never removes either silently.
 
-A self-signed certificate is useful only on accounts that explicitly trust it; it
-does not establish publisher identity on a clean third-party machine. Until a
-public signing identity is provisioned, 0.x release artifacts may use the
-explicit disclosed unsigned policy. Version 1.0+ may not be published without
-public trust. Validation-only tags contain no executable assets.
-SHA-256, manifest and attestations complement publisher identity; they do not
-replace it.
+A self-signed certificate is useful only on accounts that explicitly trust it;
+it does not establish publisher identity on a clean third-party machine and is
+never a public-release fallback. Validation-only tags contain no executable
+assets. Invalid, self-signed or unexpectedly signed public artifacts fail the
+release gate instead of being represented as trustworthy.
 
 ## 9. Known gaps, stated
 

@@ -36,5 +36,22 @@ namespace Horizun.Core.Tests
             Assert.Contains("bool dryRun = request[\"dry_run\"] == null || request.Value<bool>(\"dry_run\");",
                             production, StringComparison.Ordinal);
         }
+
+        [Fact]
+        public void Delete_mode_is_required_and_omission_never_selects_purge()
+        {
+            var contract = Contract.All.Single(c => c.Name == "horizun_delete_verified");
+            var required = ((JArray)contract.InputSchema["required"]).Select(t => (string)t).ToArray();
+
+            Assert.Contains("mode", required);
+            Assert.Contains("Omission is refused", (string)contract.InputSchema["properties"]["mode"]["description"],
+                            StringComparison.Ordinal);
+
+            string production = File.ReadAllText(Path.Combine(
+                RepoRoot(), "src", "Horizun.Revit", "Commands", "DeleteCommand.cs"));
+            Assert.Contains("mode is REQUIRED", production, StringComparison.Ordinal);
+            Assert.DoesNotContain("request[\"ids\"] != null ? \"ids\" : \"purge_unused\"",
+                                  production, StringComparison.Ordinal);
+        }
     }
 }

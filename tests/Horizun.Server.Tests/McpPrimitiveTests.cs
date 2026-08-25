@@ -61,7 +61,7 @@ namespace Horizun.Server.Tests
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
-            Assert.Equal(3, prompts.Count);
+            Assert.Equal(4, prompts.Count);
 
             McpError missing = Assert.Throws<McpError>(() => McpPrompts.Get(new JObject
             {

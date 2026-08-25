@@ -135,6 +135,12 @@ namespace Horizun.Revit.Commands
                 revit_version = rvt.VersionNumber,
                 revit_build = rvt.VersionBuild,
                 revit_name = rvt.VersionName,
+                // The UI language, verbatim from Revit. A live report that omits it
+                // presents one localization's evidence as everybody's: template names,
+                // parameter display names and unit formatting all vary with it, and a
+                // matrix row that cannot say which language it measured cannot be
+                // compared with a row from another machine.
+                revit_language = LanguageOf(rvt),
                 username = rvt.Username,
                 process_id = pid,
                 // WHO ELSE is talking to this Revit (5.16). Two agents on one machine
@@ -170,6 +176,15 @@ namespace Horizun.Revit.Commands
         /// the process behind it still runs - and a name read can throw on
         /// permissions, which is a null name, never a dropped row.
         /// </summary>
+        /// <summary>
+        /// Health must never die measuring an ornament: unreadable answers "unknown",
+        /// which is itself a fact worth seeing, rather than taking the whole call down.
+        /// </summary>
+        private static string LanguageOf(Autodesk.Revit.ApplicationServices.Application rvt)
+        {
+            try { return rvt.Language.ToString(); } catch { return "unknown"; }
+        }
+
         private static object ClientsBlock()
         {
             try

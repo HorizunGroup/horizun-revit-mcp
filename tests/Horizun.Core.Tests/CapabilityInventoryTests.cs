@@ -121,6 +121,70 @@ namespace Horizun.Core.Tests
                 Classification = Kind.Argument,
                 Why = "An export option outside its documented set. The caller fixes the field; no script is " +
                       "needed and none is suggested." },
+
+            new Entry {
+                File = "AnnotateCommand.cs", Fragment = "DimensionPlanRules.NoApiAnyYear(op)",
+                Classification = Kind.Argument,
+                Why = "spot_slope: no creation API exists in ANY Revit 2023-2027, so a Python fallback would " +
+                      "be a doomed script, not a workaround. Deliberately an ArgumentException rather than " +
+                      "UnsupportedCapability so FallbackDecision never grants what nothing can honour; the " +
+                      "message says the API is absent everywhere." },
+
+            new Entry {
+                File = "AnnotateCommand.cs", Fragment = "\"RadialDimension.Create\", 2025",
+                Classification = Kind.Argument,
+                Why = "radial/diameter dimensions on Revit 2023/2024: RadialDimension.Create arrived in 2025, " +
+                      "and there is no other route - Python runs against the same API and cannot reach it " +
+                      "either. The refusal names the API and the year that introduces it, and grants no " +
+                      "fallback for the same reason as spot_slope." },
+
+            new Entry {
+                File = "AnnotateCommand.cs", Fragment = "\"ArcLengthDimension.Create\", 2025",
+                Classification = Kind.Argument,
+                Why = "arc-length dimensions on Revit 2023/2024: same shape as the radial refusal above - the " +
+                      "API arrives in 2025 and Python cannot conjure it earlier." },
+
+            new Entry {
+                File = "AnnotateCommand.cs", Fragment = "resolves into a LINKED model",
+                Classification = Kind.Argument,
+                Why = "A stable reference that resolves into an RVT link. Consuming linked references in " +
+                      "dimension creation is not proven live, so offering them typed - or via a Python " +
+                      "fallback that would hit the same unproven path - would present a guess as a " +
+                      "capability. Raised while planning, before any transaction." },
+
+            new Entry {
+                File = "Detail2DCommand.cs", Fragment = "unsupported operation '",
+                Classification = Kind.StructuralGranted,
+                Why = "The operation enum is the command's whole contract; an unlisted one has no typed path. " +
+                      "Raised while planning, before any transaction, and handed to FallbackDecision over the " +
+                      "whole batch - the AnnotateCommand shape exactly." },
+
+            new Entry {
+                File = "EditDimensionsCommand.cs", Fragment = "unsupported action field '",
+                Classification = Kind.StructuralGranted,
+                Why = "An action field outside the edit contract (say, text_position). Raised while planning, " +
+                      "before any transaction; Python CAN reach dimension members this command does not type, " +
+                      "so the gap is granted to FallbackDecision over the whole batch." },
+
+            new Entry {
+                File = "FixPlanimetryCommand.cs", Fragment = "unsupported operation '",
+                Classification = Kind.StructuralGranted,
+                Why = "The fix catalog is closed on purpose - packing, tagging and revision generation are " +
+                      "later phases. An operation outside it has no typed path; raised while planning, before " +
+                      "any transaction, and handed to FallbackDecision over the whole batch. The other " +
+                      "structural refusals in this command (non-rectangular crop, an API-absent " +
+                      "ScheduleSheetInstance.Point setter) do not use the scanner's keywords: the crop is an " +
+                      "UnsupportedCapability that reaches the same decision, and the API absence deliberately " +
+                      "stays an ArgumentException because Python faces the same absent setter." },
+
+            new Entry {
+                File = "EditDimensionsCommand.cs", Fragment = "not supported by the Revit API itself",
+                Classification = Kind.Argument,
+                Why = "replace_references and its aliases. Dimension.References has no setter in ANY Revit " +
+                      "2023-2027, so a Python fallback would be a doomed script, not a workaround - the " +
+                      "refusal deliberately stays an ArgumentException that names the honest route: delete " +
+                      "and recreate through horizun_annotate. 'Argument' here means the CALLER can fix the " +
+                      "approach, not that a value was mistyped." },
         };
 
         /// <summary>

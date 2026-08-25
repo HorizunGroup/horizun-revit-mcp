@@ -28,7 +28,10 @@ namespace Horizun.Server
                         Arg("correct_when", "How the result will be recognised as correct.", true)),
                     Prompt("read-only-audit", "Audit the active model without writes",
                         "Run a coverage-honest audit of the active model and report uncertainty explicitly.",
-                        Arg("focus", "Optional audit focus such as health, links, quantities or naming.", false))
+                        Arg("focus", "Optional audit focus such as health, links, quantities or naming.", false)),
+                    Prompt("planimetry-review", "Review planimetry directly from Revit",
+                        "Audit sheets and documentation from the model, capture the actual sheets and judge visual quality without exporting a PDF.",
+                        Arg("scope", "Optional sheet numbers, sheet ids or discipline; omit for every non-placeholder sheet.", false))
                 }
             };
         }
@@ -73,6 +76,23 @@ namespace Horizun.Server
                         (string.IsNullOrWhiteSpace(focus) ? "Cover the whole model." : "Focus: " + focus + ".") +
                         " Report closed worksets, unloaded links, truncation and unreadable sections as uncertainty; " +
                         "never interpret absence under incomplete coverage as proof that a problem does not exist.";
+                    break;
+                case "planimetry-review":
+                    string scope = Argument(args, "scope", false);
+                    description = "Audit and visually review Revit planimetry without a PDF intermediary.";
+                    body =
+                        "Review planimetry DIRECTLY FROM THE ACTIVE REVIT MODEL; do not export or inspect a PDF. " +
+                        "Call horizun_health first. Use horizun_query_planimetry mode=inventory, then sheets, " +
+                        "placements and annotations with complete pagination for " +
+                        (string.IsNullOrWhiteSpace(scope) ? "every non-placeholder sheet" : "this scope: " + scope) +
+                        ". Run horizun_audit_planimetry with the approved inline requirement_set when one exists. " +
+                        "For every sheet in scope call horizun_capture_view by sheet view_id and actually inspect " +
+                        "the attached PNG. Judge hierarchy, density, alignment, balance, clipping, whitespace, " +
+                        "legibility, collisions, orphan marks, missing tags/dimensions and consistency across the " +
+                        "set. Cross-reference every visual suspicion with model rows; label subjective findings " +
+                        "visual and database findings measured. A failed capture, truncated page or unreadable fact " +
+                        "is UNKNOWN, never clean. Return findings by sheet with severity, evidence and element/view " +
+                        "ids. Use the narrowest typed correction only after approval and its dry run.";
                     break;
                 default: throw new McpError(-32602, "Unknown Horizun prompt: '" + name + "'.");
             }

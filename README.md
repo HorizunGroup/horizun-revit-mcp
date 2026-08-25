@@ -48,7 +48,7 @@ guessing.
 // horizun_health, abbreviated
 {
   "status": "healthy",
-  "horizun_version": "0.9.6",
+  "horizun_version": "1.0.0",
   "horizun_commit": "ced1aa1",
   "built_from_clean_tree": true,
   "revit_version": "2026",
@@ -79,16 +79,13 @@ Every installable release carries a payload `manifest.json`,
 `package-hashes.json` and an [SBOM](https://cyclonedx.org/). Stable releases also
 carry one live verification report per supported Revit year.
 
-> **Read this before you run it.** Version 0.x is an official pre-1.0 release,
-> but its Windows binaries are currently **unsigned** while the public identity
-> is under review. SHA-256 verifies the downloaded bytes against the release; it
-> does not authenticate the publisher. The bootstrap therefore requires the
-> explicit `-AllowUnsigned` acknowledgement shown below. Windows/Revit may show
-> an unknown-publisher warning. Version 1.0+ has no unsigned exception under the
-> [code signing policy](CODE-SIGNING-POLICY.md). The intended open-source service is:
-> **Free code signing provided by SignPath.io, certificate by SignPath Foundation.**
-> The application is under review; this is not a claim that a signed download is
-> currently available.
+> **Read this before you run it.** Horizun Windows releases are intentionally
+> **unsigned**. SHA-256, the payload manifest, SBOM and build-provenance
+> attestation verify the released bytes; they do not authenticate a Windows
+> publisher. The bootstrap therefore requires the explicit `-AllowUnsigned`
+> acknowledgement shown below, and Windows/Revit may show an unknown-publisher
+> warning. Invalid or self-signed public artifacts are refused. See the
+> [unsigned release policy](CODE-SIGNING-POLICY.md).
 
 If you would rather have the script do the same checks, one paste verifies the
 complete SHA-256 against that same GitHub release, installs quietly and finishes
@@ -239,6 +236,9 @@ tool, and what each one refuses — is in **[docs/TOOLS.md](docs/TOOLS.md)**.
 | **Query** | Composable queries and paginated inventory across host and loaded links, model census, quantities, clash, native schedule read. |
 | **Write** | Parameter writes, keynotes, deletion with the cascade counted, transforms, atomic creation of levels, grids, walls, floors, roofs, rooms, MEP runs and structural framing. |
 | **Views & sheets** | Dependency-aware plans, sections, elevations, 3D and drafting views, templates, sheets, viewports, schedules and annotation. |
+| **2D detail** | Semantic resource discovery per view (line styles, region types with real `IsMasking`, placeable symbols — always by id, never by name), and atomic, rehearsed, totally-rolled-back drafting: lines, arcs, polylines, filled/masking regions with pure-validated loops, detail components and symbols, line-style edits. |
+| **Dimensions** | Semantic reference discovery (faces, centerlines, grids, levels, edges — with fingerprints and structured ambiguity instead of guesses), rehearsed-by-creation linear/angular/radial/diameter/arc-length/spot dimensioning with total rollback and `stale_plan` drift refusal, complete dimension reads, and verified edits. The full workflow with examples is in **[docs/DIMENSIONS.md](docs/DIMENSIONS.md)**. |
+| **Planimetry** | End-to-end documentation directly in Revit, without a PDF control loop: query and audit sheets/views/placements/annotations; correct cited findings; pack ordered views and schedules automatically around fixed obstacles; plan collision-aware tags and semantic dimension chains; apply them through the rehearsed annotation writer; create verified revisions, sheet assignments and clouds; then capture and visually review every real sheet through the `planimetry-review` MCP prompt. Unreadable, truncated, ambiguous or uncaptured work is unknown/refused, never clean. See **[docs/PLANIMETRY-AUDIT.md](docs/PLANIMETRY-AUDIT.md)** and **[docs/PLANIMETRY-PRODUCTION.md](docs/PLANIMETRY-PRODUCTION.md)**. |
 | **Families** | RFT → RFA compilation with parameters, formulas, types, dimensions, nested instances, solid/void forms and MEP connectors; system-type duplication with complete compound structures. |
 | **Interoperability** | PDF, DWG, configurable IFC, Navisworks NWC, multi-view FBX, images, schedules, `.xlsx` written over the OPC package, and direct Power BI push ingestion. |
 | **Model surgery** | Layer splitting, floor-loop splitting, ungroup/regroup by parameter, slab elevation copying, toposolid embedding and grading, wall rectangularisation. |

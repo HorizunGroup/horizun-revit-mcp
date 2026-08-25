@@ -150,10 +150,23 @@ namespace Horizun.Revit.Commands
                     {
                         JObject action = (JObject)input[i];
                         Element result = Apply(doc, action, aliases, scale);
+                        if (result == null)
+                            throw new InvalidOperationException(
+                                "operation '" + action.Value<string>("operation") + "' returned no element. " +
+                                "The whole batch is being rolled back before commit.");
                         string key = action.Value<string>("key");
-                        if (!string.IsNullOrWhiteSpace(key) && result != null) aliases[key] = result.Id;
-                        applied.Add(new Applied { Index = i, Operation = action.Value<string>("operation"), Id = result?.Id,
+                        if (!string.IsNullOrWhiteSpace(key)) aliases[key] = result.Id;
+                        applied.Add(new Applied { Index = i, Operation = action.Value<string>("operation"), Id = result.Id,
                             TargetId = TargetId(doc, action, aliases) });
+                    }
+                    doc.Regenerate();
+                    foreach (Applied action in applied)
+                    {
+                        Element reread = doc.GetElement(action.Id);
+                        if (!Verify(doc, action, reread))
+                            throw new InvalidOperationException(
+                                "operation '" + action.Operation + "' failed verification while the transaction " +
+                                "was still reversible. The whole batch is being rolled back before commit.");
                     }
                     Guard.Commit(tx, txName);
                 }

@@ -140,7 +140,14 @@ namespace Horizun.Server
             if (string.IsNullOrWhiteSpace(description)) return suffix.Trim();
             string normalized = description.Replace("\r", " ").Replace("\n", " ").Trim();
             if (normalized.Length + suffix.Length <= max) return normalized + suffix;
-            int limit = max - suffix.Length;
+            // THE ELLIPSIS IS PART OF THE BUDGET. It was not, and the cap this function
+            // promises could be exceeded by one or two characters: with the sentence
+            // boundary falling exactly on `limit` the result came back at 901, and
+            // `cut += 1` could reach 902. Nothing detected it until a description landed
+            // on the boundary, because every existing one happened to cut earlier - the
+            // quiet kind of off-by-one that waits for the next tool. One character is
+            // reserved here, and the two branches below can then only shorten.
+            int limit = max - suffix.Length - 1;
             int cut = normalized.LastIndexOf(". ", limit, StringComparison.Ordinal);
             if (cut < Math.Min(160, limit / 2)) cut = limit;
             else cut += 1;

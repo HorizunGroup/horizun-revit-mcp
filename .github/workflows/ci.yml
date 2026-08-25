@@ -83,38 +83,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
         shell: bash
         run: |
-          version=$(grep -oP '(?<=<Version>)[^<]+' Directory.Build.props)
-          if [ "${version%%.*}" = "0" ]; then
-            echo "::warning::Pre-1.0 release: public Authenticode identity is pending. CI proves source/Windows gates; unsigned packaging and the complete live matrix must be attached and disclosed by the maintainer."
-            exit 0
-          fi
           if [ "${{ vars.HAS_REVIT_RUNNER }}" != "true" ]; then
             echo "::error::A release tag cannot pass without the self-hosted Revit runner. Publish a preview from a non-tag build or restore the full live gate first."
             exit 1
           fi
-          if [ -z "${{ vars.REVIT_RUNNER_GROUP }}" ] || [ -z "${{ vars.SIGNING_RUNNER_GROUP }}" ]; then
-            echo "::error::Stable releases require explicit REVIT_RUNNER_GROUP and SIGNING_RUNNER_GROUP repository variables."
+          if [ -z "${{ vars.REVIT_RUNNER_GROUP }}" ]; then
+            echo "::error::Installable releases require an explicit REVIT_RUNNER_GROUP repository variable."
             exit 1
           fi
-          if [ "${{ vars.REVIT_RUNNER_GROUP }}" = "${{ vars.SIGNING_RUNNER_GROUP }}" ]; then
-            echo "::error::The signing runner group must be distinct from the Revit integration runner group."
-            exit 1
-          fi
-          if [ "${{ vars.SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED }}" != "true" ]; then
-            echo "::error::SignPath Foundation OSS origin rules require hosted build jobs by default. This Revit build needs licensed APIs on a self-hosted runner; stable signing remains blocked until SignPath explicitly approves that origin and SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED=true records the external decision."
-            exit 1
-          fi
-          missing=()
-          [ -n "${{ vars.SIGNPATH_ORGANIZATION_ID }}" ] || missing+=(SIGNPATH_ORGANIZATION_ID)
-          [ -n "${{ vars.SIGNPATH_PROJECT_SLUG }}" ] || missing+=(SIGNPATH_PROJECT_SLUG)
-          [ -n "${{ vars.SIGNPATH_PAYLOAD_POLICY_SLUG }}" ] || missing+=(SIGNPATH_PAYLOAD_POLICY_SLUG)
-          [ -n "${{ vars.SIGNPATH_PAYLOAD_ARTIFACT_CONFIGURATION_SLUG }}" ] || missing+=(SIGNPATH_PAYLOAD_ARTIFACT_CONFIGURATION_SLUG)
-          [ -n "${{ vars.SIGNPATH_INSTALLER_POLICY_SLUG }}" ] || missing+=(SIGNPATH_INSTALLER_POLICY_SLUG)
-          [ -n "${{ vars.SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG }}" ] || missing+=(SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG)
-          if [ "${#missing[@]}" -ne 0 ]; then
-            printf '::error::SignPath project configuration is incomplete: %s\n' "${missing[*]}"
-            exit 1
-          fi
+          echo "::warning::Horizun releases are unsigned by policy. SHA-256, manifest, SBOM, provenance attestation and the complete live matrix prove the released bytes, but do not provide a Windows publisher identity."
 
       - name: Restore
         run: |
@@ -275,18 +252,18 @@ jobs:
           Write-Host "Revit $year -> $want, sha $((Get-FileHash $dll -Algorithm SHA256).Hash.Substring(0,16))"
 
   # ---------------------------------------------------------------------------
-  # Build the unsigned stage on the isolated machine that owns the licensed
-  # Revit APIs. This job never receives SignPath credentials. Its only hand-off
-  # is the immutable GitHub artifact id consumed by the hosted signing job.
+  # Build the unsigned stage on the licensed Revit runner. Public releases are
+  # deliberately unsigned; immutable artifact ids, hashes and attestations bind
+  # every later step to these exact bytes.
   # ---------------------------------------------------------------------------
   build-stage:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.') && vars.HAS_REVIT_RUNNER == 'true' && vars.SIGNING_RUNNER_GROUP != '' && vars.SIGNING_RUNNER_GROUP != vars.REVIT_RUNNER_GROUP }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.') && vars.HAS_REVIT_RUNNER == 'true' && vars.REVIT_RUNNER_GROUP != '' }}
     needs: [revit-free, windows-deployment, revit-addin]
     outputs:
-      payload-artifact-id: ${{ steps.signpath-payload-input.outputs.artifact-id }}
+      payload-artifact-id: ${{ steps.unsigned-payload.outputs.artifact-id }}
     runs-on:
-      group: ${{ vars.SIGNING_RUNNER_GROUP }}
-      labels: [self-hosted, windows, revit, signing]
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
     env:
       NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-build-stage
     permissions:
@@ -305,68 +282,39 @@ jobs:
         shell: pwsh
         run: pwsh scripts/pack.ps1 -SkipInstaller
 
-      # The stage is validated on its own, because "pack did not throw" and "the
-      # payload is correct" are different claims.
-      - name: Validate the staged payload
+      - name: Validate the complete unsigned stage
         shell: pwsh
         run: |
-          $stage = "dist/stage"
+          . ./scripts/horizun-deploy.lib.ps1
+          $stage = 'dist/stage'
           $doc = Get-Content "$stage/manifest.json" -Raw | ConvertFrom-Json
           if ($doc.Schema -ne 2) { throw "expected manifest schema 2, got '$($doc.Schema)'" }
-
-          # A package must name ONE commit, and it must be a commit these binaries
-          # actually are. -dirty means the sha names something else.
-          if (-not $doc.Commit -or $doc.Commit -eq 'unknown') { throw "the manifest names no commit" }
-          if ($doc.Commit.Length -ne 40) { throw "the manifest's commit is not a full sha: $($doc.Commit)" }
-          if (-not $doc.CleanTree) { throw "packaged from a DIRTY tree - the commit in this manifest is not what these binaries are" }
-
-          # The server is half of what gets installed, and the half the manifest
-          # used to omit entirely.
-          $srvSha = (Get-FileHash "$stage/$($doc.Server.File)" -Algorithm SHA256).Hash.ToLower()
-          if ($srvSha -ne $doc.Server.Sha256) { throw "server: manifest says $($doc.Server.Sha256), file is $srvSha" }
-          if ($doc.Server.Sha256.Length -ne 64) { throw "the server hash is truncated - a prefix identifies nothing" }
-          foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1') {
-            if (-not (Test-Path "$stage/server/client-tools/$helper")) {
-              throw "installer client helper is missing: $helper"
-            }
+          if (-not $doc.Commit -or $doc.Commit.Length -ne 40 -or -not $doc.CleanTree) {
+            throw 'manifest must name one full clean source commit'
           }
-
-          if ($doc.Plugins.Count -lt 1) { throw "the manifest has no plugin payloads" }
-          $seen = @{}
-          foreach ($e in $doc.Plugins) {
-            $dll = "$stage/plugin/$($e.Year)/Horizun.Revit.dll"
-            if (-not (Test-Path $dll)) { throw "manifest names $($e.Year) but its payload is missing" }
-            $sha = (Get-FileHash $dll -Algorithm SHA256).Hash.ToLower()
-            if ($sha -ne $e.Sha256) { throw "$($e.Year): manifest says $($e.Sha256), file is $sha" }
-            if ($e.Sha256.Length -ne 64) { throw "$($e.Year): truncated hash - a 16-character prefix verifies nothing" }
-            # Two years sharing a hash means one was built against the wrong API -
-            # the exact defect the per-year build exists to remove.
-            if ($seen.ContainsKey($sha)) { throw "$($e.Year) and $($seen[$sha]) are the SAME binary" }
-            $seen[$sha] = $e.Year
-            foreach ($needed in 'IronPython.dll','Newtonsoft.Json.dll') {
-              if (-not (Test-Path "$stage/plugin/$($e.Year)/$needed")) { throw "$($e.Year): $needed missing" }
-            }
-          }
-
-          # All five, or the package silently drops a Revit generation and the
-          # symptom lands on whoever opens that year weeks later.
           $missing = @(2023,2024,2025,2026,2027 | Where-Object { $_ -notin $doc.Plugins.Year })
-          if ($missing.Count -gt 0) { throw "no payload for $($missing -join ', ') - this runner is missing those Revit versions" }
-
-          Write-Host "validated commit $($doc.Commit), server + $($doc.Plugins.Count) per-year payloads, all distinct, full hashes"
+          if ($missing.Count) { throw "stage is missing Revit $($missing -join ', ')" }
+          $mismatch = @(Test-HorizunStageMatchesManifest $stage)
+          if ($mismatch.Count) { throw "stage/manifest mismatch: $($mismatch -join '; ')" }
+          $own = @(Get-HorizunOwnBinaries $stage)
+          if ($own.Count -ne 7) { throw "expected seven Horizun-owned payload binaries, found $($own.Count)" }
+          foreach ($path in $own) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $path
+            if ($sig.Status -ne 'NotSigned') {
+              throw "public release payload must be unsigned, not $($sig.Status): $path"
+            }
+          }
+          if ($doc.Signed) { throw 'unsigned release manifest unexpectedly claims Signed=true' }
 
       - name: Prove an active CLI update stops only the installed server path
         shell: pwsh
         run: pwsh scripts/server-update.tests.ps1 -RequireWindows
 
-      # The full check, with the wordlist that lives on this runner. -RequireTerms
-      # makes a MISSING wordlist a failure: at a release gate, "the name check did
-      # not run" must not be indistinguishable from "it passed".
-      - name: Scan for client names, with the wordlist (release gate)
+      - name: Scan for client names, with the wordlist
         shell: pwsh
         run: pwsh scripts/scan-sensitive.ps1 -RequireTerms -Json artifacts/scan/sensitive-release.json
 
-      - name: Inventory what ships (fails on an unidentified licence)
+      - name: Generate and validate release evidence
         shell: pwsh
         run: |
           pwsh scripts/sbom.ps1
@@ -375,10 +323,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "SBOM tests failed ($LASTEXITCODE)" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage
           if ($LASTEXITCODE -ne 0) { throw "staged version consistency failed ($LASTEXITCODE)" }
-
-      - name: Audit the exact redistributed IronPython standard library
-        shell: pwsh
-        run: |
           pwsh scripts/audit-python-stdlib.ps1 -StageRoot dist/stage -Json dist/python-stdlib-audit.json -Sarif dist/python-stdlib-audit.sarif
           if ($LASTEXITCODE -ne 0) { throw "Python stdlib audit failed ($LASTEXITCODE)" }
 
@@ -389,242 +333,82 @@ jobs:
           $url = 'https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.32.0/cyclonedx-win-x64.exe'
           $expected = 'b1c00dbb40e628ec8c1252771871341ac4d4aaf032f832d83bd22cb2b1d258ae'
           Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tool
-          $actual = (Get-FileHash $tool -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "CycloneDX CLI checksum mismatch: $actual" }
+          if ((Get-FileHash $tool -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'CycloneDX CLI checksum mismatch.' }
           & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
           if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
 
-      # SignPath consumes the immutable GitHub artifact, not a filesystem path
-      # chosen by repository code. This is request 1 of 2: Revit loads these
-      # seven inner binaries after Setup extracts them, so signing only Setup
-      # would leave the actual code unsigned.
-      - name: Upload the unsigned payload for SignPath
-        id: signpath-payload-input
+      - name: Upload the immutable unsigned payload
+        id: unsigned-payload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: signpath-payload-input-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/stage
+          name: unsigned-payload-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/stage
+            dist/sbom.json
+            dist/python-stdlib-audit.json
+            dist/python-stdlib-audit.sarif
           if-no-files-found: error
           retention-days: 1
 
-  # The API token exists only in this protected, disposable hosted job. The
-  # self-hosted producer is referenced by immutable artifact id, never by path
-  # or artifact name.
-  sign-payload:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
-    needs: build-stage
-    environment: release-signing
-    runs-on: windows-latest
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      signed-payload-artifact-id: ${{ steps.signed-payload.outputs.artifact-id }}
-      signing-request-url: ${{ steps.signpath-payload.outputs.signing-request-web-url }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Sign the staged Horizun binaries with SignPath Foundation
-        id: signpath-payload
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_PAYLOAD_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_PAYLOAD_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.build-stage.outputs.payload-artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: dist/signpath-payload-output
-
-      - name: Verify and adopt the exact signed payload
-        shell: pwsh
-        run: |
-          $manifests = @(Get-ChildItem -LiteralPath 'dist/signpath-payload-output' -Filter manifest.json -File -Recurse)
-          if ($manifests.Count -ne 1) {
-            throw "SignPath payload output must contain exactly one manifest.json; found $($manifests.Count)."
-          }
-          $signedRoot = $manifests[0].Directory.FullName
-          $original = Get-Content -LiteralPath $manifests[0].FullName -Raw | ConvertFrom-Json
-          . ./scripts/horizun-deploy.lib.ps1
-
-          # The manifest deliberately aggregates each plugin's Python stdlib into
-          # a path-and-hash digest. Compare with the same canonical inventory
-          # function instead of flattening only the human-readable entries.
-          $expectedRoot = @('Horizun.addin','manifest.json','plugin','server')
-          $actualRoot = @(Get-ChildItem -LiteralPath $signedRoot -Force | ForEach-Object Name | Sort-Object)
-          if (@(Compare-Object ($expectedRoot | Sort-Object) $actualRoot).Count) {
-            throw "SignPath changed the stage root inventory."
-          }
-
-          $serverListing = Get-HorizunPayloadListing (Join-Path $signedRoot 'server')
-          $serverExpected = @($original.Server.Payload | ForEach-Object { "$($_.Path)".Replace('\','/') } | Sort-Object)
-          $serverActual = @($serverListing.Files | ForEach-Object { "$($_.Path)".Replace('\','/') } | Sort-Object)
-          if (@(Compare-Object $serverExpected $serverActual).Count -or $serverListing.StdLibFiles -ne 0) {
-            throw 'SignPath changed the server payload inventory.'
-          }
-
-          $expectedYears = @($original.Plugins | ForEach-Object { "$($_.Year)" } | Sort-Object)
-          $actualYears = @(Get-ChildItem -LiteralPath (Join-Path $signedRoot 'plugin') -Directory -Force | ForEach-Object Name | Sort-Object)
-          if (@(Compare-Object $expectedYears $actualYears).Count) {
-            throw 'SignPath changed the plugin-year inventory.'
-          }
-          foreach ($plugin in @($original.Plugins)) {
-            $listing = Get-HorizunPayloadListing (Join-Path $signedRoot "plugin/$($plugin.Year)")
-            $expected = @($plugin.Payload | ForEach-Object { "$($_.Path)".Replace('\','/') } | Sort-Object)
-            $actual = @($listing.Files | ForEach-Object { "$($_.Path)".Replace('\','/') } | Sort-Object)
-            if (@(Compare-Object $expected $actual).Count -or
-                [int]$listing.StdLibFiles -ne [int]$plugin.StdLibFiles -or
-                "$($listing.StdLibDigest)" -ne "$($plugin.StdLibDigest)" -or
-                [int]$plugin.Files -ne ([int]$listing.FileCount + [int]$listing.StdLibFiles)) {
-              throw "SignPath changed the plugin $($plugin.Year) payload inventory."
-            }
-          }
-
-          $expectedOwn = @('server/horizun-mcp.exe','server/horizun-mcp.dll') + `
-            @(2023,2024,2025,2026,2027 | ForEach-Object { "plugin/$_/Horizun.Revit.dll" })
-          function Assert-UnchangedEntry([string]$relative, [string]$sha256) {
-            $relative = $relative.Replace('\','/')
-            if ($expectedOwn -contains $relative) { return }
-            $path = Join-Path $signedRoot $relative
-            $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($actual -ne "$sha256".ToLowerInvariant()) {
-              throw "SignPath changed non-owned payload byte: $relative"
-            }
-          }
-          foreach ($entry in @($original.Server.Payload)) {
-            Assert-UnchangedEntry "server/$($entry.Path)" $entry.Sha256
-          }
-          foreach ($plugin in @($original.Plugins)) {
-            foreach ($entry in @($plugin.Payload)) {
-              Assert-UnchangedEntry "plugin/$($plugin.Year)/$($entry.Path)" $entry.Sha256
-            }
-          }
-          if ($original.AddinManifest) {
-            Assert-UnchangedEntry 'Horizun.addin' $original.AddinManifest.Sha256
-          }
-
-          $actualOwn = @(Get-HorizunOwnBinaries $signedRoot | ForEach-Object {
-            $_.Substring($signedRoot.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
-          } | Sort-Object)
-          if (@(Compare-Object ($expectedOwn | Sort-Object) $actualOwn).Count) {
-            throw "SignPath output does not contain the exact seven owned binaries."
-          }
-          foreach ($path in @(Get-HorizunOwnBinaries $signedRoot)) {
-            $sig = Get-AuthenticodeSignature -LiteralPath $path
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or
-                $sig.SignerCertificate.Subject -notmatch '(?i)SignPath Foundation') {
-              throw "SignPath payload is not publicly trusted, timestamped and Foundation-signed: $path ($($sig.Status))."
-            }
-          }
-
-          $stage = Join-Path (Resolve-Path dist).Path 'stage'
-          if (Test-Path -LiteralPath $stage) { throw 'Hosted signing workspace unexpectedly already contains dist/stage.' }
-          Move-Item -LiteralPath $signedRoot -Destination $stage
-          $doc = Update-HorizunManifestToStage $stage
-          $mismatch = @(Test-HorizunStageMatchesManifest $stage)
-          if ($mismatch.Count) { throw "Signed stage does not match refreshed manifest: $($mismatch -join '; ')" }
-          $badSignatureRecords = @($doc.Signature.Files | Where-Object { -not $_.Signed -or $_.Status -ne 'Valid' -or -not $_.Timestamped })
-          if (-not $doc.Signed -or $doc.Signature.SignerSubject -notmatch '(?i)SignPath Foundation' -or $badSignatureRecords.Count) {
-            throw 'Refreshed manifest does not record the exact valid SignPath-signed payload.'
-          }
-
-      - name: Upload the verified signed payload
-        id: signed-payload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: signed-payload-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/stage
-          if-no-files-found: error
-          retention-days: 1
-
-  # The installer must embed the already-signed stage, so compilation returns to
-  # the isolated Windows/Revit build runner. No environment or SignPath secret is
-  # attached to this job.
   compile-installer:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
-    needs: sign-payload
+    needs: build-stage
     runs-on:
-      group: ${{ vars.SIGNING_RUNNER_GROUP }}
-      labels: [self-hosted, windows, revit, signing]
+      group: ${{ vars.REVIT_RUNNER_GROUP }}
+      labels: [self-hosted, windows, revit]
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}\.horizun-nuget-${{ github.run_id }}-${{ github.run_attempt }}-compile-installer
     permissions:
       actions: read
       contents: read
     outputs:
-      installer-artifact-id: ${{ steps.signpath-installer-input.outputs.artifact-id }}
-      package-support-artifact-id: ${{ steps.package-support.outputs.artifact-id }}
+      package-input-artifact-id: ${{ steps.package-input.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Download the exact signed payload
+      - name: Download the exact unsigned stage
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: ${{ needs.sign-payload.outputs.signed-payload-artifact-id }}
-          path: dist/stage
+          artifact-ids: ${{ needs.build-stage.outputs.payload-artifact-id }}
+          path: dist
           merge-multiple: true
 
-      - name: Revalidate the signed stage before compilation
+      - name: Revalidate the stage and compile its installer
         shell: pwsh
         run: |
           . ./scripts/horizun-deploy.lib.ps1
           $mismatch = @(Test-HorizunStageMatchesManifest 'dist/stage')
-          if ($mismatch.Count) { throw "Downloaded signed stage does not match its manifest: $($mismatch -join '; ')" }
-          $doc = Get-Content 'dist/stage/manifest.json' -Raw | ConvertFrom-Json
-          if (-not $doc.Signed -or $doc.Signature.SignerSubject -notmatch '(?i)SignPath Foundation') {
-            throw 'Downloaded stage has no valid SignPath manifest identity.'
-          }
-
-      - name: Regenerate signed-stage evidence
-        shell: pwsh
-        run: |
-          pwsh scripts/sbom.ps1
-          if ($LASTEXITCODE -ne 0) { throw "signed-stage SBOM generation failed ($LASTEXITCODE)" }
-          pwsh scripts/sbom.tests.ps1
-          if ($LASTEXITCODE -ne 0) { throw "signed-stage SBOM tests failed ($LASTEXITCODE)" }
-          pwsh scripts/audit-python-stdlib.ps1 -StageRoot dist/stage -Json dist/python-stdlib-audit.json -Sarif dist/python-stdlib-audit.sarif
-          if ($LASTEXITCODE -ne 0) { throw "signed-stage Python stdlib audit failed ($LASTEXITCODE)" }
-
-      - name: Compile the installer from the signed payload
-        shell: pwsh
-        run: |
+          if ($mismatch.Count) { throw "downloaded stage/manifest mismatch: $($mismatch -join '; ')" }
           pwsh scripts/pack.ps1 -InstallerOnly
           if ($LASTEXITCODE -ne 0) { throw "installer compilation failed ($LASTEXITCODE)" }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "installer version consistency failed ($LASTEXITCODE)" }
+          $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
+          if ($setup.Count -ne 1) { throw "expected one Setup, found $($setup.Count)" }
+          if ((Get-AuthenticodeSignature -LiteralPath $setup[0].FullName).Status -ne 'NotSigned') {
+            throw 'public release installer must be unsigned by policy'
+          }
 
-      - name: Archive the complete signed stage with its build timestamps
+      - name: Archive the complete stage with its build timestamps
         shell: pwsh
         run: |
           Add-Type -AssemblyName System.IO.Compression.FileSystem
-          $source = (Resolve-Path 'dist/stage').Path
-          $archive = Join-Path (Resolve-Path 'dist').Path 'stage.zip'
           [System.IO.Compression.ZipFile]::CreateFromDirectory(
-            $source,
-            $archive,
+            (Resolve-Path 'dist/stage').Path,
+            (Join-Path (Resolve-Path 'dist').Path 'stage.zip'),
             [System.IO.Compression.CompressionLevel]::Optimal,
             $false
           )
-          if (-not (Test-Path $archive)) { throw 'stage.zip was not created' }
 
-      - name: Upload the unsigned installer for SignPath
-        id: signpath-installer-input
+      - name: Upload immutable package inputs
+        id: package-input
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: signpath-installer-input-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/*setup.exe
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Upload the immutable package support files
-        id: package-support
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: package-support-${{ github.run_id }}-${{ github.run_attempt }}
+          name: unsigned-package-input-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            dist/*setup.exe
             dist/stage.zip
             dist/stage/manifest.json
             dist/sbom.json
@@ -633,64 +417,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Request 2 is independently protected and hosted. The token is again scoped
-  # to this disposable job and never crosses into the installer compiler.
-  sign-installer:
-    if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
-    needs: compile-installer
-    environment: release-signing
-    runs-on: windows-latest
-    permissions:
-      actions: read
-      contents: read
-    outputs:
-      signed-installer-artifact-id: ${{ steps.signed-installer.outputs.artifact-id }}
-      signing-request-url: ${{ steps.signpath-installer.outputs.signing-request-web-url }}
-    steps:
-      - name: Sign the installer with SignPath Foundation
-        id: signpath-installer
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.3
-        with:
-          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
-          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
-          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
-          signing-policy-slug: ${{ vars.SIGNPATH_INSTALLER_POLICY_SLUG }}
-          artifact-configuration-slug: ${{ vars.SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG }}
-          github-artifact-id: ${{ needs.compile-installer.outputs.installer-artifact-id }}
-          wait-for-completion: true
-          output-artifact-directory: dist/signpath-installer-output
-
-      - name: Verify the exact signed installer
-        shell: pwsh
-        run: |
-          $signed = @(Get-ChildItem -LiteralPath 'dist/signpath-installer-output' -Filter '*setup.exe' -File -Recurse)
-          $all = @(Get-ChildItem -LiteralPath 'dist/signpath-installer-output' -File -Recurse)
-          if ($signed.Count -ne 1 -or $all.Count -ne 1) {
-            throw "SignPath installer output must contain exactly one Setup; found setup=$($signed.Count), files=$($all.Count)."
-          }
-          $sig = Get-AuthenticodeSignature -LiteralPath $signed[0].FullName
-          if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or
-              $sig.SignerCertificate.Subject -notmatch '(?i)SignPath Foundation') {
-            throw "Signed Setup failed public publisher/timestamp verification: $($sig.Status), $($sig.SignerCertificate.Subject)"
-          }
-          New-Item -ItemType Directory -Path dist/signed-installer | Out-Null
-          Move-Item -LiteralPath $signed[0].FullName -Destination (Join-Path 'dist/signed-installer' $signed[0].Name)
-
-      - name: Upload the verified signed installer
-        id: signed-installer
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: signed-installer-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/signed-installer/*setup.exe
-          if-no-files-found: error
-          retention-days: 1
-
-  # Assemble only artifact-id-bound inputs on a fresh hosted runner, verify all
-  # eight public signatures, attest the exact bytes and publish the sole package
-  # consumed by installation and release jobs.
   package:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
-    needs: [sign-payload, compile-installer, sign-installer]
+    needs: compile-installer
     runs-on: windows-latest
     permissions:
       actions: read
@@ -705,91 +434,47 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download exact signed-stage support by artifact id
+      - name: Download exact package inputs by artifact id
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          artifact-ids: ${{ needs.compile-installer.outputs.package-support-artifact-id }}
+          artifact-ids: ${{ needs.compile-installer.outputs.package-input-artifact-id }}
           path: dist
           merge-multiple: true
 
-      - name: Refuse any unexpected support file
+      - name: Reconstruct and verify the unsigned package
         shell: pwsh
         run: |
-          $expected = @('stage.zip','stage/manifest.json','sbom.json','python-stdlib-audit.json','python-stdlib-audit.sarif') | Sort-Object
-          $actual = @(Get-ChildItem -LiteralPath dist -File -Recurse | ForEach-Object {
-            $_.FullName.Substring((Resolve-Path dist).Path.Length).TrimStart([char[]]@('\','/')).Replace('\','/')
-          } | Sort-Object)
-          if (@(Compare-Object $expected $actual).Count) {
-            throw "Package support artifact inventory is not exact:`n$(@(Compare-Object $expected $actual) | Out-String)"
-          }
-
-      - name: Download exact signed installer by artifact id
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          artifact-ids: ${{ needs.sign-installer.outputs.signed-installer-artifact-id }}
-          path: dist/signed-installer
-          merge-multiple: true
-
-      - name: Reconstruct and verify the final package
-        shell: pwsh
-        run: |
-          $setups = @(Get-ChildItem -LiteralPath dist/signed-installer -Filter '*setup.exe' -File -Recurse)
-          $installerFiles = @(Get-ChildItem -LiteralPath dist/signed-installer -File -Recurse)
-          if ($setups.Count -ne 1 -or $installerFiles.Count -ne 1) {
-            throw "Signed-installer artifact inventory is not exact: setup=$($setups.Count), files=$($installerFiles.Count)."
-          }
-          Move-Item -LiteralPath $setups[0].FullName -Destination (Join-Path dist $setups[0].Name)
-          Remove-Item -LiteralPath dist/signed-installer -Recurse -Force
-
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage-expanded
-          $looseManifestHash = (Get-FileHash dist/stage/manifest.json -Algorithm SHA256).Hash
-          $archiveManifestHash = (Get-FileHash dist/stage-expanded/manifest.json -Algorithm SHA256).Hash
-          if ($looseManifestHash -ne $archiveManifestHash) { throw 'Loose and archived signed manifests differ.' }
+          $loose = (Get-FileHash dist/stage/manifest.json -Algorithm SHA256).Hash
+          $archived = (Get-FileHash dist/stage-expanded/manifest.json -Algorithm SHA256).Hash
+          if ($loose -ne $archived) { throw 'loose and archived manifests differ' }
           Remove-Item -LiteralPath dist/stage -Recurse -Force
           Move-Item -LiteralPath dist/stage-expanded -Destination dist/stage
-
           . ./scripts/horizun-deploy.lib.ps1
           $mismatch = @(Test-HorizunStageMatchesManifest 'dist/stage')
-          if ($mismatch.Count) { throw "Final signed stage does not match its manifest: $($mismatch -join '; ')" }
-          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) + `
+          if ($mismatch.Count) { throw "final stage/manifest mismatch: $($mismatch -join '; ')" }
+          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          if ($targets.Count -ne 8) { throw "Expected seven payload binaries and one Setup; found $($targets.Count)." }
+          if ($targets.Count -ne 8) { throw "expected seven payload binaries and one Setup; found $($targets.Count)" }
           foreach ($file in $targets) {
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
-            if ($sig.Status -ne 'Valid' -or -not $sig.TimeStamperCertificate -or
-                $sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer -or
-                $sig.SignerCertificate.Subject -notmatch '(?i)SignPath Foundation') {
-              throw "Installable release contains unsigned, invalid, self-signed or untimestamped own binaries: $($file.FullName), $($sig.Status)"
+            if ($sig.Status -ne 'NotSigned') {
+              throw "release artifact must be unsigned by policy, not $($sig.Status): $($file.FullName)"
             }
           }
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "final version consistency failed ($LASTEXITCODE)" }
 
-      - name: Validate the final CycloneDX SBOM
-        shell: pwsh
-        run: |
-          $tool = Join-Path $env:RUNNER_TEMP 'cyclonedx-win-x64.exe'
-          $url = 'https://github.com/CycloneDX/cyclonedx-cli/releases/download/v0.32.0/cyclonedx-win-x64.exe'
-          $expected = 'b1c00dbb40e628ec8c1252771871341ac4d4aaf032f832d83bd22cb2b1d258ae'
-          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $tool
-          if ((Get-FileHash $tool -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'CycloneDX CLI checksum mismatch.' }
-          & $tool validate --input-file dist/sbom.json --input-format json --input-version v1_6 --fail-on-errors
-          if ($LASTEXITCODE -ne 0) { throw "CycloneDX validation failed ($LASTEXITCODE)" }
-
-      - name: Generate final checksums and package identity
+      - name: Generate exact checksums and package identity
         shell: pwsh
         run: |
           $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          if ($setup.Count -ne 1) { throw "Expected one setup, found $($setup.Count)." }
-          $releaseFiles = @(
-            $setup[0], (Get-Item dist/sbom.json),
+          $releaseFiles = @($setup[0], (Get-Item dist/sbom.json),
             (Get-Item dist/python-stdlib-audit.json), (Get-Item dist/python-stdlib-audit.sarif),
-            (Get-Item dist/stage/manifest.json)
-          )
+            (Get-Item dist/stage/manifest.json))
           $releaseFiles | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()) *$($_.Name)"
           } | Out-File dist/SHA256SUMS.txt -Encoding ascii
-
           $files = @{
             installer = $setup[0].FullName; 'sbom.json' = 'dist/sbom.json'
             'manifest.json' = 'dist/stage/manifest.json'; 'stage.zip' = 'dist/stage.zip'
@@ -805,10 +490,10 @@ jobs:
           }
           $doc = Get-Content dist/stage/manifest.json -Raw | ConvertFrom-Json
           [pscustomobject]@{
-            schema = 1; commit = $doc.Commit; workflow_sha = '${{ github.sha }}'
-            built_utc = (Get-Date).ToUniversalTime().ToString('o'); files = $hashes
-            signpath_payload_request = '${{ needs.sign-payload.outputs.signing-request-url }}'
-            signpath_installer_request = '${{ needs.sign-installer.outputs.signing-request-url }}'
+            schema = 2; commit = $doc.Commit; workflow_sha = '${{ github.sha }}'
+            built_utc = (Get-Date).ToUniversalTime().ToString('o')
+            authenticode = 'unsigned_by_policy'; publisher_identity_available = $false
+            files = $hashes
           } | ConvertTo-Json -Depth 5 | Out-File dist/package-hashes.json -Encoding utf8
 
       - name: Attest final build provenance
@@ -824,7 +509,7 @@ jobs:
           subject-path: dist/*setup.exe
           sbom-path: dist/sbom.json
 
-      - name: Publish the final signed package
+      - name: Publish the final unsigned package
         id: final-package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -840,10 +525,7 @@ jobs:
             dist/stage/manifest.json
           if-no-files-found: error
 
-  # The release's stated trust state is re-evaluated on a disposable
-  # Microsoft-hosted machine. Every installable tag must be publicly trusted and
-  # timestamped, exactly as the public bootstrap requires before executing Setup.
-  public-signature:
+  public-integrity:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-validation.')
     needs: package
     runs-on: windows-latest
@@ -852,40 +534,31 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Download the exact signed package
+      - name: Download the exact unsigned package
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
           path: dist
           merge-multiple: true
 
-      - name: Enforce the versioned trust promise on a clean runner
+      - name: Enforce the published integrity and disclosure contract
         shell: pwsh
         run: |
+          $record = Get-Content dist/package-hashes.json -Raw | ConvertFrom-Json
+          if ($record.authenticode -ne 'unsigned_by_policy' -or $record.publisher_identity_available -ne $false) {
+            throw 'package does not disclose the permanent unsigned-release policy'
+          }
           Expand-Archive -LiteralPath dist/stage.zip -DestinationPath dist/stage -Force
           . ./scripts/horizun-deploy.lib.ps1
-          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) + `
+          $targets = @(@(Get-HorizunOwnBinaries 'dist/stage') | ForEach-Object { Get-Item $_ }) +
                      @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          if ($targets.Count -ne 8) {
-            throw "Expected server exe+dll, five Revit DLLs and setup; found $($targets.Count)."
-          }
+          if ($targets.Count -ne 8) { throw "expected eight unsigned release targets, found $($targets.Count)" }
           foreach ($file in $targets) {
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
-            if ($sig.Status -ne 'Valid') {
-              throw "$($file.FullName) is not publicly trusted on a clean Windows runner: $($sig.Status) - $($sig.StatusMessage)"
-            }
-            if (-not $sig.TimeStamperCertificate) {
-              throw "$($file.FullName) has no trusted Authenticode timestamp."
-            }
-            if ($sig.SignerCertificate.Subject -eq $sig.SignerCertificate.Issuer) {
-              throw "$($file.FullName) is self-signed, not a public publisher identity."
-            }
-            $identity = $sig.SignerCertificate.Subject
-            if ($identity -notmatch '(?i)SignPath Foundation') {
-              throw "$($file.FullName) is not signed by the SignPath Foundation release publisher: $identity"
-            }
-            Write-Host "  trusted $($file.Name) - $($sig.SignerCertificate.Subject)"
+            if ($sig.Status -ne 'NotSigned') { throw "unexpected signature state $($sig.Status): $($file.FullName)" }
           }
+          pwsh scripts/verify-release.ps1 -AllowUnsigned
+          if ($LASTEXITCODE -ne 0) { throw "unsigned release-chain verification failed ($LASTEXITCODE)" }
 
   # ---------------------------------------------------------------------------
   # Install exactly once. Reinstalling the identical package before every Revit
@@ -1029,13 +702,13 @@ jobs:
       # commit, and is it the one in the tree".
       - name: Verify one clean commit from source to what is installed
         shell: pwsh
-        # Branch builds keep an explicit unsigned development exception. Every
-        # tagged binary release must be publicly signed, matching the bootstrap.
+        # Public releases are unsigned by policy. The explicit switch prevents a
+        # missing publisher identity from ever being mistaken for signed trust.
         # The result path is the exact per-run file requested in the install step,
         # never the global result left by an earlier install.
         run: |
-          pwsh scripts/verify-release.ps1 -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
-          if ($LASTEXITCODE -ne 0) { throw "installed signed release verification failed ($LASTEXITCODE)" }
+          pwsh scripts/verify-release.ps1 -AllowUnsigned -Installed -InstallResult "$env:RUNNER_TEMP/horizun-install-result-${{ github.run_id }}.txt" -Json artifacts/live/release-chain.json
+          if ($LASTEXITCODE -ne 0) { throw "installed unsigned release verification failed ($LASTEXITCODE)" }
 
       - name: Publish the installed release-chain evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -1130,7 +803,7 @@ jobs:
 
   publish-stable-release:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: [package, public-signature, stable-release-evidence]
+    needs: [package, public-integrity, stable-release-evidence]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1183,7 +856,7 @@ jobs:
 
   publish-preview-release:
     if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-preview.') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: [package, public-signature]
+    needs: [package, public-integrity]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1295,7 +968,7 @@ jobs:
   # ---------------------------------------------------------------------------
   coverage-statement:
     if: ${{ always() }}
-    needs: [revit-free, windows-deployment, revit-addin, build-stage, sign-payload, compile-installer, sign-installer, package, install-package, revit-integration]
+    needs: [revit-free, windows-deployment, revit-addin, build-stage, compile-installer, package, public-integrity, install-package, revit-integration]
     runs-on: ubuntu-latest
     steps:
       - name: What this run did and did not cover
@@ -1305,7 +978,7 @@ jobs:
           echo "Also here: the structural half of the sensitive-name scan. The NAME half needs"
           echo "a wordlist that is deliberately not in this repository, so on a hosted runner it"
           echo "reports NOT RUN - which is not the same as passing, and is not printed as if it were."
-          echo "Job results: revit-free=${{ needs.revit-free.result }}, windows-deployment=${{ needs.windows-deployment.result }}, add-in=${{ needs.revit-addin.result }}, build-stage=${{ needs.build-stage.result }}, sign-payload=${{ needs.sign-payload.result }}, compile-installer=${{ needs.compile-installer.result }}, sign-installer=${{ needs.sign-installer.result }}, package=${{ needs.package.result }}, install=${{ needs.install-package.result }}, integration=${{ needs.revit-integration.result }}."
+          echo "Job results: revit-free=${{ needs.revit-free.result }}, windows-deployment=${{ needs.windows-deployment.result }}, add-in=${{ needs.revit-addin.result }}, build-stage=${{ needs.build-stage.result }}, compile-installer=${{ needs.compile-installer.result }}, package=${{ needs.package.result }}, public-integrity=${{ needs.public-integrity.result }}, install=${{ needs.install-package.result }}, integration=${{ needs.revit-integration.result }}."
           if [ "${{ needs.revit-integration.result }}" = "success" ]; then
             echo "Revit jobs: RAN and completed successfully."
             echo "Integration ran against the INSTALLED artifact on Revit 2023 through 2027, with the"

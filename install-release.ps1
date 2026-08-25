@@ -25,9 +25,9 @@ param(
     [switch]$VerifyOnly,
     [switch]$NoClientCompletion,
     [switch]$NoLiveVerification,
-    # Until Horizun has a public Authenticode identity, 0.x releases may be
-    # installed only through this explicit acknowledgement. Hash verification
-    # still detects transfer corruption, but it is not publisher authentication.
+    # Public Horizun releases are unsigned by policy and require this explicit
+    # acknowledgement. Hash verification detects byte changes, but it is not
+    # Windows publisher authentication.
     [switch]$AllowUnsigned
 )
 $ErrorActionPreference = 'Stop'
@@ -99,44 +99,18 @@ function Get-HorizunAuthoritativeCompletionStatus([string]$BasePath) {
     return $BasePath
 }
 
-function Assert-HorizunSetupAuthenticode([string]$Path, [string]$ReleaseVersion, [bool]$UnsignedAllowed) {
+function Assert-HorizunSetupUnsigned([string]$Path, [bool]$UnsignedAllowed) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($signature.Status -eq 'NotSigned') {
-        $semver = $ReleaseVersion.TrimStart('v')
-        if (-not $UnsignedAllowed) {
-            throw 'Setup is unsigned. Re-run with -AllowUnsigned only if you accept that Windows cannot authenticate the publisher.'
-        }
-        if ($semver -notmatch '^0\.') {
-            throw "Unsigned installation is restricted to pre-1.0 releases; refused $ReleaseVersion."
-        }
-        $version = (Get-Item -LiteralPath $Path).VersionInfo
-        if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
-            throw "Unsigned Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
-        }
-        return $null
+    if ($signature.Status -ne 'NotSigned') {
+        throw "Public Horizun releases must be unsigned by policy; refused Authenticode state '$($signature.Status)'."
     }
-    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) {
-        throw "Setup Authenticode is not valid under the independent Windows trust store: $($signature.Status) - $($signature.StatusMessage)"
+    if (-not $UnsignedAllowed) {
+        throw 'Setup is unsigned. Re-run with -AllowUnsigned only if you accept that Windows cannot authenticate the publisher.'
     }
-    if ($signature.SignerCertificate.Subject -eq $signature.SignerCertificate.Issuer) {
-        throw 'Setup is self-signed. Public release installation requires an independently trusted publisher.'
-    }
-    $identity = $signature.SignerCertificate.Subject
-    if ($identity -notmatch '(?i)SignPath Foundation') {
-        throw ("Setup is validly signed, but not by the release-policy publisher (SignPath Foundation): " +
-               $signature.SignerCertificate.Subject + ' / ' + $signature.SignerCertificate.Issuer)
-    }
-    # SignPath Foundation is necessarily the Authenticode publisher for its OSS
-    # certificate. Bind that shared public identity back to this product using
-    # the signed installer's version resource, which is covered by the signature.
     $version = (Get-Item -LiteralPath $Path).VersionInfo
     if (([string]$version.CompanyName).Trim() -ne 'Horizun Group' -or ([string]$version.ProductName).Trim() -ne 'Horizun Revit MCP') {
-        throw "Setup has the expected public publisher but not the signed Horizun product identity. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
+        throw "Unsigned Setup does not carry the expected Horizun product metadata. Company='$($version.CompanyName)' Product='$($version.ProductName)'"
     }
-    if (-not $signature.TimeStamperCertificate) {
-        throw 'Setup signature has no trusted timestamp; refusing an artifact whose trust expires with the current certificate.'
-    }
-    return $signature
 }
 
 function New-HorizunSetupArguments([string]$ResultPath, [string]$InstallerClient) {
@@ -195,14 +169,9 @@ try {
         throw "SHA-256 mismatch. Expected $expected but downloaded $actual. The installer was NOT launched."
     }
 
-    $setupSignature = Assert-HorizunSetupAuthenticode $setupPath $release.tag_name ([bool]$AllowUnsigned)
-
-    if ($setupSignature) {
-        Write-Host "[Horizun] verified $($release.tag_name): $actual; $($setupSignature.SignerCertificate.Subject)" -ForegroundColor Green
-    } else {
-        Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED pre-1.0 release." -ForegroundColor Yellow
-        Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
-    }
+    Assert-HorizunSetupUnsigned $setupPath ([bool]$AllowUnsigned)
+    Write-Host "[Horizun] WARNING: $($release.tag_name) is an official but UNSIGNED release." -ForegroundColor Yellow
+    Write-Host "          SHA-256 matched the release, but Windows cannot authenticate its publisher." -ForegroundColor Yellow
     if ($VerifyOnly) {
         Write-Host '[Horizun] verification-only requested; Setup was NOT launched.' -ForegroundColor Green
         return

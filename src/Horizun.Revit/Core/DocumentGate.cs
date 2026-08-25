@@ -219,7 +219,18 @@ namespace Horizun.Revit.Core
                 atApply?.Fingerprint(),
                 (atApply != null && rehearsed != null) ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
             if (!check.Ok)
-                return CommandResult.Fail(check.Message + " (Nothing was changed.)");
+                // The refusal travels as DATA beside the prose. The dimension contracts
+                // promise a closed outcome set - committed_verified, rolled_back, refused,
+                // stale_plan, uncertain - and a client branching on `state` must not have
+                // to sniff "THE MODEL MOVED" out of a sentence to tell a stale plan from
+                // any other refusal. One seat, here, so every token-gated command answers
+                // the same way.
+                return CommandResult.FailWithDetail(check.Message + " (Nothing was changed.)",
+                    new JObject
+                    {
+                        ["state"] = check.State == ConfirmationState.StalePlan ? "stale_plan" : "refused",
+                        ["confirmation_state"] = check.State.ToString()
+                    });
 
             // The token was minted against this document; prove it has not moved between
             // then and now, immediately before any work starts.

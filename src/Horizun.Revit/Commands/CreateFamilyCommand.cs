@@ -109,6 +109,10 @@ namespace Horizun.Revit.Commands
                         "The public Revit API does not provide general creation of in-place families; Horizun refuses to fake it with UI automation."),
                     ["note"] = "No family document, transaction or file was created."
                 };
+                if (plan.Dimensions.Any(x => x.ViewName != null || x.TypeName != null))
+                    result["deferred_checks"] = new JArray(
+                        "dimensions[].view_name and dimensions[].dimension_type_name resolve against the family document, " +
+                        "which a dry run never opens; a wrong name refuses at apply before any transaction is started.");
                 DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, true,
                     "the token binds template BY CONTENT (its SHA-256, not its path), destination and what already " +
@@ -141,6 +145,14 @@ namespace Horizun.Revit.Commands
                 if (family == null || !family.IsFamilyDocument)
                     throw new InvalidOperationException("Revit did not create a family document from the template.");
                 View familyView = FindFamilyCreationView(family);
+                // Dimension views and dimension types resolve against the REAL family
+                // document, and deliberately before any transaction or nested load has
+                // touched it: a wrong name must refuse while the document is still an
+                // untouched copy of the template, so "nothing was created" stays
+                // literally true. A dry run never opens documents, which is why these
+                // two names are the only dimension inputs it cannot pre-validate.
+                Dictionary<string, View> dimensionViews = ResolveDimensionViews(family, plan.Dimensions);
+                Dictionary<string, DimensionType> dimensionTypes = ResolveDimensionTypes(family, plan.Dimensions);
 
                 var nestedFamilies = new Dictionary<string, Family>(StringComparer.OrdinalIgnoreCase);
                 foreach (NestedInstancePlan nestedPlan in plan.NestedInstances)
@@ -194,14 +206,49 @@ namespace Horizun.Revit.Commands
                         if (plan.Dimensions.Count > 0) family.Regenerate();
                         foreach (DimensionPlan dimensionPlan in plan.Dimensions)
                         {
+                            View dimensionView = dimensionPlan.ViewName == null ? familyView : dimensionViews[dimensionPlan.ViewName];
+                            DimensionType dimensionType = dimensionPlan.TypeName == null ? null : dimensionTypes[dimensionPlan.TypeName];
                             var references = new ReferenceArray();
                             foreach (string referenceKey in dimensionPlan.ReferencePlaneKeys)
                                 references.Append(referencePlanes[referenceKey].GetReference());
-                            Dimension dimension = family.FamilyCreate.NewLinearDimension(familyView,
-                                Line.CreateBound(dimensionPlan.LineStart, dimensionPlan.LineEnd), references);
+                            Line dimensionLine = Line.CreateBound(dimensionPlan.LineStart, dimensionPlan.LineEnd);
+                            Dimension dimension = dimensionType == null
+                                ? family.FamilyCreate.NewLinearDimension(dimensionView, dimensionLine, references)
+                                : family.FamilyCreate.NewLinearDimension(dimensionView, dimensionLine, references, dimensionType);
                             if (!string.IsNullOrWhiteSpace(dimensionPlan.LabelParameter))
                                 dimension.FamilyLabel = parameters[dimensionPlan.LabelParameter];
-                            createdDimensions.Add(new JObject { ["key"] = dimensionPlan.Key, ["element_id"] = Rid.Value(dimension.Id) });
+                            // lock+label was already refused while planning; if Revit still
+                            // rejects either flag here, the message must name the dimension,
+                            // and the throw rolls the whole transaction back.
+                            if (dimensionPlan.Lock)
+                            {
+                                try { dimension.IsLocked = true; }
+                                catch (Exception ex)
+                                {
+                                    throw new InvalidOperationException("dimension '" + dimensionPlan.Key +
+                                        "' could not be locked: " + ex.Message + " The transaction is rolled back; nothing was created.", ex);
+                                }
+                            }
+                            if (dimensionPlan.Eq)
+                            {
+                                try { dimension.AreSegmentsEqual = true; }
+                                catch (Exception ex)
+                                {
+                                    throw new InvalidOperationException("dimension '" + dimensionPlan.Key +
+                                        "' could not take its EQ constraint: " + ex.Message + " The transaction is rolled back; nothing was created.", ex);
+                                }
+                            }
+                            var dimensionRow = new JObject
+                            {
+                                ["key"] = dimensionPlan.Key, ["element_id"] = Rid.Value(dimension.Id),
+                                ["view_id"] = Rid.Value(dimensionView.Id), ["view_name"] = dimensionView.Name
+                            };
+                            if (dimensionType != null)
+                            {
+                                dimensionRow["dimension_type_id"] = Rid.Value(dimensionType.Id);
+                                dimensionRow["dimension_type_name"] = dimensionType.Name;
+                            }
+                            createdDimensions.Add(dimensionRow);
                         }
                         foreach (FamilyLinePlan linePlan in plan.FamilyLines)
                         {
@@ -270,9 +317,14 @@ namespace Horizun.Revit.Commands
                     createdReferencePlanes, createdDimensions, createdFamilyLines, createdNestedInstances);
                 var save = new SaveAsOptions { OverwriteExistingFile = overwrite, MaximumBackups = 1 };
                 family.SaveAs(output, save);
-
-                if (load)
-                    loaded = family.LoadFamily(project, new FamilyLoadOptions(request.Value<bool?>("overwrite_parameter_values") == true));
+                // The building document has served its purpose - close it NOW, on
+                // purpose. The deliverable is the file on disk, and the only honest way
+                // to verify a file is to read it back from disk through a fresh
+                // OpenDocumentFile, never through the in-memory document that wrote it.
+                // Loading into the project moves after that verification for the same
+                // reason: the project receives a proven file, not a hopeful one.
+                family.Close(false);
+                family = null;
             }
             catch (Exception ex)
             {
@@ -290,6 +342,77 @@ namespace Horizun.Revit.Commands
             var info = new FileInfo(output);
             bool changed = info.Length > 0 && (beforeBytes < 0 || info.Length != beforeBytes || info.LastWriteTimeUtc != beforeWrite);
             if (!changed) return CommandResult.Fail("The RFA exists but no new/changed non-empty file could be proven at " + output + ".");
+
+            // ---- Verification against the SAVED BYTES. SaveAs returning and the file
+            // changing are facts about the filesystem, not about the family: a truncated
+            // or half-written RFA satisfies both. So the saved file is re-opened from
+            // disk and every dimension re-read in the reopened document against what was
+            // requested. A failure here is a verification failure, never softened to a
+            // warning: the RFA exists, and it is NOT verified.
+            JObject reopenedVerification = null;
+            Document reopened = null;
+            try
+            {
+                reopened = app.Application.OpenDocumentFile(output);
+                if (reopened == null || !reopened.IsFamilyDocument)
+                    throw new InvalidOperationException("the saved file did not re-open as a family document");
+                reopenedVerification = VerifyReopenedFamily(reopened, output, plan, createdDimensions);
+            }
+            catch (Exception ex)
+            {
+                return CommandResult.Fail("The RFA was saved at " + output + " and verified in memory before saving, " +
+                    "but verification after re-opening the saved file FAILED: " + ex.Message +
+                    " The file exists on disk and is NOT verified" +
+                    (load ? ", and it was NOT loaded into the project." : ".") +
+                    " Inspect it in Revit, or re-run with overwrite=true to replace it.");
+            }
+            finally
+            {
+                try { if (reopened != null && reopened.IsValidObject) reopened.Close(false); } catch { }
+            }
+
+            if (load)
+            {
+                // The load starts FROM THE VERIFIED FILE, in the project's own
+                // transaction - not from the family document that wrote it, which is
+                // already closed. What enters the project is exactly what was proven.
+                // "The project was not changed" is a claim about the ROLLBACK, so it is
+                // only made when Revit's own status confirms one - a Pending or Error
+                // answer keeps its uncertainty instead of being asserted away, which is
+                // exactly what PlanFailure.SingleTransactionOutcome exists to phrase.
+                bool loadRollbackAttempted = false;
+                string loadRollbackStatus = PlanFailure.NotAttempted;
+                try
+                {
+                    using (var loadTx = new Transaction(project, "Horizun: load family " + Path.GetFileNameWithoutExtension(output)))
+                    {
+                        loadTx.Start();
+                        try
+                        {
+                            if (!project.LoadFamily(output, new FamilyLoadOptions(request.Value<bool?>("overwrite_parameter_values") == true), out loaded) || loaded == null)
+                                throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                            Guard.Commit(loadTx, "load family into project");
+                        }
+                        catch
+                        {
+                            if (loadTx.GetStatus() == TransactionStatus.Started)
+                            {
+                                loadRollbackAttempted = true;
+                                loadRollbackStatus = Guard.RollBack(loadTx).StatusName;
+                            }
+                            throw;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    return CommandResult.Fail("The RFA was saved at " + output + " and verified by re-opening it from disk, " +
+                        "but loading it into the project failed: " + ex.Message + " " +
+                        PlanFailure.SingleTransactionOutcome(loadRollbackAttempted, loadRollbackStatus,
+                            "the project holds nothing from this load") +
+                        " Load the verified RFA manually, or run horizun_create_family again against the same output with overwrite=true.");
+                }
+            }
 
             JObject loadedResult = null;
             if (load)
@@ -339,6 +462,7 @@ namespace Horizun.Revit.Commands
                 ["family_lines"] = createdFamilyLines,
                 ["nested_instances"] = createdNestedInstances,
                 ["family_document_verification"] = familyDocumentVerification,
+                ["reopened_verification"] = reopenedVerification,
                 ["loaded_into_project"] = load,
                 ["loaded_family"] = loadedResult
             });
@@ -549,10 +673,32 @@ namespace Horizun.Revit.Commands
                 ValidateTypedParameter(parameterPlans, label, "length", "dimension '" + key + "' label");
                 XYZ lineStart = ReadPoint(row["line_start"], scale); XYZ lineEnd = ReadPoint(row["line_end"], scale);
                 if (lineStart.DistanceTo(lineEnd) < 1e-9) throw new ArgumentException("dimension '" + key + "' line_start and line_end must differ");
+                string viewName = row.Value<string>("view_name");
+                if (viewName != null && string.IsNullOrWhiteSpace(viewName))
+                    throw new ArgumentException("dimension '" + key + "' view_name cannot be blank; omit it to use the default family view");
+                string typeName = row.Value<string>("dimension_type_name");
+                if (typeName != null && string.IsNullOrWhiteSpace(typeName))
+                    throw new ArgumentException("dimension '" + key + "' dimension_type_name cannot be blank; omit it to use the template's default linear type");
+                bool lockRequested = row.Value<bool?>("lock") == true;
+                bool eqRequested = row.Value<bool?>("eq") == true;
+                // lock is the two-reference constraint and EQ is the multi-segment one; each
+                // combination Revit would reject is refused here, while this is still a plan,
+                // with the reason named instead of Revit's generic input error.
+                if (lockRequested && requestedRefs.Count != 2)
+                    throw new ArgumentException("dimension '" + key + "' lock applies only to a two-reference dimension; this one has " + requestedRefs.Count + " references");
+                if (eqRequested && requestedRefs.Count < 3)
+                    throw new ArgumentException("dimension '" + key + "' eq needs at least three reference planes (two segments to equalise); this one has " + requestedRefs.Count);
+                // A labelled dimension is already driven by its parameter - Revit treats the
+                // label AS the constraint and rejects a lock stacked on top of it, with an
+                // error that names neither cause. Refuse the combination before anything
+                // exists to roll back.
+                if (lockRequested && !string.IsNullOrWhiteSpace(label))
+                    throw new ArgumentException("dimension '" + key + "' cannot combine lock with label_parameter: the label already constrains the dimension through its parameter. Keep one of the two.");
                 plan.Dimensions.Add(new DimensionPlan
                 {
                     Key = key, ReferencePlaneKeys = requestedRefs, LineStart = lineStart, LineEnd = lineEnd,
-                    LabelParameter = label
+                    LabelParameter = label, ViewName = viewName?.Trim(), TypeName = typeName?.Trim(),
+                    Lock = lockRequested, Eq = eqRequested
                 });
                 dimensionIndex++;
             }
@@ -842,6 +988,7 @@ namespace Horizun.Revit.Commands
             }
 
             var referencePlans = plan.ReferencePlanes.ToDictionary(x => x.Key, StringComparer.Ordinal);
+            var verifiedPlanes = new Dictionary<string, ReferencePlane>(StringComparer.Ordinal);
             foreach (JObject row in referencePlanes.OfType<JObject>())
             {
                 long id = row.Value<long>("element_id");
@@ -852,6 +999,7 @@ namespace Horizun.Revit.Commands
                     throw new InvalidOperationException("reference plane '" + requested.Key + "' name did not re-read as requested");
                 if (referencePlane.GetReference() == null)
                     throw new InvalidOperationException("reference plane '" + requested.Key + "' did not expose a stable Reference");
+                verifiedPlanes[requested.Key] = referencePlane;
                 row["name"] = referencePlane.Name; row["verified"] = true;
             }
 
@@ -868,11 +1016,54 @@ namespace Horizun.Revit.Commands
                     : string.Equals(actualLabel, requested.LabelParameter, StringComparison.Ordinal);
                 // In a family document Revit can report AreReferencesAvailable=false even
                 // though the dimension owns the expected reference array and saves correctly.
-                // The durable checks here are the re-read reference count and family label;
-                // preserve the API diagnostic in the result for callers that need it.
+                // So here it stays a recorded diagnostic; the ENFORCED read happens after
+                // the RFA is re-opened from disk, where Revit computed the answer from the
+                // saved file and a false really means the references are gone.
                 if (dimension.References == null ||
                     dimension.References.Size != requested.ReferencePlaneKeys.Count || !labelOk)
                     throw new InvalidOperationException("dimension '" + requested.Key + "' references or family label did not re-read as requested");
+                if (Rid.Value(dimension.OwnerViewId) != row.Value<long>("view_id"))
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' did not re-read in the view it was created in");
+                if (requested.TypeName != null &&
+                    Rid.Value(dimension.DimensionType?.Id ?? ElementId.InvalidElementId) != row.Value<long>("dimension_type_id"))
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' did not re-read with dimension type '" + requested.TypeName + "'");
+                row["line"] = VerifyDimensionLine(dimension, requested);
+                int expectedSegments = ExpectedSegments(requested.ReferencePlaneKeys.Count);
+                if (dimension.NumberOfSegments != expectedSegments)
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' re-read " + dimension.NumberOfSegments +
+                        " segments where " + expectedSegments + " were expected (Revit reports a single-segment dimension as 0)");
+                row["segments"] = new JObject { ["requested"] = expectedSegments, ["read"] = dimension.NumberOfSegments, ["match"] = true };
+                // The expected value comes from where the planes stand NOW, not where the
+                // request drew them: a label or an EQ constraint legitimately moves planes
+                // during regeneration, and the honest check is measured-vs-planes with both
+                // sides read fresh from the same document state.
+                double expectedSpan = ExpectedDimensionSpan(requested, verifiedPlanes);
+                double? measured = MeasuredTotal(dimension);
+                if (!measured.HasValue)
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' re-read with no measurable value");
+                if (Math.Abs(measured.Value - expectedSpan) > GeometryToleranceFeet)
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' measures " +
+                        measured.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                        " ft where its reference planes stand " +
+                        expectedSpan.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                        " ft apart (tolerance " + GeometryToleranceFeet + " ft)");
+                row["value_internal_feet"] = new JObject
+                {
+                    ["requested"] = expectedSpan, ["read"] = measured.Value, ["match"] = true,
+                    ["tolerance_internal_feet"] = GeometryToleranceFeet
+                };
+                if (requested.Lock)
+                {
+                    if (!dimension.IsLocked)
+                        throw new InvalidOperationException("dimension '" + requested.Key + "' did not re-read as locked");
+                    row["locked"] = new JObject { ["requested"] = true, ["read"] = true, ["match"] = true };
+                }
+                if (requested.Eq)
+                {
+                    if (!dimension.AreSegmentsEqual)
+                        throw new InvalidOperationException("dimension '" + requested.Key + "' did not re-read with its EQ constraint");
+                    row["segments_equal"] = new JObject { ["requested"] = true, ["read"] = true, ["match"] = true };
+                }
                 row["references"] = dimension.References.Size; row["references_available"] = dimension.AreReferencesAvailable;
                 row["label_parameter"] = actualLabel; row["verified"] = true;
             }
@@ -959,6 +1150,370 @@ namespace Horizun.Revit.Commands
             if (view == null)
                 throw new InvalidOperationException("The family template exposes no non-template view for reference planes, dimensions or symbolic geometry.");
             return view;
+        }
+
+        /// <summary>
+        /// Geometric tolerance for dimension verification, in internal feet, declared in
+        /// every comparison row so the caller knows what "match" was measured against.
+        /// 1e-6 ft is a third of a micron - far below anything Revit snaps to and far
+        /// above double-precision noise at family-document coordinates.
+        /// </summary>
+        private const double GeometryToleranceFeet = 1e-6;
+
+        /// <summary>
+        /// Whether a family view can host a dimension: never a view template, and only
+        /// the graphical view kinds a family template actually produces. Mirrors what
+        /// FindFamilyCreationView is willing to pick, plus sections/elevations/details.
+        /// </summary>
+        private static bool AcceptsFamilyDimensions(View view)
+        {
+            if (view == null || view.IsTemplate) return false;
+            switch (view.ViewType)
+            {
+                case ViewType.FloorPlan:
+                case ViewType.CeilingPlan:
+                case ViewType.Elevation:
+                case ViewType.Section:
+                case ViewType.ThreeD:
+                case ViewType.Detail:
+                case ViewType.EngineeringPlan:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static Dictionary<string, View> ResolveDimensionViews(Document family, List<DimensionPlan> dimensions)
+        {
+            var resolved = new Dictionary<string, View>(StringComparer.Ordinal);
+            List<string> wanted = dimensions.Where(x => x.ViewName != null).Select(x => x.ViewName)
+                .Distinct(StringComparer.Ordinal).ToList();
+            if (wanted.Count == 0) return resolved;
+            List<View> views = new FilteredElementCollector(family).OfClass(typeof(View)).Cast<View>().ToList();
+            string available = string.Join(", ", views.Where(AcceptsFamilyDimensions)
+                .Select(x => "'" + x.Name + "' (" + x.ViewType + ")").OrderBy(x => x, StringComparer.Ordinal));
+            if (available.Length == 0) available = "(none)";
+            foreach (string name in wanted)
+            {
+                List<View> byName = views.Where(x => string.Equals(x.Name, name, StringComparison.Ordinal)).ToList();
+                if (byName.Count == 0)
+                    throw new InvalidOperationException("dimension view_name '" + name + "' does not exist in this family document. " +
+                        "No transaction was opened and nothing was created. Views that accept dimensions: " + available + ".");
+                List<View> usable = byName.Where(AcceptsFamilyDimensions).ToList();
+                if (usable.Count == 0)
+                    throw new InvalidOperationException("dimension view_name '" + name + "' " +
+                        (byName[0].IsTemplate ? "is a view template" : "is a " + byName[0].ViewType + " view, which does not accept dimensions") +
+                        ". No transaction was opened and nothing was created. Views that accept dimensions: " + available + ".");
+                if (usable.Count > 1)
+                    throw new InvalidOperationException("dimension view_name '" + name + "' matches " + usable.Count +
+                        " views in this family document; the name must be unambiguous. Nothing was created.");
+                resolved[name] = usable[0];
+            }
+            return resolved;
+        }
+
+        private static Dictionary<string, DimensionType> ResolveDimensionTypes(Document family, List<DimensionPlan> dimensions)
+        {
+            var resolved = new Dictionary<string, DimensionType>(StringComparer.Ordinal);
+            List<string> wanted = dimensions.Where(x => x.TypeName != null).Select(x => x.TypeName)
+                .Distinct(StringComparer.Ordinal).ToList();
+            if (wanted.Count == 0) return resolved;
+            List<DimensionType> linear = new FilteredElementCollector(family).OfClass(typeof(DimensionType))
+                .Cast<DimensionType>().Where(x => x.StyleType == DimensionStyleType.Linear && !string.IsNullOrWhiteSpace(x.Name))
+                .ToList();
+            string available = string.Join(", ", linear.Select(x => "'" + x.Name + "'")
+                .Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal));
+            if (available.Length == 0) available = "(none)";
+            foreach (string name in wanted)
+            {
+                List<DimensionType> byName = linear.Where(x => string.Equals(x.Name, name, StringComparison.Ordinal)).ToList();
+                if (byName.Count == 0)
+                    throw new InvalidOperationException("dimension_type_name '" + name + "' does not name a linear dimension type " +
+                        "in this family document. Nothing was created. Linear dimension types available: " + available + ".");
+                if (byName.Count > 1)
+                    throw new InvalidOperationException("dimension_type_name '" + name + "' matches " + byName.Count +
+                        " linear dimension types; the name must be unambiguous. Nothing was created.");
+                resolved[name] = byName[0];
+            }
+            return resolved;
+        }
+
+        /// <summary>
+        /// Revit's segment convention, spelled out once: a two-reference dimension is a
+        /// SINGLE-segment dimension and reports NumberOfSegments = 0, with its value in
+        /// Dimension.Value; only from three references up does NumberOfSegments count
+        /// the n-1 spans and the value move into the segments.
+        /// </summary>
+        private static int ExpectedSegments(int referenceCount) => referenceCount == 2 ? 0 : referenceCount - 1;
+
+        /// <summary>
+        /// What the dimension SHOULD measure, computed from where the referenced planes
+        /// actually stand right now - not from where the request drew them, because a
+        /// label or an EQ constraint legitimately moves planes during regeneration. Each
+        /// plane's witness foot is its intersection with the dimension line; the total
+        /// is the spread of those feet along the line.
+        /// </summary>
+        private static double ExpectedDimensionSpan(DimensionPlan requested, Dictionary<string, ReferencePlane> planes)
+        {
+            XYZ direction = (requested.LineEnd - requested.LineStart).Normalize();
+            double min = double.MaxValue, max = double.MinValue;
+            foreach (string key in requested.ReferencePlaneKeys)
+            {
+                Autodesk.Revit.DB.Plane plane = planes[key].GetPlane();
+                double along = direction.DotProduct(plane.Normal);
+                if (Math.Abs(along) < 1e-9)
+                    throw new InvalidOperationException("dimension '" + requested.Key + "' reference plane '" + key +
+                        "' is parallel to the dimension line, so no measured value can be predicted or verified");
+                double t = (plane.Origin - requested.LineStart).DotProduct(plane.Normal) / along;
+                if (t < min) min = t;
+                if (t > max) max = t;
+            }
+            return max - min;
+        }
+
+        /// <summary>Total measured value: Dimension.Value for a single segment, the segment sum otherwise. Null when Revit reports none.</summary>
+        private static double? MeasuredTotal(Dimension dimension)
+        {
+            if (dimension.Value.HasValue) return dimension.Value.Value;
+            if (dimension.Segments == null || dimension.Segments.Size == 0) return null;
+            double sum = 0;
+            foreach (DimensionSegment segment in dimension.Segments)
+            {
+                if (!segment.Value.HasValue) return null;
+                sum += segment.Value.Value;
+            }
+            return sum;
+        }
+
+        /// <summary>
+        /// The re-read dimension line, compared for COLLINEARITY rather than endpoint
+        /// equality on purpose: Revit trims and extends the dimension line to its
+        /// witness lines, so the honest postcondition is that both requested endpoints
+        /// lie on the carrier of the re-read line, within the declared tolerance.
+        /// </summary>
+        private static JObject VerifyDimensionLine(Dimension dimension, DimensionPlan requested)
+        {
+            Curve curve = dimension.Curve;
+            if (!(curve is Line line))
+                throw new InvalidOperationException("dimension '" + requested.Key + "' did not re-read a straight dimension line" +
+                    (curve == null ? "" : " (it re-read a " + curve.GetType().Name + ")"));
+            XYZ origin = line.Origin;
+            XYZ direction = line.Direction.Normalize();
+            double startOffset = DistanceToCarrier(requested.LineStart, origin, direction);
+            double endOffset = DistanceToCarrier(requested.LineEnd, origin, direction);
+            if (startOffset > GeometryToleranceFeet || endOffset > GeometryToleranceFeet)
+                throw new InvalidOperationException("dimension '" + requested.Key + "' line did not re-read collinear with the requested line: " +
+                    "the requested endpoints sit " + startOffset.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                    " and " + endOffset.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                    " ft off the re-read carrier (tolerance " + GeometryToleranceFeet + " ft)");
+            JObject read = line.IsBound
+                ? new JObject { ["bound"] = true, ["start"] = Triplet(line.GetEndPoint(0)), ["end"] = Triplet(line.GetEndPoint(1)) }
+                : new JObject { ["bound"] = false, ["origin"] = Triplet(origin), ["direction"] = Triplet(direction) };
+            return new JObject
+            {
+                ["requested"] = new JObject { ["start"] = Triplet(requested.LineStart), ["end"] = Triplet(requested.LineEnd) },
+                ["read"] = read,
+                ["match"] = true,
+                ["comparison"] = "collinearity - Revit trims the dimension line to its witness lines, so endpoint equality would fail on correct dimensions",
+                ["tolerance_internal_feet"] = GeometryToleranceFeet
+            };
+        }
+
+        private static double DistanceToCarrier(XYZ point, XYZ origin, XYZ unitDirection)
+        {
+            XYZ toPoint = point - origin;
+            return (toPoint - unitDirection * toPoint.DotProduct(unitDirection)).GetLength();
+        }
+
+        private static JArray Triplet(XYZ point) => new JArray(point.X, point.Y, point.Z);
+
+        /// <summary>
+        /// The evidence the dimension claims finally stand on: the saved RFA re-opened
+        /// from disk and every dimension re-read in the reopened document by its
+        /// ElementId, which survives a save/reopen of the same file. AreReferencesAvailable
+        /// is ENFORCED here and only here - in the freshly built document Revit is known
+        /// to report false on dimensions that save and reopen correctly (see the note in
+        /// VerifyFamilyDocument), but a reopened document computed its references from
+        /// the saved bytes, so a false here means the file really does not carry them.
+        /// </summary>
+        private static JObject VerifyReopenedFamily(Document reopened, string output, FamilyPlan plan, JArray createdDimensions)
+        {
+            // MEASURED 2026-08-24 on Revit 2025: a family opened API-side
+            // (OpenDocumentFile, no UI activation) can report AreReferencesAvailable
+            // false on dimensions whose saved bytes are CORRECT - the same file opened
+            // through a UI-activated open reads true, with the label value, lock and EQ
+            // all intact. So the flag alone is not allowed to fail the file: first the
+            // strict read; if only availability failed, regenerate inside a rolled-back
+            // transaction and read again; if the flag STILL reads false, the SUBSTANCE
+            // decides - counts, label, measured value, segments, lock, EQ, view - and
+            // the availability row reports the tri-state honestly instead of borrowing
+            // a verdict from an unreliable flag. A substantive failure throws at every
+            // layer; nothing here converts one into a pass.
+            try
+            {
+                return ReopenedResult(VerifyReopenedRows(reopened, plan, createdDimensions, strictAvailability: true),
+                                      output, regenerated: false, availabilityNote: null);
+            }
+            catch (InvalidOperationException ex)
+            {
+                if (!IsAvailabilityOnlyFailure(ex)) throw;
+            }
+            using (var regenTx = new Transaction(reopened, "Horizun: regenerate for reopened verification"))
+            {
+                regenTx.Start();
+                try
+                {
+                    reopened.Regenerate();
+                    try
+                    {
+                        return ReopenedResult(VerifyReopenedRows(reopened, plan, createdDimensions, strictAvailability: true),
+                                              output, regenerated: true,
+                                              availabilityNote: "AreReferencesAvailable read false on first read and TRUE " +
+                                              "after an explicit Regenerate inside a rolled-back transaction.");
+                    }
+                    catch (InvalidOperationException ex2)
+                    {
+                        if (!IsAvailabilityOnlyFailure(ex2)) throw;
+                        return ReopenedResult(VerifyReopenedRows(reopened, plan, createdDimensions, strictAvailability: false),
+                                              output, regenerated: true,
+                                              availabilityNote: "AreReferencesAvailable stayed false under this API-side " +
+                                              "reopen even after Regenerate. Every SUBSTANTIVE fact - reference count, " +
+                                              "label, measured value, segments, lock, EQ, owner view - verified from the " +
+                                              "saved bytes, and a UI-activated open of the same file reads the flag true " +
+                                              "(measured 2026-08-24 on Revit 2025). The flag under an API open is " +
+                                              "reported as observed, not used as a verdict.");
+                    }
+                }
+                finally
+                {
+                    if (regenTx.GetStatus() == TransactionStatus.Started) Guard.RollBack(regenTx);
+                }
+            }
+        }
+
+        private static bool IsAvailabilityOnlyFailure(InvalidOperationException ex)
+            => ex.Message != null && ex.Message.Contains("AreReferencesAvailable=false");
+
+        private static JObject ReopenedResult(JArray rows, string output, bool regenerated, string availabilityNote)
+        {
+            var result = new JObject
+            {
+                ["reopened"] = true,
+                ["path"] = output,
+                ["is_family_document"] = true,
+                ["tolerance_internal_feet"] = GeometryToleranceFeet,
+                ["regenerated_before_read"] = regenerated,
+                ["dimensions"] = rows,
+                ["note"] = "read from the saved file after closing and re-opening it - SaveAs producing a file is never treated as verification"
+            };
+            if (availabilityNote != null) result["references_available_note"] = availabilityNote;
+            return result;
+        }
+
+        private static JArray VerifyReopenedRows(Document reopened, FamilyPlan plan, JArray createdDimensions,
+                                                 bool strictAvailability)
+        {
+            var dimensionPlans = plan.Dimensions.ToDictionary(x => x.Key, StringComparer.Ordinal);
+            var rows = new JArray();
+            foreach (JObject created in createdDimensions.OfType<JObject>())
+            {
+                string key = created.Value<string>("key");
+                DimensionPlan requested = dimensionPlans[key];
+                long id = created.Value<long>("element_id");
+                Element element = reopened.GetElement(Rid.Make(id));
+                if (!(element is Dimension dimension))
+                    throw new InvalidOperationException("dimension '" + key + "' (id " + id + ") was not re-read in the reopened file" +
+                        (element == null ? ": the id resolves to no element" : ": the id resolves to a " + element.GetType().Name));
+                int requestedReferences = requested.ReferencePlaneKeys.Count;
+                int readReferences = dimension.References?.Size ?? 0;
+                if (readReferences != requestedReferences)
+                    throw new InvalidOperationException("dimension '" + key + "' re-read " + readReferences +
+                        " references in the reopened file where " + requestedReferences + " were requested");
+                bool referencesAvailable = dimension.AreReferencesAvailable;
+                if (strictAvailability && !referencesAvailable)
+                    throw new InvalidOperationException("dimension '" + key + "' reports AreReferencesAvailable=false in the reopened file: " +
+                        "its references did not survive the save/reopen round trip");
+                string readLabel = dimension.FamilyLabel?.Definition?.Name;
+                bool labelOk = string.IsNullOrWhiteSpace(requested.LabelParameter)
+                    ? dimension.FamilyLabel == null
+                    : string.Equals(readLabel, requested.LabelParameter, StringComparison.Ordinal);
+                if (!labelOk)
+                    throw new InvalidOperationException("dimension '" + key + "' label did not survive the save/reopen round trip: expected " +
+                        (requested.LabelParameter == null ? "no label" : "'" + requested.LabelParameter + "'") + ", read " +
+                        (readLabel == null ? "none" : "'" + readLabel + "'"));
+                int expectedSegments = ExpectedSegments(requestedReferences);
+                int readSegments = dimension.NumberOfSegments;
+                if (readSegments != expectedSegments)
+                    throw new InvalidOperationException("dimension '" + key + "' re-read " + readSegments +
+                        " segments in the reopened file where " + expectedSegments + " were expected");
+                JToken expectedToken = created.SelectToken("value_internal_feet.requested");
+                if (expectedToken == null)
+                    throw new InvalidOperationException("no expected value was captured for dimension '" + key + "' before the family document closed");
+                double expectedValue = expectedToken.Value<double>();
+                double? measured = MeasuredTotal(dimension);
+                if (!measured.HasValue || Math.Abs(measured.Value - expectedValue) > GeometryToleranceFeet)
+                    throw new InvalidOperationException("dimension '" + key + "' measures " +
+                        (measured.HasValue ? measured.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture) : "nothing") +
+                        " ft in the reopened file where " + expectedValue.ToString("R", System.Globalization.CultureInfo.InvariantCulture) +
+                        " ft was verified before saving (tolerance " + GeometryToleranceFeet + " ft)");
+                string createdViewName = created.Value<string>("view_name");
+                string readViewName = (reopened.GetElement(dimension.OwnerViewId) as View)?.Name;
+                if (!string.Equals(readViewName, createdViewName, StringComparison.Ordinal))
+                    throw new InvalidOperationException("dimension '" + key + "' re-read in view '" + readViewName +
+                        "' where it was created in '" + createdViewName + "'");
+                var row = new JObject
+                {
+                    ["key"] = key,
+                    ["element_id"] = id,
+                    ["found_as_dimension"] = true,
+                    ["references"] = new JObject { ["requested"] = requestedReferences, ["read"] = readReferences, ["match"] = true },
+                    // match null, not true, when the flag read false and the substance
+                    // carried the verification: a true here would claim a reading that
+                    // was not taken. The result-level note names the measured API quirk.
+                    ["references_available"] = new JObject
+                    {
+                        ["requested"] = true,
+                        ["read"] = referencesAvailable,
+                        ["match"] = referencesAvailable ? (JToken)true : JValue.CreateNull(),
+                        ["verified_by"] = referencesAvailable ? "flag" : "substance"
+                    },
+                    ["label_parameter"] = new JObject
+                    {
+                        ["requested"] = requested.LabelParameter == null ? JValue.CreateNull() : (JToken)requested.LabelParameter,
+                        ["read"] = readLabel == null ? JValue.CreateNull() : (JToken)readLabel,
+                        ["match"] = true
+                    },
+                    ["segments"] = new JObject { ["requested"] = expectedSegments, ["read"] = readSegments, ["match"] = true },
+                    ["value_internal_feet"] = new JObject
+                    {
+                        ["requested"] = expectedValue, ["read"] = measured.Value, ["match"] = true,
+                        ["tolerance_internal_feet"] = GeometryToleranceFeet
+                    },
+                    ["owner_view"] = new JObject { ["requested"] = createdViewName, ["read"] = readViewName, ["match"] = true }
+                };
+                if (requested.Lock)
+                {
+                    if (!dimension.IsLocked)
+                        throw new InvalidOperationException("dimension '" + key + "' re-read UNLOCKED in the reopened file where lock=true was requested");
+                    row["locked"] = new JObject { ["requested"] = true, ["read"] = true, ["match"] = true };
+                }
+                if (requested.Eq)
+                {
+                    if (!dimension.AreSegmentsEqual)
+                        throw new InvalidOperationException("dimension '" + key + "' re-read WITHOUT its EQ constraint in the reopened file");
+                    row["segments_equal"] = new JObject { ["requested"] = true, ["read"] = true, ["match"] = true };
+                }
+                if (requested.TypeName != null)
+                {
+                    string readTypeName = dimension.DimensionType?.Name;
+                    if (!string.Equals(readTypeName, requested.TypeName, StringComparison.Ordinal))
+                        throw new InvalidOperationException("dimension '" + key + "' re-read with dimension type '" + readTypeName +
+                            "' where '" + requested.TypeName + "' was requested");
+                    row["dimension_type_name"] = new JObject { ["requested"] = requested.TypeName, ["read"] = readTypeName, ["match"] = true };
+                }
+                rows.Add(row);
+            }
+            return rows;
         }
 
         private static double NormalizeAngle(double radians)
@@ -1316,7 +1871,8 @@ namespace Horizun.Revit.Commands
         }
         private sealed class DimensionPlan
         {
-            public string Key, LabelParameter; public List<string> ReferencePlaneKeys; public XYZ LineStart, LineEnd;
+            public string Key, LabelParameter, ViewName, TypeName; public List<string> ReferencePlaneKeys; public XYZ LineStart, LineEnd;
+            public bool Lock, Eq;
         }
         private sealed class FamilyLinePlan
         {

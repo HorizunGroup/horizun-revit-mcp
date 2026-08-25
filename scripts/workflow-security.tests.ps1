@@ -40,8 +40,8 @@ Assert-True ($ci -match '(?s)build-stage:.*?needs:\s*\[revit-free,\s*windows-dep
 Assert-True ($ci -match '(?s)revit-addin:.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}') `
     'Revit jobs must target the externally configured Revit runner group.'
 foreach ($jobName in 'build-stage','compile-installer') {
-    Assert-True ($ci -match "(?s)$([regex]::Escape($jobName)):.*?group:\s*\$\{\{\s*vars\.SIGNING_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit, signing\]") `
-        "$jobName must target the isolated build runner group."
+    Assert-True ($ci -match "(?s)$([regex]::Escape($jobName)):.*?group:\s*\$\{\{\s*vars\.REVIT_RUNNER_GROUP\s*\}\}.*?labels:\s*\[self-hosted, windows, revit\]") `
+        "$jobName must target the licensed Revit runner group."
 }
 
 function Get-JobBlock([string]$name) {
@@ -51,49 +51,33 @@ function Get-JobBlock([string]$name) {
 }
 
 $selfHostedReleaseBlocks = (Get-JobBlock 'build-stage') + (Get-JobBlock 'compile-installer')
-Assert-True ($selfHostedReleaseBlocks -notmatch 'SIGNPATH_API_TOKEN|secrets\.|environment:\s*release-signing') `
-    'A SignPath credential or protected signing environment can reach a self-hosted release job.'
+Assert-True ($selfHostedReleaseBlocks -notmatch 'secrets\.|environment:\s*release-signing') `
+    'A credential or protected secret environment can reach a self-hosted release job.'
 foreach ($jobName in 'build-stage','compile-installer') {
     Assert-True ((Get-JobBlock $jobName) -match "startsWith\(github\.ref,\s*'refs/tags/v'\).*?!contains\(github\.ref_name,\s*'-validation\.'\)") `
         "$jobName must run only for installable tags."
 }
-foreach ($jobName in 'sign-payload','sign-installer') {
+foreach ($jobName in 'package','public-integrity') {
     $block = Get-JobBlock $jobName
-    Assert-True ($block -match 'runs-on:\s*windows-latest' -and
-                 $block -match 'environment:\s*release-signing' -and
-                 $block -match 'secrets\.SIGNPATH_API_TOKEN') `
-        "$jobName must be the protected hosted boundary that consumes SIGNPATH_API_TOKEN."
+    Assert-True ($block -match 'runs-on:\s*windows-latest' -and $block -notmatch 'self-hosted|secrets\.') `
+        "$jobName must run on a disposable hosted runner without release secrets."
 }
-Assert-True ((Get-JobBlock 'package') -match 'runs-on:\s*windows-latest' -and
-             (Get-JobBlock 'package') -notmatch 'self-hosted|SIGNPATH_API_TOKEN') `
-    'Final package verification, attestation and upload must run on a hosted runner without the SignPath token.'
-Assert-True ([regex]::Matches($ci, 'signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627').Count -eq 2) `
-    'The installable path must use the immutable SignPath v2.3 action exactly twice: payload, then installer.'
-Assert-True ([regex]::Matches($ci, 'secrets\.SIGNPATH_API_TOKEN').Count -eq 2) `
-    'SIGNPATH_API_TOKEN must appear exactly once in each hosted signing-request job.'
+Assert-True ($ci -notmatch 'signpath/|SIGNPATH_|SIGNING_CERT_THUMBPRINT|sign-payload:|sign-installer:') `
+    'Permanent unsigned release CI must contain no public-signing route or credential.'
+Assert-True ($ci -match "authenticode = 'unsigned_by_policy'" -and
+             $ci -match 'publisher_identity_available = \$false' -and
+             $ci -match "Status -ne 'NotSigned'") `
+    'The release workflow must disclose and enforce the exact unsigned state.'
 foreach ($handoff in
-    'github-artifact-id: ${{ needs.build-stage.outputs.payload-artifact-id }}',
-    'artifact-ids: ${{ needs.sign-payload.outputs.signed-payload-artifact-id }}',
-    'github-artifact-id: ${{ needs.compile-installer.outputs.installer-artifact-id }}',
-    'artifact-ids: ${{ needs.compile-installer.outputs.package-support-artifact-id }}',
-    'artifact-ids: ${{ needs.sign-installer.outputs.signed-installer-artifact-id }}') {
+    'artifact-ids: ${{ needs.build-stage.outputs.payload-artifact-id }}',
+    'artifact-ids: ${{ needs.compile-installer.outputs.package-input-artifact-id }}',
+    'artifact-ids: ${{ needs.package.outputs.package-artifact-id }}') {
     Assert-True ($ci.Contains($handoff)) "Immutable artifact-id hand-off is missing: $handoff"
 }
 $artifactIdDownloads = [regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{')
 $directArtifactIdDownloads = [regex]::Matches($ci, '(?m)^\s+artifact-ids:\s*\$\{\{[^\r\n]+\r?\n\s+path:[^\r\n]+\r?\n\s+merge-multiple:\s*true\s*$')
 Assert-True ($artifactIdDownloads.Count -gt 0 -and $directArtifactIdDownloads.Count -eq $artifactIdDownloads.Count) `
     'Every artifact-id download must extract directly into its verified destination (merge-multiple: true).'
-Assert-True ($ci -notmatch 'SIGNING_CERT_THUMBPRINT') `
-    'Public release CI must not expose a local certificate-store signing fallback.'
-foreach ($required in 'SIGNPATH_ORGANIZATION_ID','SIGNPATH_PROJECT_SLUG','SIGNPATH_PAYLOAD_POLICY_SLUG',
-                      'SIGNPATH_PAYLOAD_ARTIFACT_CONFIGURATION_SLUG','SIGNPATH_INSTALLER_POLICY_SLUG',
-                      'SIGNPATH_INSTALLER_ARTIFACT_CONFIGURATION_SLUG','SIGNPATH_API_TOKEN') {
-    Assert-True ($ci -match [regex]::Escape($required)) "Release workflow does not consume required SignPath setting $required."
-}
-Assert-True ($ci -match 'SIGNING_RUNNER_GROUP.*!=.*REVIT_RUNNER_GROUP|SIGNING_RUNNER_GROUP.*-ne.*REVIT_RUNNER_GROUP') `
-    'The workflow must fail closed unless signing and integration runner groups differ.'
-Assert-True ($ci -match 'SIGNPATH_SELF_HOSTED_ORIGIN_APPROVED.*!=.*true') `
-    'Stable signing must fail closed until SignPath approves the self-hosted Revit origin.'
 Assert-True ([regex]::Matches($ci, '(?m)^\s+NUGET_PACKAGES:\s*\$\{\{\s*github\.workspace\s*\}\}.*?github\.run_id').Count -ge 2) `
     'Every self-hosted build/package route must use a run-isolated NuGet extraction root.'
 

@@ -25,8 +25,21 @@
     <!-- The release redistributes this runtime, so its patch is part of our
          supply-chain identity rather than whatever happens to be newest on the
          packaging runner. pack.ps1 and sbom.ps1 re-read the published deps file
-         and fail if the bytes are not this exact component. -->
-    <RuntimeFrameworkVersion>8.0.30</RuntimeFrameworkVersion>
+         and fail if the bytes are not this exact component.
+
+         SELF-CONTAINED ONLY, and that condition is load-bearing. Unconditional,
+         this pin also became the runtimeconfig of the ordinary framework-
+         dependent build - the one the test suite launches - which then refused
+         to start on any machine whose newest .NET 8 patch was below it
+         (measured 2026-08-24: the host had 8.0.23/8.0.28, the apphost demanded
+         exactly 8.0.30, and 14 wire tests reported the codes untested). A
+         framework-dependent binary has no redistributed runtime to pin: the
+         supply-chain identity this protects exists only where the runtime
+         ships WITH the artifact, and both install.ps1 and pack.ps1 publish
+         with SelfContained=true, where pack.ps1/sbom.ps1 still verify the
+         published deps against this exact value. The runtime pack is not part
+         of the NuGet lock graph, so the condition does not fork the lock. -->
+    <RuntimeFrameworkVersion Condition="'$(SelfContained)' == 'true'">8.0.30</RuntimeFrameworkVersion>
 
     <!-- Same reason as the plugin: without this the binary carries the absolute
          path of the folder it was built in, so the same commit built elsewhere

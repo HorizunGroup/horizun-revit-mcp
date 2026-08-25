@@ -128,7 +128,14 @@ foreach ($requiredRuntimeFile in 'horizun-mcp.exe','horizun-mcp.dll','hostfxr.dl
     }
 }
 $serverProject = [xml](Get-Content (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj'))
-$expectedServerRuntime = [string]($serverProject.Project.PropertyGroup.RuntimeFrameworkVersion |
+# SelectNodes, not the PowerShell XML adapter. `$xml.Project.PropertyGroup.X`
+# returns a STRING for a bare element but the XmlElement itself once the element
+# carries an attribute - and RuntimeFrameworkVersion carries Condition. Casting
+# that to [string] yields the literal text "System.Xml.XmlElement", so the pin
+# check compared the published runtime against a type name and threw on every
+# correct build. It is the check that was broken, not the publish.
+$expectedServerRuntime = [string]($serverProject.SelectNodes('//RuntimeFrameworkVersion') |
+    ForEach-Object { $_.InnerText.Trim() } |
     Where-Object { $_ } | Select-Object -First 1)
 if ([string]::IsNullOrWhiteSpace($expectedServerRuntime)) {
     throw 'Horizun.Server.csproj must pin RuntimeFrameworkVersion for the redistributed self-contained runtime'

@@ -32,29 +32,43 @@ namespace Horizun.Server.Tests
                 d = d.Parent;
             Assert.True(d != null, "Could not locate src/Horizun.Server");
 
-            // BOTH NAMES. The apphost carries .exe on Windows and nothing on Linux, and
-            // this looked only for the Windows one - so on the ubuntu runner every test
-            // in this file threw "not built" against a server that had just built fine.
-            // CI had been red on main for that reason alone, which is worse than a
-            // failing test: a permanently red gate is a gate people stop reading.
-            string newest = null;
-            DateTime newestWrite = DateTime.MinValue;
-            foreach (string cfg in new[] { "Release", "Debug" })
-                foreach (string exe in new[] { "horizun-mcp.exe", "horizun-mcp" })
-                {
-                    string p = Path.Combine(d.FullName, "src", "Horizun.Server", "bin", cfg, "net8.0", exe);
-                    if (!File.Exists(p)) continue;
-                    DateTime written = File.GetLastWriteTimeUtc(p);
-                    if (newest == null || written > newestWrite) { newest = p; newestWrite = written; }
-                }
-            if (newest != null) return newest;
+            // THE SAME CONFIGURATION THIS TEST WAS BUILT IN, and no other. This used to
+            // take the NEWEST apphost across Release and Debug, which is a race dressed
+            // as a rule: a `dotnet test -c Debug` run after any stray Release build
+            // exercised last week's Release bytes and reported them as this run's server.
+            // The wire codes would then "pass" for a binary the current tree no longer
+            // produces. Date order cannot say which build a test run is ABOUT;
+            // configuration can, because the test and the server build from one tree in
+            // one run. If the matching build is missing that is a failure that names the
+            // exact command - never a quiet fallback to whatever binary is lying around.
+            string configuration = null;
+            foreach (object attr in typeof(JsonRpcErrorCodeTests).Assembly
+                         .GetCustomAttributes(typeof(System.Reflection.AssemblyConfigurationAttribute), false))
+                configuration = ((System.Reflection.AssemblyConfigurationAttribute)attr).Configuration;
+            if (string.IsNullOrWhiteSpace(configuration))
+                throw new Xunit.Sdk.XunitException(
+                    "This test assembly carries no AssemblyConfiguration attribute, so the matching " +
+                    "server build cannot be identified. The wire codes were NOT tested.");
+
+            // BOTH NAMES, still: the apphost carries .exe on Windows and nothing on
+            // Linux, and looking only for the Windows one once kept CI red for a server
+            // that had just built fine.
+            foreach (string exe in new[] { "horizun-mcp.exe", "horizun-mcp" })
+            {
+                string p = Path.Combine(d.FullName, "src", "Horizun.Server", "bin", configuration, "net8.0", exe);
+                if (File.Exists(p)) return p;
+            }
 
             // Deliberately a failure and not a skip: a test that quietly passes when it
-            // could not run is the shape of defect this whole exercise is about.
+            // could not run is the shape of defect this whole exercise is about. And
+            // deliberately NOT a fallback to the other configuration: a Debug test run
+            // answered by a Release binary is a claim about bytes this run never built.
             throw new Xunit.Sdk.XunitException(
-                "The horizun-mcp server executable is not built, so the wire codes were NOT tested. " +
-                "Looked for 'horizun-mcp.exe' and 'horizun-mcp' under src/Horizun.Server/bin/{Release,Debug}/net8.0. " +
-                "Run: dotnet build src/Horizun.Server -c Release");
+                "The horizun-mcp server executable for THIS test run's configuration (" + configuration + ") " +
+                "is not built, so the wire codes were NOT tested. Looked for 'horizun-mcp.exe' and 'horizun-mcp' " +
+                "under src/Horizun.Server/bin/" + configuration + "/net8.0 only - a binary from another " +
+                "configuration is not this run's server, however recent its date. " +
+                "Run: dotnet build src/Horizun.Server -c " + configuration);
         }
 
         /// <summary>Send raw lines, read every reply line back. One process, one round.</summary>
@@ -120,6 +134,36 @@ namespace Horizun.Server.Tests
             foreach (JObject r in replies)
                 seen.Add(r["error"] is JObject e ? "error " + e["code"] : "result");
             return seen.Count == 0 ? "(no replies at all)" : string.Join(", ", seen);
+        }
+
+        /// <summary>
+        /// The framework-dependent server this suite launches must not demand an exact
+        /// runtime patch. Measured 2026-08-24: an unconditional
+        /// RuntimeFrameworkVersion=8.0.30 flowed into THIS build's runtimeconfig, the
+        /// machine's newest .NET 8 was 8.0.28, the apphost refused to start, and all
+        /// fourteen wire tests reported the codes untested. The exact pin belongs to
+        /// the SELF-CONTAINED publish - where the runtime ships with the artifact and
+        /// pack.ps1/sbom.ps1 verify the published deps against it - and nowhere else.
+        /// Every other test in this file is the other half of the guarantee: the
+        /// process really starts and answers the MCP handshake on whatever compatible
+        /// .NET 8 the machine has.
+        /// </summary>
+        [Fact]
+        public void The_test_server_runtimeconfig_demands_no_exact_runtime_patch()
+        {
+            string runtimeconfig = Path.ChangeExtension(ServerExe(), null) + ".runtimeconfig.json";
+            Assert.True(File.Exists(runtimeconfig),
+                "The built server carries no runtimeconfig.json beside it, so the framework demand " +
+                "could not be inspected: " + runtimeconfig);
+
+            JObject config = JObject.Parse(File.ReadAllText(runtimeconfig));
+            string version = (string)config.SelectToken("runtimeOptions.framework.version");
+            Assert.True(string.Equals(version, "8.0.0", StringComparison.Ordinal),
+                "The framework-dependent test server demands Microsoft.NETCore.App '" + version + "'. " +
+                "Anything more specific than 8.0.0 makes the wire-code suite depend on a runtime patch " +
+                "the machine may not carry (measured: 8.0.30 demanded, 8.0.28 installed, fourteen tests " +
+                "never ran). Pin the redistributed runtime only under SelfContained=true in " +
+                "Horizun.Server.csproj, where the publish verification owns it.");
         }
 
         [Fact]
@@ -237,7 +281,7 @@ namespace Horizun.Server.Tests
             Assert.Equal(5, replies.Count);
             Assert.Equal(4, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
-            Assert.Equal(3, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
+            Assert.Equal(4, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);
             Assert.Equal(-32601, (int)replies.Find(x => (int?)x["id"] == 15)["error"]["code"]);
         }

@@ -34,7 +34,26 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-if (-not $Manifest) { $Manifest = Join-Path $repo 'dist\stage\manifest.json' }
+# THE MANIFEST THIS GATE MEASURES AGAINST IS THE INSTALLED ONE.
+#
+# It used to default to dist\stage\manifest.json, and after a source install
+# that comparison can never pass. Two independent reasons, either one enough:
+# install.ps1 builds into its OWN temporary staging root and never reads
+# dist\stage, so the two are separate builds of the same commit; and install.ps1
+# SIGNS what it installs, which rewrites every binary after its hash was
+# recorded. The staged manifest therefore describes unsigned bytes that are not
+# the ones Revit will load, and the gate reported two failures for a correct
+# install.
+#
+# The installed manifest is what the live run is actually about: verify-install
+# proves it matches the bytes on disk, and its Commit is what pairs the halves.
+# dist\stage remains the fallback for a release-artifact run, where the staged
+# payload IS what gets installed.
+if (-not $Manifest) {
+    $installedManifest = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\manifest.json'
+    $Manifest = if (Test-Path -LiteralPath $installedManifest) { $installedManifest }
+                else { Join-Path $repo 'dist\stage\manifest.json' }
+}
 if (-not $Server) { $Server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 if (-not $Json) { $Json = Join-Path $repo ("artifacts\live\live-{0}.json" -f $Year) }
 
@@ -159,6 +178,12 @@ $tempBase = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { $env:TEMP }
 $runId = "{0}-{1}-{2}" -f $Year, ([DateTime]::UtcNow.ToString('yyyyMMddHHmmss')), ([guid]::NewGuid().ToString('N').Substring(0,8))
 $script:runRoot = Join-Path $tempBase "horizun-release-live-$runId"
 New-Item -ItemType Directory -Force -Path $script:runRoot | Out-Null
+# A COPY of the inactive fixture, for the link-refusal probe. The inactive model
+# itself is OPEN in the gate's Revit, and Revit refuses to link an open
+# document's file - so the harness gets a same-year copy that nothing has open.
+# It lives under runRoot and leaves with it.
+$linkSource = Join-Path $script:runRoot ("HZ_LINKSRC_{0}.rvt" -f $Year)
+Copy-Item -Path $inactiveModel -Destination $linkSource -Force
 # The bridge deliberately rejects LocalApplicationData as shared state: packaged
 # and elevated processes can resolve it to different folders. RUNNER_TEMP lives
 # there on Windows, so keep call transcripts in it but put the shared add-in /
@@ -245,6 +270,7 @@ try {
         '-OldFile', $oldFile,
         '-ClosedWorksetDocument', $activeReleaseTitle,
         '-ClosedWorksetName', $closedWorkset,
+        '-LinkSourceFile', $linkSource,
         '-WriteDocument', $activeReleaseTitle,
         '-WriteDocumentDisposable', $disposable,
         '-ExpectedCommit', [string]$manifestDoc.Commit,
@@ -263,6 +289,20 @@ try {
         $report.summary.not_covered -ne 0) {
         throw "The live report is not a complete green release gate: $($report.summary | ConvertTo-Json -Compress)"
     }
+    # STRUCTURAL COHERENCE, checked where the verdict is consumed. A report whose
+    # summary and probe rows disagree (probes=112 beside 114 rows was shipped
+    # once) is not evidence of anything; verify-live now refuses to write one,
+    # and this gate refuses to accept one, so a drift needs BOTH seats broken.
+    $reportRows = @($report.probes)
+    if ([int]$report.summary.probes -ne $reportRows.Count) {
+        throw ("The live report disagrees with itself: summary.probes={0} but the report carries {1} probe rows." -f `
+               $report.summary.probes, $reportRows.Count)
+    }
+    $rowsNotCovered = @($reportRows | Where-Object { $_.outcome -eq 'not_covered' }).Count
+    if (([int]$report.summary.passed + [int]$report.summary.failed + [int]$report.summary.unverified + $rowsNotCovered) -ne $reportRows.Count) {
+        throw ("The live report disagrees with itself: passed({0}) + failed({1}) + unverified({2}) + not_covered rows({3}) != {4} rows." -f `
+               $report.summary.passed, $report.summary.failed, $report.summary.unverified, $rowsNotCovered, $reportRows.Count)
+    }
     Stage ("GREEN Revit {0}: {1} passed, including {2} committing probes" -f `
            $Year, $report.summary.passed, $report.write_tier.probes)
 }
@@ -277,4 +317,10 @@ finally {
     }
     $env:HORIZUN_DATA_ROOT = $oldDataRoot
     $env:HORIZUN_REVIT_YEAR = $oldTargetYear
+    # The link-source copy exists only so the harness could stage a link; unlike
+    # the call transcripts, a copied fixture model is not evidence and does not
+    # stay behind.
+    if ($linkSource -and (Test-Path $linkSource)) {
+        Remove-Item $linkSource -Force -ErrorAction SilentlyContinue
+    }
 }

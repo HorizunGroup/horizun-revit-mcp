@@ -86,7 +86,12 @@ if ($runtimeEntries.Count -ne 1) {
 }
 $runtimeVersion = $runtimeEntries[0].Name.Substring($runtimePrefix.Length)
 $serverProject = [xml](Get-Content (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj'))
-$pinnedRuntimeVersion = [string]($serverProject.Project.PropertyGroup.RuntimeFrameworkVersion |
+# SelectNodes, for the reason spelled out in pack.ps1: the PowerShell XML adapter
+# hands back the XmlElement rather than its text once the element carries an
+# attribute, and RuntimeFrameworkVersion carries Condition. The old form compared
+# the staged runtime against the literal string "System.Xml.XmlElement".
+$pinnedRuntimeVersion = [string]($serverProject.SelectNodes('//RuntimeFrameworkVersion') |
+    ForEach-Object { $_.InnerText.Trim() } |
     Where-Object { $_ } | Select-Object -First 1)
 if ($runtimeVersion -ne $pinnedRuntimeVersion) {
     throw "staged runtime $runtimeVersion does not match pinned RuntimeFrameworkVersion $pinnedRuntimeVersion"

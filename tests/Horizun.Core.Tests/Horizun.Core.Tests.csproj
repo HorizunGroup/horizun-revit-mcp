@@ -186,6 +186,45 @@
          synthetic WAL bytes shaped like the real ones - escaped JSON, NULs
          interleaved - because that shape is what the field script parsed. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AccUploadWal.cs" />
+    <!-- Which references horizun_get_dimension_references may offer, in what order,
+         and under which fingerprint. The Revit geometry read is the command's; the
+         selector table, the ambiguity shaping, the deterministic ordering and the
+         0.1 mm quantised fingerprint are pure arithmetic proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionReferenceRules.cs" />
+    <!-- Which dimension edits are eligible for which dimensions, and what the final
+         state may claim once the transaction status is known. Depends only on
+         ApplicationOutcome and PlanFailure, both linked above. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionEditRules.cs" />
+    <!-- What horizun_annotate may promise about a dimension before Revit is asked, and
+         what the outcome may claim afterwards: the conditional requirement table, the
+         override/EQ/lock eligibility rules, the reference fingerprint and the
+         final-state matrix are pure and proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DimensionPlanRules.cs" />
+    <!-- What horizun_detail_2d may accept and promise before Revit is asked: canonical
+         curve/loop/region signatures on the 0.1 mm grid with exact integer topology,
+         loop validation (self-intersection, exterior/hole hierarchy) and the error
+         codes the contract publishes - pure, and proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\Detail2DRules.cs" />
+    <!-- The planimetry surface, split so that everything except the Revit READ is
+         provable here: the layout arithmetic (touching is not overlapping, an
+         unreadable box is not an empty one), the facts the inventory fills in, the
+         universal rules, and the requirement-set loader with every refusal it owes.
+         PlanimetryInventory.cs is deliberately NOT linked - it is the one half that
+         needs a Document. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryGeometry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryFacts.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryRequirementSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryRules.cs" />
+    <!-- The rules of CORRECTING a planimetry finding: the closed operation catalog,
+         the universal-rule remedy table, finding identity vs observed staleness, batch
+         claim discipline, and the resolved/persistent/new reconciliation. Everything
+         except the Revit write is provable here; FixPlanimetryCommand.cs is the one
+         half that needs a Document. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryFixRules.cs" />
+    <!-- Deterministic autonomous sheet packing: pure rectangle arithmetic, fixed
+         obstacles, all-or-nothing capacity and stable ordering. The Revit command
+         only measures/creates the placements this rule decides. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryPackingRules.cs" />
   </ItemGroup>
 
   <ItemGroup>
