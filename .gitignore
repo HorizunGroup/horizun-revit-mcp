@@ -6,6 +6,10 @@ build/
 artifacts/
 dist/
 
+# Per-job NuGet cache used by the release workflow inside the checkout.
+# It is build infrastructure state, never source provenance.
+.horizun-nuget-*/
+
 # Python doc-generation tooling and its output — unrelated to the C# MCP source.
 # Kept out of the tree rather than deleted; move them elsewhere if you prefer.
 __pycache__/
