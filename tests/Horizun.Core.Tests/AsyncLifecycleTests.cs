@@ -27,16 +27,23 @@ namespace Horizun.Core.Tests
     internal sealed class FakeRaiser : IWorkRaiser
     {
         private readonly RaiseOutcome _answer;
+        private readonly Queue<RaiseOutcome> _answers;
         private readonly Exception _throw;
         public int Raises;
 
         public FakeRaiser(RaiseOutcome answer) { _answer = answer; }
+        public FakeRaiser(params RaiseOutcome[] answers)
+        {
+            _answers = new Queue<RaiseOutcome>(answers ?? Array.Empty<RaiseOutcome>());
+            _answer = RaiseOutcome.Unknown;
+        }
         public FakeRaiser(Exception ex) { _throw = ex; }
 
         public RaiseOutcome Raise()
         {
             Raises++;
             if (_throw != null) throw _throw;
+            if (_answers != null && _answers.Count > 0) return _answers.Dequeue();
             return _answer;
         }
     }
@@ -77,6 +84,63 @@ namespace Horizun.Core.Tests
         }
 
         private static string Text(AsyncWork w) => File.ReadAllText(w.Record.Path);
+
+        // ---- transient Denied ------------------------------------------------
+
+        [Fact]
+        public void A_transient_denied_is_retried_and_then_scheduled()
+        {
+            var raiser = new FakeRaiser(RaiseOutcome.Denied, RaiseOutcome.Accepted);
+            var delays = new List<int>();
+
+            RaiseAttemptResult r = RaiseRetryPolicy.TrySchedule(
+                raiser, delays.Add, new[] { 7, 11, 13 });
+
+            Assert.True(r.Scheduled);
+            Assert.Equal(RaiseOutcome.Accepted, r.Outcome);
+            Assert.Equal(2, r.Attempts);
+            Assert.Equal(new[] { 7 }, delays);
+        }
+
+        [Fact]
+        public void Pending_after_a_transient_denied_is_scheduled_too()
+        {
+            var raiser = new FakeRaiser(RaiseOutcome.Denied, RaiseOutcome.Pending);
+
+            RaiseAttemptResult r = RaiseRetryPolicy.TrySchedule(
+                raiser, _ => { }, new[] { 1 });
+
+            Assert.True(r.Scheduled);
+            Assert.Equal(2, r.Attempts);
+        }
+
+        [Fact]
+        public void Repeated_denied_becomes_terminal_only_after_the_bounded_window()
+        {
+            var raiser = new FakeRaiser(RaiseOutcome.Denied);
+            var delays = new List<int>();
+
+            RaiseAttemptResult r = RaiseRetryPolicy.TrySchedule(
+                raiser, delays.Add, new[] { 2, 3, 5 });
+
+            Assert.False(r.Scheduled);
+            Assert.Equal(RaiseOutcome.Denied, r.Outcome);
+            Assert.Equal(4, r.Attempts);
+            Assert.Equal(new[] { 2, 3, 5 }, delays);
+        }
+
+        [Fact]
+        public void Unknown_is_terminal_without_retrying()
+        {
+            var delays = new List<int>();
+
+            RaiseAttemptResult r = RaiseRetryPolicy.TrySchedule(
+                new FakeRaiser(RaiseOutcome.Unknown), delays.Add, new[] { 2, 3 });
+
+            Assert.False(r.Scheduled);
+            Assert.Equal(1, r.Attempts);
+            Assert.Empty(delays);
+        }
 
         // ---- the three answers ------------------------------------------------
 
@@ -125,9 +189,8 @@ namespace Horizun.Core.Tests
             Assert.False(r.Scheduled);
             Assert.Equal(RaiseOutcome.Denied, r.Outcome);
 
-            // ALL of them, not just the one at the head. Denied is not transient -
-            // Revit is closing or the event is disposed - so no later raise rescues
-            // the rest of the batch.
+            // AsyncPump receives terminal outcomes only, after RaiseRetryPolicy has
+            // exhausted the transient window. It drains ALL of them, not just the head.
             Assert.Equal(3, r.AbandonedJobs);
             Assert.Equal(0, AsyncQueue.Count);
 
@@ -362,6 +425,19 @@ namespace Horizun.Core.Tests
                 "expected the shared pump at both the command-completion and async-completion sites, found " + pumps);
             Assert.Contains("_gate.HasPending", dispatcher);
             Assert.Contains("AsyncQueue.Count", dispatcher);
+        }
+
+        [Fact]
+        public void Every_background_raise_uses_the_bounded_denied_retry_policy()
+        {
+            string dispatcher = File.ReadAllText(RepoFile("Core", "Dispatcher.cs"));
+
+            Assert.Contains("RaiseRetryPolicy.TrySchedule", dispatcher);
+            Assert.Contains("RaiseWithBoundedRetry", dispatcher);
+            Assert.Contains("ThreadPool.QueueUserWorkItem", dispatcher);
+            Assert.Contains("Let the callback that called PumpNext return before the first raise", dispatcher);
+            Assert.DoesNotContain("try { raised = Raiser().Raise(); }", dispatcher);
+            Assert.DoesNotContain("try { outcome = Raiser().Raise(); }", dispatcher);
         }
     }
 

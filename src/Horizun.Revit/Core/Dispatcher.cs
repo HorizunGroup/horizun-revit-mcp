@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
 using Horizun.Contracts;
@@ -34,6 +35,8 @@ namespace Horizun.Revit.Core
         private readonly DurableCommandLedger _idempotency =
             new DurableCommandLedger(retentionLog: message => Log.Info(message));
         private bool _preferAsync;
+        private volatile bool _shuttingDown;
+        private int _backgroundRaiseScheduled;
 
         /// <summary>
         /// The ExternalEvent behind IWorkRaiser, which is the ONLY Revit-dependent part
@@ -73,6 +76,14 @@ namespace Horizun.Revit.Core
 
         private IWorkRaiser Raiser() => new ExternalEventRaiser(_event);
 
+        private RaiseAttemptResult RaiseWithBoundedRetry(string context)
+        {
+            return RaiseRetryPolicy.TrySchedule(
+                Raiser(),
+                milliseconds => Thread.Sleep(milliseconds),
+                warn: message => Log.Warn(context + ": " + message));
+        }
+
         public void Register(ICommand command)
         {
             if (command == null) return;
@@ -105,6 +116,10 @@ namespace Horizun.Revit.Core
 
         public CommandResult Invoke(string wireId, string name, string paramsJson, int timeoutMs)
         {
+            if (_shuttingDown)
+                return CommandResult.Fail("Revit is shutting down. '" + name +
+                    "' was not queued and NEVER RAN; nothing was executed or written.");
+
             if (name == null || !_commands.ContainsKey(name))
             {
                 Log.Warn($"unknown command '{name}' requested");
@@ -140,14 +155,8 @@ namespace Horizun.Revit.Core
             // callback is ever coming. Discarding it turned that into a 600-second wait
             // for something that had already been declined, and then a timeout message
             // blaming a modal dialog that was never there.
-            RaiseOutcome raised;
-            try { raised = Raiser().Raise(); }
-            catch (Exception ex)
-            {
-                raised = RaiseOutcome.Unknown;
-                Log.Warn("initial ExternalEvent.Raise() threw: " + ex.Message);
-            }
-            if (raised != RaiseOutcome.Accepted && raised != RaiseOutcome.Pending)
+            RaiseAttemptResult raise = RaiseWithBoundedRetry("initial ExternalEvent raise for '" + name + "'");
+            if (!raise.Scheduled)
             {
                 // Denied/unknown means this ExternalEvent will not produce a callback.
                 // Wake every ordinary and async waiter now; leaving older entries behind
@@ -158,16 +167,18 @@ namespace Horizun.Revit.Core
                     "Revit refused the shared ExternalEvent before this queued job started. It NEVER RAN.",
                     message => Log.Warn(message));
                 clock.Stop();
-                Log.Warn($"'{name}' NOT QUEUED: Revit answered Raise() with {raised}; " +
+                Log.Warn($"'{name}' NOT QUEUED: Revit kept answering Raise() with {raise.Outcome} " +
+                         $"for {raise.Attempts} attempt(s); " +
                          $"closed {failed} ordinary waiter(s)");
                 return CommandResult.Fail(
-                    $"Revit refused to queue '{name}': Raise() returned {raised}. Nothing was done, and nothing " +
+                    $"Revit refused to queue '{name}': Raise() returned {raise.Outcome} after " +
+                    $"{raise.Attempts} bounded attempt(s). Nothing was done, and nothing " +
                     "will be - no callback is coming, so this is reported now instead of after the " +
                     $"{timeoutMs} ms timeout. " +
-                    (raised == RaiseOutcome.Denied
-                        ? "Denied usually means Revit is closing down or the bridge's external event has been " +
+                    (raise.Outcome == RaiseOutcome.Denied
+                        ? "Repeated Denied usually means Revit is closing down or the bridge's external event has been " +
                           "disposed. If Revit is still open, restart it to reload the add-in."
-                        : $"Raise() itself reported {raised}."));
+                        : $"Raise() itself reported {raise.Outcome}."));
             }
 
             // The wait, in slices. One flat Wait(timeoutMs) used to be the whole story,
@@ -344,20 +355,15 @@ namespace Horizun.Revit.Core
                 if (result != null && result.Success)
                 {
                     admittedJobId = (string)(result.Data as JObject)?["job_id"];
-                    RaiseOutcome raised;
-                    try { raised = Raiser().Raise(); }
-                    catch (Exception ex)
-                    {
-                        raised = RaiseOutcome.Unknown;
-                        Log.Warn("async submission raise threw: " + ex.Message);
-                    }
-                    if (raised != RaiseOutcome.Accepted && raised != RaiseOutcome.Pending)
+                    RaiseAttemptResult raise = RaiseWithBoundedRetry("async submission raise");
+                    if (!raise.Scheduled)
                     {
                         AsyncPump.FailEverythingWaiting(
                             "Revit refused the ExternalEvent after task admission. It NEVER RAN.",
                             m => Log.Warn(m));
                         result = CommandResult.Fail("The task record was created, but Revit refused the callback " +
-                            "that would execute it (" + raised + "). The queued job was closed as not_started.");
+                            "that would execute it (" + raise.Outcome + " after " + raise.Attempts +
+                            " attempt(s)). The queued job was closed as not_started.");
                     }
                 }
                 if (result == null) result = CommandResult.Fail("horizun_submit_job produced no result.");
@@ -711,31 +717,35 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Schedule one more callback when either queue has work. A denied raise closes
-        /// every still-waiting entry as never started; leaving them queued would promise
-        /// executions for a callback Revit has explicitly said will not come.
+        /// Schedule one more callback when either queue has work. This method is called
+        /// while Revit is still unwinding the current ExternalEvent callback, precisely
+        /// the window in which Revit 2026 was measured returning a transient Denied.
+        /// Raising is therefore deferred to a background worker; that worker exhausts
+        /// the bounded retry policy before a refusal is allowed to drain the queues.
         /// </summary>
         private void PumpNext()
         {
             if (!_gate.HasPending && AsyncQueue.Count == 0) return;
+            if (Interlocked.Exchange(ref _backgroundRaiseScheduled, 1) != 0) return;
 
-            RaiseOutcome outcome;
-            try { outcome = Raiser().Raise(); }
-            catch (Exception ex)
+            ThreadPool.QueueUserWorkItem(_ =>
             {
-                outcome = RaiseOutcome.Unknown;
-                Log.Warn("raising the external event for queued work threw: " + ex.Message);
-            }
+                // Let the callback that called PumpNext return before the first raise.
+                Thread.Sleep(5);
+                Interlocked.Exchange(ref _backgroundRaiseScheduled, 0);
+                if (_shuttingDown || (!_gate.HasPending && AsyncQueue.Count == 0)) return;
 
-            if (outcome == RaiseOutcome.Accepted || outcome == RaiseOutcome.Pending) return;
+                RaiseAttemptResult raise = RaiseWithBoundedRetry("queued-work ExternalEvent raise");
+                if (raise.Scheduled || _shuttingDown) return;
 
-            string reason = "Revit refused to schedule queued work: Raise() returned " + outcome +
-                            ". It NEVER STARTED; nothing was executed or written. Revit is closing or the " +
-                            "ExternalEvent is no longer available.";
-            int sync = _gate.FailQueued(reason);
-            int async = AsyncPump.FailEverythingWaiting(reason, Log.Warn);
-            Log.Warn("queued work abandoned after Raise()=" + outcome + ": " + sync +
-                     " synchronous request(s), " + async + " async job(s)");
+                string reason = "Revit refused to schedule queued work: Raise() returned " + raise.Outcome +
+                                " after " + raise.Attempts + " bounded attempt(s). It NEVER STARTED; nothing " +
+                                "was executed or written. Revit is closing or the ExternalEvent is no longer available.";
+                int sync = _gate.FailQueued(reason);
+                int async = AsyncPump.FailEverythingWaiting(reason, Log.Warn);
+                Log.Warn("queued work abandoned after Raise()=" + raise.Outcome + ": " + sync +
+                         " synchronous request(s), " + async + " async job(s)");
+            });
         }
 
         public bool CancelQueued(string wireId, out string detail)
@@ -743,6 +753,7 @@ namespace Horizun.Revit.Core
 
         public int Shutdown()
         {
+            _shuttingDown = true;
             string reason = "Revit shut down before this queued command started. It NEVER RAN: nothing was " +
                             "executed and nothing was written.";
             return _gate.FailQueued(reason);

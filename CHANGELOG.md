@@ -3,6 +3,19 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.3 — 2026-08-29
+
+- **No dropped command in Revit's callback-unwind window.** The `v1.1.2`
+  release matrix measured Revit 2026 return `ExternalEventRequest.Denied` to a
+  sequential caller only 4 ms after the preceding command completed; Revit
+  remained open and served every later request. Horizun had treated every
+  `Denied` as terminal shutdown, so that one dry run never entered the FIFO and
+  the stable release was correctly blocked. The dispatcher now retries that
+  answer for a short, bounded interval off Revit's UI thread, while repeated
+  denial and shutdown still close untouched work as `not_started`. Four pure
+  sequence tests plus a wiring regression cover transient Denied → Accepted,
+  transient Denied → Pending, terminal repeated denial and Unknown.
+
 ## v1.1.2 — 2026-08-29
 
 - **Deterministic complete-surface inventory.** The inventory generator now
