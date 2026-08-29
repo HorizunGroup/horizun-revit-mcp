@@ -9765,13 +9765,18 @@ __output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
             }
         }
 
-        # ---- case 11: what cancellation actually does, measured --------------
-        # MEASURED on run 14: notifications/cancelled releases the CALLER, but a
-        # request already DELIVERED to the add-in's FIFO runs to completion -
-        # there is no recall across the pipe. The honest probe measures exactly
-        # that: the cancelled apply's work EXISTS afterwards, its token is
-        # consumed, and the duplicate-protection that survives cancellation is
-        # the durable idempotency key, not the cancel.
+        # ---- case 11: queued cancellation prevents the write ------------------
+        # Cancellation has a precise boundary: RequestGate may remove work that
+        # is still WAITING, but may never claim to stop work already taken by the
+        # Revit UI thread. A fast model_scan is not a blocker (on the release
+        # fixture it measured 25-700 ms), so timing sleeps made this probe a race.
+        # Instead a harness-only Python call writes a marker AFTER it owns Revit's
+        # UI thread and then holds it. Only after that marker do we submit the
+        # apply, and only after the add-in log proves it entered the FIFO behind
+        # that blocker do we cancel it over the real control pipe. Reusing BOTH
+        # the confirmation token and idempotency key must then be a fresh
+        # successful execution, proving neither was consumed by the cancelled
+        # request; the final query must find exactly one grid.
         $t0 = Get-Date
         $dry11 = Invoke-Write 'horizun_create_elements' @{
             target_document=$wDoc; units='mm'
@@ -9779,40 +9784,88 @@ __output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
         $tok11c = if ($dry11.data) { $dry11.data.confirmation_token } else { $null }
         if (-not $tok11c) { Complete-W13Case 11 $t0 'unverified' 'no token for the cancellation probe' }
         else {
+            $marker11 = Join-Path $scratchDir ('w13-cancel-blocker-' + $dimTag + '.ready')
+            Remove-Item -LiteralPath $marker11 -Force -ErrorAction SilentlyContinue
+            $markerPy11 = $marker11.Replace('\','/')
+            $blockCode11 = "import time`nf = open(r'$markerPy11', 'w')`nf.write('ready')`nf.flush()`nf.close()`ntime.sleep(15)`n__output__ = {'blocked': True}"
             Send-Rpc @{ jsonrpc='2.0'; id=770001; method='tools/call'
-                        params=@{ name='horizun_model_scan'
-                                  arguments=@{ target_document_title=$wDoc; sections=@('categories','worksets'); top=100 } } }
-            Start-Sleep -Milliseconds 400
+                        params=@{ name='horizun_execute_python'
+                                  arguments=@{ target_document=$wDoc; code=$blockCode11
+                                               idempotency_key=("live-w13-cancel-blocker-$probeRun") } } }
+            $markerDeadline11 = (Get-Date).AddSeconds(30)
+            while (-not (Test-Path -LiteralPath $marker11) -and (Get-Date) -lt $markerDeadline11) {
+                Start-Sleep -Milliseconds 50
+            }
+            $markerReady11 = Test-Path -LiteralPath $marker11
             $key11 = "live-w13-cancel-$probeRun"
-            Send-Rpc @{ jsonrpc='2.0'; id=770002; method='tools/call'
-                        params=@{ name='horizun_create_elements'
-                                  arguments=@{ target_document=$wDoc; units='mm'; dry_run=$false
-                                               confirmation_token=$tok11c
-                                               idempotency_key=$key11
-                                               elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag)
-                                                             start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) } } }
-            Start-Sleep -Milliseconds 200
-            Send-Rpc @{ jsonrpc='2.0'; method='notifications/cancelled'; params=@{ requestId=770002 } }
-            $null = Read-Rpc; $null = Read-Rpc 60000
+            $queueLog11 = Join-Path $dataRoot ("logs\revit-$Year.log")
+            $queueLinesBefore11 = if (Test-Path -LiteralPath $queueLog11) {
+                @(Get-Content -LiteralPath $queueLog11).Count
+            } else { 0 }
+            if ($markerReady11) {
+                Send-Rpc @{ jsonrpc='2.0'; id=770002; method='tools/call'
+                            params=@{ name='horizun_create_elements'
+                                      arguments=@{ target_document=$wDoc; units='mm'; dry_run=$false
+                                                   confirmation_token=$tok11c
+                                                   idempotency_key=$key11
+                                                   elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag)
+                                                                 start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) } } }
+                $queuedDeadline11 = (Get-Date).AddSeconds(8)
+                $queued11 = $false
+                while (-not $queued11 -and (Get-Date) -lt $queuedDeadline11) {
+                    if (Test-Path -LiteralPath $queueLog11) {
+                        $newQueueLines11 = @(Get-Content -LiteralPath $queueLog11 | Select-Object -Skip $queueLinesBefore11)
+                        $queued11 = @($newQueueLines11 | Where-Object {
+                            $_ -match "'horizun_create_elements' queued as ticket .* behind [1-9][0-9]* request"
+                        }).Count -gt 0
+                    }
+                    if (-not $queued11) { Start-Sleep -Milliseconds 50 }
+                }
+                Send-Rpc @{ jsonrpc='2.0'; method='notifications/cancelled'; params=@{ requestId=770002 } }
+            } else {
+                $queued11 = $false
+                Send-Rpc @{ jsonrpc='2.0'; method='notifications/cancelled'; params=@{ requestId=770001 } }
+            }
+
+            $wireReplies11 = @{}
+            $replyDeadline11 = (Get-Date).AddSeconds(30)
+            while ($wireReplies11.Count -lt $(if ($markerReady11) { 2 } else { 1 }) -and
+                   (Get-Date) -lt $replyDeadline11) {
+                $wire11 = Read-Rpc 30000
+                if ($null -eq $wire11) { break }
+                if ([int]$wire11.id -eq 770001 -or [int]$wire11.id -eq 770002) {
+                    $wireReplies11[[string]$wire11.id] = $wire11
+                }
+            }
+            $cancelReply11 = $wireReplies11['770002']
+            $cancelMessage11 = [string]$cancelReply11.error.message
+            $cancelProof11 = $markerReady11 -and $queued11 -and $cancelReply11 -and
+                             [int]$cancelReply11.error.code -eq -32800 -and
+                             ($cancelMessage11 -match 'NEVER STARTED' -or
+                              $cancelMessage11 -match 'FIFO queue.*removed before it started')
             Start-Sleep -Seconds 3
             $q11 = Invoke-Write 'horizun_query_model' @{
                 categories=@('OST_Grids'); include_links=$false; max_rows=300 }
             $ran11 = -not $q11.isError -and (@($q11.data.rows | Where-Object { $_.name -match ('HZ_CXL_' + $dimTag) }).Count -eq 1)
-            # And the guard that DOES hold across a cancel: the same key replays.
+            # The cancelled request never crossed the mutation boundary, so the
+            # same token and key remain valid and this retry must execute freshly.
             $again11 = Invoke-Write 'horizun_create_elements' @{
                 target_document=$wDoc; units='mm'; dry_run=$false; confirmation_token=$tok11c
                 idempotency_key=$key11
                 elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag); start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) }
-            $replay11 = -not $again11.isError -and $again11.data -and $again11.data.idempotency -and
-                        $again11.data.idempotency.command_executed_in_this_call -eq $false
+            $fresh11 = -not $again11.isError -and $again11.data -and $again11.data.idempotency -and
+                       $again11.data.idempotency.status -eq 'executed_once' -and
+                       $again11.data.idempotency.command_executed_in_this_call -eq $true
             $q11b = Invoke-Write 'horizun_query_model' @{
                 categories=@('OST_Grids'); include_links=$false; max_rows=300 }
             $still11 = -not $q11b.isError -and (@($q11b.data.rows | Where-Object { $_.name -match ('HZ_CXL_' + $dimTag) }).Count -eq 1)
-            if ($ran11 -and $replay11 -and $still11) {
-                Complete-W13Case 11 $t0 'pass' 'MEASURED semantics recorded: cancellation released the caller but the DELIVERED apply ran (the grid exists); what survives a cancel is the durable key - the re-send replayed and the grid still exists exactly once' `
-                    -Evidence @{ semantics='no_recall_after_delivery'; idempotency=$again11.data.idempotency }
+            if ($cancelProof11 -and -not $ran11 -and $fresh11 -and $still11) {
+                Complete-W13Case 11 $t0 'pass' 'MEASURED: the queued apply was cancelled before start (no grid); its confirmation token and idempotency key remained unconsumed, so the identical retry executed freshly and exactly one grid exists' `
+                    -Evidence @{ semantics='cancelled_before_start'; marker_proved_ui_blocked=$markerReady11
+                                 queue_admission_proved=$queued11; cancellation_reply_proved_never_started=$true
+                                 token_and_key_unconsumed=$true; idempotency=$again11.data.idempotency }
             } else {
-                Complete-W13Case 11 $t0 'fail' ("delivered_ran=$ran11 replay=$replay11 once=$still11 " + (Get-DimShortText $again11.text))
+                Complete-W13Case 11 $t0 'fail' ("marker=$markerReady11 queued=$queued11 cancel_proof=$([bool]$cancelProof11) cancelled_write_absent=$(-not $ran11) retry_fresh=$fresh11 once=$still11 " + (Get-DimShortText $again11.text))
             }
         }
 

@@ -3,6 +3,23 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.4 — 2026-08-29
+
+- **The release gate now asserts the actual queued-cancellation guarantee.**
+  Revit 2023 in the `v1.1.3` matrix proved that an apply cancelled while still
+  behind another command never wrote its grid and consumed neither its
+  confirmation token nor its durable idempotency key: the identical retry ran
+  freshly and produced exactly one grid. The harness still asserted an older
+  measured no-recall path for work already delivered to Revit, contradicting
+  both the probe title and the safer observed result, so it marked correct
+  behaviour as a failure. The probe now distinguishes the boundary explicitly:
+  queued work must be removed before start; work already running remains
+  non-interruptible. The release harness no longer guesses that boundary from a
+  sleep: a marker proves a blocking command owns Revit's UI thread, the add-in
+  log proves the apply entered the FIFO behind it, and the MCP cancellation
+  reply must prove it was removed before start. Revit 2026 then passed the full
+  gate 242/242 with 157 committing probes.
+
 ## v1.1.3 — 2026-08-29
 
 - **No dropped command in Revit's callback-unwind window.** The `v1.1.2`
