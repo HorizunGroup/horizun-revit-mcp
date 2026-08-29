@@ -29,6 +29,14 @@ Check 'the generator exists and is referenced by name from the docs it feeds' {
     $null
 }
 
+Check 'a clean checkout with one server binary keeps the complete executable path' {
+    $generator = Get-Content (Join-Path $repo 'scripts\generate-inventory.ps1') -Raw
+    if ($generator -notmatch '\$ServerExe\s*=\s*@\(\$candidates\)\[0\]') {
+        return 'the one-item candidate pipeline can unwrap to a string and indexing it would execute only its first character'
+    }
+    $null
+}
+
 Check 'docs/inventory.json exists and declares what each count means' {
     if (-not (Test-Path $inventoryPath)) { return 'docs/inventory.json is missing - run scripts/generate-inventory.ps1' }
     $inv = Get-Content $inventoryPath -Raw | ConvertFrom-Json

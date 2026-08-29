@@ -51,6 +51,10 @@ $evidence = Join-Path $repo 'docs\evidence\structure-matrix.json'
 $backup = Join-Path $root 'structure-matrix.real.json'
 $hadEvidence = Test-Path -LiteralPath $evidence
 if ($hadEvidence) { Copy-Item -LiteralPath $evidence -Destination $backup -Force }
+# The public projection intentionally omits private evidence artifacts, so a
+# clean hosted checkout may not contain docs/evidence at all. This fixture owns
+# the file it writes and therefore owns creating its parent directory too.
+New-Item -ItemType Directory -Path (Split-Path -Parent $evidence) -Force | Out-Null
 
 $artifacts = Join-Path $repo 'artifacts\live'
 if (-not (Test-Path -LiteralPath $artifacts)) { New-Item -ItemType Directory -Path $artifacts -Force | Out-Null }

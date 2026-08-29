@@ -51,7 +51,12 @@ if (-not $ServerExe) {
         $candidates = @((Join-Path $repo 'src\Horizun.Server\bin\Release\net8.0\horizun-mcp.exe')) | Where-Object { Test-Path $_ }
     }
     if (-not $candidates) { throw 'no server binary to ask; build src/Horizun.Server first.' }
-    $ServerExe = $candidates[0]
+    # PowerShell unwraps a one-item pipeline into a scalar string. Indexing that
+    # scalar directly returns its first CHARACTER ("C" on a hosted Windows
+    # runner) instead of the full executable path. Force array semantics so a
+    # clean checkout with only the Release build behaves like a developer tree
+    # that happens to contain both Release and Debug outputs.
+    $ServerExe = @($candidates)[0]
 }
 
 # ---- ask the server what it serves -----------------------------------------
