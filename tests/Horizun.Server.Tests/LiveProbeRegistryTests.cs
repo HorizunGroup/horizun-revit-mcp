@@ -107,6 +107,42 @@ namespace Horizun.Server.Tests
             Assert.Contains("ExpectError = 'mode is REQUIRED'", block, StringComparison.Ordinal);
         }
 
+        [Fact]
+        public void Queued_cancellation_probe_requires_no_write_and_an_unconsumed_retry_key()
+        {
+            string text = Script();
+            int probe = text.IndexOf(
+                "case 11: queued cancellation prevents the write",
+                StringComparison.Ordinal);
+            int next = text.IndexOf("case 12:", probe, StringComparison.Ordinal);
+
+            Assert.True(probe >= 0 && next > probe,
+                "the wire-cancellation probe must remain a bounded W13 case");
+            string block = text.Substring(probe, next - probe);
+
+            Assert.Contains("-not $ran11 -and $fresh11 -and $still11", block,
+                            StringComparison.Ordinal);
+            Assert.Contains("status -eq 'executed_once'", block, StringComparison.Ordinal);
+            Assert.Contains("command_executed_in_this_call -eq $true", block,
+                            StringComparison.Ordinal);
+            Assert.Contains("marker_proved_ui_blocked", block, StringComparison.Ordinal);
+            Assert.Contains("queue_admission_proved", block, StringComparison.Ordinal);
+            Assert.Contains("cancellation_reply_proved_never_started", block,
+                            StringComparison.Ordinal);
+            Assert.Contains("'horizun_create_elements' queued as ticket", block,
+                            StringComparison.Ordinal);
+            Assert.Contains("cancelMessage11 -match 'NEVER STARTED'", block,
+                            StringComparison.Ordinal);
+            Assert.Contains("cancelMessage11 -match 'FIFO queue.*removed before it started'", block,
+                            StringComparison.Ordinal);
+            Assert.DoesNotContain("Start-Sleep -Milliseconds 200", block,
+                                  StringComparison.Ordinal);
+            Assert.Contains("semantics='cancelled_before_start'", block,
+                            StringComparison.Ordinal);
+            Assert.DoesNotContain("no_recall_after_delivery", block, StringComparison.Ordinal);
+            Assert.DoesNotContain("$replay11", block, StringComparison.Ordinal);
+        }
+
         /// <summary>
         /// The four that were retired must STAY retired, with their history intact. A
         /// probe silently revived would start reporting a permanent gap again.
