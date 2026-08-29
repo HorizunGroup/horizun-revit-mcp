@@ -45,6 +45,7 @@ namespace Horizun.Server
                 { "horizun_job_status",       (a, ct) => JobStatus.Handle(a, ct) },
                 { "horizun_catalog_lookup",   (a, ct) => CatalogLookup.Handle(a, ct) },
                 { "horizun_excel_write_rows", (a, ct) => ExcelWriteRows.Handle(a, ct) },
+                { "horizun_excel_read_rows",  (a, ct) => { ct.ThrowIfCancellationRequested(); return ExcelReadRows.Handle(a); } },
                 { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
                 { "horizun_target",           (a, ct) => { ct.ThrowIfCancellationRequested(); return Targets.Handle(a); } }
             };

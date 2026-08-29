@@ -124,6 +124,41 @@ namespace Horizun.Revit.Commands
                         if (p.Sheets.Any(s => s.Id == sheet.Id)) { error = "actions[" + i + "] repeats sheet_id " + id + "."; return null; }
                         p.Sheets.Add(sheet);
                     }
+                JArray removals = a["remove_sheet_ids"] as JArray;
+                if (removals != null)
+                {
+                    if (op != "update_revision")
+                    { error = "actions[" + i + "].remove_sheet_ids applies to update_revision only: a revision " +
+                              "being created is on no sheet yet."; return null; }
+                    foreach (JToken t in removals)
+                    {
+                        long id = t.Value<long>();
+                        ViewSheet sheet = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) as ViewSheet : null;
+                        if (sheet == null) { error = "actions[" + i + "].remove_sheet_ids names an invalid sheet " + id + "."; return null; }
+                        if (p.Sheets.Any(x => x.Id == sheet.Id))
+                        { error = "actions[" + i + "] both adds and removes sheet " + id + "; which of the two " +
+                                  "is meant is not guessable."; return null; }
+                        if (p.RemoveSheets.Any(x => x.Id == sheet.Id))
+                        { error = "actions[" + i + "] repeats remove_sheet_ids entry " + id + "."; return null; }
+                        // Removing an ADDITIONAL assignment that is not there is a caller
+                        // mistake worth naming, not a silent no-op: the caller believes the
+                        // revision is on this sheet, and it is not - or it is there through
+                        // a CLOUD, which SetAdditionalRevisionIds cannot remove.
+                        if (!sheet.GetAdditionalRevisionIds().Contains(p.Revision.Id))
+                        {
+                            bool viaCloud = sheet.GetAllRevisionIds().Contains(p.Revision.Id);
+                            error = "actions[" + i + "]: revision " + Rid.Value(p.Revision.Id) + " is not among " +
+                                    "sheet " + id + "'s ADDITIONAL revisions" +
+                                    (viaCloud
+                                        ? " - it reaches the sheet through a revision CLOUD, and clouds are " +
+                                          "removed by deleting the cloud (horizun_delete_verified), not by " +
+                                          "editing the sheet's revision list"
+                                        : "") + ". Nothing was written.";
+                            return null;
+                        }
+                        p.RemoveSheets.Add(sheet);
+                    }
+                }
                 JArray clouds = a["clouds"] as JArray;
                 if (clouds != null)
                     for (int ci=0; ci<clouds.Count; ci++)
@@ -171,6 +206,11 @@ namespace Horizun.Revit.Commands
                 List<ElementId> ids = sheet.GetAdditionalRevisionIds().ToList();
                 if (!ids.Contains(p.Revision.Id)) { ids.Add(p.Revision.Id); sheet.SetAdditionalRevisionIds(ids); }
             }
+            foreach (ViewSheet sheet in p.RemoveSheets)
+            {
+                List<ElementId> ids = sheet.GetAdditionalRevisionIds().ToList();
+                if (ids.Remove(p.Revision.Id)) sheet.SetAdditionalRevisionIds(ids);
+            }
             foreach (CloudPlan cloud in p.Clouds)
             {
                 RevisionCloud created = RevisionCloud.Create(doc, cloud.View, p.Revision.Id, cloud.Curves);
@@ -188,6 +228,7 @@ namespace Horizun.Revit.Commands
             if (a["issued_to"] != null && revision.IssuedTo != (a.Value<string>("issued_to") ?? "")) return false;
             if (a["issued"] != null && revision.Issued != a.Value<bool>("issued")) return false;
             if (p.Sheets.Any(s => !(doc.GetElement(s.Id) as ViewSheet).GetAdditionalRevisionIds().Contains(revision.Id))) return false;
+            if (p.RemoveSheets.Any(s => (doc.GetElement(s.Id) as ViewSheet).GetAdditionalRevisionIds().Contains(revision.Id))) return false;
             foreach (CloudPlan c in p.Clouds)
             {
                 RevisionCloud cloud = c.CreatedId == null ? null : doc.GetElement(c.CreatedId) as RevisionCloud;
@@ -213,18 +254,18 @@ namespace Horizun.Revit.Commands
             var rp=new ResolvedPlan { Command="horizun_manage_revisions", DocumentKey=gate.Fingerprint, RevitVersion=app.Application.VersionNumber, DocumentFingerprint=gate.Identity.FingerprintDigest() };
             foreach(Plan p in plans)
             {
-                var before=new Dictionary<string,string> { ["operation"]=p.Operation, ["revision_before"]=p.Before??"<new>", ["sheets"]=string.Join(",",p.Sheets.Select(s=>Rid.Value(s.Id))), ["views"]=string.Join(",",p.Clouds.Select(c=>Rid.Value(c.View.Id))), ["clouds"]=string.Join("|",p.Clouds.SelectMany(c=>c.Signatures)) };
+                var before=new Dictionary<string,string> { ["operation"]=p.Operation, ["revision_before"]=p.Before??"<new>", ["sheets"]=string.Join(",",p.Sheets.Select(s=>Rid.Value(s.Id))), ["sheets_removed"]=string.Join(",",p.RemoveSheets.Select(s=>Rid.Value(s.Id))), ["views"]=string.Join(",",p.Clouds.Select(c=>Rid.Value(c.View.Id))), ["clouds"]=string.Join("|",p.Clouds.SelectMany(c=>c.Signatures)) };
                 rp.Elements.Add(new PlannedElement { UniqueId="action:"+p.Key, Category="revision", Action=PlannedAction.Create, BeforeValues=before });
             }
             return rp;
         }
 
         private static string RevisionState(Revision r) => string.Join("|", new[]{r.UniqueId,r.Description,r.RevisionDate,r.IssuedBy,r.IssuedTo,r.Issued.ToString()});
-        private static JObject PlanJson(Plan p) => new JObject { ["index"]=p.Index, ["key"]=p.Key, ["operation"]=p.Operation, ["revision_id"]=p.Operation=="update_revision"?(JToken)Rid.Value(p.Revision.Id):JValue.CreateNull(), ["sheet_ids"]=new JArray(p.Sheets.Select(s=>Rid.Value(s.Id))), ["cloud_views"]=new JArray(p.Clouds.Select(c=>Rid.Value(c.View.Id))) };
-        private static JObject ResultJson(Plan p) => new JObject { ["key"]=p.Key, ["revision_id"]=Rid.Value(p.Revision.Id), ["verified"]=true, ["sheet_ids"]=new JArray(p.Sheets.Select(s=>Rid.Value(s.Id))), ["revision_cloud_ids"]=new JArray(p.Clouds.Select(c=>Rid.Value(c.CreatedId))) };
+        private static JObject PlanJson(Plan p) => new JObject { ["index"]=p.Index, ["key"]=p.Key, ["operation"]=p.Operation, ["revision_id"]=p.Operation=="update_revision"?(JToken)Rid.Value(p.Revision.Id):JValue.CreateNull(), ["sheet_ids"]=new JArray(p.Sheets.Select(s=>Rid.Value(s.Id))), ["removed_sheet_ids"]=new JArray(p.RemoveSheets.Select(s=>Rid.Value(s.Id))), ["cloud_views"]=new JArray(p.Clouds.Select(c=>Rid.Value(c.View.Id))) };
+        private static JObject ResultJson(Plan p) => new JObject { ["key"]=p.Key, ["revision_id"]=Rid.Value(p.Revision.Id), ["verified"]=true, ["sheet_ids"]=new JArray(p.Sheets.Select(s=>Rid.Value(s.Id))), ["removed_sheet_ids"]=new JArray(p.RemoveSheets.Select(s=>Rid.Value(s.Id))), ["revision_cloud_ids"]=new JArray(p.Clouds.Select(c=>Rid.Value(c.CreatedId))) };
         private static string Canon(XYZ p)=>Math.Round(p.X,9).ToString("R",CultureInfo.InvariantCulture)+","+Math.Round(p.Y,9).ToString("R",CultureInfo.InvariantCulture)+","+Math.Round(p.Z,9).ToString("R",CultureInfo.InvariantCulture);
 
-        private sealed class Plan { public int Index; public string Key,Operation,Before; public JObject Input; public Revision Revision; public readonly List<ViewSheet> Sheets=new List<ViewSheet>(); public readonly List<CloudPlan> Clouds=new List<CloudPlan>(); }
+        private sealed class Plan { public int Index; public string Key,Operation,Before; public JObject Input; public Revision Revision; public readonly List<ViewSheet> Sheets=new List<ViewSheet>(); public readonly List<ViewSheet> RemoveSheets=new List<ViewSheet>(); public readonly List<CloudPlan> Clouds=new List<CloudPlan>(); }
         private sealed class CloudPlan { public View View; public readonly List<Curve> Curves=new List<Curve>(); public readonly List<string> Signatures=new List<string>(); public int LoopCount; public ElementId CreatedId; }
         private sealed class Rehearsal { public bool Verified,RollbackConfirmed; public string Error,RollbackStatus; public JObject Json; }
     }

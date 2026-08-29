@@ -28,6 +28,100 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RequestGate.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PenetrationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLayoutRules.cs" />
+    <!-- The rebar layout arithmetic. Provable at a desk, and it HAS to be: the
+         plan computes every bar position and the apply compares Revit's answer
+         to that computation, so a wrong formula makes the plan and the
+         verification agree with each other and both be wrong. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarLayoutRules.cs" />
+    <!-- The requirement set. Tested by what it REFUSES: a set accepted with a hole
+         in it builds half of somebody's reinforcement and leaves them believing
+         they asked for what arrived. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\StructuralRequirementSet.cs" />
+    <!-- The coverage vocabulary. Zero and "could not look" are different answers. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\StructuralCoverage.cs" />
+    <!-- Whether a declared set actually FITS its host. Revit creates a set longer
+         than its beam without complaint, so this is measured before a transaction
+         exists - every position, not the two ends. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarPlanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SolidContainment.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarContainment.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarArrayGeometry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\StirrupZoneRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MatRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarTakeoff.cs" />
+    <!-- The audit comparison. Both sides arrive as JSON - the shapes the resolver
+         and the reader actually emit - so it is provable at a desk and cannot
+         drift from either of them. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RebarAuditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TabularRules.cs" />
+    <!-- The audit check names, so a test can hold the gate's targets against the
+         names the findings actually carry. They diverged once and the gate went
+         permanently not_measurable on one requirement. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AuditCheckNames.cs" />
+    <!-- The diagnostics P0 kernel. Every decision here is Revit-free on purpose:
+         where the geometry sits, whether two datums are the same datum, and
+         whether a model carries the evidence a scheduler would need are all
+         judgements about numbers, and a judgement that needs a Document to be
+         made cannot be proved at a desk. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CoordinateRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DatumRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReadinessRules.cs" />
+    <!-- Snapshots and the health index. Both are pure arithmetic over numbers
+         somebody else measured, and both have a characteristic way of lying:
+         a trend that reports a smaller sample as progress, and a confident score
+         about a model nobody finished looking at. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DiagnosticsSnapshot.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\HealthIndexRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PreDeliveryGateRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ToolTimings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TypeCatalogRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepRouteRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ExportPresetRules.cs" />
+
+    <!-- The DWG reading layer. These decide what a drawing MEANS - which lines
+         are a wall, which ring is a room, whether this is the same entity as
+         last week - and a meaning that changes between runs is not a meaning.
+         They carry no `using Autodesk.*` precisely so the reasoning can be
+         argued with here, without a Revit in the room. CadGeometryRules also
+         pins the SURROGATE IDENTITY algorithm: measured on Revit 2026,
+         GeometryObject.Id collides (35 objects, 24 distinct ids) and no DWG
+         handle exists anywhere in the API, so every incremental update and
+         every audit match depends on this hash being the same tomorrow. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadGeometryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadTopologyRules.cs" />
+    <!-- Which VIEW a drawing is, and what that view can honestly be asked for. A
+         section linked into a model looks exactly like a plan to the reader, and
+         converting one as a plan is the failure with no symptom: the elements are
+         created, verified and audited clean, because the model and the drawing
+         agree with each other and neither agrees with the building. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceRole.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadRequirementSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadAuditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />
+    <!-- Which name belongs to which candidate. A DWG carries no text this bridge
+         can read, so names arrive from the requirement set - and the decision of
+         which one goes where is arithmetic over geometry and a declared table,
+         provable here. The refusals are the point: there is no fallback to
+         enumeration order, because that is whatever Revit returned first. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadNamingRules.cs" />
+    <!-- What each geometry source would FIND on each layer, measured by running the
+         same reader the conversion runs. It is here rather than beside the command
+         because the property worth proving is a refusal: every `produces` it emits
+         is null, and a profiler that guessed even once would be one organisation's
+         layer convention compiled into a bridge that converts everybody's drawings. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadLayerProfileRules.cs" />
+    <!-- Whether the values a rule declared actually LANDED. Two opposite mistakes
+         shipped here - reading keys the writer does not emit, then demanding
+         evidence a legitimate write cannot produce - and neither was reproducible
+         without a Revit. The arithmetic is now provable at a desk. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadParameterOutcome.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DocumentIdentity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\WorksetConfigurationEvidence.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptOutput.cs" />
@@ -108,6 +202,10 @@
          else, because it needs two environments and no Revit. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" />
+    <!-- The job-record folding behind the ribbon Jobs dialog: half-written lines
+         are states, "running" is never claimed from a file alone. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\JobRecordSummary.cs" />
     <!-- The other half of at-most-once. AsyncQueue guarantees a QUEUED entry runs
          once; this decides whether a request that arrived twice becomes one queue
          entry or two. Neither touches Revit, and the property is only worth having
@@ -191,6 +289,23 @@
          selector table, the ambiguity shaping, the deterministic ordering and the
          0.1 mm quantised fingerprint are pure arithmetic proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\DimensionReferenceRules.cs" />
+    <!-- What a reference INTO an RVT link is: the three-id separation, the transform
+         fingerprint on the same 0.1 mm grid as every other geometric fact, the drift
+         comparison a stale plan is decided by, and the closed set of refusal codes.
+         Pure - the command reads the link, this file decides about it. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\LinkedReferenceRules.cs" />
+    <!-- The arithmetic behind auto_dimension_*: direction grouping, measured axis
+         resolution, positional ordering with the coincidence refusal, unordered
+         duplicate identity and the coverage verdict. Pure, and proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\AutoDimensionRules.cs" />
+    <!-- Room-driven view production: eligibility with codes, the 90-degree-symmetry
+         principal rotation, token naming with refusal on typos, exact box support
+         functions and the shared coverage vocabulary. Pure, and proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RoomViewRules.cs" />
+    <!-- The schedule-editing arithmetic: stable field resolution with the ambiguous-
+         name refusal, the closed operator table with value shapes, and the canonical
+         definition snapshot a before/after diff hangs off. Pure, proved here. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleEditRules.cs" />
     <!-- Which dimension edits are eligible for which dimensions, and what the final
          state may claim once the transaction status is known. Depends only on
          ApplicationOutcome and PlanFailure, both linked above. -->

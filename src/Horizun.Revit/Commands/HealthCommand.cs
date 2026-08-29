@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // "Is anyone home, and WHICH Revit is it?" — the first call any workflow makes.
@@ -143,6 +143,20 @@ namespace Horizun.Revit.Commands
                 revit_language = LanguageOf(rvt),
                 username = rvt.Username,
                 process_id = pid,
+                // WHAT THIS SESSION IS ABOUT: the active tool packs. Published here
+                // because "why does my client not show pack_sheets" must be answerable
+                // from the one call everybody makes first - and because a session
+                // running on the administrator's environment override should say so
+                // rather than look like a user choice.
+                tool_packs = ToolPacksBlock(),
+                // THE JOB LEDGER, folded. queued/running/interrupted are resolved the
+                // way the Session panel resolves them - the record's pid asked of the
+                // OS - so "did my batch survive the restart" is answerable from the
+                // one call everybody makes first. Bounded to the newest 200 records.
+                jobs = JobsBlock(),
+                // MEASURED per-tool timing for THIS session (resets with Revit; the
+                // snapshot says so): expensive tools lead, avg-vs-recent shows drift.
+                timings = ToolTimings.Snapshot(),
                 // WHO ELSE is talking to this Revit (5.16). Two agents on one machine
                 // once cost three journal autopsies: one killed and redeployed the
                 // add-in underneath the other, and neither could see the other. The
@@ -183,6 +197,103 @@ namespace Horizun.Revit.Commands
         private static string LanguageOf(Autodesk.Revit.ApplicationServices.Application rvt)
         {
             try { return rvt.Language.ToString(); } catch { return "unknown"; }
+        }
+
+        /// <summary>
+        /// The resolved pack selection, as facts a caller can act on: which packs, who
+        /// decided (default / settings / environment / malformed), which packs arrived
+        /// through dependencies, how many tools that leaves visible, and the problem
+        /// sentence when the configuration is broken. Guarded like every ornament -
+        /// health never dies measuring one.
+        /// </summary>
+        private static object JobsBlock()
+        {
+            try
+            {
+                string dir = HorizunPaths.JobsDir();
+                if (!System.IO.Directory.Exists(dir))
+                    return new { jobs_path = dir, records = 0 };
+                var files = new System.IO.DirectoryInfo(dir).GetFiles("*.jsonl");
+                Array.Sort(files, (a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
+                int queued = 0, running = 0, interrupted = 0, runningOrDied = 0, ok = 0, failed = 0, unreadable = 0;
+                int examined = Math.Min(files.Length, 200);
+                for (int i = 0; i < examined; i++)
+                {
+                    try
+                    {
+                        JobRecordSummary summary = JobRecordSummary.FromLines(
+                            System.IO.File.ReadLines(files[i].FullName), ProcessAlive);
+                        switch (summary.State)
+                        {
+                            case "queued": queued++; break;
+                            case "running": running++; break;
+                            case "interrupted": interrupted++; break;
+                            case "running_or_died": runningOrDied++; break;
+                            case "finished": if (summary.Failed) failed++; else ok++; break;
+                        }
+                    }
+                    catch { unreadable++; }
+                }
+                return new
+                {
+                    jobs_path = dir,
+                    records = files.Length,
+                    examined,
+                    truncated = files.Length > examined,
+                    queued, running, interrupted,
+                    running_or_died = runningOrDied,
+                    finished_ok = ok, finished_failed = failed, unreadable,
+                    note = interrupted > 0
+                        ? "interrupted: the record's writing process is GONE and the finish line will never come. " +
+                          "The work already checkpointed is still in the record; re-running on top of it is a " +
+                          "second write to weigh, not a default."
+                        : null
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { error = "the job ledger could not be read: " + ex.Message };
+            }
+        }
+
+        private static bool ProcessAlive(int pid)
+        {
+            try { return !System.Diagnostics.Process.GetProcessById(pid).HasExited; }
+            catch { return false; }
+        }
+
+        private static object ToolPacksBlock()
+        {
+            try
+            {
+                ToolPacks.Resolution packs = Core.Settings.ActivePackResolution();
+                var tools = packs.Tools();
+                int total = 0;
+                int visible = 0;
+                foreach (Horizun.Contracts.CommandContract c in Horizun.Contracts.Contract.All)
+                {
+                    total++;
+                    if (!packs.Restricting || tools.Contains(c.Name)) visible++;
+                }
+                return new
+                {
+                    source = packs.Source.ToString().ToLowerInvariant(),
+                    restricting = packs.Restricting,
+                    active = packs.ActivePacks == null ? null : packs.ActivePacks.ToArray(),
+                    chosen = packs.ChosenPacks == null ? null : packs.ChosenPacks.ToArray(),
+                    added_by_dependency = packs.AddedByDependency == null || packs.AddedByDependency.Count == 0
+                        ? null : packs.AddedByDependency.ToArray(),
+                    problem = packs.Problem,
+                    tools_visible = visible,
+                    tools_total = total,
+                    known_packs = System.Linq.Enumerable.ToArray(
+                        System.Linq.Enumerable.OrderBy(ToolPacks.KnownPacks, k => k, StringComparer.Ordinal))
+                };
+            }
+            catch (Exception ex)
+            {
+                return new { source = "unknown", problem = "the pack state could not be read: " + ex.Message };
+            }
         }
 
         private static object ClientsBlock()

@@ -14,12 +14,14 @@
 - Benchmark: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/BENCHMARK.md
 - Security model: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/security-model.md
 - Family authoring: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/FAMILY-AUTHORING.md
+- DWG to BIM: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/DWG-TO-BIM.md
 
 ## Capability and evidence facts
 
 Horizun exposes typed, schema-described Revit operations for inspection,
-quantities, clashes, model edits, views, sheets, schedules, families, exports
-and Power BI ingestion. Typed mutations use the contract's confirmation,
+quantities, clashes, model edits, views, sheets, schedules, families, exports,
+Power BI ingestion, and conversion of linked DWG drawings into BIM through a
+requirement set the caller writes rather than one compiled into the bridge. Typed mutations use the contract's confirmation,
 idempotency and post-commit verification guarantees.
 
 `horizun_execute_python` is disabled by default. A machine owner may grant it for

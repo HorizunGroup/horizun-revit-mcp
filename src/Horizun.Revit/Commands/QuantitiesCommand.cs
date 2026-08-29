@@ -57,6 +57,8 @@ namespace Horizun.Revit.Commands
         public string ParametersSchema => @"{
   ""type"": ""object"",
   ""properties"": {
+    ""target_document_title"": { ""type"": ""string"",
+      ""description"": ""Title of the document you believe is active. When present, the takeoff ABORTS if the active document differs - the same guard model_scan has, and it matters MORE here because this number gets billed: a takeoff of the wrong model is a priced bill of quantities for a file nobody looked at. '.rvt' is optional. Optional for compatibility; pass it whenever more than one document is open."" },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
                        ""description"": ""Elements to measure. Omit and pass 'category' instead to sweep a whole category."" },
     ""category"": { ""type"": ""string"",
@@ -82,6 +84,19 @@ namespace Horizun.Revit.Commands
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+
+            var wantedTitle = request.Value<string>("target_document_title");
+            if (!string.IsNullOrWhiteSpace(wantedTitle))
+            {
+                string actualTitle;
+                try { actualTitle = doc.Title; } catch { actualTitle = null; }
+                if (!TitlesMatch(wantedTitle, actualTitle))
+                    return CommandResult.Fail(
+                        "Refusing to measure: you asked for '" + wantedTitle + "' but the active document is '" +
+                        (actualTitle ?? "(title unreadable)") + "'. Nothing was read. A takeoff of the wrong model " +
+                        "is a priced bill of quantities for a file nobody looked at. Activate the intended document, " +
+                        "or check you are talking to the right Revit host.");
+            }
 
             var detail = ParseDetail(request.Value<string>("detail_level"));
             double tolPct = request["tolerance_pct"] != null ? request.Value<double>("tolerance_pct") : 1.0;
@@ -130,7 +145,29 @@ namespace Horizun.Revit.Commands
             }
 
             if (elements.Count == 0 && failed.Count == 0)
+            {
+                // A dry "nothing matched" error is only honest when this document is
+                // COMPLETE. With a closed workset, zero LOADED elements says nothing
+                // about the model - the whole category may live on the workset nobody
+                // opened - and an error here would be this tool violating its own
+                // doctrine: an absence in the answer read as an absence in the model.
+                DocumentVisibilityCoverage emptyVisibility = DocumentVisibility.Measure(doc);
+                if (!emptyVisibility.CoverageComplete)
+                    return CommandResult.Ok(new JObject
+                    {
+                        ["detail_level"] = detail.ToString(),
+                        ["visibility_coverage"] = emptyVisibility.ToJson(),
+                        ["candidates"] = 0,
+                        ["rows"] = new JArray(),
+                        ["failed"] = failed,
+                        ["headline"] = "0 elements of the requested set are LOADED - and that is NOT a measurement of the model. " +
+                            "INCOMPLETE COVERAGE: " + emptyVisibility.WorksetsClosed + " of " + emptyVisibility.WorksetsTotal +
+                            " workset(s) are CLOSED, and the elements you asked about may live entirely on them. " +
+                            "DO NOT READ AN ABSENCE HERE AS AN ABSENCE IN THE MODEL. Re-open the model with all " +
+                            "worksets open and run this again before pricing anything on it."
+                    });
                 return CommandResult.Fail("No elements matched. Nothing to measure — reporting a total of zero here would read as 'this is empty' rather than 'you asked for nothing'.");
+            }
 
             var options = new Options { ComputeReferences = false, IncludeNonVisibleObjects = false, DetailLevel = detail };
 
@@ -459,6 +496,19 @@ namespace Horizun.Revit.Commands
                 foreach (var o in ge) v += SumSolids(o, ref solids);
             }
             return v;
+        }
+
+        private static bool TitlesMatch(string wanted, string actual)
+        {
+            if (actual == null) return false;
+            return string.Equals(StripRvt(wanted), StripRvt(actual), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string StripRvt(string s)
+        {
+            s = (s ?? "").Trim();
+            if (s.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase)) s = s.Substring(0, s.Length - 4);
+            return s;
         }
 
         private static ViewDetailLevel ParseDetail(string s)

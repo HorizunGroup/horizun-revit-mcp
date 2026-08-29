@@ -152,6 +152,26 @@ namespace Horizun.Server.Tests
                     Assert.Equal(1, (int)tools["horizun_manage_revisions"]);
                     Assert.Equal(1, (int)tools["horizun_capture_view"]);
                 }
+                if (schema >= 5)
+                {
+                    // The linked-and-production section: eighteen cases, every one
+                    // passed, with the exact per-tool split - so a later harness
+                    // cannot trade one linked capability for three easy probes and
+                    // keep the green label.
+                    JObject dp2 = (JObject)y["dimension_production"];
+                    Assert.NotNull(dp2);
+                    Assert.Equal(18, (int)dp2["total"]);
+                    Assert.Equal((int)dp2["total"], (int)dp2["passed"]);
+                    JObject dp2Tools = (JObject)dp2["tools"];
+                    Assert.Equal(3, (int)dp2Tools["horizun_get_dimension_references"]);
+                    Assert.Equal(2, (int)dp2Tools["horizun_annotate"]);
+                    Assert.Equal(2, (int)dp2Tools["horizun_plan_annotations"]);
+                    Assert.Equal(1, (int)dp2Tools["horizun_plan_views"]);
+                    Assert.Equal(3, (int)dp2Tools["horizun_manage_views"]);
+                    Assert.Equal(2, (int)dp2Tools["horizun_manage_schedules"]);
+                    Assert.Equal(1, (int)dp2Tools["horizun_manage_revisions"]);
+                    Assert.Equal(1, (int)dp2Tools["horizun_health"]);
+                }
             }
         }
 
@@ -171,7 +191,7 @@ namespace Horizun.Server.Tests
 
             Assert.Contains("The release gate harness is not pinned to a clean Git commit", harness,
                             StringComparison.Ordinal);
-            Assert.Contains("schema           = 4", generator, StringComparison.Ordinal);
+            Assert.Contains("schema           = 5", generator, StringComparison.Ordinal);
             Assert.Contains("predates harness provenance", generator, StringComparison.Ordinal);
             Assert.Contains("used harness", generator, StringComparison.Ordinal);
             Assert.Contains("current verify-live.ps1 SHA-256", generator, StringComparison.Ordinal);

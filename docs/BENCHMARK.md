@@ -69,7 +69,7 @@ Revit concepts.
 | O1 | 5 | B/S; L pending for new kinds | `horizun_create_elements`, one transaction, confirmation and durable replay. |
 | O2 | 5 | B/S; L pending | Typed structural curve/point creation and structural-type re-read. |
 | O3 | 5 | B/S; L pending for cable tray | Native typed MEP APIs. |
-| O4 | 5 | B/S; L pending for new views | `horizun_manage_views`, aliases and post-commit class checks. |
+| O4 | 5 | B/S/T; L for the W10 batch (area plans, callouts, placeholder conversion, view range/crops, alignment) pending green matrix | `horizun_manage_views` at 24 operations, aliases, per-value post-commit re-reads (view ranges, crops, rotations, alignments), document+batch-unique sheet numbers. |
 | O5 | 5 | B/S; L pending | `horizun_create_family`; RFT→RFA compiler with connector face selection and file/project verification. |
 | O6 | 5 | B/S; L pending | `horizun_manage_system_types`; generic type parameters plus verified host compound structures. |
 | O7 | 5 | L/T/S | Native linked schedule creation/list/read path. |

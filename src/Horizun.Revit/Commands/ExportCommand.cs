@@ -77,6 +77,44 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("ifc_filter_view_id is only valid for IFC export.");
 
             IFCVersion ifcVersion = IFCVersion.Default;
+            // ---- preset: a named, hashed option bundle handed IN as an argument. ----
+            // Organisation-neutral by construction: nothing here ships options for
+            // anybody; the preset arrives with the request, its options override the
+            // loose arguments, its hash joins the plan (an edited preset is a
+            // different plan and the token refuses), and after the export each
+            // option is either PROVED from the produced file or reported
+            // requested_unverifiable by name.
+            ExportPreset preset = null; string presetHash = null;
+            if (request["preset"] is JObject presetToken)
+            {
+                var presetOptions = new List<KeyValuePair<string, string>>();
+                if (presetToken["options"] is JObject optionsToken)
+                    foreach (JProperty property in optionsToken.Properties())
+                        presetOptions.Add(new KeyValuePair<string, string>(property.Name,
+                            property.Value.Type == JTokenType.Boolean
+                                ? ((bool)property.Value ? "true" : "false")
+                                : property.Value.ToString()));
+                string presetReason;
+                preset = ExportPresetRules.Parse(
+                    presetToken.Value<string>("name"), format,
+                    presetToken.Value<int?>("schema_version") ?? 1,
+                    presetToken.Value<string>("overwrite_policy"),
+                    presetOptions, out presetReason);
+                if (preset == null)
+                    return CommandResult.Fail("preset refused: " + presetReason + " Nothing was exported.");
+                presetHash = ExportPresetRules.Hash(preset);
+                if (preset.OverwritePolicy == ExportPresetRules.PolicyReplace) overwrite = true;
+                string optionValue;
+                if (preset.Options.TryGetValue("ifc_version", out optionValue))
+                    request["ifc_version"] = optionValue;
+                if (preset.Options.TryGetValue("acad_version", out optionValue))
+                    request["acad_version"] = optionValue;
+                if (preset.Options.TryGetValue("pixel_size", out optionValue))
+                    request["image_pixels"] = int.Parse(optionValue, System.Globalization.CultureInfo.InvariantCulture);
+                if (preset.Options.TryGetValue("combine", out optionValue))
+                    request["pdf_combine"] = optionValue == "true";
+            }
+
             int ifcSpaceBoundary = request.Value<int?>("ifc_space_boundary_level") ?? 1;
             NavisworksCoordinates nwcCoordinates = NavisworksCoordinates.Shared;
             NavisworksParameters nwcParameters = NavisworksParameters.All;
@@ -107,7 +145,7 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", existing.Where(File.Exists)));
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite",
+            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error");
@@ -195,7 +233,7 @@ namespace Horizun.Revit.Commands
                         apiAccepted = doc.Export(folder, views.Select(v => v.Id).ToList(), pdf); break;
                     case "dwg":
                         apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output),
-                            new List<ElementId> { views[0].Id }, new DWGExportOptions()); break;
+                            new List<ElementId> { views[0].Id }, BuildDwgOptions(request)); break;
                     case "ifc":
                         var ifc = new IFCExportOptions
                         {
@@ -205,7 +243,18 @@ namespace Horizun.Revit.Commands
                             FilterViewId = ifcFilterView?.Id ?? ElementId.InvalidElementId
                         };
                         ifc.FileVersion = ifcVersion;
-                        apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output), ifc); break;
+                        // MEASURED on run 15: Revit's IFC exporter WRITES to the
+                        // document (export marks) and throws 'Modifying is forbidden'
+                        // without an open transaction. The transaction is the API's
+                        // requirement, not a model edit of ours; it commits whatever
+                        // bookkeeping the exporter insists on.
+                        using (var ifcTx = new Transaction(doc, "Horizun: export IFC"))
+                        {
+                            ifcTx.Start();
+                            apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output), ifc);
+                            ifcTx.Commit();
+                        }
+                        break;
                     case "nwc":
                         using (var nwc = new NavisworksExportOptions())
                         {
@@ -261,13 +310,117 @@ namespace Horizun.Revit.Commands
                 var info = new FileInfo(path);
                 files.Add(new JObject { ["path"] = path, ["bytes"] = info.Length, ["last_write_utc"] = info.LastWriteTimeUtc.ToString("o") });
             }
-            return CommandResult.Ok(new JObject
+            var exportResult = new JObject
             {
                 ["format"] = format, ["api_accepted"] = apiAccepted, ["files_verified"] = produced.Count,
                 ["requested_output_path"] = output, ["files"] = files,
                 ["note"] = produced.Count == 1 ? "One produced file was re-read from disk." :
                     "Revit produced multiple sidecar/output files; every changed non-empty file is reported."
-            });
+            };
+            if (preset != null)
+                exportResult["preset"] = VerifyPreset(preset, presetHash, produced);
+            return CommandResult.Ok(exportResult);
+        }
+
+        private static DWGExportOptions BuildDwgOptions(JObject request)
+        {
+            var options = new DWGExportOptions();
+            string acad = request.Value<string>("acad_version");
+            if (acad == "2013") options.FileVersion = ACADVersion.R2013;
+            else if (acad == "2018") options.FileVersion = ACADVersion.R2018;
+            return options;
+        }
+
+        /// <summary>
+        /// Prove each preset option from the produced file where the format admits
+        /// proof; name the rest requested_unverifiable. A claim per option, never a
+        /// blanket "applied".
+        /// </summary>
+        private static JObject VerifyPreset(ExportPreset preset, string presetHash, List<string> produced)
+        {
+            var optionRows = new JArray();
+            bool allProvableHeld = true;
+            foreach (KeyValuePair<string, string> option in preset.Options)
+            {
+                var row = new JObject { ["option"] = option.Key, ["requested"] = option.Value };
+                if (!ExportPresetRules.Verifiable(preset.Format, option.Key))
+                {
+                    row["status"] = "requested_unverifiable";
+                    row["reason"] = "the produced format carries no readable trace of this option; it was passed " +
+                                    "to the exporter and is NOT claimed as verified.";
+                    optionRows.Add(row);
+                    continue;
+                }
+                string readBack = null;
+                try
+                {
+                    string first = produced.FirstOrDefault();
+                    switch (option.Key)
+                    {
+                        case "ifc_version":
+                        {
+                            string head = first == null ? null : ReadHeadText(first, 4096);
+                            string schema = ExportPresetRules.IfcSchemaOf(head);
+                            readBack = schema;
+                            row["verified"] = schema != null &&
+                                schema.StartsWith(option.Value, StringComparison.OrdinalIgnoreCase);
+                            break;
+                        }
+                        case "acad_version":
+                        {
+                            byte[] head = first == null ? null : ReadHeadBytes(first, 6);
+                            readBack = ExportPresetRules.DwgVersionOf(head);
+                            row["verified"] = string.Equals(readBack, option.Value, StringComparison.Ordinal);
+                            break;
+                        }
+                        case "pixel_size":
+                        {
+                            byte[] head = first == null ? null : ReadHeadBytes(first, 24);
+                            int width = ExportPresetRules.PngWidthOf(head);
+                            readBack = width.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                            row["verified"] = width.ToString(System.Globalization.CultureInfo.InvariantCulture) == option.Value;
+                            break;
+                        }
+                        case "combine":
+                        {
+                            readBack = produced.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + " file(s)";
+                            row["verified"] = option.Value != "true" || produced.Count == 1;
+                            break;
+                        }
+                    }
+                }
+                catch (Exception ex) { row["verified"] = false; row["error"] = ex.Message; }
+                row["read_back"] = readBack;
+                if (row["verified"] != null && !(bool)row["verified"]) allProvableHeld = false;
+                row["status"] = row["status"] ?? ((bool?)row["verified"] == true ? "verified" : "failed");
+                optionRows.Add(row);
+            }
+            return new JObject
+            {
+                ["name"] = preset.Name, ["format"] = preset.Format, ["sha256"] = presetHash,
+                ["options"] = optionRows, ["all_provable_options_held"] = allProvableHeld
+            };
+        }
+
+        private static string ReadHeadText(string path, int bytes)
+        {
+            using (var stream = File.OpenRead(path))
+            {
+                var buffer = new byte[Math.Min(bytes, (int)Math.Min(stream.Length, int.MaxValue))];
+                int read = stream.Read(buffer, 0, buffer.Length);
+                return System.Text.Encoding.ASCII.GetString(buffer, 0, read);
+            }
+        }
+
+        private static byte[] ReadHeadBytes(string path, int bytes)
+        {
+            using (var stream = File.OpenRead(path))
+            {
+                var buffer = new byte[Math.Min(bytes, (int)Math.Min(stream.Length, int.MaxValue))];
+                int read = stream.Read(buffer, 0, buffer.Length);
+                Array.Resize(ref buffer, read);
+                return buffer;
+            }
         }
 
         private static List<View> ReadViews(Document doc, JArray ids, out string error)

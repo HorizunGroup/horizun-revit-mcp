@@ -11,10 +11,14 @@
     stale add-in - which then shows the unsigned-add-in dialog for ITS binary and
     reads exactly like the year under test failing to load.
 
-  * The model is handed to an ALREADY RUNNING instance. Passing the file on the
-    command line makes Revit open it during startup, where a workshared central
-    raises a modal nobody is there to answer and the open is simply abandoned. The
-    shell hand-off into a live instance detaches without asking.
+  * The model is opened THROUGH THE BRIDGE, not by the shell. Both of the other
+    ways go through Revit's own open, which raises the warnings roll-up on these
+    fixtures - and a modal with nobody at the keyboard stops Revit servicing the
+    bridge at all, so every later call is refused with "Revit has a MODAL DIALOG
+    open" and the cycle reads as a bridge that never came up. Measured again on
+    2026-08-27: the shell hand-off cost ten minutes of waiting for a document that
+    was sitting behind an unanswered dialog. horizun_open_document opens the same
+    file with no dialog, and says whether it worked.
 #>
 [CmdletBinding()]
 param(
@@ -82,21 +86,19 @@ while ((Get-Date) -lt $deadline) {
 if (-not $up) { Say 'the bridge never came up'; exit 2 }
 Say 'bridge is up with no document'
 
-Say 'handing the model to the running instance'
-$before = @(Get-Process -Name Revit -ErrorAction SilentlyContinue).Count
-Start-Process $Model
-Start-Sleep -Seconds 20
-$after = @(Get-Process -Name Revit -ErrorAction SilentlyContinue)
-if ($after.Count -gt $before) {
-    # The shell launched a SECOND Revit instead of handing the file to the live one -
-    # the .rvt association points at one specific year, and DDE only reaches a Revit
-    # that is ready. Two instances mean the bridge will refuse to choose, so say that
-    # rather than letting it read as a dead bridge six minutes later.
-    Say ("the shell started a SECOND Revit instead of handing over the file (" + $before +
-         " -> " + $after.Count + "). Kill all Revit and re-run; if it repeats, the first " +
-         "instance was not ready to accept DDE.")
-    exit 5
+Say 'opening the model THROUGH THE BRIDGE (the shell raises a dialog nobody can answer)'
+$openArgs = Join-Path $scratch 'cycle-open.json'
+$openOut  = Join-Path $scratch 'cycle-open-result.json'
+@{ path = $Model; idempotency_key = ('live-cycle-' + [guid]::NewGuid().ToString('N')) } |
+    ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $openArgs -Encoding UTF8
+if (Test-Path $openOut) { Remove-Item $openOut -Force }
+& (Join-Path $Repo 'scripts\hz-call.ps1') -Tool horizun_open_document -ArgumentsPath $openArgs `
+    -Json $openOut -Quiet -TimeoutSec 900 2>&1 | Out-Null
+if (Test-Path $openOut) {
+    $opened = Get-Content $openOut -Raw | ConvertFrom-Json
+    if ($opened.is_error) { Say ('the open was refused: ' + $opened.raw); exit 3 }
 }
+
 $deadline = (Get-Date).AddMinutes(10)
 while ((Get-Date) -lt $deadline) {
     $h = Ask-Health

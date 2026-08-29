@@ -53,6 +53,7 @@ namespace Horizun.Revit.Commands
                 else if (!keys.Add(key)) errors.Add(Error(i, "key '" + key + "' is duplicated"));
                 else if (!Allowed.Contains(tool ?? "")) errors.Add(Error(i, "tool '" + tool + "' is not allowed in an atomic plan"));
                 else if (_resolve(tool) == null) errors.Add(Error(i, "tool '" + tool + "' is not installed in this add-in"));
+                else if (!ChildPermitted(tool, out string childRefusal)) errors.Add(Error(i, childRefusal));
                 else if (!(action["arguments"] is JObject)) errors.Add(Error(i, "arguments must be an object"));
                 else foreach (string referenced in PlanReferences.ReferenceKeys(action["arguments"]))
                     if (string.Equals(referenced, key, StringComparison.Ordinal) || !keys.Contains(referenced))
@@ -371,7 +372,20 @@ namespace Horizun.Revit.Commands
                     return CommandResult.FailWithDetail(PlanFailure.Message(diag), diag);
                 }
             }
-            return CommandResult.Ok(applyLedger.SuccessPayload(groupName, new JObject(results)));
+            // BUILD THE PAYLOAD PROPERTY BY PROPERTY.
+            //
+            // new JObject(dictionary) does not do what it looks like: Newtonsoft
+            // enumerates the dictionary as KeyValuePair<string, JToken> and tries
+            // to wrap each pair in a JValue, which throws "Could not determine
+            // JSON object type". results is populated for EVERY action that
+            // commits, so this threw on every successful real apply - and the
+            // only live probe pointed at execute_plan's apply path was one that
+            // deliberately FAILS, to prove rollback. The success path had never
+            // been run against Revit at all.
+            var outputs = new JObject();
+            foreach (KeyValuePair<string, JToken> pair in results)
+                outputs[pair.Key] = pair.Value;
+            return CommandResult.Ok(applyLedger.SuccessPayload(groupName, outputs));
         }
 
         /// <summary>
@@ -451,6 +465,23 @@ namespace Horizun.Revit.Commands
         }
 
         private static JObject Error(int index, string error) => new JObject { ["index"] = index, ["error"] = error };
+
+        /// <summary>
+        /// A plan CHILD runs under the same permission and pack rules as a direct call.
+        /// Without this, execute_plan is a side door: the plan itself is admitted, and
+        /// each step then reaches a command the owner's configuration hides. The check
+        /// runs in validation - before any transaction - so a refused child refuses
+        /// the whole plan by name instead of failing it half-written.
+        /// </summary>
+        private static bool ChildPermitted(string tool, out string refusal)
+        {
+            refusal = null;
+            Horizun.Contracts.CommandContract contract = Horizun.Contracts.Contract.Find(tool);
+            if (contract == null) { refusal = "tool '" + tool + "' has no contract"; return false; }
+            if (!Core.Settings.IsToolAllowed(contract, out string reason))
+            { refusal = "tool '" + tool + "' is not permitted on this machine: " + reason; return false; }
+            return true;
+        }
         private static JToken ToToken(object data) => data == null ? JValue.CreateNull() :
             (data as JToken)?.DeepClone() ?? JToken.FromObject(data);
     }

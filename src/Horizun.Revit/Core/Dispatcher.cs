@@ -277,6 +277,9 @@ namespace Horizun.Revit.Core
             }
             if (result.Success) Log.Info($"{name} ok in {clock.ElapsedMilliseconds} ms");
             else Log.Warn($"{name} FAILED in {clock.ElapsedMilliseconds} ms: {result.Error}");
+            // The one seat every call passes through is where timing facts are
+            // collected; health publishes the fold (ToolTimings.Snapshot).
+            ToolTimings.Record(name, clock.ElapsedMilliseconds);
 
             // ---- The receipt (5.2). Written from what the reply itself carried, after
             // the reply is final, and NEVER able to fail the operation it records: the

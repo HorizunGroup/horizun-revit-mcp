@@ -65,7 +65,8 @@ namespace Horizun.Revit.Commands
                 var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
                     "unique_id", "category", "name", "family", "type", "type_id", "level",
-                    "is_element_type", "source_kind", "source_model", "link_instance_id"
+                    "is_element_type", "source_kind", "source_model", "link_instance_id",
+                    "host_id", "host_category"
                 };
                 foreach (string f in returnFields)
                     if (!known.Contains(f))
@@ -122,6 +123,7 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("coordinate_units must be mm, m or feet.");
             bool includeBox = request.Value<bool?>("include_bounding_box") == true;
             bool includeTypes = request.Value<bool?>("include_types") == true;
+            bool includeMep = request.Value<bool?>("include_mep") == true;
 
             int maxRows = Math.Max(1, Math.Min(500, request.Value<int?>("max_rows") ?? 100));
             var matched = new List<Row>();
@@ -129,7 +131,7 @@ namespace Horizun.Revit.Commands
             int unreadableTotal = 0;
 
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
-                    predicates, projected, queryBox, includeBox, coordinateScale, includeTypes,
+                    predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                     fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
 
             if (includeLinks)
@@ -161,7 +163,7 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
-                            predicates, projected, queryBox, includeBox, coordinateScale, includeTypes,
+                            predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
                             fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
                 }
             }
@@ -214,7 +216,7 @@ namespace Horizun.Revit.Commands
 
             JObject coverage = FederatedVisibility.Measure(host, includeLinks);
             bool coverageComplete = coverage.Value<bool>("coverage_complete") && unreadableTotal == 0;
-            return CommandResult.Ok(new JObject
+            var queryResult = new JObject
             {
                 ["document"] = host.Title,
                 ["scope"] = scope,
@@ -234,13 +236,34 @@ namespace Horizun.Revit.Commands
                 ["federated_coverage"] = coverage,
                 ["summary"] = Summary(matched),
                 ["rows"] = new JArray(page.Select(r => r.Json))
-            });
+            };
+            if (includeMep)
+            {
+                // Aggregated over every MATCHED row (not only the page), because "how
+                // many open connectors" is a model question, not a pagination artifact.
+                int mepRows = 0, mepConnectorTotal = 0, mepOpenTotal = 0;
+                foreach (Row r in matched)
+                {
+                    var block = r.Json["mep"] as JObject;
+                    if (block == null) continue;
+                    mepRows++;
+                    mepConnectorTotal += (block["connectors"] as JArray)?.Count ?? 0;
+                    mepOpenTotal += block.Value<int?>("open_connectors") ?? 0;
+                }
+                queryResult["mep_summary"] = new JObject
+                {
+                    ["rows_with_connectors"] = mepRows,
+                    ["connectors"] = mepConnectorTotal,
+                    ["open_connectors"] = mepOpenTotal
+                };
+            }
+            return CommandResult.Ok(queryResult);
         }
 
         private static void Collect(Document source, string sourceKind, string sourceName, long? linkId,
                                     Transform transform, ElementId viewId, List<string> categories, JObject request,
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
-                                    double coordinateScale, bool includeTypes, HashSet<string> fields,
+                                    double coordinateScale, bool includeTypes, bool includeMep, HashSet<string> fields,
                                     bool compactParameters, List<Row> rows, JArray unreadable,
                                     ref int unreadableTotal)
         {
@@ -264,6 +287,28 @@ namespace Horizun.Revit.Commands
             // for types in that category must not receive a false empty set. Sweep the
             // class as the API's authoritative route and union by ElementId. This is
             // deliberately narrow: no other category gets a guessed substitute.
+            // Explicit element_ids: the caller names EXACTLY the rows it wants -
+            // the verification read every write path needs. Ids resolve directly
+            // (never through category collectors), the other predicates still
+            // apply, and an id that resolves to nothing lands in unreadable
+            // rather than silently shrinking the answer. MEASURED on run 15:
+            // before this, element_ids was silently ignored and the reply carried
+            // arbitrary rows - a verification that read like it verified.
+            if (request["element_ids"] is JArray requestedIds && requestedIds.Count > 0)
+            {
+                var byId = new List<Element>();
+                foreach (JToken idToken in requestedIds)
+                {
+                    long rawId = (long)idToken;
+                    Element resolved = Rid.CanRepresent(rawId) ? source.GetElement(Rid.Make(rawId)) : null;
+                    if (resolved == null)
+                        AddUnreadable(unreadable, ref unreadableTotal,
+                            Error(sourceName, linkId, rawId, "element_ids: this id resolves to no element"));
+                    else byId.Add(resolved);
+                }
+                candidates = byId;
+            }
+
             bool supplementTextTypes = includeTypes && RequestsTextNotes(categories);
             if (supplementTextTypes)
             {
@@ -333,7 +378,56 @@ namespace Horizun.Revit.Commands
                     if (fields == null || fields.Contains("source_kind")) json["source_kind"] = sourceKind;
                     if (fields == null || fields.Contains("source_model")) json["source_model"] = sourceName;
                     if (fields == null || fields.Contains("link_instance_id")) json["link_instance_id"] = linkId == null ? JValue.CreateNull() : new JValue(linkId.Value);
+
+                    // WHAT IT LIVES IN.
+                    //
+                    // A door is not a thing that stands in a room: Revit hosts it
+                    // IN a wall, and a door placed without one is a door-shaped
+                    // object beside its own opening. It creates, it schedules, it
+                    // looks right in plan. The only way to tell the two apart is
+                    // to ask the model what the element's host is - and until now
+                    // there was no typed way to ask, so the answer had to be taken
+                    // from the testimony of whatever wrote it.
+                    if (fields == null || fields.Contains("host_id") || fields.Contains("host_category"))
+                    {
+                        Element hostElement = null;
+                        try { hostElement = (element as FamilyInstance)?.Host; } catch { }
+                        if (fields == null || fields.Contains("host_id"))
+                            json["host_id"] = hostElement == null
+                                ? JValue.CreateNull() : new JValue(Rid.Value(hostElement.Id));
+                        if (fields == null || fields.Contains("host_category"))
+                        {
+                            string hostCategory = null;
+                            try { hostCategory = hostElement?.Category?.Name; } catch { }
+                            json["host_category"] = hostCategory == null
+                                ? JValue.CreateNull() : new JValue(hostCategory);
+                        }
+                    }
                     if (includeBox) json["bounding_box"] = BoxJson(elementBox, coordinateScale);
+                    if (includeMep)
+                    {
+                        // Connector facts, opt-in: domain, shape/size, open or connected,
+                        // partners and system membership - the same reader the fitting
+                        // kind decides over, so discovery and creation describe one
+                        // connector one way. Elements without a connector manager carry
+                        // no block: absent is not the same as "zero connectors".
+                        ConnectorManager mepManager = MepFacts.ManagerOf(element);
+                        if (mepManager != null)
+                        {
+                            var mepConnectors = new JArray();
+                            int mepOpen = 0;
+                            foreach (Connector mepConnector in MepFacts.Ordered(mepManager))
+                            {
+                                if (!mepConnector.IsConnected) mepOpen++;
+                                mepConnectors.Add(MepFacts.Json(mepConnector, transform, coordinateScale));
+                            }
+                            json["mep"] = new JObject
+                            {
+                                ["connectors"] = mepConnectors,
+                                ["open_connectors"] = mepOpen
+                            };
+                        }
+                    }
                     if (returnParameters.Count > 0)
                     {
                         List<string> projectionErrors;

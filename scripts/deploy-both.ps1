@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Deploy BOTH halves of Horizun - the Revit add-in for every year, and the MCP
   server - from this working tree, as ONE TRANSACTION.
@@ -407,6 +407,20 @@ finally {
 
 Write-Host ""
 Write-Host "[Horizun] both halves deployed and verified." -ForegroundColor Green
+
+# The durable install record now describes bytes that no longer exist. Downgrade
+# it HONESTLY: deployed_pending_health, naming the new commit, old health block
+# dropped. Best effort - a deploy must not fail because a status file could not
+# be written - but the failure is SAID, not swallowed silently.
+try {
+    $deployedStamp = Get-HorizunProvenance (Join-Path $serverInstall 'horizun-mcp.dll')
+    if ($deployedStamp -and $deployedStamp.Sha) {
+        & (Join-Path $PSScriptRoot 'refresh-install-status.ps1') -DeployedCommit $deployedStamp.Sha
+    }
+}
+catch {
+    Write-Warning "install-status.json could not be refreshed: $($_.Exception.Message). The durable record may still describe the previous build."
+}
 
 if (-not $SkipServer -and $mcpRunning.Count -gt 0) {
     # Did the CONTRACT actually move between the server that keeps running and the

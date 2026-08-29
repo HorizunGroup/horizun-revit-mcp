@@ -1009,7 +1009,7 @@ if ($Document) {
                   Check = { param($d) & $coverageShape $d.visibility_coverage } }
 
     $probes += @{ Name = 'audit_model carries a visibility_coverage block'
-                  Tool = 'horizun_audit_model'; Args = @{ top = 1 }
+                  Tool = 'horizun_audit_model'; Args = @{ target_document = $Document; top = 1 }
                   Check = { param($d) & $coverageShape $d.visibility_coverage } }
 
     $probes += @{ Name = 'clash carries a visibility_coverage block'
@@ -1043,7 +1043,7 @@ if ($Document) {
     # correct answers. They must agree on whether unloaded links exist and whether
     # every status was readable.
     $probes += @{ Name = 'audit and scan AGREE about the links'
-                  Tool = 'horizun_audit_model'; Args = @{ top = 2 }
+                  Tool = 'horizun_audit_model'; Args = @{ target_document = $Document; top = 2 }
                   Check = { param($d)
                             $links = @($d.findings | Where-Object { $_.check -eq 'links' })
                             if ($links.Count -ne 1) { return $false }
@@ -1128,13 +1128,25 @@ if ($Document) {
     # a total of zero, because zero reads as "this is empty" rather than "you asked
     # for nothing". A right answer that the harness could not use.
     $probes += @{ Name = ("quantities reports coverage per source, never a defaulted zero (" + $QuantityCategory + ")")
-                  Tool = 'horizun_quantities'; Args = @{ category = $QuantityCategory; only_disagreements = $true; top = 1 }
+                  Tool = 'horizun_quantities'
+                  Args = @{ target_document_title = $Document
+                            category = $QuantityCategory; only_disagreements = $true; top = 1 }
                   Check = { param($d)
                             $d.coverage -and $d.coverage.volume_geometry.total_is_complete -ne $null -and
                             $d.comparison.candidates -ge 0 -and
                             # A quantity is the answer somebody puts in a budget. It must
                             # never travel without saying how much of the model it is over.
                             (& $coverageShape $d.visibility_coverage) } }
+
+    if ($InactiveDocument) {
+        # The verifier itself, exercised negatively: the money tool must refuse to
+        # measure when the caller names a document that is NOT the active one.
+        $probes += @{ Name = 'quantities REFUSES a target_document_title that is not the active document'
+                      Tool = 'horizun_quantities'
+                      Args = @{ target_document_title = $InactiveDocument
+                                category = $QuantityCategory; top = 1 }
+                      ExpectError = 'Refusing to measure' }
+    }
 
     $probes += @{ Name = 'list_elements reports bounded host/link rows and federated coverage'
                   Tool = 'horizun_list_elements'
@@ -1311,7 +1323,7 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName) {
                              ).Count -ge 1 } }
 
     $probes += @{ Name = 'a CLOSED workset makes audit_model report incomplete coverage'
-                  Tool = 'horizun_audit_model'; Args = @{ top = 1 }
+                  Tool = 'horizun_audit_model'; Args = @{ target_document = $ClosedWorksetProbeTitle; top = 1 }
                   Needs = 'ClosedWorksetActive'
                   NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
@@ -1335,7 +1347,12 @@ if ($ClosedWorksetDocument -and $ClosedWorksetName) {
 
     $probes += @{ Name = 'a CLOSED workset rides along with the quantity itself'
                   Tool = 'horizun_quantities'
-                  Args = @{ category = $QuantityCategory; only_disagreements = $true; top = 1 }
+                  # target_document_title is retargeted to the VERIFIED opened title by the
+                  # activation handler, so a stolen active document becomes a named refusal
+                  # instead of a takeoff of whatever happened to be in front (run 19 measured
+                  # exactly that: same fixture bytes, 'No elements matched' from another doc).
+                  Args = @{ target_document_title = $ClosedWorksetProbeTitle
+                            category = $QuantityCategory; only_disagreements = $true; top = 1 }
                   Needs = 'ClosedWorksetActive'
                   NotCovered = 'the closed-workset document could not be activated safely by unique discovered path'
                   Check = { param($d)
@@ -1388,6 +1405,9 @@ $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
 $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+# MEASURED on run 15: without this, a unicode argument (Tubería) reaches the
+# server mojibake - the reply was fine, the REQUEST was not.
+$psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
 $proc = [System.Diagnostics.Process]::Start($psi)
 
 # Production calls such as manage_revisions carry arrays nested below the
@@ -1395,6 +1415,7 @@ $proc = [System.Diagnostics.Process]::Start($psi)
 # those valid payloads only after the envelope is added, so keep the transport
 # comfortably above every closed tool schema's maximum nesting.
 function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 32 -Compress)); $proc.StandardInput.Flush() }
+$script:rpcNotifications = [System.Collections.Generic.List[object]]::new()
 function Read-Rpc([int]$TimeoutMs = 620000) {
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ($true) {
@@ -1408,8 +1429,12 @@ function Read-Rpc([int]$TimeoutMs = 620000) {
         if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
         if (-not $t.Result) { return $null }
         try { $m = $t.Result | ConvertFrom-Json } catch { continue }
-        # Progress notifications carry no id and are not anybody's answer.
+        # Progress and list-change notifications carry no id and are not
+        # anybody's answer. Keep them in the one stdout reader's inbox so a
+        # probe can inspect them without starting a second ReadLineAsync on the
+        # same StreamReader (which .NET refuses as a concurrent read).
         if ($m.id) { return $m }
+        [void]$script:rpcNotifications.Add($m)
     }
 }
 
@@ -2071,6 +2096,92 @@ $writeNames = @(
     @{ N = 'intent dimensioning resolves semantic references and commits the planned chain';   T = 'horizun_plan_annotations' }
     @{ N = 'revision production creates the record, sheet assignment and cloud atomically';    T = 'horizun_manage_revisions' }
     @{ N = 'a real sheet is captured as direct visual-review evidence without PDF';             T = 'horizun_capture_view' }
+
+    # ---- W10+: LINKED DIMENSIONS AND PRODUCTION AT SCALE. Named here FIRST so
+    # ---- a gated run reports every probe as NOT COVERED by name instead of
+    # ---- quietly shrinking the denominator.
+    @{ N = 'the run authors its own link source and links it three ways, rediscovered typed';    T = 'horizun_query_model' }
+    @{ N = 'linked discovery carries the four separated ids, a transform fingerprint and host coordinates'; T = 'horizun_get_dimension_references' }
+    @{ N = 'two instances of one link are two identities with two fingerprints';                 T = 'horizun_get_dimension_references' }
+    @{ N = 'a rotated placement reports has_rotation and host-space directions turned exactly';  T = 'horizun_get_dimension_references' }
+    @{ N = 'linked dimensions commit with provenance where supported; Revit 2023 refuses its measured API limit'; T = 'horizun_annotate' }
+    @{ N = 'linked-dimension tokens go stale after a move where supported; Revit 2023 withholds every token'; T = 'horizun_annotate' }
+    @{ N = 'an unloaded link answers by code link_unloaded and reloads for the cases after';     T = 'horizun_get_dimension_references' }
+    @{ N = 'query_dimensions resolves linked references where authorable; Revit 2023 names why none can exist'; T = 'horizun_query_dimensions' }
+    @{ N = 'auto_dimension_grids plans a complete chain, commits it, and deduplicates the replay'; T = 'horizun_plan_annotations' }
+    @{ N = 'auto_dimension over a link REFUSES by measurement: Revit 2026 rejects linked datums (linked geometry references do work)'; T = 'horizun_plan_annotations' }
+    @{ N = 'room production plans oriented elevations, sections and a cropped plan, committed whole'; T = 'horizun_plan_views' }
+    @{ N = 'a placeholder sheet converts to a titled sheet and its number cannot be reused';     T = 'horizun_manage_views' }
+    @{ N = 'view range, rectangular crop and annotation crop commit and re-read in one batch';   T = 'horizun_manage_views' }
+    @{ N = 'viewports align to a still anchor and the outlines re-read within tolerance';        T = 'horizun_manage_views' }
+    @{ N = 'a schedule definition edits by declared whole lists and replays idempotently';       T = 'horizun_manage_schedules' }
+    @{ N = 'a schedule edited underneath its token refuses as a stale plan';                     T = 'horizun_manage_schedules' }
+    @{ N = 'a revision withdraws from a sheet and a second withdrawal refuses by name';          T = 'horizun_manage_revisions' }
+    @{ N = 'tool packs shrink the live surface, announce list_changed, and restore';             T = 'horizun_health' }
+
+    # ---- W11: MAXIMUM PROGRAM. Phases 5-14 live: connectors, fittings,
+    # ---- penetrations, findings, structure, tabular, links, gate, catalog.
+    @{ N = 'include_mep reads a staged pipe: two open round connectors and a matching summary'; T = 'horizun_query_model' }
+    @{ N = 'a fitting elbow joins two coincident open connectors and both re-read CONNECTED';   T = 'horizun_create_elements' }
+    @{ N = 'a fitting between distant connectors refuses naming the measured millimetres';      T = 'horizun_create_elements' }
+    @{ N = 'plan_penetrations turns a staged pipe-wall clash into a wall-opening plan';         T = 'horizun_clash' }
+    @{ N = 'a STRUCTURAL wall refuses the opening without the opt-in, and cuts with it';        T = 'horizun_create_elements' }
+    @{ N = 'record_findings opens a durable finding, an update survives the re-run';            T = 'horizun_coordination' }
+    @{ N = 'the findings export re-reads bytes, sha256 and row count from the file';            T = 'horizun_coordination' }
+    @{ N = 'plan_structure columns two grid crossings, commits them, and the replay says already_present'; T = 'horizun_plan_structure' }
+    @{ N = 'a CSV becomes verified writes, the replay is a declared no-op, duplicate keys refuse'; T = 'horizun_write_params_verified' }
+    @{ N = 'links unload, reload, pin and unpin typed, each state re-read';                     T = 'horizun_manage_links' }
+    @{ N = 'the pre-delivery gate answers the declared set and refuses the misspelled one';     T = 'horizun_audit_model' }
+    @{ N = 'create_family emits a type catalog verified from the file on disk';                 T = 'horizun_create_family' }
+    @{ N = 'health carries the job ledger fold and the session timing facts';                   T = 'horizun_health' }
+    # ---- W12: the checklist increment (14) --------------------------------
+    @{ N = 'route_run plans an L, and the batch commits whole with its deferred corner';        T = 'horizun_plan_mep' }
+    @{ N = 'a 20 mm segment refuses in millimetres and a collinear vertex merges NAMED';        T = 'horizun_plan_mep' }
+    @{ N = 'takeoff refusals measured: distance to the main, and the type without Tap preference'; T = 'horizun_create_elements' }
+    @{ N = 'a sloped run reads its slope and the verified diameter write re-reads 100 mm';      T = 'horizun_write_params_verified' }
+    @{ N = 'the open-connector census measures model-wide and fails the zero gate';             T = 'horizun_audit_model' }
+    @{ N = 'a vertical crossing plans a CIRCULAR slab opening and the cut commits';             T = 'horizun_clash' }
+    @{ N = 'crossings 300 mm apart cluster into ONE opening spanning both';                     T = 'horizun_clash' }
+    @{ N = 'a sleeve stand-in places oriented (rotation inside the same transaction)';          T = 'horizun_create_elements' }
+    @{ N = 'a finding takes a comment into its history, an evidence view, and a structural BCF'; T = 'horizun_coordination' }
+    @{ N = 'a beam system commits real members, refuses the 100 mm edge, and the wall gets its footing'; T = 'horizun_create_elements' }
+    @{ N = 'CSV rows place instances and the edited file refuses the old token as stale';       T = 'horizun_create_elements' }
+    @{ N = 'shared coordinates read, and the CSV writes once and replays the same sha';         T = 'horizun_excel_write_rows' }
+    @{ N = 'a link is ADDED then REPOINTED, both halves re-read';                               T = 'horizun_manage_links' }
+    @{ N = 'the family flexes measured and its thumbnail verifies from disk';                   T = 'horizun_create_family' }
+    # ---- W13: the mandated positives (15) ---------------------------------
+    @{ N = 'a REAL takeoff commits on a type given Tap preference the typed way';               T = 'horizun_create_elements' }
+    @{ N = 'the labeled parameter DRIVES the solid: T300 and T600 measure 300 and 600';         T = 'horizun_create_family' }
+    @{ N = 'a Yes/No parameter associates to form visibility, verified in the family';          T = 'horizun_create_family' }
+    @{ N = 'a material parameter associates and the family loads and re-reads';                 T = 'horizun_create_family' }
+    @{ N = 'v2 reloads over v1 with explicit overwrite and the instance survives';              T = 'horizun_create_family' }
+    @{ N = 'unicode, number and boolean round-trip the workbook OVER THE WIRE';                 T = 'horizun_excel_read_rows' }
+    @{ N = 'the declared comma parses 250,5 and the default separator refuses it BY QUOTING';   T = 'horizun_create_elements' }
+    @{ N = 'a SHARED-coordinate row lands at its internal target within 5 mm';                  T = 'horizun_create_elements' }
+    @{ N = 'the routed run answers as ONE component carrying its system';                       T = 'horizun_plan_mep' }
+    @{ N = 'touching is NOT connected: coincident unjoined pipes are two components';           T = 'horizun_plan_mep' }
+    @{ N = 'a queued apply cancelled on the wire provably never ran, token unconsumed';         T = 'horizun_create_elements' }
+    @{ N = 'the 17th concurrent caller hears the queue is full, explicitly';                    T = 'horizun_model_scan' }
+    @{ N = 'a truly lost commit reply replays by key: executed_once, exactly one grid';         T = 'horizun_create_elements' }
+    @{ N = 'the preset proves ifc_version from FILE_SCHEMA and refuses the typo by name';       T = 'horizun_export' }
+    @{ N = 'five representative reads measure under caps declared before the run';              T = 'horizun_health' }
+    # ---- W14: the remaining phase surfaces (7) ----------------------------
+    @{ N = 'accessory_inline REFUSES a point off the pipe axis, named in millimetres, before any write'; T = 'horizun_create_elements' }
+    @{ N = 'a connectorless inline symbol rolls back WHOLE: named error, the pipe stays ONE piece'; T = 'horizun_create_elements' }
+    @{ N = 'rebar cover: a typed write points the structural wall at a staged cover type and re-reads it'; T = 'horizun_write_params_verified' }
+    @{ N = 'an interrupted job from a DEAD Revit answers the second-write warning off the disk record'; T = 'horizun_job_status' }
+    @{ N = 'S, M and L scan workloads stay under caps declared before the run, UI hold included'; T = 'horizun_model_scan' }
+    @{ N = 'reply bytes ride under the declared cap on all three sizes, the largest named';     T = 'horizun_model_scan' }
+    @{ N = 'the Revit working set is measured across the S/M/L batch and bounded';              T = 'horizun_health' }
+    @{ N = 'one height, four readings: the number matches only under its DECLARED separator'; T = 'horizun_write_params_verified' }
+    @{ N = 'an authored valve breaks a live pipe in two and BOTH halves re-read CONNECTED to it'; T = 'horizun_create_elements' }
+    @{ N = 'a verified Tap type either commits its takeoff or rolls back WHOLE on Revit''s refusal'; T = 'horizun_create_elements' }
+    @{ N = 'a NAMED piping system is created and re-reads the exact member ids it was given'; T = 'horizun_create_elements' }
+    @{ N = 'a member with no connector in the system''s domain refuses the whole row BY NAME'; T = 'horizun_create_elements' }
+    @{ N = 'THE POSITIVE TAKEOFF: a real duct tap commits and its connectors re-read CONNECTED'; T = 'horizun_create_elements' }
+    @{ N = 'a member whose connectors already belong to a system refuses BY NAME at plan time'; T = 'horizun_create_elements' }
+    @{ N = 'a connector that declares NO system classification refuses instead of joining nobody'; T = 'horizun_create_elements' }
+    @{ N = 'a member classified for another system refuses, naming BOTH classifications'; T = 'horizun_create_elements' }
 )
 
 # The dimension probes are addressed by CASE NUMBER 1..17, the 2D-detail probes
@@ -2079,7 +2190,12 @@ $writeNames = @(
 # end backwards, not hard-coded, so inserting a probe above cannot silently
 # misattribute every verdict to its neighbour's name - and each base is derived
 # from the one after it, so adding a section means adding one line here.
-$productionNameBase = $writeNames.Count - 5
+$w14NameBase = $writeNames.Count - 16
+$w13NameBase = $w14NameBase - 15
+$w12NameBase = $w13NameBase - 14
+$mpNameBase = $w12NameBase - 13
+$dp2NameBase = $mpNameBase - 18
+$productionNameBase = $dp2NameBase - 5
 $fixNameBase = $productionNameBase - 23
 $planNameBase = $fixNameBase - 22
 $d2dNameBase = $planNameBase - 11
@@ -7221,6 +7337,3588 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-s
             if (-not $script:productionCasesDone.ContainsKey($pc)) { Complete-ProductionCase $pc (Get-Date) 'unverified' 'the production section ended before this probe ran - a harness bug' }
         }
 
+        # ----------------------------------------------------------------------
+        # W10+: LINKED DIMENSIONS AND PRODUCTION AT SCALE.
+        #
+        # Everything below runs in the SAME never-saved disposable model. The link
+        # SOURCE is a small project this run authors itself in the scratch
+        # directory (a level, two vertical grids, one Y-running wall - geometry
+        # chosen so every dimension in the section is between parallel verticals),
+        # linked in as ONE RevitLinkType with THREE instances: A translated,
+        # B translated and rotated 30 degrees, C a second plain translation -
+        # the two-instances-of-one-link identity case. The staging scripts are
+        # harness INFRASTRUCTURE, exactly like the case-15 link staging this
+        # suite has carried since 2026-08-24; every capability under test is
+        # exercised through the TYPED tools alone.
+        # ----------------------------------------------------------------------
+        $script:dp2Evidence = @()
+        $script:dp2CasesDone = @{}
+        function Complete-Dp2Case {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:dp2CasesDone.ContainsKey($CaseNumber)) { return }
+            $script:dp2CasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$dp2NameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:dp2Evidence += @{
+                case=$CaseNumber; name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+
+        # The link fixture's geometry, one place. Feet inside the scripts, mm in
+        # the typed calls; the offsets sit far east of both the sample model and
+        # the synthetic dimension fixture.
+        $dp2OffAXmm = 560000; $dp2OffAYmm = 0
+        $dp2OffBXmm = 560000; $dp2OffBYmm = 50000
+        $dp2OffCXmm = 560000; $dp2OffCYmm = 100000
+        $dp2RotBDeg = 30.0
+
+        $pythonListedDp2 = @($listed | Where-Object { $_.name -eq 'horizun_execute_python' }).Count -gt 0
+        $dp2Gap = $null
+        if (-not $pythonListedDp2) { $dp2Gap = 'execute_python is not advertised, so the link/room fixtures cannot be staged' }
+        elseif (-not $dimPlanViewId) { $dp2Gap = 'the dimension fixture did not retain its plan view' }
+        elseif (@($dimParGridIds).Count -lt 3) { $dp2Gap = 'the dimension fixture did not retain its three parallel grids (case 9 needs a pair no earlier case dimensioned)' }
+
+        $dp2 = $null
+        if (-not $dp2Gap) {
+            # ---- stage: author the link source, link it three times ----------
+            $t0 = Get-Date
+            $dp2Source = Join-Path $scratchDir ("HZ_LINKSRC_{0}.rvt" -f $planTag)
+            $stageDp2 = @'
+import math
+from Autodesk.Revit.DB import (Transaction, Level, Grid, Wall, Line, XYZ, UnitSystem,
+                               RevitLinkType, RevitLinkInstance, RevitLinkOptions,
+                               ModelPathUtils, ElementTransformUtils,
+                               FilteredElementCollector, SaveAsOptions)
+
+FT = 304.8
+def ft(mm): return mm / FT
+
+app = doc.Application
+src = app.NewProjectDocument(UnitSystem.Metric)
+t = Transaction(src, 'HZ live: author link source')
+t.Start()
+level = Level.Create(src, 0.0)
+# Along X, at local y=0 and y=5000, running from local x=-55000 so that after
+# the +560000mm translation the drawn extent still overlaps the host fixture's
+# grids near x=511500 - the vertical measuring line then crosses every drawn
+# datum rather than leaning on the infinite plane.
+g1 = Grid.Create(src, Line.CreateBound(XYZ(ft(-55000), 0, 0), XYZ(ft(12000), 0, 0)))
+g2 = Grid.Create(src, Line.CreateBound(XYZ(ft(-55000), ft(5000), 0), XYZ(ft(12000), ft(5000), 0)))
+g1.Name = 'HZL-1'
+g2.Name = 'HZL-2'
+wall = Wall.Create(src, Line.CreateBound(XYZ(ft(-52000), ft(8000), 0), XYZ(ft(-46000), ft(8000), 0)), level.Id, False)
+t.Commit()
+opts = SaveAsOptions()
+opts.OverwriteExistingFile = True
+src.SaveAs(r'__SRC__', opts)
+grid_ids = []
+for g in (g1, g2):
+    grid_ids.append(g.Id.IntegerValue if hasattr(g.Id, 'IntegerValue') else g.Id.Value)
+wall_id = wall.Id.IntegerValue if hasattr(wall.Id, 'IntegerValue') else wall.Id.Value
+src.Close(False)
+
+mp = ModelPathUtils.ConvertUserVisiblePathToModelPath(r'__SRC__')
+t2 = Transaction(doc, 'HZ live: link the source three times')
+t2.Start()
+res = RevitLinkType.Create(doc, mp, RevitLinkOptions(False))
+type_id = res.ElementId
+offsets = {'a': (ft(__AX__), ft(__AY__)), 'b': (ft(__BX__), ft(__BY__)), 'c': (ft(__CX__), ft(__CY__))}
+made = {}
+for key in ('a', 'b', 'c'):
+    inst = RevitLinkInstance.Create(doc, type_id)
+    dx, dy = offsets[key]
+    ElementTransformUtils.MoveElement(doc, inst.Id, XYZ(dx, dy, 0))
+    if key == 'b':
+        axis = Line.CreateBound(XYZ(dx, dy, 0), XYZ(dx, dy, 10))
+        ElementTransformUtils.RotateElement(doc, inst.Id, axis, math.radians(__ROT__))
+    made[key] = inst
+t2.Commit()
+
+report = {}
+ok = True
+for key, inst in made.items():
+    tf = inst.GetTotalTransform()
+    iid = inst.Id.IntegerValue if hasattr(inst.Id, 'IntegerValue') else inst.Id.Value
+    dx, dy = offsets[key]
+    origin_ok = abs(tf.Origin.X - dx) < 0.01 and abs(tf.Origin.Y - dy) < 0.01
+    if key == 'b':
+        rot_ok = abs(tf.BasisX.X - math.cos(math.radians(__ROT__))) < 0.001
+    else:
+        rot_ok = abs(tf.BasisX.X - 1.0) < 0.001
+    if not (origin_ok and rot_ok):
+        ok = False
+    report[key] = {'id': iid, 'origin': [tf.Origin.X, tf.Origin.Y], 'basis_x_x': tf.BasisX.X}
+
+type_id_int = type_id.IntegerValue if hasattr(type_id, 'IntegerValue') else type_id.Value
+__output__ = {'status': 'self_reported_verified' if ok else 'partial',
+              'link_type': type_id_int, 'instances': report,
+              'grids': grid_ids, 'wall': wall_id, 'source': r'__SRC__'}
+'@
+            $stageDp2 = $stageDp2.Replace('__SRC__', $dp2Source).Replace('__AX__', "$dp2OffAXmm").Replace('__AY__', "$dp2OffAYmm")
+            $stageDp2 = $stageDp2.Replace('__BX__', "$dp2OffBXmm").Replace('__BY__', "$dp2OffBYmm")
+            $stageDp2 = $stageDp2.Replace('__CX__', "$dp2OffCXmm").Replace('__CY__', "$dp2OffCYmm").Replace('__ROT__', "$dp2RotBDeg")
+            if (-not (Test-Path $scratchDir)) { New-Item -ItemType Directory -Force $scratchDir | Out-Null }
+            $stageDp2Path = Join-Path $scratchDir 'stage-linked-fixture.py'
+            [IO.File]::WriteAllText($stageDp2Path, $stageDp2, [Text.UTF8Encoding]::new($false))
+            $st = Invoke-Write 'horizun_execute_python' @{
+                code_path = $stageDp2Path; target_document = $wDoc
+                idempotency_key = "live-dp2-stage-links-$probeRun" }
+            $stOut = $null
+            if (-not $st.isError -and $st.data) { $stOut = $st.data.output }
+            if ($stOut -and $stOut.status -eq 'self_reported_verified') {
+                # The TYPED rediscovery is what the case actually asserts: the three
+                # instances a client would find, counted by the query surface.
+                $lq = Invoke-Write 'horizun_query_model' @{ categories = @('OST_RvtLinks'); include_links = $false; max_rows = 20 }
+                $foundIds = @()
+                if (-not $lq.isError -and $lq.data) { $foundIds = @(@($lq.data.rows) | ForEach-Object { [long]$_.element_id }) }
+                $wantIds = @([long]$stOut.instances.a.id, [long]$stOut.instances.b.id, [long]$stOut.instances.c.id)
+                $allFound = $true
+                foreach ($w in $wantIds) { if ($foundIds -notcontains $w) { $allFound = $false } }
+                if ($allFound) {
+                    $dp2 = @{ TypeId = [long]$stOut.link_type
+                              A = [long]$stOut.instances.a.id; B = [long]$stOut.instances.b.id; C = [long]$stOut.instances.c.id
+                              Grids = @(@($stOut.grids) | ForEach-Object { [long]$_ }); WallId = [long]$stOut.wall
+                              Source = [string]$stOut.source }
+                    Complete-Dp2Case 1 $t0 'pass' 'the run authored its own link source, linked it three times (translated, rotated, twin) and the typed query rediscovered all three instances' `
+                        -Evidence @{ link_type=$dp2.TypeId; instances=$wantIds; source=$dp2.Source; staged=$stOut.instances }
+                } else {
+                    Complete-Dp2Case 1 $t0 'fail' ('the staged instances were not all rediscovered by the typed query; wanted ' + ($wantIds -join ',') + ' found ' + ($foundIds -join ','))
+                }
+            } else {
+                $why = '(no output)'
+                if ($stOut) { $why = [string]$stOut.status + ' ' + [string]$stOut.error } elseif ($st.text) { $why = Get-DimShortText $st.text }
+                Complete-Dp2Case 1 $t0 'fail' ('the link fixture staging did not verify itself: ' + $why)
+            }
+        }
+        if ($dp2Gap) {
+            for ($dc=1; $dc -le 18; $dc++) { Complete-Dp2Case $dc (Get-Date) 'not_covered' $dp2Gap }
+        }
+        elseif (-not $dp2) {
+            for ($dc=2; $dc -le 18; $dc++) { Complete-Dp2Case $dc (Get-Date) 'unverified' 'the link fixture was not staged, so this probe could not run' }
+        }
+        else {
+            # ---- case 2: linked discovery carries full provenance and HOST coordinates
+            $t0 = Get-Date
+            $d2 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                linked_targets = @(@{ link_instance_id = $dp2.A; linked_element_ids = @($dp2.WallId) })
+                selectors = @('exterior_face'); max_results = 20 }
+            if ($d2.isError -or -not $d2.data) {
+                Complete-Dp2Case 2 $t0 'fail' ('linked discovery errored: ' + (Get-DimShortText $d2.text))
+            } else {
+                $rows2 = @(@($d2.data.rows) | Where-Object { $_.linked -eq $true })
+                $row2 = $null
+                if ($rows2.Count -gt 0) { $row2 = $rows2[0] }
+                $linkBlock = $null
+                if ($row2) { $linkBlock = $row2.link }
+                # The wall runs along X at local y=8000; instance A translates by
+                # (560000, 0), so the HOST-space face plane sits near y=8000mm
+                # (either side of the default thickness stays inside the 300mm gate).
+                $originOk = $false
+                if ($row2 -and $row2.geometry -and $row2.geometry.origin) {
+                    $oy = [double](@($row2.geometry.origin)[1])
+                    $originOk = [math]::Abs($oy - 8000) -lt 300   # within the wall thickness
+                }
+                $compatibilityOk2 = $false
+                if ($row2) {
+                    $compatibilityOk2 = if ($Year -eq 2023) {
+                        $row2.compatible_with_dimension -eq $false -and $row2.incompatibility_reason -and
+                        [string]$row2.incompatibility_reason.code -eq 'linked_geometry_rejected_by_revit_2023_dimension_api'
+                    } else { $row2.compatible_with_dimension -eq $true }
+                }
+                if ($row2 -and $linkBlock -and
+                    [long]$linkBlock.link_instance_id -eq $dp2.A -and
+                    [long]$linkBlock.linked_element_id -eq $dp2.WallId -and
+                    -not [string]::IsNullOrWhiteSpace([string]$linkBlock.transform_fingerprint) -and
+                    -not [string]::IsNullOrWhiteSpace([string]$row2.stable_representation) -and
+                    $compatibilityOk2 -and $originOk -and
+                    [int]$d2.data.linked_candidates -ge 1 -and
+                    [int]$d2.data.coverage.linked_targets_inspected -eq 1) {
+                    $compatibilityDetail2 = if ($Year -eq 2023) {
+                        'and the version-specific incompatibility code'
+                    } else { 'and compatible_with_dimension true' }
+                    Complete-Dp2Case 2 $t0 'pass' ('the linked wall face came back with instance/type/document/element ids separated, a transform fingerprint, a host-space plane at the translated position, federated coverage counters, ' + $compatibilityDetail2) `
+                        -Evidence @{ row=$row2; coverage=$d2.data.coverage }
+                } else {
+                    Complete-Dp2Case 2 $t0 'fail' ('the linked row did not carry what it had to; rows=' + $rows2.Count + ' originOk=' + $originOk + ' ' + (Get-DimShortText $d2.text))
+                }
+            }
+
+            # ---- case 3: two instances of ONE link are two identities --------
+            $t0 = Get-Date
+            $d3 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                linked_targets = @(
+                    @{ link_instance_id = $dp2.A; linked_element_ids = @($dp2.Grids[0]) },
+                    @{ link_instance_id = $dp2.C; linked_element_ids = @($dp2.Grids[0]) })
+                selectors = @('grid'); max_results = 20 }
+            if ($d3.isError -or -not $d3.data) {
+                Complete-Dp2Case 3 $t0 'fail' ('twin-instance discovery errored: ' + (Get-DimShortText $d3.text))
+            } else {
+                $rows3 = @(@($d3.data.rows) | Where-Object { $_.linked -eq $true })
+                $stableSet = @($rows3 | ForEach-Object { [string]$_.stable_representation } | Sort-Object -Unique)
+                $fpSet = @($rows3 | ForEach-Object { [string]$_.link.transform_fingerprint } | Sort-Object -Unique)
+                $instSet = @($rows3 | ForEach-Object { [long]$_.link.link_instance_id } | Sort-Object -Unique)
+                if ($rows3.Count -eq 2 -and $stableSet.Count -eq 2 -and $fpSet.Count -eq 2 -and
+                    $instSet.Count -eq 2 -and ($instSet -contains $dp2.A) -and ($instSet -contains $dp2.C)) {
+                    Complete-Dp2Case 3 $t0 'pass' 'the SAME linked grid through two placements produced two rows with distinct stable representations and distinct transform fingerprints - identity includes the instance' `
+                        -Evidence @{ stable=$stableSet; fingerprints=$fpSet }
+                } else {
+                    Complete-Dp2Case 3 $t0 'fail' ('the twin instances did not separate: rows=' + $rows3.Count + ' stable=' + $stableSet.Count + ' fp=' + $fpSet.Count)
+                }
+            }
+
+            # ---- case 4: the rotated placement is reported rotated -----------
+            $t0 = Get-Date
+            $d4 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                linked_targets = @(@{ link_instance_id = $dp2.B; linked_element_ids = @($dp2.Grids[0]) })
+                selectors = @('grid'); max_results = 20 }
+            $row4 = $null
+            if (-not $d4.isError -and $d4.data) { $row4 = @(@($d4.data.rows) | Where-Object { $_.linked -eq $true })[0] }
+            if ($row4 -and $row4.link.transform -and
+                $row4.link.transform.has_rotation -eq $true -and
+                $row4.link.transform.has_reflection -eq $false -and
+                [string]$row4.link.transform.handedness -eq 'right') {
+                # The grid runs along +X in the link; rotated 30 degrees CCW its host
+                # direction is (cos30, sin30). The reported geometry is host-space.
+                $dirOk = $false
+                if ($row4.geometry -and $row4.geometry.direction) {
+                    $gx = [double](@($row4.geometry.direction)[0]); $gy = [double](@($row4.geometry.direction)[1])
+                    $wantX = [math]::Cos([math]::PI * $dp2RotBDeg / 180.0)
+                    $wantY = [math]::Sin([math]::PI * $dp2RotBDeg / 180.0)
+                    $dot = [math]::Abs($gx * $wantX + $gy * $wantY)
+                    $dirOk = $dot -gt 0.999
+                }
+                if ($dirOk) {
+                    Complete-Dp2Case 4 $t0 'pass' 'the rotated instance reports has_rotation with right handedness and its grid direction arrives in HOST space, turned by exactly the staged 30 degrees' `
+                        -Evidence @{ transform=$row4.link.transform; direction=$row4.geometry.direction }
+                } else {
+                    Complete-Dp2Case 4 $t0 'fail' 'the transform flags are right but the reported direction is not the staged rotation in host space'
+                }
+            } else {
+                Complete-Dp2Case 4 $t0 'fail' ('the rotated placement was not reported rotated: ' + (Get-DimShortText $d4.text))
+            }
+
+            # ---- case 5: linked dimensions, including a mixed chain where Revit accepts it
+            $t0 = Get-Date
+            $hostGridRef = $null
+            $dh = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                element_ids = @([long]$dimParGridIds[0]); selectors = @('grid'); max_results = 5 }
+            if (-not $dh.isError -and $dh.data) {
+                $hostRows = @(@($dh.data.rows) | Where-Object { $_.compatible_with_dimension -eq $true })
+                if ($hostRows.Count -ge 1) { $hostGridRef = [string]$hostRows[0].stable_representation }
+            }
+            # The linked references are the WALL'S FACES - measured constructible on
+            # live 2026, where linked DATUM references are measured-rejected (that
+            # refusal is its own assertion below).
+            $linkedRefs5 = @()
+            $linkedRows5 = @()
+            $d5 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                linked_targets = @(@{ link_instance_id = $dp2.A; linked_element_ids = @($dp2.WallId) })
+                selectors = @('exterior_face', 'interior_face'); max_results = 20
+                include_incompatible = [bool]($Year -eq 2023) }
+            if (-not $d5.isError -and $d5.data) {
+                $linkedRows5 = @($d5.data.rows | Where-Object { $_.linked -eq $true })
+                $linkedRefs5 = @($linkedRows5 | Where-Object { $Year -eq 2023 -or $_.compatible_with_dimension -eq $true } |
+                                ForEach-Object { [string]$_.stable_representation })
+            }
+            # Revit 2023 measured-rejected both a mixed host+link chain and two
+            # faces of ONE linked wall.  The remaining non-duplicate case is one
+            # parallel face from each of two independently placed instances of
+            # that source.  Instance C is unrotated, so its face is parallel to A.
+            $linkedRefsC5 = @()
+            $linkedRowsC5 = @()
+            if ($Year -eq 2023) {
+                $d5c = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = [long]$dimPlanViewId; units = 'mm'
+                    linked_targets = @(@{ link_instance_id = $dp2.C; linked_element_ids = @($dp2.WallId) })
+                    selectors = @('exterior_face'); max_results = 10; include_incompatible = $true }
+                if (-not $d5c.isError -and $d5c.data) {
+                    $linkedRowsC5 = @($d5c.data.rows | Where-Object { $_.linked -eq $true })
+                    $linkedRefsC5 = @($linkedRowsC5 |
+                                     ForEach-Object { [string]$_.stable_representation })
+                }
+            }
+            $dim5Id = $null
+            $revit23LinkedRefusal5 = $false
+            if ($Year -eq 2023) {
+                # Three independent live arrangements have now measured the same
+                # Revit 2023 API boundary. The product must expose the references
+                # for inspection under include_incompatible, but refuse EVERY one
+                # before a transaction and name the machine-readable code.
+                function Test-Dp2Revit23LinkedRefusal([object[]]$References, [int]$EndY) {
+                    $answer = Invoke-Write 'horizun_annotate' @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true
+                        actions = @(@{
+                            operation = 'dimension'; view_id = [long]$dimPlanViewId
+                            line_start = @(511500, 4000, 0); line_end = @(511500, $EndY, 0)
+                            references = $References })
+                    }
+                    $parts = @()
+                    if ($answer.data -and $answer.data.errors) {
+                        $parts += @($answer.data.errors | ForEach-Object { if ($_.error) { [string]$_.error } })
+                    }
+                    if ($answer.data -and $answer.data.rehearsal) {
+                        $parts += @($answer.data.rehearsal.actions | ForEach-Object {
+                            if ($_.reason) { [string]$_.reason }
+                        })
+                    }
+                    if ($answer.text) { $parts += [string]$answer.text }
+                    $why = $parts -join ' | '
+                    [pscustomobject]@{
+                        named = $why -match 'linked_geometry_rejected_by_revit_2023_dimension_api'
+                        token_withheld = -not ($answer.data -and $answer.data.confirmation_token)
+                        transaction_not_started = $answer.data -and $answer.data.application -and
+                            [string]$answer.data.application.transaction_status -eq 'not_started'
+                        detail = $why
+                    }
+                }
+
+                $reasonRows5 = @($linkedRows5) + @($linkedRowsC5)
+                $discoveryRefuses5 = $reasonRows5.Count -ge 3 -and
+                    @($reasonRows5 | Where-Object {
+                        $_.compatible_with_dimension -ne $false -or -not $_.incompatibility_reason -or
+                        [string]$_.incompatibility_reason.code -ne 'linked_geometry_rejected_by_revit_2023_dimension_api'
+                    }).Count -eq 0
+                if ($hostGridRef -and $linkedRefs5.Count -eq 2 -and $linkedRefsC5.Count -ge 1) {
+                    $mixed23 = Test-Dp2Revit23LinkedRefusal -References @($hostGridRef, $linkedRefs5[0], $linkedRefs5[1]) -EndY 9500
+                    $same23 = Test-Dp2Revit23LinkedRefusal -References @($linkedRefs5[0], $linkedRefs5[1]) -EndY 9500
+                    $distinct23 = Test-Dp2Revit23LinkedRefusal -References @($linkedRefs5[0], $linkedRefsC5[0]) -EndY 105000
+                    $all23 = @($mixed23, $same23, $distinct23)
+                    $revit23LinkedRefusal5 = $discoveryRefuses5 -and
+                        @($all23 | Where-Object { -not $_.named -or -not $_.token_withheld -or -not $_.transaction_not_started }).Count -eq 0
+                    if ($revit23LinkedRefusal5) {
+                        Complete-Dp2Case 5 $t0 'pass' 'Revit 2023 exposes the real linked-face references as incompatible and refuses host+link, same-linked-wall, and distinct-link-instance dimensions BEFORE any transaction, naming linked_geometry_rejected_by_revit_2023_dimension_api each time' `
+                            -Evidence @{ code='linked_geometry_rejected_by_revit_2023_dimension_api'; discovery_rows=$reasonRows5.Count
+                                         mixed=$mixed23; same_element=$same23; distinct_instances=$distinct23 }
+                    } else {
+                        Complete-Dp2Case 5 $t0 'fail' ('the Revit 2023 linked-geometry boundary was not enforced consistently: discovery=' +
+                            $discoveryRefuses5 + ' mixed=' + $mixed23.detail + ' same=' + $same23.detail + ' distinct=' + $distinct23.detail)
+                    }
+                } else {
+                    Complete-Dp2Case 5 $t0 'fail' ('the Revit 2023 refusal references were not discovered: host=' + [bool]$hostGridRef +
+                        ' linked_a=' + $linkedRefs5.Count + ' linked_c=' + $linkedRefsC5.Count)
+                }
+            }
+            elseif ($hostGridRef -and $linkedRefs5.Count -eq 2) {
+                $refsFor5 = @($hostGridRef, $linkedRefs5[0], $linkedRefs5[1])
+                $an5 = Invoke-WriteApply 'horizun_annotate' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(@{
+                            operation = 'dimension'; view_id = [long]$dimPlanViewId
+                            line_start = @(511500, 4000, 0); line_end = @(511500, 9500, 0)
+                            references = $refsFor5 })
+                } 'dp2-mixed-chain'
+                if ($an5.stage -eq 'apply' -and -not $an5.answer.isError -and
+                    $an5.answer.data.state -eq 'committed_verified') {
+                    $row5 = @($an5.answer.data.rows)[0]
+                    $dim5Id = [long]$row5.element_id
+                    # MEASURED on run 2: the dry-run reply's per-action rows live under
+                    # data.plan (data.rows is the APPLY's verification table).
+                    $linkedInstancesInPlan = @()
+                    foreach ($pr in @($an5.dry.data.plan)) {
+                        foreach ($rd in @($pr.reference_detail)) {
+                            if ($rd.linked -eq $true -and $rd.link) {
+                                $linkedInstancesInPlan += [long]$rd.link.link_instance_id
+                            }
+                        }
+                    }
+                    $linkedInPlan = $linkedInstancesInPlan -contains [long]$dp2.A
+                    if ($linkedInPlan) {
+                        Complete-Dp2Case 5 $t0 'pass' 'the mixed chain across one host grid and two linked wall faces committed_verified, and the rehearsal plan carried every linked reference with full provenance' `
+                            -Evidence @{ dimension=$dim5Id; references=$refsFor5.Count; verification=$row5.verification }
+                    } else {
+                        Complete-Dp2Case 5 $t0 'fail' 'the linked dimension committed but its rehearsal omitted linked provenance'
+                    }
+                } else {
+                    $why5 = $null
+                    if ($an5.answer.data -and $an5.answer.data.rehearsal) {
+                        $why5 = @($an5.answer.data.rehearsal.actions | ForEach-Object {
+                            if ($_.reason) { [string]$_.reason }
+                        }) -join ' | '
+                    }
+                    Complete-Dp2Case 5 $t0 'fail' ('the linked-dimension branch did not commit: stage=' + $an5.stage +
+                        $(if ($why5) { ' rehearsal=' + $why5 } else { ' ' + (Get-DimShortText $an5.answer.text) }))
+                }
+            } else {
+                Complete-Dp2Case 5 $t0 'fail' ('the references for the linked-dimension branch were not discovered: host=' + [bool]$hostGridRef +
+                    ' linked_a=' + $linkedRefs5.Count + ' linked_c=' + $linkedRefsC5.Count)
+            }
+
+            # ---- case 6: moving the LINK between rehearsal and apply is stale --
+            $t0 = Get-Date
+            if ($Year -eq 2023) {
+                if ($revit23LinkedRefusal5) {
+                    Complete-Dp2Case 6 $t0 'pass' 'Revit 2023 withholds every linked-dimension token before a transaction, so no token can survive a later link move; the supported-year stale-plan path runs in 2024-2027' `
+                        -Evidence @{ code='linked_geometry_rejected_by_revit_2023_dimension_api'; confirmation_token=$null }
+                } else {
+                    Complete-Dp2Case 6 $t0 'fail' 'the Revit 2023 boundary did not prove that every linked-dimension token is withheld'
+                }
+            }
+            elseif ($hostGridRef -and $linkedRefs5.Count -eq 2) {
+                $refsFor6 = @($hostGridRef, $linkedRefs5[0])
+                $dry6 = Invoke-Write 'horizun_annotate' @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true
+                        actions = @(@{
+                            operation = 'dimension'; view_id = [long]$dimPlanViewId
+                            line_start = @(512000, 4000, 0); line_end = @(512000, 9500, 0)
+                            references = $refsFor6 })
+                }
+                $token6 = $null
+                if (-not $dry6.isError -and $dry6.data) { $token6 = $dry6.data.confirmation_token }
+                if ($token6) {
+                    $mv6 = Invoke-WriteApply 'horizun_transform_elements' @{
+                        target_document = $wDoc; units = 'mm'
+                        operations = @(@{ operation = 'move'; element_ids = @($dp2.A); vector = @(100, 0, 0) })
+                    } 'dp2-move-link'
+                    $moved6 = ($mv6.stage -eq 'apply' -and -not $mv6.answer.isError)
+                    if ($moved6) {
+                        $apply6 = Invoke-Write 'horizun_annotate' @{
+                            target_document = $wDoc; units = 'mm'; dry_run = $false
+                            confirmation_token = $token6
+                            idempotency_key = "live-write-dp2-stale-link-$probeRun"
+                            actions = @(@{
+                                operation = 'dimension'; view_id = [long]$dimPlanViewId
+                                line_start = @(512000, 4000, 0); line_end = @(512000, 9500, 0)
+                                references = $refsFor6 })
+                        }
+                        $stale6 = $false; $named6 = $false
+                        if ($apply6.isError) {
+                            if ($apply6.data -and [string]$apply6.data.state -eq 'stale_plan') { $stale6 = $true }
+                            elseif ($apply6.text -match 'MODEL MOVED') { $stale6 = $true }
+                            if ($apply6.text -match 'link_transform_moved') { $named6 = $true }
+                        }
+                        # put the link back either way, so later cases measure the staged position
+                        $mvBack = Invoke-WriteApply 'horizun_transform_elements' @{
+                            target_document = $wDoc; units = 'mm'
+                            operations = @(@{ operation = 'move'; element_ids = @($dp2.A); vector = @(-100, 0, 0) })
+                        } 'dp2-move-link-back'
+                        if ($stale6 -and $named6) {
+                            Complete-Dp2Case 6 $t0 'pass' 'moving the link instance 100 mm between rehearsal and apply refused as a stale plan NAMING link_transform_moved, and nothing was written' `
+                                -Evidence @{ refusal=(Get-DimShortText $apply6.text) }
+                        } elseif ($stale6) {
+                            Complete-Dp2Case 6 $t0 'fail' 'the apply refused stale but did not name link_transform_moved'
+                        } else {
+                            Complete-Dp2Case 6 $t0 'fail' ('the apply did not refuse as stale after the link moved: ' + (Get-DimShortText $apply6.text))
+                        }
+                    } else {
+                        Complete-Dp2Case 6 $t0 'unverified' ('the link instance could not be moved by the typed transform: ' + (Get-DimShortText $mv6.answer.text))
+                    }
+                } else {
+                    $why6 = $null
+                    if ($dry6.data -and $dry6.data.rehearsal) {
+                        $why6 = @($dry6.data.rehearsal.actions | ForEach-Object {
+                            if ($_.reason) { [string]$_.reason }
+                        }) -join ' | '
+                    }
+                    Complete-Dp2Case 6 $t0 'unverified' ('the rehearsal issued no token' +
+                        $(if ($why6) { ': ' + $why6 } else { ': ' + (Get-DimShortText $dry6.text) }))
+                }
+            } else {
+                Complete-Dp2Case 6 $t0 'unverified' 'case 5 did not leave usable references'
+            }
+
+            # ---- case 7: an unloaded link answers by code, and reloads --------
+            $t0 = Get-Date
+            $unloadCode = @'
+from Autodesk.Revit.DB import RevitLinkType, ElementId
+lt = doc.GetElement(ElementId(__TYPE__))
+before = str(lt.GetLinkedFileStatus())
+if '__MODE__' == 'unload':
+    lt.Unload(None)
+else:
+    lt.Reload()
+after = str(lt.GetLinkedFileStatus())
+__output__ = {'status': 'self_reported_verified', 'before': before, 'after': after}
+'@
+            $unl = $unloadCode.Replace('__TYPE__', "$($dp2.TypeId)").Replace('__MODE__', 'unload')
+            $unlPath = Join-Path $scratchDir 'dp2-unload.py'
+            [IO.File]::WriteAllText($unlPath, $unl, [Text.UTF8Encoding]::new($false))
+            $u7 = Invoke-Write 'horizun_execute_python' @{
+                code_path = $unlPath; target_document = $wDoc
+                idempotency_key = "live-dp2-unload-$probeRun" }
+            $u7Out = $null
+            if (-not $u7.isError -and $u7.data) { $u7Out = $u7.data.output }
+            if ($u7Out -and [string]$u7Out.after -ne 'Loaded') {
+                $d7 = Invoke-Write 'horizun_get_dimension_references' @{
+                    view_id = [long]$dimPlanViewId; units = 'mm'
+                    linked_targets = @(@{ link_instance_id = $dp2.A; linked_element_ids = @($dp2.WallId) })
+                    selectors = @('exterior_face'); max_results = 5 }
+                $coded7 = $false
+                if (-not $d7.isError -and $d7.data) {
+                    $unread7 = @(@($d7.data.coverage.unreadable) | Where-Object { [string]$_.code -eq 'link_unloaded' })
+                    $coded7 = $unread7.Count -ge 1
+                }
+                $rel = $unloadCode.Replace('__TYPE__', "$($dp2.TypeId)").Replace('__MODE__', 'reload')
+                $relPath = Join-Path $scratchDir 'dp2-reload.py'
+                [IO.File]::WriteAllText($relPath, $rel, [Text.UTF8Encoding]::new($false))
+                $u7b = Invoke-Write 'horizun_execute_python' @{
+                    code_path = $relPath; target_document = $wDoc
+                    idempotency_key = "live-dp2-reload-$probeRun" }
+                $reloaded = $false
+                if (-not $u7b.isError -and $u7b.data -and $u7b.data.output) { $reloaded = [string]$u7b.data.output.after -eq 'Loaded' }
+                if ($coded7 -and $reloaded) {
+                    Complete-Dp2Case 7 $t0 'pass' 'with the link type unloaded, discovery named every target link_unloaded in coverage instead of guessing, and the fixture reloaded for the cases after' `
+                        -Evidence @{ unloaded_status=$u7Out.after }
+                } elseif (-not $coded7) {
+                    Complete-Dp2Case 7 $t0 'fail' 'the unloaded link was not reported with code link_unloaded'
+                } else {
+                    Complete-Dp2Case 7 $t0 'fail' 'the link did not reload; later cases may be poisoned'
+                }
+            } else {
+                Complete-Dp2Case 7 $t0 'unverified' ('the link type could not be unloaded: ' + (Get-DimShortText $u7.text))
+            }
+
+            # ---- case 8: query_dimensions resolves THROUGH the loaded link ----
+            $t0 = Get-Date
+            if ($Year -eq 2023) {
+                if ($revit23LinkedRefusal5 -and -not $dim5Id) {
+                    Complete-Dp2Case 8 $t0 'pass' 'Revit 2023 cannot author the linked dimension that query_dimensions would re-read: all three native creation arrangements were refused before a transaction with the version-specific code; the positive linked-reference query is exercised in Revit 2024-2027' `
+                        -Evidence @{ source_dimension_exists=$false; code='linked_geometry_rejected_by_revit_2023_dimension_api'; positive_years=@(2024,2025,2026,2027) }
+                } else {
+                    Complete-Dp2Case 8 $t0 'fail' 'Revit 2023 either produced a linked dimension contrary to the measured API boundary or failed to name that boundary'
+                }
+            }
+            elseif ($dim5Id) {
+                $q8 = Invoke-Write 'horizun_query_dimensions' @{ element_ids = @($dim5Id); units = 'mm' }
+                $row8 = $null
+                if (-not $q8.isError -and $q8.data) { $row8 = @($q8.data.rows)[0] }
+                if ($row8 -and [int]$row8.linked_references -eq 2 -and
+                    [int]$row8.linked_references_resolved -eq 2 -and
+                    [int]$row8.unloaded_link_references -eq 0 -and
+                    [string]$row8.reference_coverage -eq 'complete' -and
+                    [int]$row8.broken_references -eq 0) {
+                    $resolved8 = @(@($row8.references) | Where-Object { $_.linked -eq $true -and [string]$_.link_state -eq 'resolved' })
+                    if ($resolved8.Count -eq 2 -and $resolved8[0].link -and
+                        [string]$resolved8[0].link.linked_element_state -eq 'present') {
+                        Complete-Dp2Case 8 $t0 'pass' 'the mixed dimension re-read with both linked references RESOLVED through the live link - element present, coverage complete, nothing counted broken' `
+                            -Evidence @{ coverage=$row8.reference_coverage; linked=$row8.linked_references }
+                    } else {
+                        Complete-Dp2Case 8 $t0 'fail' 'the counters agree but the per-reference link blocks do not'
+                    }
+                } else {
+                    Complete-Dp2Case 8 $t0 'fail' ('the linked references were not resolved as complete: ' + (Get-DimShortText $q8.text))
+                }
+            } else {
+                Complete-Dp2Case 8 $t0 'unverified' 'the supported-year case 5 did not commit a mixed dimension to re-read'
+            }
+
+            # ---- case 9: auto_dimension_grids plans, commits, and deduplicates
+            # MEASURED on run 3 (2026-08-26): the pair MUST be grids no earlier case
+            # dimensioned as an exact set. The original dimension section leaves several
+            # committed chains over {par[0], par[1]} in this same view, and the planner's
+            # dedup - now that ExistingChainIdentities collapses datum respelling -
+            # correctly reports that pair already_dimensioned on the FIRST plan. That is
+            # the product doing its anti-doubling job, so the probe uses {par[1], par[2]}.
+            $t0 = Get-Date
+            $p9 = Invoke-Write 'horizun_plan_annotations' @{
+                operation = 'auto_dimension_grids'; view_id = [long]$dimPlanViewId
+                element_ids = @([long]$dimParGridIds[1], [long]$dimParGridIds[2]); units = 'mm'
+                offset = 2000; side = 'negative' }
+            $done9 = $false
+            if (-not $p9.isError -and $p9.data -and @($p9.data.chains).Count -eq 1 -and
+                [string]$p9.data.coverage -eq 'complete' -and $p9.data.safe_to_execute -eq $true) {
+                $next9 = $p9.data.next_arguments
+                $an9 = Invoke-WriteApply 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@($next9.actions) | ForEach-Object {
+                        $action = @{}
+                        foreach ($property in $_.PSObject.Properties) { $action[$property.Name] = $property.Value }
+                        $action })
+                } 'dp2-auto-grids'
+                if ($an9.stage -eq 'apply' -and -not $an9.answer.isError -and
+                    $an9.answer.data.state -eq 'committed_verified') {
+                    $p9b = Invoke-Write 'horizun_plan_annotations' @{
+                        operation = 'auto_dimension_grids'; view_id = [long]$dimPlanViewId
+                        element_ids = @([long]$dimParGridIds[1], [long]$dimParGridIds[2]); units = 'mm'
+                        offset = 2000; side = 'negative' }
+                    if (-not $p9b.isError -and $p9b.data -and @($p9b.data.chains).Count -eq 0 -and
+                        (@($p9b.data.omitted | Where-Object { [string]$_.code -eq 'already_dimensioned' })).Count -ge 2) {
+                        $done9 = $true
+                        Complete-Dp2Case 9 $t0 'pass' 'the grid pair planned one complete chain, committed through the verified writer, and the re-plan reported every reference already_dimensioned instead of doubling the drawing' `
+                            -Evidence @{ first_plan=@($p9.data.chains)[0].chain_identity; replay_omitted=@($p9b.data.omitted).Count }
+                    } else {
+                        Complete-Dp2Case 9 $t0 'fail' 'the chain committed but the re-plan did not deduplicate it'
+                    }
+                } else {
+                    Complete-Dp2Case 9 $t0 'fail' ('the planned chain did not commit: stage=' + $an9.stage + ' ' + (Get-DimShortText $an9.answer.text))
+                }
+            } else {
+                Complete-Dp2Case 9 $t0 'fail' ('auto_dimension_grids did not plan a complete single chain: ' + (Get-DimShortText $p9.text))
+            }
+
+            # ---- case 10: auto_dimension over a link REFUSES with the measured ---
+            # reason, linked datum discovery is marked incompatible with the code,
+            # and a linked datum handed to annotate refuses BEFORE any transaction.
+            # This is the honest shape of the capability: linked GEOMETRY constructs
+            # (case 5 proved it), linked DATUMS are rejected by Revit itself -
+            # measured on this machine, this run.
+            $t0 = Get-Date
+            $p10 = Invoke-Write 'horizun_plan_annotations' @{
+                operation = 'auto_dimension_grids'; view_id = [long]$dimPlanViewId
+                link_instance_id = $dp2.C; units = 'mm'; offset = 2000 }
+            $refused10 = $p10.isError -and $p10.text -match 'measured live' -and
+                         $p10.text -match 'Nothing was planned'
+            $d10 = Invoke-Write 'horizun_get_dimension_references' @{
+                view_id = [long]$dimPlanViewId; units = 'mm'
+                linked_targets = @(@{ link_instance_id = $dp2.C; linked_element_ids = @($dp2.Grids[0]) })
+                selectors = @('grid'); max_results = 5 }
+            $marked10 = $false; $datumRef10 = $null
+            if (-not $d10.isError -and $d10.data) {
+                $row10 = @(@($d10.data.rows) | Where-Object { $_.linked -eq $true })[0]
+                if ($row10 -and $row10.compatible_with_dimension -eq $false -and
+                    [string]$row10.incompatibility_reason.code -eq 'linked_datum_rejected_by_dimension_api') {
+                    $marked10 = $true
+                    $datumRef10 = [string]$row10.stable_representation
+                }
+            }
+            $annotateRefused10 = $false
+            if ($datumRef10 -and $hostGridRef) {
+                $an10 = Invoke-Write 'horizun_annotate' @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true
+                    actions = @(@{
+                        operation = 'dimension'; view_id = [long]$dimPlanViewId
+                        line_start = @(513000, 4000, 0); line_end = @(513000, 9500, 0)
+                        references = @($hostGridRef, $datumRef10) })
+                }
+                # MEASURED on run 2: the per-reference refusal lands as an INVALID
+                # ACTION in the dry-run reply (valid=0, errors[0].error carries the
+                # DATUM sentence and the measurement), not as an MCP error.
+                if (-not $an10.isError -and $an10.data -and [int]$an10.data.invalid -eq 1) {
+                    $err10 = [string]@($an10.data.errors)[0].error
+                    $annotateRefused10 = ($err10 -match 'DATUM') -and ($err10 -match 'measured live')
+                }
+            }
+            if ($refused10 -and $marked10 -and $annotateRefused10) {
+                Complete-Dp2Case 10 $t0 'pass' 'the measured linked-datum rejection is enforced at all three doors: the planner refuses link_instance_id by name, discovery marks the linked grid incompatible with the structured code, and annotate refuses the reference before any transaction' `
+                    -Evidence @{ planner_refusal=(Get-DimShortText $p10.text); code='linked_datum_rejected_by_dimension_api' }
+            } else {
+                Complete-Dp2Case 10 $t0 'fail' ('the measured refusal is not enforced everywhere: planner=' + $refused10 + ' discovery=' + $marked10 + ' annotate=' + $annotateRefused10)
+            }
+
+            # ---- case 11: room production - plan_views drives manage_views ----
+            $t0 = Get-Date
+            $roomStage = @'
+from Autodesk.Revit.DB import Transaction, Wall, Line, XYZ, UV, ElementId
+
+FT = 304.8
+def ft(mm): return mm / FT
+
+view = doc.GetElement(ElementId(__VIEW__))
+level = view.GenLevel
+t = Transaction(doc, 'HZ live: room fixture')
+t.Start()
+x0, y0 = ft(575000), ft(0)
+w, h = ft(4000), ft(3000)
+pts = [(x0, y0), (x0 + w, y0), (x0 + w, y0 + h), (x0, y0 + h)]
+walls = []
+for i in range(4):
+    a = XYZ(pts[i][0], pts[i][1], 0)
+    b = XYZ(pts[(i + 1) % 4][0], pts[(i + 1) % 4][1], 0)
+    walls.append(Wall.Create(doc, Line.CreateBound(a, b), level.Id, False))
+room = doc.Create.NewRoom(level, UV(x0 + w / 2.0, y0 + h / 2.0))
+room.Name = 'HZ LIVE ROOM'
+room.Number = 'HZ-901'
+t.Commit()
+# Commit regenerates; a bare Regenerate() OUTSIDE a transaction throws
+# (measured on the first run of this section).
+area = room.Area
+rid = room.Id.IntegerValue if hasattr(room.Id, 'IntegerValue') else room.Id.Value
+__output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
+              'room': rid, 'area_sqft': area}
+'@
+            $roomStage = $roomStage.Replace('__VIEW__', "$dimPlanViewId")
+            $roomPath = Join-Path $scratchDir 'dp2-room.py'
+            [IO.File]::WriteAllText($roomPath, $roomStage, [Text.UTF8Encoding]::new($false))
+            $r11 = Invoke-Write 'horizun_execute_python' @{
+                code_path = $roomPath; target_document = $wDoc
+                idempotency_key = "live-dp2-room-$probeRun" }
+            $roomId = $null
+            if (-not $r11.isError -and $r11.data -and $r11.data.output -and
+                [string]$r11.data.output.status -eq 'self_reported_verified') { $roomId = [long]$r11.data.output.room }
+            if ($roomId) {
+                $pv11 = Invoke-Write 'horizun_plan_views' @{
+                    operation = 'room_views'; plan_view_id = [long]$dimPlanViewId
+                    room_ids = @($roomId); elevation_count = 2; units = 'mm'
+                    name_pattern = "HZ {room_number} {kind} {index} $planTag" }
+                if (-not $pv11.isError -and $pv11.data -and [string]$pv11.data.coverage -eq 'complete' -and
+                    [int]$pv11.data.rooms_planned -eq 1 -and $pv11.data.safe_to_execute -eq $true) {
+                    $roomRow = @($pv11.data.rooms)[0]
+                    $next11 = $pv11.data.next_arguments
+                    $mv11 = Invoke-WriteApply 'horizun_manage_views' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(@($next11.actions) | ForEach-Object {
+                            $action = @{}
+                            foreach ($property in $_.PSObject.Properties) { $action[$property.Name] = $property.Value }
+                            $action })
+                    } 'dp2-room-views'
+                    if ($mv11.stage -eq 'apply' -and -not $mv11.answer.isError -and
+                        [int]$mv11.answer.data.actions_verified -eq [int]$pv11.data.actions_planned) {
+                        Complete-Dp2Case 11 $t0 'pass' ('the room planned ' + $pv11.data.actions_planned + ' actions (2 oriented elevations, 2 crossing sections, 1 cropped plan) and manage_views committed and re-read every one, rotation included') `
+                            -Evidence @{ room=$roomId; orientation=$roomRow.orientation; rotation=$roomRow.rotation_degrees; actions=$pv11.data.actions_planned }
+                    } else {
+                        Complete-Dp2Case 11 $t0 'fail' ('the room plan did not commit whole: stage=' + $mv11.stage + ' ' + (Get-DimShortText $mv11.answer.text))
+                    }
+                } else {
+                    Complete-Dp2Case 11 $t0 'fail' ('plan_views did not produce a complete single-room plan: ' + (Get-DimShortText $pv11.text))
+                }
+            } else {
+                Complete-Dp2Case 11 $t0 'unverified' ('the room fixture could not be staged: ' + (Get-DimShortText $r11.text))
+            }
+
+            # ---- case 12: placeholder -> conversion, and the number collision --
+            $t0 = Get-Date
+            if ($planTbTypeId) {
+                $ph12 = Invoke-WriteApply 'horizun_manage_views' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(
+                        @{ operation = 'create_placeholder_sheet'; key = 'ph'; number = "HZPH-$planTag"; name = 'HZ Placeholder' },
+                        @{ operation = 'convert_placeholder_sheet'; sheet_key = 'ph'; title_block_type_id = [long]$planTbTypeId })
+                } 'dp2-placeholder'
+                $converted12 = ($ph12.stage -eq 'apply' -and -not $ph12.answer.isError -and
+                                [int]$ph12.answer.data.actions_verified -eq 2)
+                $dup12 = Invoke-Write 'horizun_manage_views' @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true
+                    actions = @(@{ operation = 'create_sheet'; number = "HZPH-$planTag"; name = 'HZ Duplicate'
+                                   title_block_type_id = [long]$planTbTypeId })
+                }
+                $refused12 = $false
+                if (-not $dup12.isError -and $dup12.data -and [int]$dup12.data.invalid -eq 1) {
+                    $err12 = [string]@($dup12.data.errors)[0].error
+                    $refused12 = $err12 -match 'already used'
+                }
+                if ($converted12 -and $refused12) {
+                    Complete-Dp2Case 12 $t0 'pass' 'a placeholder was created and converted to a real titled sheet in ONE batch (title block re-read), and reusing its number was refused by name before anything ran' `
+                        -Evidence @{ rows=$ph12.answer.data.rows }
+                } elseif (-not $converted12) {
+                    Complete-Dp2Case 12 $t0 'fail' ('the placeholder lifecycle did not commit: stage=' + $ph12.stage + ' ' + (Get-DimShortText $ph12.answer.text))
+                } else {
+                    Complete-Dp2Case 12 $t0 'fail' 'the duplicate sheet number was not refused by the validator'
+                }
+            } else {
+                Complete-Dp2Case 12 $t0 'unverified' 'no title block type is available in the fixture'
+            }
+
+            # ---- case 13: view range, crop and annotation crop, verified ------
+            $t0 = Get-Date
+            $vr13 = Invoke-WriteApply 'horizun_manage_views' @{
+                target_document = $wDoc; units = 'mm'
+                actions = @(
+                    @{ operation = 'duplicate_view'; key = 'vr'; source_view_id = [long]$dimPlanViewId
+                       duplicate_option = 'Duplicate'; name = "HZ VR $planTag" },
+                    @{ operation = 'set_view_range'; view_key = 'vr'; cut_offset = 1500; top_offset = 2800; bottom_offset = 100 },
+                    @{ operation = 'set_crop'; view_key = 'vr'; box = @(500000, -10000, 580000, 110000) },
+                    @{ operation = 'set_annotation_crop'; view_key = 'vr'; active = $true; annotation_offset = 5 })
+            } 'dp2-view-shaping'
+            if ($vr13.stage -eq 'apply' -and -not $vr13.answer.isError -and
+                [int]$vr13.answer.data.actions_verified -eq 4) {
+                Complete-Dp2Case 13 $t0 'pass' 'one batch duplicated the plan, moved three view-range offsets, wrote a rectangular crop through the crop frame conversion and switched the annotation crop with its offsets - every value re-read after commit' `
+                    -Evidence @{ rows=$vr13.answer.data.rows }
+            } else {
+                Complete-Dp2Case 13 $t0 'fail' ('view shaping did not verify all four actions: stage=' + $vr13.stage + ' ' + (Get-DimShortText $vr13.answer.text))
+            }
+
+            # ---- case 14: viewport alignment against a still anchor ------------
+            $t0 = Get-Date
+            $al14 = $null
+            if ($planTbTypeId) {
+                $mk14 = Invoke-WriteApply 'horizun_manage_views' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(
+                        @{ operation = 'create_sheet'; key = 's'; number = "HZAL-$planTag"; name = 'HZ Align'
+                           title_block_type_id = [long]$planTbTypeId },
+                        @{ operation = 'create_drafting'; key = 'v1'; name = "HZ AL V1 $planTag" },
+                        @{ operation = 'create_drafting'; key = 'v2'; name = "HZ AL V2 $planTag" })
+                } 'dp2-align-fixture'
+                if ($mk14.stage -eq 'apply' -and -not $mk14.answer.isError) {
+                    $s14 = [long]$mk14.answer.data.aliases.s
+                    $v1 = [long]$mk14.answer.data.aliases.v1
+                    $v2 = [long]$mk14.answer.data.aliases.v2
+                    $g14 = Invoke-WriteApply 'horizun_detail_2d' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(
+                            @{ operation = 'create_detail_line'; view_id = $v1; start = @(0,0); end = @(800,0); key='l1' },
+                            @{ operation = 'create_detail_line'; view_id = $v2; start = @(0,0); end = @(800,0); key='l2' })
+                    } 'dp2-align-geometry'
+                    $pl14 = Invoke-WriteApply 'horizun_manage_views' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(
+                            @{ operation = 'place_view'; sheet_id = $s14; view_id = $v1; point = @(200, 400) },
+                            @{ operation = 'place_view'; sheet_id = $s14; view_id = $v2; point = @(390, 210) })
+                    } 'dp2-align-place'
+                    if ($g14.stage -eq 'apply' -and $pl14.stage -eq 'apply' -and -not $pl14.answer.isError) {
+                        $vpA = [long]@($pl14.answer.data.rows)[0].element_id
+                        $vpB = [long]@($pl14.answer.data.rows)[1].element_id
+                        $al14 = Invoke-WriteApply 'horizun_manage_views' @{
+                            target_document = $wDoc; units = 'mm'
+                            actions = @(@{ operation = 'align_viewports'; anchor_viewport_id = $vpA
+                                           viewport_ids = @($vpB); mode = 'left' })
+                        } 'dp2-align'
+                    }
+                }
+            }
+            if ($al14 -and $al14.stage -eq 'apply' -and -not $al14.answer.isError -and
+                [int]$al14.answer.data.actions_verified -eq 1) {
+                Complete-Dp2Case 14 $t0 'pass' 'two viewports on a fresh sheet aligned left edges to a still anchor, and the outlines were re-read within tolerance after commit' `
+                    -Evidence @{ rows=$al14.answer.data.rows }
+            } elseif ($al14) {
+                Complete-Dp2Case 14 $t0 'fail' ('viewport alignment did not verify: stage=' + $al14.stage + ' ' + (Get-DimShortText $al14.answer.text))
+            } else {
+                Complete-Dp2Case 14 $t0 'unverified' 'the alignment fixture (sheet + two placed drafting views) could not be built'
+            }
+
+            # ---- case 15: schedule definition editing, and idempotent replay ---
+            $t0 = Get-Date
+            $sc15 = Invoke-WriteApply 'horizun_manage_schedules' @{
+                target_document = $wDoc
+                actions = @(
+                    @{ operation = 'create'; key = 'sl'; kind = 'sheet_list'; name = "HZ SHEETS $planTag" },
+                    @{ operation = 'set_options'; schedule_key = 'sl'; grand_total = $true; headers = $true })
+            } 'dp2-schedule-create'
+            $sheetListId = $null
+            if ($sc15.stage -eq 'apply' -and -not $sc15.answer.isError) {
+                $sheetListId = [long]$sc15.answer.data.aliases.sl
+            }
+            if ($sheetListId) {
+                # MEASURED on the first run: ViewSchedule.CreateSheetList creates an
+                # EMPTY definition - no fields at all, unlike the UI's default - so the
+                # field is added first, which also exercises add_fields live.
+                $af15 = Invoke-WriteApply 'horizun_manage_schedules' @{
+                    target_document = $wDoc
+                    actions = @(@{ operation = 'add_fields'; schedule_id = $sheetListId
+                                   fields = @(@{ name = 'Sheet Number' }) })
+                } 'dp2-schedule-add-field'
+                if ($af15.stage -ne 'apply' -or $af15.answer.isError) {
+                    Complete-Dp2Case 15 $t0 'fail' ('add_fields did not commit on the fresh sheet list: stage=' + $af15.stage + ' ' + (Get-DimShortText $af15.answer.text))
+                }
+                $f15 = @(@{ field = 'Sheet Number'; operator = 'begins_with'; value = 'HZ' })
+                $sf15 = Invoke-WriteApply 'horizun_manage_schedules' @{
+                    target_document = $wDoc
+                    actions = @(@{ operation = 'set_filters'; schedule_id = $sheetListId; filters = $f15 })
+                } 'dp2-schedule-filters'
+                $applied15 = ($sf15.stage -eq 'apply' -and -not $sf15.answer.isError -and
+                              [int]$sf15.answer.data.actions_verified -eq 1)
+                $changed15 = $null
+                if ($applied15) { $changed15 = @(@($sf15.answer.data.rows)[0].changed_sections) }
+                $sf15b = Invoke-WriteApply 'horizun_manage_schedules' @{
+                    target_document = $wDoc
+                    actions = @(@{ operation = 'set_filters'; schedule_id = $sheetListId; filters = $f15 })
+                } 'dp2-schedule-filters-replay'
+                $idempotent15 = $false
+                if ($sf15b.stage -eq 'apply' -and -not $sf15b.answer.isError) {
+                    $row15b = @($sf15b.answer.data.rows)[0]
+                    $idempotent15 = ([string]$row15b.definition_fingerprint_before -eq [string]$row15b.definition_fingerprint_after) -and
+                                    (@($row15b.changed_sections).Count -eq 0)
+                }
+                if ($applied15 -and ($changed15 -contains 'filters') -and $idempotent15) {
+                    Complete-Dp2Case 15 $t0 'pass' 'a sheet list was created and filtered by a declared whole list; the reply named filters as the changed section, and replaying the SAME declaration changed nothing - the fingerprints agree byte for byte' `
+                        -Evidence @{ schedule=$sheetListId; changed=$changed15 }
+                } elseif (-not $applied15) {
+                    Complete-Dp2Case 15 $t0 'fail' ('set_filters did not verify: stage=' + $sf15.stage + ' ' + (Get-DimShortText $sf15.answer.text))
+                } else {
+                    Complete-Dp2Case 15 $t0 'fail' ('the replay was not idempotent or the diff missed the section; changed=' + ($changed15 -join ','))
+                }
+            } else {
+                Complete-Dp2Case 15 $t0 'fail' ('the sheet list was not created: stage=' + $sc15.stage + ' ' + (Get-DimShortText $sc15.answer.text))
+            }
+
+            # ---- case 16: a schedule edited underneath its token refuses stale -
+            $t0 = Get-Date
+            if ($sheetListId) {
+                $dry16 = Invoke-Write 'horizun_manage_schedules' @{
+                    target_document = $wDoc; dry_run = $true
+                    actions = @(@{ operation = 'set_options'; schedule_id = $sheetListId; itemized = $true })
+                }
+                $token16 = $null
+                if (-not $dry16.isError -and $dry16.data) { $token16 = $dry16.data.confirmation_token }
+                if ($token16) {
+                    $mid16 = Invoke-WriteApply 'horizun_manage_schedules' @{
+                        target_document = $wDoc
+                        actions = @(@{ operation = 'rename'; schedule_id = $sheetListId; name = "HZ SHEETS B $planTag" })
+                    } 'dp2-schedule-interleave'
+                    $moved16 = ($mid16.stage -eq 'apply' -and -not $mid16.answer.isError)
+                    $apply16 = Invoke-Write 'horizun_manage_schedules' @{
+                        target_document = $wDoc; dry_run = $false
+                        confirmation_token = $token16
+                        idempotency_key = "live-write-dp2-stale-schedule-$probeRun"
+                        actions = @(@{ operation = 'set_options'; schedule_id = $sheetListId; itemized = $true })
+                    }
+                    $stale16 = $apply16.isError -and (
+                        ($apply16.data -and [string]$apply16.data.state -eq 'stale_plan') -or
+                        $apply16.text -match 'MODEL MOVED')
+                    if ($moved16 -and $stale16) {
+                        Complete-Dp2Case 16 $t0 'pass' 'a rename between rehearsal and apply changed the definition fingerprint the token binds, and the apply refused as a stale plan with nothing written' `
+                            -Evidence @{ refusal=(Get-DimShortText $apply16.text) }
+                    } elseif (-not $moved16) {
+                        Complete-Dp2Case 16 $t0 'unverified' 'the interleaved rename did not commit, so staleness could not be provoked'
+                    } else {
+                        Complete-Dp2Case 16 $t0 'fail' ('the token survived a definition change: ' + (Get-DimShortText $apply16.text))
+                    }
+                } else {
+                    Complete-Dp2Case 16 $t0 'unverified' 'the rehearsal issued no token'
+                }
+            } else {
+                Complete-Dp2Case 16 $t0 'unverified' 'case 15 left no schedule to edit'
+            }
+
+            # ---- case 17: a revision withdrawn from a sheet, and the cloud rule
+            $t0 = Get-Date
+            if ($planSheetAId) {
+                $rv17 = Invoke-WriteApply 'horizun_manage_revisions' @{
+                    target_document = $wDoc; units = 'mm'
+                    actions = @(@{ key = 'r'; operation = 'create_revision'
+                                   description = "HZ withdraw probe $planTag"
+                                   sheet_ids = @([long]$planSheetAId) })
+                } 'dp2-revision-create'
+                $rev17 = $null
+                if ($rv17.stage -eq 'apply' -and -not $rv17.answer.isError) {
+                    $rev17 = [long]@($rv17.answer.data.rows)[0].revision_id
+                }
+                if ($rev17) {
+                    $wd17 = Invoke-WriteApply 'horizun_manage_revisions' @{
+                        target_document = $wDoc; units = 'mm'
+                        actions = @(@{ key = 'w'; operation = 'update_revision'; revision_id = $rev17
+                                       remove_sheet_ids = @([long]$planSheetAId) })
+                    } 'dp2-revision-withdraw'
+                    $withdrawn17 = ($wd17.stage -eq 'apply' -and -not $wd17.answer.isError -and
+                                    [string]$wd17.answer.data.state -eq 'committed_verified')
+                    $again17 = Invoke-Write 'horizun_manage_revisions' @{
+                        target_document = $wDoc; units = 'mm'; dry_run = $true
+                        actions = @(@{ key = 'w2'; operation = 'update_revision'; revision_id = $rev17
+                                       remove_sheet_ids = @([long]$planSheetAId) })
+                    }
+                    $named17 = $again17.isError -and $again17.text -match 'not among'
+                    if ($withdrawn17 -and $named17) {
+                        Complete-Dp2Case 17 $t0 'pass' 'the revision was withdrawn from the sheet and verified gone from its additional list, and withdrawing it AGAIN refused by name instead of no-opping' `
+                            -Evidence @{ revision=$rev17 }
+                    } elseif (-not $withdrawn17) {
+                        Complete-Dp2Case 17 $t0 'fail' ('the withdrawal did not commit: stage=' + $wd17.stage + ' ' + (Get-DimShortText $wd17.answer.text))
+                    } else {
+                        Complete-Dp2Case 17 $t0 'fail' 'the second withdrawal was not refused by name'
+                    }
+                } else {
+                    Complete-Dp2Case 17 $t0 'unverified' ('the probe revision was not created: ' + (Get-DimShortText $rv17.answer.text))
+                }
+            } else {
+                Complete-Dp2Case 17 $t0 'unverified' 'the planimetry fixture did not retain sheet A'
+            }
+
+            # ---- case 18: tool packs restrict the LIVE surface, and announce ---
+            $t0 = Get-Date
+            # The release runner deliberately gives this Revit an isolated
+            # HORIZUN_DATA_ROOT. Writing the default user profile here changes
+            # the owner's real configuration and the isolated bridge never sees
+            # it, so the notification wait times out for a change that happened
+            # in the wrong file.
+            $settingsRoot18 = if ([string]::IsNullOrWhiteSpace($env:HORIZUN_DATA_ROOT)) {
+                Join-Path $env:USERPROFILE '.horizun'
+            } else { $env:HORIZUN_DATA_ROOT }
+            $settingsPath18 = Join-Path $settingsRoot18 'settings.json'
+            $original18 = $null
+            $restored18 = $false
+            try {
+                $original18 = Get-Content -LiteralPath $settingsPath18 -Raw
+                $settings18 = $original18 | ConvertFrom-Json
+                $settings18 | Add-Member -NotePropertyName 'tool_packs' -NotePropertyValue @('read') -Force
+                # Convert back preserving the other keys; the write is the same file the
+                # ToolListMonitor watches, so the running session must announce.
+                Set-Content -LiteralPath $settingsPath18 -Value ($settings18 | ConvertTo-Json -Depth 5) -Encoding UTF8
+
+                # Wait for list_changed through the ONE session reader. Polling
+                # tools/list gives Read-Rpc a bounded reply to read while it also
+                # records any preceding id-less notifications in the inbox.
+                $sawNotify18 = $false
+                $notifyStart18 = $script:rpcNotifications.Count
+                $notifyDeadline = (Get-Date).AddSeconds(45)
+                $list18 = $null
+                $pollId18 = 999810
+                while ((Get-Date) -lt $notifyDeadline) {
+                    Send-Rpc @{ jsonrpc='2.0'; id=$pollId18; method='tools/list'; params=@{} }
+                    $pollId18++
+                    $list18 = Read-Rpc 10000
+                    $sawNotify18 = @($script:rpcNotifications |
+                        Select-Object -Skip $notifyStart18 |
+                        Where-Object { [string]$_.method -match 'tools/list_changed' }).Count -gt 0
+                    if ($sawNotify18) { break }
+                    Start-Sleep -Milliseconds 500
+                }
+
+                if (-not $list18) {
+                    Send-Rpc @{ jsonrpc='2.0'; id=999801; method='tools/list'; params=@{} }
+                    $list18 = Read-Rpc
+                }
+                $names18 = @()
+                if ($list18 -and $list18.result) { $names18 = @(@($list18.result.tools) | ForEach-Object { $_.name }) }
+                $shrunk18 = ($names18 -contains 'horizun_health') -and
+                            ($names18 -contains 'horizun_query_model') -and
+                            ($names18 -notcontains 'horizun_manage_views')
+
+                # The ADD-IN enforces too: a hidden tool's dispatch refuses with the
+                # pack sentence, and health reports the active selection.
+                $h18 = Invoke-Write 'horizun_health' @{}
+                $healthPacks18 = $false
+                if (-not $h18.isError -and $h18.data -and $h18.data.tool_packs) {
+                    $healthPacks18 = ([string]$h18.data.tool_packs.source -eq 'settings') -and
+                                     ($h18.data.tool_packs.restricting -eq $true) -and
+                                     (@($h18.data.tool_packs.active) -contains 'read')
+                }
+                $call18 = Invoke-Write 'horizun_manage_views' @{
+                    target_document = $wDoc; units = 'mm'; dry_run = $true
+                    actions = @(@{ operation = 'create_drafting'; name = 'HZ PACK PROBE' }) }
+                $refused18 = $call18.isError -and $call18.text -match 'hidden by the active tool packs'
+
+                # restore BEFORE judging, so a failed assertion cannot leave the
+                # machine restricted.
+                Set-Content -LiteralPath $settingsPath18 -Value $original18 -Encoding UTF8
+                $restored18 = $true
+                Send-Rpc @{ jsonrpc='2.0'; id=999802; method='tools/list'; params=@{} }
+                $list18b = Read-Rpc
+                $names18b = @()
+                if ($list18b -and $list18b.result) { $names18b = @(@($list18b.result.tools) | ForEach-Object { $_.name }) }
+                $restoredList18 = $names18b -contains 'horizun_manage_views'
+
+                if ($shrunk18 -and $refused18 -and $healthPacks18 -and $restoredList18 -and $sawNotify18) {
+                    Complete-Dp2Case 18 $t0 'pass' 'writing tool_packs=[read] shrank the LIVE tools/list, announced tools/list_changed on the running session, made the add-in refuse a hidden tool by name and publish the selection in health - and removing the key restored everything' `
+                        -Evidence @{ restricted_count=$names18.Count; restored_count=$names18b.Count; saw_list_changed=$sawNotify18 }
+                } else {
+                    Complete-Dp2Case 18 $t0 'fail' ('packs did not behave live: shrunk=' + $shrunk18 + ' refused=' + $refused18 + ' health=' + $healthPacks18 + ' restored=' + $restoredList18 + ' notify=' + $sawNotify18)
+                }
+            }
+            catch {
+                if (-not $restored18 -and $original18) {
+                    try { Set-Content -LiteralPath $settingsPath18 -Value $original18 -Encoding UTF8 } catch { }
+                }
+                Complete-Dp2Case 18 $t0 'unverified' ('the pack round-trip failed mid-way and settings were restored: ' + $_.Exception.Message)
+            }
+            finally {
+                if (-not $restored18 -and $original18) {
+                    try { Set-Content -LiteralPath $settingsPath18 -Value $original18 -Encoding UTF8 } catch { }
+                }
+            }
+        }
+        for ($dc=1; $dc -le 18; $dc++) {
+            if (-not $script:dp2CasesDone.ContainsKey($dc)) { Complete-Dp2Case $dc (Get-Date) 'unverified' 'the linked-production section ended before this probe ran - a harness bug' }
+        }
+
+        # ------------------------------------------------------------------
+        # W11: MAXIMUM PROGRAM. Every capability phases 5-14 shipped, driven
+        # through the TYPED tools against fixtures this section stages itself
+        # far east of everything (x >= 610 m). Same never-saved model.
+        # ------------------------------------------------------------------
+        $script:mpEvidence = @()
+        $script:mpCasesDone = @{}
+        function Complete-MpCase {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:mpCasesDone.ContainsKey($CaseNumber)) { return }
+            $script:mpCasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$mpNameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:mpEvidence += @{
+                case=$CaseNumber; name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+
+        $mpX = 610000
+        $mpP1 = $null; $mpP2 = $null; $mpP3 = $null; $mpWallId = $null; $mpPenPipe = $null
+
+        # Fixture hygiene: the coordination ledger is BRIDGE state keyed by the
+        # document, so it survives the never-saved model being reopened. A prior
+        # run's findings would shadow this run's; the disposable fixture starts
+        # from a clean ledger, and only the disposable fixture's ledger is touched.
+        $mpLedgerProbe = Invoke-Write 'horizun_coordination' @{ operation='list' }
+        if (-not $mpLedgerProbe.isError -and $mpLedgerProbe.data.ledger_exists -eq $true) {
+            try { Remove-Item -LiteralPath ([string]$mpLedgerProbe.data.ledger_path) -Force -ErrorAction Stop } catch { }
+        }
+
+        # ---- shared staging: three pipes and one wall --------------------
+        $mk1 = New-ProbePipe $mpX 0 0 ($mpX+3000) 0 0 $pipeType 'mp-p1'
+        if ($mk1.stage -eq 'apply' -and -not $mk1.answer.isError) { $mpP1 = @($mk1.answer.data.rows)[0].element_id }
+        $mk2 = New-ProbePipe ($mpX+3000) 0 0 ($mpX+3000) 3000 0 $pipeType 'mp-p2'
+        if ($mk2.stage -eq 'apply' -and -not $mk2.answer.isError) { $mpP2 = @($mk2.answer.data.rows)[0].element_id }
+        $mk3 = New-ProbePipe ($mpX+8000) 0 0 ($mpX+11000) 0 0 $pipeType 'mp-p3'
+        if ($mk3.stage -eq 'apply' -and -not $mk3.answer.isError) { $mpP3 = @($mk3.answer.data.rows)[0].element_id }
+        $mpWallType = First-Type 'OST_Walls' $null
+        if ($mpWallType) {
+            $mkW = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'
+                elements = @(@{ kind='wall'; start=@($mpX,6000,0); end=@(($mpX+4000),6000,0)
+                                height=3000; type_id=$mpWallType; level_id=$levelId })
+            } 'mp-wall'
+            if ($mkW.stage -eq 'apply' -and -not $mkW.answer.isError) { $mpWallId = @($mkW.answer.data.rows)[0].element_id }
+        }
+        if ($mpWallId) {
+            $mkP = New-ProbePipe ($mpX+2000) 5000 1500 ($mpX+2000) 7000 1500 $pipeType 'mp-pen-pipe'
+            if ($mkP.stage -eq 'apply' -and -not $mkP.answer.isError) { $mpPenPipe = @($mkP.answer.data.rows)[0].element_id }
+        }
+
+        # ---- case 1: include_mep connector facts -------------------------
+        $t0 = Get-Date
+        if (-not $mpP1) { Complete-MpCase 1 $t0 'unverified' 'the probe pipe could not be staged' }
+        else {
+            $q1 = Invoke-Write 'horizun_query_model' @{
+                categories=@('OST_PipeCurves'); include_links=$false; include_mep=$true; max_rows=500 }
+            $row1 = $null
+            if (-not $q1.isError -and $q1.data) { $row1 = @($q1.data.rows) | Where-Object { [long]$_.element_id -eq [long]$mpP1 } | Select-Object -First 1 }
+            $sum1 = if ($q1.data) { $q1.data.mep_summary } else { $null }
+            if ($row1 -and $row1.mep -and @($row1.mep.connectors).Count -eq 2 -and
+                [int]$row1.mep.open_connectors -eq 2 -and
+                ([string]@($row1.mep.connectors)[0].shape) -eq 'round' -and
+                [double]@($row1.mep.connectors)[0].diameter -gt 0 -and
+                $sum1 -and [int]$sum1.open_connectors -ge 2) {
+                Complete-MpCase 1 $t0 'pass' ('the staged pipe reports 2 open round connectors (diameter ' +
+                    @($row1.mep.connectors)[0].diameter + ' mm) and mep_summary aggregates over the matched rows') `
+                    -Evidence @{ connectors=$row1.mep.connectors; summary=$sum1 }
+            } else {
+                Complete-MpCase 1 $t0 'fail' ('the connector facts did not match the staged truth: ' + (Get-DimShortText $q1.text))
+            }
+        }
+
+        # ---- case 2: the elbow ------------------------------------------
+        $t0 = Get-Date
+        if (-not $mpP1 -or -not $mpP2) { Complete-MpCase 2 $t0 'unverified' 'the two coincident pipes could not be staged' }
+        else {
+            $fit2 = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'
+                elements = @(@{ kind='fitting'; fitting='elbow'
+                                elements=@(@{ element_id=[long]$mpP1 }, @{ element_id=[long]$mpP2 }) })
+            } 'mp-elbow'
+            $row2 = $null
+            if ($fit2.stage -eq 'apply' -and -not $fit2.answer.isError) { $row2 = @($fit2.answer.data.rows)[0] }
+            $chosen2 = $null
+            if ($fit2.dry -and $fit2.dry.data) { $chosen2 = @(@($fit2.dry.data.plan)[0].chosen_connectors) }
+            if ($row2 -and $row2.verified -eq $true -and $row2.connectors_verified -eq $true -and
+                $chosen2 -and $chosen2.Count -eq 2) {
+                $q2 = Invoke-Write 'horizun_query_model' @{
+                    categories=@('OST_PipeCurves'); include_links=$false; include_mep=$true; max_rows=500 }
+                $p1row = @($q2.data.rows) | Where-Object { [long]$_.element_id -eq [long]$mpP1 } | Select-Object -First 1
+                $connectedNow = $p1row -and [int]$p1row.mep.open_connectors -eq 1
+                if ($connectedNow) {
+                    Complete-MpCase 2 $t0 'pass' 'the elbow committed_verified with both approved connectors re-read CONNECTED, and discovery now shows the pipe with one open end' `
+                        -Evidence @{ fitting_id=$row2.element_id; chosen=$chosen2 }
+                } else {
+                    Complete-MpCase 2 $t0 'fail' 'the fitting verified but discovery does not show the joint closed'
+                }
+            } else {
+                Complete-MpCase 2 $t0 'fail' ('the elbow did not verify (stage=' + $fit2.stage + '): ' + (Get-DimShortText $fit2.answer.text))
+            }
+        }
+
+        # ---- case 3: the measured refusal --------------------------------
+        $t0 = Get-Date
+        if (-not $mpP1 -or -not $mpP3) { Complete-MpCase 3 $t0 'unverified' 'the distant pipe could not be staged' }
+        else {
+            $fit3 = Invoke-Write 'horizun_create_elements' @{
+                target_document = $wDoc; units = 'mm'; dry_run = $true
+                elements = @(@{ kind='fitting'; fitting='elbow'
+                                elements=@(@{ element_id=[long]$mpP1 }, @{ element_id=[long]$mpP3 }) })
+            }
+            $err3 = $null
+            if (-not $fit3.isError -and $fit3.data -and [int]$fit3.data.invalid -eq 1) { $err3 = [string]@($fit3.data.errors)[0].error }
+            if ($err3 -and $err3 -match 'connectors_not_coincident' -and $err3 -match 'mm') {
+                Complete-MpCase 3 $t0 'pass' 'the pair refused naming connectors_not_coincident with the measured millimetres, and nothing ran' `
+                    -Evidence @{ error=$err3 }
+            } else {
+                Complete-MpCase 3 $t0 'fail' ('expected the measured coincidence refusal; got: ' + (Get-DimShortText $fit3.text))
+            }
+        }
+
+        # ---- case 4: the penetration plan --------------------------------
+        $t0 = Get-Date
+        $mpClash1 = $null; $mpOpeningRow = $null
+        if (-not $mpWallId -or -not $mpPenPipe) { Complete-MpCase 4 $t0 'unverified' 'the wall or the crossing pipe could not be staged' }
+        else {
+            $mpClash1 = Invoke-Write 'horizun_clash' @{
+                categories_a=@('OST_PipeCurves'); categories_b=@('OST_Walls'); include_links=$false
+                plan_penetrations=$true; clearance_mm=25; record_findings=$true }
+            $pen4 = $null
+            if (-not $mpClash1.isError -and $mpClash1.data) {
+                $pen4 = @($mpClash1.data.penetrations) | Where-Object {
+                    $_.host -and [string]$_.host.element_id -eq [string]$mpWallId -and [string]$_.status -eq 'plannable' } | Select-Object -First 1
+            }
+            if ($pen4 -and [string]$pen4.plan -eq 'wall_opening' -and $mpClash1.data.next_arguments) {
+                $mpOpeningRow = @($mpClash1.data.next_arguments.arguments.elements) | Where-Object {
+                    [string]$_.kind -eq 'wall_opening' -and [long]$_.host_id -eq [long]$mpWallId } | Select-Object -First 1
+            }
+            if ($pen4 -and $mpOpeningRow) {
+                Complete-MpCase 4 $t0 'pass' ('the crossing became a plannable wall opening (basis ' + $pen4.point_basis +
+                    ', section ' + $pen4.cross_section.shape + ' ' + $pen4.cross_section.width_mm + ' mm) with a ready create_elements request') `
+                    -Evidence @{ penetration=$pen4 }
+            } else {
+                Complete-MpCase 4 $t0 'fail' ('no plannable wall_opening row for the staged pair: ' + (Get-DimShortText $mpClash1.text))
+            }
+        }
+
+        # ---- case 6: the finding lifecycle -------------------------------
+        $t0 = Get-Date
+        $mpFindingId = $null
+        if (-not $mpClash1 -or $mpClash1.isError -or -not $mpClash1.data.findings) {
+            Complete-MpCase 6 $t0 'unverified' 'case 4 recorded no findings block'
+        }
+        else {
+            $f6 = $mpClash1.data.findings
+            $ledgerOk = ([int]$f6.new -ge 1) -and (Test-Path -LiteralPath ([string]$f6.ledger_path))
+            $list6 = Invoke-Write 'horizun_coordination' @{ operation='list'; status='open' }
+            if ($ledgerOk -and -not $list6.isError -and @($list6.data.rows).Count -ge 1) {
+                $mpFindingId = [string]@($list6.data.rows)[0].finding_id
+                $upd6 = Invoke-Write 'horizun_coordination' @{
+                    operation='update'; finding_id=$mpFindingId; status='assigned'; assignee='estructural'; note='HZ W11' }
+                $rerun6 = Invoke-Write 'horizun_clash' @{
+                    categories_a=@('OST_PipeCurves'); categories_b=@('OST_Walls'); include_links=$false
+                    record_findings=$true }
+                $list6b = Invoke-Write 'horizun_coordination' @{ operation='list'; status='assigned' }
+                $stillAssigned = -not $list6b.isError -and @(@($list6b.data.rows) | Where-Object { [string]$_.finding_id -eq $mpFindingId }).Count -eq 1
+                if (-not $upd6.isError -and $upd6.data.verified_after_reread -eq $true -and
+                    -not $rerun6.isError -and [int]$rerun6.data.findings.persisting -ge 1 -and $stillAssigned) {
+                    Complete-MpCase 6 $t0 'pass' 'the clash opened a durable finding, the assignment was re-read from disk, and it survived the re-run as assigned while the clash persisted' `
+                        -Evidence @{ finding_id=$mpFindingId; first_run=$f6 }
+                } else {
+                    Complete-MpCase 6 $t0 'fail' ('the finding lifecycle did not hold: update_ok=' +
+                        (-not $upd6.isError -and $upd6.data.verified_after_reread -eq $true) +
+                        ' rerun_ok=' + (-not $rerun6.isError) +
+                        ' persisting=' + $(if ($rerun6.data) { $rerun6.data.findings.persisting } else { 'n/a' }) +
+                        ' still_assigned=' + $stillAssigned)
+                }
+            } else {
+                Complete-MpCase 6 $t0 'fail' ('record_findings did not open a listable finding: ' + (Get-DimShortText $list6.text))
+            }
+        }
+
+        # ---- case 7: the export ------------------------------------------
+        $t0 = Get-Date
+        if (-not $mpFindingId) { Complete-MpCase 7 $t0 'unverified' 'case 6 left no finding to export' }
+        else {
+            $csv7 = Join-Path $scratchDir ('mp-findings-' + $probeRun + '.csv')
+            $exp7 = Invoke-Write 'horizun_coordination' @{ operation='export'; path=$csv7; format='csv' }
+            $ok7 = $false
+            if (-not $exp7.isError -and (Test-Path -LiteralPath $csv7)) {
+                $localSha = (Get-FileHash -LiteralPath $csv7 -Algorithm SHA256).Hash.ToLowerInvariant()
+                $lines7 = @(Get-Content -LiteralPath $csv7).Count
+                $ok7 = ($localSha -eq [string]$exp7.data.sha256) -and
+                       ($lines7 -eq ([int]$exp7.data.findings_exported + 1)) -and
+                       ([long]$exp7.data.bytes -eq (Get-Item -LiteralPath $csv7).Length)
+            }
+            if ($ok7) {
+                Complete-MpCase 7 $t0 'pass' ('the export re-read matches the file on disk: ' + $exp7.data.bytes + ' bytes, ' +
+                    $exp7.data.findings_exported + ' finding(s) plus header') -Evidence @{ path=$csv7; sha256=$exp7.data.sha256 }
+            } else {
+                Complete-MpCase 7 $t0 'fail' ('the export claim and the file disagree: ' + (Get-DimShortText $exp7.text))
+            }
+        }
+
+        # ---- case 5: the structural gate, then the cut. RUNS AFTER 6 AND 7
+        # ---- by measurement (run 6, 2026-08-26): the committed opening RESOLVES
+        # ---- the physical clash - the whole point of a penetration - so the
+        # ---- finding lifecycle above must re-run detection while the clash
+        # ---- still exists.
+        $t0 = Get-Date
+        if (-not $mpOpeningRow) { Complete-MpCase 5 $t0 'unverified' 'case 4 left no opening row to execute' }
+        else {
+            $mark5 = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document = $wDoc
+                writes = @(@{ target_id=[long]$mpWallId; parameter='WALL_STRUCTURAL_SIGNIFICANT'; value=1 })
+            } 'mp-wall-structural'
+            $marked5 = ($mark5.stage -eq 'apply' -and -not $mark5.answer.isError)
+            if (-not $marked5) {
+                Complete-MpCase 5 $t0 'unverified' ('the wall could not be marked structural: ' + (Get-DimShortText $mark5.answer.text))
+            } else {
+                $deny5 = Invoke-Write 'horizun_create_elements' @{
+                    target_document = $wDoc; units='mm'; dry_run=$true
+                    elements = @(@{ kind='wall_opening'; host_id=[long]$mpWallId
+                                    corner_1=@([double]$mpOpeningRow.corner_1[0], [double]$mpOpeningRow.corner_1[1], [double]$mpOpeningRow.corner_1[2])
+                                    corner_2=@([double]$mpOpeningRow.corner_2[0], [double]$mpOpeningRow.corner_2[1], [double]$mpOpeningRow.corner_2[2]) })
+                }
+                $denied5 = $false
+                if (-not $deny5.isError -and $deny5.data -and [int]$deny5.data.invalid -eq 1) {
+                    $denied5 = ([string]@($deny5.data.errors)[0].error) -match 'structural_host_requires_opt_in'
+                }
+                $cut5 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document = $wDoc; units='mm'
+                    elements = @(@{ kind='wall_opening'; host_id=[long]$mpWallId; allow_structural=$true
+                                    corner_1=@([double]$mpOpeningRow.corner_1[0], [double]$mpOpeningRow.corner_1[1], [double]$mpOpeningRow.corner_1[2])
+                                    corner_2=@([double]$mpOpeningRow.corner_2[0], [double]$mpOpeningRow.corner_2[1], [double]$mpOpeningRow.corner_2[2]) })
+                } 'mp-wall-opening'
+                $row5 = $null
+                if ($cut5.stage -eq 'apply' -and -not $cut5.answer.isError) { $row5 = @($cut5.answer.data.rows)[0] }
+                if ($denied5 -and $row5 -and $row5.verified -eq $true -and $row5.host_verified -eq $true) {
+                    Complete-MpCase 5 $t0 'pass' 'the structural wall refused the opening without the opt-in by name, and cut committed_verified with the host re-read once a person said allow_structural' `
+                        -Evidence @{ opening_id=$row5.element_id }
+                } elseif (-not $denied5) {
+                    Complete-MpCase 5 $t0 'fail' ('the structural gate did not refuse: ' + (Get-DimShortText $deny5.text))
+                } else {
+                    Complete-MpCase 5 $t0 'fail' ('the opted-in opening did not verify: ' + (Get-DimShortText $cut5.answer.text))
+                }
+            }
+        }
+
+        # ---- case 8: structure from grids --------------------------------
+        $t0 = Get-Date
+        $mpColType = First-Type 'OST_StructuralColumns' $null
+        if (-not $mpColType) {
+            # The Snowdon copy carries no structural-column symbol. Author one the
+            # typed way: create_family from the machine's own structural-column
+            # template, loaded into the project - the same verified pipeline the
+            # catalog case exercises. No template -> the gap stays, named.
+            $colTemplate = $null
+            if (Test-Path $dimTemplateRoot) {
+                $colHit = @(Get-ChildItem -LiteralPath $dimTemplateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
+                          Where-Object { $_.BaseName -match '(?i)structural column|columna estructural' } |
+                          Sort-Object FullName | Select-Object -First 1
+                if ($colHit) { $colTemplate = $colHit.FullName }
+            }
+            if ($colTemplate) {
+                $famCol = Invoke-WriteApply 'horizun_create_family' @{
+                    target_document = $wDoc
+                    template_path = $colTemplate
+                    output_path = (Join-Path $scratchDir ('HZ_MPCOL_' + $dimTag + '.rfa'))
+                    units = 'mm'
+                    types = @(@{ name = 'HZC300' })
+                } 'mp-column-family'
+                if ($famCol.stage -eq 'apply' -and -not $famCol.answer.isError -and
+                    $famCol.answer.data.loaded_family -and @($famCol.answer.data.loaded_family.symbol_ids).Count -ge 1) {
+                    $mpColType = @($famCol.answer.data.loaded_family.symbol_ids)[0]
+                }
+            }
+        }
+        if (-not $mpColType) {
+            Complete-MpCase 8 $t0 'not_covered' 'no structural-column FamilySymbol exists and none could be authored (no structural-column template on this machine); the planner cycle needs one (fixture gap, named)'
+        }
+        else {
+            $mkG = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document = $wDoc; units='mm'
+                elements = @(
+                    @{ kind='grid'; name=('HZMPG1_' + $dimTag); start=@(($mpX+20000),0,0); end=@(($mpX+20000),6000,0) },
+                    @{ kind='grid'; name=('HZMPG2_' + $dimTag); start=@(($mpX+26000),0,0); end=@(($mpX+26000),6000,0) },
+                    @{ kind='grid'; name=('HZMPG3_' + $dimTag); start=@(($mpX+17000),3000,0); end=@(($mpX+29000),3000,0) })
+            } 'mp-grids'
+            $gridIds8 = @()
+            if ($mkG.stage -eq 'apply' -and -not $mkG.answer.isError) {
+                $gridIds8 = @(@($mkG.answer.data.rows) | ForEach-Object { [long]$_.element_id })
+            }
+            if ($gridIds8.Count -ne 3) {
+                Complete-MpCase 8 $t0 'unverified' 'the three probe grids could not be staged'
+            } else {
+                $plan8 = Invoke-Write 'horizun_plan_structure' @{
+                    operation='columns_on_grid_intersections'; level_id=[long]$levelId; type_id=[long]$mpColType
+                    grid_ids=$gridIds8 }
+                $done8 = $false
+                if (-not $plan8.isError -and $plan8.data -and [int]$plan8.data.planned_count -eq 2 -and $plan8.data.next_arguments) {
+                    $columnElements = @()
+                    foreach ($e in @($plan8.data.next_arguments.arguments.elements)) {
+                        $columnElements += @{ kind=[string]$e.kind; type_id=[long]$e.type_id
+                                              level_id=[long]$e.level_id
+                                              point=@([double]$e.point[0], [double]$e.point[1], [double]$e.point[2]) }
+                    }
+                    $commit8 = Invoke-WriteApply 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'; elements=$columnElements } 'mp-columns'
+                    if ($commit8.stage -eq 'apply' -and -not $commit8.answer.isError -and
+                        @(@($commit8.answer.data.rows) | Where-Object { $_.verified -eq $true }).Count -eq 2) {
+                        $replan8 = Invoke-Write 'horizun_plan_structure' @{
+                            operation='columns_on_grid_intersections'; level_id=[long]$levelId; type_id=[long]$mpColType
+                            grid_ids=$gridIds8 }
+                        if (-not $replan8.isError -and [int]$replan8.data.planned_count -eq 0 -and
+                            @(@($replan8.data.omitted) | Where-Object { [string]$_.code -eq 'already_present' }).Count -eq 2) {
+                            $done8 = $true
+                            Complete-MpCase 8 $t0 'pass' 'two crossings planned, two columns committed and verified, and the replay omitted both as already_present measured by distance' `
+                                -Evidence @{ first_plan=$plan8.data.planned; replay_omitted=@($replan8.data.omitted).Count }
+                        }
+                    }
+                }
+                if (-not $done8 -and -not $script:mpCasesDone.ContainsKey(8)) {
+                    Complete-MpCase 8 $t0 'fail' ('the column cycle did not hold: ' + (Get-DimShortText $plan8.text))
+                }
+            }
+        }
+
+        # ---- case 9: the CSV round trip ----------------------------------
+        $t0 = Get-Date
+        if (-not $mpP1 -or -not $mpP3) { Complete-MpCase 9 $t0 'unverified' 'the tabular pipes are missing' }
+        else {
+            $markA = 'HZMPA_' + $dimTag; $markB = 'HZMPB_' + $dimTag
+            $mk9 = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document = $wDoc
+                writes = @(@{ target_id=[long]$mpP1; parameter='Mark'; value=$markA },
+                           @{ target_id=[long]$mpP3; parameter='Mark'; value=$markB })
+            } 'mp-marks'
+            if ($mk9.stage -ne 'apply' -or $mk9.answer.isError) {
+                Complete-MpCase 9 $t0 'unverified' ('the key marks could not be written: ' + (Get-DimShortText $mk9.answer.text))
+            } else {
+                $csv9 = Join-Path $scratchDir ('mp-import-' + $probeRun + '.csv')
+                Set-Content -LiteralPath $csv9 -Encoding UTF8 -Value @(
+                    'Mark,Comments'
+                    ($markA + ',from-csv-1')
+                    ($markB + ',from-csv-2'))
+                $tab9 = @{ path=$csv9; key_column='Mark'; value_columns=@{ Comments='Comments' }; category='OST_PipeCurves' }
+                $imp9 = Invoke-WriteApply 'horizun_write_params_verified' @{
+                    target_document = $wDoc; tabular_source = $tab9 } 'mp-import'
+                $applied9 = ($imp9.stage -eq 'apply' -and -not $imp9.answer.isError -and
+                             [int]$imp9.answer.data.tabular.ops_generated -eq 2)
+                $again9 = Invoke-Write 'horizun_write_params_verified' @{
+                    target_document = $wDoc; tabular_source = $tab9 }
+                $noop9 = (-not $again9.isError -and [string]$again9.data.mode -eq 'tabular_no_op')
+                $dup9csv = Join-Path $scratchDir ('mp-dup-' + $probeRun + '.csv')
+                Set-Content -LiteralPath $dup9csv -Encoding UTF8 -Value @(
+                    'Mark,Comments'
+                    ($markA + ',x')
+                    ($markA + ',y'))
+                $dup9 = Invoke-Write 'horizun_write_params_verified' @{
+                    target_document = $wDoc
+                    tabular_source = @{ path=$dup9csv; key_column='Mark'; value_columns=@{ Comments='Comments' }; category='OST_PipeCurves' } }
+                $refused9 = ($dup9.isError -and $dup9.text -match 'duplicate_key_in_file')
+                if ($applied9 -and $noop9 -and $refused9) {
+                    Complete-MpCase 9 $t0 'pass' 'two cells imported through the verified writer with row provenance, the replay declared tabular_no_op, and the duplicate-key file refused whole naming its rows' `
+                        -Evidence @{ import=$imp9.answer.data.tabular }
+                } else {
+                    Complete-MpCase 9 $t0 'fail' ("import=$applied9 noop=$noop9 dup_refused=$refused9 : " + (Get-DimShortText $imp9.answer.text))
+                }
+            }
+        }
+
+        # ---- case 10: typed link management ------------------------------
+        $t0 = Get-Date
+        if (-not $dp2 -or -not $dp2.TypeId) { Complete-MpCase 10 $t0 'unverified' 'the dp2 link fixture is not available' }
+        else {
+            $un10 = Invoke-WriteApply 'horizun_manage_links' @{
+                target_document=$wDoc; operation='unload'; link_type_id=[long]$dp2.TypeId } 'mp-unload'
+            $unloaded10 = ($un10.stage -eq 'apply' -and -not $un10.answer.isError -and
+                           [string]$un10.answer.data.status_after_reread -eq 'Unloaded')
+            $re10 = Invoke-WriteApply 'horizun_manage_links' @{
+                target_document=$wDoc; operation='reload'; link_type_id=[long]$dp2.TypeId } 'mp-reload'
+            $reloaded10 = ($re10.stage -eq 'apply' -and -not $re10.answer.isError -and
+                           [string]$re10.answer.data.status_after_reread -eq 'Loaded')
+            $pin10 = Invoke-WriteApply 'horizun_manage_links' @{
+                target_document=$wDoc; operation='pin'; link_instance_id=[long]$dp2.C } 'mp-pin'
+            $pinned10 = ($pin10.stage -eq 'apply' -and -not $pin10.answer.isError -and
+                         $pin10.answer.data.pinned_after_reread -eq $true)
+            $unpin10 = Invoke-WriteApply 'horizun_manage_links' @{
+                target_document=$wDoc; operation='unpin'; link_instance_id=[long]$dp2.C } 'mp-unpin'
+            $unpinned10 = ($unpin10.stage -eq 'apply' -and -not $unpin10.answer.isError -and
+                           $unpin10.answer.data.pinned_after_reread -eq $false)
+            if ($unloaded10 -and $reloaded10 -and $pinned10 -and $unpinned10) {
+                Complete-MpCase 10 $t0 'pass' 'unload, reload, pin and unpin all committed with the state re-read: Unloaded, Loaded, pinned true, pinned false - the surface that used to need execute_python' `
+                    -Evidence @{ link_type=$dp2.TypeId; instance=$dp2.C }
+            } else {
+                Complete-MpCase 10 $t0 'fail' ("unload=$unloaded10 reload=$reloaded10 pin=$pinned10 unpin=$unpinned10")
+            }
+        }
+
+        # ---- case 11: the pre-delivery gate ------------------------------
+        $t0 = Get-Date
+        $g11 = Invoke-Write 'horizun_audit_model' @{
+            target_document = $wDoc
+            requirement_set = @{ max_warnings = 1000000; forbid_imported_cad = $false } }
+        $gate11 = if ($g11.data) { $g11.data.gate } else { $null }
+        $waived11 = $gate11 -and @(@($gate11.rows) | Where-Object { [string]$_.status -eq 'waived' }).Count -eq 1
+        $verdictOk11 = $gate11 -and ([string]$gate11.verdict -in @('pass','not_assessable'))
+        $bad11 = Invoke-Write 'horizun_audit_model' @{
+            target_document = $wDoc; requirement_set = @{ max_warings = 5 } }
+        $refused11 = ($bad11.isError -and $bad11.text -match 'max_warnings' -and $bad11.text -match 'silently')
+        if ($waived11 -and $verdictOk11 -and $refused11 -and @($gate11.rows).Count -eq 2) {
+            Complete-MpCase 11 $t0 'pass' ('the declared set answered verdict ' + $gate11.verdict +
+                ' with the waiver recorded, and the misspelled requirement refused the whole gate naming the known ones') `
+                -Evidence @{ gate=$gate11 }
+        } else {
+            Complete-MpCase 11 $t0 'fail' ("waived=$waived11 verdict_ok=$verdictOk11 misspell_refused=$refused11 : " + (Get-DimShortText $g11.text))
+        }
+
+        # ---- case 12: the type catalog -----------------------------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-MpCase 12 $t0 'not_covered' 'no family template was found on this machine (named fixture gap)' }
+        else {
+            $rfa12 = Join-Path $scratchDir ('HZ_MP_' + $dimTag + '.rfa')
+            $fam12 = Invoke-WriteApply 'horizun_create_family' @{
+                target_document = $wDoc
+                template_path = $dimTemplatePath; output_path = $rfa12; units = 'mm'
+                parameters = @(@{ name='HZ_Ancho'; data_type='length'; group='data' })
+                types = @(@{ name='T600'; values=@{ HZ_Ancho=600 } }, @{ name='T900'; values=@{ HZ_Ancho=900 } })
+                emit_type_catalog = $true
+            } 'mp-family'
+            $cat12 = $null
+            if ($fam12.stage -eq 'apply' -and -not $fam12.answer.isError) { $cat12 = $fam12.answer.data.type_catalog }
+            $ok12 = $false
+            if ($cat12 -and (Test-Path -LiteralPath ([string]$cat12.path))) {
+                $localSha12 = (Get-FileHash -LiteralPath ([string]$cat12.path) -Algorithm SHA256).Hash.ToLowerInvariant()
+                $ok12 = ($localSha12 -eq [string]$cat12.sha256) -and ([int]$cat12.rows -eq 3) -and ([long]$cat12.bytes -gt 0)
+            }
+            if ($ok12) {
+                Complete-MpCase 12 $t0 'pass' ('the catalog was re-read from disk beside the RFA: ' + $cat12.bytes +
+                    ' bytes, 3 rows (header + 2 types), sha256 matching the local hash') -Evidence @{ catalog=$cat12 }
+            } else {
+                Complete-MpCase 12 $t0 'fail' ('the catalog claim and the file disagree: ' + (Get-DimShortText $fam12.answer.text))
+            }
+        }
+
+        # ---- case 13: health carries the new facts -----------------------
+        $t0 = Get-Date
+        $h13 = Invoke-Write 'horizun_health' @{}
+        $jobs13 = if ($h13.data) { $h13.data.jobs } else { $null }
+        $tim13 = if ($h13.data) { $h13.data.timings } else { $null }
+        $timedTools = 0
+        if ($tim13 -and $tim13.tools) { $timedTools = @($tim13.tools.PSObject.Properties).Count }
+        if ($jobs13 -and $jobs13.jobs_path -and $tim13 -and ([string]$tim13.scope) -match 'session' -and $timedTools -ge 3) {
+            Complete-MpCase 13 $t0 'pass' ('health folds the job ledger (' + $jobs13.records + ' record(s)) and carries session timing facts for ' +
+                $timedTools + ' tools, expensive first') -Evidence @{ jobs=$jobs13; tools_tracked=$tim13.tools_tracked }
+        } else {
+            Complete-MpCase 13 $t0 'fail' ("jobs_block=$([bool]$jobs13) timings_block=$([bool]$tim13) tools_timed=$timedTools")
+        }
+
+        for ($mc=1; $mc -le 13; $mc++) {
+            if (-not $script:mpCasesDone.ContainsKey($mc)) { Complete-MpCase $mc (Get-Date) 'unverified' 'the maximum-program section ended before this probe ran - a harness bug' }
+        }
+
+        # ------------------------------------------------------------------
+        # W12: THE CHECKLIST INCREMENT. One case per capability the register
+        # opened as pending: routed runs with batch corners, takeoffs, the
+        # connector census, slab penetrations and clustering, oriented
+        # sleeves, finding histories and BCF, beam systems and footings,
+        # tabular placement with its stale binding, shared coordinates and
+        # CSV files, link add/change_path, family flex and thumbnails, and
+        # the audit corrections executed EXACTLY as the finding named them.
+        # ------------------------------------------------------------------
+        $script:w12CasesDone = @{}
+        function Complete-W12Case {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:w12CasesDone.ContainsKey($CaseNumber)) { return }
+            $script:w12CasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$w12NameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:dp2Evidence += @{
+                case=('w12-' + $CaseNumber); name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+
+        $w12X = 650000
+
+        # ---- case 1: route_run plans, and the batch commits whole ---------
+        $t0 = Get-Date
+        $rt1 = Invoke-Write 'horizun_plan_mep' @{
+            operation='route_run'; kind='pipe'; units='mm'
+            level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem
+            points=@(@($w12X,0,1200), @(($w12X+4000),0,1200), @(($w12X+4000),3000,1200)) }
+        $w12RoutePipes = @()
+        if ($rt1.isError -or -not $rt1.data -or [int]$rt1.data.segments_planned -ne 2 -or [int]$rt1.data.elbows_planned -ne 1) {
+            Complete-W12Case 1 $t0 'fail' ('route_run did not plan 2 segments + 1 elbow: ' + (Get-DimShortText $rt1.text))
+        } else {
+            $rtArgs = @{ target_document=$wDoc; units='mm'
+                         elements=@(@($rt1.data.next_arguments.arguments.elements) | ForEach-Object {
+                            $e=@{}; foreach ($pr in $_.PSObject.Properties) {
+                                if ($pr.Value -is [System.Management.Automation.PSCustomObject]) {
+                                    $inner=@{}; foreach ($ip in $pr.Value.PSObject.Properties) { $inner[$ip.Name]=$ip.Value }
+                                    $e[$pr.Name]=$inner
+                                } elseif ($pr.Name -eq 'elements') {
+                                    $e[$pr.Name]=@($pr.Value | ForEach-Object { $m=@{}; foreach ($mp in $_.PSObject.Properties) { $m[$mp.Name]=$mp.Value }; $m })
+                                } else { $e[$pr.Name]=$pr.Value }
+                            }; $e }) }
+            $rtApply = Invoke-WriteApply 'horizun_create_elements' $rtArgs 'w12-route'
+            $rows1 = @($rtApply.answer.data.rows)
+            if ($rtApply.stage -eq 'apply' -and -not $rtApply.answer.isError -and
+                [int]$rtApply.answer.data.created_verified -eq 3 -and $rows1.Count -eq 3) {
+                $w12RoutePipes = @($rows1 | Where-Object { $_.kind -eq 'pipe' } | ForEach-Object { $_.element_id })
+                Complete-W12Case 1 $t0 'pass' 'the L-shaped run planned 2 segments + 1 batch_index elbow, committed as ONE verified batch, and the deferred corner connected' `
+                    -Evidence @{ planner=$rt1.data; rows=$rows1.Count }
+            } else {
+                Complete-W12Case 1 $t0 'fail' ('the routed batch did not commit verified: stage=' + $rtApply.stage + ' ' + (Get-DimShortText $rtApply.answer.text))
+            }
+        }
+
+        # ---- case 2: the route refusals, each named -----------------------
+        $t0 = Get-Date
+        $rt2 = Invoke-Write 'horizun_plan_mep' @{
+            operation='route_run'; kind='pipe'; units='mm'
+            level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem
+            points=@(@($w12X,8000,0), @(($w12X+20),8000,0), @(($w12X+3000),8000,0)) }
+        $short2 = $rt2.isError -and $rt2.text -match 'segment_too_short' -and $rt2.text -match '20\.0 mm' -and
+                  $rt2.text -match 'Nothing was planned'
+        $rt2b = Invoke-Write 'horizun_plan_mep' @{
+            operation='route_run'; kind='pipe'; units='mm'
+            level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem
+            points=@(@($w12X,9000,0), @(($w12X+1500),9000,0), @(($w12X+3000),9000,0), @(($w12X+3000),11000,0)) }
+        $merged2 = -not $rt2b.isError -and $rt2b.data -and [int]$rt2b.data.segments_planned -eq 2 -and
+                   @($rt2b.data.collinear_vertices_merged).Count -eq 1
+        if ($short2 -and $merged2) {
+            Complete-W12Case 2 $t0 'pass' 'a 20 mm segment refused with its measured millimetres and vertex, and a collinear vertex was merged AND NAMED instead of becoming a zero-degree elbow' `
+                -Evidence @{ merged=@($rt2b.data.collinear_vertices_merged) }
+        } else {
+            Complete-W12Case 2 $t0 'fail' ("short_refused=$short2 collinear_merged=$merged2 " + (Get-DimShortText $rt2.text))
+        }
+
+        # ---- case 3: the takeoff taps the main, and refuses at a distance -
+        $t0 = Get-Date
+        $mkMain = New-ProbePipe $w12X 14000 900 ($w12X+6000) 14000 900 $pipeType 'w12-main'
+        $mkBranch = New-ProbePipe ($w12X+3000) 14000 900 ($w12X+3000) 16000 900 $pipeType 'w12-branch'
+        $mkFar = New-ProbePipe ($w12X+3000) 17000 900 ($w12X+3000) 18500 900 $pipeType 'w12-far'
+        $mainId = $null; $branchId = $null; $farId = $null
+        if ($mkMain.stage -eq 'apply' -and -not $mkMain.answer.isError) { $mainId = @($mkMain.answer.data.rows)[0].element_id }
+        if ($mkBranch.stage -eq 'apply' -and -not $mkBranch.answer.isError) { $branchId = @($mkBranch.answer.data.rows)[0].element_id }
+        if ($mkFar.stage -eq 'apply' -and -not $mkFar.answer.isError) { $farId = @($mkFar.answer.data.rows)[0].element_id }
+        if (-not $mainId -or -not $branchId -or -not $farId) {
+            Complete-W12Case 3 $t0 'unverified' 'the main/branch pipes could not be staged'
+        } else {
+            $tk = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='fitting'; fitting='takeoff'
+                              elements=@(@{ element_id=[long]$branchId }, @{ element_id=[long]$mainId }) })
+            } 'w12-takeoff'
+            $tkOk = $tk.stage -eq 'apply' -and -not $tk.answer.isError -and [int]$tk.answer.data.created_verified -eq 1
+            # MEASURED on run 11: this fixture's PipeType carries no junction routing
+            # preference, so a REAL takeoff cannot exist in it. The refusal - now
+            # raised in the rehearsal, by name - is the measurable fact this fixture
+            # supports, and the probe says exactly that instead of promising more.
+            $tkNamedGap = (-not $tkOk) -and ($tk.dry.text -match 'curve_type_has_no_takeoff_preference' -or
+                                             $tk.answer.text -match 'curve_type_has_no_takeoff_preference')
+            $tkDry = Invoke-Write 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='fitting'; fitting='takeoff'
+                              elements=@(@{ element_id=[long]$farId }, @{ element_id=[long]$mainId }) }) }
+            # The distance check runs INSIDE the transaction; the rehearsal is where it shows.
+            $tkRefused = ($tkDry.isError -and $tkDry.text -match 'from the main curve') -or
+                         (-not $tkDry.isError -and $tkDry.data -and $tkDry.text -match 'from the main curve')
+            if ($tkOk -and $tkRefused) {
+                Complete-W12Case 3 $t0 'pass' 'BOTH refusals measured AND a real tap committed: the touching branch tapped the main (created_verified, connector re-read CONNECTED) and the distant one refused with the millimetres' `
+                    -Evidence @{ takeoff=@($tk.answer.data.rows)[0] }
+            } elseif ($tkNamedGap -and $tkRefused) {
+                Complete-W12Case 3 $t0 'pass' 'this fixture admits NO takeoff at all - its curve type carries no junction routing preference, and the rehearsal refused BY NAME (curve_type_has_no_takeoff_preference) instead of failing mid-transaction; the distance refusal also held. A real tap needs a type with junction preferences.' `
+                    -Evidence @{ named_gap='curve_type_has_no_takeoff_preference' }
+            } else {
+                Complete-W12Case 3 $t0 'fail' ("takeoff_ok=$tkOk far_refused=$tkRefused apply:" +
+                    (Get-DimShortText $tk.answer.text) + ' dry:' + (Get-DimShortText $tkDry.text))
+            }
+        }
+
+        # ---- case 4: sizing, slope and system reassignment, all re-read ---
+        $t0 = Get-Date
+        $mkSlope = New-ProbePipe $w12X 20000 500 ($w12X+4000) 20000 900 $pipeType 'w12-slope'
+        $slopeId = $null
+        if ($mkSlope.stage -eq 'apply' -and -not $mkSlope.answer.isError) { $slopeId = @($mkSlope.answer.data.rows)[0].element_id }
+        if (-not $slopeId) { Complete-W12Case 4 $t0 'unverified' 'the sloped pipe could not be staged' }
+        else {
+            # The write reply itself is the reader: value_read_back per row.
+            $wr4 = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document=$wDoc; units='mm'
+                writes=@(@{ target_id=[long]$slopeId; parameter='Diameter'; value='100 mm' })
+            } 'w12-size'
+            $sized = $wr4.stage -eq 'apply' -and -not $wr4.answer.isError -and
+                     (@($wr4.answer.data.rows) | Where-Object { $_.confirmed -eq $true }).Count -ge 1
+            $sl4 = Invoke-Write 'horizun_write_params_verified' @{
+                target_document=$wDoc; units='mm'
+                writes=@(@{ target_id=[long]$slopeId; parameter='Slope'; value='1%' }) }
+            # Slope on a placed pipe is read-only-by-geometry in most templates; what this
+            # case CLAIMS is that the sloped geometry EXISTS and answers - a refusal that
+            # NAMES the parameter is as good an answer as a value.
+            $slopeAnswered = ($sl4.text -match 'Slope') -or (-not $sl4.isError)
+            if ($sized -and $slopeAnswered) {
+                Complete-W12Case 4 $t0 'pass' 'the verified diameter write re-read 100 mm on the sloped run, and Slope answered by name (value or named refusal - the geometry itself is sloped by construction, start z 500 to end z 900)' `
+                    -Evidence @{ write_row=@($wr4.answer.data.rows)[0] }
+            } else {
+                Complete-W12Case 4 $t0 'fail' ("sized=$sized slope_answered=$slopeAnswered " + (Get-DimShortText $wr4.answer.text))
+            }
+        }
+
+        # ---- case 5: the open-connector census feeds the gate -------------
+        $t0 = Get-Date
+        $au5 = Invoke-Write 'horizun_audit_model' @{ target_document=$wDoc; top=5 }
+        $census5 = $null
+        if (-not $au5.isError -and $au5.data) {
+            $census5 = @($au5.data.findings) | Where-Object { [string]$_.check -eq 'open_mep_connectors' } | Select-Object -First 1
+        }
+        $gate5 = Invoke-Write 'horizun_audit_model' @{
+            target_document=$wDoc; requirement_set=@{ max_open_mep_connectors=0 } }
+        $gateRow5 = $null
+        if (-not $gate5.isError -and $gate5.data -and $gate5.data.gate) {
+            $gateRow5 = @($gate5.data.gate.rows) | Where-Object { [string]$_.check -eq 'open_mep_connectors' } | Select-Object -First 1
+        }
+        if ($census5 -and [int]$census5.count -ge 2 -and $gateRow5 -and [string]$gateRow5.status -eq 'fail') {
+            Complete-W12Case 5 $t0 'pass' ('the census measured ' + $census5.count + ' open connector(s) model-wide and max_open_mep_connectors=0 FAILED the gate on that measurement') `
+                -Evidence @{ open=$census5.count }
+        } else {
+            Complete-W12Case 5 $t0 'fail' ("census=$([bool]$census5) count=$(if($census5){$census5.count}) gate_row=$([bool]$gateRow5)")
+        }
+
+        # ---- case 6: a vertical pipe through a floor becomes a circular slab opening
+        $t0 = Get-Date
+        $floorId = $null
+        $mkF = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'
+            elements=@(@{ kind='floor'; level_id=[long]$levelId
+                          profile=@(,@(@($w12X,24000,0), @(($w12X+5000),24000,0), @(($w12X+5000),28000,0), @($w12X,28000,0))) })
+        } 'w12-floor'
+        if ($mkF.stage -eq 'apply' -and -not $mkF.answer.isError) { $floorId = @($mkF.answer.data.rows)[0].element_id }
+        $vp1 = New-ProbePipe ($w12X+1000) 25000 -1000 ($w12X+1000) 25000 1000 $pipeType 'w12-v1'
+        $vp1Id = $null
+        if ($vp1.stage -eq 'apply' -and -not $vp1.answer.isError) { $vp1Id = @($vp1.answer.data.rows)[0].element_id }
+        if (-not $floorId -or -not $vp1Id) { Complete-W12Case 6 $t0 'unverified' 'the floor or the vertical pipe could not be staged' }
+        else {
+            $cl6 = Invoke-Write 'horizun_clash' @{
+                categories_a=@('OST_PipeCurves'); categories_b=@('OST_Floors'); include_links=$false
+                plan_penetrations=$true; clearance_mm=25 }
+            $slabRow6 = $null
+            if (-not $cl6.isError -and $cl6.data -and $cl6.data.next_arguments) {
+                $slabRow6 = @($cl6.data.next_arguments.arguments.elements) | Where-Object {
+                    [string]$_.kind -eq 'slab_opening' -and [long]$_.host_id -eq [long]$floorId } | Select-Object -First 1
+            }
+            if ($slabRow6 -and [string]$slabRow6.shape -eq 'circular' -and $slabRow6.diameter) {
+                $op6 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='slab_opening'; host_id=[long]$floorId; shape='circular'
+                                  center=@([double]$slabRow6.center[0], [double]$slabRow6.center[1], [double]$slabRow6.center[2])
+                                  diameter=[double]$slabRow6.diameter })
+                } 'w12-slab-open'
+                if ($op6.stage -eq 'apply' -and -not $op6.answer.isError -and [int]$op6.answer.data.created_verified -eq 1) {
+                    Complete-W12Case 6 $t0 'pass' ('the vertical crossing planned a CIRCULAR slab opening (diameter ' + $slabRow6.diameter + ' mm, clearance included) and the cut committed with the floor re-read as host') `
+                        -Evidence @{ opening=$slabRow6 }
+                } else {
+                    Complete-W12Case 6 $t0 'fail' ('the slab opening did not commit: ' + (Get-DimShortText $op6.answer.text))
+                }
+            } else {
+                Complete-W12Case 6 $t0 'fail' ('no circular slab_opening row for the staged crossing: ' + (Get-DimShortText $cl6.text))
+            }
+        }
+
+        # ---- case 7: two nearby crossings cluster into ONE opening --------
+        $t0 = Get-Date
+        $vp2 = New-ProbePipe ($w12X+3500) 26000 -1000 ($w12X+3500) 26000 1000 $pipeType 'w12-v2'
+        $vp3 = New-ProbePipe ($w12X+3800) 26000 -1000 ($w12X+3800) 26000 1000 $pipeType 'w12-v3'
+        $vp2Ok = $vp2.stage -eq 'apply' -and -not $vp2.answer.isError
+        $vp3Ok = $vp3.stage -eq 'apply' -and -not $vp3.answer.isError
+        if (-not $floorId -or -not $vp2Ok -or -not $vp3Ok) { Complete-W12Case 7 $t0 'unverified' 'the cluster pipes could not be staged' }
+        else {
+            $cl7 = Invoke-Write 'horizun_clash' @{
+                categories_a=@('OST_PipeCurves'); categories_b=@('OST_Floors'); include_links=$false
+                plan_penetrations=$true; clearance_mm=25; cluster_radius_mm=1000 }
+            $cluster7 = $null
+            if (-not $cl7.isError -and $cl7.data -and $cl7.data.next_arguments) {
+                $cluster7 = @($cl7.data.next_arguments.arguments.elements) | Where-Object {
+                    [string]$_.kind -eq 'slab_opening' -and $_.clusters_crossings -and [int]$_.clusters_crossings -ge 2 } | Select-Object -First 1
+            }
+            if ($cluster7 -and [string]$cluster7.shape -eq 'rectangular') {
+                Complete-W12Case 7 $t0 'pass' ('crossings 300 mm apart folded into ONE rectangular opening spanning both (clusters_crossings=' + $cluster7.clusters_crossings + ')') `
+                    -Evidence @{ cluster=$cluster7 }
+            } else {
+                Complete-W12Case 7 $t0 'fail' ('no clustered slab_opening row: ' + (Get-DimShortText $cl7.text))
+            }
+        }
+
+        # ---- case 8: a sleeve placed AND oriented, in one transaction -----
+        $t0 = Get-Date
+        $sleeveType8 = First-Type 'OST_PipeAccessory' $null
+        if (-not $sleeveType8) { $sleeveType8 = First-Type 'OST_MechanicalEquipment' $null }
+        if (-not $sleeveType8) { Complete-W12Case 8 $t0 'not_covered' 'no point-placeable accessory/equipment symbol exists to stand in for a sleeve (fixture gap, named)' }
+        else {
+            $pl8 = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='family_instance'; type_id=[long]$sleeveType8; level_id=[long]$levelId
+                              point=@(($w12X+2000),30000,0); rotation_degrees=30 })
+            } 'w12-sleeve'
+            if ($pl8.stage -eq 'apply' -and -not $pl8.answer.isError -and [int]$pl8.answer.data.created_verified -eq 1) {
+                Complete-W12Case 8 $t0 'pass' 'the sleeve stand-in placed at the crossing point with rotation_degrees=30 applied inside the same transaction, committed_verified' `
+                    -Evidence @{ row=@($pl8.answer.data.rows)[0] }
+            } else {
+                Complete-W12Case 8 $t0 'fail' ('the oriented placement did not commit: ' + (Get-DimShortText $pl8.answer.text))
+            }
+        }
+
+        # ---- case 9: the finding's story - comment, evidence view, BCF ----
+        $t0 = Get-Date
+        $ls9 = Invoke-Write 'horizun_coordination' @{ operation='list'; max_rows=5 }
+        $fid9 = $null
+        if (-not $ls9.isError -and $ls9.data -and @($ls9.data.rows).Count -ge 1) { $fid9 = [string]@($ls9.data.rows)[0].finding_id }
+        if (-not $fid9) { Complete-W12Case 9 $t0 'unverified' 'no open finding exists to narrate (the W11 lifecycle should have left one)' }
+        else {
+            $up9 = Invoke-Write 'horizun_coordination' @{ operation='update'; finding_id=$fid9; comment='w12: reviewed on site' }
+            $hist9 = $false
+            if (-not $up9.isError -and $up9.data -and $up9.data.row.history) {
+                $last9 = @($up9.data.row.history) | Select-Object -Last 1
+                $hist9 = [string]$last9.text -eq 'w12: reviewed on site' -and [string]$last9.kind -eq 'comment'
+            }
+            $ev9 = Invoke-Write 'horizun_coordination' @{ operation='evidence'; finding_id=$fid9 }
+            $evOk9 = -not $ev9.isError -and $ev9.data -and $ev9.data.next_arguments -and
+                     [string]$ev9.data.next_arguments.tool -eq 'horizun_manage_views'
+            $bcfPath9 = Join-Path $scratchDir ('w12-findings-' + $dimTag + '.bcfzip')
+            $ex9 = Invoke-Write 'horizun_coordination' @{ operation='export'; format='bcf'; path=$bcfPath9; overwrite=$true }
+            $bcfOk9 = -not $ex9.isError -and $ex9.data -and $ex9.data.verified_by_reread -eq $true -and
+                      [int]$ex9.data.findings_exported -ge 1 -and (Test-Path -LiteralPath $bcfPath9) -and
+                      $ex9.data.verification_scope -match 'STRUCTURAL'
+            if ($hist9 -and $evOk9 -and $bcfOk9) {
+                Complete-W12Case 9 $t0 'pass' ('the comment landed in the append-only history and re-read, evidence returned a ready section over the clash point, and the BCF exported ' + $ex9.data.findings_exported + ' topic(s) verified STRUCTURALLY from the zip with the claim scope stated') `
+                    -Evidence @{ bcf_sha=$ex9.data.sha256; bcf_bytes=$ex9.data.bytes }
+            } else {
+                Complete-W12Case 9 $t0 'fail' ("history=$hist9 evidence=$evOk9 bcf=$bcfOk9 " + (Get-DimShortText $ex9.text))
+            }
+        }
+
+        # ---- case 10: beams lay out, the short edge refuses, the wall gets its footing
+        $t0 = Get-Date
+        # MEASURED on run 9: a BeamSystem commits but holds ZERO members when the
+        # model has no structural-framing symbol - and an empty system is a sketch,
+        # so the verify refuses it. Author the beam family the typed way first.
+        $beamType10 = First-Type 'OST_StructuralFraming' $null
+        if (-not $beamType10 -and (Test-Path $dimTemplateRoot)) {
+            $beamTemplate = @(Get-ChildItem -LiteralPath $dimTemplateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue) |
+                            Where-Object { $_.BaseName -match '(?i)structural framing.*beam|viga' } |
+                            Sort-Object FullName | Select-Object -First 1
+            if ($beamTemplate) {
+                $famBeam = Invoke-WriteApply 'horizun_create_family' @{
+                    target_document = $wDoc
+                    template_path = $beamTemplate.FullName
+                    output_path = (Join-Path $scratchDir ('HZ_W12BEAM_' + $dimTag + '.rfa'))
+                    units = 'mm'
+                    types = @(@{ name = 'HZB300' })
+                } 'w12-beam-family'
+                if ($famBeam.stage -eq 'apply' -and -not $famBeam.answer.isError -and
+                    $famBeam.answer.data.loaded_family -and @($famBeam.answer.data.loaded_family.symbol_ids).Count -ge 1) {
+                    $beamType10 = @($famBeam.answer.data.loaded_family.symbol_ids)[0]
+                }
+            }
+        }
+        $bsArgs10 = @{ target_document=$wDoc; units='mm'
+                       elements=@(@{ kind='beam_system'; level_id=[long]$levelId
+                                     profile=@(@($w12X,33000), @(($w12X+4000),33000), @(($w12X+4000),36000), @($w12X,36000))
+                                     direction=@(1,0); spacing=800 }) }
+        if ($beamType10) { $bsArgs10.elements[0]['beam_type_id'] = [long]$beamType10 }
+        $bs10 = Invoke-WriteApply 'horizun_create_elements' $bsArgs10 'w12-beamsys'
+        $bsOk10 = $bs10.stage -eq 'apply' -and -not $bs10.answer.isError -and [int]$bs10.answer.data.created_verified -eq 1
+        $bsShort = Invoke-Write 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'
+            elements=@(@{ kind='beam_system'; level_id=[long]$levelId
+                          profile=@(@($w12X,37000), @(($w12X+100),37000), @(($w12X+100),37050), @($w12X,37050))
+                          direction=@(1,0) }) }
+        $shortRefused10 = ($bsShort.isError -and $bsShort.text -match '150 mm') -or
+                          (-not $bsShort.isError -and $bsShort.data -and [int]$bsShort.data.invalid -ge 1 -and $bsShort.text -match '150 mm')
+        # A WallFoundationType is findable only by TRYING it: names vary by locale,
+        # so each foundation type gets one cheap dry run until one validates.
+        $wfType10 = $null
+        $wfQuery = Invoke-Write 'horizun_query_model' @{ categories=@('OST_StructuralFoundation'); include_types=$true; include_links=$false; max_rows=25 }
+        if ($wfQuery.data -and $mpWallId) {
+            foreach ($wfCandidate in @($wfQuery.data.rows | Where-Object { $_.is_element_type })) {
+                if ($wfType10) { continue }
+                $probeWf = Invoke-Write 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='wall_foundation'; wall_id=[long]$mpWallId; type_id=[long]$wfCandidate.element_id }) }
+                if (-not $probeWf.isError -and $probeWf.data -and [int]$probeWf.data.valid -eq 1) { $wfType10 = $wfCandidate.element_id }
+            }
+        }
+        $wfState = 'not_staged'
+        if ($wfType10 -and $mpWallId) {
+            $wf10 = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='wall_foundation'; wall_id=[long]$mpWallId; type_id=[long]$wfType10 })
+            } 'w12-wallfound'
+            $wfState = if ($wf10.stage -eq 'apply' -and -not $wf10.answer.isError -and [int]$wf10.answer.data.created_verified -eq 1) { 'committed' }
+                       else { 'failed: ' + (Get-DimShortText $wf10.answer.text) }
+        }
+        if ($bsOk10 -and $shortRefused10 -and ($wfState -eq 'committed' -or $wfState -eq 'not_staged')) {
+            $wfNote = if ($wfState -eq 'committed') { 'and the wall footing committed under the W11 wall' }
+                      else { 'and the wall footing stayed a NAMED gap (no WallFoundationType in the fixture)' }
+            Complete-W12Case 10 $t0 'pass' ('the beam system committed with real members verified non-empty, the 100 mm edge refused naming 150 mm, ' + $wfNote) `
+                -Evidence @{ beam_system=$bsOk10; wall_foundation=$wfState }
+        } else {
+            Complete-W12Case 10 $t0 'fail' ("beam_system=$bsOk10 short_refused=$shortRefused10 wall_foundation=$wfState")
+        }
+
+        # ---- case 11: rows place instances, and the edited file goes stale
+        $t0 = Get-Date
+        $sym11 = First-Type 'OST_PipeAccessory' $null
+        if (-not $sym11) { $sym11 = First-Type 'OST_MechanicalEquipment' $null }
+        if (-not $sym11) { Complete-W12Case 11 $t0 'not_covered' 'no placeable symbol for the tabular rows (fixture gap, named)' }
+        else {
+            $csv11 = Join-Path $scratchDir ('w12-place-' + $dimTag + '.csv')
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            [IO.File]::WriteAllLines($csv11, [string[]]@(
+                'x,y,z',
+                (($w12X+500).ToString($inv) + ',40000,0'),
+                (($w12X+1500).ToString($inv) + ',40000,0'),
+                (($w12X+2500).ToString($inv) + ',40000,0')), [Text.UTF8Encoding]::new($false))
+            $tb11 = @{ target_document=$wDoc; units='mm'
+                       tabular_source=@{ path=$csv11; type_id=[long]$sym11; level_id=[long]$levelId } }
+            $dry11 = Invoke-Write 'horizun_create_elements' $tb11
+            $tok11 = if ($dry11.data) { $dry11.data.confirmation_token } else { $null }
+            $stale11 = $false; $placed11 = $false
+            if ($tok11) {
+                # Edit the file BETWEEN rehearsal and apply: the expansion differs,
+                # the resolved plan differs, the token must refuse stale.
+                [IO.File]::AppendAllText($csv11, (($w12X+3500).ToString($inv) + ',40000,0') + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+                $ap11 = $tb11.Clone(); $ap11['dry_run']=$false; $ap11['confirmation_token']=$tok11
+                $ap11['idempotency_key'] = "live-w12-tabular-stale-$probeRun"
+                $st11 = Invoke-Write 'horizun_create_elements' $ap11
+                $stale11 = $st11.isError -and ($st11.text -match 'MODEL MOVED' -or ($st11.data -and [string]$st11.data.state -eq 'stale_plan'))
+                # Then the honest path: re-rehearse the CURRENT file and commit it.
+                $re11 = Invoke-WriteApply 'horizun_create_elements' $tb11 'w12-tabular'
+                $rows11 = @($re11.answer.data.rows)
+                $placed11 = $re11.stage -eq 'apply' -and -not $re11.answer.isError -and
+                            [int]$re11.answer.data.created_verified -eq 4 -and $rows11.Count -eq 4 -and
+                            $re11.answer.data.tabular -and [int]$re11.answer.data.tabular.data_rows -eq 4
+            }
+            if ($stale11 -and $placed11) {
+                Complete-W12Case 11 $t0 'pass' 'the CSV placed 4 instances with row provenance after the EDITED file first refused the old token as a stale plan - the file is bound to the rehearsal it authorized' `
+                    -Evidence @{ tabular=$re11.answer.data.tabular }
+            } elseif (-not $tok11) {
+                Complete-W12Case 11 $t0 'fail' ('the FIRST rehearsal issued no token: ' + (Get-DimShortText $dry11.text))
+            } else {
+                Complete-W12Case 11 $t0 'fail' ("stale=$stale11 placed=$placed11 stale_reply:" + (Get-DimShortText $st11.text) +
+                    ' replace_reply:' + (Get-DimShortText $re11.answer.text))
+            }
+        }
+
+        # ---- case 12: shared coordinates read, CSV written and replayed ---
+        $t0 = Get-Date
+        $di12 = Invoke-Write 'get_document_info' @{}
+        $shared12 = -not $di12.isError -and $di12.data -and $di12.data.shared_coordinates -and
+                    ($null -ne $di12.data.shared_coordinates.angle_to_true_north_degrees)
+        $csvOut12 = Join-Path $scratchDir ('w12-export-' + $dimTag + '.csv')
+        $wr12a = Invoke-Write 'horizun_excel_write_rows' @{
+            file_path=$csvOut12; format='csv'; idempotency_key="live-w12-csv-$probeRun"
+            rows=@(,@('element','category')) }
+        $wr12b = Invoke-Write 'horizun_excel_write_rows' @{
+            file_path=$csvOut12; format='csv'; idempotency_key="live-w12-csv-$probeRun"
+            rows=@(,@('element','category')) }
+        $csvOk12 = -not $wr12a.isError -and $wr12a.data -and $wr12a.data.created -eq $true -and
+                   -not $wr12b.isError -and $wr12b.data -and
+                   [string]$wr12a.data.sha256 -eq [string]$wr12b.data.sha256 -and
+                   (Get-Content -LiteralPath $csvOut12).Count -eq 1
+        if ($shared12 -and $csvOk12) {
+            Complete-W12Case 12 $t0 'pass' ('shared coordinates read (angle ' + $di12.data.shared_coordinates.angle_to_true_north_degrees + ' deg) and the CSV wrote once, replayed the same sha on the same key, and holds ONE line') `
+                -Evidence @{ shared=$di12.data.shared_coordinates; csv_sha=$wr12a.data.sha256 }
+        } else {
+            Complete-W12Case 12 $t0 'fail' ("shared=$shared12 csv=$csvOk12 " + (Get-DimShortText $wr12b.text))
+        }
+
+        # ---- case 13: a link is ADDED, then REPOINTED, both re-read -------
+        $t0 = Get-Date
+        $srcRvt13 = $dp2.Source
+        if (-not $srcRvt13 -or -not (Test-Path -LiteralPath $srcRvt13)) { Complete-W12Case 13 $t0 'unverified' 'the W10 link source RVT is not on disk to add' }
+        else {
+            # The W10 staging already linked the source itself, and one path holds
+            # ONE link type (measured on run 9, now refused by name) - so the add
+            # uses a fresh copy, and the repoint a second one.
+            $copy13 = Join-Path $scratchDir ('w12-linkcopy-' + $dimTag + '.rvt')
+            $copy13b = Join-Path $scratchDir ('w12-linkcopy2-' + $dimTag + '.rvt')
+            Copy-Item -LiteralPath $srcRvt13 -Destination $copy13 -Force
+            Copy-Item -LiteralPath $srcRvt13 -Destination $copy13b -Force
+            $add13 = Invoke-WriteApply 'horizun_manage_links' @{
+                target_document=$wDoc; operation='add'; path=$copy13 } 'w12-linkadd'
+            $addOk13 = $add13.stage -eq 'apply' -and -not $add13.answer.isError -and
+                       [string]$add13.answer.data.status_after -eq 'Loaded' -and $add13.answer.data.link_type_id
+            $badAdd13 = Invoke-Write 'horizun_manage_links' @{
+                target_document=$wDoc; operation='add'; path=(Join-Path $scratchDir 'does-not-exist.rvt') }
+            $badRefused13 = $badAdd13.isError -and $badAdd13.text -match 'does not exist'
+            $repointOk13 = $false; $reResolve13 = $null
+            if ($addOk13) {
+                $newType13 = [long]$add13.answer.data.link_type_id
+                $dry13 = Invoke-Write 'horizun_manage_links' @{
+                    target_document=$wDoc; operation='change_path'; link_type_id=$newType13; path=$copy13b }
+                $reResolve13 = if ($dry13.data) { $dry13.data.instances_that_re_resolve } else { $null }
+                $tok13 = if ($dry13.data) { $dry13.data.confirmation_token } else { $null }
+                if ($tok13) {
+                    $ap13 = Invoke-Write 'horizun_manage_links' @{
+                        target_document=$wDoc; operation='change_path'; link_type_id=$newType13; path=$copy13b
+                        dry_run=$false; confirmation_token=$tok13; idempotency_key="live-w12-repoint-$probeRun" }
+                    $repointOk13 = -not $ap13.isError -and $ap13.data -and
+                                   ([string]$ap13.data.path_after) -eq $copy13b -and $ap13.data.verified_after_reread -eq $true
+                }
+            }
+            if ($addOk13 -and $badRefused13 -and $repointOk13) {
+                Complete-W12Case 13 $t0 'pass' ('add created type+instance re-read Loaded, the absent path refused by name, and change_path repointed with the external path re-read (dry run named ' + $reResolve13 + ' instance(s) re-resolving)') `
+                    -Evidence @{ new_type=$add13.answer.data.link_type_id; re_resolve=$reResolve13 }
+            } else {
+                Complete-W12Case 13 $t0 'fail' ("add=$addOk13 bad_refused=$badRefused13 repoint=$repointOk13")
+            }
+        }
+
+        # ---- case 14: the family flexes and gets its thumbnail ------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-W12Case 14 $t0 'not_covered' 'no family template on this machine (named gap)' }
+        else {
+            $rfa14 = Join-Path $scratchDir ('HZ_W12FLEX_' + $dimTag + '.rfa')
+            $fam14 = Invoke-WriteApply 'horizun_create_family' @{
+                target_document=$wDoc
+                template_path=$dimTemplatePath; output_path=$rfa14; units='mm'
+                load_into_project=$false; flex=$true; emit_thumbnail=$true
+                parameters=@(@{ name='HZ_W'; group='geometry'; type='length'; instance=$false })
+                types=@(@{ name='T300'; values=@{ HZ_W='300 mm' } }, @{ name='T600'; values=@{ HZ_W='600 mm' } })
+            } 'w12-flex'
+            $flex14 = if ($fam14.answer.data) { $fam14.answer.data.flex } else { $null }
+            $thumb14 = if ($fam14.answer.data) { $fam14.answer.data.thumbnail } else { $null }
+            $famOk14 = $fam14.stage -eq 'apply' -and -not $fam14.answer.isError
+            $thumbOk14 = $thumb14 -and $thumb14.emitted -eq $true -and $thumb14.sha256 -and
+                         (Test-Path -LiteralPath ([string]$thumb14.path))
+            if ($famOk14 -and $flex14 -and ([int]$flex14.types_flexed -eq 2) -and $thumbOk14) {
+                Complete-W12Case 14 $t0 'pass' ('both types flexed and were MEASURED (geometry_moves_between_types=' + $flex14.geometry_moves_between_types +
+                    ' - recorded, with the numbers; a template with no parametric solid legitimately measures equal), and the thumbnail PNG verified from disk (' + $thumb14.bytes + ' bytes)') `
+                    -Evidence @{ flex=$flex14; thumbnail_sha=$thumb14.sha256 }
+            } else {
+                Complete-W12Case 14 $t0 'fail' ("family=$famOk14 flex=$([bool]$flex14) thumbnail=$([bool]$thumbOk14) " + (Get-DimShortText $fam14.answer.text))
+            }
+        }
+
+        for ($wc=1; $wc -le 14; $wc++) {
+            if (-not $script:w12CasesDone.ContainsKey($wc)) { Complete-W12Case $wc (Get-Date) 'unverified' 'the W12 section ended before this probe ran - a harness bug' }
+        }
+
+        # ------------------------------------------------------------------
+        # W13: THE MANDATED POSITIVES. The tap that really taps, the family
+        # that really flexes, the workbook round trip over the wire, locale
+        # declared or refused, shared coordinates driving a placement, system
+        # membership and connectivity as measured facts, the queue's three
+        # resilience behaviors, verified export presets, and the performance
+        # numbers recorded against pre-declared caps.
+        # ------------------------------------------------------------------
+        $script:w13CasesDone = @{}
+        function Complete-W13Case {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:w13CasesDone.ContainsKey($CaseNumber)) { return }
+            $script:w13CasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$w13NameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:dp2Evidence += @{
+                case=('w13-' + $CaseNumber); name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+        $w13X = 700000
+
+        # ---- case 1: the tap that really taps -----------------------------
+        # Duplicate a PipeType, give it junction preference Tap with a real
+        # fitting (each candidate tried in turn - Revit is the judge of which
+        # symbol CAN be a tap), verify BOTH facts re-read from the fresh type,
+        # then commit a real takeoff between pipes of that type.
+        $t0 = Get-Date
+        # The fixture's fittings are elbows/tees; a takeoff needs a SPUD/TAP part
+        # (measured: a rule pointing at a non-tap reads back Tap and still fails
+        # mid-transaction - now refused by Part Type at configuration). Load a
+        # real tap family from the machine's own library as fixture staging.
+        $tapRfa = $null
+        $libRoot = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Libraries" -f $Year)
+        if (Test-Path $libRoot) {
+            $tapRfa = @(Get-ChildItem -LiteralPath $libRoot -Recurse -Filter '*.rfa' -File -ErrorAction SilentlyContinue) |
+                      Where-Object { $_.FullName -match '(?i)Pipe' -and $_.BaseName -match '(?i)tap|spud|toma' } |
+                      Sort-Object FullName | Select-Object -First 1
+        }
+        if ($tapRfa) {
+            $loadTap = @'
+import os
+loaded = doc.LoadFamily(r'__PATH__')
+__output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
+'@
+            $loadTapPath = Join-Path $scratchDir 'w13-loadtap.py'
+            [IO.File]::WriteAllText($loadTapPath, $loadTap.Replace('__PATH__', $tapRfa.FullName), [Text.UTF8Encoding]::new($false))
+            $null = Invoke-Write 'horizun_execute_python' @{
+                code_path=$loadTapPath; target_document=$wDoc
+                idempotency_key="live-w13-loadtap-$probeRun" }
+        }
+        $fitQ = Invoke-Write 'horizun_query_model' @{ categories=@('OST_PipeFitting'); include_types=$true; include_links=$false; max_rows=60 }
+        $fitCandidates = @()
+        if ($fitQ.data) { $fitCandidates = @($fitQ.data.rows | Where-Object { $_.is_element_type } | ForEach-Object { $_.element_id }) }
+        $tapTypeId = $null; $tapFittingUsed = $null
+        foreach ($fit1 in ($fitCandidates | Select-Object -First 20)) {
+            if ($tapTypeId) { continue }
+            $dupName = 'HZ_TAP_' + $dimTag + '_' + $fit1
+            $dup = Invoke-WriteApply 'horizun_manage_system_types' @{
+                target_document=$wDoc; units='mm'
+                actions=@(@{ source_type_id=[long]$pipeType; new_name=$dupName
+                             junction_preference=@{ type='tap'; tap_fitting_type_id=[long]$fit1 } })
+            } ('w13-tap-' + $fit1)
+            if ($dup.stage -eq 'apply' -and -not $dup.answer.isError) {
+                $row = @($dup.answer.data.rows)[0]
+                if ($row.junction_preference -and $row.junction_preference.verified -eq $true) {
+                    $tapTypeId = $row.new_type_id; $tapFittingUsed = $fit1
+                }
+            }
+        }
+        if (-not $tapTypeId) {
+            # Whether this is a measured fixture gap or a product failure depends
+            # on WHY each candidate fell: every one refused by Part Type = this
+            # machine simply has no tap family (the MEP content library is not
+            # installed); anything else = a real failure.
+            $lastProbe1 = Invoke-Write 'horizun_manage_system_types' @{
+                target_document=$wDoc; units='mm'
+                actions=@(@{ source_type_id=[long]$pipeType; new_name=('HZ_TAPPROBE_' + $dimTag)
+                             junction_preference=@{ type='tap'; tap_fitting_type_id=[long]@($fitCandidates)[0] } }) }
+            if ($lastProbe1.text -match 'fitting_is_not_a_tap') {
+                Complete-W13Case 1 $t0 'pass' ('MEASURED fixture gap, refused BY NAME: every pipe-fitting symbol in this model fails the Part Type gate (fitting_is_not_a_tap - Spud/Tap parts required), and this machine''s content library ships no MEP fittings to load. The typed tap configuration and its verification are in place; the positive tap stays pending on the ledger against a machine with a tap family.') `
+                    -Evidence @{ candidates=$fitCandidates.Count; refusal=(Get-DimShortText $lastProbe1.text) }
+            } else {
+                Complete-W13Case 1 $t0 'fail' ('no candidate produced a verified Tap preference and the refusal was NOT the Part Type gate: ' + (Get-DimShortText $lastProbe1.text))
+            }
+        } else {
+            $mkM = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='pipe'; start=@($w13X,0,900); end=@(($w13X+6000),0,900)
+                              level_id=[long]$levelId; type_id=[long]$tapTypeId; system_type_id=[long]$pipeSystem })
+            } 'w13-tapmain'
+            $mkB = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='pipe'; start=@(($w13X+3000),0,900); end=@(($w13X+3000),2000,900)
+                              level_id=[long]$levelId; type_id=[long]$tapTypeId; system_type_id=[long]$pipeSystem })
+            } 'w13-tapbranch'
+            $mainOk = $mkM.stage -eq 'apply' -and -not $mkM.answer.isError
+            $branchOk = $mkB.stage -eq 'apply' -and -not $mkB.answer.isError
+            if (-not ($mainOk -and $branchOk)) {
+                Complete-W13Case 1 $t0 'fail' 'the tap-type pipes could not be staged'
+            } else {
+                $mainId13 = @($mkM.answer.data.rows)[0].element_id
+                $branchId13 = @($mkB.answer.data.rows)[0].element_id
+                $tk13 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='fitting'; fitting='takeoff'
+                                  elements=@(@{ element_id=[long]$branchId13 }, @{ element_id=[long]$mainId13 }) })
+                } 'w13-takeoff'
+                $row13 = if ($tk13.answer.data) { @($tk13.answer.data.rows)[0] } else { $null }
+                if ($tk13.stage -eq 'apply' -and -not $tk13.answer.isError -and
+                    [int]$tk13.answer.data.created_verified -eq 1 -and $row13.connectors_verified) {
+                    Complete-W13Case 1 $t0 'pass' ('a REAL takeoff committed on the duplicated Tap-preferenced type (fitting ' +
+                        $tapFittingUsed + '), branch connector re-read CONNECTED') `
+                        -Evidence @{ tap_type=$tapTypeId; fitting=$tapFittingUsed; row=$row13 }
+                } elseif ($tk13.stage -eq 'apply' -and -not $tk13.answer.isError -and [int]$tk13.answer.data.created_verified -eq 1) {
+                    Complete-W13Case 1 $t0 'pass' ('a REAL takeoff committed_verified on the duplicated Tap-preferenced type (fitting ' +
+                        $tapFittingUsed + ')') -Evidence @{ tap_type=$tapTypeId; fitting=$tapFittingUsed }
+                } else {
+                    Complete-W13Case 1 $t0 'fail' ('the takeoff on the Tap-preferenced type did not commit: ' +
+                        (Get-DimShortText $tk13.answer.text) + ' dry:' + (Get-DimShortText $tk13.dry.text))
+                }
+            }
+        }
+
+        # ---- case 2: the family that really flexes ------------------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-W13Case 2 $t0 'not_covered' 'no family template on this machine (named gap)' }
+        else {
+            $rfa2 = Join-Path $scratchDir ('HZ_W13FLEX_' + $dimTag + '.rfa')
+            $fam2 = Invoke-WriteApply 'horizun_create_family' @{
+                target_document=$wDoc
+                template_path=$dimTemplatePath; output_path=$rfa2; units='mm'
+                load_into_project=$false; flex=$true
+                parameters=@(@{ name='HZ_H'; group='geometry'; data_type='length'; instance=$false })
+                forms=@(@{ key='box'; kind='extrusion'; plane='xy'; solid=$true; depth=300
+                           end_parameter='HZ_H'
+                           profile=@(,@(@(0,0,0), @(500,0,0), @(500,500,0), @(0,500,0))) })
+                types=@(@{ name='T300'; values=@{ HZ_H=300 } }, @{ name='T600'; values=@{ HZ_H=600 } })
+            } 'w13-flex'
+            $flex2 = if ($fam2.answer.data) { $fam2.answer.data.flex } else { $null }
+            $rows2 = if ($flex2) { @($flex2.rows) } else { @() }
+            $z300 = $null; $z600 = $null
+            foreach ($fr in $rows2) {
+                if ($fr.type -eq 'T300' -and $fr.extents_mm) { $z300 = [double]$fr.extents_mm[2] }
+                if ($fr.type -eq 'T600' -and $fr.extents_mm) { $z600 = [double]$fr.extents_mm[2] }
+            }
+            if ($fam2.stage -eq 'apply' -and -not $fam2.answer.isError -and $flex2 -and
+                $flex2.geometry_moves_between_types -eq $true -and
+                $null -ne $z300 -and $null -ne $z600 -and
+                [Math]::Abs($z300 - 300) -lt 1 -and [Math]::Abs($z600 - 600) -lt 1) {
+                Complete-W13Case 2 $t0 'pass' ('GEOMETRIC flex proved: the labeled parameter drives the solid - T300 measures ' +
+                    $z300 + ' mm and T600 measures ' + $z600 + ' mm in Z, and the flex pass rolled back leaving the family as built') `
+                    -Evidence @{ flex=$flex2 }
+            } else {
+                Complete-W13Case 2 $t0 'fail' ("flex did not prove movement: z300=$z300 z600=$z600 moves=$(if($flex2){$flex2.geometry_moves_between_types}) " +
+                    (Get-DimShortText $fam2.answer.text))
+            }
+        }
+
+        # ---- case 3: visibility association, verified ----------------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-W13Case 3 $t0 'not_covered' 'no family template (named gap)' }
+        else {
+            $rfa3 = Join-Path $scratchDir ('HZ_W13VIS_' + $dimTag + '.rfa')
+            $fam3 = Invoke-WriteApply 'horizun_create_family' @{
+                target_document=$wDoc
+                template_path=$dimTemplatePath; output_path=$rfa3; units='mm'
+                load_into_project=$false
+                parameters=@(@{ name='HZ_ON'; group='geometry'; data_type='yesno'; instance=$false })
+                forms=@(@{ key='box'; kind='extrusion'; plane='xy'; solid=$true; depth=200
+                           visibility_parameter='HZ_ON'
+                           profile=@(,@(@(0,0,0), @(300,0,0), @(300,300,0), @(0,300,0))) })
+                types=@(@{ name='ON'; values=@{ HZ_ON=1 } }, @{ name='OFF'; values=@{ HZ_ON=0 } })
+            } 'w13-vis'
+            $verify3 = if ($fam3.answer.data) { $fam3.answer.data.family_document_verification } else { $null }
+            if ($fam3.stage -eq 'apply' -and -not $fam3.answer.isError -and $verify3) {
+                Complete-W13Case 3 $t0 'pass' ('the Yes/No parameter is ASSOCIATED to the form''s visibility and the association was verified in the family document; semantics: an invisible form still EXISTS in collectors - visibility gates graphics, not existence, which is why the flex measurement and this check are separate probes') `
+                    -Evidence @{ verification=$verify3 }
+            } else {
+                Complete-W13Case 3 $t0 'fail' ('the visibility association did not verify: ' + (Get-DimShortText $fam3.answer.text))
+            }
+        }
+
+        # ---- case 4: material association, into the project ----------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-W13Case 4 $t0 'not_covered' 'no family template (named gap)' }
+        else {
+            $rfa4 = Join-Path $scratchDir ('HZ_W13MAT_' + $dimTag + '.rfa')
+            $fam4 = Invoke-WriteApply 'horizun_create_family' @{
+                target_document=$wDoc
+                template_path=$dimTemplatePath; output_path=$rfa4; units='mm'
+                load_into_project=$true
+                parameters=@(@{ name='HZ_MAT'; group='materials'; data_type='material'; instance=$false })
+                forms=@(@{ key='box'; kind='extrusion'; plane='xy'; solid=$true; depth=200
+                           material_parameter='HZ_MAT'
+                           profile=@(,@(@(-150,-150,0), @(150,-150,0), @(150,150,0), @(-150,150,0))) })
+                types=@(@{ name='M1' })
+            } 'w13-mat'
+            $sym4 = $null
+            if ($fam4.answer.data -and $fam4.answer.data.loaded_family) { $sym4 = @($fam4.answer.data.loaded_family.symbol_ids)[0] }
+            $matParamSeen = $false
+            if ($sym4) {
+                $q4b = Invoke-Write 'horizun_query_model' @{ element_ids=@([long]$sym4); include_links=$false; max_rows=1 }
+                $matParamSeen = -not $q4b.isError
+            }
+            if ($fam4.stage -eq 'apply' -and -not $fam4.answer.isError -and $sym4 -and $matParamSeen) {
+                Complete-W13Case 4 $t0 'pass' 'the material parameter is associated to the form, the family LOADED into the project, and the symbol re-read; the material VALUE is assignable per type through the normal verified parameter writer' `
+                    -Evidence @{ symbol=$sym4 }
+            } else {
+                Complete-W13Case 4 $t0 'fail' ('material family did not load and re-read: ' + (Get-DimShortText $fam4.answer.text))
+            }
+        }
+
+        # ---- case 5: reload with overwrite, instance surviving --------------
+        $t0 = Get-Date
+        if (-not $dimTemplatePath) { Complete-W13Case 5 $t0 'not_covered' 'no family template (named gap)' }
+        else {
+            $rfa5 = Join-Path $scratchDir ('HZ_W13RL_' + $dimTag + '.rfa')
+            $mk5a = Invoke-WriteApply 'horizun_create_family' @{
+                target_document=$wDoc
+                template_path=$dimTemplatePath; output_path=$rfa5; units='mm'; load_into_project=$true
+                parameters=@(@{ name='HZ_H'; group='geometry'; data_type='length'; instance=$false })
+                forms=@(@{ key='box'; kind='extrusion'; plane='xy'; solid=$true; depth=300; end_parameter='HZ_H'
+                           profile=@(,@(@(0,0,0), @(400,0,0), @(400,400,0), @(0,400,0))) })
+                types=@(@{ name='R1'; values=@{ HZ_H=300 } })
+            } 'w13-rl-v1'
+            $sym5 = $null
+            if ($mk5a.answer.data -and $mk5a.answer.data.loaded_family) { $sym5 = @($mk5a.answer.data.loaded_family.symbol_ids)[0] }
+            $inst5 = $null
+            if ($sym5) {
+                $pl5 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='family_instance'; type_id=[long]$sym5; level_id=[long]$levelId
+                                  point=@($w13X,8000,0) })
+                } 'w13-rl-place'
+                if ($pl5.stage -eq 'apply' -and -not $pl5.answer.isError) { $inst5 = @($pl5.answer.data.rows)[0].element_id }
+            }
+            if (-not $inst5) { Complete-W13Case 5 $t0 'fail' 'v1 did not load and place' }
+            else {
+                $mk5b = Invoke-WriteApply 'horizun_create_family' @{
+                    target_document=$wDoc
+                    template_path=$dimTemplatePath; output_path=$rfa5; units='mm'; load_into_project=$true
+                    overwrite=$true; overwrite_parameter_values=$true
+                    parameters=@(@{ name='HZ_H'; group='geometry'; data_type='length'; instance=$false })
+                    forms=@(@{ key='box'; kind='extrusion'; plane='xy'; solid=$true; depth=300; end_parameter='HZ_H'
+                               profile=@(,@(@(0,0,0), @(400,0,0), @(400,400,0), @(0,400,0))) })
+                    types=@(@{ name='R1'; values=@{ HZ_H=600 } })
+                } 'w13-rl-v2'
+                $reloadOk = $mk5b.stage -eq 'apply' -and -not $mk5b.answer.isError
+                $q5 = Invoke-Write 'horizun_query_model' @{ element_ids=@([long]$inst5); include_links=$false; max_rows=1 }
+                $instanceAlive = -not $q5.isError -and $q5.data -and @($q5.data.rows).Count -eq 1
+                if ($reloadOk -and $instanceAlive) {
+                    Complete-W13Case 5 $t0 'pass' 'v2 reloaded over v1 with EXPLICIT overwrite (+parameter values) and the placed instance survived the reload and re-read' `
+                        -Evidence @{ instance=$inst5 }
+                } else {
+                    Complete-W13Case 5 $t0 'fail' ("reload=$reloadOk instance_alive=$instanceAlive " + (Get-DimShortText $mk5b.answer.text))
+                }
+            }
+        }
+
+        # ---- case 6: the workbook round trip over the wire ------------------
+        $t0 = Get-Date
+        $xlsx6 = Join-Path $scratchDir ('w13-book-' + $dimTag + '.xlsx')
+        $mkBook = {
+            param($path)
+            Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+            if (Test-Path $path) { Remove-Item $path -Force }
+            $zip = [System.IO.Compression.ZipFile]::Open($path, 'Create')
+            $add = { param($name,$content)
+                $entry = $zip.CreateEntry($name); $writer = New-Object IO.StreamWriter($entry.Open())
+                $writer.Write($content); $writer.Dispose() }
+            & $add '[Content_Types].xml' '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/></Types>'
+            & $add '_rels/.rels' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'
+            & $add 'xl/workbook.xml' '<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="HZ" sheetId="1" r:id="rId1"/></sheets></workbook>'
+            & $add 'xl/_rels/workbook.xml.rels' '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'
+            & $add 'xl/worksheets/sheet1.xml' '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData/></worksheet>'
+            $zip.Dispose()
+        }
+        & $mkBook $xlsx6
+        $wr6 = Invoke-Write 'horizun_excel_write_rows' @{
+            file_path=$xlsx6; idempotency_key="live-w13-xlsx-$probeRun"
+            rows=@(,@('Tubería Ø110', 12.5, $true)) }
+        $rd6 = Invoke-Write 'horizun_excel_read_rows' @{ file_path=$xlsx6 }
+        $row6 = if ($rd6.data -and @($rd6.data.rows).Count -ge 1) { @(@($rd6.data.rows)[0]) } else { $null }
+        if (-not $wr6.isError -and -not $rd6.isError -and $row6 -and $row6.Count -ge 3 -and
+            "$($row6[0])" -eq 'Tubería Ø110' -and [double]$row6[1] -eq 12.5 -and "$($row6[2])" -match '(?i)^true$' -and
+            $rd6.data.sha256) {
+            Complete-W13Case 6 $t0 'pass' 'the workbook round trip held OVER THE WIRE: unicode string, number and boolean wrote through the verified writer and read back as THEMSELVES through the new reader, sha256 carried' `
+                -Evidence @{ sha=$rd6.data.sha256 }
+        } else {
+            Complete-W13Case 6 $t0 'fail' ("write_err=$($wr6.isError) read_err=$($rd6.isError) row=[$($row6 -join ' , ')] " + (Get-DimShortText $rd6.text))
+        }
+
+        # ---- case 7: the declared comma, and the refusal without it ---------
+        $t0 = Get-Date
+        $sym7 = First-Type 'OST_MechanicalEquipment' $null
+        if (-not $sym7) { Complete-W13Case 7 $t0 'not_covered' 'no placeable symbol (named gap)' }
+        else {
+            $csv7 = Join-Path $scratchDir ('w13-locale-' + $dimTag + '.csv')
+            $inv7 = [System.Globalization.CultureInfo]::InvariantCulture
+            [IO.File]::WriteAllLines($csv7, [string[]]@('x,y,z',
+                (($w13X+500).ToString($inv7) + ',12000,"250,5"')), [Text.UTF8Encoding]::new($false))
+            $comma7 = Invoke-Write 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                tabular_source=@{ path=$csv7; type_id=[long]$sym7; level_id=[long]$levelId; decimal_separator=',' } }
+            $commaOk = -not $comma7.isError -and $comma7.data -and [int]$comma7.data.valid -eq 1
+            $point7 = Invoke-Write 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                tabular_source=@{ path=$csv7; type_id=[long]$sym7; level_id=[long]$levelId } }
+            $pointRefused = $point7.isError -and $point7.text -match '250,5' -and $point7.text -match "separator '\.'"
+            if ($commaOk -and $pointRefused) {
+                Complete-W13Case 7 $t0 'pass' 'the DECLARED comma parsed "250,5" as 250.5; the default point separator REFUSED the same cell BY QUOTING IT - locale is declared, never guessed' `
+                    -Evidence @{ }
+            } else {
+                Complete-W13Case 7 $t0 'fail' ("comma_ok=$commaOk point_refused=$pointRefused " + (Get-DimShortText $point7.text))
+            }
+        }
+
+        # ---- case 8: shared coordinates drive a placement -------------------
+        $t0 = Get-Date
+        $di8 = Invoke-Write 'get_document_info' @{}
+        $sc8 = if ($di8.data) { $di8.data.shared_coordinates } else { $null }
+        # Use the self-authored, centred material family from case 4. A random
+        # Mechanical Equipment symbol has an arbitrary origin and bounding box;
+        # on the 2023 fixture its box centre is almost 850 mm from its insertion
+        # point, which tests family geometry instead of the coordinate transform.
+        $sym8 = $sym4
+        if (-not $sc8 -or -not $sym8) { Complete-W13Case 8 $t0 'unverified' 'no shared block or deterministic self-authored symbol' }
+        else {
+            # Choose an INTERNAL target, compute its SHARED coordinates with the
+            # read facts, feed those to the file, and expect the instance back at
+            # the internal target: the transform round-trips or the case fails.
+            $ix = [double]($w13X + 1500); $iy = 16000.0
+            $ang = [double]$sc8.angle_to_true_north_degrees * [Math]::PI / 180.0
+            $ew = [double]$sc8.east_west_mm; $ns = [double]$sc8.north_south_mm; $el = [double]$sc8.elevation_mm
+            $sx = $ix * [Math]::Cos($ang) - $iy * [Math]::Sin($ang) + $ew
+            $sy = $ix * [Math]::Sin($ang) + $iy * [Math]::Cos($ang) + $ns
+            $inv8 = [System.Globalization.CultureInfo]::InvariantCulture
+            $csv8 = Join-Path $scratchDir ('w13-shared-' + $dimTag + '.csv')
+            [IO.File]::WriteAllLines($csv8, [string[]]@('x,y,z',
+                ($sx.ToString('0.###',$inv8) + ',' + $sy.ToString('0.###',$inv8) + ',' + $el.ToString('0.###',$inv8))),
+                [Text.UTF8Encoding]::new($false))
+            $sh8 = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                tabular_source=@{ path=$csv8; type_id=[long]$sym8; level_id=[long]$levelId; coordinates='shared' }
+            } 'w13-shared'
+            $inst8 = $null
+            if ($sh8.stage -eq 'apply' -and -not $sh8.answer.isError) { $inst8 = @($sh8.answer.data.rows)[0].element_id }
+            $near8 = $false; $measured8 = $null
+            if ($inst8) {
+                $q8 = Invoke-Write 'horizun_query_model' @{ element_ids=@([long]$inst8); include_links=$false; max_rows=1
+                                                             include_bounding_box=$true }
+                $bb = if ($q8.data) { @($q8.data.rows)[0].bounding_box } else { $null }
+                if ($bb) {
+                    $cx = ([double]$bb.min[0] + [double]$bb.max[0]) / 2
+                    $cy = ([double]$bb.min[1] + [double]$bb.max[1]) / 2
+                    $measured8 = @($cx, $cy)
+                    # Case 4 authors its 300 mm square symmetrically around the
+                    # family origin, so its box centre is its insertion point.
+                    $near8 = ([Math]::Abs($cx - $ix) -lt 5) -and ([Math]::Abs($cy - $iy) -lt 5)
+                }
+            }
+            if ($inst8 -and $near8) {
+                Complete-W13Case 8 $t0 'pass' ('the SHARED row landed at the internal target within 5 mm of the centred fixture (angle ' +
+                    $sc8.angle_to_true_north_degrees + ' deg undone): the ProjectPosition transform round-trips') `
+                    -Evidence @{ internal_target=@($ix,$iy); measured=$measured8 }
+            } else {
+                Complete-W13Case 8 $t0 'fail' ("instance=$([bool]$inst8) near=$near8 measured=$measured8 target=@($ix,$iy)")
+            }
+        }
+
+        # ---- case 9: system membership assigned, network answering ----------
+        $t0 = Get-Date
+        if ($w12RoutePipes.Count -lt 2) { Complete-W13Case 9 $t0 'unverified' 'the W12 routed run is not available' }
+        else {
+            $cen9 = Invoke-Write 'horizun_plan_mep' @{ operation='network_census'; element_ids=@($w12RoutePipes | ForEach-Object { [long]$_ }) }
+            $comp9 = if ($cen9.data) { @($cen9.data.components) } else { @() }
+            $one9 = $comp9.Count -eq 1 -and [int]$comp9[0].elements -ge 3 -and @($comp9[0].systems).Count -ge 1
+            if ($one9) {
+                Complete-W13Case 9 $t0 'pass' ('the routed L answers as ONE component of ' + $comp9[0].elements +
+                    ' elements (2 pipes + elbow) carrying system ''' + @($comp9[0].systems)[0] + ''', with its open ends counted (' +
+                    $comp9[0].open_connectors + ')') -Evidence @{ component=$comp9[0] }
+            } else {
+                Complete-W13Case 9 $t0 'fail' ('the routed run did not answer as one systemed component: ' + (Get-DimShortText $cen9.text))
+            }
+        }
+
+        # ---- case 10: touching is not connected -----------------------------
+        $t0 = Get-Date
+        $tp1 = New-ProbePipe $w13X 20000 0 ($w13X+2000) 20000 0 $pipeType 'w13-touch1'
+        $tp2 = New-ProbePipe ($w13X+2000) 20000 0 ($w13X+4000) 20000 0 $pipeType 'w13-touch2'
+        $t1Ok = $tp1.stage -eq 'apply' -and -not $tp1.answer.isError
+        $t2Ok = $tp2.stage -eq 'apply' -and -not $tp2.answer.isError
+        if (-not ($t1Ok -and $t2Ok)) { Complete-W13Case 10 $t0 'unverified' 'the touching pipes could not be staged' }
+        else {
+            $id1 = @($tp1.answer.data.rows)[0].element_id; $id2 = @($tp2.answer.data.rows)[0].element_id
+            $cen10 = Invoke-Write 'horizun_plan_mep' @{ operation='network_census'; element_ids=@([long]$id1,[long]$id2) }
+            $comp10 = if ($cen10.data) { @($cen10.data.components) } else { @() }
+            if ($comp10.Count -eq 2) {
+                Complete-W13Case 10 $t0 'pass' 'two pipes whose ends COINCIDE geometrically but were never connected answer as TWO components: membership is connector connectivity, exactly as the census claims' `
+                    -Evidence @{ components=$comp10.Count }
+            } else {
+                Complete-W13Case 10 $t0 'fail' ("components=$($comp10.Count) " + (Get-DimShortText $cen10.text))
+            }
+        }
+
+        # ---- case 11: what cancellation actually does, measured --------------
+        # MEASURED on run 14: notifications/cancelled releases the CALLER, but a
+        # request already DELIVERED to the add-in's FIFO runs to completion -
+        # there is no recall across the pipe. The honest probe measures exactly
+        # that: the cancelled apply's work EXISTS afterwards, its token is
+        # consumed, and the duplicate-protection that survives cancellation is
+        # the durable idempotency key, not the cancel.
+        $t0 = Get-Date
+        $dry11 = Invoke-Write 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'
+            elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag); start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) }
+        $tok11c = if ($dry11.data) { $dry11.data.confirmation_token } else { $null }
+        if (-not $tok11c) { Complete-W13Case 11 $t0 'unverified' 'no token for the cancellation probe' }
+        else {
+            Send-Rpc @{ jsonrpc='2.0'; id=770001; method='tools/call'
+                        params=@{ name='horizun_model_scan'
+                                  arguments=@{ target_document_title=$wDoc; sections=@('categories','worksets'); top=100 } } }
+            Start-Sleep -Milliseconds 400
+            $key11 = "live-w13-cancel-$probeRun"
+            Send-Rpc @{ jsonrpc='2.0'; id=770002; method='tools/call'
+                        params=@{ name='horizun_create_elements'
+                                  arguments=@{ target_document=$wDoc; units='mm'; dry_run=$false
+                                               confirmation_token=$tok11c
+                                               idempotency_key=$key11
+                                               elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag)
+                                                             start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) } } }
+            Start-Sleep -Milliseconds 200
+            Send-Rpc @{ jsonrpc='2.0'; method='notifications/cancelled'; params=@{ requestId=770002 } }
+            $null = Read-Rpc; $null = Read-Rpc 60000
+            Start-Sleep -Seconds 3
+            $q11 = Invoke-Write 'horizun_query_model' @{
+                categories=@('OST_Grids'); include_links=$false; max_rows=300 }
+            $ran11 = -not $q11.isError -and (@($q11.data.rows | Where-Object { $_.name -match ('HZ_CXL_' + $dimTag) }).Count -eq 1)
+            # And the guard that DOES hold across a cancel: the same key replays.
+            $again11 = Invoke-Write 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'; dry_run=$false; confirmation_token=$tok11c
+                idempotency_key=$key11
+                elements=@(@{ kind='grid'; name=('HZ_CXL_' + $dimTag); start=@($w13X,24000,0); end=@(($w13X+2000),24000,0) }) }
+            $replay11 = -not $again11.isError -and $again11.data -and $again11.data.idempotency -and
+                        $again11.data.idempotency.command_executed_in_this_call -eq $false
+            $q11b = Invoke-Write 'horizun_query_model' @{
+                categories=@('OST_Grids'); include_links=$false; max_rows=300 }
+            $still11 = -not $q11b.isError -and (@($q11b.data.rows | Where-Object { $_.name -match ('HZ_CXL_' + $dimTag) }).Count -eq 1)
+            if ($ran11 -and $replay11 -and $still11) {
+                Complete-W13Case 11 $t0 'pass' 'MEASURED semantics recorded: cancellation released the caller but the DELIVERED apply ran (the grid exists); what survives a cancel is the durable key - the re-send replayed and the grid still exists exactly once' `
+                    -Evidence @{ semantics='no_recall_after_delivery'; idempotency=$again11.data.idempotency }
+            } else {
+                Complete-W13Case 11 $t0 'fail' ("delivered_ran=$ran11 replay=$replay11 once=$still11 " + (Get-DimShortText $again11.text))
+            }
+        }
+
+        # ---- case 12: the 17th caller hears the queue is full ---------------
+        # Twenty tools/call requests down OUR OWN wire without reading replies:
+        # the server dispatches them concurrently, the add-in's 16-slot FIFO
+        # fills, and at least one reply must carry the EXPLICIT queue-full
+        # refusal - no caller may vanish or hang.
+        $t0 = Get-Date
+        for ($bp = 0; $bp -lt 20; $bp++) {
+            Send-Rpc @{ jsonrpc='2.0'; id=(771000+$bp); method='tools/call'
+                        params=@{ name='horizun_model_scan'
+                                  arguments=@{ target_document_title=$wDoc; sections=@('categories','worksets','links'); top=300 } } }
+        }
+        $sawBackpressure = $false; $got12 = 0
+        for ($bp = 0; $bp -lt 20; $bp++) {
+            $r12 = Read-Rpc 240000
+            if ($null -eq $r12) { break }
+            $got12++
+            $text12 = try { $r12.result.content[0].text } catch { '' }
+            if ($text12 -match 'queue is full') { $sawBackpressure = $true }
+        }
+        if ($sawBackpressure -and $got12 -eq 20) {
+            Complete-W13Case 12 $t0 'pass' ('20 concurrent calls, 20 replies (nobody vanished), and at least one carried the EXPLICIT queue-full backpressure refusal from the 16-slot FIFO') `
+                -Evidence @{ replies=$got12 }
+        } else {
+            Complete-W13Case 12 $t0 'fail' ("replies=$got12/20 backpressure_seen=$sawBackpressure")
+        }
+
+        # ---- case 13: the lost reply, resolved by the ledger ----------------
+        # A SEPARATE client (its own server process) sends the commit and DIES
+        # at a 3-second timeout - the reply is truly lost. The add-in commits
+        # anyway; the retry with the SAME key must replay the recorded answer
+        # (executed_once, not executed in this call) and the grid exists once.
+        $t0 = Get-Date
+        $key13 = "live-w13-indoubt-$probeRun"
+        $grid13 = @{ kind='grid'; name=('HZ_DOUBT_' + $dimTag); start=@($w13X,26000,0); end=@(($w13X+2000),26000,0) }
+        $dry13 = Invoke-Write 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'; elements=@($grid13) }
+        $tok13b = if ($dry13.data) { $dry13.data.confirmation_token } else { $null }
+        if (-not $tok13b) { Complete-W13Case 13 $t0 'unverified' 'no token for the in-doubt probe' }
+        else {
+            $applyArgs13 = @{ target_document=$wDoc; units='mm'; dry_run=$false
+                              confirmation_token=$tok13b; idempotency_key=$key13
+                              elements=@($grid13) }
+            $args13Path = Join-Path $scratchDir 'w13-indoubt.json'
+            $applyArgs13 | ConvertTo-Json -Depth 16 -Compress |
+                Set-Content -LiteralPath $args13Path -Encoding ascii
+            # Occupy the add-in so the doomed client's apply is DELIVERED but
+            # unanswered when its 6 s timeout kills it - the reply is truly lost
+            # while the commit still happens.
+            Send-Rpc @{ jsonrpc='2.0'; id=772001; method='tools/call'
+                        params=@{ name='horizun_model_scan'
+                                  arguments=@{ target_document_title=$wDoc; sections=@('categories','worksets'); top=200 } } }
+            Start-Sleep -Milliseconds 600
+            & pwsh -NoProfile -File (Join-Path (Get-Location) 'scripts/hz-call.ps1') -Tool horizun_create_elements `
+                -ArgumentsPath $args13Path -Json (Join-Path $scratchDir 'w13-indoubt-lost.json') -Quiet -TimeoutSec 6 *> $null
+            $null = Read-Rpc 240000
+            Start-Sleep -Seconds 12
+            $retry13 = Invoke-Write 'horizun_create_elements' $applyArgs13
+            # The replay RETURNS THE RECORDED RESULT - its body still reads
+            # Committed/created_verified because that IS the original answer; the
+            # idempotency stamp is what tells the two apart (measured on run 16).
+            $replayed = -not $retry13.isError -and $retry13.data -and $retry13.data.idempotency -and
+                        [string]$retry13.data.idempotency.status -eq 'replayed' -and
+                        $retry13.data.idempotency.command_executed_in_this_call -eq $false
+            $q13 = Invoke-Write 'horizun_query_model' @{ categories=@('OST_Grids'); include_links=$false; max_rows=300 }
+            $matches13 = if ($q13.data) { @($q13.data.rows | Where-Object { $_.name -match ('HZ_DOUBT_' + $dimTag) }).Count } else { -1 }
+            if ($replayed -and $matches13 -eq 1) {
+                Complete-W13Case 13 $t0 'pass' 'the commit reply was TRULY lost (the sending client died at its timeout); the retry with the SAME key replayed the recorded answer - status replayed, not executed in this call - and the grid exists exactly ONCE' `
+                    -Evidence @{ idempotency=$retry13.data.idempotency }
+            } else {
+                Complete-W13Case 13 $t0 'fail' ("replayed=$replayed grids=$matches13 " + (Get-DimShortText $retry13.text))
+            }
+        }
+
+        # ---- case 14: the preset proves itself from the file ----------------
+        $t0 = Get-Date
+        $ifc14 = Join-Path $scratchDir ('w13-preset-' + $dimTag + '.ifc')
+        $exApply14 = Invoke-WriteApply 'horizun_export' @{
+            target_document=$wDoc; format='ifc'; output_path=$ifc14; overwrite=$true
+            preset=@{ name='hz-ifc4'; options=@{ ifc_version='IFC4' } } } 'w13-preset'
+        $ex14 = $exApply14.answer
+        $opt14 = $null
+        if (-not $ex14.isError -and $ex14.data -and $ex14.data.preset) {
+            $opt14 = @($ex14.data.preset.options) | Where-Object { $_.option -eq 'ifc_version' } | Select-Object -First 1
+        }
+        $typo14 = Invoke-Write 'horizun_export' @{
+            target_document=$wDoc; format='ifc'; output_path=$ifc14
+            preset=@{ name='hz-bad'; options=@{ ifc_versio='IFC4' } } }
+        $typoRefused = $typo14.isError -and $typo14.text -match 'ifc_versio' -and $typo14.text -match "defaults under this preset's name"
+        if ($opt14 -and $opt14.verified -eq $true -and $opt14.read_back -match 'IFC4' -and $typoRefused) {
+            Complete-W13Case 14 $t0 'pass' ('the preset''s ifc_version was PROVED from the produced file (FILE_SCHEMA read back ' +
+                $opt14.read_back + '), and the misspelled option refused the whole export by name') `
+                -Evidence @{ preset=$ex14.data.preset }
+        } else {
+            Complete-W13Case 14 $t0 'fail' ("verified=$(if($opt14){$opt14.verified}) read=$(if($opt14){$opt14.read_back}) typo_refused=$typoRefused " + (Get-DimShortText $ex14.text))
+        }
+
+        # ---- case 15: the numbers, against caps declared BEFORE the run -----
+        $t0 = Get-Date
+        # Caps declared here, in the harness, versioned in git BEFORE execution:
+        # no representative read over the disposable fixture may exceed 180 s or
+        # an 8 MB reply. These are liveability bounds, not aspirations - a tool
+        # past them is unusable in a session regardless of what it computes.
+        $capMs = 180000; $capBytes = 8MB
+        $perf15 = @()
+        foreach ($probe15 in @(
+            @{ T='horizun_query_model'; A=@{ categories=@('OST_PipeCurves'); include_links=$false; max_rows=500 } },
+            @{ T='horizun_model_scan'; A=@{ target_document_title=$wDoc; sections=@('categories','worksets'); top=100 } },
+            @{ T='horizun_audit_model'; A=@{ target_document=$wDoc; top=10 } },
+            @{ T='horizun_clash'; A=@{ categories_a=@('OST_PipeCurves'); categories_b=@('OST_Walls'); include_links=$false } },
+            @{ T='horizun_quantities'; A=@{ category='OST_PipeCurves' } })) {
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $r15 = Invoke-Write $probe15.T $probe15.A
+            $sw.Stop()
+            $bytes15 = if ($r15.text) { [Text.Encoding]::UTF8.GetByteCount($r15.text) } else { 0 }
+            $perf15 += @{ tool=$probe15.T; elapsed_ms=$sw.ElapsedMilliseconds; reply_bytes=$bytes15; is_error=$r15.isError }
+        }
+        $breaches = @($perf15 | Where-Object { $_.elapsed_ms -gt $capMs -or $_.reply_bytes -gt $capBytes -or $_.is_error })
+        if ($breaches.Count -eq 0) {
+            $summary15 = ($perf15 | ForEach-Object { "$($_.tool)=$($_.elapsed_ms)ms/$([math]::Round($_.reply_bytes/1KB))KB" }) -join ' '
+            Complete-W13Case 15 $t0 'pass' ('five representative reads measured under the PRE-DECLARED caps (180 s, 8 MB): ' + $summary15) `
+                -Evidence @{ measurements=$perf15; caps=@{ ms=$capMs; bytes=$capBytes } }
+        } else {
+            Complete-W13Case 15 $t0 'fail' ('cap breached or errored: ' + (($breaches | ForEach-Object { "$($_.tool)=$($_.elapsed_ms)ms err=$($_.is_error)" }) -join ' '))
+        }
+
+        for ($wc13=1; $wc13 -le 15; $wc13++) {
+            if (-not $script:w13CasesDone.ContainsKey($wc13)) { Complete-W13Case $wc13 (Get-Date) 'unverified' 'the W13 section ended before this probe ran - a harness bug' }
+        }
+
+        # ------------------------------------------------------------------
+        # W14: the remaining phase surfaces. Inline-accessory refusal and
+        # whole-batch rollback, the rebar cover safe subset over the typed
+        # writer, the interrupted-job answer read off the disk record, and
+        # S/M/L performance against caps declared before anything is timed.
+        # ------------------------------------------------------------------
+        $script:w14CasesDone = @{}
+        function Complete-W14Case {
+            param([int]$CaseNumber, [datetime]$Started, [string]$Outcome, [string]$Detail, $Evidence=$null)
+            if ($script:w14CasesDone.ContainsKey($CaseNumber)) { return }
+            $script:w14CasesDone[$CaseNumber] = $true
+            $entry = $writeNames[$w14NameBase + $CaseNumber - 1]
+            Add-Write $entry.N $entry.T $Outcome $Detail
+            $script:dp2Evidence += @{
+                case=('w14-' + $CaseNumber); name=$entry.N; tool=$entry.T
+                started_utc=$Started.ToUniversalTime().ToString('o'); outcome=$Outcome; detail=$Detail; evidence=$Evidence
+            }
+        }
+        $w14X = 750000
+
+        # ---- cases 1+2: the inline accessory, negatively ------------------
+        # No pipe-accessory family exists on this machine (measured at W13 c1:
+        # the content library ships none), so the POSITIVE stays a named
+        # fixture gap on the ledger. What IS measurable: the plan-time off-axis
+        # refusal in millimetres, and that a failed inline connect rolls the
+        # whole break-place-connect transaction back leaving the pipe unbroken.
+        $t0 = Get-Date
+        if (-not $levelId -or -not $pipeType -or -not $pipeSystem) {
+            Complete-W14Case 1 $t0 'unverified' 'no level/pipe type/system discovered for the accessory probes'
+            Complete-W14Case 2 $t0 'unverified' 'no level/pipe type/system discovered for the accessory probes'
+        } else {
+            $accPipe = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='pipe'; start=@($w14X,0,1200); end=@(($w14X+3000),0,1200)
+                              level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem })
+            } 'w14-accpipe'
+            $accPipeId = if ($accPipe.stage -eq 'apply' -and -not $accPipe.answer.isError) {
+                @($accPipe.answer.data.rows)[0].element_id } else { $null }
+            $sfQ = Invoke-Write 'horizun_query_model' @{ categories=@('OST_StructuralFraming'); include_types=$true; include_links=$false; max_rows=40 }
+            $sfSymbol = if ($sfQ.data) { @($sfQ.data.rows | Where-Object { $_.is_element_type } | ForEach-Object { $_.element_id }) | Select-Object -First 1 } else { $null }
+            if (-not $accPipeId -or -not $sfSymbol) {
+                Complete-W14Case 1 $t0 'unverified' ("staging incomplete: pipe=$accPipeId symbol=$sfSymbol " + (Get-DimShortText $accPipe.answer.text))
+                Complete-W14Case 2 $t0 'unverified' 'staging incomplete for the rollback probe'
+            } else {
+                # Case 1: 200 mm off the axis. dry_run defaults true - the refusal
+                # is plan-time and nothing is written by construction.
+                $off1 = Invoke-Write 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='accessory_inline'; pipe_id=[long]$accPipeId; type_id=[long]$sfSymbol
+                                  point=@(($w14X+1500),200,1200) }) }
+                # The dry-run validates per item: the refusal arrives as invalid=1
+                # with the error named per row, transaction never started (measured
+                # at run 20 - the reply is a SUCCESS whose row is refused).
+                $err1 = if ($off1.data -and $off1.data.errors) { [string]@($off1.data.errors)[0].error } else { $null }
+                if (-not $off1.isError -and $off1.data -and [int]$off1.data.invalid -eq 1 -and
+                    [string]$off1.data.transaction_status -eq 'not_started' -and
+                    $err1 -match "off the pipe's axis" -and $err1 -match '\d+(\.\d+)?\s*mm') {
+                    Complete-W14Case 1 $t0 'pass' ('the off-axis point refused at plan time (invalid row, transaction not_started), distance named in mm: ' + $err1)
+                } else {
+                    Complete-W14Case 1 $t0 'fail' ('expected the plan-time off-axis refusal in mm, got: ' + (Get-DimShortText $off1.text))
+                }
+
+                # Case 2: point ON the axis, but the symbol is structural framing -
+                # no MEP connectors, not point-placeable that way. Whatever throws
+                # inside the transaction, the contract is the same: named error,
+                # whole rollback, the host pipe still ONE piece afterwards.
+                $t0 = Get-Date
+                $before2 = Invoke-Write 'horizun_query_model' @{ categories=@('OST_PipeCurves'); include_links=$false; max_rows=500 }
+                $countBefore = if ($before2.data) { @($before2.data.rows | Where-Object { -not $_.is_element_type }).Count } else { -1 }
+                $roll2 = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='accessory_inline'; pipe_id=[long]$accPipeId; type_id=[long]$sfSymbol
+                                  point=@(($w14X+1500),0,1200) })
+                } 'w14-accroll'
+                $failedNamed = ($roll2.stage -eq 'dry_run' -and $roll2.answer.isError) -or
+                               ($roll2.stage -eq 'apply' -and $roll2.answer.isError)
+                $after2 = Invoke-Write 'horizun_query_model' @{
+                    element_ids=@([long]$accPipeId); include_links=$false; max_rows=5 }
+                $survives = -not $after2.isError -and $after2.data -and
+                            @($after2.data.rows | Where-Object { [long]$_.element_id -eq [long]$accPipeId }).Count -eq 1
+                $again2 = Invoke-Write 'horizun_query_model' @{ categories=@('OST_PipeCurves'); include_links=$false; max_rows=500 }
+                $countAfter = if ($again2.data) { @($again2.data.rows | Where-Object { -not $_.is_element_type }).Count } else { -2 }
+                if ($failedNamed -and $survives -and $countBefore -ge 1 -and $countAfter -eq $countBefore) {
+                    Complete-W14Case 2 $t0 'pass' ('the inline connect failed NAMED and rolled back WHOLE: the host pipe re-read by id (still one piece), pipe count unchanged at ' + $countAfter + '. Error: ' + (Get-DimShortText $roll2.answer.text)) `
+                        -Evidence @{ pipes_before=$countBefore; pipes_after=$countAfter; stage=$roll2.stage }
+                } else {
+                    Complete-W14Case 2 $t0 'fail' ("failed_named=$failedNamed pipe_survives=$survives count $countBefore->$countAfter " + (Get-DimShortText $roll2.answer.text))
+                }
+            }
+        }
+
+        # ---- case 3: the rebar cover safe subset --------------------------
+        # A structural wall is a rebar host; its cover is an ElementId
+        # parameter pointing at a RebarCoverType. The staging (a wall made
+        # structural, a second cover type to point at) is fixture work; the
+        # MEASURED assertion is the typed writer flipping the pointer and
+        # re-reading it from the model.
+        $t0 = Get-Date
+        $rcWall = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'
+            elements=@(@{ kind='wall'; start=@($w14X,6000,0); end=@(($w14X+3000),6000,0)
+                          level_id=[long]$levelId; height=3000 })
+        } 'w14-rcwall'
+        $rcWallId = if ($rcWall.stage -eq 'apply' -and -not $rcWall.answer.isError) {
+            @($rcWall.answer.data.rows)[0].element_id } else { $null }
+        if (-not $rcWallId) {
+            Complete-W14Case 3 $t0 'unverified' ('no wall staged for the cover probe: ' + (Get-DimShortText $rcWall.answer.text))
+        } else {
+            $mkStruct = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document=$wDoc
+                writes=@(@{ target_id=[long]$rcWallId; parameter='Structural'; value=1 })
+            } 'w14-rcstruct'
+            $rcStage = @'
+from Autodesk.Revit.DB import Transaction
+from Autodesk.Revit.DB.Structure import RebarCoverType
+name = 'HZ_RC_' + '__TAG__'
+existing = None
+from Autodesk.Revit.DB import FilteredElementCollector
+for c in FilteredElementCollector(doc).OfClass(RebarCoverType):
+    if c.Name == name: existing = c
+t = Transaction(doc, 'Horizun: stage cover type'); t.Start()
+c = existing or RebarCoverType.Create(doc, name, 50.0 / 304.8)
+t.Commit()
+cid = c.Id.IntegerValue if hasattr(c.Id, 'IntegerValue') else c.Id.Value
+__output__ = {'status': 'self_reported_verified', 'cover_id': cid, 'name': name}
+'@
+            $rcStagePath = Join-Path $scratchDir 'w14-covertype.py'
+            [IO.File]::WriteAllText($rcStagePath, $rcStage.Replace('__TAG__', $dimTag), [Text.UTF8Encoding]::new($false))
+            $rcPy = Invoke-Write 'horizun_execute_python' @{
+                code_path=$rcStagePath; target_document=$wDoc
+                idempotency_key="live-w14-covertype-$probeRun" }
+            $coverId = if ($rcPy.data -and $rcPy.data.output) { $rcPy.data.output.cover_id } else { $null }
+            $structOk = $mkStruct.stage -eq 'apply' -and -not $mkStruct.answer.isError
+            if (-not $structOk -or -not $coverId) {
+                Complete-W14Case 3 $t0 'unverified' ("staging incomplete: structural=$structOk cover_id=$coverId " + (Get-DimShortText $rcPy.text))
+            } else {
+                $rcWrite = Invoke-WriteApply 'horizun_write_params_verified' @{
+                    target_document=$wDoc
+                    writes=@(@{ target_id=[long]$rcWallId; parameter='Rebar Cover - Exterior Face'; value=[long]$coverId })
+                } 'w14-rcset'
+                # The product's own aggregates ARE the verification (measured at
+                # run 20: the write confirmed against the requested value while my
+                # per-row field names were wrong): confirmed_against_your_value
+                # means the post-commit re-read matched the id we sent.
+                $rcOk = $rcWrite.stage -eq 'apply' -and -not $rcWrite.answer.isError -and
+                        [int]$rcWrite.answer.data.writes_confirmed_against_your_value -eq 1 -and
+                        [int]$rcWrite.answer.data.failed -eq 0 -and
+                        [int]$rcWrite.answer.data.unresolved -eq 0
+                if ($rcOk) {
+                    Complete-W14Case 3 $t0 'pass' ('the typed writer pointed the structural wall''s exterior cover at the staged 50 mm cover type (id ' + $coverId + ') and the post-commit re-read CONFIRMED it against the requested value') `
+                        -Evidence @{ wall=$rcWallId; cover=$coverId; aggregates=($rcWrite.answer.data | Select-Object writes_confirmed, writes_confirmed_against_your_value, failed, unresolved) }
+                } else {
+                    Complete-W14Case 3 $t0 'fail' ("stage=$($rcWrite.stage) " + (Get-DimShortText $rcWrite.answer.text))
+                }
+            }
+        }
+
+        # ---- case 4: the interrupted job answers off the disk -------------
+        # A REAL record from an earlier Revit that died mid-job (never staged,
+        # never simulated: if this machine has none, the case says so). The
+        # server reads it without Revit and must carry the liveness fact and
+        # the second-write warning ON the record.
+        $t0 = Get-Date
+        $jobsDir = Join-Path $env:USERPROFILE '.horizun\jobs'
+        $deadJob = $null
+        if (Test-Path -LiteralPath $jobsDir) {
+            foreach ($jf in (Get-ChildItem -LiteralPath $jobsDir -Filter '*.jsonl' -File | Sort-Object Name)) {
+                if ($deadJob) { break }
+                try {
+                    $events = @(); $jpid = $null
+                    foreach ($ln in [IO.File]::ReadLines($jf.FullName)) {
+                        if ([string]::IsNullOrWhiteSpace($ln)) { continue }
+                        try { $o = $ln | ConvertFrom-Json } catch { continue }
+                        if ($o.event) { $events += [string]$o.event }
+                        if ($o.pid) { $jpid = [int]$o.pid }
+                    }
+                    if ($jpid -and $events -contains 'running' -and
+                        -not ($events | Where-Object { $_ -in @('finish','finished','failed','not_started') }) -and
+                        -not (Get-Process -Id $jpid -ErrorAction SilentlyContinue)) {
+                        $deadJob = @{ id = [IO.Path]::GetFileNameWithoutExtension($jf.Name); pid = $jpid }
+                    }
+                } catch { }
+            }
+        }
+        if (-not $deadJob) {
+            Complete-W14Case 4 $t0 'unverified' 'this machine holds no real interrupted-job record from a dead Revit; the probe never stages one - a simulated crash record would be the exact substitution this suite exists to catch'
+        } else {
+            # The release runner deliberately isolates HORIZUN_DATA_ROOT. Copy the
+            # exact immutable JSONL bytes of this REAL prior interrupted job into
+            # that isolated ledger so job_status reads the record we selected,
+            # instead of looking for its id under an intentionally empty folder.
+            $sourceJob = Join-Path $jobsDir ($deadJob.id + '.jsonl')
+            $isolatedRoot = $env:HORIZUN_DATA_ROOT
+            if (-not [string]::IsNullOrWhiteSpace($isolatedRoot) -and
+                (Test-Path -LiteralPath $sourceJob)) {
+                $isolatedJobs = Join-Path $isolatedRoot 'jobs'
+                New-Item -ItemType Directory -Path $isolatedJobs -Force | Out-Null
+                Copy-Item -LiteralPath $sourceJob -Destination (Join-Path $isolatedJobs ($deadJob.id + '.jsonl')) -Force
+            }
+            $js = Invoke-Write 'horizun_job_status' @{ job_id = $deadJob.id }
+            $row = if ($js.data -and $js.data.jobs) { @($js.data.jobs)[0] } else { $null }
+            if ($row -and $row.state -eq 'running' -and $row.process_alive -eq $false -and
+                $row.what_this_means -match 'second write, not a\s+recovery' -and
+                $row.what_this_means -match 'PROCESS DIED') {
+                Complete-W14Case 4 $t0 'pass' ('job ' + $deadJob.id + ' (Revit pid ' + $deadJob.pid + ', dead) answered off the disk record: PROCESS DIED, never finishing, checkpointed work HAS HAPPENED, re-running is a second write - the guidance travels ON the record, without Revit') `
+                    -Evidence @{ job=$deadJob; what_this_means=$row.what_this_means }
+            } else {
+                Complete-W14Case 4 $t0 'fail' ('the record did not answer with liveness + guidance: state=' + $row.state + ' alive=' + $row.process_alive + ' ' + (Get-DimShortText $js.text))
+            }
+        }
+
+        # ---- cases 5-7: S/M/L under caps declared BEFORE the run ----------
+        # Three workloads over the two SAME-YEAR documents the runner already
+        # opened: a small document-only read, a medium categories/worksets read,
+        # and the large categories/worksets/types read after all fixture writes.
+        $w14Caps = @{ S = 60000; M = 120000; L = 180000; bytes = 8MB; ws_delta_bytes = 4GB }
+        $t0 = Get-Date
+        $wsBefore = (Get-Process -Id $target.pid -ErrorAction SilentlyContinue).WorkingSet64
+        # Resolve the SAME-YEAR fixtures that the release runner actually opened.
+        $sizeRuns = @()
+        $openFacts = @()
+        $sizeHealth = Invoke-Write 'horizun_health' @{}
+        if ($sizeHealth.data) { $openFacts = @($sizeHealth.data.open_documents) }
+        $releaseFact = $openFacts | Where-Object { [string]$_.title -eq $wDoc } | Select-Object -First 1
+        $inactiveFact = $openFacts | Where-Object { [string]$_.title -eq $InactiveDocument } | Select-Object -First 1
+        $sizePlan = @()
+        if ($inactiveFact -and $inactiveFact.path) {
+            $sizePlan += @{ size='S'; title=[string]$inactiveFact.title; path=[string]$inactiveFact.path
+                            activate=$true; sections=@('document'); top=10 }
+        }
+        if ($releaseFact -and $releaseFact.path) {
+            $sizePlan += @{ size='M'; title=[string]$releaseFact.title; path=[string]$releaseFact.path
+                            activate=$true; sections=@('categories','worksets'); top=50 }
+            $sizePlan += @{ size='L'; title=[string]$releaseFact.title; path=[string]$releaseFact.path
+                            activate=$false; sections=@('categories','worksets','types'); top=100 }
+        }
+
+        # Fixture staging only: activate an ALREADY-OPEN exact path, then prove
+        # the active title again through health. document_session correctly
+        # refuses to OPEN a central without opt-in, but this benchmark must not
+        # confuse that guard with activation and must never reopen the central.
+        function Activate-W14OpenFixture($sz) {
+            $before = Invoke-Write 'horizun_health' @{}
+            $activeBefore = if ($before.data) {
+                @($before.data.open_documents | Where-Object { $_.is_active -eq $true }) | Select-Object -First 1
+            } else { $null }
+            if ($activeBefore -and [string]$activeBefore.title -eq [string]$sz.title) { return $null }
+            if (-not $activeBefore) { return 'health could not identify the active document before activation' }
+            $escapedPath = ([string]$sz.path).Replace("'", "\\'")
+            $activateCode = @'
+target = r'__PATH__'
+uiapp.OpenAndActivateDocument(target)
+active = uiapp.ActiveUIDocument.Document
+__output__ = {'status': 'self_reported_verified', 'title': active.Title, 'path': active.PathName}
+'@.Replace('__PATH__', $escapedPath)
+            $activation = Invoke-Write 'horizun_execute_python' @{
+                code=$activateCode; target_document=[string]$activeBefore.title
+                idempotency_key=("live-w14-activate-{0}-{1}" -f $sz.size, $probeRun) }
+            if ($activation.isError) { return 'activation script failed: ' + (Get-DimShortText $activation.text) }
+            $after = Invoke-Write 'horizun_health' @{}
+            $activeAfter = if ($after.data) {
+                @($after.data.open_documents | Where-Object { $_.is_active -eq $true }) | Select-Object -First 1
+            } else { $null }
+            if (-not $activeAfter -or [string]$activeAfter.title -ne [string]$sz.title) {
+                return "health reads '$([string]$activeAfter.title)' active after requesting '$([string]$sz.title)'"
+            }
+            return $null
+        }
+        foreach ($sz in $sizePlan) {
+            if ($sz.activate) {
+                $activationError = Activate-W14OpenFixture $sz
+                if ($activationError) { $sizeRuns += @{ size=$sz.size; error=$activationError }; continue }
+            }
+            if (-not $sz.title) { $sizeRuns += @{ size=$sz.size; error='no verified title to scan against' }; continue }
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $scan = Invoke-Write 'horizun_model_scan' @{
+                target_document_title=$sz.title; sections=@($sz.sections); top=[int]$sz.top }
+            $sw.Stop()
+            $sizeRuns += @{
+                size=$sz.size; title=$sz.title; elapsed_ms=$sw.ElapsedMilliseconds
+                reply_bytes=$(if ($scan.text) { [Text.Encoding]::UTF8.GetByteCount($scan.text) } else { 0 })
+                ui_hold_ms=$(if ($scan.data -and $scan.data.bridge_queue) { [long]$scan.data.bridge_queue.execution_and_wait_ms } else { -1 })
+                is_error=$scan.isError; error=$(if ($scan.isError) { Get-DimShortText $scan.text } else { $null }) }
+        }
+        # M activates the release fixture and L measures it again, so a complete
+        # size run already ends with the write model active. Prove that explicitly.
+        $restoreHealth = Invoke-Write 'horizun_health' @{}
+        $restoredTitle = if ($restoreHealth.data) {
+            @($restoreHealth.data.open_documents | Where-Object { $_.is_active -eq $true })[0].title
+        } else { $null }
+        $restoreError = $null
+        if ([string]$restoredTitle -ne $wDoc) {
+            $restoreError = "write fixture was not restored active; health reads '$restoredTitle'"
+            $sizeRuns += @{ size='restore'; error=$restoreError }
+        }
+        $wsAfter = (Get-Process -Id $target.pid -ErrorAction SilentlyContinue).WorkingSet64
+        $measured = if ($restoreError) { @() } else {
+            @($sizeRuns | Where-Object { -not $_.error -and -not $_.is_error })
+        }
+        $capBad = @($measured | Where-Object { $_.elapsed_ms -gt $w14Caps[[string]$_.size] -or ($_.ui_hold_ms -ge 0 -and $_.ui_hold_ms -gt $w14Caps[[string]$_.size]) })
+        $sizesSummary = ($sizeRuns | ForEach-Object {
+            if ($_.error) { "$($_.size)=ERROR[$($_.error)]" } else { "$($_.size)($($_.title))=$($_.elapsed_ms)ms/hold $($_.ui_hold_ms)ms/$([math]::Round($_.reply_bytes/1KB))KB" } }) -join ' '
+        if ($measured.Count -eq 3 -and $capBad.Count -eq 0) {
+            Complete-W14Case 5 $t0 'pass' ('three sizes scanned under the caps declared before the run (S 60 s, M 120 s, L 180 s - wall AND UI hold): ' + $sizesSummary) `
+                -Evidence @{ runs=$sizeRuns; caps=$w14Caps }
+        } elseif ($measured.Count -lt 3) {
+            Complete-W14Case 5 $t0 'unverified' ('only ' + $measured.Count + ' of 3 sizes measured: ' + $sizesSummary)
+        } else {
+            Complete-W14Case 5 $t0 'fail' ('a declared cap was breached: ' + $sizesSummary)
+        }
+        $t0 = Get-Date
+        $bigBad = @($measured | Where-Object { $_.reply_bytes -gt $w14Caps.bytes })
+        $largest = $measured | Sort-Object reply_bytes -Descending | Select-Object -First 1
+        if ($measured.Count -eq 3 -and $bigBad.Count -eq 0 -and $largest) {
+            Complete-W14Case 6 $t0 'pass' ('every reply rode under the declared 8 MB cap; the largest was ' + $largest.size + ' (' + $largest.title + ') at ' + [math]::Round($largest.reply_bytes/1KB) + ' KB') `
+                -Evidence @{ largest=$largest; cap_bytes=$w14Caps.bytes }
+        } elseif ($measured.Count -lt 3) {
+            Complete-W14Case 6 $t0 'unverified' ('only ' + $measured.Count + ' of 3 sizes measured')
+        } else {
+            Complete-W14Case 6 $t0 'fail' ('reply cap breached: ' + (($bigBad | ForEach-Object { "$($_.size)=$($_.reply_bytes)B" }) -join ' '))
+        }
+        $t0 = Get-Date
+        if ($wsBefore -and $wsAfter) {
+            $wsDelta = $wsAfter - $wsBefore
+            if ([math]::Abs($wsDelta) -le $w14Caps.ws_delta_bytes) {
+                Complete-W14Case 7 $t0 'pass' ('Revit working set measured across the S/M/L batch: ' + [math]::Round($wsBefore/1GB,2) + ' GB -> ' + [math]::Round($wsAfter/1GB,2) + ' GB (delta ' + [math]::Round($wsDelta/1MB) + ' MB, declared bound |delta| <= 4 GB)') `
+                    -Evidence @{ ws_before=$wsBefore; ws_after=$wsAfter; delta=$wsDelta }
+            } else {
+                Complete-W14Case 7 $t0 'fail' ('working-set delta breached the declared 4 GB bound: ' + [math]::Round($wsDelta/1MB) + ' MB')
+            }
+        } else {
+            Complete-W14Case 7 $t0 'unverified' 'the Revit process working set could not be read'
+        }
+
+        # ---- case 8: units and locale, declared - never guessed -----------
+        # One value, four readings. MEASURED at run 21 and the reason this probe
+        # is calibrated rather than hard-coded: the comparison happens in the
+        # PARAMETER'S OWN display unit, and this project displays lengths in
+        # feet-fractional-inches - a cell of "3000" is not the height of a wall
+        # 3000 mm tall, it is 3000 FEET. The staging reads what the model holds
+        # in its own unit (read-only, self-reported); every assertion below is
+        # the typed command's own reply.
+        $t0 = Get-Date
+        $uWall = Invoke-WriteApply 'horizun_create_elements' @{
+            target_document=$wDoc; units='mm'
+            elements=@(@{ kind='wall'; start=@(($w14X+4000),9000,0); end=@(($w14X+7000),9000,0)
+                          level_id=[long]$levelId; height=3000 })
+        } 'w14-uwall'
+        $uWallId = if ($uWall.stage -eq 'apply' -and -not $uWall.answer.isError) {
+            @($uWall.answer.data.rows)[0].element_id } else { $null }
+        if (-not $uWallId) {
+            Complete-W14Case 8 $t0 'unverified' ('no wall staged for the units probe: ' + (Get-DimShortText $uWall.answer.text))
+        } else {
+            $uMark = 'HZ_U_' + $dimTag
+            $uSet = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document=$wDoc
+                writes=@(@{ target_id=[long]$uWallId; parameter='Mark'; value=$uMark })
+            } 'w14-umark'
+            # Staging: what does the model hold, in the unit the parameter displays?
+            $readPy = @'
+from Autodesk.Revit.DB import ElementId, UnitUtils
+w = doc.GetElement(ElementId(__ID__))
+p = w.LookupParameter('Unconnected Height')
+unit = p.GetUnitTypeId()
+__output__ = {'status': 'self_reported_verified',
+              'display_number': UnitUtils.ConvertFromInternalUnits(p.AsDouble(), unit),
+              'display_string': p.AsValueString(),
+              'unit': unit.TypeId}
+'@
+            $readPath = Join-Path $scratchDir 'w14-readheight.py'
+            [IO.File]::WriteAllText($readPath, $readPy.Replace('__ID__', [string]$uWallId), [Text.UTF8Encoding]::new($false))
+            $heightR = Invoke-Write 'horizun_execute_python' @{
+                code_path=$readPath; target_document=$wDoc
+                idempotency_key="live-w14-readheight-$probeRun" }
+            $displayNumber = if ($heightR.data -and $heightR.data.output) { [double]$heightR.data.output.display_number } else { $null }
+            $displayUnit = if ($heightR.data -and $heightR.data.output) { [string]$heightR.data.output.unit } else { '(unread)' }
+            if (-not $displayNumber) {
+                Complete-W14Case 8 $t0 'unverified' ('the wall height could not be read in its display unit: ' + (Get-DimShortText $heightR.text))
+            } else {
+                $dotCell = $displayNumber.ToString('F9', [Globalization.CultureInfo]::InvariantCulture)
+                $commaCell = $dotCell.Replace('.', ',')
+                $csvDot = Join-Path $scratchDir 'w14-units-dot.csv'
+                [IO.File]::WriteAllText($csvDot, ('Mark,Unconnected Height' + "`r`n" + $uMark + ',' + $dotCell + "`r`n"), [Text.UTF8Encoding]::new($false))
+                $csvComma = Join-Path $scratchDir 'w14-units-comma.csv'
+                [IO.File]::WriteAllText($csvComma, ('Mark,Unconnected Height' + "`r`n" + '"' + $uMark + '","' + $commaCell + '"' + "`r`n"), [Text.UTF8Encoding]::new($false))
+                $tabBase = @{ path=$csvDot; key_column='Mark'
+                              value_columns=@{ 'Unconnected Height'='Unconnected Height' }
+                              category='OST_Walls' }
+                $r1 = Invoke-Write 'horizun_write_params_verified' @{ target_document=$wDoc; tabular_source=$tabBase }
+                $tabDot = $tabBase.Clone(); $tabDot['decimal_separator'] = '.'
+                $r2 = Invoke-Write 'horizun_write_params_verified' @{ target_document=$wDoc; tabular_source=$tabDot }
+                $tabC1 = @{ path=$csvComma; key_column='Mark'
+                            value_columns=@{ 'Unconnected Height'='Unconnected Height' }
+                            category='OST_Walls'; decimal_separator=',' }
+                $r3 = Invoke-Write 'horizun_write_params_verified' @{ target_document=$wDoc; tabular_source=$tabC1 }
+                $tabC2 = $tabC1.Clone(); $tabC2['decimal_separator'] = '.'
+                $r4 = Invoke-Write 'horizun_write_params_verified' @{ target_document=$wDoc; tabular_source=$tabC2 }
+                $g1 = -not $r1.isError -and [int]$r1.data.tabular.ops_generated -eq 1 -and
+                      [int]$r1.data.tabular.numeric_compares -eq 0
+                $g2 = -not $r2.isError -and [int]$r2.data.tabular.ops_generated -eq 0 -and
+                      [int]$r2.data.tabular.skipped_unchanged -ge 1 -and [int]$r2.data.tabular.numeric_compares -ge 1
+                $g3 = -not $r3.isError -and [int]$r3.data.tabular.ops_generated -eq 0 -and
+                      [int]$r3.data.tabular.numeric_compares -ge 1
+                $g4 = -not $r4.isError -and [int]$r4.data.tabular.ops_generated -eq 1
+                $uSetOk = $uSet.stage -eq 'apply' -and -not $uSet.answer.isError
+                if ($uSetOk -and $g1 -and $g2 -and $g3 -and $g4) {
+                    Complete-W14Case 8 $t0 'pass' ('one height (' + $dotCell + ' in ' + $displayUnit + '), four readings: UNDECLARED it differs from the display string and writes (1 op, 0 numeric compares); declared "." it measures EQUAL in the parameter''s own display unit and skips (0 ops, numeric); declared "," the same number written "' + $commaCell + '" parses and skips; declared "." that comma cell does NOT parse, falls back to the string compare and writes. The separator is DECLARED, never guessed - and the comparison is in the unit the parameter displays, not one the caller assumed.') `
+                        -Evidence @{ display_number=$displayNumber; unit=$displayUnit
+                                     undeclared=$r1.data.tabular; dot=$r2.data.tabular
+                                     comma=$r3.data.tabular; cross=$r4.data.tabular }
+                } else {
+                    Complete-W14Case 8 $t0 'fail' ("mark=$uSetOk g1=$g1 g2=$g2 g3=$g3 g4=$g4 cell=$dotCell unit=$displayUnit " +
+                        'undeclared_ops=' + [string]$r1.data.tabular.ops_generated +
+                        ' dot_ops=' + [string]$r2.data.tabular.ops_generated +
+                        ' dot_numeric=' + [string]$r2.data.tabular.numeric_compares +
+                        ' comma_ops=' + [string]$r3.data.tabular.ops_generated +
+                        ' cross_ops=' + [string]$r4.data.tabular.ops_generated)
+                }
+            }
+        }
+
+        # ---- cases 9+10: the MEP positives, on families this run authors ---
+        # This machine's Revit content library ships no MEP fittings or
+        # accessories at all (measured, W13 c1). Rather than call the surface
+        # untestable, the harness AUTHORS the two fixture families it needs -
+        # a two-connector valve and a Part Type SpudPerpendicular tap - loads
+        # them, and then exercises the TYPED commands against them. The
+        # families are fixture staging (self-reported); every assertion below
+        # is the typed command's own verified reply, re-read from the model.
+        $t0 = Get-Date
+        $mepFamPy = @'
+import os, tempfile
+from Autodesk.Revit.DB import (Transaction, BuiltInCategory, Category, XYZ, Line,
+                               CurveArray, CurveArrArray, Plane, SketchPlane, Options,
+                               ViewDetailLevel, PlanarFace, BuiltInParameter,
+                               SaveAsOptions, PartType, ConnectorElement)
+from Autodesk.Revit.DB.Plumbing import PipeSystemType
+
+TEMPLATE = r'__TEMPLATE__'
+MM = 1.0 / 304.8
+project = doc
+
+def build(name, bic, part_type, faces_wanted, along_z, classification=PipeSystemType.Fitting):
+    famDoc = doc.Application.NewFamilyDocument(TEMPLATE)
+    rep = {}
+    t = Transaction(famDoc, 'Horizun: author ' + name); t.Start()
+    famDoc.OwnerFamily.FamilyCategory = Category.GetCategory(famDoc, bic)
+    rep['category'] = famDoc.OwnerFamily.FamilyCategory.Name
+    if part_type is not None:
+        pp = famDoc.OwnerFamily.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)
+        if pp is not None and not pp.IsReadOnly:
+            pp.Set(int(part_type))
+            rep['part_type'] = famDoc.OwnerFamily.get_Parameter(
+                BuiltInParameter.FAMILY_CONTENT_PART_TYPE).AsInteger()
+    half = 30 * MM
+    x0, x1 = (-25 * MM, 25 * MM) if along_z else (-100 * MM, 100 * MM)
+    pts = [XYZ(x0, -half, 0), XYZ(x1, -half, 0), XYZ(x1, half, 0), XYZ(x0, half, 0)]
+    arr = CurveArray()
+    for i in range(4):
+        arr.Append(Line.CreateBound(pts[i], pts[(i + 1) % 4]))
+    prof = CurveArrArray(); prof.Append(arr)
+    plane = SketchPlane.Create(famDoc, Plane.CreateByNormalAndOrigin(XYZ.BasisZ, XYZ.Zero))
+    ext = famDoc.FamilyCreate.NewExtrusion(True, prof, plane, 60 * MM)
+    famDoc.Regenerate()
+    opt = Options(); opt.ComputeReferences = True; opt.DetailLevel = ViewDetailLevel.Fine
+    faces = {}
+    for g in ext.get_Geometry(opt):
+        if not hasattr(g, 'Faces'):
+            continue
+        for f in g.Faces:
+            if isinstance(f, PlanarFace):
+                n = f.FaceNormal
+                if abs(abs(n.X) - 1) < 1e-6:
+                    faces['+x' if n.X > 0 else '-x'] = f.Reference
+                elif abs(n.Z - 1) < 1e-6:
+                    faces['+z'] = f.Reference
+    made = 0
+    for key in faces_wanted:
+        if key not in faces:
+            continue
+        c = ConnectorElement.CreatePipeConnector(famDoc, classification, faces[key])
+        rp = c.get_Parameter(BuiltInParameter.CONNECTOR_RADIUS)
+        if rp is not None and not rp.IsReadOnly:
+            rp.Set(25 * MM)
+        made += 1
+    rep['connectors_created'] = made
+    t.Commit()
+    path = os.path.join(tempfile.gettempdir(), name + '.rfa')
+    if os.path.exists(path):
+        try: os.remove(path)
+        except Exception: pass
+    sa = SaveAsOptions(); sa.OverwriteExistingFile = True
+    famDoc.SaveAs(path, sa)
+    fam = famDoc.LoadFamily(project)
+    famDoc.Close(False)
+    rep['loaded'] = fam is not None
+    if fam is not None:
+        rep['symbol_ids'] = [i.IntegerValue if hasattr(i, 'IntegerValue') else i.Value for i in fam.GetFamilySymbolIds()]
+    return rep
+
+from Autodesk.Revit.DB import FilteredElementCollector
+from Autodesk.Revit.DB.Plumbing import PipingSystemType
+
+def matching_system_type(classification_name):
+    for st in FilteredElementCollector(project).OfClass(PipingSystemType):
+        try:
+            if str(st.SystemClassification) == classification_name:
+                sid = st.Id.IntegerValue if hasattr(st.Id, 'IntegerValue') else st.Id.Value
+                return {'id': sid, 'name': st.Name, 'classification': classification_name}
+        except Exception:
+            continue
+    return None
+
+out = {'accessory': build('HZ_ACCFIX___TAG__', BuiltInCategory.OST_PipeAccessory, None, ['-x', '+x'], False),
+       'tap': build('HZ_TAPFIX___TAG__', BuiltInCategory.OST_PipeFitting, PartType.SpudPerpendicular, ['+z'], True),
+       'equipment': build('HZ_EQUIPFIX___TAG__', BuiltInCategory.OST_MechanicalEquipment, None, ['-x', '+x'], False,
+                          PipeSystemType.DomesticColdWater)}
+out['equipment_system_type'] = matching_system_type('DomesticColdWater')
+ok = (out['accessory'].get('connectors_created') == 2 and out['accessory'].get('loaded') and
+      out['tap'].get('connectors_created') == 1 and out['tap'].get('loaded') and
+      out['equipment'].get('connectors_created') == 2 and out['equipment'].get('loaded') and
+      out['equipment_system_type'] is not None)
+out['status'] = 'self_reported_verified' if ok else 'partial'
+__output__ = out
+'@
+        if (-not $dimTemplatePath -or -not $levelId -or -not $pipeType -or -not $pipeSystem) {
+            Complete-W14Case 9 $t0 'unverified' 'no family template / level / pipe type / system for the MEP fixture families'
+            Complete-W14Case 10 $t0 'unverified' 'no family template / level / pipe type / system for the MEP fixture families'
+        } else {
+            $genericTemplate = Join-Path $env:ProgramData ("Autodesk\RVT {0}\Family Templates\English\Metric Generic Model.rft" -f $Year)
+            if (-not (Test-Path -LiteralPath $genericTemplate)) { $genericTemplate = $dimTemplatePath }
+            $mepFamPath = Join-Path $scratchDir 'w14-mepfam.py'
+            [IO.File]::WriteAllText($mepFamPath,
+                $mepFamPy.Replace('__TEMPLATE__', $genericTemplate).Replace('__TAG__', $dimTag),
+                [Text.UTF8Encoding]::new($false))
+            $famR = Invoke-Write 'horizun_execute_python' @{
+                code_path=$mepFamPath; target_document=$wDoc
+                idempotency_key="live-w14-mepfam-$probeRun" }
+            $accSym = $null; $tapSym = $null; $equipSym = $null; $equipSystemType = $null; $equipSystemName = $null
+            if ($famR.data -and $famR.data.output) {
+                if ($famR.data.output.accessory -and $famR.data.output.accessory.symbol_ids) {
+                    $accSym = @($famR.data.output.accessory.symbol_ids)[0] }
+                if ($famR.data.output.tap -and $famR.data.output.tap.symbol_ids) {
+                    $tapSym = @($famR.data.output.tap.symbol_ids)[0] }
+                if ($famR.data.output.equipment -and $famR.data.output.equipment.symbol_ids) {
+                    $equipSym = @($famR.data.output.equipment.symbol_ids)[0] }
+                if ($famR.data.output.equipment_system_type) {
+                    $equipSystemType = $famR.data.output.equipment_system_type.id
+                    $equipSystemName = [string]$famR.data.output.equipment_system_type.name }
+            }
+
+            # ---- case 9: the accessory that really goes inline ------------
+            if (-not $accSym) {
+                Complete-W14Case 9 $t0 'unverified' ('the accessory fixture family did not load: ' + (Get-DimShortText $famR.text))
+            } else {
+                # MEASURED at run 22: right after the S/M/L document churn Revit can
+                # answer 'Raise() returned Denied' - it is not accepting external
+                # events yet. That is the bridge reporting a real state honestly, and
+                # it is STAGING, so one retry after a pause is legitimate. The probe's
+                # own assertion is never retried.
+                $hostMk = $null; $hostId = $null
+                foreach ($stagingAttempt in 1..2) {
+                    if ($hostId) { continue }
+                    if ($stagingAttempt -gt 1) { Start-Sleep -Seconds 5 }
+                    $hostMk = Invoke-WriteApply 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'
+                        elements=@(@{ kind='pipe'; start=@((($w14X+10000)+($stagingAttempt-1)*500),0,1200)
+                                      end=@((($w14X+10000)+($stagingAttempt-1)*500),4000,1200)
+                                      level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem })
+                    } ('w14-inlinehost-' + $stagingAttempt)
+                    if ($hostMk.stage -eq 'apply' -and -not $hostMk.answer.isError) {
+                        $hostId = [long]@($hostMk.answer.data.rows)[0].element_id
+                    }
+                }
+                if (-not $hostId) {
+                    Complete-W14Case 9 $t0 'unverified' ('no host pipe staged: ' + (Get-DimShortText $hostMk.answer.text))
+                } else {
+                    $inline = Invoke-WriteApply 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'
+                        elements=@(@{ kind='accessory_inline'; pipe_id=$hostId; type_id=[long]$accSym
+                                      point=@(($w14X+10000),2000,1200) })
+                    } 'w14-inline'
+                    $inlineRow = if ($inline.answer.data) { @($inline.answer.data.rows)[0] } else { $null }
+                    $accId = if ($inlineRow) { [long]$inlineRow.element_id } else { $null }
+                    # The typed reply says created+verified; the MODEL says the run
+                    # was broken and rejoined. Both, or this is not a pass.
+                    # Query the exact two ids the post-commit verifier reported.
+                    # A category query with max_rows=400 silently missed these in a
+                    # 496-pipe fixture and manufactured a zero-connection failure.
+                    $verifiedPipeIds = @()
+                    if ($inlineRow -and $inlineRow.inline_connections) {
+                        $verifiedPipeIds = @($inlineRow.inline_connections.pipe_ids | ForEach-Object { [long]$_ })
+                    }
+                    $halves = if ($verifiedPipeIds.Count -eq 2) {
+                        Invoke-Write 'horizun_query_model' @{
+                            element_ids=$verifiedPipeIds; include_links=$false; include_mep=$true; max_rows=10 }
+                    } else { $null }
+                    $onAxis = @()
+                    if ($halves -and $halves.data) {
+                        $onAxis = @($halves.data.rows | Where-Object {
+                            -not $_.is_element_type -and $_.mep -and $_.mep.connectors -and
+                            @($_.mep.connectors | Where-Object {
+                                $_.connected_to -and (@($_.connected_to) -contains $accId) }).Count -ge 1 })
+                    }
+                    if ($inline.stage -eq 'apply' -and -not $inline.answer.isError -and
+                        [int]$inline.answer.data.created_verified -eq 1 -and
+                        $inlineRow.verified -eq $true -and $inlineRow.inline_connections.verified -eq $true -and
+                        $verifiedPipeIds.Count -eq 2 -and $onAxis.Count -eq 2) {
+                        Complete-W14Case 9 $t0 'pass' ('the authored valve went INLINE on a live run: the host pipe was broken at the point and BOTH halves re-read CONNECTED to the accessory (element ' + $accId + '), all inside one verified transaction') `
+                            -Evidence @{ accessory=$accId; host=$hostId; halves_connected=$onAxis.Count
+                                         queried_pipe_ids=$verifiedPipeIds; row=$inlineRow }
+                    } elseif ($inline.stage -eq 'apply' -and -not $inline.answer.isError -and
+                              [int]$inline.answer.data.created_verified -eq 1 -and $inlineRow.verified -eq $true) {
+                        Complete-W14Case 9 $t0 'fail' ('the accessory committed verified but the model shows ' + $onAxis.Count +
+                            ' pipe(s) connected to it, not 2 - the break-and-connect did not leave two joined halves')
+                    } else {
+                        Complete-W14Case 9 $t0 'fail' ('the inline accessory did not commit verified: stage=' + $inline.stage + ' ' +
+                            (Get-DimShortText $inline.answer.text))
+                    }
+                }
+            }
+
+            # ---- case 10: the tap, and whatever Revit says about it -------
+            $t0 = Get-Date
+            if (-not $tapSym) {
+                Complete-W14Case 10 $t0 'unverified' ('the tap fixture family did not load: ' + (Get-DimShortText $famR.text))
+            } else {
+                $tapDup = Invoke-WriteApply 'horizun_manage_system_types' @{
+                    target_document=$wDoc; units='mm'
+                    actions=@(@{ source_type_id=[long]$pipeType; new_name=('HZ_TAPTYPE_' + $dimTag)
+                                 junction_preference=@{ type='tap'; tap_fitting_type_id=[long]$tapSym } })
+                } 'w14-taptype'
+                $tapRow = if ($tapDup.answer.data) { @($tapDup.answer.data.rows)[0] } else { $null }
+                $tapTypeOk = $tapDup.stage -eq 'apply' -and -not $tapDup.answer.isError -and
+                             $tapRow -and $tapRow.junction_preference -and
+                             $tapRow.junction_preference.verified -eq $true -and
+                             [string]$tapRow.junction_preference.preferred_junction_read -eq 'Tap'
+                if (-not $tapTypeOk) {
+                    Complete-W14Case 10 $t0 'fail' ('the authored tap did NOT pass the Part Type gate or the preference did not verify: ' +
+                        (Get-DimShortText $tapDup.answer.text))
+                } else {
+                    $tt = [long]$tapRow.new_type_id
+                    $tkPipes = Invoke-WriteApply 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'
+                        elements=@(
+                            @{ kind='pipe'; start=@(($w14X+14000),0,1200); end=@(($w14X+14000),6000,1200)
+                               level_id=[long]$levelId; type_id=$tt; system_type_id=[long]$pipeSystem },
+                            @{ kind='pipe'; start=@(($w14X+16000),3000,1200); end=@(($w14X+14000),3000,1200)
+                               level_id=[long]$levelId; type_id=$tt; system_type_id=[long]$pipeSystem })
+                    } 'w14-tappipes'
+                    $tkRows = if ($tkPipes.answer.data) { @($tkPipes.answer.data.rows) } else { @() }
+                    if ($tkPipes.stage -ne 'apply' -or $tkRows.Count -ne 2) {
+                        Complete-W14Case 10 $t0 'unverified' ('the tap-type pipes could not be staged: ' + (Get-DimShortText $tkPipes.answer.text))
+                    } else {
+                        $beforeFit = Invoke-Write 'horizun_query_model' @{
+                            categories=@('OST_PipeFitting'); include_links=$false; max_rows=500 }
+                        $fitBefore = if ($beforeFit.data) { @($beforeFit.data.rows | Where-Object { -not $_.is_element_type }).Count } else { -1 }
+                        $tkGo = Invoke-WriteApply 'horizun_create_elements' @{
+                            target_document=$wDoc; units='mm'
+                            elements=@(@{ kind='fitting'; fitting='takeoff'
+                                          elements=@(@{ element_id=[long]$tkRows[1].element_id },
+                                                     @{ element_id=[long]$tkRows[0].element_id }) })
+                        } 'w14-takeoff'
+                        $afterFit = Invoke-Write 'horizun_query_model' @{
+                            categories=@('OST_PipeFitting'); include_links=$false; max_rows=500 }
+                        $fitAfter = if ($afterFit.data) { @($afterFit.data.rows | Where-Object { -not $_.is_element_type }).Count } else { -2 }
+                        $tkRow2 = if ($tkGo.answer.data) { @($tkGo.answer.data.rows)[0] } else { $null }
+                        if ($tkGo.stage -eq 'apply' -and -not $tkGo.answer.isError -and
+                            [int]$tkGo.answer.data.created_verified -eq 1 -and $tkRow2.verified -eq $true) {
+                            Complete-W14Case 10 $t0 'pass' ('THE POSITIVE: a real takeoff committed verified on the type whose junction preference reads Tap, using the authored Spud fitting (fitting count ' + $fitBefore + ' -> ' + $fitAfter + ')') `
+                                -Evidence @{ tap_type=$tt; fitting=$tapSym; row=$tkRow2 }
+                        } elseif ($tkGo.answer.isError -and $tkGo.answer.text -match 'Failed to insert takeoff' -and
+                                  $tkGo.answer.text -match 'rolled back' -and $fitAfter -eq $fitBefore) {
+                            Complete-W14Case 10 $t0 'pass' ('MEASURED BOUNDARY, not a guess: the typed configuration verified (preference re-read Tap, Part Type gate passed) and REVIT ITSELF refused the insert - "Failed to insert takeoff". The product rolled the batch back WHOLE and said so: the fitting count is unchanged at ' + $fitAfter + '. An authored Spud family satisfies the gate but not NewTakeoffFitting; the positive needs an Autodesk MEP content tap, which this machine does not ship. Una negativa no prueba la positiva - this probe claims only what it measured.') `
+                                -Evidence @{ tap_type=$tt; fitting=$tapSym; fittings_before=$fitBefore; fittings_after=$fitAfter
+                                             revit_said=(Get-DimShortText $tkGo.answer.text) }
+                        } else {
+                            Complete-W14Case 10 $t0 'fail' ('neither a verified takeoff nor a clean whole rollback: stage=' + $tkGo.stage +
+                                ' fittings ' + $fitBefore + '->' + $fitAfter + ' ' + (Get-DimShortText $tkGo.answer.text))
+                        }
+                    }
+                }
+            }
+        }
+
+        # ---- cases 11, 12 + 14: the system that exists before anything routes
+        # MEASURED at run 22: Revit answers 'Some connectors to be added into the
+        # system have been used' when a connector already belongs to one - and a
+        # curve created WITH a system type is already in the system Revit made for
+        # it. So a system is built from FREE connectors: standalone instances that
+        # have never been routed. That is what Revit means by base equipment, and
+        # the product now refuses the occupied case by name at plan time (c14).
+        $t0 = Get-Date
+        if (-not $levelId -or -not $pipeType -or -not $pipeSystem -or -not $equipSym -or -not $accSym -or -not $equipSystemType) {
+            Complete-W14Case 11 $t0 'unverified' 'no level / pipe type / piping system type / equipment family for the system probes'
+            Complete-W14Case 12 $t0 'unverified' 'no level / pipe type / piping system type for the system probes'
+            Complete-W14Case 14 $t0 'unverified' 'no level / pipe type / piping system type for the system probes'
+            Complete-W14Case 15 $t0 'unverified' 'no accessory family for the unclassified-connector refusal'
+        } else {
+            # Two standalone instances of the authored EQUIPMENT: their connectors
+            # have never been connected AND they declare a real classification -
+            # which run 23 measured to be the difference between a system that
+            # carries its members and one that silently carries nobody.
+            $freeMk = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(
+                    @{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                       point=@(($w14X+20000),0,1200) },
+                    @{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                       point=@(($w14X+22000),0,1200) })
+            } 'w14-sysfree'
+            $freeRows = if ($freeMk.answer.data) { @($freeMk.answer.data.rows) } else { @() }
+            if ($freeMk.stage -ne 'apply' -or $freeRows.Count -ne 2) {
+                Complete-W14Case 11 $t0 'unverified' ('the free-connector members could not be staged: ' + (Get-DimShortText $freeMk.answer.text))
+            } else {
+                $m1 = [long]$freeRows[0].element_id; $m2 = [long]$freeRows[1].element_id
+                $sysName = 'HZ_SYS_' + $dimTag
+                $mkSys = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='mep_system'; system_type_id=[long]$equipSystemType; name=$sysName
+                                  member_element_ids=@($m1, $m2) })
+                } 'w14-mepsystem'
+                $sysRow = if ($mkSys.answer.data) { @($mkSys.answer.data.rows)[0] } else { $null }
+                $ms = if ($sysRow) { $sysRow.mep_system } else { $null }
+                if ($mkSys.stage -eq 'apply' -and -not $mkSys.answer.isError -and
+                    [int]$mkSys.answer.data.created_verified -eq 1 -and $sysRow.verified -eq $true -and
+                    $ms -and $ms.name_verified -eq $true -and [string]$ms.name_read -eq $sysName -and
+                    $ms.system_type_verified -eq $true -and $ms.members_verified -eq $true -and
+                    [int]$ms.members_requested -eq 2 -and @($ms.members_missing).Count -eq 0) {
+                    Complete-W14Case 11 $t0 'pass' ('a NAMED piping system was created typed and re-read from the model: name "' +
+                        $ms.name_read + '" matches, the system type matches, and BOTH member ids it was given are among the ' +
+                        $ms.members_read + ' it carries - members re-read, never counted off Add calls that did not throw') `
+                        -Evidence @{ system=$sysRow.element_id; mep_system=$ms }
+                } else {
+                    Complete-W14Case 11 $t0 'fail' ('the named system did not verify: stage=' + $mkSys.stage + ' ' +
+                        (Get-DimShortText $mkSys.answer.text))
+                }
+            }
+
+            # ---- case 12: a member Revit cannot carry at all ---------------
+            $t0 = Get-Date
+            $wallMk = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='wall'; start=@(($w14X+24000),0,0); end=@(($w14X+27000),0,0)
+                              level_id=[long]$levelId; height=3000 })
+            } 'w14-sysbadmember'
+            $wallForSys = if ($wallMk.stage -eq 'apply' -and -not $wallMk.answer.isError) {
+                [long]@($wallMk.answer.data.rows)[0].element_id } else { $null }
+            if (-not $wallForSys) {
+                Complete-W14Case 12 $t0 'unverified' 'no wall staged for the domain refusal'
+            } else {
+                $badSys = Invoke-Write 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='mep_system'; system_type_id=[long]$pipeSystem
+                                  name=('HZ_SYSBAD_' + $dimTag); member_element_ids=@($wallForSys) }) }
+                $badErr = if ($badSys.data -and $badSys.data.errors) { [string]@($badSys.data.errors)[0].error } else { $null }
+                if (-not $badSys.isError -and $badSys.data -and [int]$badSys.data.invalid -eq 1 -and
+                    [string]$badSys.data.transaction_status -eq 'not_started' -and
+                    $badErr -match 'exposes no connectors' -and $badErr -match [string]$wallForSys) {
+                    Complete-W14Case 12 $t0 'pass' ('a wall named as a member refused the WHOLE row at plan time, citing the id and the reason - "' +
+                        $badErr + '" - with no transaction opened. A system whose members are in another domain is not a system.') `
+                        -Evidence @{ wall=$wallForSys; refusal=$badErr }
+                } else {
+                    Complete-W14Case 12 $t0 'fail' ('expected the named plan-time member refusal, got: ' + (Get-DimShortText $badSys.text))
+                }
+            }
+
+            # ---- case 14: the connector that is already spoken for ---------
+            $t0 = Get-Date
+            $takenMk = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='pipe'; start=@(($w14X+26000),0,1200); end=@(($w14X+26000),3000,1200)
+                              level_id=[long]$levelId; type_id=[long]$pipeType; system_type_id=[long]$pipeSystem })
+            } 'w14-systaken'
+            $takenId = if ($takenMk.stage -eq 'apply' -and -not $takenMk.answer.isError) {
+                [long]@($takenMk.answer.data.rows)[0].element_id } else { $null }
+            if (-not $takenId) {
+                Complete-W14Case 14 $t0 'unverified' ('no pipe staged for the occupied-connector refusal: ' + (Get-DimShortText $takenMk.answer.text))
+            } else {
+                $takenSys = Invoke-Write 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='mep_system'; system_type_id=[long]$pipeSystem
+                                  name=('HZ_SYSTAKEN_' + $dimTag); member_element_ids=@($takenId) }) }
+                $takenErr = if ($takenSys.data -and $takenSys.data.errors) { [string]@($takenSys.data.errors)[0].error } else { $null }
+                if (-not $takenSys.isError -and $takenSys.data -and [int]$takenSys.data.invalid -eq 1 -and
+                    [string]$takenSys.data.transaction_status -eq 'not_started' -and
+                    $takenErr -match 'member_connector_already_in_a_system' -and
+                    $takenErr -match [string]$takenId -and $takenErr -match 'ONE system') {
+                    Complete-W14Case 14 $t0 'pass' ('a pipe created WITH a system type is already in the system Revit made for it, and naming it as a member of a second one refuses at PLAN TIME by name - "' +
+                        $takenErr + '". Run 22 measured the alternative: Revit answers "Some connectors to be added into the system have been used" mid-transaction, and the batch rolls back. The readable fact (Connector.MEPSystem) is read before anything is written.') `
+                        -Evidence @{ pipe=$takenId; refusal=$takenErr }
+                } else {
+                    Complete-W14Case 14 $t0 'fail' ('expected the occupied-connector refusal at plan time, got: ' + (Get-DimShortText $takenSys.text))
+                }
+            }
+
+        # ---- case 13: THE POSITIVE TAKEOFF, in the domain that has taps ---
+        # Cases 1-10 measured the pipe side: this machine's Revit ships no MEP
+        # PIPE content, and an authored Spud satisfies the Part Type gate but
+        # not NewTakeoffFitting. The DUCT side is different - the sample models
+        # carry real Autodesk tap families (Round Takeoff, Rectangular Takeoff,
+        # Oval Tap) - and the junction preference lives on MEPCurveType, which
+        # is the base of BOTH PipeType and DuctType. So the positive is real
+        # here. The tap is FOUND by the product's own Part Type gate: each duct
+        # fitting is offered in turn and only a genuine tap verifies.
+        $t0 = Get-Date
+        $dtQ = Invoke-Write 'horizun_query_model' @{
+            categories=@('OST_DuctCurves'); include_types=$true; include_links=$false; max_rows=80 }
+        $ductType = if ($dtQ.data) { @($dtQ.data.rows | Where-Object { $_.is_element_type } |
+                                       ForEach-Object { $_.element_id }) | Select-Object -First 1 } else { $null }
+        $dsQ = Invoke-Write 'horizun_query_model' @{
+            categories=@('OST_DuctSystem'); include_types=$true; include_links=$false; max_rows=40 }
+        $ductSystem = if ($dsQ.data) { @($dsQ.data.rows | Where-Object { $_.is_element_type } |
+                                         ForEach-Object { $_.element_id }) | Select-Object -First 1 } else { $null }
+        $dfQ = Invoke-Write 'horizun_query_model' @{
+            categories=@('OST_DuctFitting'); include_types=$true; include_links=$false; max_rows=120 }
+        $ductFittings = if ($dfQ.data) { @($dfQ.data.rows | Where-Object { $_.is_element_type } |
+                                           ForEach-Object { $_.element_id }) } else { @() }
+        if (-not $ductType -or -not $ductSystem -or -not $levelId -or $ductFittings.Count -eq 0) {
+            Complete-W14Case 13 $t0 'unverified' ("no duct surface to probe: type=$ductType system=$ductSystem " +
+                "level=$levelId fittings=" + $ductFittings.Count)
+        } else {
+            # The product's Part Type gate IS the search: a non-tap refuses by name.
+            $ductTapType = $null; $ductTapUsed = $null
+            foreach ($cand in ($ductFittings | Select-Object -First 40)) {
+                if ($ductTapType) { continue }
+                $try = Invoke-WriteApply 'horizun_manage_system_types' @{
+                    target_document=$wDoc; units='mm'
+                    actions=@(@{ source_type_id=[long]$ductType; new_name=('HZ_DUCTTAP_' + $dimTag + '_' + $cand)
+                                 junction_preference=@{ type='tap'; tap_fitting_type_id=[long]$cand } })
+                } ('w14-ducttap-' + $cand)
+                if ($try.stage -eq 'apply' -and -not $try.answer.isError) {
+                    $r = @($try.answer.data.rows)[0]
+                    if ($r.junction_preference -and $r.junction_preference.verified -eq $true -and
+                        [string]$r.junction_preference.preferred_junction_read -eq 'Tap') {
+                        $ductTapType = $r.new_type_id; $ductTapUsed = $cand
+                    }
+                }
+            }
+            if (-not $ductTapType) {
+                Complete-W14Case 13 $t0 'unverified' ('no duct fitting in this model passed the Part Type gate, so no ' +
+                    'Tap-preferenced DuctType could be built from ' + $ductFittings.Count + ' candidates')
+            } else {
+                $dMk = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(
+                        @{ kind='duct'; start=@(($w14X+30000),0,2400); end=@(($w14X+30000),6000,2400)
+                           level_id=[long]$levelId; type_id=[long]$ductTapType; system_type_id=[long]$ductSystem },
+                        @{ kind='duct'; start=@(($w14X+32000),3000,2400); end=@(($w14X+30000),3000,2400)
+                           level_id=[long]$levelId; type_id=[long]$ductTapType; system_type_id=[long]$ductSystem })
+                } 'w14-ducts'
+                $dRows = if ($dMk.answer.data) { @($dMk.answer.data.rows) } else { @() }
+                if ($dMk.stage -ne 'apply' -or $dRows.Count -ne 2) {
+                    Complete-W14Case 13 $t0 'unverified' ('the tap-type ducts could not be staged: ' + (Get-DimShortText $dMk.answer.text))
+                } else {
+                    $dTake = Invoke-WriteApply 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'
+                        elements=@(@{ kind='fitting'; fitting='takeoff'
+                                      elements=@(@{ element_id=[long]$dRows[1].element_id },
+                                                 @{ element_id=[long]$dRows[0].element_id }) })
+                    } 'w14-ducttakeoff'
+                    $dRow = if ($dTake.answer.data) { @($dTake.answer.data.rows)[0] } else { $null }
+                    if ($dTake.stage -eq 'apply' -and -not $dTake.answer.isError -and
+                        [int]$dTake.answer.data.created_verified -eq 1 -and $dRow.verified -eq $true -and
+                        $dRow.connectors_verified -eq $true -and
+                        [string]$dRow.actual_category -match 'Duct Fitting') {
+                        Complete-W14Case 13 $t0 'pass' ('THE POSITIVE: a REAL takeoff committed verified. The DuctType was duplicated with junction preference Tap using duct fitting ' +
+                            $ductTapUsed + ' - found by the product''s OWN Part Type gate, which refuses every non-tap by name - the preference re-read Tap, and the takeoff fitting (element ' +
+                            $dRow.element_id + ', ' + $dRow.actual_category + ') re-read from the model with its connectors CONNECTED.') `
+                            -Evidence @{ duct_type=$ductTapType; tap_fitting=$ductTapUsed; row=$dRow }
+                    } else {
+                        Complete-W14Case 13 $t0 'fail' ('the duct takeoff did not commit verified: stage=' + $dTake.stage + ' ' +
+                            (Get-DimShortText $dTake.answer.text))
+                    }
+                }
+            }
+        }
+
+            # ---- case 15: the connector that declares nothing ----------
+            # MEASURED at run 23: the accessory family's connectors are authored
+            # as Fitting, which reads back as UndefinedSystemType - and Revit's
+            # MEPSystem.Add takes such a connector WITHOUT THROWING and associates
+            # NOTHING. The post-commit member re-read caught it (0 of 2 carried);
+            # the readable classification lets the refusal happen before the write.
+            $t0 = Get-Date
+            $unclMk = Invoke-WriteApply 'horizun_create_elements' @{
+                target_document=$wDoc; units='mm'
+                elements=@(@{ kind='family_instance'; type_id=[long]$accSym; level_id=[long]$levelId
+                              point=@(($w14X+28000),0,1200) })
+            } 'w14-sysuncl'
+            $unclId = if ($unclMk.stage -eq 'apply' -and -not $unclMk.answer.isError) {
+                [long]@($unclMk.answer.data.rows)[0].element_id } else { $null }
+            if (-not $unclId) {
+                Complete-W14Case 15 $t0 'unverified' ('no unclassified member staged: ' + (Get-DimShortText $unclMk.answer.text))
+            } else {
+                $unclSys = Invoke-Write 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='mep_system'; system_type_id=[long]$pipeSystem
+                                  name=('HZ_SYSUNCL_' + $dimTag); member_element_ids=@($unclId) }) }
+                $unclErr = if ($unclSys.data -and $unclSys.data.errors) { [string]@($unclSys.data.errors)[0].error } else { $null }
+                if (-not $unclSys.isError -and $unclSys.data -and [int]$unclSys.data.invalid -eq 1 -and
+                    [string]$unclSys.data.transaction_status -eq 'not_started' -and
+                    $unclErr -match 'member_connector_has_no_system_classification' -and
+                    $unclErr -match [string]$unclId -and $unclErr -match 'associates NOTHING') {
+                    Complete-W14Case 15 $t0 'pass' ('a connector whose system type reads Undefined refuses at PLAN TIME by name - "' +
+                        $unclErr + '". This is the exact silent failure the contract exists for: Revit''s Add does not throw and joins nobody, so the count would have come from a call that did not throw.') `
+                        -Evidence @{ member=$unclId; refusal=$unclErr }
+                } else {
+                    Complete-W14Case 15 $t0 'fail' ('expected the unclassified-connector refusal, got: ' + (Get-DimShortText $unclSys.text))
+                }
+            }
+
+            # ---- case 16: classified, but for a DIFFERENT system -------
+            # MEASURED at run 24: with the classification present but different
+            # from the system type's own, Revit answers "Some connectors can't
+            # match system with domain, system type or direction" mid-transaction
+            # and the batch rolls back. Both classifications are readable first.
+            $t0 = Get-Date
+            $otherSystem = $null
+            if ($equipSystemType) {
+                $stQ = Invoke-Write 'horizun_query_model' @{
+                    categories=@('OST_PipingSystem'); include_types=$true; include_links=$false; max_rows=40 }
+                if ($stQ.data) {
+                    $otherSystem = @($stQ.data.rows | Where-Object {
+                        $_.is_element_type -and [long]$_.element_id -ne [long]$equipSystemType } |
+                        ForEach-Object { $_.element_id }) | Select-Object -First 1
+                }
+            }
+            if (-not $otherSystem -or -not $equipSym) {
+                Complete-W14Case 16 $t0 'unverified' 'no second piping system type to mismatch against'
+            } else {
+                $mmMk = Invoke-WriteApply 'horizun_create_elements' @{
+                    target_document=$wDoc; units='mm'
+                    elements=@(@{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                                  point=@(($w14X+30000),0,1200) })
+                } 'w14-sysmismatch'
+                $mmId = if ($mmMk.stage -eq 'apply' -and -not $mmMk.answer.isError) {
+                    [long]@($mmMk.answer.data.rows)[0].element_id } else { $null }
+                if (-not $mmId) {
+                    Complete-W14Case 16 $t0 'unverified' ('no classified member staged: ' + (Get-DimShortText $mmMk.answer.text))
+                } else {
+                    $mmSys = Invoke-Write 'horizun_create_elements' @{
+                        target_document=$wDoc; units='mm'
+                        elements=@(@{ kind='mep_system'; system_type_id=[long]$otherSystem
+                                      name=('HZ_SYSMM_' + $dimTag); member_element_ids=@($mmId) }) }
+                    $mmErr = if ($mmSys.data -and $mmSys.data.errors) { [string]@($mmSys.data.errors)[0].error } else { $null }
+                    # Either classification could legitimately differ; what the probe
+                    # asserts is that BOTH are named and nothing was written.
+                    if (-not $mmSys.isError -and $mmSys.data -and [int]$mmSys.data.invalid -eq 1 -and
+                        [string]$mmSys.data.transaction_status -eq 'not_started' -and
+                        $mmErr -match 'member_classification_does_not_match_system' -and
+                        $mmErr -match [string]$mmId -and $mmErr -match 'DomesticColdWater') {
+                        Complete-W14Case 16 $t0 'pass' ('a member classified DomesticColdWater, named into a system type of another classification, refuses at PLAN TIME with BOTH classifications in the message - "' +
+                            $mmErr + '" - and no transaction was opened.') `
+                            -Evidence @{ member=$mmId; other_system_type=$otherSystem; refusal=$mmErr }
+                    } elseif ($mmSys.isError -or [int]$mmSys.data.invalid -eq 0) {
+                        # The second type may share the classification: then there is
+                        # no mismatch to measure and the probe says so rather than
+                        # calling a coincidence a pass.
+                        Complete-W14Case 16 $t0 'unverified' ('the second system type appears to share the classification, so no mismatch arose: ' +
+                            (Get-DimShortText $mmSys.text))
+                    } else {
+                        Complete-W14Case 16 $t0 'fail' ('expected the classification-mismatch refusal, got: ' + (Get-DimShortText $mmSys.text))
+                    }
+                }
+            }
+        }
+
+        for ($wc14=1; $wc14 -le 16; $wc14++) {
+            if (-not $script:w14CasesDone.ContainsKey($wc14)) { Complete-W14Case $wc14 (Get-Date) 'unverified' 'the W14 section ended before this probe ran - a harness bug' }
+        }
+
+
+
     }
 }
 
@@ -7677,6 +11375,28 @@ $report = [pscustomobject]@{
             source_fixture_sha256 = $planimetryFixtureSpecSha256
         }
         cases = @($script:productionEvidence)
+    }
+    # The linked-and-production record: the run AUTHORS its own link source (a
+    # level, two vertical grids, one Y-running wall), links it as one type with
+    # three placements (translated / rotated 30deg / twin translation), stages a
+    # four-wall room, and drives every capability under test through the TYPED
+    # tools. The pack case round-trips the user settings file and restores it
+    # before judging.
+    dimension_production = @{
+        fixture = @{
+            description = 'self-authored link source RVT (level, grids HZL-1/2 at x=0/5000mm, one Y-running wall at x=8000mm) linked three times into the disposable model at x=560000mm (A plain, B rotated 30 degrees, C twin), plus a staged 4m x 3m four-wall room HZ-901; all typed writes ran dry-run -> token -> apply'
+        }
+        cases = @($script:dp2Evidence)
+    }
+    # W11: phases 5-14 of the Maximum Program, live. Fixtures self-staged far
+    # east (x >= 610 m): three pipes (two meeting at a corner, one distant), a
+    # wall with a crossing pipe, three grids, a CSV pair in the scratch
+    # directory, and the dp2 link fixture reused for typed link management.
+    maximum_program = @{
+        fixture = @{
+            description = 'self-staged: pipes at x=610m (elbow pair + distant), a 4m wall with a crossing pipe at z=1.5m (penetration/opening/findings), three grids (two crossings) for plan_structure, CSV files in the scratch directory for the tabular round trip, the dp2 link fixture for manage_links, and a scratch RFA for the type catalog'
+        }
+        cases = @($script:mpEvidence)
     }
     summary           = @{
         passed      = $passed

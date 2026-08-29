@@ -66,7 +66,46 @@ namespace Horizun.Revit.Commands
                     if (compound != null && !(source is HostObjAttributes))
                         throw new ArgumentException("compound_structure is only valid for a HostObjAttributes system type such as WallType, FloorType, RoofType or CeilingType");
                     if (compound != null) ValidateCompound((HostObjAttributes)source, compound);
-                    plans.Add(new Plan { Index = i, Source = source, NewName = name, Writes = writes, Compound = compound });
+                    JunctionPlan junction = null;
+                    if (action["junction_preference"] is JObject junctionToken)
+                    {
+                        // The junction choice lives on MEPCurveType - the base of BOTH
+                        // PipeType and DuctType - so a duct takeoff is configured exactly
+                        // the way a pipe one is. Narrowing this to pipes was the command
+                        // being stricter than the API it wraps.
+                        if (!(source is MEPCurveType))
+                            throw new ArgumentException("junction_preference applies to an MEPCurveType source " +
+                                "(PipeType or DuctType); '" + source.GetType().Name + "' does not carry a " +
+                                "routing-preference junction choice.");
+                        string junctionKind = (junctionToken.Value<string>("type") ?? "").ToLowerInvariant();
+                        if (junctionKind != "tap" && junctionKind != "tee")
+                            throw new ArgumentException("junction_preference.type must be tap or tee");
+                        junction = new JunctionPlan { Kind = junctionKind };
+                        long fittingId = junctionToken.Value<long?>("tap_fitting_type_id") ?? -1;
+                        if (junctionKind == "tap")
+                        {
+                            if (!Rid.CanRepresent(fittingId) || !(doc.GetElement(Rid.Make(fittingId)) is FamilySymbol tapSymbol))
+                                throw new ArgumentException("junction_preference tap needs tap_fitting_type_id: the " +
+                                    "fitting FamilySymbol Revit should use as the tap (a pipe fitting for a " +
+                                    "PipeType, a duct fitting for a DuctType)");
+                            // MEASURED on run 14: a junction rule pointing at a NON-TAP
+                            // fitting reads back as PreferredJunctionType=Tap and still
+                            // fails NewTakeoffFitting mid-transaction. The fitting's own
+                            // Part Type is the readable fact, so a non-tap refuses HERE.
+                            int partTypeValue = -1;
+                            try { partTypeValue = tapSymbol.Family?.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)?.AsInteger() ?? -1; }
+                            catch { }
+                            var partType = (PartType)partTypeValue;
+                            bool isTapPart = partType == PartType.SpudPerpendicular || partType == PartType.SpudAdjustable ||
+                                             partType == PartType.TapPerpendicular || partType == PartType.TapAdjustable;
+                            if (!isTapPart)
+                                throw new ArgumentException("fitting_is_not_a_tap: FamilySymbol " + fittingId + " ('" +
+                                    tapSymbol.Name + "') has Part Type '" + partType + "', and a takeoff junction " +
+                                    "needs a Spud/Tap part. Point tap_fitting_type_id at a tap fitting family.");
+                            junction.TapFitting = tapSymbol;
+                        }
+                    }
+                    plans.Add(new Plan { Index = i, Source = source, NewName = name, Writes = writes, Compound = compound, Junction = junction });
                 }
                 catch (Exception ex) { errors.Add(new JObject { ["index"] = i, ["error"] = ex.Message }); }
             }
@@ -113,6 +152,9 @@ namespace Horizun.Revit.Commands
                 };
                 foreach (Write w in planned.Writes)
                     row.BeforeValues["param:" + w.Spec] = SafePlanParamNow(planned.Source, w.Spec);
+                if (planned.Junction != null)
+                    row.BeforeValues["junction"] = planned.Junction.Kind + "|" +
+                        (planned.Junction.TapFitting == null ? "" : SafePlanUniqueId(planned.Junction.TapFitting));
                 resolvedPlan.Elements.Add(row);
             }
 
@@ -164,6 +206,21 @@ namespace Horizun.Revit.Commands
                         plan.CreatedId = plan.Source.Duplicate(plan.NewName).Id;
                         ElementType created = doc.GetElement(plan.CreatedId) as ElementType;
                         if (created == null) throw new InvalidOperationException("Duplicate returned no ElementType for action " + plan.Index);
+                        if (plan.Junction != null && created is MEPCurveType pipeCreated)
+                        {
+                            // The duplicate INHERITS the source's routing preferences; this
+                            // sets the junction the caller asked for ON THE NEW TYPE ONLY,
+                            // and the verify below re-reads both facts from the model.
+                            RoutingPreferenceManager routingCreated = pipeCreated.RoutingPreferenceManager;
+                            if (plan.Junction.Kind == "tap")
+                            {
+                                if (!plan.Junction.TapFitting.IsActive) { plan.Junction.TapFitting.Activate(); doc.Regenerate(); }
+                                routingCreated.AddRule(RoutingPreferenceRuleGroupType.Junctions,
+                                    new RoutingPreferenceRule(plan.Junction.TapFitting.Id, "Horizun tap"));
+                                routingCreated.PreferredJunctionType = PreferredJunctionType.Tap;
+                            }
+                            else routingCreated.PreferredJunctionType = PreferredJunctionType.Tee;
+                        }
                         foreach (Write write in plan.Writes)
                         {
                             Parameter parameter = ResolveParameter(created, write.Spec, out string why);
@@ -204,13 +261,32 @@ namespace Horizun.Revit.Commands
                 }
                 JObject compound = plan.Compound == null ? null : VerifyCompound(fresh as HostObjAttributes, plan.Compound);
                 bool compoundOk = compound == null || compound.Value<bool>("verified");
-                bool okAll = typeOk && valuesOk && compoundOk; if (okAll) verified++;
+                JObject junction = null; bool junctionOk = true;
+                if (plan.Junction != null)
+                {
+                    var freshPipe = fresh as MEPCurveType;
+                    RoutingPreferenceManager freshRouting = freshPipe?.RoutingPreferenceManager;
+                    string preferenceRead = freshRouting?.PreferredJunctionType.ToString();
+                    int junctionRules = freshRouting == null ? 0
+                        : freshRouting.GetNumberOfRules(RoutingPreferenceRuleGroupType.Junctions);
+                    junctionOk = string.Equals(preferenceRead, plan.Junction.Kind, StringComparison.OrdinalIgnoreCase) &&
+                                 (plan.Junction.Kind != "tap" || junctionRules > 0);
+                    junction = new JObject
+                    {
+                        ["requested"] = plan.Junction.Kind,
+                        ["preferred_junction_read"] = preferenceRead,
+                        ["junction_rules_after"] = junctionRules,
+                        ["verified"] = junctionOk
+                    };
+                }
+                bool okAll = typeOk && valuesOk && compoundOk && junctionOk; if (okAll) verified++;
                 rows.Add(new JObject
                 {
                     ["index"] = plan.Index, ["source_type_id"] = Rid.Value(plan.Source.Id), ["new_type_id"] = Rid.Value(plan.CreatedId),
                     ["class"] = fresh?.GetType().Name, ["name"] = fresh?.Name, ["type_verified"] = typeOk,
                     ["parameters_verified"] = valuesOk, ["compound_structure_verified"] = compoundOk,
-                    ["verified"] = okAll, ["parameters"] = parameters, ["compound_structure"] = compound
+                    ["verified"] = okAll, ["parameters"] = parameters, ["compound_structure"] = compound,
+                    ["junction_preference"] = junction
                 });
             }
             if (verified != plans.Count)
@@ -521,7 +597,8 @@ namespace Horizun.Revit.Commands
             catch { return "<unreadable>"; }
         }
 
-        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public ElementId CreatedId; }
+        private sealed class JunctionPlan { public string Kind; public FamilySymbol TapFitting; }
+        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public JunctionPlan Junction; public ElementId CreatedId; }
         private sealed class Write { public string Spec; public JToken Requested, Expected; public bool ParsedByRevit; }
         private sealed class CompoundPlan
         {

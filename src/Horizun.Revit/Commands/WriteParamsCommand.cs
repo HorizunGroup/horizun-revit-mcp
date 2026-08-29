@@ -80,8 +80,21 @@ namespace Horizun.Revit.Commands
 
         public string ParametersSchema => @"{
   ""type"": ""object"",
-  ""required"": [""writes""],
   ""properties"": {
+    ""tabular_source"": {
+      ""type"": ""object"", ""required"": [""path"", ""key_column"", ""value_columns"", ""category""],
+      ""description"": ""The writes come from a CSV instead of the writes array (give one or the other). The file is diffed against the model NOW: ops are generated only for cells whose reading differs (exact string comparison of the displayed value by default - conservative; declare decimal_separator and numeric cells against Double/Integer parameters compare NUMERICALLY instead, unit-aware), row problems (empty key, unmatched, ambiguous) are named per row in the reply's tabular block, duplicate keys in the file refuse the whole call, and the expanded ops ride the normal rehearsal - a file edited between rehearsal and apply refuses as a stale plan. CSV only, by design: this bridge carries no spreadsheet library."",
+      ""properties"": {
+        ""path"": { ""type"": ""string"", ""description"": ""Absolute path to the .csv (UTF-8, BOM tolerated)."" },
+        ""key_column"": { ""type"": ""string"", ""description"": ""Header column whose value finds the element. Exact, case-sensitive."" },
+        ""key_parameter"": { ""type"": ""string"", ""description"": ""Parameter the key is matched against. Default: same name as key_column."" },
+        ""value_columns"": { ""type"": ""object"", ""description"": ""{column: parameter} - each mapped column writes that parameter."", ""additionalProperties"": { ""type"": ""string"" } },
+        ""category"": { ""type"": ""string"", ""description"": ""OST_ BuiltInCategory bounding the element sweep. Required: an unbounded sweep is not a cost to impose silently."" },
+        ""skip_unchanged"": { ""type"": ""boolean"", ""default"": true },
+        ""decimal_separator"": { ""type"": ""string"", ""enum"": [""."", "",""],
+          ""description"": ""DECLARED, never guessed from the file. When present, a cell that parses as a number under this separator and lands on a Double parameter is compared NUMERICALLY against the model's value converted to that parameter's display unit (Integer storage compares the integer), so '300' no longer rewrites a parameter displaying '300.00 mm'. Equal means within 1e-6 relative. A cell that does not parse (a unit suffix, the other separator) falls back to the exact display-string compare, which writes - harmlessly. Absent: every cell uses the exact display-string compare, as before."" }
+      }
+    },
     ""writes"": {
       ""type"": ""array"", ""minItems"": 1,
       ""description"": ""The batch. Each entry names ONE parameter on ONE target."",
@@ -143,8 +156,37 @@ namespace Horizun.Revit.Commands
             }
 
             var writesToken = request["writes"] as JArray;
+            // ---- tabular_source: the writes come from a CSV, diffed against the model
+            // NOW. The expansion is deterministic (same file + same model = same ops),
+            // the request hash binds the mapping, and the RESOLVED PLAN binds the
+            // expanded rows - a file edited between rehearsal and apply changes the
+            // ops, the plan fingerprint moves, and the token refuses as stale.
+            JObject tabularReport = null;
+            if (request["tabular_source"] is JObject tabularSource)
+            {
+                if (writesToken != null && writesToken.Count > 0)
+                    return CommandResult.Fail("Give writes OR tabular_source, not both: two sources of the same " +
+                        "batch cannot be reconciled honestly. Nothing was written.");
+                CommandResult tabularRefusal = ExpandTabular(doc, tabularSource, out writesToken, out tabularReport);
+                if (tabularRefusal != null) return tabularRefusal;
+                if (writesToken.Count == 0)
+                {
+                    var noOp = new JObject
+                    {
+                        ["mode"] = "tabular_no_op",
+                        ["document"] = SafeTitle(doc),
+                        ["tabular"] = tabularReport,
+                        ["note"] = "Every mapped cell already reads exactly as the file says (or its row was " +
+                                   "refused by name in the report). Nothing needs writing; no transaction was opened."
+                    };
+                    // A no-op is a completed application of zero writes, and it declares
+                    // itself so a composing plan can read it instead of refusing.
+                    ApplicationOutcome.StampApplied(noOp, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+                    return CommandResult.Ok(noOp);
+                }
+            }
             if (writesToken == null || writesToken.Count == 0)
-                return CommandResult.Fail("writes is required and must be a non-empty array.");
+                return CommandResult.Fail("writes is required and must be a non-empty array (or give tabular_source).");
 
             var mode = (request.Value<string>("on_failure") ?? "atomic").ToLowerInvariant();
             if (mode != "atomic" && mode != "best_effort")
@@ -163,7 +205,7 @@ namespace Horizun.Revit.Commands
             // and bind_shared_param this one was never exploitable. Named correctly so it
             // stays that way.
             string planHash = DocumentGate.PlanHash(request, "writes", "on_failure",
-                                                    "allow_vary_between_groups");
+                                                    "allow_vary_between_groups", "tabular_source");
 
             // The confirmation is validated AFTER the resolve loop below, not here: the
             // stale-plan check needs the plan recomputed NOW, and a plan cannot be compared
@@ -289,6 +331,7 @@ namespace Horizun.Revit.Commands
                 var dryResult = new JObject
                 {
                     ["mode"] = "dry_run",
+                    ["tabular"] = tabularReport,
                     ["on_failure_if_run"] = mode,
                     ["transaction_status"] = "not_started",
                     ["transaction_name"] = txName,
@@ -562,6 +605,7 @@ namespace Horizun.Revit.Commands
             var result = new JObject
             {
                 ["mode"] = mode,
+                ["tabular"] = tabularReport,
                 ["transaction_status"] = txStatus,
                 ["transaction_name"] = txName,
                 ["document"] = SafeTitle(doc),
@@ -1468,6 +1512,246 @@ namespace Horizun.Revit.Commands
         private static string TokenText(JToken v)
         {
             return v.Type == JTokenType.String ? v.Value<string>() : v.ToString();
+        }
+
+        // ---------------------------------------------------------------------
+        // tabular_source: a CSV becomes writes, each op carrying its row of origin.
+        // Refusals over the FILE (missing, wrong extension, broken mapping,
+        // duplicate keys) refuse the whole call - the file's author must fix the
+        // file. Refusals over a ROW (empty key, unmatched, ambiguous) are entries
+        // in the report: the rest of the file still deserves its import.
+        // ---------------------------------------------------------------------
+        private static CommandResult ExpandTabular(Document doc, JObject source,
+                                                   out JArray writes, out JObject report)
+        {
+            writes = new JArray(); report = null;
+            string path = source.Value<string>("path");
+            if (string.IsNullOrWhiteSpace(path) || !System.IO.Path.IsPathRooted(path))
+                return CommandResult.Fail("tabular_source.path is required and must be absolute.");
+            string extension = System.IO.Path.GetExtension(path).ToLowerInvariant();
+            if (extension != ".csv")
+                return CommandResult.Fail("tabular_source reads CSV only ('" + extension + "' was given). This " +
+                    "bridge carries no spreadsheet library, so an .xlsx would be parsed by guesswork; export the " +
+                    "sheet to CSV (Excel: Save As > CSV UTF-8) and import that. Nothing was written.");
+            if (!System.IO.File.Exists(path))
+                return CommandResult.Fail("tabular_source.path does not exist: " + path);
+
+            string keyColumn = source.Value<string>("key_column");
+            if (string.IsNullOrWhiteSpace(keyColumn))
+                return CommandResult.Fail("tabular_source.key_column is required: the column whose value finds the element.");
+            string keyParameter = source.Value<string>("key_parameter");
+            if (string.IsNullOrWhiteSpace(keyParameter)) keyParameter = keyColumn;
+            if (!(source["value_columns"] is JObject valueColumns) || valueColumns.Count == 0)
+                return CommandResult.Fail("tabular_source.value_columns is required: {column: parameter}, at least one.");
+            string categoryName = source.Value<string>("category");
+            if (string.IsNullOrWhiteSpace(categoryName))
+                return CommandResult.Fail("tabular_source.category is required (an OST_ BuiltInCategory name): it " +
+                    "bounds the sweep that matches keys to elements, and an unbounded sweep of a real model is not " +
+                    "a cost to impose silently.");
+            BuiltInCategory category;
+            if (!Enum.TryParse(categoryName, false, out category))
+                return CommandResult.Fail("tabular_source.category '" + categoryName + "' is not a BuiltInCategory name.");
+            bool skipUnchanged = source["skip_unchanged"] == null || source.Value<bool>("skip_unchanged");
+            string decimalSeparator = source.Value<string>("decimal_separator");
+            if (decimalSeparator != null && decimalSeparator != "." && decimalSeparator != ",")
+                return CommandResult.Fail(
+                    "tabular_source.decimal_separator must be '.' or ',' - it is DECLARED, never guessed from the file.");
+
+            string text;
+            byte[] bytes;
+            try
+            {
+                bytes = System.IO.File.ReadAllBytes(path);
+                text = new System.Text.UTF8Encoding(false).GetString(
+                    bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF
+                        ? new ArraySegment<byte>(bytes, 3, bytes.Length - 3).ToArray() : bytes);
+            }
+            catch (Exception ex) { return CommandResult.Fail("tabular_source.path could not be read: " + ex.Message); }
+            string fileSha;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                fileSha = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+
+            List<string[]> parsed = TabularRules.ParseCsv(text);
+            if (parsed.Count < 2)
+                return CommandResult.Fail("the file has " + parsed.Count + " row(s); an import needs a header and at " +
+                    "least one data row.");
+            TabularMapping mapping;
+            var declared = new List<KeyValuePair<string, string>>();
+            foreach (var property in valueColumns.Properties())
+                declared.Add(new KeyValuePair<string, string>(property.Name, (string)property.Value));
+            string mapError = TabularRules.MapColumns(parsed[0], keyColumn, declared, out mapping);
+            if (mapError != null) return CommandResult.Fail(mapError + " Nothing was written.");
+
+            List<string[]> dataRows = parsed.GetRange(1, parsed.Count - 1);
+            var duplicates = TabularRules.DuplicateKeys(dataRows, mapping.KeyIndex, firstRowNumber: 2);
+            if (duplicates.Count > 0)
+            {
+                var described = new List<string>();
+                foreach (var pair in duplicates)
+                    described.Add("'" + pair.Key + "' (rows " + string.Join(", ", pair.Value) + ")");
+                return CommandResult.Fail(TabularRules.CodeDuplicateKeyInFile + ": " + duplicates.Count +
+                    " key(s) appear more than once - " + string.Join("; ", described) + ". Two rows steering one " +
+                    "element is a contradiction the file must resolve; last-row-wins would be a coin toss. " +
+                    "Nothing was written.");
+            }
+
+            // The model index: key value -> element ids, bounded by the category.
+            var byKey = new Dictionary<string, List<Element>>(StringComparer.Ordinal);
+            foreach (Element element in new FilteredElementCollector(doc)
+                         .OfCategory(category).WhereElementIsNotElementType())
+            {
+                string value = ReadAsDisplayed(element, keyParameter);
+                if (string.IsNullOrEmpty(value)) continue;
+                List<Element> list;
+                if (!byKey.TryGetValue(value, out list)) byKey[value] = list = new List<Element>();
+                list.Add(element);
+            }
+
+            var refusals = new JArray();
+            int skipped = 0, matched = 0, numericCompares = 0;
+            for (int i = 0; i < dataRows.Count; i++)
+            {
+                int rowNumber = i + 2;
+                string[] row = dataRows[i];
+                string key = mapping.KeyIndex < row.Length ? row[mapping.KeyIndex] : "";
+                if (string.IsNullOrEmpty(key))
+                {
+                    AddRefusal(refusals, rowNumber, key, TabularRules.CodeEmptyKey, "the key cell is empty.");
+                    continue;
+                }
+                List<Element> hits;
+                if (!byKey.TryGetValue(key, out hits) || hits.Count == 0)
+                {
+                    AddRefusal(refusals, rowNumber, key, TabularRules.CodeUnmatchedElement,
+                        "no " + categoryName + " element carries " + keyParameter + " = '" + key + "'.");
+                    continue;
+                }
+                if (hits.Count > 1)
+                {
+                    var ids = new List<string>();
+                    foreach (Element hit in hits) ids.Add(Rid.Value(hit.Id).ToString());
+                    AddRefusal(refusals, rowNumber, key, TabularRules.CodeAmbiguousKey,
+                        hits.Count + " elements carry this key (ids " + string.Join(", ", ids) +
+                        "); a row must land on exactly one.");
+                    continue;
+                }
+                matched++;
+                Element target = hits[0];
+                foreach (KeyValuePair<int, string> column in mapping.ValueColumns)
+                {
+                    string cell = column.Key < row.Length ? row[column.Key] : "";
+                    if (skipUnchanged && !CellDiffers(target, column.Value, cell, decimalSeparator, ref numericCompares))
+                    { skipped++; continue; }
+                    writes.Add(new JObject
+                    {
+                        ["target_id"] = Rid.Value(target.Id),
+                        ["parameter"] = column.Value,
+                        ["value"] = cell
+                    });
+                }
+            }
+
+            report = new JObject
+            {
+                ["path"] = path,
+                ["file_sha256"] = fileSha,
+                ["category"] = categoryName,
+                ["key_column"] = keyColumn,
+                ["key_parameter"] = keyParameter,
+                ["data_rows"] = dataRows.Count,
+                ["rows_matched"] = matched,
+                ["ops_generated"] = writes.Count,
+                ["skipped_unchanged"] = skipped,
+                ["row_refusals"] = refusals,
+                ["skip_unchanged"] = skipUnchanged,
+                ["decimal_separator"] = decimalSeparator,
+                ["numeric_compares"] = numericCompares,
+                ["note"] = decimalSeparator == null
+                    ? "Ops were generated ONLY for cells whose current model reading differs from the file " +
+                      "(exact string comparison of the displayed value - conservative: a formatting " +
+                      "difference writes again, harmlessly). The expanded ops ride the normal rehearsal: " +
+                      "the token binds them, and a file edited before apply refuses as a stale plan."
+                    : "Ops were generated ONLY for cells whose current model reading differs from the file. With " +
+                      "decimal_separator declared ('" + decimalSeparator + "'), a numeric cell against a " +
+                      "Double parameter compared NUMERICALLY to the model's value in that parameter's display " +
+                      "unit (Integer storage compared the integer; equal means within 1e-6 relative); " +
+                      "numeric_compares counts them. Everything else kept the exact display-string compare - " +
+                      "conservative: a formatting difference writes again, harmlessly. The expanded ops ride " +
+                      "the normal rehearsal: the token binds them, and a file edited before apply refuses as " +
+                      "a stale plan."
+            };
+            return null;
+        }
+
+        private static void AddRefusal(JArray refusals, int rowNumber, string key, string code, string reason)
+        {
+            if (refusals.Count >= 50)
+            {
+                if (refusals.Count == 50)
+                    refusals.Add(new JObject { ["note"] = "more row refusals were found and not listed" });
+                return;
+            }
+            refusals.Add(new JObject
+            {
+                ["row"] = rowNumber, ["key"] = key, ["code"] = code, ["reason"] = reason
+            });
+        }
+
+        /// <summary>
+        /// One cell against the model, for the CSV diff. Without a declared
+        /// decimal_separator this is the exact display-string compare. With one, a
+        /// cell that parses as a number under the DECLARED locale and lands on a
+        /// Double parameter compares numerically against the model's value converted
+        /// to that parameter's display unit (Integer storage compares AsInteger);
+        /// when the display unit cannot be read, or the cell does not parse, it
+        /// falls back to the display-string compare - conservative both times.
+        /// </summary>
+        private static bool CellDiffers(Element element, string parameterName, string cell,
+                                        string decimalSeparator, ref int numericCompares)
+        {
+            if (decimalSeparator != null)
+            {
+                try
+                {
+                    Parameter parameter = element.LookupParameter(parameterName);
+                    double cellNumber;
+                    if (parameter != null && parameter.HasValue &&
+                        TabularRules.TryParseCell(cell, decimalSeparator, out cellNumber))
+                    {
+                        if (parameter.StorageType == StorageType.Double)
+                        {
+                            var unit = parameter.GetUnitTypeId();
+                            if (unit != null)
+                            {
+                                double modelNumber = UnitUtils.ConvertFromInternalUnits(parameter.AsDouble(), unit);
+                                numericCompares++;
+                                return !TabularRules.NumbersEqual(cellNumber, modelNumber);
+                            }
+                        }
+                        else if (parameter.StorageType == StorageType.Integer &&
+                                 cellNumber == Math.Floor(cellNumber))
+                        {
+                            numericCompares++;
+                            return parameter.AsInteger() != (int)cellNumber;
+                        }
+                    }
+                }
+                catch { /* fall through to the conservative string compare */ }
+            }
+            return TabularRules.ShouldWrite(cell, ReadAsDisplayed(element, parameterName));
+        }
+
+        /// <summary>The value as the model displays it: AsString for text, AsValueString otherwise.</summary>
+        private static string ReadAsDisplayed(Element element, string parameterName)
+        {
+            try
+            {
+                Parameter parameter = element.LookupParameter(parameterName);
+                if (parameter == null) return null;
+                if (parameter.StorageType == StorageType.String) return parameter.AsString();
+                return parameter.AsValueString() ?? (parameter.HasValue ? parameter.AsElementId().ToString() : null);
+            }
+            catch { return null; }
         }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }

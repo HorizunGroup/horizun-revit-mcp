@@ -171,6 +171,37 @@ namespace Horizun.Revit.Core
                                       "choosing a new key."
                         };
 
+                    // A REPLAY MUST NOT DESCRIBE A SESSION THAT DIED.
+                    //
+                    // The ledger's promise is at-most-once, and for a model write
+                    // it holds across a restart: the write is in the FILE, so the
+                    // recorded answer is still true. For a command whose entire
+                    // outcome lives in the Revit process - which document is open,
+                    // which is active, where the view is pointed - it does not.
+                    // The process that recorded "opened, active_document_verified:
+                    // true" has exited; nothing is open now.
+                    //
+                    // MEASURED 2026-08-27: a harness reused its keys across a
+                    // deliberate Revit restart. All three staging opens replayed
+                    // "opened", the harness believed them, and 57 probes then ran
+                    // against a Revit with zero documents - reported as command
+                    // failures, which is where anyone reading that run would have
+                    // looked first. The bridge told the truth once and repeated it
+                    // after it stopped being true.
+                    int claimPid = ClaimPid(claim);
+                    if (IsSessionScoped(command) && claimPid != 0 && claimPid != _pid())
+                        return new DurableCommandDecision
+                        {
+                            Outcome = DurableCommandOutcome.Conflict,
+                            Key = key, Command = command, Fingerprint = fingerprint, Path = path,
+                            Message = "stale_session_replay: idempotency_key '" + key + "' recorded a successful '" +
+                                      command + "' in process " + claimPid + ", and this is process " + _pid() +
+                                      ". That command's whole result was the state of a Revit session which has " +
+                                      "since exited, so replaying it would report a document open that is not " +
+                                      "open. NOTHING ran and nothing was replayed. Use a NEW key: this is new " +
+                                      "work in a new session, not a retry of the old one."
+                        };
+
                     return new DurableCommandDecision
                     {
                         Outcome = DurableCommandOutcome.Replay,
@@ -197,6 +228,42 @@ namespace Horizun.Revit.Core
                               "the operation must run."
                 };
             });
+        }
+
+        /// <summary>
+        /// Commands whose entire outcome is the state of ONE Revit session, and so
+        /// cannot be truthfully replayed into another. Everything else - every
+        /// model write - replays across a restart exactly as before, because a
+        /// committed write is in the file and the recorded answer is still true.
+        ///
+        /// Named explicitly rather than derived from the effect taxonomy: this
+        /// list decides whether a caller is told a document is open, and a
+        /// classification changed for an unrelated reason must not quietly change
+        /// that. horizun_document_session is DocumentSession; navigate, target and
+        /// request_python_access are HostState.
+        /// </summary>
+        private static readonly HashSet<string> SessionScoped = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "horizun_document_session",
+            "horizun_open_document",
+            "horizun_navigate",
+            "horizun_target",
+            "horizun_request_python_access"
+        };
+
+        public static bool IsSessionScoped(string command) =>
+            command != null && SessionScoped.Contains(command);
+
+        private static int ClaimPid(JObject claim)
+        {
+            try
+            {
+                JToken pid = claim == null ? null : claim["pid"];
+                if (pid == null || pid.Type == JTokenType.Null) return 0;
+                int parsed;
+                return int.TryParse(pid.ToString(), out parsed) ? parsed : 0;
+            }
+            catch { return 0; }
         }
 
         public void Complete(DurableCommandDecision claim, CommandResult result)

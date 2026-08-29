@@ -153,12 +153,117 @@ namespace Horizun.Core.Tests
         /// because this is exactly the case a human would otherwise not understand.
         /// </summary>
         [Fact]
-        public void The_drift_description_explains_a_value_only_change()
+        public void The_drift_description_names_the_value_that_changed_and_both_sides()
         {
             string why = ResolvedPlan.DescribeDrift(
                 Plan(El("u1", PlannedAction.Modify, fireRating: "60")),
                 Plan(El("u1", PlannedAction.Modify, fireRating: "120")));
-            Assert.Contains("somebody else may have already", why);
+
+            // "a value changed" is not something anybody can act on. The field and both
+            // sides of it are what turn a stale refusal into a next step.
+            Assert.Contains("u1", why);
+            Assert.Contains("60", why);
+            Assert.Contains("120", why);
+        }
+
+        /// <summary>
+        /// The one case where naming the field is not enough: a link binding is four
+        /// facts packed into one value, and "this opaque string changed" would send the
+        /// reader looking for the wrong thing. It is decoded to the structured code.
+        /// </summary>
+        [Fact]
+        public void A_moved_link_is_described_by_its_structured_code_rather_than_by_two_hashes()
+        {
+            var before = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                { { "ref.0.link", "inst-1|MOD_EST|aaaa|transform-A" } }
+            };
+            var after = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                { { "ref.0.link", "inst-1|MOD_EST|aaaa|transform-B" } }
+            };
+
+            string why = ResolvedPlan.DescribeDrift(Plan(before), Plan(after));
+
+            Assert.Contains(LinkedReferenceRules.CodeLinkTransformMoved, why);
+            Assert.DoesNotContain("transform-A", why);
+        }
+
+        [Fact]
+        public void A_replaced_linked_document_is_described_by_its_own_code()
+        {
+            var before = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                { { "ref.0.link", "inst-1|MOD_EST|aaaa|transform-A" } }
+            };
+            var after = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                { { "ref.0.link", "inst-1|MOD_OTHER|aaaa|transform-A" } }
+            };
+
+            Assert.Contains(LinkedReferenceRules.CodeLinkedDocumentChanged,
+                            ResolvedPlan.DescribeDrift(Plan(before), Plan(after)));
+        }
+
+        /// <summary>
+        /// A value that is NOT a packed link binding must not be forced through the
+        /// link decoder: it falls back to printing both sides, which is still true.
+        /// </summary>
+        [Fact]
+        public void A_link_key_that_is_not_four_fields_falls_back_to_showing_both_sides()
+        {
+            var before = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string> { { "ref.0.link", "corrupted" } }
+            };
+            var after = new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string> { { "ref.0.link", "also-corrupted" } }
+            };
+
+            string why = ResolvedPlan.DescribeDrift(Plan(before), Plan(after));
+            Assert.Contains("corrupted", why);
+            Assert.Contains("also-corrupted", why);
+        }
+
+        /// <summary>
+        /// A plan with many changed values must stay readable. The description names a
+        /// bounded number of them and says outright that it stopped, rather than either
+        /// printing a wall of text or implying those were all of them.
+        /// </summary>
+        [Fact]
+        public void A_plan_with_many_changed_values_names_a_bounded_number_and_says_it_stopped()
+        {
+            var beforeValues = new Dictionary<string, string>();
+            var afterValues = new Dictionary<string, string>();
+            for (int i = 0; i < 40; i++)
+            {
+                beforeValues["field" + i] = "a";
+                afterValues["field" + i] = "b";
+            }
+            var before = new PlannedElement
+            {
+                UniqueId = "u1", Category = "wall", Action = PlannedAction.Modify, BeforeValues = beforeValues
+            };
+            var after = new PlannedElement
+            {
+                UniqueId = "u1", Category = "wall", Action = PlannedAction.Modify, BeforeValues = afterValues
+            };
+
+            string why = ResolvedPlan.DescribeDrift(Plan(before), Plan(after));
+
+            Assert.Contains("not listed", why);
+            Assert.True(why.Length < 2000, "a drift description nobody can read is not a description.");
         }
 
         [Fact]
@@ -234,12 +339,71 @@ namespace Horizun.Core.Tests
         /// been checked against the model. Silence there is the substitution this repository
         /// exists to refuse.
         /// </summary>
+        private static ResolvedPlan LinkPlan(string transform)
+        {
+            // The identity is "title|path-hash" - the REAL five-segment shape the live
+            // model packs (measured 2026-08-26), not the four-segment simplification
+            // that let the parser require an exact count and miss every real value.
+            var p = new ResolvedPlan { Command = "c", DocumentKey = "d", RevitVersion = "2026", DocumentFingerprint = "f" };
+            p.Elements.Add(new PlannedElement
+            {
+                UniqueId = "action:0", Category = "dimension", Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                    { { "ref.1.link", "inst-1|HZ_LINKSRC|ab12cd34ef567890|aaaa|" + transform } }
+            });
+            return p;
+        }
+
+        /// <summary>
+        /// The stale refusal must NAME what moved even when the apply call kept no copy of
+        /// the rehearsed plan - which is every real apply, because the rehearsal lived in a
+        /// different MCP call. The store kept the plan with the token; validating with the
+        /// plan recomputed NOW is enough to get the decoded link code into the sentence.
+        /// This is the seat dp2 case 6 measures live: before it, the message was the
+        /// generic MODEL MOVED sentence with no field named at all.
+        /// </summary>
+        [Fact]
+        public void The_store_names_link_drift_from_the_plan_it_kept_with_the_token()
+        {
+            var store = new ConfirmationStore();
+            ResolvedPlan rehearsed = LinkPlan("transform-A");
+            ResolvedPlan atApply = LinkPlan("transform-B");
+
+            Confirmation c = store.Issue("horizun_annotate", "d", "req-hash", null,
+                                         rehearsed.Fingerprint(), rehearsed);
+            ConfirmationCheck check = store.Validate(
+                c.Token, "horizun_annotate", "d", "req-hash", atApply, null);
+
+            Assert.False(check.Ok);
+            Assert.Equal(ConfirmationState.StalePlan, check.State);
+            Assert.Contains(LinkedReferenceRules.CodeLinkTransformMoved, check.Message);
+            Assert.Contains("ref.1.link", check.Message);
+        }
+
+        /// <summary>
+        /// And a caller that DID keep its rehearsal keeps the floor: an explicit drift
+        /// description is never overwritten by the stored plan's own diff.
+        /// </summary>
+        [Fact]
+        public void A_caller_supplied_drift_description_wins_over_the_stored_plan()
+        {
+            var store = new ConfirmationStore();
+            ResolvedPlan rehearsed = LinkPlan("transform-A");
+            ResolvedPlan atApply = LinkPlan("transform-B");
+            Confirmation c = store.Issue("horizun_annotate", "d", "req-hash", null,
+                                         rehearsed.Fingerprint(), rehearsed);
+            ConfirmationCheck check = store.Validate(
+                c.Token, "horizun_annotate", "d", "req-hash", atApply, "the caller's own words");
+            Assert.False(check.Ok);
+            Assert.Contains("the caller's own words", check.Message);
+        }
+
         [Fact]
         public void A_command_without_a_materialised_plan_says_so_on_success()
         {
             var store = new ConfirmationStore();
             Confirmation c = store.Issue("c", "d", "plan-hash");   // no fingerprint
-            ConfirmationCheck check = store.Validate(c.Token, "c", "d", "plan-hash", null, null);
+            ConfirmationCheck check = store.Validate(c.Token, "c", "d", "plan-hash", (string)null, null);
             Assert.True(check.Ok);
             Assert.Contains("REQUEST only", check.Message);
             Assert.Contains("would not have been detected", check.Message);

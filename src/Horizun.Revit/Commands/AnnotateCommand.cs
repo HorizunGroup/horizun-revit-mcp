@@ -643,9 +643,17 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
-        /// Parse one stable reference, refuse links, reserialize it, and fingerprint
-        /// the geometry behind it. Returns the parsed reference and records every fact
-        /// on the plan, in order.
+        /// Parse one stable reference, resolve where it lives, reserialize it, and
+        /// fingerprint the geometry behind it. Returns the parsed reference and records
+        /// every fact on the plan, in order.
+        ///
+        /// A reference INTO an RVT link is accepted here, and the extra facts it brings
+        /// are not decoration: the link instance, the linked document, the linked
+        /// element and the instance transform all go into the plan, because a dimension
+        /// to a linked face measures from wherever the link happens to stand. Without
+        /// those facts a token minted against a link at one position would still be
+        /// spent after somebody moved it, and the dimension would be right about the
+        /// face and wrong about the distance.
         /// </summary>
         private static Reference AddReference(Document doc, Plan p, string stable, string field)
         {
@@ -657,18 +665,28 @@ namespace Horizun.Revit.Commands
                                             ex.Message);
             }
             if (r == null) throw new ArgumentException(field + " did not resolve to a reference.");
-            ElementId linked = null;
-            try { linked = r.LinkedElementId; } catch { linked = null; }
-            if (linked != null && linked != ElementId.InvalidElementId)
-                throw new ArgumentException(field + " resolves into a LINKED model; linked references are not supported by horizun_annotate - " +
-                                            "this command is host-only by contract (the same rule as " +
-                                            "horizun_get_dimension_references), so dimension host geometry instead. " +
-                                            "Nothing was written.");
 
+            LinkBinding binding = null;
             Element owner = null;
-            try { owner = doc.GetElement(r); } catch { owner = null; }
-            if (owner == null)
-                throw new ArgumentException(field + " parses but its element no longer exists in this document.");
+            Transform toHost = Transform.Identity;
+            ElementId linkedId = null;
+            try { linkedId = r.LinkedElementId; } catch { linkedId = null; }
+            bool isLinked = linkedId != null && linkedId != ElementId.InvalidElementId;
+
+            if (isLinked)
+            {
+                binding = ResolveLinkBinding(doc, r, linkedId, field, out owner, out toHost);
+#if REVIT2023
+                IncompatibilityReason revit2023Limit = DimensionReferenceRules.LinkedGeometryRejectedByRevit2023();
+                throw new ArgumentException(field + ": " + revit2023Limit.Code + ": " + revit2023Limit.Message);
+#endif
+            }
+            else
+            {
+                try { owner = doc.GetElement(r); } catch { owner = null; }
+                if (owner == null)
+                    throw new ArgumentException(field + " parses but its element no longer exists in this document.");
+            }
 
             string reserialized;
             try { reserialized = r.ConvertToStableRepresentation(doc); }
@@ -681,7 +699,7 @@ namespace Horizun.Revit.Commands
             try { refType = r.ElementReferenceType.ToString(); } catch { refType = "unknown"; }
 
             int order = p.RefList.Count;
-            string fingerprint = ReferenceGeometryFingerprint(doc, p.View, r, owner, order, refType, field);
+            string fingerprint = ReferenceGeometryFingerprint(doc, p.View, r, owner, toHost, order, refType, field);
 
             p.RefList.Add(r);
             p.RefRequested.Add(stable);
@@ -689,8 +707,161 @@ namespace Horizun.Revit.Commands
             p.RefOwnerUids.Add(SafeUid(owner));
             p.RefTypes.Add(refType);
             p.RefFingerprints.Add(fingerprint);
+            p.RefLinks.Add(binding);
             return r;
         }
+
+        /// <summary>
+        /// Everything a linked reference is, resolved from the host document. Each
+        /// failure below refuses the whole batch by name rather than degrading the
+        /// reference to a host one - a linked reference the bridge cannot fully
+        /// describe is a reference it cannot promise stale detection for.
+        /// </summary>
+        private static LinkBinding ResolveLinkBinding(Document doc, Reference r, ElementId linkedId, string field,
+                                                      out Element linkedElement, out Transform toHost)
+        {
+            linkedElement = null;
+            toHost = Transform.Identity;
+
+            long instanceId = 0;
+            RevitLinkInstance link = null;
+            try
+            {
+                instanceId = Rid.Value(r.ElementId);
+                link = doc.GetElement(r.ElementId) as RevitLinkInstance;
+            }
+            catch { link = null; }
+            if (link == null)
+                throw new ArgumentException(field + " is a LINKED reference whose host-side owner (" + instanceId +
+                                            ") is not a RevitLinkInstance in this document. " +
+                                            LinkedReferenceRules.NotALinkInstance(instanceId) +
+                                            " Nothing was written.");
+
+            string linkName = null; try { linkName = link.Name; } catch { }
+            string status = "Unknown";
+            try
+            {
+                var type = doc.GetElement(link.GetTypeId()) as RevitLinkType;
+                if (type != null) status = type.GetLinkedFileStatus().ToString();
+            }
+            catch { status = "Unknown"; }
+            if (!string.Equals(status, "Loaded", StringComparison.Ordinal))
+                throw new ArgumentException(field + ": " +
+                                            LinkedReferenceRules.LinkUnloaded(instanceId, linkName, status) +
+                                            " Nothing was written.");
+
+            Document linkedDoc = null;
+            try { linkedDoc = link.GetLinkDocument(); } catch { linkedDoc = null; }
+            if (linkedDoc == null)
+                throw new ArgumentException(field + ": " +
+                                            LinkedReferenceRules.LinkDocumentUnavailable(instanceId, linkName) +
+                                            " Nothing was written.");
+
+            long linkedElementId = Rid.Value(linkedId);
+            try { linkedElement = linkedDoc.GetElement(linkedId); } catch { linkedElement = null; }
+            if (linkedElement == null)
+                throw new ArgumentException(field + ": " +
+                                            LinkedReferenceRules.LinkedElementMissing(instanceId, linkedElementId,
+                                                                                      linkedDoc.Title) +
+                                            " Nothing was written.");
+            if (linkedElement is DatumPlane)
+                // Measured live 2026-08-26: the rehearsal would refuse this with Revit's
+                // 'Invalid number of references'. Refusing HERE, before any transaction,
+                // names the actual cause instead of Revit's least helpful sentence.
+                throw new ArgumentException(field + ": element " + linkedElementId + " inside link instance " +
+                                            instanceId + " is a DATUM (" + linkedElement.GetType().Name + "). " +
+                                            DimensionReferenceRules.LinkedDatumRejected().Message +
+                                            " Nothing was written.");
+
+            LinkTransformFacts facts;
+            string fingerprint;
+            try
+            {
+                toHost = link.GetTotalTransform();
+                if (toHost == null) throw new InvalidOperationException("GetTotalTransform returned null");
+                facts = new LinkTransformFacts
+                {
+                    Origin = new[] { toHost.Origin.X, toHost.Origin.Y, toHost.Origin.Z },
+                    BasisX = new[] { toHost.BasisX.X, toHost.BasisX.Y, toHost.BasisX.Z },
+                    BasisY = new[] { toHost.BasisY.X, toHost.BasisY.Y, toHost.BasisY.Z },
+                    BasisZ = new[] { toHost.BasisZ.X, toHost.BasisZ.Y, toHost.BasisZ.Z },
+                    Determinant = toHost.Determinant,
+                    IsIdentity = toHost.IsIdentity,
+                    HasRotation = !toHost.BasisX.IsAlmostEqualTo(XYZ.BasisX) ||
+                                  !toHost.BasisY.IsAlmostEqualTo(XYZ.BasisY) ||
+                                  !toHost.BasisZ.IsAlmostEqualTo(XYZ.BasisZ)
+                };
+                fingerprint = LinkedReferenceRules.TransformFingerprint(facts);
+            }
+            catch (Exception ex)
+            {
+                throw new ArgumentException(field + ": link instance " + instanceId + " did not report a readable " +
+                                            "total transform (" + ex.Message + "), so a dimension to it could not " +
+                                            "be bound to WHERE the link stands. Nothing was written.");
+            }
+
+            string path = null; try { path = linkedDoc.PathName; } catch { }
+            return new LinkBinding
+            {
+                LinkInstanceId = instanceId,
+                InstanceUniqueId = SafeUid(link),
+                LinkTypeId = SafeId(link),
+                LinkName = linkName,
+                DocumentTitle = linkedDoc.Title,
+                DocumentIdentity = LinkedReferenceRules.DocumentIdentity(linkedDoc.Title, path),
+                LinkedElementId = linkedElementId,
+                LinkedElementUniqueId = SafeUid(linkedElement),
+                LinkedElementCategory = SafeCategoryName(linkedElement),
+                LinkedElementClass = linkedElement.GetType().Name,
+                TransformFingerprint = fingerprint,
+                Transform = facts
+            };
+        }
+
+        private static long SafeId(Element element)
+        { try { return Rid.Value(element.GetTypeId()); } catch { return 0; } }
+
+        /// <summary>
+        /// The provenance of one reference, or null when it is host geometry. Every id
+        /// is labelled by the document it belongs to: the link instance and the link
+        /// type are HOST ids, the linked element id is not, and they are all integers.
+        /// </summary>
+        private static JToken LinkJson(LinkBinding b)
+        {
+            if (b == null) return JValue.CreateNull();
+            var o = new JObject
+            {
+                ["link_instance_id"] = b.LinkInstanceId,
+                ["link_instance_unique_id"] = b.InstanceUniqueId,
+                ["link_type_id"] = b.LinkTypeId,
+                ["link_name"] = b.LinkName,
+                ["linked_document_title"] = b.DocumentTitle,
+                ["linked_document_identity"] = b.DocumentIdentity,
+                ["linked_element_id"] = b.LinkedElementId,
+                ["linked_element_unique_id"] = b.LinkedElementUniqueId,
+                ["linked_element_category"] = b.LinkedElementCategory,
+                ["linked_element_class"] = b.LinkedElementClass,
+                ["transform_fingerprint"] = b.TransformFingerprint
+            };
+            if (b.Transform != null)
+                o["transform"] = new JObject
+                {
+                    ["origin_feet"] = new JArray(b.Transform.Origin[0], b.Transform.Origin[1],
+                                                 b.Transform.Origin[2]),
+                    ["basis_x"] = new JArray(b.Transform.BasisX[0], b.Transform.BasisX[1], b.Transform.BasisX[2]),
+                    ["basis_y"] = new JArray(b.Transform.BasisY[0], b.Transform.BasisY[1], b.Transform.BasisY[2]),
+                    ["basis_z"] = new JArray(b.Transform.BasisZ[0], b.Transform.BasisZ[1], b.Transform.BasisZ[2]),
+                    ["determinant"] = b.Transform.Determinant,
+                    ["handedness"] = b.Transform.Handedness,
+                    ["identity"] = b.Transform.IsIdentity,
+                    ["has_rotation"] = b.Transform.HasRotation,
+                    ["has_reflection"] = b.Transform.HasReflection
+                };
+            return o;
+        }
+
+        private static string SafeCategoryName(Element element)
+        { try { return element.Category == null ? null : element.Category.Name; } catch { return null; } }
 
         /// <summary>
         /// The geometric FACTS behind a reference, fingerprinted at 0.1 mm: a planar
@@ -701,18 +872,37 @@ namespace Horizun.Revit.Commands
         /// anyway is the lie this whole file exists to prevent.
         /// </summary>
         private static string ReferenceGeometryFingerprint(Document doc, View view, Reference r, Element owner,
-                                                           int order, string refType, string field)
+                                                           Transform toHost, int order, string refType, string field)
         {
             var facts = new List<double>();
             string kind = null;
+            if (toHost == null) toHost = Transform.Identity;
 
+            // A linked reference resolves its geometry through the element in the
+            // LINKED document; the host-side owner of such a reference is the link
+            // instance, whose own geometry is not what anybody is dimensioning to. The
+            // inner form is tried first and the outer one second, because different
+            // reference kinds accept different forms and neither is universal.
             GeometryObject g = null;
             try { g = owner.GetGeometryObjectFromReference(r); } catch { g = null; }
+            if (g == null)
+            {
+                Reference inner = null;
+                try { inner = r.CreateReferenceInLink(); } catch { inner = null; }
+                if (inner != null)
+                    try { g = owner.GetGeometryObjectFromReference(inner); } catch { g = null; }
+            }
 
+            // EVERY fact below travels through toHost before it is hashed. For a host
+            // reference that is the identity and nothing changes; for a linked one it
+            // is what turns the linked model's own coordinates into the coordinates
+            // the dimension will be measured in. Hashing the raw linked numbers would
+            // produce a fingerprint that survives moving the link, which is precisely
+            // the drift the plan exists to catch.
             if (g is PlanarFace pf)
             {
                 kind = "face";
-                Push(facts, pf.Origin); Push(facts, pf.FaceNormal);
+                PushPoint(facts, toHost, pf.Origin); PushVector(facts, toHost, pf.FaceNormal);
             }
             else if (g is Face face)
             {
@@ -723,37 +913,63 @@ namespace Horizun.Revit.Commands
                     BoundingBoxUV bb = face.GetBoundingBox();
                     var mid = new UV((bb.Min.U + bb.Max.U) / 2, (bb.Min.V + bb.Max.V) / 2);
                     kind = "face";
-                    Push(facts, face.Evaluate(mid)); Push(facts, face.ComputeNormal(mid));
+                    PushPoint(facts, toHost, face.Evaluate(mid));
+                    PushVector(facts, toHost, face.ComputeNormal(mid));
                 }
                 catch { kind = null; }
             }
             else if (g is Edge edge)
             {
                 Curve c = null; try { c = edge.AsCurve(); } catch { c = null; }
-                kind = CurveFacts(c, facts) ? "curve" : null;
+                kind = CurveFacts(c, toHost, facts) ? "curve" : null;
             }
             else if (g is Curve curve)
             {
-                kind = CurveFacts(curve, facts) ? "curve" : null;
+                kind = CurveFacts(curve, toHost, facts) ? "curve" : null;
             }
             else if (g is Autodesk.Revit.DB.Point point)
             {
-                kind = "point"; Push(facts, point.Coord);
+                kind = "point"; PushPoint(facts, toHost, point.Coord);
             }
             else if (g == null && owner is DatumPlane datum)
             {
                 try
                 {
-                    IList<Curve> curves = datum.GetCurvesInView(DatumExtentType.Model, view);
-                    if (curves != null && curves.Count > 0 && CurveFacts(curves[0], facts)) kind = "datum";
+                    // GetCurvesInView needs a view in the DATUM'S OWN document. A linked
+                    // grid has none here, so it falls through to the datum's own curve
+                    // below rather than being read against a host view it does not
+                    // belong to.
+                    if (toHost.IsIdentity)
+                    {
+                        IList<Curve> curves = datum.GetCurvesInView(DatumExtentType.Model, view);
+                        if (curves != null && curves.Count > 0 && CurveFacts(curves[0], toHost, facts))
+                            kind = "datum";
+                    }
                 }
                 catch { kind = null; }
+                if (kind == null && owner is Grid linkedGrid)
+                {
+                    try { kind = CurveFacts(linkedGrid.Curve, toHost, facts) ? "datum" : null; }
+                    catch { kind = null; facts.Clear(); }
+                }
+                if (kind == null && owner is Level linkedLevel)
+                {
+                    try
+                    {
+                        kind = "datum";
+                        PushPoint(facts, toHost, new XYZ(0, 0, linkedLevel.ProjectElevation));
+                        PushVector(facts, toHost, XYZ.BasisZ);
+                    }
+                    catch { kind = null; facts.Clear(); }
+                }
                 if (kind == null && owner is ReferencePlane rp)
                 {
                     try
                     {
                         kind = "reference_plane";
-                        Push(facts, rp.BubbleEnd); Push(facts, rp.FreeEnd); Push(facts, rp.Normal);
+                        PushPoint(facts, toHost, rp.BubbleEnd);
+                        PushPoint(facts, toHost, rp.FreeEnd);
+                        PushVector(facts, toHost, rp.Normal);
                     }
                     catch { kind = null; facts.Clear(); }
                 }
@@ -762,8 +978,9 @@ namespace Horizun.Revit.Commands
             {
                 LocationCurve lc = null; LocationPoint lp = null;
                 try { lc = owner.Location as LocationCurve; lp = owner.Location as LocationPoint; } catch { }
-                if (lc != null && CurveFacts(lc.Curve, facts)) kind = "curve";
-                else if (lp != null) { kind = "point"; try { Push(facts, lp.Point); } catch { kind = null; } }
+                if (lc != null && CurveFacts(lc.Curve, toHost, facts)) kind = "curve";
+                else if (lp != null)
+                { kind = "point"; try { PushPoint(facts, toHost, lp.Point); } catch { kind = null; } }
             }
 
             if (kind == null || facts.Count == 0)
@@ -774,21 +991,39 @@ namespace Horizun.Revit.Commands
             return DimensionPlanRules.GeometryFingerprint(order, refType, kind, facts);
         }
 
-        /// <summary>Endpoints for a bound curve; centre+radius for a full arc/circle.</summary>
-        private static bool CurveFacts(Curve c, List<double> facts)
+        /// <summary>
+        /// Endpoints for a bound curve; centre+radius for a full arc/circle. The radius
+        /// is NOT transformed: a Revit link transform is rigid, so it moves and turns a
+        /// circle without resizing it, and putting a transformed length in beside an
+        /// untransformed one would only make the hash harder to reason about.
+        /// </summary>
+        private static bool CurveFacts(Curve c, Transform toHost, List<double> facts)
         {
             if (c == null) return false;
             try
             {
-                if (c.IsBound) { Push(facts, c.GetEndPoint(0)); Push(facts, c.GetEndPoint(1)); return true; }
+                if (c.IsBound)
+                {
+                    PushPoint(facts, toHost, c.GetEndPoint(0));
+                    PushPoint(facts, toHost, c.GetEndPoint(1));
+                    return true;
+                }
                 var arc = c as Arc;
-                if (arc != null) { Push(facts, arc.Center); facts.Add(arc.Radius); return true; }
+                if (arc != null) { PushPoint(facts, toHost, arc.Center); facts.Add(arc.Radius); return true; }
             }
             catch { return false; }
             return false;
         }
 
         private static void Push(List<double> facts, XYZ v) { facts.Add(v.X); facts.Add(v.Y); facts.Add(v.Z); }
+
+        /// <summary>A POINT, in host coordinates: the placement moves it.</summary>
+        private static void PushPoint(List<double> facts, Transform toHost, XYZ v)
+            => Push(facts, toHost == null ? v : toHost.OfPoint(v));
+
+        /// <summary>A DIRECTION, in host coordinates: the placement turns it but never translates it.</summary>
+        private static void PushVector(List<double> facts, Transform toHost, XYZ v)
+            => Push(facts, toHost == null ? v : toHost.OfVector(v));
 
         /// <summary>
         /// The direction a reference contributes to an angular dimension, projected
@@ -1684,9 +1919,19 @@ namespace Horizun.Revit.Commands
                 { "references", planned.RefList.Count.ToString(CultureInfo.InvariantCulture) }
             };
             for (int i = 0; i < planned.RefList.Count; i++)
+            {
                 before["ref." + i.ToString(CultureInfo.InvariantCulture)] =
                     planned.RefReserialized[i] + "|" + planned.RefOwnerUids[i] + "|" +
                     planned.RefTypes[i] + "|" + planned.RefFingerprints[i];
+                // The link facts are a SEPARATE key rather than more text on the line
+                // above, so a host reference's binding is byte-identical to what it was
+                // before links were supported and no existing plan changes shape.
+                LinkBinding link = planned.RefLinks[i];
+                if (link != null)
+                    before["ref." + i.ToString(CultureInfo.InvariantCulture) + ".link"] =
+                        link.InstanceUniqueId + "|" + link.DocumentIdentity + "|" +
+                        link.LinkedElementUniqueId + "|" + link.TransformFingerprint;
+            }
             if (planned.Line != null)
                 before["line"] = Canon(planned.Line.GetEndPoint(0)) + ";" + Canon(planned.Line.GetEndPoint(1));
             if (planned.ArcCenter != null)
@@ -1764,9 +2009,12 @@ namespace Horizun.Revit.Commands
                     ["reserialized"] = p.RefReserialized[i],
                     ["owner_unique_id"] = p.RefOwnerUids[i],
                     ["reference_type"] = p.RefTypes[i],
-                    ["geometry_fingerprint"] = p.RefFingerprints[i]
+                    ["geometry_fingerprint"] = p.RefFingerprints[i],
+                    ["linked"] = p.RefLinks[i] != null,
+                    ["link"] = LinkJson(p.RefLinks[i])
                 });
             row["reference_detail"] = refRows;
+            row["has_linked_references"] = p.HasLinkedReferences;
             if (p.Line != null)
                 row["line_feet"] = new JObject { ["start"] = Show(Arr(p.Line.GetEndPoint(0))), ["end"] = Show(Arr(p.Line.GetEndPoint(1))) };
             if (p.ArcCenter != null)
@@ -1928,6 +2176,12 @@ namespace Horizun.Revit.Commands
             public readonly List<string> RefOwnerUids = new List<string>();
             public readonly List<string> RefTypes = new List<string>();
             public readonly List<string> RefFingerprints = new List<string>();
+            /// <summary>Null at a position whose reference is host geometry; the provenance otherwise.</summary>
+            public readonly List<LinkBinding> RefLinks = new List<LinkBinding>();
+            public bool HasLinkedReferences
+            {
+                get { foreach (LinkBinding b in RefLinks) if (b != null) return true; return false; }
+            }
             public DimensionType EffectiveType; public bool TypeFromDefault;
             public Reference ArcReference; public Arc Arc; public XYZ ArcCenter; public double ArcRadius;
             public XYZ SpotOrigin, SpotBend, SpotEnd; public bool SpotLeader;

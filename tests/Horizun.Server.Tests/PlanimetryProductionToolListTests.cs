@@ -49,7 +49,28 @@ namespace Horizun.Server.Tests
 
                 JObject plan = (JObject)Entry("horizun_plan_annotations")["inputSchema"];
                 string[] ops = plan["properties"]["operation"]["enum"].Select(x => (string)x).ToArray();
-                Assert.Equal(new[] { "auto_tags", "intent_dimension" }, ops);
+                Assert.Equal(new[]
+                {
+                    "auto_tags", "intent_dimension",
+                    "auto_dimension_grids", "auto_dimension_levels",
+                    "auto_dimension_curtain_walls", "auto_dimension_openings"
+                }, ops);
+                // auto_dimension_* may sweep a view, so element_ids left the top-level
+                // required list - and the two operations that DO need it must still
+                // demand it conditionally, or an empty call plans nothing silently.
+                string[] required = plan["required"].Select(x => (string)x).ToArray();
+                Assert.DoesNotContain("element_ids", required);
+                JArray allOf = (JArray)plan["allOf"];
+                Assert.Contains(allOf.OfType<JObject>(), c =>
+                    (string)c["if"]?["properties"]?["operation"]?["const"] == "auto_tags" &&
+                    c["then"]?["required"] != null &&
+                    c["then"]["required"].Any(r => (string)r == "element_ids"));
+                Assert.Contains(allOf.OfType<JObject>(), c =>
+                    (string)c["if"]?["properties"]?["operation"]?["const"] == "intent_dimension" &&
+                    c["then"]?["required"] != null &&
+                    c["then"]["required"].Any(r => (string)r == "element_ids"));
+                Assert.NotNull(plan["properties"]["link_instance_id"]);
+                Assert.NotNull(plan["properties"]["chain_separation"]);
 
                 JObject revisions = (JObject)Entry("horizun_manage_revisions")["inputSchema"];
                 Assert.NotNull(revisions["properties"]["actions"]["items"]["properties"]["clouds"]);

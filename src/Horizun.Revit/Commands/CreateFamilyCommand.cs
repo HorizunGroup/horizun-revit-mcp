@@ -53,7 +53,7 @@ namespace Horizun.Revit.Commands
 
             bool load = request.Value<bool?>("load_into_project") != false;
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
-            string planHash = DocumentGate.PlanHash(request, "template_path", "output_path", "units", "parameters", "types",
+            string planHash = DocumentGate.PlanHash(request, "template_path", "output_path", "units", "parameters", "types", "emit_type_catalog", "flex", "emit_thumbnail",
                 "forms", "connectors", "reference_planes", "dimensions", "family_lines",
                 "nested_instances", "overwrite", "load_into_project", "overwrite_parameter_values");
             // ---- The MATERIALISED plan. The request is a recipe; the TEMPLATE is an
@@ -139,6 +139,7 @@ namespace Horizun.Revit.Commands
             JArray createdFamilyLines = new JArray();
             JArray createdNestedInstances = new JArray();
             JObject familyDocumentVerification = null;
+            JObject flexBlock = null; JObject thumbnailBlock = null; string thumbnailPath = null;
             try
             {
                 family = app.Application.NewFamilyDocument(template);
@@ -315,8 +316,25 @@ namespace Horizun.Revit.Commands
 
                 familyDocumentVerification = VerifyFamilyDocument(family, plan, createdForms, createdConnectors,
                     createdReferencePlanes, createdDimensions, createdFamilyLines, createdNestedInstances);
+
+                // ---- flex: every type activated in turn, the geometry MEASURED. ----
+                // A parametric family that does not move when its dimensions change is
+                // a drawing with sliders. The flex activates each type, regenerates,
+                // and records the solid extents; two types whose driving values differ
+                // but whose extents match to a tenth of a millimetre are reported as
+                // not_flexing - a warning with the numbers, because a family with only
+                // non-geometric parameters is legitimate and gets to say so.
+                if (request.Value<bool?>("flex") == true && plan.Types.Count > 0)
+                    flexBlock = FlexTypes(family, plan);
+
+                // ---- thumbnail: a real image of the family, verified from disk. ----
+                if (request.Value<bool?>("emit_thumbnail") == true)
+                    thumbnailPath = System.IO.Path.ChangeExtension(output, ".png");
+
                 var save = new SaveAsOptions { OverwriteExistingFile = overwrite, MaximumBackups = 1 };
                 family.SaveAs(output, save);
+                if (thumbnailPath != null)
+                    thumbnailBlock = ExportThumbnail(family, thumbnailPath);
                 // The building document has served its purpose - close it NOW, on
                 // purpose. The deliverable is the file on disk, and the only honest way
                 // to verify a file is to read it back from disk through a fresh
@@ -439,12 +457,59 @@ namespace Horizun.Revit.Commands
                 };
             }
 
+            // ---- the type catalog, when asked for: built by TypeCatalogRules
+            // (columns decided and exclusions NAMED in Core), written beside the
+            // RFA, and RE-READ - bytes, sha256 and row count come from the file on
+            // disk, not from the string that was meant to become it.
+            JObject catalogBlock = null;
+            if (request.Value<bool?>("emit_type_catalog") == true)
+            {
+                var catalogColumns = plan.Parameters.Select(parameter => new CatalogColumn
+                { Name = parameter.Name, DataType = parameter.DataType }).ToList();
+                var withFormula = plan.Parameters.Where(parameter => parameter.FormulaSpecified)
+                                                 .Select(parameter => parameter.Name).ToList();
+                var catalogTypes = plan.Types.Select(t =>
+                    new KeyValuePair<string, IDictionary<string, string>>(t.Name,
+                        (IDictionary<string, string>)t.Values.Properties().ToDictionary(
+                            property => property.Name,
+                            property => TypeCatalogRules.ValueCell(
+                                plan.Parameters.FirstOrDefault(x => x.Name == property.Name)?.DataType ?? "text",
+                                ((JValue)property.Value)?.Value)))).ToList();
+                string catalogContent; List<string> catalogExcluded;
+                string catalogError = TypeCatalogRules.Build(catalogColumns, withFormula, null, catalogTypes,
+                                                             out catalogContent, out catalogExcluded);
+                if (catalogError != null)
+                    return CommandResult.Fail("The RFA was created and verified at " + output + ", but the type " +
+                        "catalog you asked for cannot be built: " + catalogError + " The RFA stands; re-run " +
+                        "without emit_type_catalog or fix the spec.");
+                string catalogPath = System.IO.Path.ChangeExtension(output, ".txt");
+                File.WriteAllText(catalogPath, catalogContent, new System.Text.UTF8Encoding(false));
+                byte[] catalogBytes = File.ReadAllBytes(catalogPath);
+                string catalogSha;
+                using (var hasher = System.Security.Cryptography.SHA256.Create())
+                    catalogSha = BitConverter.ToString(hasher.ComputeHash(catalogBytes)).Replace("-", "").ToLowerInvariant();
+                int catalogRows = 0;
+                foreach (char c in System.Text.Encoding.UTF8.GetString(catalogBytes)) if (c == '\n') catalogRows++;
+                catalogBlock = new JObject
+                {
+                    ["path"] = catalogPath,
+                    ["bytes"] = catalogBytes.Length,
+                    ["sha256"] = catalogSha,
+                    ["rows"] = catalogRows,
+                    ["types"] = plan.Types.Count,
+                    ["columns_excluded"] = new JArray(catalogExcluded),
+                    ["note"] = "An empty cell keeps the type's own value at load time. Revit finds the catalog " +
+                               "by name: it must sit beside the RFA when the family is loaded."
+                };
+            }
+
             return CommandResult.Ok(new JObject
             {
                 ["dry_run"] = false,
                 ["family_kind"] = "loadable_rfa",
                 ["output_verified"] = true,
                 ["output_path"] = output,
+                ["type_catalog"] = catalogBlock,
                 ["bytes"] = info.Length,
                 ["last_write_utc"] = info.LastWriteTimeUtc.ToString("o"),
                 ["parameters_verified"] = plan.Parameters.Count,
@@ -464,7 +529,9 @@ namespace Horizun.Revit.Commands
                 ["family_document_verification"] = familyDocumentVerification,
                 ["reopened_verification"] = reopenedVerification,
                 ["loaded_into_project"] = load,
-                ["loaded_family"] = loadedResult
+                ["loaded_family"] = loadedResult,
+                ["flex"] = flexBlock,
+                ["thumbnail"] = thumbnailBlock
             });
         }
 
@@ -778,6 +845,132 @@ namespace Horizun.Revit.Commands
                 else result[plan.Name] = fm.AddParameter(plan.Name, plan.Group, plan.Spec, plan.Instance);
             }
             return result;
+        }
+
+        // ---- flex measurement. --------------------------------------------------
+        private static JObject FlexTypes(Document family, FamilyPlan plan)
+        {
+            FamilyManager fm = family.FamilyManager;
+            var rows = new JArray();
+            var extents = new List<KeyValuePair<string, double[]>>();
+            using (var tx = new Transaction(family, "Horizun: flex types"))
+            {
+                tx.Start();
+                foreach (FamilyType type in fm.Types.Cast<FamilyType>())
+                {
+                    fm.CurrentType = type;
+                    family.Regenerate();
+                    double[] size = SolidExtents(family);
+                    rows.Add(new JObject
+                    {
+                        ["type"] = type.Name,
+                        ["extents_mm"] = size == null ? null : new JArray(
+                            Math.Round(size[0] * 304.8, 1), Math.Round(size[1] * 304.8, 1), Math.Round(size[2] * 304.8, 1))
+                    });
+                    if (size != null) extents.Add(new KeyValuePair<string, double[]>(type.Name, size));
+                }
+                Guard.RollBack(tx);   // flexing is a MEASUREMENT; the family keeps its state
+            }
+            bool anyPairDiffers = false;
+            for (int i = 0; i < extents.Count && !anyPairDiffers; i++)
+                for (int j = i + 1; j < extents.Count && !anyPairDiffers; j++)
+                    for (int axis = 0; axis < 3; axis++)
+                        if (Math.Abs(extents[i].Value[axis] - extents[j].Value[axis]) > 0.1 / 304.8)
+                            { anyPairDiffers = true; break; }
+            return new JObject
+            {
+                ["types_flexed"] = rows.Count,
+                ["rows"] = rows,
+                ["geometry_moves_between_types"] = anyPairDiffers,
+                ["note"] = extents.Count < 2
+                    ? "fewer than two types carry measurable solids, so movement between types cannot be judged."
+                    : anyPairDiffers
+                        ? "at least one pair of types differs in solid extents: the parameters DRIVE the geometry."
+                        : "every type measures the same solid extents to 0.1 mm - either the parameters are " +
+                          "non-geometric (legitimate) or the flex is broken; the numbers above are the evidence."
+            };
+        }
+
+        private static double[] SolidExtents(Document family)
+        {
+            var options = new Options { DetailLevel = ViewDetailLevel.Fine };
+            double minX = double.MaxValue, minY = double.MaxValue, minZ = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue, maxZ = double.MinValue;
+            bool any = false;
+            foreach (Element element in new FilteredElementCollector(family).OfClass(typeof(GenericForm)))
+            {
+                GeometryElement geometry;
+                try { geometry = element.get_Geometry(options); } catch { continue; }
+                if (geometry == null) continue;
+                foreach (GeometryObject obj in geometry)
+                {
+                    if (!(obj is Solid solid) || solid.Volume <= 0) continue;
+                    BoundingBoxXYZ box;
+                    try { box = solid.GetBoundingBox(); } catch { continue; }
+                    if (box == null) continue;
+                    XYZ lo = box.Transform.OfPoint(box.Min), hi = box.Transform.OfPoint(box.Max);
+                    minX = Math.Min(minX, Math.Min(lo.X, hi.X)); maxX = Math.Max(maxX, Math.Max(lo.X, hi.X));
+                    minY = Math.Min(minY, Math.Min(lo.Y, hi.Y)); maxY = Math.Max(maxY, Math.Max(lo.Y, hi.Y));
+                    minZ = Math.Min(minZ, Math.Min(lo.Z, hi.Z)); maxZ = Math.Max(maxZ, Math.Max(lo.Z, hi.Z));
+                    any = true;
+                }
+            }
+            if (!any) return null;
+            return new[] { maxX - minX, maxY - minY, maxZ - minZ };
+        }
+
+        // ---- thumbnail: exported beside the RFA, verified from disk. -------------
+        private static JObject ExportThumbnail(Document family, string path)
+        {
+            try
+            {
+                View view = new FilteredElementCollector(family).OfClass(typeof(View3D)).OfType<View3D>()
+                                .FirstOrDefault(v => !v.IsTemplate)
+                            ?? new FilteredElementCollector(family).OfClass(typeof(View)).OfType<View>()
+                                .FirstOrDefault(v => !v.IsTemplate && v.CanBePrinted);
+                if (view == null)
+                    return new JObject { ["emitted"] = false, ["reason"] = "the family document has no exportable view." };
+                var options = new ImageExportOptions
+                {
+                    FilePath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(path),
+                                                      System.IO.Path.GetFileNameWithoutExtension(path)),
+                    ZoomType = ZoomFitType.FitToPage,
+                    PixelSize = 512,
+                    ImageResolution = ImageResolution.DPI_72,
+                    ExportRange = ExportRange.SetOfViews,
+                    HLRandWFViewsFileType = ImageFileType.PNG,
+                    ShadowViewsFileType = ImageFileType.PNG
+                };
+                options.SetViewsAndSheets(new List<ElementId> { view.Id });
+                family.ExportImage(options);
+                // Revit names the file itself; find what it wrote and normalize.
+                string dir = System.IO.Path.GetDirectoryName(path);
+                string stem = System.IO.Path.GetFileNameWithoutExtension(path);
+                string produced = System.IO.Directory.GetFiles(dir, stem + "*.png")
+                    .OrderByDescending(System.IO.File.GetLastWriteTimeUtc).FirstOrDefault();
+                if (produced == null)
+                    return new JObject { ["emitted"] = false, ["reason"] = "ExportImage returned but no PNG landed beside the RFA." };
+                if (!string.Equals(produced, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                    System.IO.File.Move(produced, path);
+                }
+                byte[] bytes = System.IO.File.ReadAllBytes(path);
+                string sha;
+                using (var hasher = System.Security.Cryptography.SHA256.Create())
+                    sha = BitConverter.ToString(hasher.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                bool png = bytes.Length > 8 && bytes[0] == 0x89 && bytes[1] == 0x50;
+                return new JObject
+                {
+                    ["emitted"] = png, ["path"] = path, ["bytes"] = bytes.Length, ["sha256"] = sha,
+                    ["verified_by_reread"] = png,
+                    ["reason"] = png ? null : "the produced file does not begin with a PNG signature."
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["emitted"] = false, ["reason"] = "thumbnail export threw: " + ex.Message };
+            }
         }
 
         private static Dictionary<string, FamilyType> EnsureTypes(FamilyManager fm, List<TypePlan> plans)

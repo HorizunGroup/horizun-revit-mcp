@@ -25,6 +25,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Tool,
+    # A RESOURCE INSTEAD OF A TOOL. Some facts a caller must verify are published
+    # as MCP resources rather than tools - the contract hash among them, at
+    # horizun://build/identity. A harness that cannot ask for one has to read the
+    # fact off a file on disk instead, and a file describes whatever binary last
+    # wrote it, not the one that just answered.
+    [string]$Resource,
     # JSON object. Defaults to no arguments.
     [string]$Arguments = '{}',
     # Exact transport for callers that launch a separate PowerShell process.
@@ -117,8 +123,12 @@ Send @{ jsonrpc = '2.0'; id = 1; method = 'initialize'
 $null = ReadReply 60
 Send @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
 
-Send @{ jsonrpc = '2.0'; id = 2; method = 'tools/call'
-        params = @{ name = $Tool; arguments = $argObj } }
+if ($Resource) {
+    Send @{ jsonrpc = '2.0'; id = 2; method = 'resources/read'; params = @{ uri = $Resource } }
+} else {
+    Send @{ jsonrpc = '2.0'; id = 2; method = 'tools/call'
+            params = @{ name = $Tool; arguments = $argObj } }
+}
 $reply = ReadReply $TimeoutSec
 $clock.Stop()
 
@@ -126,7 +136,15 @@ try { $proc.StandardInput.Close() } catch { }
 if (-not $proc.WaitForExit(30000)) { try { $proc.Kill() } catch { } }
 
 $text = $null; $isError = $null; $data = $null
-if ($reply) {
+if ($reply -and $Resource) {
+    # A resource answers with contents[], not content[] with an isError beside it.
+    # Its text IS the payload, so it is parsed as the data channel directly.
+    try { $text = $reply.result.contents[0].text } catch { $text = $null }
+    $isError = $false
+    if ($null -ne $reply.error) { $isError = $true; $text = ($reply.error | ConvertTo-Json -Compress) }
+    if ($text -and -not $isError) { try { $data = $text | ConvertFrom-Json } catch { $data = $null } }
+}
+elseif ($reply) {
     $text = $reply.result.content[0].text
     $isError = [bool]$reply.result.isError
     # The text block is for a person and can legally contain the JSON payload

@@ -189,10 +189,11 @@ namespace Horizun.Revit.Commands
             try
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
-                if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" && op != "change_type")
+                if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" &&
+                    op != "change_type" && op != "set_curve")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, pin, unpin and change_type only. Nothing was written.",
+                        "rotate, pin, unpin, change_type and set_curve only. Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
                 JArray ids = o["element_ids"] as JArray;
                 if (ids == null || ids.Count == 0 || ids.Count > 2000) throw new ArgumentException("element_ids must contain 1..2000 ids");
@@ -211,6 +212,31 @@ namespace Horizun.Revit.Commands
                         if (sample.Count == 0) throw new ArgumentException("ElementId " + raw + " has no LocationPoint/LocationCurve sample, so " + op + " cannot be verified");
                         p.Samples[raw] = sample;
                     }
+                    if (op == "set_curve")
+                    {
+                        // A curve belongs to ONE element. Giving the same line to
+                        // several would stack them on top of each other, which is
+                        // never what anybody meant and is hard to see afterwards.
+                        if (ids.Count != 1)
+                            throw new ArgumentException(
+                                "set_curve takes exactly one element_id: the line is that element's own. " +
+                                "Sending " + ids.Count + " ids with one line would stack them on top of each " +
+                                "other. Use one operation per element.");
+                        var lc = element.Location as LocationCurve;
+                        if (lc == null || lc.Curve == null)
+                            throw new ArgumentException(
+                                "ElementId " + raw + " is a " + element.GetType().Name + " with no LocationCurve, " +
+                                "so it has no line to set. Walls, beams, pipes and ducts have one; a family " +
+                                "instance placed at a point does not.");
+                        bool pinned;
+                        try { pinned = element.Pinned; } catch { pinned = false; }
+                        if (pinned)
+                            throw new ArgumentException(
+                                "ElementId " + raw + " is PINNED. Revit silently refuses to move a pinned " +
+                                "element, so this would report a failed verification rather than a refusal. " +
+                                "Unpin it deliberately first.");
+                        p.Samples[raw] = Samples(element);
+                    }
                 }
                 if (op == "move" || op == "copy") p.Vector = Point(o["vector"], scale, "vector");
                 if (op == "rotate")
@@ -221,6 +247,13 @@ namespace Horizun.Revit.Commands
                     if (o["angle_degrees"] == null) throw new ArgumentException("angle_degrees is required for rotate");
                     p.Angle = o.Value<double>("angle_degrees") * Math.PI / 180.0;
                     p.Rotation = Transform.CreateRotationAtPoint((b - a).Normalize(), p.Angle, a);
+                }
+                if (op == "set_curve")
+                {
+                    XYZ a = Point(o["start"], scale, "start"), b = Point(o["end"], scale, "end");
+                    if (a.DistanceTo(b) < 1e-9)
+                        throw new ArgumentException("start and end must differ: a zero-length curve is not a line");
+                    p.Curve = Line.CreateBound(a, b);
                 }
                 if (op == "change_type")
                 {
@@ -253,6 +286,13 @@ namespace Horizun.Revit.Commands
                 case "pin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = true; break;
                 case "unpin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = false; break;
                 case "change_type": foreach (ElementId id in p.Ids) doc.GetElement(id).ChangeTypeId(p.TypeId); break;
+                case "set_curve":
+                    foreach (ElementId id in p.Ids)
+                    {
+                        var lc = doc.GetElement(id).Location as LocationCurve;
+                        if (lc != null) lc.Curve = p.Curve;
+                    }
+                    break;
             }
         }
 
@@ -273,6 +313,30 @@ namespace Horizun.Revit.Commands
                 if (p.Operation == "pin" && e.Pinned) good++;
                 else if (p.Operation == "unpin" && !e.Pinned) good++;
                 else if (p.Operation == "change_type" && e.GetTypeId() == p.TypeId) good++;
+                else if (p.Operation == "set_curve")
+                {
+                    // RE-READ THE CURVE, and accept what a JOIN legitimately does
+                    // to it. Revit trims a wall's location curve back to where the
+                    // centrelines of the walls it meets cross, so the endpoints
+                    // after a commit are not the endpoints that were asked for -
+                    // by up to half the joined wall's thickness. Demanding an
+                    // exact match would report every corner as a failure; ignoring
+                    // the difference would report a wall placed anywhere on the
+                    // right line as a success. The line itself is what was set, so
+                    // the line itself is what is checked: same direction, and both
+                    // endpoints ON it.
+                    var lc = e.Location as LocationCurve;
+                    if (lc == null || lc.Curve == null) continue;
+                    XYZ want0 = p.Curve.GetEndPoint(0), want1 = p.Curve.GetEndPoint(1);
+                    XYZ got0 = lc.Curve.GetEndPoint(0), got1 = lc.Curve.GetEndPoint(1);
+                    XYZ dir = (want1 - want0).Normalize();
+                    double off0 = (got0 - want0).CrossProduct(dir).GetLength();
+                    double off1 = (got1 - want0).CrossProduct(dir).GetLength();
+                    // 0.5 mm in feet: the same tolerance the rest of this file uses
+                    // for "the model came back where we put it".
+                    const double onTheLine = 0.5 / 304.8;
+                    if (off0 <= onTheLine && off1 <= onTheLine) good++;
+                }
                 else if (p.Operation == "move" || p.Operation == "rotate")
                 {
                     List<XYZ> after = Samples(e), before = p.Samples[Rid.Value(id)];
@@ -306,7 +370,22 @@ namespace Horizun.Revit.Commands
             if (point != null) { result.Add(point.Point); return result; }
             LocationCurve curve = e.Location as LocationCurve;
             if (curve != null && curve.Curve != null)
-            { result.Add(curve.Curve.GetEndPoint(0)); result.Add(curve.Curve.GetEndPoint(1)); }
+            { result.Add(curve.Curve.GetEndPoint(0)); result.Add(curve.Curve.GetEndPoint(1)); return result; }
+            // A RevitLinkInstance exposes NO sampleable Location (measured live,
+            // 2026-08-26) - yet moving a link is an everyday coordination operation,
+            // and its verification story is as sound as any location's: the total
+            // transform's origin is where the placement stands, and a committed move
+            // must show that origin displaced by exactly the requested vector.
+            var link = e as RevitLinkInstance;
+            if (link != null)
+            {
+                try
+                {
+                    Transform total = link.GetTotalTransform();
+                    if (total != null) result.Add(total.Origin);
+                }
+                catch { /* no sample stays no sample, and the refusal names it */ }
+            }
             return result;
         }
         private static XYZ Point(JToken token, double scale, string name)
@@ -365,6 +444,8 @@ namespace Horizun.Revit.Commands
         {
             public int Index; public string Operation; public List<ElementId> Ids, Created; public XYZ Vector;
             public Line Axis; public double Angle; public Transform Rotation; public ElementId TypeId;
+            /// <summary>set_curve: the line this element's LocationCurve is being set to.</summary>
+            public Line Curve;
             public Dictionary<long, List<XYZ>> Samples; public JObject Summary;
         }
     }

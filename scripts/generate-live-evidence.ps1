@@ -171,6 +171,33 @@ foreach ($y in $years) {
         }
     }
 
+    # The linked-and-production section (schema 5). Same discipline as the
+    # production block above: exact per-tool counts, so a future harness cannot
+    # trade one linked capability for three easy probes under the same label.
+    $dp2 = @($r.dimension_production.cases)
+    $dp2Pass = @($dp2 | Where-Object { $_.outcome -eq 'pass' }).Count
+    $dp2Expected = [ordered]@{
+        horizun_query_model              = 1
+        horizun_get_dimension_references = 3
+        horizun_annotate                 = 2
+        horizun_query_dimensions         = 1
+        horizun_plan_annotations         = 2
+        horizun_plan_views               = 1
+        horizun_manage_views             = 3
+        horizun_manage_schedules         = 2
+        horizun_manage_revisions         = 1
+        horizun_health                   = 1
+    }
+    if ($dp2.Count -ne 18 -or $dp2Pass -ne $dp2.Count) {
+        Fail "Revit $y linked-production cases: $dp2Pass/$($dp2.Count) passed; exactly eighteen are required."
+    }
+    foreach ($tool in $dp2Expected.Keys) {
+        $actual = @($dp2 | Where-Object { $_.tool -eq $tool }).Count
+        if ($actual -ne [int]$dp2Expected[$tool]) {
+            Fail "Revit $y linked production expected $($dp2Expected[$tool]) '$tool' case(s), found $actual."
+        }
+    }
+
     $addin = $m.Plugins | Where-Object { [int]$_.Year -eq $y } | Select-Object -First 1
     if (-not $addin) { Fail "the release manifest has no Revit $y payload." }
     $addinSha = ([string]$addin.Sha256).ToLower()
@@ -214,6 +241,17 @@ foreach ($y in $years) {
                 horizun_capture_view       = @($production | Where-Object { $_.tool -eq 'horizun_capture_view' -and $_.outcome -eq 'pass' }).Count
             }
         }
+        dimension_production = [ordered]@{
+            passed = $dp2Pass
+            total  = $dp2.Count
+            tools  = $(
+                $dp2Tools = [ordered]@{}
+                foreach ($tool in $dp2Expected.Keys) {
+                    $dp2Tools[$tool] = @($dp2 | Where-Object { $_.tool -eq $tool -and $_.outcome -eq 'pass' }).Count
+                }
+                $dp2Tools
+            )
+        }
         addin_sha256           = $addinSha
     }
 }
@@ -235,7 +273,7 @@ if ($LASTEXITCODE -ne 0 -or $committedHarnessBlobLines.Count -ne 1 -or
 }
 
 $doc = [ordered]@{
-    schema           = 4
+    schema           = 5
     generated_utc    = $newestUtc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'")
     candidate_commit = $Candidate
     harness_commit   = $harnessCommit

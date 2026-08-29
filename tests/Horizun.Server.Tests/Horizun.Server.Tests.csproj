@@ -32,6 +32,7 @@
     <Compile Include="..\..\src\Horizun.Server\McpTasks.cs" Link="McpTasks.cs" />
     <Compile Include="..\..\src\Horizun.Server\CatalogLookup.cs" Link="CatalogLookup.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
     <!-- The concurrency plumbing: one writer, one reply per id, one in-flight
          registry. Linked for the same reason - it needs neither Revit nor a
@@ -107,6 +108,7 @@
          answers with, from the same Settings the add-in reads. -->
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />
     <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
   </ItemGroup>
 

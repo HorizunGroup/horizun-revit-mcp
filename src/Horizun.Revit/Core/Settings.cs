@@ -61,6 +61,7 @@ using System.IO;
 using System.Text;
 using System.Collections.Generic;
 using System.Threading;
+using System.Linq;
 using Horizun.Contracts;
 using Newtonsoft.Json.Linq;
 
@@ -146,6 +147,15 @@ namespace Horizun.Revit.Core
             if (allowed.Count > 0 && !allowed.Contains(contract.Name))
             { reason = contract.Name + " is outside the allowed_tools allowlist in " + Path() + "."; return false; }
 
+            // ---- tool packs: which tools this SESSION is about. -------------------
+            // Enforced here, in the one place both advertisement and dispatch already
+            // consult, so hidden means unreachable on every path - sync, async, submit
+            // and execute_plan's children alike. Core tools never fall to this check;
+            // ActivePackResolution welds them on even over a malformed selection.
+            ToolPacks.Resolution packs = ActivePackResolution(settings);
+            if (packs.Restricting && !packs.Tools().Contains(contract.Name))
+            { reason = ToolPacks.HiddenReason(contract.Name, packs); return false; }
+
             string profile = PermissionProfile;
             JToken persistentUiToken = settings?["execute_python_ui_granted"];
             bool persistentUiGrant = persistentUiToken != null &&
@@ -196,6 +206,61 @@ namespace Horizun.Revit.Core
                 return false;
             }
             return true;
+        }
+
+        /// <summary>
+        /// The resolved tool-pack selection, from the environment override or the
+        /// settings file. Public so health can publish the profile a session is
+        /// actually running and the UI can show it; the OPTIONAL settings argument
+        /// spares a second file read on the IsToolAllowed hot path.
+        /// </summary>
+        public static ToolPacks.Resolution ActivePackResolution(JObject settings = null)
+        {
+            string env = null;
+            try { env = Environment.GetEnvironmentVariable(ToolPacks.EnvironmentOverride); } catch { env = null; }
+
+            FileState state;
+            JObject o = settings ?? Read(out state);
+            JToken raw = o?[ToolPacks.SettingsKey];
+            if (raw == null) return ToolPacks.Resolve(env, null, settingsValueMalformed: false);
+            var array = raw as JArray;
+            if (array == null || array.Any(t => t.Type != JTokenType.String))
+                return ToolPacks.Resolve(env, null, settingsValueMalformed: true);
+            return ToolPacks.Resolve(env, array.Select(t => (string)t), settingsValueMalformed: false);
+        }
+
+        /// <summary>
+        /// Persist the user's pack selection. Null or empty restores the default
+        /// (every pack). The same guarded read-modify-write as every settings change;
+        /// the ToolListMonitor sees the file move and compatible clients get
+        /// tools/list_changed without a restart.
+        /// </summary>
+        public static bool TrySetToolPacks(IEnumerable<string> packs, out string error)
+        {
+            List<string> list = packs?.Select(p => (p ?? "").Trim().ToLowerInvariant())
+                                      .Where(p => p.Length > 0).Distinct().ToList();
+            if (list != null && list.Count > 0)
+            {
+                // Refuse garbage BEFORE writing it: a settings file with an unknown pack
+                // falls closed to core-only, which is safe and also nothing the user
+                // asked to happen.
+                var unknown = list.Where(p => p != ToolPacks.AllToken &&
+                                              !ToolPacks.KnownPacks.Contains(p)).ToList();
+                if (unknown.Count > 0)
+                {
+                    error = "unknown pack name(s): " + string.Join(", ", unknown) + ". Known: " +
+                            string.Join(", ", ToolPacks.KnownPacks.OrderBy(k => k, StringComparer.Ordinal)) +
+                            ". Nothing was changed.";
+                    return false;
+                }
+            }
+            return TryUpdate(o =>
+            {
+                if (list == null || list.Count == 0 ||
+                    (list.Count == 1 && list[0] == ToolPacks.AllToken)) o.Remove(ToolPacks.SettingsKey);
+                else o[ToolPacks.SettingsKey] = new JArray(list);
+                return true;
+            }, out error);
         }
 
         /// <summary>
