@@ -38,7 +38,221 @@ namespace Horizun.Revit.Commands
             string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
             if (operation == "auto_tags") return PlanTags(doc, request, units, toFeet);
             if (operation == "intent_dimension") return PlanDimension(app, doc, request, units, toFeet);
-            return CommandResult.Fail("operation must be auto_tags or intent_dimension.");
+            if (AutoDimensionRules.KnownOperations.Contains(operation))
+                return PlanAutoDimension(doc, request, operation, units, toFeet);
+            return CommandResult.Fail(AutoDimensionRules.OperationError(operation));
+        }
+
+        // =====================================================================
+        // auto_dimension_* : whole-family chains, planned deterministically
+        // =====================================================================
+
+        /// <summary>
+        /// Plan complete dimension chains for one semantic family - grids, levels,
+        /// curtain grid lines, opening centres - in one view, over the host or over one
+        /// named link instance. Read-only; the output is a horizun_annotate dry-run
+        /// request plus the full account of what was found, what was planned, what was
+        /// omitted and why, and whether that adds up to complete coverage.
+        /// </summary>
+        private static CommandResult PlanAutoDimension(Document doc, JObject request, string operation,
+                                                       string units, double toFeet)
+        {
+            string error;
+            View view = ResolveView(doc, request, out error);
+            if (view == null) return CommandResult.Fail(error);
+
+            string axisRequested = (request.Value<string>("axis") ?? "auto").ToLowerInvariant();
+            error = AutoDimensionRules.ValidateAxis(axisRequested); if (error != null) return CommandResult.Fail(error);
+            string side = (request.Value<string>("side") ?? "positive").ToLowerInvariant();
+            error = AutoDimensionRules.ValidateSide(side); if (error != null) return CommandResult.Fail(error);
+            double offset = (request.Value<double?>("offset") ?? 15.0) * toFeet;
+            if (offset <= 0) return CommandResult.Fail("offset must be greater than zero.");
+            double separation = (request.Value<double?>("chain_separation") ?? (request.Value<double?>("offset") ?? 15.0)) * toFeet;
+            if (separation <= 0) return CommandResult.Fail("chain_separation must be greater than zero.");
+            bool skipExisting = request.Value<bool?>("skip_existing") ?? true;
+
+            // ---- the source is the HOST, and a link instance is refused with the ----
+            // MEASURED reason. On live Revit 2026 (2026-08-26) NewDimension rejects
+            // DATUM references lifted through CreateLinkReference ('Invalid number of
+            // references' - the same rehearsal that PASSES against linked wall faces),
+            // so a grid/level chain over a link would plan dimensions whose every
+            // rehearsal fails. Curtain grid lines and opening-centre references are
+            // datum-backed and have not been proven constructible through a link, and
+            // this planner does not declare support Revit has not demonstrated.
+            // Linked FACES are proven and flow through linked_targets +
+            // horizun_annotate directly.
+            var source = new AutoDimensionSource { GeometryDoc = doc };
+            long? linkInstanceId = request.Value<long?>("link_instance_id");
+            if (linkInstanceId.HasValue)
+            {
+                if (operation == AutoDimensionRules.OpGrids || operation == AutoDimensionRules.OpLevels)
+                    return CommandResult.Fail(
+                        operation + " cannot run over a link instance: " +
+                        DimensionReferenceRules.LinkedDatumRejected().Message + " Nothing was planned.");
+                return CommandResult.Fail(
+                    operation + " over a link instance is refused: linked curtain-grid-line and opening-centre " +
+                    "references are datum-backed, and Revit's dimension API rejects linked datum references " +
+                    "(measured live 2026-08-26: 'Invalid number of references'). Dimension linked geometry " +
+                    "through horizun_get_dimension_references linked_targets and horizun_annotate instead. " +
+                    "Nothing was planned.");
+            }
+
+            List<long> explicitIds = null;
+            if (request["element_ids"] is JArray idsArray)
+            {
+                if (idsArray.Count < 1 || idsArray.Any(t => t.Type != JTokenType.Integer))
+                    return CommandResult.Fail("element_ids, when present, must be a non-empty array of integer " +
+                                              "ids" + (source.IsLinked ? " from inside the linked document." : "."));
+                explicitIds = idsArray.Select(t => t.Value<long>()).Distinct().ToList();
+            }
+
+            // ---- collect ------------------------------------------------------------
+            var omissions = new List<AutoDimensionOmission>();
+            List<AutoDimensionCandidate> candidates =
+                AutoDimensionPlanner.Collect(operation, doc, view, source, explicitIds, omissions, out error);
+            if (candidates == null) return CommandResult.Fail(error);
+
+            // ---- group --------------------------------------------------------------
+            // LEVELS are one vertical stack by definition and are never direction-
+            // grouped: a level datum has no direction in a section, and the chain
+            // everybody wants is the storey stack.
+            List<List<AutoDimensionCandidate>> groups;
+            if (operation == AutoDimensionRules.OpLevels)
+            {
+                groups = candidates.Count > 0
+                    ? new List<List<AutoDimensionCandidate>> { candidates }
+                    : new List<List<AutoDimensionCandidate>>();
+            }
+            else
+            {
+                List<AutoDimensionCandidate> ungroupable;
+                groups = AutoDimensionRules.GroupByDirection(candidates,
+                    AutoDimensionRules.DirectionToleranceDegrees, out ungroupable);
+                foreach (AutoDimensionCandidate u in ungroupable)
+                    omissions.Add(new AutoDimensionOmission(u, AutoDimensionRules.CodeNoDirection,
+                        "the reference has no usable direction in this view's plane, so it cannot be assigned " +
+                        "to a parallel chain. Use intent_dimension to name it explicitly."));
+            }
+
+            // Deterministic order over the groups themselves.
+            groups = groups.OrderBy(g => AutoDimensionRules.GroupKey(g), StringComparer.Ordinal).ToList();
+
+            HashSet<string> existing = skipExisting
+                ? AutoDimensionPlanner.ExistingChainIdentities(doc, view)
+                : new HashSet<string>(StringComparer.Ordinal);
+
+            // ---- order, deduplicate, place ------------------------------------------
+            var actions = new JArray();
+            var chainRows = new JArray();
+            var refusedGroups = new JArray();
+            double fromFeet = 1.0 / toFeet;
+            XYZ right = view.RightDirection.Normalize(), up = view.UpDirection.Normalize(), origin = view.Origin;
+            int planned = 0;
+            int chainOrdinal = 0;
+            foreach (List<AutoDimensionCandidate> group in groups)
+            {
+                string groupKey = AutoDimensionRules.GroupKey(group);
+                // Levels are stacked vertically whatever "auto" would measure; every
+                // other family measures ACROSS its lines: a family of parallel verticals
+                // spreads horizontally, and that spread axis is the chain axis.
+                double spreadX, spreadY;
+                string axis = operation == AutoDimensionRules.OpLevels && axisRequested == "auto"
+                    ? "vertical"
+                    : AutoDimensionRules.ResolveAxis(group, axisRequested, out spreadX, out spreadY);
+
+                List<AutoDimensionCandidate> ordered; string code;
+                string groupError = AutoDimensionRules.OrderAlongAxis(group, axis, out ordered, out code);
+                if (groupError != null)
+                {
+                    if (code == AutoDimensionRules.CodeGroupTooSmall)
+                    {
+                        foreach (AutoDimensionCandidate c in group)
+                            omissions.Add(new AutoDimensionOmission(c, code, groupError));
+                    }
+                    else
+                    {
+                        refusedGroups.Add(new JObject
+                        {
+                            ["group"] = groupKey, ["axis"] = axis, ["code"] = code, ["reason"] = groupError,
+                            ["members"] = new JArray(group.Select(c => AutoDimensionPlanner.CandidateJson(c, fromFeet)))
+                        });
+                        foreach (AutoDimensionCandidate c in group)
+                            omissions.Add(new AutoDimensionOmission(c, code, "its group was refused: " + groupError));
+                    }
+                    continue;
+                }
+
+                List<string> reps = ordered.Select(c => c.StableRepresentation).ToList();
+                List<string> dedupReps = ordered.Select(c => c.EffectiveDedupIdentity).ToList();
+                if (AutoDimensionRules.IsDuplicate(dedupReps, existing))
+                {
+                    foreach (AutoDimensionCandidate c in ordered)
+                        omissions.Add(new AutoDimensionOmission(c, AutoDimensionRules.CodeAlreadyDimensioned,
+                            "a dimension over exactly this reference set already exists in the view; " +
+                            "skip_existing=false plans it anyway."));
+                    continue;
+                }
+
+                var chain = new AutoDimensionChain { GroupKey = groupKey };
+                chain.Ordered.AddRange(ordered);
+                double stacked = AutoDimensionRules.StackedOffset(offset, separation, chainOrdinal);
+                AutoDimensionRules.PlaceLine(ordered, axis, side, stacked, chain);
+                chainOrdinal++;
+
+                XYZ start = origin.Add(right.Multiply(chain.StartX)).Add(up.Multiply(chain.StartY));
+                XYZ end = origin.Add(right.Multiply(chain.EndX)).Add(up.Multiply(chain.EndY));
+                var action = new JObject
+                {
+                    ["operation"] = "dimension", ["view_id"] = Rid.Value(view.Id),
+                    ["line_start"] = Point(start, fromFeet), ["line_end"] = Point(end, fromFeet),
+                    ["references"] = new JArray(reps)
+                };
+                if (request["dimension_type_id"] != null)
+                    action["dimension_type_id"] = request["dimension_type_id"].DeepClone();
+                actions.Add(action);
+                planned += ordered.Count;
+                chainRows.Add(new JObject
+                {
+                    ["group"] = groupKey, ["axis"] = chain.Axis, ["side"] = side,
+                    ["offset_applied"] = stacked * fromFeet,
+                    ["references"] = new JArray(ordered.Select(c => AutoDimensionPlanner.CandidateJson(c, fromFeet))),
+                    ["chain_identity"] = AutoDimensionRules.ChainIdentityUnordered(dedupReps)
+                });
+            }
+
+            string coverage = AutoDimensionRules.Coverage(candidates.Count + omissions.Count(o =>
+                o.Code == AutoDimensionRules.CodeNoReference || o.Code == AutoDimensionRules.CodeUnreadable),
+                planned, omissions.Count);
+            var result = new JObject
+            {
+                ["operation"] = operation,
+                ["view_id"] = Rid.Value(view.Id),
+                // Host-only by measurement (2026-08-26): link_instance_id refuses
+                // above, so the source is always the host and says so.
+                ["source"] = new JObject { ["linked"] = false },
+                ["axis"] = axisRequested,
+                ["found"] = candidates.Count + omissions.Count(o =>
+                    o.Code == AutoDimensionRules.CodeNoReference || o.Code == AutoDimensionRules.CodeUnreadable),
+                ["planned_references"] = planned,
+                ["chains"] = chainRows,
+                ["refused_groups"] = refusedGroups,
+                ["omitted"] = new JArray(omissions.Select(o => AutoDimensionPlanner.OmissionJson(o, fromFeet))),
+                ["coverage"] = coverage,
+                ["ordering"] = AutoDimensionRules.OrderingNote,
+                ["safe_to_execute"] = actions.Count > 0 && refusedGroups.Count == 0,
+                ["next_tool"] = "horizun_annotate",
+                ["next_arguments"] = AnnotateRequest(doc, units, actions),
+                ["note"] = "This planner made no model changes. Run the returned horizun_annotate dry run; only " +
+                           "its rehearsal proves each chain is constructible in this view, and only its " +
+                           "confirmation token writes."
+            };
+            if (actions.Count == 0)
+                result["nothing_planned_code"] = candidates.Count == 0
+                    ? AutoDimensionRules.CodeNothingToDimension
+                    : (omissions.Any(o => o.Code == AutoDimensionRules.CodeAlreadyDimensioned)
+                        ? AutoDimensionRules.CodeAlreadyDimensioned
+                        : AutoDimensionRules.CodeNothingToDimension);
+            return CommandResult.Ok(result);
         }
 
         private static CommandResult PlanTags(Document doc, JObject request, string units, double toFeet)

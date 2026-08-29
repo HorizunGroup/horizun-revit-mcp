@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // A HOST-RESIDENT tool: it answers inside this process and never touches Revit.
@@ -48,6 +48,70 @@ namespace Horizun.Server
         // ---------------------------------------------------------------------
         // Pure helpers — no file I/O, unit-testable.
         // ---------------------------------------------------------------------
+
+        // ---- the CSV side of the same contract. -----------------------------
+        private static JObject HandleCsv(JObject args, string filePath, List<IList<object>> rows,
+                                         string idempotencyKey, DurableCommandLedger ledger)
+        {
+            // The same at-most-once story as the workbook path: claim first, and a
+            // replayed key answers with the recorded result instead of appending twice.
+            string fingerprint = RequestFingerprint.OfOperation(
+                ToolName, "csv:" + filePath.ToLowerInvariant(), args, "idempotency_key");
+            DurableCommandDecision decision = ledger.Claim(idempotencyKey, ToolName, fingerprint);
+            if (decision.Outcome == DurableCommandOutcome.Replay) return Replay(decision.ReplayResult);
+            if (!decision.IsFresh) throw new ToolRefusal(decision.Message);
+
+            var sb = new StringBuilder();
+            bool existed = File.Exists(filePath);
+            if (existed)
+            {
+                string current = File.ReadAllText(filePath);
+                sb.Append(current);
+                if (current.Length > 0 && !current.EndsWith("\n")) sb.Append("\r\n");
+            }
+            foreach (IList<object> row in rows)
+            {
+                for (int i = 0; i < row.Count; i++)
+                {
+                    if (i > 0) sb.Append(',');
+                    sb.Append(CsvField(row[i]));
+                }
+                sb.Append("\r\n");
+            }
+            string dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+            File.WriteAllText(filePath, sb.ToString(), new UTF8Encoding(false));
+
+            byte[] written = File.ReadAllBytes(filePath);
+            string sha;
+            using (var hasher = System.Security.Cryptography.SHA256.Create())
+                sha = BitConverter.ToString(hasher.ComputeHash(written)).Replace("-", "").ToLowerInvariant();
+            int lines = 0;
+            foreach (char ch in File.ReadAllText(filePath)) if (ch == '\n') lines++;
+            var result = new JObject
+            {
+                ["file_path"] = filePath,
+                ["format"] = "csv",
+                ["created"] = !existed,
+                ["rows_written"] = rows.Count,
+                ["total_lines_after"] = lines,
+                ["bytes"] = written.Length,
+                ["sha256"] = sha,
+                ["verified_by_reread"] = true
+            };
+            ledger.Complete(decision, CommandResult.Ok(result));
+            return result;
+        }
+
+        /// <summary>RFC-4180: quote when the field carries a comma, quote or newline; double inner quotes.</summary>
+        internal static string CsvField(object value)
+        {
+            if (value == null) return "";
+            string text = value is bool b ? (b ? "true" : "false")
+                : Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+            if (text.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return text;
+            return "\"" + text.Replace("\"", "\"\"") + "\"";
+        }
 
         /// <summary>Zero-based column index to its spreadsheet letter: 0->A, 25->Z, 26->AA.</summary>
         internal static string ColumnLetter(int index)
@@ -395,6 +459,15 @@ namespace Horizun.Server
                 foreach (JToken ct in cells) one.Add(JsonValueToClr(ct));
                 rows.Add(one);
             }
+
+            // ---- format=csv: the same append contract, plain text. --------------
+            // A CSV is created when absent (an xlsx never is - its structure cannot
+            // be invented), rows append under RFC-4180 quoting, and the evidence is
+            // the re-read file: bytes, sha256 and the line count afterwards.
+            string format = ((string)args?["format"] ?? "xlsx").ToLowerInvariant();
+            if (format == "csv") return HandleCsv(args, filePath, rows, idempotencyKey, ledger);
+            if (format != "xlsx")
+                throw new ArgumentException("format must be xlsx or csv.");
 
             if (!File.Exists(filePath))
                 throw new FileNotFoundException("Workbook not found: " + filePath);

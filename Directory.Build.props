@@ -2,7 +2,11 @@
   <PropertyGroup>
     <!-- One product, one release number. The server and every Revit payload
          inherit this value and are packaged/deployed as an inseparable pair. -->
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
+    <!-- 1.0.0 IS PUBLISHED and its tag must never move. This compatible
+         capability increment is the 1.1.0 release candidate. A stable tag may
+         be created only after the exact candidate completes the repository,
+         package, installed-byte and Revit 2023-2027 release gates. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

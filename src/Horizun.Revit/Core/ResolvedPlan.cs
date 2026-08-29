@@ -233,13 +233,105 @@ namespace Horizun.Revit.Core
 
             if (parts.Count == 0)
             {
-                // Same elements, same counts - so a VALUE the plan read is different. That is
-                // the quiet one: somebody else already set what this was about to set.
-                return "the same elements match and the counts are unchanged, so a value this plan " +
-                       "depends on was edited after the dry run - somebody else may have already " +
-                       "changed what this was about to change.";
+                // Same elements, same counts - so a VALUE the plan read is different.
+                // That is the quiet one, and "a value changed" is not enough to act on:
+                // name the fields, because a moved link, a swapped type and a
+                // re-measured length all land here and all have different fixes.
+                List<string> fields = ChangedFields(approved, now);
+                if (fields.Count == 0)
+                    return "the same elements match and the counts are unchanged, so a value this plan " +
+                           "depends on was edited after the dry run - somebody else may have already " +
+                           "changed what this was about to change.";
+                return "the same elements match and the counts are unchanged, but " + fields.Count +
+                       " resolved value(s) differ: " + string.Join("; ", fields.ToArray()) + ".";
             }
             return string.Join("; ", parts.ToArray()) + ".";
+        }
+
+        /// <summary>How many changed values a drift description will name before it stops.</summary>
+        private const int MaxNamedDriftFields = 8;
+
+        /// <summary>
+        /// The BeforeValues keys whose values moved between the two plans, rendered so a
+        /// reader can act. A key ending in ".link" is decoded rather than printed: the
+        /// four fields it packs are the link instance, the linked document, the linked
+        /// element and the placement, and LinkedReferenceRules names which of them
+        /// moved with the same structured code the discovery surface uses.
+        /// </summary>
+        private static List<string> ChangedFields(ResolvedPlan approved, ResolvedPlan now)
+        {
+            var result = new List<string>();
+            var current = new Dictionary<string, PlannedElement>(StringComparer.Ordinal);
+            foreach (PlannedElement e in now.Elements)
+                if (e.UniqueId != null && !current.ContainsKey(e.UniqueId)) current[e.UniqueId] = e;
+
+            foreach (PlannedElement was in approved.Elements)
+            {
+                PlannedElement isNow;
+                if (was.UniqueId == null || !current.TryGetValue(was.UniqueId, out isNow)) continue;
+                if (was.BeforeValues == null || isNow.BeforeValues == null) continue;
+                foreach (KeyValuePair<string, string> pair in was.BeforeValues)
+                {
+                    string after;
+                    if (!isNow.BeforeValues.TryGetValue(pair.Key, out after)) after = null;
+                    if (string.Equals(pair.Value ?? "", after ?? "", StringComparison.Ordinal)) continue;
+                    if (result.Count >= MaxNamedDriftFields)
+                    {
+                        result.Add("(more differences were found and not listed)");
+                        return result;
+                    }
+                    result.Add(DescribeFieldDrift(was.UniqueId, pair.Key, pair.Value, after));
+                }
+            }
+            return result;
+        }
+
+        private static string DescribeFieldDrift(string owner, string field, string was, string now)
+        {
+            if (field != null && field.EndsWith(".link", StringComparison.Ordinal))
+            {
+                LinkBinding before = ParseLinkBinding(was);
+                LinkBinding after = ParseLinkBinding(now);
+                string code = LinkedReferenceRules.DetectDrift(before, after);
+                if (code != null)
+                    return owner + " " + field + ": " + code;
+            }
+            return owner + " " + field + ": '" + Elide(was) + "' -> '" + Elide(now) + "'";
+        }
+
+        /// <summary>
+        /// The inverse of how the annotation plan packs a link binding into one value:
+        /// instance unique id, document identity, linked element unique id, transform
+        /// fingerprint. MEASURED on Revit 2026 (2026-08-26): the document identity is
+        /// itself "title|path-hash" - LinkedReferenceRules.DocumentIdentity packs a pipe
+        /// of its own, and a linked title may carry more. So the parse anchors on the
+        /// ENDS, where the fields are pipe-free by construction (Revit unique ids and
+        /// the transform fingerprint), and everything between the first and the last two
+        /// separators is the identity. Exactly four segments was the shape this required
+        /// before, and every real value has at least five - which is why the live stale
+        /// refusal printed two elided hashes instead of link_transform_moved.
+        /// A value with too few segments returns null and the caller falls back to
+        /// printing both sides, which is still true and still useful.
+        /// </summary>
+        private static LinkBinding ParseLinkBinding(string packed)
+        {
+            if (string.IsNullOrEmpty(packed)) return null;
+            string[] fields = packed.Split('|');
+            if (fields.Length < 4) return null;
+            int n = fields.Length;
+            return new LinkBinding
+            {
+                InstanceUniqueId = fields[0],
+                DocumentIdentity = string.Join("|", fields, 1, n - 3),
+                LinkedElementUniqueId = fields[n - 2],
+                TransformFingerprint = fields[n - 1]
+            };
+        }
+
+        private static string Elide(string value)
+        {
+            if (value == null) return "(absent)";
+            return value.Length <= 48 ? value : value.Substring(0, 48) + "...";
         }
     }
 }

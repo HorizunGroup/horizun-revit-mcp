@@ -201,8 +201,19 @@ namespace Horizun.Revit.Commands
             row["references_available"] = refsAvailable == null ? JValue.CreateNull() : new JValue(refsAvailable.Value);
 
             int broken;
-            row["references"] = References(host, d, warnings, out broken);
+            LinkedReferenceTally links;
+            row["references"] = References(host, d, warnings, out broken, out links);
             row["broken_references"] = broken;
+            row["linked_references"] = links.Total;
+            row["linked_references_resolved"] = links.Resolved;
+            row["unloaded_link_references"] = links.Unloaded;
+            row["unreadable_link_references"] = links.Unreadable;
+            // The one field a caller needs to decide whether this row can be trusted as
+            // a complete statement about the dimension. references_available is Revit's
+            // own flag and says nothing about links.
+            row["reference_coverage"] = links.Total == 0
+                ? "host_only"
+                : (links.Unloaded + links.Unreadable == 0 ? "complete" : "incomplete");
 
             int segmentCount = GuardedInt(() => d.NumberOfSegments, warnings, "segment_count_unreadable") ?? 0;
             row["number_of_segments"] = segmentCount;
@@ -363,13 +374,17 @@ namespace Horizun.Revit.Commands
 
         /// <summary>
         /// The references, in the order the dimension holds them. A reference into a
-        /// LINK is marked linked:true with its raw ids and resolved no further; it is
-        /// also never counted broken, because "we did not look inside the link" is not
-        /// "the element is gone".
+        /// LINK is resolved THROUGH the link when the link is loaded - the linked
+        /// element's identity, category and class, plus where the instance stands now -
+        /// and is reported as unknown when it is not. It is never counted broken: "we
+        /// could not look inside the link" is not "the element is gone", and conflating
+        /// them turns an unloaded link into a model full of damage that is not there.
         /// </summary>
-        private static JArray References(Document host, Dimension d, JArray warnings, out int broken)
+        private static JArray References(Document host, Dimension d, JArray warnings, out int broken,
+                                          out LinkedReferenceTally links)
         {
             broken = 0;
+            links = new LinkedReferenceTally();
             var result = new JArray();
             ReferenceArray refs;
             try { refs = d.References; }
@@ -406,13 +421,11 @@ namespace Horizun.Revit.Commands
 
                     if (linked)
                     {
-                        // The host-side id above is the RevitLinkInstance; the raw linked id
-                        // is reported and NOT resolved - the link is another document.
+                        // The host-side id above is the RevitLinkInstance; the linked id
+                        // belongs to ANOTHER document and is never conflated with it.
+                        links.Total++;
                         entry["linked_element_id"] = Rid.Value(r.LinkedElementId);
-                        entry["unique_id"] = JValue.CreateNull();
-                        entry["category"] = JValue.CreateNull();
-                        entry["element_exists"] = JValue.CreateNull();
-                        entry["reference_resolvable"] = JValue.CreateNull();
+                        ResolveThroughLink(host, r, entry, warnings, links);
                     }
                     else
                     {
@@ -440,6 +453,145 @@ namespace Horizun.Revit.Commands
                 index++;
             }
             return result;
+        }
+
+        /// <summary>How a federated census splits, so a partial answer cannot read like a whole one.</summary>
+        private sealed class LinkedReferenceTally
+        {
+            public int Total;
+            public int Unloaded;
+            public int Unreadable;
+            public int Resolved;
+        }
+
+        /// <summary>
+        /// Follow one linked reference into its link and report what is actually there.
+        /// Each state is DISTINCT in the output - resolved, unloaded, unreadable - and
+        /// none of them is element_exists=false, because that field means "this document
+        /// no longer holds it" and none of these do.
+        /// </summary>
+        private static void ResolveThroughLink(Document host, Reference r, JObject entry, JArray warnings,
+                                                LinkedReferenceTally tally)
+        {
+            entry["element_exists"] = JValue.CreateNull();
+            entry["reference_resolvable"] = JValue.CreateNull();
+            entry["unique_id"] = JValue.CreateNull();
+            entry["category"] = JValue.CreateNull();
+
+            RevitLinkInstance link = null;
+            try { link = host.GetElement(r.ElementId) as RevitLinkInstance; } catch { link = null; }
+            if (link == null)
+            {
+                // The reference says it is linked and the host-side owner is not a link
+                // instance: the instance was deleted, or replaced by something else.
+                tally.Unreadable++;
+                entry["link_state"] = "instance_missing";
+                entry["link"] = JValue.CreateNull();
+                return;
+            }
+
+            string linkName = null; try { linkName = link.Name; } catch { }
+            string status = "Unknown";
+            long typeId = 0;
+            try
+            {
+                ElementId typeElementId = link.GetTypeId();
+                typeId = Rid.Value(typeElementId);
+                var type = host.GetElement(typeElementId) as RevitLinkType;
+                if (type != null) status = type.GetLinkedFileStatus().ToString();
+            }
+            catch { status = "Unknown"; }
+
+            var block = new JObject
+            {
+                ["link_instance_id"] = Rid.Value(r.ElementId),
+                ["link_instance_unique_id"] = Guarded(() => link.UniqueId, warnings, "link_instance_unreadable"),
+                ["link_type_id"] = typeId,
+                ["link_name"] = linkName,
+                ["linked_file_status"] = status
+            };
+
+            Document linked = null;
+            if (string.Equals(status, "Loaded", StringComparison.Ordinal))
+                try { linked = link.GetLinkDocument(); } catch { linked = null; }
+
+            if (linked == null)
+            {
+                tally.Unloaded++;
+                entry["link_state"] = string.Equals(status, "Loaded", StringComparison.Ordinal)
+                    ? "document_unavailable" : "unloaded";
+                block["linked_document_title"] = JValue.CreateNull();
+                block["linked_document_identity"] = JValue.CreateNull();
+                block["linked_element_state"] = "unknown";
+                block["note"] = "the link is not readable in this session, so what it holds is UNKNOWN. It is " +
+                                "not reported as a broken reference: nothing here says the element is gone.";
+                entry["link"] = block;
+                AddPlacement(block, link);
+                return;
+            }
+
+            string path = null; try { path = linked.PathName; } catch { }
+            block["linked_document_title"] = linked.Title;
+            block["linked_document_identity"] = LinkedReferenceRules.DocumentIdentity(linked.Title, path);
+
+            Element inside = null;
+            try { inside = linked.GetElement(r.LinkedElementId); } catch { inside = null; }
+            if (inside == null)
+            {
+                // The link IS readable and the element is not in it. That is a real
+                // finding, and it is still not the host document's broken reference.
+                tally.Unreadable++;
+                entry["link_state"] = "linked_element_missing";
+                block["linked_element_state"] = "missing";
+            }
+            else
+            {
+                tally.Resolved++;
+                entry["link_state"] = "resolved";
+                block["linked_element_state"] = "present";
+                block["linked_element_unique_id"] = Guarded(() => inside.UniqueId, warnings,
+                                                            "linked_element_unreadable");
+                block["linked_element_category"] = Guarded(() => inside.Category == null ? null : inside.Category.Name,
+                                                            warnings, "linked_element_unreadable");
+                block["linked_element_class"] = inside.GetType().Name;
+            }
+            AddPlacement(block, link);
+            entry["link"] = block;
+        }
+
+        /// <summary>
+        /// Where the instance stands NOW, with its fingerprint. Deliberately the current
+        /// placement and nothing else: this bridge does not stamp storage onto the
+        /// dimensions it creates, so it cannot say where the link stood when the
+        /// dimension was drawn, and it does not pretend to. A caller holding the plan it
+        /// approved has that number and can compare.
+        /// </summary>
+        private static void AddPlacement(JObject block, RevitLinkInstance link)
+        {
+            try
+            {
+                Transform t = link.GetTotalTransform();
+                if (t == null) { block["transform_fingerprint"] = JValue.CreateNull(); return; }
+                var facts = new LinkTransformFacts
+                {
+                    Origin = new[] { t.Origin.X, t.Origin.Y, t.Origin.Z },
+                    BasisX = new[] { t.BasisX.X, t.BasisX.Y, t.BasisX.Z },
+                    BasisY = new[] { t.BasisY.X, t.BasisY.Y, t.BasisY.Z },
+                    BasisZ = new[] { t.BasisZ.X, t.BasisZ.Y, t.BasisZ.Z },
+                    Determinant = t.Determinant,
+                    IsIdentity = t.IsIdentity,
+                    HasRotation = !t.BasisX.IsAlmostEqualTo(XYZ.BasisX) || !t.BasisY.IsAlmostEqualTo(XYZ.BasisY) ||
+                                  !t.BasisZ.IsAlmostEqualTo(XYZ.BasisZ)
+                };
+                block["transform_fingerprint"] = LinkedReferenceRules.TransformFingerprint(facts);
+                block["transform_is_current"] = true;
+                block["handedness"] = facts.Handedness;
+                block["transform_identity"] = facts.IsIdentity;
+            }
+            catch
+            {
+                block["transform_fingerprint"] = JValue.CreateNull();
+            }
         }
 
         private static JArray Segments(Dimension d, JArray warnings)

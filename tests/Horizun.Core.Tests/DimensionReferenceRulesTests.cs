@@ -383,15 +383,54 @@ namespace Horizun.Core.Tests
             Assert.Throws<ArgumentException>(() => new IncompatibilityReason("", "message without a code"));
         }
 
+        /// <summary>
+        /// Naming a link INSTANCE in element_ids is still not an answer - but the reason
+        /// is no longer "links are unsupported". It is that the instance and an element
+        /// inside it are different subjects, and the message has to hand the caller the
+        /// call that WOULD work rather than a dead end.
+        /// </summary>
         [Fact]
-        public void The_link_refusal_names_the_element_and_admits_what_was_not_proven()
+        public void A_link_instance_in_element_ids_is_redirected_to_linked_targets()
         {
             string message = DimensionReferenceRules.LinkReferencesMessage(4242);
             Assert.Contains("4242", message);
-            Assert.Contains("NOT inspected", message);
-            // The reason is honesty, not inability-to-be-bothered: the claim "link
-            // references work" has not been proven live, and the message says so.
-            Assert.Contains("proven", message);
+            Assert.Contains("linked_targets", message);
+            Assert.Contains("link_instance_id", message);
+            Assert.Contains("linked_element_ids", message);
+            // The distinction the whole feature rests on: those ids are not host ids.
+            Assert.Contains("LINKED document", message);
+            // And it must not claim the instance itself was inspected.
+            Assert.Contains("not inspected", message);
+        }
+
+        /// <summary>
+        /// The measured 2026-08-26 split: linked GEOMETRY constructs, linked DATUMS are
+        /// rejected by NewDimension itself. The code is what a client branches on and
+        /// the message must carry both the measurement and the way out.
+        /// </summary>
+        [Fact]
+        public void The_linked_datum_rejection_carries_its_code_and_the_measured_way_out()
+        {
+            IncompatibilityReason reason = DimensionReferenceRules.LinkedDatumRejected();
+            Assert.Equal("linked_datum_rejected_by_dimension_api", reason.Code);
+            Assert.Equal(DimensionReferenceRules.CodeLinkedDatumRejected, reason.Code);
+            Assert.Contains("measured live", reason.Message);
+            Assert.Contains("faces", reason.Message);
+            Assert.Contains("Invalid number of references", reason.Message);
+        }
+
+        [Fact]
+        public void Revit_2023_linked_geometry_limit_names_all_measured_arrangements_and_the_supported_years()
+        {
+            IncompatibilityReason reason = DimensionReferenceRules.LinkedGeometryRejectedByRevit2023();
+
+            Assert.Equal("linked_geometry_rejected_by_revit_2023_dimension_api", reason.Code);
+            Assert.Equal(DimensionReferenceRules.CodeLinkedGeometryRejectedByRevit2023, reason.Code);
+            Assert.Contains("host+link", reason.Message);
+            Assert.Contains("two faces of one linked wall", reason.Message);
+            Assert.Contains("two link instances", reason.Message);
+            Assert.Contains("Revit 2024+", reason.Message);
+            Assert.Contains("Nothing was written", reason.Message);
         }
 
         // ---- applicability ---------------------------------------------------

@@ -49,6 +49,8 @@ namespace Horizun.Core.Tests
             new object[] { "AnnotateCommand.cs",          "ReasonUnsupportedOperation" },
             new object[] { "TransformElementsCommand.cs", "ReasonUnsupportedOperation" },
             new object[] { "ManageViewsCommand.cs",       "ReasonUnsupportedOperation" },
+            new object[] { "ManageSchedulesCommand.cs",   "ReasonUnsupportedOperation" },
+            new object[] { "ManageCadLinksCommand.cs",    "ReasonUnsupportedOperation" },
         };
 
         [Theory]
@@ -105,8 +107,21 @@ namespace Horizun.Core.Tests
         /// fallback and nobody checked whether it could already have written.
         /// </summary>
         public static readonly string[] ExpectedEmitters =
-            { "CreateElementsCommand.cs", "AnnotateCommand.cs",
+            { // Checked 2026-08-27: the single grant is in the dispatch switch's default
+              // arm, reached only for an operation outside the enum, with one
+              // ActionOutcome and Decide(writeStarted:false) - and the whole file's
+              // first `new Transaction(` comes later, inside Add(). 'unload' is refused
+              // ABOVE it WITHOUT a grant on purpose: Revit has no CAD unload in any
+              // version 2023-2027, so handing over the Python fallback would send a
+              // caller to write a script that finds the same absent API.
+              "ManageCadLinksCommand.cs",
+              "CreateElementsCommand.cs", "AnnotateCommand.cs",
               "TransformElementsCommand.cs", "ManageViewsCommand.cs",
+              // Checked 2026-08-25: the ManageViews shape exactly - the unknown-operation
+              // refusal is raised in Validate() with ReasonUnsupportedOperation, every
+              // action lands in an ActionOutcome, and both Decide calls pass
+              // writeStarted:false before the first `new Transaction(`.
+              "ManageSchedulesCommand.cs",
               // Checked 2026-08-24: the unsupported-action-field refusal is raised while
               // planning, every action lands in an ActionOutcome, and both Decide calls
               // pass writeStarted:false before the first `new Transaction(`. The

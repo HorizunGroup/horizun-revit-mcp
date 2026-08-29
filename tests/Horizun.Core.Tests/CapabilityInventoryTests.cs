@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Core tests - original Horizun code.
 //
 // EVERY STRUCTURAL REFUSAL IN THE TYPED SURFACE, CLASSIFIED - and a scanner that
@@ -52,6 +52,14 @@ namespace Horizun.Core.Tests
         private static readonly Entry[] Inventory =
         {
             new Entry {
+                File = "ManageCadLinksCommand.cs", Fragment = "horizun_manage_cad_links does list, add",
+                Classification = Kind.StructuralGranted,
+                Why = "The operation enum is this command's whole contract, and an unlisted one has no typed " +
+                      "path. Raised in the dispatch switch, before the transaction opens - and BEFORE it, " +
+                      "'unload' is refused by name with the API fact behind it, because there is no CAD unload " +
+                      "in any Revit 2023-2027 and a fallback would only find the same absence." },
+
+            new Entry {
                 File = "AnnotateCommand.cs", Fragment = "horizun_annotate creates text, tags and dimensions",
                 Classification = Kind.StructuralGranted,
                 Why = "The operation enum is the command's whole contract; an unlisted one has no typed path. " +
@@ -71,6 +79,13 @@ namespace Horizun.Core.Tests
                       "elements may already have been created, so it must never grant a fallback." },
 
             new Entry {
+                File = "CreateElementsCommand.cs", Fragment = "InvalidOperationException(\"unsupported fitting '\" + p.FittingSubtype",
+                Classification = Kind.PostWrite,
+                Why = "The fitting subtype switch inside Create(), the same mirror as the kind switch above: " +
+                      "PlanItem already refused unknown subtypes before any transaction, so this is defensive, " +
+                      "runs inside the transaction, and must never grant a fallback." },
+
+            new Entry {
                 File = "TransformElementsCommand.cs", Fragment = "horizun_transform_elements does move, copy",
                 Classification = Kind.StructuralGranted,
                 Why = "An operation outside move/copy/rotate/pin/unpin/change_type. Raised while planning." },
@@ -86,6 +101,18 @@ namespace Horizun.Core.Tests
                 Classification = Kind.PostWrite,
                 Why = "The mirror switch inside Apply(), inside the transaction. Same reasoning as " +
                       "CreateElements: unreachable via Validate(), and post-write if it ever is not." },
+
+            new Entry {
+                File = "ManageSchedulesCommand.cs", Fragment = "return \"unsupported operation '\" + op",
+                Classification = Kind.StructuralGranted,
+                Why = "An operation outside the documented schedule-definition set. Raised in Validate(), " +
+                      "before the transaction, with ReasonUnsupportedOperation - the ManageViews shape exactly." },
+
+            new Entry {
+                File = "ManageSchedulesCommand.cs", Fragment = "InvalidOperationException(\"unsupported operation '\" + op",
+                Classification = Kind.PostWrite,
+                Why = "The mirror switch inside Apply(), inside the transaction. Unreachable via Validate(), " +
+                      "and post-write if it ever is not." },
 
             new Entry {
                 File = "CreateFamilyCommand.cs", Fragment = "unsupported storage type for '",
@@ -144,13 +171,13 @@ namespace Horizun.Core.Tests
                 Why = "arc-length dimensions on Revit 2023/2024: same shape as the radial refusal above - the " +
                       "API arrives in 2025 and Python cannot conjure it earlier." },
 
-            new Entry {
-                File = "AnnotateCommand.cs", Fragment = "resolves into a LINKED model",
-                Classification = Kind.Argument,
-                Why = "A stable reference that resolves into an RVT link. Consuming linked references in " +
-                      "dimension creation is not proven live, so offering them typed - or via a Python " +
-                      "fallback that would hit the same unproven path - would present a guess as a " +
-                      "capability. Raised while planning, before any transaction." },
+            // The row that used to sit here refused every reference resolving into an RVT
+            // link, on the ground that consuming one was not proven live. It IS proven
+            // live now (see docs/LINKED-DIMENSIONS.md and the linked cases in the live
+            // matrix), so the refusal is gone rather than reclassified. What replaced it
+            // are ordinary argument errors - an unloaded link, a missing linked element,
+            // a nested link - none of which is phrased as a capability limit, which is
+            // why none of them appears in this inventory.
 
             new Entry {
                 File = "Detail2DCommand.cs", Fragment = "unsupported operation '",

@@ -70,6 +70,16 @@ restriction, and corruption must never convert "I turned this off" into
 "everything is enabled". And `allowed_tools` is an optional allowlist while
 `denied_tools` always wins.
 
+**Tool packs are visibility, never privilege.** The optional `tool_packs`
+selection (docs/TOOL-PACKS.md) shrinks which tools a session advertises and
+can reach — including `horizun_execute_plan` children — but it is enforced by
+the same `IsToolAllowed` the profiles run through and BELOW them: a pack that
+names `unsafe_code` does not surface Python without the owner grant, and
+`read_only` still strips writes from any pack. A malformed pack list falls
+closed to core-only (health, target, jobs, submit — the four that survive any
+configuration), and the environment override `HORIZUN_TOOL_PACKS` is read from
+the server process an administrator controls, never from a request.
+
 **What this does NOT defend against:** anything running as the same Windows user.
 A process with that user's rights can read the discovery file, present the token,
 and drive Revit. That is not a gap to be closed at this layer — such a process can
@@ -350,6 +360,17 @@ release gate instead of being represented as trustworthy.
   command-specific invariants for every supported Revit year (§4).
 - Cancellation cannot stop work already inside Revit (§6).
 - Anything running as the same Windows user can drive this bridge (§2).
+- **A caller names the file to link.** `horizun_manage_cad_links` takes a
+  `file_path` and reads it from the machine running Revit. It is checked before
+  Revit sees it - it must exist, be non-empty, carry a `.dwg`/`.dxf` extension
+  AND begin with a DWG signature, because an extension is a claim and the first
+  bytes are evidence - but it is not confined to a directory. That is the same
+  posture as every other path this bridge takes (`horizun_export` writes where
+  it is told, `horizun_create_family` reads the template it is given), and it
+  rests on §2: the caller already runs as this Windows user and can read the
+  file anyway. A drawing is DATA, not instructions: nothing in a DWG is
+  executed, text is not even reachable from it, and what a rule may do with the
+  geometry is bounded by the requirement set the caller wrote.
 - No publicly trusted code-signing identity (§8).
 - Durable job/idempotency records may contain result data. Terminal jobs are
   bounded by default; idempotency records and explicitly configured zero/zero

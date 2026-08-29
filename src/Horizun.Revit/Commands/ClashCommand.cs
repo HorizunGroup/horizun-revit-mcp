@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_clash — clash detection that includes linked models.
@@ -57,7 +57,19 @@ namespace Horizun.Revit.Commands
                          ""description"": ""Include loaded Revit links. Turning this off on a model that HAS links makes the result partial, and it will be labelled as such."" },
     ""tolerance_mm"": { ""type"": ""number"", ""default"": 0.0,
                         ""description"": ""Intersections whose overlap is under this are ignored. 0 = report any real overlap."" },
-    ""max_results"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1, ""maximum"": 2000 }
+    ""max_results"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1, ""maximum"": 2000 },
+    ""plan_penetrations"": { ""type"": ""boolean"", ""default"": false,
+                             ""description"": ""Turn each clash pair with exactly one MEP curve into a penetration plan: crossing point (volume-weighted intersection centroid, basis stated), direction, measured cross-section, and - for wall hosts - the opening rectangle, emitted as next_arguments for horizun_create_elements (kind wall_opening). Refusals are per-row and named: linked host, structural host without opt-in, near-vertical run (a floor case), unreadable cross-section. Still read-only."" },
+    ""clearance_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 500,
+                        ""description"": ""Clearance added ALL AROUND the penetrant cross-section when sizing openings."" },
+    ""allow_structural_hosts"": { ""type"": ""boolean"", ""default"": false,
+                                  ""description"": ""Plan penetrations through STRUCTURAL hosts. Off by default: cutting a bearing element is an engineering decision, and this argument is the record that a person made it."" },
+    ""sleeve_type_id"": { ""type"": ""integer"",
+                          ""description"": ""A FamilySymbol to place point-wise at crossings that cannot take a wall opening (floor/framing hosts, near-vertical runs). Without it those rows are refused by name."" },
+    ""cluster_radius_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 5000,
+                             ""description"": ""Crossings of ONE host within this radius fold into one opening (transitive). 0 = every crossing is its own opening."" },
+    ""record_findings"": { ""type"": ""boolean"", ""default"": false,
+                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" }
   }
 }";
 
@@ -79,6 +91,22 @@ namespace Horizun.Revit.Commands
             double tolMm = request["tolerance_mm"] != null ? request.Value<double>("tolerance_mm") : 0.0;
             int maxResults = request["max_results"] != null ? request.Value<int>("max_results") : 200;
             double tolFt3 = Math.Pow(tolMm / 304.8, 3);
+            // Penetration planning over the SAME pairs, opt-in. Still read-only: the
+            // output is a plan the caller executes through create_elements, whose own
+            // rehearsal/token/verify pipeline does the writing.
+            bool planPenetrations = request.Value<bool?>("plan_penetrations") == true;
+            // Fold this run into the durable finding ledger (see horizun_coordination).
+            // A ledger write is bridge state, not model state - the run stays read-only
+            // for the document either way.
+            bool recordFindings = request.Value<bool?>("record_findings") == true;
+            double clearanceMm = request["clearance_mm"] != null ? request.Value<double>("clearance_mm") : 0.0;
+            bool allowStructuralHosts = request.Value<bool?>("allow_structural_hosts") == true;
+            long? sleeveTypeId = request.Value<long?>("sleeve_type_id");
+            double clusterRadiusMm = request["cluster_radius_mm"] != null ? request.Value<double>("cluster_radius_mm") : 0.0;
+            if (clusterRadiusMm < 0 || clusterRadiusMm > 5000)
+                return CommandResult.Fail("cluster_radius_mm must be between 0 and 5000.");
+            if (clearanceMm < 0 || clearanceMm > 500)
+                return CommandResult.Fail("clearance_mm must be between 0 and 500.");
 
             var options = new Options { ComputeReferences = false, IncludeNonVisibleObjects = false, DetailLevel = ViewDetailLevel.Fine };
 
@@ -188,6 +216,7 @@ namespace Horizun.Revit.Commands
 
             // ---- Broad phase on bounding boxes, narrow phase on solids. ----
             var clashes = new JArray();
+            var hitDetails = new List<HitDetail>();
             var geometryFailures = new JArray();
             int bboxHits = 0, solidTests = 0;
             var solidCache = new Dictionary<string, List<Solid>>();
@@ -222,6 +251,7 @@ namespace Horizun.Revit.Commands
 
                     solidTests++;
                     double vol = 0; bool hit = false; string boolError = null; int boolFailures = 0;
+                    double centroidVol = 0; XYZ centroidSum = XYZ.Zero;
                     foreach (var x in sa)
                     {
                         foreach (var y in sb)
@@ -229,7 +259,13 @@ namespace Horizun.Revit.Commands
                             try
                             {
                                 var inter = BooleanOperationsUtils.ExecuteBooleanOperation(x, y, BooleanOperationsType.Intersect);
-                                if (inter != null && inter.Volume > tolFt3) { hit = true; vol += inter.Volume; }
+                                if (inter != null && inter.Volume > tolFt3)
+                                {
+                                    hit = true; vol += inter.Volume;
+                                    if (planPenetrations || recordFindings)
+                                        try { centroidSum += inter.ComputeCentroid() * inter.Volume; centroidVol += inter.Volume; }
+                                        catch { }
+                                }
                             }
                             catch (Exception ex) { boolError = ex.Message; boolFailures++; }
                         }
@@ -264,6 +300,24 @@ namespace Horizun.Revit.Commands
                         ["intersection_volume_is_complete"] = boolFailures == 0,
                         ["cross_model"] = a.Source != b.Source || a.InstanceId != b.InstanceId
                     });
+                    if (planPenetrations || recordFindings)
+                    {
+                        var detail = new HitDetail { A = a, B = b, ClashIndex = clashes.Count - 1 };
+                        if (centroidVol > 1e-12)
+                        {
+                            detail.Centroid = centroidSum / centroidVol;
+                            detail.PointBasis = "intersection_centroid";
+                        }
+                        else
+                        {
+                            // The centroid could not be computed; the overlap of the two
+                            // host-coordinate boxes still locates the crossing, and the
+                            // row SAYS which basis it used.
+                            detail.Centroid = BoxOverlapMidpoint(a.Box, b.Box);
+                            detail.PointBasis = "bbox_overlap_midpoint";
+                        }
+                        hitDetails.Add(detail);
+                    }
                     if (clashes.Count >= maxResults) goto done;
                 }
             }
@@ -283,7 +337,7 @@ namespace Horizun.Revit.Commands
                            // reaches the same flag.
                            || !visibilityComplete;
 
-            return CommandResult.Ok(new JObject
+            var clashResult = new JObject
             {
                 ["clash_count"] = clashes.Count,
                 ["result"] = partial ? "partial" : "complete",
@@ -300,7 +354,17 @@ namespace Horizun.Revit.Commands
                 ["headline"] = Headline(clashes.Count, partial, linksSkipped.Count, geometryFailures.Count,
                                         sources.Count, ledgerA, ledgerB, pairs) +
                                (visibilityComplete ? "" : " " + (string)visibility["note"])
-            });
+            };
+            if (planPenetrations)
+            {
+                JObject nextArguments;
+                clashResult["penetrations"] = PlanPenetrations(doc, hitDetails, clearanceMm / 304.8,
+                    allowStructuralHosts, sleeveTypeId, clusterRadiusMm / 304.8, out nextArguments);
+                if (nextArguments != null) clashResult["next_arguments"] = nextArguments;
+            }
+            if (recordFindings)
+                clashResult["findings"] = RecordFindings(doc, request, hitDetails, tolMm, includeLinks, partial);
+            return CommandResult.Ok(clashResult);
         }
 
         /// <summary>
@@ -426,6 +490,349 @@ namespace Horizun.Revit.Commands
 
         /// <summary>Source identity for the pair key: the model plus the link placement.</summary>
         private static string SrcKey(Item it) => PairLedger.ElementKey(it.Source, it.InstanceId, null);
+
+        // ---------------------------------------------------------------------
+        // Penetration planning over the clash pairs. READ-ONLY: the output is a
+        // plan; the writing happens through create_elements' own pipeline.
+        // ---------------------------------------------------------------------
+        private class HitDetail
+        {
+            public Item A, B; public int ClashIndex; public XYZ Centroid; public string PointBasis;
+        }
+
+        private static XYZ BoxOverlapMidpoint(BoundingBoxXYZ a, BoundingBoxXYZ b)
+        {
+            double x1 = Math.Max(a.Min.X, b.Min.X), x2 = Math.Min(a.Max.X, b.Max.X);
+            double y1 = Math.Max(a.Min.Y, b.Min.Y), y2 = Math.Min(a.Max.Y, b.Max.Y);
+            double z1 = Math.Max(a.Min.Z, b.Min.Z), z2 = Math.Min(a.Max.Z, b.Max.Z);
+            return new XYZ((x1 + x2) / 2, (y1 + y2) / 2, (z1 + z2) / 2);
+        }
+
+        private static bool HostIsStructural(Element host)
+        {
+            try
+            {
+                if (host is Wall wall)
+                    return wall.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT)?.AsInteger() == 1;
+                if (host is Floor floor)
+                    return floor.get_Parameter(BuiltInParameter.FLOOR_PARAM_IS_STRUCTURAL)?.AsInteger() == 1;
+                Category category = host.Category;
+                if (category != null)
+                {
+                    long id = Rid.Value(category.Id);
+                    if (id == (long)BuiltInCategory.OST_StructuralFraming ||
+                        id == (long)BuiltInCategory.OST_StructuralColumns ||
+                        id == (long)BuiltInCategory.OST_StructuralFoundation) return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        /// <summary>
+        /// Fold this run's hits into the document's durable finding ledger. A hit
+        /// whose element identity cannot be read is COUNTED AND NAMED rather than
+        /// silently dropped, and a partial run refreshes but resolves nothing -
+        /// CoordinationRules holds that line; this method only feeds it facts.
+        /// </summary>
+        private static JObject RecordFindings(Document doc, JObject request, List<HitDetail> details,
+                                              double tolMm, bool includeLinks, bool partial)
+        {
+            var catsAScope = ((JArray)request["categories_a"]).Select(t => (string)t).ToList();
+            var catsBScope = ((JArray)request["categories_b"]).Select(t => (string)t).ToList();
+            string scope = CoordinationRules.ScopeKey(catsAScope, catsBScope, tolMm, includeLinks);
+            var detected = new List<CoordinationDetected>();
+            var unrecordable = new JArray();
+            foreach (HitDetail detail in details)
+            {
+                string uidA = null, uidB = null;
+                try { uidA = detail.A.El.UniqueId; } catch { }
+                try { uidB = detail.B.El.UniqueId; } catch { }
+                if (string.IsNullOrEmpty(uidA) || string.IsNullOrEmpty(uidB))
+                {
+                    unrecordable.Add(new JObject
+                    {
+                        ["clash_index"] = detail.ClashIndex,
+                        ["reason"] = "an element's UniqueId could not be read, so this pair has no durable identity"
+                    });
+                    continue;
+                }
+                detected.Add(new CoordinationDetected
+                {
+                    SideA = CoordinationRules.SideKey(detail.A.Source, detail.A.InstanceId, uidA),
+                    SideB = CoordinationRules.SideKey(detail.B.Source, detail.B.InstanceId, uidB),
+                    CategoryA = SafeCat(detail.A.El),
+                    CategoryB = SafeCat(detail.B.El),
+                    PointMm = detail.Centroid == null ? null : new[]
+                    {
+                        Math.Round(detail.Centroid.X * 304.8, 1),
+                        Math.Round(detail.Centroid.Y * 304.8, 1),
+                        Math.Round(detail.Centroid.Z * 304.8, 1)
+                    }
+                });
+            }
+            // Any pair that could not be recorded makes the run's resolution evidence
+            // incomplete for this scope, exactly like a partial run.
+            bool runComplete = !partial && unrecordable.Count == 0;
+            string docPath; try { docPath = doc.PathName; } catch { docPath = null; }
+            string ledgerPath = CoordinationLedger.PathFor(doc.Title, docPath);
+            string ledgerDoc;
+            Dictionary<string, CoordinationFinding> ledger = CoordinationLedger.Load(ledgerPath, out ledgerDoc);
+            string now = DateTime.UtcNow.ToString("o", System.Globalization.CultureInfo.InvariantCulture);
+            CoordinationMergeOutcome outcome = CoordinationRules.Merge(ledger, detected, now, runComplete, scope);
+            CoordinationLedger.Save(ledgerPath, doc.Title, ledger);
+            int openTotal = ledger.Values.Count(f => f.Status != CoordinationRules.StatusResolvedByModel &&
+                                                     f.Status != CoordinationRules.StatusClosedByDecision);
+            var block = new JObject
+            {
+                ["ledger_path"] = ledgerPath,
+                ["scope"] = scope,
+                ["new"] = outcome.New,
+                ["persisting"] = outcome.Persisting,
+                ["regressions"] = outcome.Regressions,
+                ["resolved_by_model"] = outcome.ResolvedByModel,
+                ["resolution_skipped_because_partial"] = outcome.ResolutionSkippedBecausePartial || !runComplete,
+                ["not_recordable"] = unrecordable,
+                ["open_or_assigned_total"] = openTotal,
+                ["note"] = "Work the ledger with horizun_coordination (list/update/export)."
+            };
+            return block;
+        }
+
+        private static JArray PlanPenetrations(Document doc, List<HitDetail> details, double clearanceFeet,
+                                               bool allowStructuralHosts, long? sleeveTypeId,
+                                               double clusterRadiusFeet, out JObject nextArguments)
+        {
+            nextArguments = null;
+            var rows = new JArray();
+            var elements = new JArray();
+            // Plannable candidates collected first so clustering can fold them by host.
+            var wallCandidates = new List<JObject>();   // {host_id, corner_1/2 (feet arrays), row}
+            var slabCandidates = new List<JObject>();
+            foreach (HitDetail detail in details)
+            {
+                bool aIsMep = detail.A.El is MEPCurve, bIsMep = detail.B.El is MEPCurve;
+                var row = new JObject { ["clash_index"] = detail.ClashIndex };
+                rows.Add(row);
+                string code, reason; bool penetrantIsA;
+                if (!PenetrationRules.ClassifyPair(aIsMep, bIsMep, out penetrantIsA, out code, out reason))
+                {
+                    row["status"] = "skipped"; row["code"] = code; row["reason"] = reason;
+                    continue;
+                }
+                Item pen = penetrantIsA ? detail.A : detail.B;
+                Item host = penetrantIsA ? detail.B : detail.A;
+                row["penetrant"] = Describe(pen);
+                if (pen.InstanceId != null) row["penetrant"]["link_instance_id"] = pen.InstanceId;
+                row["host"] = Describe(host);
+                row["point_mm"] = PointMm(detail.Centroid);
+                row["point_basis"] = detail.PointBasis;
+
+                if (!PenetrationRules.HostPermitted(host.InstanceId == null, HostIsStructural(host.El),
+                                                    allowStructuralHosts, out code, out reason))
+                {
+                    row["status"] = "refused"; row["code"] = code; row["reason"] = reason;
+                    continue;
+                }
+
+                XYZ direction = null;
+                if ((pen.El.Location as LocationCurve)?.Curve is Line line)
+                    direction = pen.Xf.OfVector(line.Direction);
+                string shape; double widthFeet, heightFeet;
+                bool profiled = MepFacts.TryProfile(pen.El, out shape, out widthFeet, out heightFeet);
+                if (direction == null || !profiled)
+                {
+                    row["status"] = "refused";
+                    row["code"] = PenetrationRules.CodeNoCrossSection;
+                    row["reason"] = direction == null
+                        ? "the penetrant is not a straight run, so the crossing has no single direction to size an opening from."
+                        : "the penetrant has no profiled connector, so its cross-section could not be measured.";
+                    continue;
+                }
+                row["direction"] = new JArray(Math.Round(direction.X, 4), Math.Round(direction.Y, 4), Math.Round(direction.Z, 4));
+                row["cross_section"] = new JObject
+                {
+                    ["shape"] = shape,
+                    ["width_mm"] = Math.Round(widthFeet * 304.8, 1),
+                    ["height_mm"] = Math.Round(heightFeet * 304.8, 1)
+                };
+
+                bool hostIsSlab = host.El is Floor || host.El is RoofBase || host.El is Ceiling;
+                if (host.El is Wall)
+                {
+                    double[] corner1, corner2;
+                    if (!PenetrationRules.OpeningCorners(detail.Centroid.X, detail.Centroid.Y, detail.Centroid.Z,
+                                                         direction.X, direction.Y, direction.Z,
+                                                         widthFeet, heightFeet, clearanceFeet,
+                                                         out corner1, out corner2, out code, out reason))
+                    {
+                        row["status"] = "refused"; row["code"] = code; row["reason"] = reason;
+                        continue;
+                    }
+                    row["status"] = "plannable";
+                    row["plan"] = "wall_opening";
+                    bool structuralWall = allowStructuralHosts && HostIsStructural(host.El);
+                    wallCandidates.Add(new JObject
+                    {
+                        ["host_id"] = Rid.Value(host.El.Id),
+                        ["c1"] = new JArray(corner1), ["c2"] = new JArray(corner2),
+                        ["allow_structural"] = structuralWall
+                    });
+                }
+                else if (hostIsSlab && Math.Abs(direction.Z) > PenetrationRules.MaxVerticalComponentForWallOpening)
+                {
+                    // A near-vertical run through a horizontal host: the slab opening,
+                    // circular for round penetrants, rectangular otherwise.
+                    row["status"] = "plannable";
+                    row["plan"] = "slab_opening";
+                    bool structuralSlab = allowStructuralHosts && HostIsStructural(host.El);
+                    slabCandidates.Add(new JObject
+                    {
+                        ["host_id"] = Rid.Value(host.El.Id),
+                        ["shape"] = shape == "round" ? "circular" : "rectangular",
+                        ["cx"] = detail.Centroid.X, ["cy"] = detail.Centroid.Y, ["cz"] = detail.Centroid.Z,
+                        ["w"] = widthFeet + 2 * clearanceFeet, ["h"] = heightFeet + 2 * clearanceFeet,
+                        ["allow_structural"] = structuralSlab
+                    });
+                }
+                else if (sleeveTypeId != null)
+                {
+                    row["status"] = "plannable";
+                    row["plan"] = "sleeve_family_instance";
+                    // Orient the sleeve along the run's plan direction, stated.
+                    double rotation = Math.Atan2(direction.Y, direction.X) * 180.0 / Math.PI;
+                    row["note"] = "the sleeve is placed at the crossing point and rotated " +
+                                  Math.Round(rotation, 1).ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                                  " degrees about Z to the run's plan direction.";
+                    elements.Add(new JObject
+                    {
+                        ["kind"] = "family_instance",
+                        ["type_id"] = sleeveTypeId.Value,
+                        ["point"] = PointMm(detail.Centroid),
+                        ["rotation_degrees"] = Math.Round(rotation, 2)
+                    });
+                }
+                else
+                {
+                    row["status"] = "refused";
+                    row["code"] = PenetrationRules.CodeOpeningWallsOnly;
+                    row["reason"] = "the host takes no rectangular opening from this crossing (not a wall; not a " +
+                                    "near-vertical run through a slab). Pass sleeve_type_id to plan a point-placed, " +
+                                    "run-oriented sleeve family here instead.";
+                }
+            }
+
+            // ---- clustering: crossings that share a host fold into one opening. ----
+            EmitWallOpenings(elements, wallCandidates, clusterRadiusFeet, rows);
+            EmitSlabOpenings(elements, slabCandidates, clusterRadiusFeet, rows);
+
+            if (elements.Count > 0)
+            {
+                nextArguments = new JObject
+                {
+                    ["tool"] = "horizun_create_elements",
+                    ["arguments"] = new JObject
+                    {
+                        ["target_document"] = doc.Title,
+                        ["units"] = "mm",
+                        ["elements"] = elements
+                    }
+                };
+            }
+            return rows;
+        }
+
+        private static void EmitWallOpenings(JArray elements, List<JObject> candidates, double clusterRadiusFeet,
+                                             JArray rows)
+        {
+            foreach (var byHost in candidates.GroupBy(c => (long)c["host_id"]))
+            {
+                var members = byHost.ToList();
+                var centers = members.Select(m =>
+                {
+                    var c1 = (JArray)m["c1"]; var c2 = (JArray)m["c2"];
+                    return new[] { ((double)c1[0] + (double)c2[0]) / 2, ((double)c1[1] + (double)c2[1]) / 2,
+                                   ((double)c1[2] + (double)c2[2]) / 2 };
+                }).ToList();
+                foreach (List<int> group in PenetrationRules.Cluster(centers, clusterRadiusFeet))
+                {
+                    double[] corner1, corner2;
+                    PenetrationRules.ClusterCorners(
+                        group.Select(i => ((JArray)members[i]["c1"]).Select(t => (double)t).ToArray()).ToList(),
+                        group.Select(i => ((JArray)members[i]["c2"]).Select(t => (double)t).ToArray()).ToList(),
+                        out corner1, out corner2);
+                    var opening = new JObject
+                    {
+                        ["kind"] = "wall_opening",
+                        ["host_id"] = byHost.Key,
+                        ["corner_1"] = FeetToMm(corner1),
+                        ["corner_2"] = FeetToMm(corner2)
+                    };
+                    if (group.Any(i => (bool)members[i]["allow_structural"])) opening["allow_structural"] = true;
+                    if (group.Count > 1) opening["clusters_crossings"] = group.Count;
+                    elements.Add(opening);
+                }
+            }
+        }
+
+        private static void EmitSlabOpenings(JArray elements, List<JObject> candidates, double clusterRadiusFeet,
+                                             JArray rows)
+        {
+            foreach (var byHost in candidates.GroupBy(c => (long)c["host_id"]))
+            {
+                var members = byHost.ToList();
+                var centers = members.Select(m => new[] { (double)m["cx"], (double)m["cy"], (double)m["cz"] }).ToList();
+                foreach (List<int> group in PenetrationRules.Cluster(centers, clusterRadiusFeet))
+                {
+                    if (group.Count == 1)
+                    {
+                        JObject m = members[group[0]];
+                        var single = new JObject
+                        {
+                            ["kind"] = "slab_opening",
+                            ["host_id"] = byHost.Key,
+                            ["shape"] = (string)m["shape"],
+                            ["center"] = FeetToMm(new[] { (double)m["cx"], (double)m["cy"], (double)m["cz"] })
+                        };
+                        if ((string)m["shape"] == "circular") single["diameter"] = Math.Round(Math.Max((double)m["w"], (double)m["h"]) * 304.8, 1);
+                        else { single["width"] = Math.Round((double)m["w"] * 304.8, 1); single["height"] = Math.Round((double)m["h"] * 304.8, 1); }
+                        if ((bool)m["allow_structural"]) single["allow_structural"] = true;
+                        elements.Add(single);
+                        continue;
+                    }
+                    // A cluster becomes one RECTANGLE spanning every member plus its size.
+                    double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue, z = 0;
+                    bool anyStructural = false;
+                    foreach (int i in group)
+                    {
+                        JObject m = members[i];
+                        double cx = (double)m["cx"], cy = (double)m["cy"], hw = (double)m["w"] / 2, hh = (double)m["h"] / 2;
+                        minX = Math.Min(minX, cx - hw); maxX = Math.Max(maxX, cx + hw);
+                        minY = Math.Min(minY, cy - hh); maxY = Math.Max(maxY, cy + hh);
+                        z = (double)m["cz"];
+                        if ((bool)m["allow_structural"]) anyStructural = true;
+                    }
+                    var clustered = new JObject
+                    {
+                        ["kind"] = "slab_opening",
+                        ["host_id"] = byHost.Key,
+                        ["shape"] = "rectangular",
+                        ["center"] = FeetToMm(new[] { (minX + maxX) / 2, (minY + maxY) / 2, z }),
+                        ["width"] = Math.Round((maxX - minX) * 304.8, 1),
+                        ["height"] = Math.Round((maxY - minY) * 304.8, 1),
+                        ["clusters_crossings"] = group.Count
+                    };
+                    if (anyStructural) clustered["allow_structural"] = true;
+                    elements.Add(clustered);
+                }
+            }
+        }
+
+        private static JArray PointMm(XYZ point) => new JArray(
+            Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1), Math.Round(point.Z * 304.8, 1));
+
+        private static JArray FeetToMm(double[] point) => new JArray(
+            Math.Round(point[0] * 304.8, 1), Math.Round(point[1] * 304.8, 1), Math.Round(point[2] * 304.8, 1));
 
         private class Src
         {

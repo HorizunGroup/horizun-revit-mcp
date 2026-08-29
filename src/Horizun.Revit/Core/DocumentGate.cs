@@ -214,9 +214,12 @@ namespace Horizun.Revit.Core
             if (_atomicPlanDepth > 0)
                 return StillTheSame(app, gate.Fingerprint, commandName);
 
+            // The plan object travels down so a stale refusal can name what moved even
+            // when the caller did not keep its own rehearsal: the store kept it with the
+            // token, and the drift is computed against that.
             ConfirmationCheck check = Confirmations.Validate(
                 request?.Value<string>("confirmation_token"), commandName, gate.Fingerprint, planHash,
-                atApply?.Fingerprint(),
+                atApply,
                 (atApply != null && rehearsed != null) ? ResolvedPlan.DescribeDrift(rehearsed, atApply) : null);
             if (!check.Ok)
                 // The refusal travels as DATA beside the prose. The dimension contracts
@@ -263,7 +266,7 @@ namespace Horizun.Revit.Core
             if (!dryRun) return;
 
             Confirmation issued = Confirmations.Issue(commandName, gate.Fingerprint, planHash, null,
-                                                      _pendingPlan?.Fingerprint());
+                                                      _pendingPlan?.Fingerprint(), _pendingPlan);
             if (_pendingPlan != null)
             {
                 // What was approved, in the answer itself. A count in the reply is what a

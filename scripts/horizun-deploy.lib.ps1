@@ -17,14 +17,62 @@
 # and would need the Revit API present for the add-in.
 function Get-HorizunProvenance([string]$DllPath) {
     if (-not (Test-Path $DllPath)) { return $null }
+
+    # ASK THE BINARY, do not read its entrails.
+    #
+    # This used to scan the raw bytes for a regex, and it was wrong twice over.
+    # The stamp is the InformationalVersion - <version>+<40-hex sha>[-dirty] -
+    # and the compiler writes it into the Win32 version resource as
+    # ProductVersion, which is a declared field with a documented meaning.
+    #
+    # What the byte scan got wrong, in the order it hurt:
+    #
+    #   1. It demanded \d+\.\d+\.\d+ immediately before the '+', so any SEMVER
+    #      PRERELEASE version failed to match. 1.1.0-dev is exactly the
+    #      unambiguous development identity this repository uses between
+    #      releases, and every binary built from such a tree read as "no
+    #      provenance stamp". The deploy gate then refused to ship a binary that
+    #      could not say which commit it was - the gate was right, the reader
+    #      was wrong.
+    #
+    #   2. MEASURED on the built DLL: the byte immediately before the string is
+    #      the custom attribute's LENGTH PREFIX, and "1.1.0-dev+" plus 40 hex is
+    #      exactly 50 characters - so that prefix byte is 0x32, which is the
+    #      ASCII digit '2'. The scan read "21.1.0-dev". A version that is nearly
+    #      right is the worst kind, and no lookbehind can fix it, because the
+    #      length byte is genuinely a digit character.
+    #
+    # ProductVersion has neither problem. The byte scan survives only as a
+    # fallback for a binary with no version resource, and it says so.
+    $product = $null
+    try { $product = (Get-Item -LiteralPath $DllPath).VersionInfo.ProductVersion } catch { }
+
+    $pattern = '^(?<ver>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\+(?<sha>[0-9a-f]{40})(?<dirty>-dirty)?$'
+    if ($product) {
+        $m = [regex]::Match($product.Trim(), $pattern)
+        if ($m.Success) {
+            return [pscustomobject]@{
+                Path    = $DllPath
+                Version = $m.Groups['ver'].Value
+                Sha     = $m.Groups['sha'].Value
+                Dirty   = $m.Groups['dirty'].Success
+                Source  = 'product_version'
+            }
+        }
+    }
+
+    # Fallback: no version resource (or one that carries something else). The
+    # length-prefix hazard above is why this is second and why it anchors on the
+    # SHA and reads the version backwards from it.
     $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($DllPath))
-    $m = [regex]::Match($text, '(\d+\.\d+\.\d+)\+([0-9a-f]{40})(-dirty)?')
-    if (-not $m.Success) { return $null }
+    $m2 = [regex]::Match($text, '(?<ver>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\+(?<sha>[0-9a-f]{40})(?<dirty>-dirty)?')
+    if (-not $m2.Success) { return $null }
     [pscustomobject]@{
         Path    = $DllPath
-        Version = $m.Groups[1].Value
-        Sha     = $m.Groups[2].Value
-        Dirty   = $m.Groups[3].Success
+        Version = $m2.Groups['ver'].Value
+        Sha     = $m2.Groups['sha'].Value
+        Dirty   = $m2.Groups['dirty'].Success
+        Source  = 'byte_scan'
     }
 }
 

@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Server tests - original Horizun code.
 //
 // The contract is declared once now. These are the tests that keep it that way,
@@ -44,7 +44,7 @@ namespace Horizun.Server.Tests
                                            .ToList();
 
             Assert.Equal(
-                new[] { "horizun_catalog_lookup", "horizun_excel_write_rows", "horizun_job_status", "horizun_power_bi_push", "horizun_target" },
+                new[] { "horizun_catalog_lookup", "horizun_excel_read_rows", "horizun_excel_write_rows", "horizun_job_status", "horizun_power_bi_push", "horizun_target" },
                 hostResident);
         }
 

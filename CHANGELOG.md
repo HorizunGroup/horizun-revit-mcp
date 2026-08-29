@@ -3,7 +3,153 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased — 2026-08-25
+## v1.1.0 — 2026-08-29
+
+- **Native-model diagnostics, snapshots and readiness.** The diagnostic surface
+  now reads coordinates, datums, naming, families, views, model weight and
+  delivery readiness directly from the active RVT, without IFC, COBie or a PDF
+  export. Requirement-set rules remain organisation-neutral and fail closed on
+  incomplete coverage. A durable local snapshot and health-index layer records
+  provenance, coverage and run-over-run changes without uploading model data.
+  The P0 slice was measured live on Revit 2026 at candidate `09fc20b`: 16/16
+  probes, 0 failed / 0 unverified / 0 not covered. The wider 33-story programme
+  remains explicitly tracked in `docs/MODEL-DIAGNOSTICS-PROGRAM-STATE.json`;
+  incomplete backlog items are not presented as released behaviour.
+
+- **Structural modelling and reinforcement.** Typed structure reads and verified
+  rebar planning/apply/audit now cover hosted bars, zones, slab mats, geometry
+  containment and quantities, with explicit refusals for design decisions the
+  caller did not supply. The dedicated matrix ran the same candidate on Revit
+  2023, 2024, 2025, 2026 and 2027: 60/60 probes per year, 300/300 total, with no
+  failed, unverified, not-covered or fixture-missing result. Exact evidence and
+  known exclusions are recorded in `docs/evidence/structure-matrix.json` and
+  `docs/STRUCTURAL-PROGRAM-STATE.json`.
+
+- **Expanded production surface.** Loaded-link dimensioning, whole-chain
+  annotation planning, per-room view planning, richer view and sheet operations,
+  schedule definitions, revisions, durable jobs, MEP/coordination/penetration
+  workflows, tabular exchange, family checks and dynamic tool packs ship as one
+  compatible minor increment. The generated contract inventory contains 78 MCP
+  tools and 182 dispatched operations; those are capability counts, not claims
+  that every enum variant has live coverage.
+
+- **The release harness now has one owner for MCP stdout.** The tool-pack live
+  probe no longer starts a second asynchronous read while the first is pending,
+  and it edits the isolated `HORIZUN_DATA_ROOT` used by the release run instead
+  of the machine owner's settings. The first `1.1.0` candidate was rejected on
+  Revit 2023 by this race before it could produce a report; the source gate now
+  pins both invariants.
+
+### DWG-to-BIM and installation hardening — 2026-08-27
+
+- **DWG → BIM, phase DWG-4.** A linked drawing becomes a model through a
+  requirement set the caller writes; no layer name, family or office standard is
+  compiled in. **Measured live on Revit 2026 at candidate `c3deb2f`: 238/238
+  probes across eighteen versioned harnesses under `scripts/live/`, every artifact
+  from ONE build** — `scripts/live/verify-dwg-all.ps1` runs them in a fixed order
+  and refuses to add up results that are not.
+
+  New in this phase: **typed CAD linking** (`horizun_manage_cad_links`) verified
+  by content, with `unload` refused by name because `CADLinkType` has no `Unload`
+  in 2023–2027; **curved walls** surviving drawing → element → audit; **floors
+  with holes**; **rooms** placed by a point genuinely inside an L; **doors and
+  windows hosted** in the wall the drawing implies, with a refusal that names the
+  two-pass order; **architectural and structural columns, grids, beams**; a
+  `structural` flag re-read from Revit's own parameter; `bridge_openings_mm`, so
+  a wall a plan drawing breaks at every opening is read as one wall; the
+  **twelve-name change vocabulary** for an incremental revision, every count
+  reported including the zeros; the audit's **substance codes** `unhosted`,
+  `type_differs` and `size_differs`; **planimetry** derived from the converted
+  model and audited in the model, never through a PDF; and **S/M/L performance**
+  against budgets declared in source before anything was measured.
+
+  Seven product defects were found by the run series and fixed. The two worth
+  naming: a producer that never called `Finalise`, so **every curved wall ever
+  read came back at confidence 1.00 with no reason given and was silently held
+  back** — from outside, a drawing full of curved walls converted to nothing; and
+  a compound wall exporting **six** concentric arcs, of which the reading built
+  two walls, the second out of the first one's material layers.
+
+  `horizun_query_model` can now be asked what an element lives IN (`host_id`,
+  `host_category`) — there was no typed way to check hosting, so it could only
+  be believed. `horizun_query_cad` publishes the drawing's **arcs as arcs**, not
+  only as the chords they were also broken into.
+
+  Guide: `docs/DWG-TO-BIM.md`. The decision NOT to read DWG files directly, with
+  the conditions under which to reopen it: `docs/ADR-001-direct-dwg-reader.md`.
+  Ledger: `docs/DWG-PROGRAM-STATE.json`, generated from the roll-up artifact.
+
+- **`install-status` can no longer claim more than it checked.** `live_verified`
+  now requires five things to agree, each recorded beside the answer: the server
+  that replied is the one INSTALLED at `server_path` (by SHA-256), the commit it
+  reports is the one stamped into that binary, the contract hash is readable, a
+  Revit is named, and a document is open. Anything missing writes
+  `deployed_pending_health` with the reason. On a development machine an older
+  `horizun-mcp.exe` left running answers `horizun_health` perfectly and reports
+  its own commit — that is why.
+
+### Model and document production — 2026-08-25
+
+- **Dimensions into loaded RVT links.** The host-only rule is gone:
+  `horizun_get_dimension_references` takes `linked_targets` (one entry per link
+  INSTANCE — two placements of one file are two identities), reports the link
+  instance, link type, linked document and linked element as four separated ids
+  with the placement transform and its 0.1 mm-grid fingerprint (handedness
+  included), and returns geometry in HOST coordinates. `horizun_annotate`
+  consumes the returned host-document representations — mixed host+linked
+  chains included — and binds the link's placement into the plan, so moving the
+  link between rehearsal and apply refuses as `stale_plan` naming
+  `link_transform_moved`. `horizun_query_dimensions` resolves linked references
+  THROUGH the live link when loaded and reports `link_state`/`reference_coverage`
+  instead of counting an unloaded link as broken. Unloaded, missing, nested and
+  non-creatable cases each carry a structured code.
+
+- **Whole-chain and per-room production planners.** `horizun_plan_annotations`
+  gains `auto_dimension_grids`/`_levels`/`_curtain_walls`/`_openings` (host or
+  ONE named link instance): direction grouping at a stated 0.5° tolerance,
+  positional ordering with a 0.1 mm coincidence refusal, duplicate detection by
+  unordered reference-set identity, stacked chains, structured omission codes
+  and a never-optimistic coverage verdict. New read-only `horizun_plan_views`
+  plans per-room deliverables (oriented elevations via the smallest turn a
+  four-way marker's symmetry allows, crossing sections from exact box support
+  functions, a cropped plan) under a token naming pattern that refuses unknown
+  tokens, returning a complete `horizun_manage_views` request.
+
+- **`horizun_manage_views` grows from 12 to 24 operations.** Area plans,
+  callouts, placeholder sheets and their conversion, sheet duplication with or
+  without content (refused by name when the source carries placed schedules),
+  phases, scope boxes, view ranges, rectangular crops carried through the crop
+  frame conversion, annotation crops, viewport retyping against `GetValidTypes`,
+  cross-sheet viewport alignment against a still anchor, and elevation-marker
+  rotation verified by re-reading the turned view direction. Sheet numbers are
+  checked unique against the document AND the batch before anything runs.
+
+- **`horizun_manage_schedules` (new).** Schedule DEFINITIONS as a verified
+  batch: material takeoffs, sheet/view lists, revision schedules and keynote
+  legends created; fields resolved by stable parameter id or unambiguous name
+  (a name matching two columns refuses listing both ids); filters and sorting
+  DECLARED whole so replays are idempotent; the confirmation token binds each
+  target's whole definition fingerprint; replies carry the canonical definition
+  before/after and the changed sections. `horizun_manage_revisions` learns to
+  WITHDRAW a revision from sheets, refusing by name the case where it reaches
+  the sheet through a cloud.
+
+- **Dynamic tool packs.** `tool_packs` in settings.json selects named subsets
+  of the 62-tool surface (core is welded on; dependencies arrive transitively
+  and visibly; malformed configurations fall closed to core-only, loudly). A
+  pack is visibility, never elevation — the permission profile stays the
+  authority, execute_python still needs the owner grant, and hidden means
+  unreachable on every dispatch path including `horizun_execute_plan` children.
+  `HORIZUN_TOOL_PACKS` gives administrators an environment override; compatible
+  clients refresh via `tools/list_changed`; `horizun_health` publishes the
+  active selection. See docs/TOOL-PACKS.md.
+
+- **The Session ribbon panel.** Tool packs, security (profile, Python origin,
+  recent ribbon changes), a planimetry review that runs the SAME read-only
+  audit an MCP client runs, and the durable job records — all native dialogs,
+  bilingual, and never a write path: corrections stay behind the typed tools.
+
+## v1.0.0 — 2026-08-25
 
 - **Version 1.0.0 and permanent unsigned-release policy.** The shared product
   version is now 1.0.0. Public Windows artifacts remain intentionally unsigned:
@@ -96,7 +242,7 @@ assumed. Dates are the day the work landed.
   read through `SelectNodes` + `InnerText`, which does not depend on whether an
   element happens to be attributed.
 
-## Unreleased — 2026-08-24
+### Planimetry foundation — 2026-08-24
 
 - **Planimetry, read and audited from the model — `horizun_query_planimetry`
   and `horizun_audit_planimetry`.** The documentation surface (sheets, views,

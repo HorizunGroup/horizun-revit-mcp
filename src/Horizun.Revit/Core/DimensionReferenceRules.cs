@@ -199,6 +199,9 @@ namespace Horizun.Revit.Core
         public const string CodeNoStableCenterline = "no_stable_centerline";
         public const string CodeUnsupportedEdgeCurve = "unsupported_edge_curve";
         public const string CodeMepCenterlineRejected = "mep_centerline_rejected_by_dimension_api";
+        public const string CodeLinkedDatumRejected = "linked_datum_rejected_by_dimension_api";
+        public const string CodeLinkedGeometryRejectedByRevit2023 =
+            "linked_geometry_rejected_by_revit_2023_dimension_api";
         // warning codes (no row was produced, or a row carries a caveat):
         public const string WarningSelectorNotApplicable = "selector_not_applicable";
         public const string WarningViewGeometryFallback = "view_geometry_fallback";
@@ -208,6 +211,14 @@ namespace Horizun.Revit.Core
         public const string WarningNoApplicableSelectors = "no_applicable_selectors";
         public const string WarningDuplicateElementIds = "duplicate_element_ids";
         public const string WarningProbePointUnused = "probe_point_unused";
+        /// <summary>
+        /// Emitted once per linked element: its geometry was read from the LINKED
+        /// document at fine detail, because Options.View names a view in the element's
+        /// own document and the requested view belongs to the host. The references are
+        /// real and the coordinates are host coordinates; what the read cannot answer
+        /// is whether the element is visible in that host view.
+        /// </summary>
+        public const string WarningLinkedGeometryNotViewScoped = "linked_geometry_not_view_scoped";
         // coverage.unreadable code:
         public const string CodeLinkReferencesNotSupported = "link_references_not_supported";
 
@@ -444,11 +455,51 @@ namespace Horizun.Revit.Core
                 "references'). The reference is stable and real, but not consumable by dimension creation - " +
                 "dimension MEP runs to grids, reference planes or neighbouring geometry instead.");
 
-        /// <summary>Why link elements are refused - the phrase travels with the coverage entry.</summary>
+        /// <summary>
+        /// MEASURED, not assumed: on live Revit 2026 (2026-08-26), NewDimension refuses
+        /// a datum reference lifted through CreateLinkReference - a linked grid's
+        /// reference, parsed and valid, answered "Invalid number of references" in the
+        /// provisional rehearsal, while the very same call succeeds against the linked
+        /// wall's FACE references (a LinearDimension was provisionally created and
+        /// measured at exactly 200 mm between them). Linked GEOMETRY carries
+        /// dimensions; linked DATUMS do not, and a row that promised otherwise would
+        /// fail at apply time with Revit's least helpful sentence.
+        /// </summary>
+        public static IncompatibilityReason LinkedDatumRejected()
+            => new IncompatibilityReason(CodeLinkedDatumRejected,
+                "Revit's dimension API rejects DATUM references lifted through a link (measured live: 'Invalid " +
+                "number of references' for a linked grid, while the same call succeeds against linked wall " +
+                "faces). The reference is stable and real, but not consumable by dimension creation - " +
+                "dimension linked geometry (faces, edges) instead, or the host's own datums.");
+
+        /// <summary>
+        /// MEASURED on live Revit 2023 (2026-08-29), not inferred from later APIs:
+        /// NewDimension rejected all three useful linked-geometry arrangements with
+        /// "Invalid number of references": host + linked faces, two faces of one
+        /// linked wall, and parallel faces from two distinct link instances. Revit
+        /// 2024+ retains the positive linked-face path.
+        /// </summary>
+        public static IncompatibilityReason LinkedGeometryRejectedByRevit2023()
+            => new IncompatibilityReason(CodeLinkedGeometryRejectedByRevit2023,
+                "Revit 2023's dimension API rejects geometry references lifted through RVT links " +
+                "(measured live: 'Invalid number of references' for host+link, two faces of one linked wall, " +
+                "and parallel faces from two link instances). The reference is stable and real, but Revit " +
+                "2023 cannot consume it in NewDimension. Revit 2024+ supports the linked-face production path; " +
+                "in Revit 2023 use host geometry/reference planes or create the dimension manually. Nothing was written.");
+
+        /// <summary>
+        /// Why a link instance named in element_ids (or matched by filter) produces no
+        /// candidates. It is NOT that linked references are unsupported - they are, via
+        /// linked_targets - but that "the link instance" and "an element inside it" are
+        /// different subjects. Enumerating references on the instance itself would hand
+        /// back geometry of the link's own bounding representation, which is not what
+        /// anybody dimensioning a linked wall is asking for.
+        /// </summary>
         public static string LinkReferencesMessage(long elementId)
-            => "element " + elementId + " is a Revit link instance. References into linked models have not been " +
-               "proven live to be consumable by dimension creation on this bridge, so they are refused rather " +
-               "than guessed at. The element was NOT inspected; open its own model to dimension it there.";
+            => "element " + elementId + " is a Revit link INSTANCE, not an element inside one. To dimension to " +
+               "geometry in the linked model, name it in linked_targets: " +
+               "[{ \"link_instance_id\": " + elementId + ", \"linked_element_ids\": [<ids inside the link>] }]. " +
+               "Those ids belong to the LINKED document, not to this one. The instance itself was not inspected.";
 
         // ---- ambiguity ------------------------------------------------------------
 

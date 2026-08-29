@@ -17,8 +17,17 @@ LLM judge qualities the Revit database does not encode.
    viewport/schedule with rollback, including viewport labels; no paper size is
    inferred from an empty `View.Outline`.
 5. Use `horizun_plan_annotations operation=auto_tags` for collision-aware tag
-   points or `operation=intent_dimension` for a dimension chain chosen from
-   semantic references. Both return a complete `horizun_annotate` dry-run call.
+   points, `operation=intent_dimension` for a dimension chain chosen from
+   semantic references, or the `auto_dimension_*` family (grids, levels,
+   curtain walls, openings — over the host or ONE named link instance) for
+   whole chains grouped by direction, ordered positionally and deduplicated
+   against dimensions already in the view. All return a complete
+   `horizun_annotate` dry-run call. For per-room deliverables,
+   `horizun_plan_views operation=room_views` plans oriented elevations,
+   crossing sections and a cropped plan per room, returning a complete
+   `horizun_manage_views` dry-run call; schedule definitions are edited with
+   `horizun_manage_schedules`, whose declared-whole filters and sorting make
+   replays idempotent.
 6. Run that dry run, inspect the provisional Revit rehearsal, and spend only its
    single-use confirmation token. An explicit tag type is validated and re-read.
 7. Create or update the paper trail with `horizun_manage_revisions`, including

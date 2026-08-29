@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Finish a Horizun installation without racing an active Claude or Codex.
 
@@ -56,6 +56,11 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runNamePrefix = 'HorizunMCPCompleteInstall-'
 $runName = $runNamePrefix + $Generation
 $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# -WindowStyle Hidden stops hiding anything once Windows Terminal is the
+# default console host (Windows 11): every hidden relaunch shows a terminal
+# window, and the awaiting_revit worker shows it for up to 24 hours. conhost
+# --headless forces the windowless legacy host regardless of that setting.
+$conhostExe = Join-Path $env:SystemRoot 'System32\conhost.exe'
 $currentGenerationPath = "$StatusPath.current"
 $generationStatusPath = "$StatusPath.generation-$Generation.json"
 $verificationPath = "$generationStatusPath.verification.json"
@@ -65,20 +70,30 @@ function Get-CurrentGeneration {
     try { return (Get-Content -LiteralPath $currentGenerationPath -Raw).Trim() } catch { return $null }
 }
 
+function Remove-StaleResumeEntries {
+    # Entries that are NOT this generation's: the legacy un-suffixed name from
+    # pre-generation installs, and suffixed entries of superseded generations.
+    # Safe on every path because it never touches $runName itself. This used to
+    # live only inside Claim-Generation, and the logon resume path exits BEFORE
+    # claiming - so an orphaned legacy entry relaunched a visible window at
+    # every logon and the script never cleaned it (measured on this machine,
+    # 2026-08-21: HorizunMCPCompleteInstall from a pre-generation install).
+    if ($NoResume -or -not (Test-Path -LiteralPath $runKey)) { return }
+    foreach ($property in @(Get-ItemProperty -LiteralPath $runKey).PSObject.Properties | Where-Object {
+        $_.Name -eq 'HorizunMCPCompleteInstall' -or
+        ($_.Name -like "$runNamePrefix*" -and $_.Name -ne $runName)
+    }) {
+        Remove-ItemProperty -LiteralPath $runKey -Name $property.Name -ErrorAction SilentlyContinue
+    }
+}
+
 function Claim-Generation {
     $dir = Split-Path -Parent $StatusPath
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     $tmp = "$currentGenerationPath.tmp-$([guid]::NewGuid().ToString('N'))"
     Set-Content -LiteralPath $tmp -Value $Generation -Encoding ASCII
     Move-Item -LiteralPath $tmp -Destination $currentGenerationPath -Force
-    if (-not $NoResume -and (Test-Path -LiteralPath $runKey)) {
-        foreach ($property in @(Get-ItemProperty -LiteralPath $runKey).PSObject.Properties | Where-Object {
-            $_.Name -eq 'HorizunMCPCompleteInstall' -or
-            ($_.Name -like "$runNamePrefix*" -and $_.Name -ne $runName)
-        }) {
-            Remove-ItemProperty -LiteralPath $runKey -Name $property.Name -ErrorAction SilentlyContinue
-        }
-    }
+    Remove-StaleResumeEntries
 }
 
 function Test-CurrentGeneration { return (Get-CurrentGeneration) -eq $Generation }
@@ -204,8 +219,8 @@ function Get-ResumeCommand([string]$Resolved) {
     $quotedScript = '"' + $PSCommandPath.Replace('"', '""') + '"'
     $quotedServer = '"' + $ServerPath.Replace('"', '""') + '"'
     $quotedStatus = '"' + $StatusPath.Replace('"', '""') + '"'
-    $command = ('"{0}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File {1} -Client {2} -ServerPath {3} -StatusPath {4} -WaitTimeoutMinutes {5} -Detached' -f `
-        $powerShellExe, $quotedScript, $Resolved, $quotedServer, $quotedStatus, $WaitTimeoutMinutes)
+    $command = ('"{0}" --headless "{1}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File {2} -Client {3} -ServerPath {4} -StatusPath {5} -WaitTimeoutMinutes {6} -Detached' -f `
+        $conhostExe, $powerShellExe, $quotedScript, $Resolved, $quotedServer, $quotedStatus, $WaitTimeoutMinutes)
     $command += ' -Generation ' + $Generation
     if ($NoLiveWait) { $command += ' -NoLiveWait' }
     if ($ClientStateFile) { $command += ' -ClientStateFile "' + $ClientStateFile.Replace('"', '""') + '"' }
@@ -236,10 +251,13 @@ function Start-DetachedWorker([string]$Resolved, [switch]$OnlyLive) {
     if ($NoResume) { $arguments += '-NoResume' }
     if ($NoLiveWait) { $arguments += '-NoLiveWait' }
     if ($ClientStateFile) { $arguments += '-ClientStateFile'; $arguments += ('"' + $ClientStateFile + '"') }
-    $stdout = "$generationStatusPath.worker.log"
-    $stderr = "$generationStatusPath.worker-error.log"
-    Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout -RedirectStandardError $stderr | Out-Null
+    # Through conhost --headless so no terminal window appears while the worker
+    # waits (under Windows Terminal as default host, Hidden alone shows one).
+    # The stdout/stderr redirects are gone with it: a redirect would capture
+    # conhost's streams, not the child's. The durable generation records ARE the
+    # worker's evidence; stdout was best-effort duplication.
+    $headlessArguments = @('--headless', $powerShellExe) + $arguments
+    Start-Process -FilePath $conhostExe -ArgumentList $headlessArguments -WindowStyle Hidden | Out-Null
 }
 
 function Restore-RegistrationWrites([string]$ReportPath) {
@@ -309,6 +327,9 @@ if (-not $mutexHeld) {
 
 try {
     if ($Detached -and -not (Get-CurrentGeneration)) { Claim-Generation }
+    # The sweep runs on EVERY startup, including the early exits below: a stale
+    # entry never belongs in Run whatever this generation decides about itself.
+    Remove-StaleResumeEntries
     if (-not (Test-CurrentGeneration)) { Clear-Resume; exit 0 }
     Set-Resume $resolved
     $deadline = (Get-Date).AddMinutes($WaitTimeoutMinutes)

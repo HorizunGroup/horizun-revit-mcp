@@ -63,6 +63,10 @@
          the server cannot drift into advertising a capability the plugin refuses. It
          carries no using Autodesk.*, so nothing Revit comes with it. -->
     <Compile Include="..\Horizun.Revit\Core\Settings.cs" />
+    <!-- The pack map and its resolution, linked for the same reason Settings is:
+         the server decides what tools/list advertises with the same arithmetic the
+         add-in refuses dispatch with, or the two drift. -->
+    <Compile Include="..\Horizun.Revit\Core\ToolPacks.cs" />
     <!-- One answer to "where does Horizun keep its state". Settings, discovery, jobs
          and both logs used to compute it separately at each end - seven lines that
          happened to agree, in two processes that can be handed different values of

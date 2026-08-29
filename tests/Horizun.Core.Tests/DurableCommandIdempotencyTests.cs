@@ -89,5 +89,74 @@ namespace Horizun.Core.Tests
         {
             try { if (Directory.Exists(_dir)) Directory.Delete(_dir, true); } catch { }
         }
+
+        // ---------------------------------------------------------------------
+        // A REPLAY MUST NOT DESCRIBE A SESSION THAT DIED
+        // ---------------------------------------------------------------------
+
+        [Fact]
+        public void A_session_command_does_NOT_replay_into_a_different_process()
+        {
+            // MEASURED 2026-08-27: a harness reused its staging keys across a
+            // deliberate Revit restart. All three opens replayed "opened,
+            // active_document_verified: true", the harness believed them, and 57
+            // probes then ran against a Revit with nothing open - reported as
+            // command failures, which is the wrong place to look.
+            DurableCommandDecision open = Ledger(pid: 10).Claim("stage-1", "horizun_document_session", "fp-open");
+            Assert.Equal(DurableCommandOutcome.Fresh, open.Outcome);
+            Ledger(pid: 10).Complete(open, CommandResult.Ok(new JObject
+            {
+                ["status"] = "opened",
+                ["active_document_verified"] = true
+            }));
+
+            DurableCommandDecision afterRestart = Ledger(pid: 77).Claim("stage-1", "horizun_document_session", "fp-open");
+            Assert.Equal(DurableCommandOutcome.Conflict, afterRestart.Outcome);
+            Assert.Null(afterRestart.ReplayResult);
+            Assert.Contains("stale_session_replay", afterRestart.Message);
+            Assert.Contains("Use a NEW key", afterRestart.Message);
+        }
+
+        [Fact]
+        public void The_SAME_process_still_replays_a_session_command_after_a_lost_reply()
+        {
+            // The at-most-once guarantee this exists for is unchanged: a client
+            // that never received the answer retries, the session is the same
+            // one, and the recorded answer is still true.
+            DurableCommandDecision open = Ledger(pid: 10).Claim("stage-2", "horizun_document_session", "fp-open");
+            Ledger(pid: 10).Complete(open, CommandResult.Ok(new JObject { ["status"] = "opened" }));
+
+            DurableCommandDecision retry = Ledger(pid: 10).Claim("stage-2", "horizun_document_session", "fp-open");
+            Assert.Equal(DurableCommandOutcome.Replay, retry.Outcome);
+            Assert.Equal("opened", (string)((JObject)retry.ReplayResult.Data)["status"]);
+        }
+
+        [Fact]
+        public void A_MODEL_WRITE_still_replays_across_a_restart_because_the_write_is_in_the_file()
+        {
+            // The distinction is the whole point. A committed write outlived the
+            // process that made it, so its recorded answer is still true and
+            // running it again would be the duplicate this ledger prevents.
+            DurableCommandDecision write = Ledger(pid: 10).Claim("build-1", "horizun_create_elements", "fp-walls");
+            Ledger(pid: 10).Complete(write, CommandResult.Ok(new JObject { ["created_verified"] = 3 }));
+
+            DurableCommandDecision afterRestart = Ledger(pid: 88).Claim("build-1", "horizun_create_elements", "fp-walls");
+            Assert.Equal(DurableCommandOutcome.Replay, afterRestart.Outcome);
+            Assert.Equal(3, (int)((JObject)afterRestart.ReplayResult.Data)["created_verified"]);
+        }
+
+        [Fact]
+        public void Every_session_scoped_command_is_covered_and_ordinary_ones_are_not()
+        {
+            foreach (string name in new[] { "horizun_document_session", "horizun_open_document",
+                                            "horizun_navigate", "horizun_target",
+                                            "horizun_request_python_access" })
+                Assert.True(DurableCommandLedger.IsSessionScoped(name), name + " must not replay across processes");
+
+            foreach (string name in new[] { "horizun_create_elements", "horizun_execute_plan",
+                                            "horizun_write_params_verified", "horizun_delete_verified",
+                                            "horizun_apply_cad_plan" })
+                Assert.False(DurableCommandLedger.IsSessionScoped(name), name + " writes the FILE and must still replay");
+        }
     }
 }

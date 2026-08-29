@@ -86,6 +86,14 @@ namespace Horizun.Revit.Core
         /// below says so out loud rather than reporting a guarantee it did not make.
         /// </summary>
         public string ElementFingerprint { get; internal set; }
+
+        /// <summary>
+        /// The PLAN the dry run resolved, kept beside its fingerprint so a stale refusal
+        /// can NAME what moved instead of asking the caller to diff two runs by hand.
+        /// The fingerprint decides; this only explains. Null for commands that do not
+        /// materialise their plan, and for tokens issued before this existed.
+        /// </summary>
+        public ResolvedPlan RehearsedPlan { get; internal set; }
         public DateTime IssuedUtc { get; internal set; }
         public DateTime ExpiresUtc { get; internal set; }
         public bool Used { get; internal set; }
@@ -110,7 +118,7 @@ namespace Horizun.Revit.Core
 
         /// <summary>Issue a token for a plan that was just computed. Never for one that was not.</summary>
         public Confirmation Issue(string command, string documentKey, string planHash, TimeSpan? ttl = null,
-                                  string elementFingerprint = null)
+                                  string elementFingerprint = null, ResolvedPlan rehearsedPlan = null)
         {
             var c = new Confirmation
             {
@@ -119,6 +127,7 @@ namespace Horizun.Revit.Core
                 DocumentKey = documentKey,
                 PlanHash = planHash,
                 ElementFingerprint = elementFingerprint,
+                RehearsedPlan = rehearsedPlan,
                 IssuedUtc = _now(),
                 ExpiresUtc = _now().Add(ttl ?? DefaultTtl)
             };
@@ -135,7 +144,7 @@ namespace Horizun.Revit.Core
         /// same approval cannot execute twice.
         /// </summary>
         public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash) =>
-            Validate(token, command, documentKey, planHash, null, null);
+            ValidateCore(token, command, documentKey, planHash, null, null, null);
 
         /// <summary>
         /// The same check, plus the one the old code said it could not make: whether the
@@ -147,7 +156,23 @@ namespace Horizun.Revit.Core
         /// not made, because a guarantee nobody mentions reads like one that held.
         /// </summary>
         public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash,
-                                          string elementFingerprint, string driftDescription)
+                                          string elementFingerprint, string driftDescription) =>
+            ValidateCore(token, command, documentKey, planHash, elementFingerprint, driftDescription, null);
+
+        /// <summary>
+        /// The same check, handed the plan RECOMPUTED NOW as an object. The fingerprint
+        /// still decides staleness; the object is only consulted AFTER the mismatch, to
+        /// name what moved against the rehearsed plan this store kept with the token -
+        /// so every token-gated command gets a named drift without persisting its own
+        /// rehearsal across two MCP calls.
+        /// </summary>
+        public ConfirmationCheck Validate(string token, string command, string documentKey, string planHash,
+                                          ResolvedPlan atApply, string driftDescription) =>
+            ValidateCore(token, command, documentKey, planHash, atApply?.Fingerprint(), driftDescription, atApply);
+
+        private ConfirmationCheck ValidateCore(string token, string command, string documentKey, string planHash,
+                                               string elementFingerprint, string driftDescription,
+                                               ResolvedPlan atApply)
         {
             lock (_lock)
             {
@@ -197,6 +222,8 @@ namespace Horizun.Revit.Core
                 if (c.ElementFingerprint != null && elementFingerprint != null &&
                     !string.Equals(c.ElementFingerprint, elementFingerprint, StringComparison.Ordinal))
                 {
+                    if (string.IsNullOrWhiteSpace(driftDescription) && c.RehearsedPlan != null && atApply != null)
+                        driftDescription = ResolvedPlan.DescribeDrift(c.RehearsedPlan, atApply);
                     return Fail(ConfirmationState.StalePlan,
                         "THE MODEL MOVED AFTER THE DRY RUN. The request is identical and the document is the " +
                         "same one, but the elements this resolves to - or the values read off them - are not " +

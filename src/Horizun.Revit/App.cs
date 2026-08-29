@@ -125,6 +125,10 @@ namespace Horizun.Revit
             d.Register(new AuditModelCommand());
             d.Register(new QuantitiesCommand());
             d.Register(new ClashCommand());
+            d.Register(new CoordinationCommand());
+            d.Register(new PlanStructureCommand());
+            d.Register(new ManageLinksCommand());
+            d.Register(new PlanMepCommand());
             d.Register(new SetKeynoteCommand());
             d.Register(new FamilyApplyCommand());
             d.Register(new CreateFamilyCommand());
@@ -150,12 +154,19 @@ namespace Horizun.Revit
             d.Register(new QueryDimensionsCommand());
             d.Register(new EditDimensionsCommand());
             d.Register(new QueryDetail2DCommand());
+            d.Register(new QueryCadCommand());
             d.Register(new Detail2DCommand());
             d.Register(new QueryPlanimetryCommand());
+            d.Register(new QueryStructureCommand());
+            d.Register(new PlanReinforcementCommand());
+            d.Register(new ApplyReinforcementCommand());
+            d.Register(new AuditReinforcementCommand());
             d.Register(new AuditPlanimetryCommand());
             d.Register(new FixPlanimetryCommand());
             d.Register(new PackSheetsCommand());
             d.Register(new PlanAnnotationsCommand());
+            d.Register(new PlanViewsCommand());
+            d.Register(new ManageSchedulesCommand());
             d.Register(new ManageRevisionsCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());
@@ -174,6 +185,12 @@ namespace Horizun.Revit
             d.Register(new RectangularizeWallsCommand());
             // Registered last because it resolves and composes the typed commands above.
             d.Register(new ExecutePlanCommand(d.ResolveCommand));
+            d.Register(new PlanFromCadCommand());
+            d.Register(new ApplyCadPlanCommand(d.ResolveCommand));
+            d.Register(new AuditCadModelCommand());
+            d.Register(new PlanCadUpdateCommand());
+            d.Register(new ApplyCadUpdateCommand(d.ResolveCommand));
+            d.Register(new ManageCadLinksCommand());
             d.Register(new SubmitJobCommand(d.ResolveCommand));
             // more commands land here as they are ported.
         }
