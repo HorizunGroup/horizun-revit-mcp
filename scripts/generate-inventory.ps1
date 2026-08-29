@@ -68,33 +68,60 @@ $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
 $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
 $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
-$proc = [Diagnostics.Process]::Start($psi)
-function Send-Line($o) { $proc.StandardInput.WriteLine(($o | ConvertTo-Json -Depth 24 -Compress)); $proc.StandardInput.Flush() }
-function Recv-Line([int]$TimeoutMs = 30000) {
-    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-    while ($true) {
-        $t = $proc.StandardOutput.ReadLineAsync()
-        $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
-        $winner = [Threading.Tasks.Task]::WhenAny([Threading.Tasks.Task[]]@($t, [Threading.Tasks.Task]::Delay($remaining))).Result
-        if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
-        if (-not $t.Result) { return $null }
-        try { $m = $t.Result | ConvertFrom-Json } catch { continue }
-        if ($m.id) { return $m }
+$inventoryDataRoot = Join-Path ([IO.Path]::GetTempPath()) ('horizun-inventory-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $inventoryDataRoot | Out-Null
+$inventorySettings = [ordered]@{
+    permission_profile = 'unsafe_code'
+    enable_execute_python = $true
+}
+[IO.File]::WriteAllText(
+    (Join-Path $inventoryDataRoot 'settings.json'),
+    (($inventorySettings | ConvertTo-Json -Compress) + [Environment]::NewLine),
+    [Text.UTF8Encoding]::new($false))
+# Inventory measures the complete product surface, not whichever subset this
+# Windows user selected for today's modelling session. Isolate BOTH permission
+# profile and tool packs in the child process; never read or rewrite the owner's
+# settings. Omitting tool_packs means the documented default: every pack.
+$psi.EnvironmentVariables['HORIZUN_DATA_ROOT'] = $inventoryDataRoot
+$psi.EnvironmentVariables['HORIZUN_TOOL_PACKS'] = 'all'
+
+$proc = $null
+$listed = $null
+$identity = $null
+try {
+    $proc = [Diagnostics.Process]::Start($psi)
+    function Send-Line($o) { $proc.StandardInput.WriteLine(($o | ConvertTo-Json -Depth 24 -Compress)); $proc.StandardInput.Flush() }
+    function Recv-Line([int]$TimeoutMs = 30000) {
+        $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
+        while ($true) {
+            $t = $proc.StandardOutput.ReadLineAsync()
+            $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
+            $winner = [Threading.Tasks.Task]::WhenAny([Threading.Tasks.Task[]]@($t, [Threading.Tasks.Task]::Delay($remaining))).Result
+            if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
+            if (-not $t.Result) { return $null }
+            try { $m = $t.Result | ConvertFrom-Json } catch { continue }
+            if ($m.id) { return $m }
+        }
+    }
+    Send-Line @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2025-11-25'; capabilities=@{}; clientInfo=@{ name='inventory'; version='1' } } }
+    $init = Recv-Line
+    if (-not $init) { throw 'the server did not answer initialize' }
+    Send-Line @{ jsonrpc='2.0'; method='notifications/initialized' }
+    Send-Line @{ jsonrpc='2.0'; id=2; method='tools/list'; params=@{} }
+    $listed = Recv-Line
+    # THE CONTRACT HASH FROM THE SAME SERVER, in the same conversation. Reading it
+    # from the source tree would prove nothing about the binary that just listed
+    # these tools - and the binary is the thing this file is a measurement of.
+    Send-Line @{ jsonrpc='2.0'; id=3; method='resources/read'; params=@{ uri='horizun://build/identity' } }
+    $identity = Recv-Line
+    $proc.StandardInput.Close()
+    if (-not $proc.WaitForExit(10000)) { $proc.Kill() }
+} finally {
+    if ($proc -and -not $proc.HasExited) { try { $proc.Kill() } catch { } }
+    if (Test-Path -LiteralPath $inventoryDataRoot) {
+        Remove-Item -LiteralPath $inventoryDataRoot -Recurse -Force
     }
 }
-Send-Line @{ jsonrpc='2.0'; id=1; method='initialize'; params=@{ protocolVersion='2025-11-25'; capabilities=@{}; clientInfo=@{ name='inventory'; version='1' } } }
-$init = Recv-Line
-if (-not $init) { throw 'the server did not answer initialize' }
-Send-Line @{ jsonrpc='2.0'; method='notifications/initialized' }
-Send-Line @{ jsonrpc='2.0'; id=2; method='tools/list'; params=@{} }
-$listed = Recv-Line
-# THE CONTRACT HASH FROM THE SAME SERVER, in the same conversation. Reading it
-# from the source tree would prove nothing about the binary that just listed
-# these tools - and the binary is the thing this file is a measurement of.
-Send-Line @{ jsonrpc='2.0'; id=3; method='resources/read'; params=@{ uri='horizun://build/identity' } }
-$identity = Recv-Line
-$proc.StandardInput.Close()
-if (-not $proc.WaitForExit(10000)) { $proc.Kill() }
 if (-not $listed) { throw 'the server did not answer tools/list' }
 $contractHash = $null
 try {
@@ -265,6 +292,7 @@ $inventory = [ordered]@{
     generated_from_server_exe = (Sanitize-Path $ServerExe)
     generated_from_server_sha = $serverSha
     generated_from_contract_hash = $contractHash
+    measurement_profile = 'isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs'
 
     # THE COMMIT OF THE CODE THAT WAS MEASURED, read off the binary's own stamp -
     # NOT git HEAD.

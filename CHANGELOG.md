@@ -3,6 +3,16 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.2 — 2026-08-29
+
+- **Deterministic complete-surface inventory.** The inventory generator now
+  launches the measured server with a disposable `HORIZUN_DATA_ROOT`, the full
+  permission profile and all tool packs. It therefore counts the complete
+  product contract without inheriting a developer's or hosted runner's active
+  modelling profile, and it never reads or rewrites that user's settings. The
+  regression test deliberately supplies a restrictive parent profile and still
+  requires the complete 78-tool inventory.
+
 ## v1.1.1 — 2026-08-29
 
 - **Clean-runner release fix.** Inventory generation now preserves a complete

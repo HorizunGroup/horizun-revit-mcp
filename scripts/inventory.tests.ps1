@@ -46,6 +46,9 @@ Check 'docs/inventory.json exists and declares what each count means' {
     foreach ($k in 'tools','reads','operations','enumerated_variants','not_measured_here') {
         if (-not $inv.definitions.$k) { return "definitions.$k is absent - a number without its definition is not reproducible" }
     }
+    if ($inv.measurement_profile -notmatch 'isolated data root.*unsafe_code.*all tool packs') {
+        return 'measurement_profile does not disclose the isolated complete-surface profile'
+    }
     $null
 }
 
@@ -59,11 +62,29 @@ Check 'every declared dispatch selector is actually read by the command source' 
 }
 
 Check 'the recorded counts still match what the server serves' {
-    # -Check re-asks the built binary and exits 1 on drift, 2 when the file is absent.
-    & pwsh -NoProfile -File (Join-Path $repo 'scripts\generate-inventory.ps1') -Check *> $null
-    if ($LASTEXITCODE -eq 0) { return $null }
-    if ($LASTEXITCODE -eq 2) { return 'docs/inventory.json is missing' }
-    return 'docs/inventory.json no longer matches the served surface - re-run scripts/generate-inventory.ps1'
+    # Prove the generator does NOT inherit a restrictive owner/session profile.
+    # A clean hosted runner is safe_write by default; a modeller can be even more
+    # restrictive. The product inventory must still measure the complete surface
+    # in its own temporary data root without editing either configuration.
+    $probeRoot = Join-Path ([IO.Path]::GetTempPath()) ('horizun-inventory-parent-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probeRoot | Out-Null
+    [IO.File]::WriteAllText(
+        (Join-Path $probeRoot 'settings.json'),
+        '{"permission_profile":"read_only","tool_packs":["core"]}',
+        [Text.UTF8Encoding]::new($false))
+    $priorRoot = $env:HORIZUN_DATA_ROOT
+    try {
+        $env:HORIZUN_DATA_ROOT = $probeRoot
+        # -Check re-asks the built binary and exits 1 on drift, 2 when absent.
+        & pwsh -NoProfile -File (Join-Path $repo 'scripts\generate-inventory.ps1') -Check *> $null
+        $exit = $LASTEXITCODE
+    } finally {
+        $env:HORIZUN_DATA_ROOT = $priorRoot
+        Remove-Item -LiteralPath $probeRoot -Recurse -Force
+    }
+    if ($exit -eq 0) { return $null }
+    if ($exit -eq 2) { return 'docs/inventory.json is missing' }
+    return 'docs/inventory.json no longer matches the isolated complete surface - re-run scripts/generate-inventory.ps1'
 }
 
 Check 'every inventory-marked number in the docs matches the generated inventory' {
