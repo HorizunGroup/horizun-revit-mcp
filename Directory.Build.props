@@ -2,9 +2,10 @@
   <PropertyGroup>
     <!-- One product, one release number. The server and every Revit payload
          inherit this value and are packaged/deployed as an inseparable pair. -->
-    <Version>1.1.2</Version>
-    <!-- Published tags never move. v1.1.2 makes inventory measurement independent
-         of the machine owner's active permission profile and tool-pack selection. -->
+    <Version>1.1.3</Version>
+    <!-- Published tags never move. v1.1.3 hardens the ExternalEvent hand-off
+         against Revit's measured transient Denied answer while a prior callback
+         is still unwinding. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

@@ -19,16 +19,20 @@
 // scheduled is reported as that same unresolvable ambiguity. The one state the
 // system could have known for certain was the one it threw away.
 //
-// Denied is not transient. Revit returns it when the ExternalEvent has been
-// disposed or the application is closing down, so there is no later raise that
-// would rescue those entries. The only honest response is to take them off the
-// queue and close each record as not_started - which is a FACT, and the whole
-// point of distinguishing it from a record that stops mid-flight.
+// Denied CAN be transient. Measured on Revit 2026 during the v1.1.2 release:
+// one command completed, the next sequential caller arrived 4 ms later, and
+// Raise() answered Denied while the previous ExternalEvent callback was still
+// unwinding. Revit stayed open and served every later command. Treating that one
+// answer as shutdown dropped work that was perfectly schedulable.
 //
-// Revit-free on purpose. Denied cannot be produced on demand - it needs a Revit
-// that is shutting down - and "reasoned and compiled" was the status of this
-// path for a reason. Behind IWorkRaiser all three answers are ordinary test
-// cases.
+// The caller therefore gives Denied a short, bounded retry window OFF the Revit
+// UI thread. If every attempt is denied, or the answer is Unknown, the terminal
+// path below still closes each record as not_started. Shutdown itself drains the
+// queue directly and never depends on this inference.
+//
+// Revit-free on purpose. The narrow unwind race cannot be timed reliably in a
+// test, but behind IWorkRaiser its measured answer sequence - Denied, then
+// Accepted/Pending - is ordinary deterministic input, as is terminal Denied.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -61,6 +65,56 @@ namespace Horizun.Revit.Core
         RaiseOutcome Raise();
     }
 
+    public sealed class RaiseAttemptResult
+    {
+        public RaiseOutcome Outcome;
+        public int Attempts;
+        public bool Scheduled => Outcome == RaiseOutcome.Accepted || Outcome == RaiseOutcome.Pending;
+    }
+
+    /// <summary>
+    /// The bounded policy between a transient Denied and a terminal refusal.
+    /// It is deliberately Revit-free: the production caller supplies Raise(),
+    /// and tests supply both the answer sequence and a delay that does not sleep.
+    /// Unknown is never retried because an exception or an unrecognised enum is
+    /// not evidence that the same ExternalEvent remains usable.
+    /// </summary>
+    public static class RaiseRetryPolicy
+    {
+        public static readonly int[] DefaultDelaysMs = { 5, 10, 25, 50, 100, 200 };
+
+        public static RaiseAttemptResult TrySchedule(
+            IWorkRaiser raiser,
+            Action<int> delay,
+            IReadOnlyList<int> delaysMs = null,
+            Action<string> warn = null)
+        {
+            if (raiser == null) throw new ArgumentNullException("raiser");
+            if (delay == null) throw new ArgumentNullException("delay");
+            IReadOnlyList<int> waits = delaysMs ?? DefaultDelaysMs;
+            var result = new RaiseAttemptResult();
+
+            for (int attempt = 0; ; attempt++)
+            {
+                result.Attempts++;
+                try { result.Outcome = raiser.Raise(); }
+                catch (Exception ex)
+                {
+                    result.Outcome = RaiseOutcome.Unknown;
+                    warn?.Invoke("raising the external event threw: " + ex.Message);
+                }
+
+                if (result.Scheduled || result.Outcome != RaiseOutcome.Denied || attempt >= waits.Count)
+                    return result;
+
+                int waitMs = Math.Max(0, waits[attempt]);
+                warn?.Invoke("ExternalEvent.Raise() returned Denied; retrying after " + waitMs +
+                             " ms because a previous callback may still be unwinding.");
+                delay(waitMs);
+            }
+        }
+    }
+
     public sealed class PumpResult
     {
         /// <summary>False when the queue was empty - there was nothing to raise for.</summary>
@@ -87,10 +141,10 @@ namespace Horizun.Revit.Core
         /// gained an entry during a command gets its turn as soon as the reply is on
         /// its way - rather than waiting for whatever the caller happens to ask next.
         ///
-        /// On Denied or Unknown the queue is DRAINED and every record closed as
-        /// not_started. Leaving them would be a queue nothing will ever pump again and
-        /// records that never close, reported as the same ambiguity as a process that
-        /// died - when in fact the outcome is known exactly.
+        /// This method receives a TERMINAL answer: callers must first exhaust
+        /// RaiseRetryPolicy off the UI thread. On terminal Denied or Unknown the queue
+        /// is DRAINED and every record closed as not_started. Leaving them would be a
+        /// queue nothing will ever pump again and records that never close.
         /// </summary>
         public static PumpResult Pump(IWorkRaiser raiser, Action<string> warn = null)
         {
@@ -108,13 +162,14 @@ namespace Horizun.Revit.Core
 
             if (result.Scheduled) return result;
 
-            result.Note = "Revit answered Raise() with " + result.Outcome + ", so no callback is coming and the " +
+            result.Note = "Revit kept answering Raise() with " + result.Outcome +
+                          " after the bounded retry window, so no callback is coming and the " +
                           "queued work will never start. Revit is closing down, or the bridge's external event " +
                           "has been disposed.";
             result.AbandonedJobs = CloseEverythingWaiting(
                 "Revit refused to schedule this job: Raise() returned " + result.Outcome + ". It NEVER STARTED - " +
                 "nothing was executed and nothing was written. This is a known outcome, not a job that stopped " +
-                "mid-flight: Denied means Revit is shutting down or the bridge's external event was disposed. " +
+                "mid-flight: repeated Denied means Revit is shutting down or the bridge's external event was disposed. " +
                 "Restart Revit and send the request again - with a NEW idempotency_key, because this one is bound " +
                 "to a process that is going away.",
                 warn);
