@@ -3,6 +3,18 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.1 — 2026-08-29
+
+- **Clean-runner release fix.** Inventory generation now preserves a complete
+  executable path when a fresh checkout contains only the Release server
+  binary. PowerShell previously unwrapped the one-item candidate list into a
+  string and indexing it selected the first character (`C`) as the process to
+  execute. Developer machines with both Debug and Release outputs masked the
+  defect. A regression gate now pins the one-binary case. The structural-state
+  fixture also creates its own `docs/evidence` parent so it runs in the public
+  projection where private evidence artifacts are intentionally absent. No
+  Revit command, schema or model behaviour changed from v1.1.0.
+
 ## v1.1.0 — 2026-08-29
 
 - **Native-model diagnostics, snapshots and readiness.** The diagnostic surface
