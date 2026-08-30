@@ -77,6 +77,19 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Ribbon_exposes_only_the_primary_bridge_controls()
+        {
+            string ribbon = Source("src/Horizun.Revit/Ribbon.cs");
+
+            Assert.DoesNotContain("CreateRibbonPanel(TabName, spanish ? \"Sesión\" : \"Session\")", ribbon);
+            Assert.DoesNotContain("HorizunToolPacks", ribbon);
+            Assert.DoesNotContain("HorizunSecurity", ribbon);
+            Assert.DoesNotContain("HorizunPlanimetryReview", ribbon);
+            Assert.DoesNotContain("HorizunJobs", ribbon);
+            Assert.False(File.Exists(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "RibbonSession.cs")));
+        }
+
+        [Fact]
         public void Python_permission_ui_follows_the_revit_language_with_english_fallback()
         {
             string ribbon = Source("src/Horizun.Revit/Ribbon.cs");
