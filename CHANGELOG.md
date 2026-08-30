@@ -3,6 +3,14 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.6 — 2026-08-29
+
+- **The optional Session panel has been removed from Revit's ribbon.** Tool
+  packs, permission inspection, planimetry auditing and durable-job status remain
+  available through the MCP surface, but Revit no longer shows the four
+  provisional letter-icon buttons for those operations. The primary bridge,
+  Python-consent and Horizun Hub controls are unchanged.
+
 ## v1.1.5 — 2026-08-29
 
 - **A planimetry census no longer regenerates every placed view.** The protected
