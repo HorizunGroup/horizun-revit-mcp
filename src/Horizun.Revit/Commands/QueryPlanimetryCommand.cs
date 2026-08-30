@@ -120,13 +120,20 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail(
                     "parameter_names was given without include_parameters=true, so it would be silently ignored.");
 
+            // inventory is a census. An unscoped census can answer exactly from the
+            // collector totals without materialising viewport or annotation geometry.
+            // Besides being much cheaper, this avoids a measured Revit 2027 native crash
+            // where GetBoxOutline forced GRep regeneration across unrelated MEP views.
+            scope.CensusOnly = mode == "inventory" && !scope.Narrowed && !scope.IncludeParameters;
+
             // What this mode actually needs. Collecting only that keeps a `sheets` answer
             // from walking every dimension in the model.
-            scope.NeedSheets = mode != "views" && mode != "references";
-            scope.NeedViews = true;                       // placements and annotations name views
-            scope.NeedPlacements = mode == "inventory" || mode == "sheets" || mode == "placements" ||
-                                    mode == "views" || mode == "annotations";
-            scope.NeedAnnotations = mode == "annotations" || mode == "inventory";
+            scope.NeedSheets = !scope.CensusOnly && mode != "views" && mode != "references";
+            scope.NeedViews = !scope.CensusOnly;          // placements and annotations name views
+            scope.NeedPlacements = !scope.CensusOnly &&
+                                   (mode == "inventory" || mode == "sheets" || mode == "placements" ||
+                                    mode == "views" || mode == "annotations");
+            scope.NeedAnnotations = !scope.CensusOnly && (mode == "annotations" || mode == "inventory");
             scope.NeedReferences = mode == "references" || mode == "inventory";
 
             PlanimetrySnapshot snap;
@@ -232,6 +239,9 @@ namespace Horizun.Revit.Commands
 
         private static CommandResult Inventory(PlanimetrySnapshot snap, PlanimetryScope scope, JObject result)
         {
+            if (scope.CensusOnly)
+                return CensusInventory(snap, result);
+
             result["population"] = "inventory";
             result["collected"] = new JObject
             {
@@ -252,6 +262,78 @@ namespace Horizun.Revit.Commands
                 "listed in totals_unreadable is ABSENT from totals rather than reported as zero.";
             Coverage(snap, result);
             return CommandResult.Ok(result);
+        }
+
+        /// <summary>
+        /// Render the unscoped census from exact collector totals. No row geometry was
+        /// requested, so "collected" is derived from the named totals rather than from
+        /// deliberately empty row lists. A missing constituent stays null and is also
+        /// named in totals_unreadable; it is never fabricated as zero.
+        /// </summary>
+        private static CommandResult CensusInventory(PlanimetrySnapshot snap, JObject result)
+        {
+            result["population"] = "inventory";
+            result["collected"] = new JObject
+            {
+                ["sheets"] = SumTotals(snap, "sheets_total"),
+                ["views"] = SumTotals(snap, "views_total", "templates_total"),
+                ["placements"] = SumTotals(snap, "viewports_total", "schedule_placements_total"),
+                ["annotations"] = SumTotals(snap,
+                    "dimensions_total", "tags_total", "text_notes_total", "detail_curves_total",
+                    "filled_regions_total", "detail_components_total", "generic_annotations_total",
+                    "revision_clouds_total"),
+                ["references"] = snap.References.Count
+            };
+            result["annotations_by_kind"] = TotalsByName(snap, new Dictionary<string, string>
+            {
+                ["dimension"] = "dimensions_total",
+                ["tag"] = "tags_total",
+                ["text_note"] = "text_notes_total",
+                ["detail_curve"] = "detail_curves_total",
+                ["filled_region"] = "filled_regions_total",
+                ["detail_component"] = "detail_components_total",
+                ["generic_annotation"] = "generic_annotations_total",
+                ["revision_cloud"] = "revision_clouds_total"
+            });
+            result["placements_by_class"] = TotalsByName(snap, new Dictionary<string, string>
+            {
+                ["viewport"] = "viewports_total",
+                ["schedule_placement"] = "schedule_placements_total"
+            });
+            result["references_by_target_state"] =
+                JsonObjectKey.SummaryCounts(snap.References.Select(f => f.TargetState));
+            result["totals_unreadable"] = new JArray(
+                snap.ChecksFailed.Select(c => (JToken)c.Check).Distinct());
+            result["note"] =
+                "totals and collected are an exact lightweight census of the WHOLE document. The census does " +
+                "not request viewport or annotation geometry; use placements or annotations mode for those " +
+                "rows. A total listed in totals_unreadable is null in collected rather than reported as zero.";
+            Coverage(snap, result);
+            return CommandResult.Ok(result);
+        }
+
+        private static JToken SumTotals(PlanimetrySnapshot snap, params string[] keys)
+        {
+            int sum = 0;
+            foreach (string key in keys)
+            {
+                int value;
+                if (!snap.Totals.TryGetValue(key, out value)) return JValue.CreateNull();
+                sum += value;
+            }
+            return sum;
+        }
+
+        private static JObject TotalsByName(PlanimetrySnapshot snap, Dictionary<string, string> keys)
+        {
+            var result = new JObject();
+            foreach (KeyValuePair<string, string> pair in keys.OrderBy(k => k.Key, StringComparer.Ordinal))
+            {
+                int value;
+                result[pair.Key] = snap.Totals.TryGetValue(pair.Value, out value)
+                    ? (JToken)value : JValue.CreateNull();
+            }
+            return result;
         }
 
         /// <summary>

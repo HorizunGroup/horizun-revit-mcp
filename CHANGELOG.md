@@ -3,6 +3,21 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.1.5 — 2026-08-29
+
+- **A planimetry census no longer regenerates every placed view.** The protected
+  `v1.1.4` release matrix passed Revit 2023–2026, then Revit 2027 crashed natively
+  on the first `horizun_query_planimetry mode=inventory` call. Its journal
+  recorded access violation `0xc0000005` inside `generateViewSpecificGRep` while
+  Revit was producing viewport graphics for unrelated MEP views. The inventory
+  answer asks only “how many?”, but the shared collector had materialised every
+  viewport outline and annotation box before returning those counts. An
+  unscoped inventory now takes a lightweight exact-census path: population
+  totals still come from native collectors and reference states remain
+  explicit, while viewport, crop and annotation geometry is reserved for the
+  detailed `placements`, `views` and `annotations` modes that actually return
+  it. Missing counts remain null and named, never fabricated as zero.
+
 ## v1.1.4 — 2026-08-29
 
 - **The release gate now asserts the actual queued-cancellation guarantee.**

@@ -53,6 +53,15 @@ namespace Horizun.Revit.Core
         public bool NeedAnnotations = true;
         public bool NeedReferences = true;
 
+        /// <summary>
+        /// The unscoped inventory answer is a census, not a geometry query.  In this mode
+        /// the collector reads exact population totals and reference states, but must not
+        /// call viewport/annotation geometry APIs.  Those APIs can force Revit to
+        /// regenerate every placed view merely to answer "how many?"; Revit 2027 has a
+        /// measured native crash in that regeneration path on otherwise valid MEP views.
+        /// </summary>
+        public bool CensusOnly;
+
         public bool IncludeParameters;
         public List<string> ParameterNames = new List<string>();
 
@@ -152,6 +161,19 @@ namespace Horizun.Revit.Core
             catch (Exception ex)
             {
                 snap.ChecksFailed.Add(new PlanimetryCheckFailure { Check = "viewport_index", Error = ex.Message });
+            }
+
+            // An unscoped inventory is deliberately a LIGHT census. Totals above are
+            // exact FilteredElementCollector counts; References below needs only ids and
+            // parameters. Returning here avoids Viewport.GetBoxOutline,
+            // Element.get_BoundingBox(view), crop geometry and every other API that can
+            // regenerate placed views. The detailed modes still take the full path.
+            if (scope.CensusOnly)
+            {
+                if (scope.NeedReferences)
+                    References(doc, snap, scope, allViews, viewNames, viewportsByView);
+                ResolveUnmatched(snap, scope);
+                return snap;
             }
 
             var schedulePlacements = new List<ScheduleSheetInstance>();
