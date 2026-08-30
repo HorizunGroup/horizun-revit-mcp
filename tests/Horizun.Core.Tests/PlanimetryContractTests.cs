@@ -298,6 +298,24 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Unscoped_inventory_is_a_light_census_and_never_materializes_view_geometry()
+        {
+            Dictionary<string, string> sources = PlanimetrySources();
+            string query = sources["QueryPlanimetryCommand.cs"];
+            string inventory = sources["PlanimetryInventory.cs"];
+
+            Assert.Contains(
+                "scope.CensusOnly = mode == \"inventory\" && !scope.Narrowed && !scope.IncludeParameters;",
+                query);
+            Assert.Contains("if (scope.CensusOnly)", inventory);
+            Assert.Contains("References(doc, snap, scope, allViews, viewNames, viewportsByView);", inventory);
+            Assert.Contains("return snap;", inventory);
+            Assert.Contains("return CensusInventory(snap, result);", query);
+            Assert.Contains("The census does ", query);
+            Assert.Contains("not request viewport or annotation geometry", query);
+        }
+
+        [Fact]
         public void Both_commands_are_registered_in_the_app()
         {
             string app = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "App.cs"));
