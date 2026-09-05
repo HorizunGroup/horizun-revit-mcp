@@ -109,6 +109,7 @@ installed `horizun-mcp.exe`:
 | **Codex** | Registers `horizun-revit` beside existing MCP servers. | Restart Codex. |
 | **Claude Code** | Registers `horizun-revit` at user scope. | Restart Claude Code. |
 | **Claude Desktop** | Builds and stages its `.mcpb` Desktop Extension. | Install the extension once inside Claude Desktop. |
+| **ChatGPT Work** | Installs its Secure MCP Tunnel helper. | Create/start the tunnel and add it in ChatGPT Work. |
 
 The installer waits for Claude Code or Codex to close before editing their
 configuration, makes timestamped backups, preserves every other MCP entry, and
@@ -156,8 +157,14 @@ Extension and inspect every supported client from one screen:
 
 ```powershell
 pwsh -File scripts/install-claude-desktop-extension.ps1   # a real .mcpb Desktop Extension
-pwsh -File scripts/diagnose-integrations.ps1              # Codex, Claude Code and Claude Desktop
+pwsh -File scripts/diagnose-integrations.ps1              # Codex, Claude Code, Claude Desktop and ChatGPT Work
 ```
+
+**ChatGPT Work does not need Codex or Claude Code.** It reaches the same installed
+server through OpenAI's Secure MCP Tunnel. Run
+`scripts/chatgpt-tunnel.ps1 -Status` or use **Configurar ChatGPT Work** in the
+Start menu. This was verified in the desktop Work interface with a free account
+on 2026-09-04; account and workspace controls can vary.
 
 TOML literal strings (single quotes) take Windows paths as they are; JSON needs
 every backslash doubled. **Raise your client's tool timeout** if it has one: a

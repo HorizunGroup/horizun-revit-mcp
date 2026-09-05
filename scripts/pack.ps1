@@ -164,7 +164,7 @@ Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Fo
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
-# The Claude Desktop integration and its libraries travel with the installer,
+# The desktop and ChatGPT Work integrations and their libraries travel with the installer,
 # because a shortcut that dot-sources a file the installer did not stage fails
 # at the first line with a message about a path.
 foreach ($tool in @(
@@ -174,6 +174,9 @@ foreach ($tool in @(
     'mcpb-manifest.lib.ps1',
     'mcp-stdio.lib.ps1',
     'integration-status.lib.ps1')) {
+    Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
+}
+foreach ($tool in @('chatgpt-tunnel.ps1', 'chatgpt-secret.lib.ps1')) {
     Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
 }
 Step '  staged safe Codex/Claude registration, deferred completion and verification helpers'
