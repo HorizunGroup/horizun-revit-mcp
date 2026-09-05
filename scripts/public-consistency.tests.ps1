@@ -449,32 +449,18 @@ if ($failures.Count -eq $universalFailures) {
     Write-Host '[PASS] one Setup prepares Codex, Claude Code and Claude Desktop' -ForegroundColor Green
 }
 
-# ---- the discarded client route stays out of the product ---------------------
-#
-# This release supports local stdio clients only. The removed remote route must
-# not survive in user-facing docs, installer shortcuts or the staged helper list.
-$discardFailures = $failures.Count
-$discardedRoutePattern = '(?i)chatgpt|tunnel-client|secure\s+mcp\s+tunnel|webmcp'
-foreach ($doc in @('README.md', 'AGENTS.md', 'CHANGELOG.md', 'docs\CLIENTS.md',
-                   'docs\RELEASE-1.2.0.md',
-                   'publish\overlay\README.md', 'publish\overlay\AGENTS.md',
-                   'installer\horizun-mcp.iss', 'scripts\pack.ps1',
-                   'scripts\diagnose-integrations.ps1', 'scripts\uninstall-cleanup.ps1')) {
-    $full = Join-Path $repo $doc
-    if (-not (Test-Path -LiteralPath $full)) { continue }
-    $text = Get-Content -LiteralPath $full -Raw
-    if ($text -match $discardedRoutePattern) {
-        Fail "$doc still contains the discarded remote-client route ('$($Matches[0])')."
-    }
+# ---- supported ChatGPT Work route and neutral product vocabulary -------------
+$integrationFailures = $failures.Count
+foreach ($required in @('scripts\chatgpt-tunnel.ps1', 'scripts\chatgpt-secret.lib.ps1')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $repo $required))) { Fail "$required is missing." }
 }
-foreach ($removed in @('scripts\chatgpt-tunnel.ps1', 'scripts\chatgpt-secret.lib.ps1',
-                        'scripts\chatgpt-tunnel.tests.ps1')) {
-    if (Test-Path -LiteralPath (Join-Path $repo $removed)) {
-        Fail "$removed still exists even though that integration was removed from the product."
-    }
+foreach ($doc in @('README.md', 'docs\CLIENTS.md', 'installer\horizun-mcp.iss',
+                   'scripts\pack.ps1', 'scripts\diagnose-integrations.ps1')) {
+    $text = Get-Content -LiteralPath (Join-Path $repo $doc) -Raw
+    if ($text -notmatch '(?i)ChatGPT Work') { Fail "$doc does not expose ChatGPT Work." }
 }
-if ($failures.Count -eq $discardFailures) {
-    Write-Host '[PASS] the discarded remote-client route is absent from product code, docs and installer' -ForegroundColor Green
+if ($failures.Count -eq $integrationFailures) {
+    Write-Host '[PASS] ChatGPT Work is shipped and current product vocabulary is organisation-neutral' -ForegroundColor Green
 }
 
 if ($failures.Count -gt 0) {

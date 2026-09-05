@@ -119,6 +119,12 @@ Name: "{group}\Instalar o reparar la extension de Claude Desktop"; Filename: "{s
 Name: "{group}\Diagnosticar la extension de Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Diagnose"; \
   WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Configurar ChatGPT Work"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Status"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Detener conexion con ChatGPT Work"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Stop"; \
+  WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Estado de todos los clientes MCP"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\diagnose-integrations.ps1"""; \
   WorkingDir: "{app}\server\client-tools"

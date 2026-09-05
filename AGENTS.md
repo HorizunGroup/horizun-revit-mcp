@@ -126,6 +126,10 @@ records that pending action. `docs/CLIENTS.md` documents the universal installer
 every client-specific last step, and where an MSIX install really keeps
 `claude_desktop_config.json`.
 
+**ChatGPT Work uses OpenAI's Secure MCP Tunnel and does not need either CLI.**
+Run `scripts/chatgpt-tunnel.ps1 -Status`; the helper names each remaining step,
+protects the API key with Windows DPAPI and launches the same installed server.
+
 TOML literal strings (single quotes) take Windows paths as written; JSON needs
 every backslash doubled. **Raise the tool timeout** if your client has one: a
 `model_scan` or a batch open holds Revit's UI thread for minutes, and a
@@ -339,6 +343,10 @@ hace dentro de Claude Desktop; el asistente prepara y valida el `.mcpb` exacto y
 registra esa acción pendiente. `docs/CLIENTS.md` documenta el instalador universal,
 el último paso de cada cliente y dónde guarda realmente
 `claude_desktop_config.json` una instalación MSIX.
+
+**ChatGPT Work usa Secure MCP Tunnel de OpenAI y no necesita ninguno de los dos
+CLI.** Ejecuta `scripts/chatgpt-tunnel.ps1 -Status`; el asistente indica cada
+paso pendiente, protege la clave API con Windows DPAPI y lanza el mismo servidor.
 
 Comillas simples en TOML (cadena literal: las barras van tal cual); en JSON hay
 que doblar cada barra. **Sube el tool timeout** si el cliente tiene uno: un

@@ -2,10 +2,10 @@
 
 Horizun Revit MCP has one runtime: the installed `horizun-mcp.exe` speaks MCP
 over standard input/output and the Revit add-in speaks to it over the local named
-pipe. Codex, Claude Code and Claude Desktop all run that same executable. There is
+pipe. Codex, Claude Code, Claude Desktop and ChatGPT Work all reach that same executable. There is
 no client-specific Revit implementation.
 
-## One installer, three clients
+## One installer, four clients
 
 The Windows Setup attached to each GitHub release is the universal installation
 path. It installs the server and every Revit 2023–2027 add-in present in the
@@ -16,6 +16,7 @@ package, then safely prepares each client found on the machine:
 | **Codex** | Adds `[mcp_servers.horizun-revit]` beside existing servers after Codex closes. | Restart Codex. |
 | **Claude Code** | Adds `mcpServers.horizun-revit` beside existing servers after Claude closes. | Restart Claude Code. |
 | **Claude Desktop** | Stages and validates a `.mcpb` that names the installed server. | Install that extension once inside Claude Desktop. |
+| **ChatGPT Work** | Installs the tunnel helpers for the same server. | Create the OpenAI tunnel, store its API key locally and start it. |
 
 The configuration formats are owned by the clients, so there is no single file
 that all three consume. Setup is the single user-facing flow: it deploys one
@@ -142,6 +143,23 @@ pwsh -File scripts/install-claude-desktop-extension.ps1 -ConfigFallback
 
 The fallback refuses to edit the file while Claude Desktop is running because
 the application can overwrite it from memory when it exits.
+
+## ChatGPT Work
+
+ChatGPT Work connects to the installed stdio server through OpenAI's Secure MCP
+Tunnel and does not require Codex or Claude Code. This route was verified in the
+ChatGPT desktop Work interface with a free account on 2026-09-04. Account and
+workspace controls can vary, so diagnostics report observed tunnel state.
+
+```powershell
+pwsh -File scripts/chatgpt-tunnel.ps1 -Status
+pwsh -File scripts/chatgpt-tunnel.ps1 -SetApiKey
+pwsh -File scripts/chatgpt-tunnel.ps1 -Init -TunnelId tunnel_...
+pwsh -File scripts/chatgpt-tunnel.ps1 -Start -IUnderstandTrafficLeavesThisMachine
+```
+
+The helper uses OpenAI's `tunnel-client`, protects the API key with Windows DPAPI
+for the current user, opens no inbound port and runs the same `horizun-mcp.exe`.
 
 ## Diagnose and repair
 

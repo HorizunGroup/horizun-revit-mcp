@@ -12,10 +12,11 @@
   Exit codes: 0 at least one client is configured   3 none is, and the steps are named
 #>
 [CmdletBinding()]
-param([string]$Json, [string]$ServerPath)
+param([string]$Json, [string]$ServerPath, [string]$StatusPath)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'mcp-clients.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcp-stdio.lib.ps1')
+. (Join-Path $PSScriptRoot 'integration-status.lib.ps1')
 
 if (-not $ServerPath) { $ServerPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 
@@ -79,6 +80,21 @@ else {
         Row 'claude-desktop' $true $false ("{0}, {1} install; {2} other extension(s) present" -f $cd.version, $cd.packaging, $cd.extensions.Count) `
             'scripts/install-claude-desktop-extension.ps1'
     }
+}
+
+# --- ChatGPT Work -------------------------------------------------------------
+$tunnel = Get-HorizunTunnelClient
+$integrations = Get-HorizunIntegrationStatus -StatusPath $StatusPath
+$workState = $null
+if ($integrations) { $workState = $integrations.PSObject.Properties['chatgpt'] }
+if (-not $tunnel.installed) {
+    Row 'chatgpt-work' $false $false "OpenAI tunnel-client is not installed" `
+        'scripts/chatgpt-tunnel.ps1 -Status'
+}
+else {
+    $st = if ($workState) { $workState.Value.state } else { 'unknown' }
+    Row 'chatgpt-work' $true ($st -eq 'configured') "tunnel-client present; recorded state: $st" `
+        $(if ($st -ne 'configured') { 'scripts/chatgpt-tunnel.ps1 -Status' } else { $null })
 }
 
 # --- permission boundary --------------------------------------------------------

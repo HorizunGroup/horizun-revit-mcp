@@ -3,6 +3,14 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.2.1 — 2026-09-04
+
+ChatGPT Work is a supported client through OpenAI's Secure MCP Tunnel. The
+installer ships setup, credential, status and diagnostic helpers and names the
+client explicitly. This was verified in the desktop Work interface with a free
+account. Active organisation-specific classification skills were removed, and a
+release gate prevents their terminology from returning in current product files.
+
 ## v1.2.0 — 2026-09-04
 
 The first release since **1.1.6**, and the version stamp has said `1.2.0` since
