@@ -37,11 +37,21 @@ $stories = @($d.stories)
 # one is a story where nobody asked, which is a hole. Conflating the two made
 # this gate refuse nine perfectly complete stories on its first run.
 $requiredProse = @('number', 'title', 'current_state', 'gap', 'contract', 'core_test', 'live_test',
-                   'size', 'priority')
+                   'size', 'priority', 'status')
 $requiredLists = @('acceptance', 'risks', 'dependencies')
 $mustNotBeEmpty = @('acceptance')
+# A CLOSED VOCABULARY. done and implemented_not_live_verified are DIFFERENT
+# claims and the difference is the whole point: one has been measured against a
+# real Revit and the other has not. A status outside this list is a word
+# somebody invented, and a reader cannot tell an invented one from a real one.
+$knownStatuses = @('done', 'implemented_not_live_verified', 'partial', 'not_started')
 $holes = @()
 foreach ($s in $stories) {
+    if (($s.PSObject.Properties.Name -contains 'status') -and $s.status -and
+        $knownStatuses -notcontains [string]$s.status) {
+        $holes += ("story " + $s.number + " has status '" + $s.status + "', which is not one of: " +
+                   ($knownStatuses -join ', '))
+    }
     foreach ($f in $requiredProse) {
         $has = $s.PSObject.Properties.Name -contains $f
         if (-not $has -or $null -eq $s.$f -or ([string]$s.$f).Trim().Length -eq 0) {
@@ -91,12 +101,21 @@ W ''
 W 'The three enabling stories come first because six, ten and nine of the others respectively cannot be built as'
 W 'written until they land. Everything after that is ordered by priority, not by topic number.'
 W ''
-W '| # | Story | Size | Priority | Depends on |'
-W '|---|---|---|---|---|'
+$tally = [ordered]@{}
+foreach ($k in $knownStatuses) { $tally[$k] = @($stories | Where-Object { [string]$_.status -eq $k }).Count }
+W ('**Where they stand.** ' + (($tally.Keys | ForEach-Object { '`' + $_ + '` ' + $tally[$_] }) -join ' · ') + '.')
+W ''
+W 'A story is `done` only when it has been measured against a running Revit. `implemented_not_live_verified`'
+W 'means the code and its contract are in place and no Revit has confirmed it - a different claim, kept'
+W 'separate on purpose, because collapsing the two is how a backlog comes to overstate what is proved.'
+W ''
+W '| # | Story | Status | Size | Priority | Depends on |'
+W '|---|---|---|---|---|---|'
 foreach ($s in $stories) {
     $dep = @(@($s.dependencies) | Where-Object { $_ })
     $depTxt = if ($dep.Count -gt 0) { ($dep -join ', ') } else { '—' }
-    W ('| **' + $s.number + '** | ' + (Esc $s.title) + ' | ' + $s.size + ' | ' + $s.priority + ' | ' + $depTxt + ' |')
+    W ('| **' + $s.number + '** | ' + (Esc $s.title) + ' | `' + $s.status + '` | ' + $s.size + ' | ' +
+       $s.priority + ' | ' + $depTxt + ' |')
 }
 W ''
 W '---'
@@ -106,8 +125,12 @@ foreach ($s in $stories) {
     W ('## ' + $s.number + ' — ' + (Esc $s.title))
     W ''
     $dep = @(@($s.dependencies) | Where-Object { $_ })
-    W ('`' + $s.size + '` · `' + $s.priority + '`' +
+    W ('`' + $s.status + '` · `' + $s.size + '` · `' + $s.priority + '`' +
        $(if ($dep.Count -gt 0) { ' · depends on ' + (($dep | ForEach-Object { '`' + $_ + '`' }) -join ', ') } else { '' }))
+    if (($s.PSObject.Properties.Name -contains 'status_note') -and $s.status_note) {
+        W ''
+        W ('**Where it stands.** ' + (Esc $s.status_note))
+    }
     W ''
     W '**What exists today.** ' + (Esc $s.current_state)
     W ''

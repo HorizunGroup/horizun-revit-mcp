@@ -17,7 +17,7 @@
 param(
     [string]$Version = 'latest',
     [ValidateSet('Auto', 'Claude', 'Codex', 'Both', 'None')]
-    [string]$Client = 'Auto',
+    [string]$Client = 'Both',
     [switch]$KeepDownloadedFiles,
     [switch]$Interactive,
     # Retained for compatibility. Quiet is the 0.9+ default.

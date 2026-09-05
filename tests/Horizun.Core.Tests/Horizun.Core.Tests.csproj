@@ -52,6 +52,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarArrayGeometry.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StirrupZoneRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MatRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\MatOpenings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RebarTakeoff.cs" />
     <!-- The audit comparison. Both sides arrive as JSON - the shapes the resolver
          and the reader actually emit - so it is provable at a desk and cannot
@@ -67,7 +68,109 @@
          whether a model carries the evidence a scheduler would need are all
          judgements about numbers, and a judgement that needs a Document to be
          made cannot be proved at a desk. -->
+    <!-- Per-section budgets and the cursors that make a second page mean anything.
+         Revit-free on purpose: every way a cursor can lie - replayed against
+         another document, another section, another contract version - is a
+         judgement about five strings, and the one answer it must never give is
+         "start from the beginning", which a caller cannot tell from page one. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SectionBudgetRules.cs" />
+    <!-- And what a scan request may SAY. Four ways it used to succeed while
+         answering a question nobody asked, all measured at v1.1.6: a misspelt
+         option accepted, a top clamped instead of refused, a bare string read as
+         "every section", and an empty list meaning all twelve. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScanRequestRules.cs" />
+    <!-- Why a model might be heavy, as ranked CANDIDATES and never as bytes.
+         Revit publishes no per-category size, so the properties worth proving are
+         the refusals: no built-in opinion about what counts as heavy, and a
+         contributor nobody could count never coming back as zero. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WeightAttributionRules.cs" />
+    <!-- And what every bucket in the scan is ALLOWED to return. The budget was
+         parsed, validated and reported while every emitter still used the one
+         global number; this is the piece the emitters actually hold, plus the
+         content-derived total order a cursor needs to mean anything. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScanPagingContext.cs" />
+    <!-- Naming, as a profile the CALLER brings. One regex cannot serve a project -
+         a level is named nothing like a sheet - so the rules are per class, and the
+         property worth proving is what a class with NO rule reports: not_requested,
+         never ok. A clean report about a rule nobody wrote is the misreading. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\NamingProfileRules.cs" />
+    <!-- The route: every class accounted for, and four different reasons a
+         class can have no findings, none of which is a pass. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\NamingFromScan.cs" />
+    <!-- Who is holding what, read without relinquishing, and the invariant
+         that keeps an unreadable status out of "free to edit". -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\OwnershipCensus.cs" />
+    <!-- A closed workset is not an empty one: the placement check may FAIL
+         on incomplete coverage but must never PASS. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorksetPlacementRules.cs" />
+    <!-- Families: three kinds that are genuinely different, and many types
+         is an INDICATOR rather than a weight - nothing opens an .rfa. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FamilyCensusRules.cs" />
+    <!-- Views: not every view has every property. A legend has no level and
+         that is not_applicable, which is neither a pass nor a failure. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ViewFactsRules.cs" />
+    <!-- Sheets: a schedule on a sheet is not a viewport, and not-empty is
+         not complete. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SheetAnnotationRules.cs" />
+    <!-- Parameter standards: a parameter is not its name, and a rule keyed
+         by GUID is never satisfied by a name match. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ParameterStandardRules.cs" />
+    <!-- Rooms, spaces and areas: unplaced, not_enclosed and redundant all
+         show zero area and are three different mistakes. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SpatialCensusRules.cs" />
+    <!-- Groups: unplaced is not empty. Design options: no options is not a
+         pass. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\GroupOptionRules.cs" />
+    <!-- Phases: a category with no phase is not_applicable, and
+         demolished-before-created is the model contradicting itself. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PhaseCensusRules.cs" />
+    <!-- MEP: connectivity is not calculation, and an open connector is a
+         fact rather than a defect. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\MepCensusRules.cs" />
+    <!-- Structure: modelling facts only. No safety, capacity or compliance,
+         and rebar with an unreadable host is never counted as hostless. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\StructureCensusRules.cs" />
+    <!-- Durable snapshots: atomic, hashed, sanitised, and never written
+         beside the model. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\SnapshotStore.cs" />
+    <!-- Federation and foreign content: circular link references, and an
+         unresolved path kept apart from an absent one. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FederationContentRules.cs" />
+    <!-- Scope boxes: the extents are the box's OWN bounding box, and "no
+         scope box" is three different situations. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScopeBoxRules.cs" />
+    <!-- Documentary context: absent is not blank, and the outcomes are
+         reused from the parameter machinery rather than copied. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DocumentaryContextRules.cs" />
+    <!-- 4D/5D readiness: evidence found, per leaf category, never a score.
+         And a classification catalogue that arrives as an argument. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryReadinessRules.cs" />
+    <!-- The quantity-to-budget join. Whether two numbers may be subtracted is a
+         judgement about the numbers and their labels - unit, coverage, price -
+         and every way that judgement can lie is provable without a model. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" />
+    <!-- WHICH DOCUMENTS A LINKED TAKEOFF MEASURES, AND UNDER WHOSE NAME. Two
+         instances of one linked file are two placements of the same Document, and
+         the numbering that tells them apart needs no Revit to be wrong. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\TakeoffScopeRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClassificationCatalogueRules.cs" />
+    <!-- Guided corrections: proposals only, from an allow-list, and a scope
+         that may narrow but never widen. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\GuidedCorrectionRules.cs" />
+    <!-- Prevention: incomplete coverage may block and may never allow. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\PreventionGateRules.cs" />
+    <!-- The ROUTE from what the scan measured to what the attribution ranks. It
+         reads the sections the scan already emitted rather than collecting again -
+         a second count of one population is free to disagree with the first - and
+         most of it is the ways a fact can be absent without ever becoming zero. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WeightAttributionFromScan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CoordinateRules.cs" />
+    <!-- The level-association census: three counts, not two, and a percentage
+         that is null when nothing was measured. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\LevelAssociationRules.cs" />
+    <!-- Warnings keyed on FailureDefinitionId, because the description text is
+         localized and rewritten between versions. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WarningRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DatumRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReadinessRules.cs" />
     <!-- Snapshots and the health index. Both are pure arithmetic over numbers
@@ -105,6 +208,17 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadAuditRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadPlacementRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateLedger.cs" />
+    <!-- The RETIRED v1 provenance schema, written down as data. The store reads
+         the v1 GUID and never writes it again, so on a machine without the
+         previous release every element is v2 and the v1 -> v2 migration cannot
+         be exercised at all. This file is the v1 definition as it stood before
+         provenance v2, and it is linked here so the shape is PINNED - field
+         names, types, the one unit spec, the GUID, the version - against the
+         constants still in CadProvenanceStore.cs. Edit either side and a test
+         fails rather than the word "v1" quietly meaning something else. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceV1Shape.cs" />
     <!-- Which name belongs to which candidate. A DWG carries no text this bridge
          can read, so names arrive from the requirement set - and the decision of
          which one goes where is arithmetic over geometry and a declared table,
@@ -219,6 +333,16 @@
          was reasoned and compiled and never exercised. Behind IWorkRaiser all three
          answers are ordinary test cases. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncLifecycle.cs" />
+    <!-- The correction CYCLE and the gate on the bridge's own save and export. The
+         identity of a finding, the record an apply reads instead of the caller's
+         copy, the selection and re-audit arithmetic, and the decision a gated save
+         takes - all decided without a Document, so a wrong id, a widened scope, a
+         stale audit and a coverage hole are ordinary test cases. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\FindingIdentity.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AuditFindingSetStore.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CorrectionCycleRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CorrectionApplyLoop.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\OperationGateRules.cs" />
     <!-- The shared contract. It carries no Revit either, and ScriptOutput now takes its
          size limits from it rather than inventing a second copy of the same number. -->
     <Compile Include="..\..\src\Horizun.Contracts\Contract.cs" />
@@ -340,6 +464,30 @@
          obstacles, all-or-nothing capacity and stable ordering. The Revit command
          only measures/creates the placements this rule decides. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PlanimetryPackingRules.cs" />
+    <!-- Where each layer of a compound wall goes. The command needs a Revit to READ
+         the assembly and to WRITE the walls; every decision between those two - which
+         layer is the core carrier, where the location line actually is, what each
+         resulting type is called and whether two types are the same type - is
+         arithmetic, and it is exactly the arithmetic the previous implementation got
+         wrong in four places at once while reporting all_verified:true. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallLayerRules.cs" />
+    <!-- A read-only sweep over many models: what can be refused before anything
+         opens, one document at a time, close on every path, and a consolidated
+         result whose denominator is every model LISTED. The session interface is
+         guarantee is the sequence allowlist, which names no tool that writes, so a
+         sweep cannot save somebody's central model. The steps are executed by
+         Dispatcher.RunSequence, which is the half that needs Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\BatchAuditRules.cs" />
+    <!-- One job whose work is an ordered read-only sequence: the allowlist that
+         makes a sweep read-only, refusal of a whole submission naming the index,
+         and the step state machine where a step after a failure is not_run rather
+         than omitted. The runner lives in Dispatcher.cs, which needs Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\JobSequenceRules.cs" />
+    <!-- The explicit list of corrections this bridge will propose. It IS the safety
+         model of that surface: a proposal may name a tool only if it appears here,
+         with arguments from typed fields and the registry's own typed constants.
+         Linked so the list itself is tested rather than only the rules that read it. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CorrectionRegistry.cs" />
   </ItemGroup>
 
   <ItemGroup>

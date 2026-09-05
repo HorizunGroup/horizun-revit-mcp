@@ -50,6 +50,36 @@ namespace Horizun.Revit.Core
         Failed
     }
 
+    /// <summary>
+    /// HOW A MEASUREMENT BECOMES A TAKEOFF READING'S STATE.
+    ///
+    /// A read that THREW is not an absence: the element is missing from the total
+    /// and every code it touches is a lower bound, which is why unreadable exists
+    /// beside absent. The mapping lives here, Revit-free, so it can be exercised
+    /// with a substituted Measurement - a real read that throws needs an element
+    /// whose geometry Revit itself cannot evaluate, and one of those cannot be
+    /// built on demand.
+    /// </summary>
+    public static class TakeoffReadingRules
+    {
+        public const string Means =
+            "measured: a number was obtained, and it may legitimately be zero. absent: the quantity does not " +
+            "apply to this element, which is not an error. unreadable: the read FAILED - the element is missing " +
+            "from the total, so every code it touches is a lower bound and the comparison downstream refuses it.";
+
+        /// <summary>The state a takeoff reading carries for this measurement.</summary>
+        public static string StateFor(Measurement m)
+        {
+            // The SAME vocabulary the takeoff writes and the comparison reads.
+            if (m == null) return QuantityState.Unreadable;
+            if (m.IsMeasured) return QuantityState.Measured;
+            return m.State == MeasureState.Failed ? QuantityState.Unreadable : QuantityState.Absent;
+        }
+
+        /// <summary>True when this reading must not be counted in a total.</summary>
+        public static bool IsLowerBound(Measurement m) => StateFor(m) == QuantityState.Unreadable;
+    }
+
     public sealed class Measurement
     {
         public MeasureState State { get; private set; }

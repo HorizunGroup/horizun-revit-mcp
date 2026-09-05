@@ -6,13 +6,20 @@
 
   Examples:
     .\uninstall-cleanup.ps1 -RemoveClients
+    .\uninstall-cleanup.ps1 -RemoveIntegrations
     .\uninstall-cleanup.ps1 -PurgeState
     .\uninstall-cleanup.ps1 -RemoveSigningTrust
     .\uninstall-cleanup.ps1 -RemoveClients -PurgeState -RemoveSigningTrust
+
+  -RemoveIntegrations undoes the Claude Desktop integration THIS product created:
+  the horizun-revit entry in claude_desktop_config.json and the staged extension
+  package. It does not delete other extensions or remove the extension from
+  inside Claude Desktop's own store; that last action belongs to the app.
 #>
 [CmdletBinding(SupportsShouldProcess=$true, ConfirmImpact='High')]
 param(
     [switch]$RemoveClients,
+    [switch]$RemoveIntegrations,
     [switch]$PurgeState,
     [switch]$RemoveSigningTrust,
     [switch]$RemoveSigningCertificate,
@@ -20,8 +27,8 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-if (-not ($RemoveClients -or $PurgeState -or $RemoveSigningTrust -or $RemoveSigningCertificate)) {
-    Write-Host 'Nothing selected. Choose -RemoveClients, -PurgeState, -RemoveSigningTrust or -RemoveSigningCertificate.' -ForegroundColor Yellow
+if (-not ($RemoveClients -or $RemoveIntegrations -or $PurgeState -or $RemoveSigningTrust -or $RemoveSigningCertificate)) {
+    Write-Host 'Nothing selected. Choose -RemoveClients, -RemoveIntegrations, -PurgeState, -RemoveSigningTrust or -RemoveSigningCertificate.' -ForegroundColor Yellow
     exit 0
 }
 $running = @(Get-Process | Where-Object { $_.ProcessName -match '^(?i:Revit|Codex|Claude|horizun-mcp)$' })
@@ -37,6 +44,30 @@ if ($RemoveClients) {
         if ($Force) { $arguments += '-Force' }
         & powershell @arguments
         if ($LASTEXITCODE -ne 0) { throw "Client cleanup failed with exit code $LASTEXITCODE." }
+    }
+}
+
+if ($RemoveIntegrations) {
+    $desktop = Join-Path $PSScriptRoot 'install-claude-desktop-extension.ps1'
+    if ($PSCmdlet.ShouldProcess('Claude Desktop', "remove only the 'horizun-revit' entry and the staged package")) {
+        if (Test-Path -LiteralPath $desktop) {
+            $arguments = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$desktop,'-Remove')
+            if ($Force) { $arguments += '-Force' }
+            & powershell @arguments
+            # Exit 2 is "Claude Desktop is not installed", which is not a failure
+            # of a cleanup whose whole job is to leave nothing behind.
+            if ($LASTEXITCODE -notin @(0, 2)) { throw "Claude Desktop cleanup failed with exit code $LASTEXITCODE." }
+        }
+        else { Write-Warning "Claude Desktop helper not found beside this script: $desktop" }
+    }
+    $staged = Join-Path $env:LOCALAPPDATA 'Horizun\integrations'
+    if ((Test-Path -LiteralPath $staged -PathType Container) -and
+        $PSCmdlet.ShouldProcess($staged, 'remove the staged integration files')) {
+        $item = Get-Item -LiteralPath $staged -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing to remove an integration directory that is a link or junction: $staged"
+        }
+        Remove-Item -LiteralPath $staged -Recurse -Force
     }
 }
 

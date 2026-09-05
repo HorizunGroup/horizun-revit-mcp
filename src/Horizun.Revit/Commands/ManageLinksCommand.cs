@@ -64,10 +64,11 @@ namespace Horizun.Revit.Commands
                 return List(readDoc);
             }
             if (operation == "add") return Add(app, doc0 => doc0, request);
+            if (operation == "add_instance") return AddInstance(app, request);
             if (operation == "change_path") return ChangePath(app, request);
             if (operation != "unload" && operation != "reload" && operation != "pin" && operation != "unpin")
-                return CommandResult.Fail("operation '" + operation + "' (known: list, unload, reload, pin, unpin, add, change_path) is not one this command understands. " +
-                    "Known: list, unload, reload, pin, unpin. add/path-change are deliberately not typed yet.");
+                return CommandResult.Fail("operation '" + operation + "' is not one this command understands. " +
+                    "Known: list, unload, reload, pin, unpin, add, add_instance, change_path.");
 
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
@@ -102,12 +103,17 @@ namespace Horizun.Revit.Commands
                     ["instances"] = instances
                 });
             }
-            return CommandResult.Ok(new JObject
+            var listing = new JObject
             {
                 ["document"] = doc.Title,
                 ["links"] = rows,
                 ["count"] = rows.Count
-            });
+            };
+            // A read, declared as the no-op it is. This command may now appear in an
+            // atomic plan, and a plan reads every child's declaration; a listing with
+            // none would stop the plan as 'uncertain' over a call that changed nothing.
+            ApplicationOutcome.StampApplied(listing, ApplicationOutcome.NotStarted, 0, 0, 0, 0, 0, 0);
+            return CommandResult.Ok(listing);
         }
 
         // ------------------------------------------------------------- load state
@@ -338,6 +344,7 @@ namespace Horizun.Revit.Commands
                     ["note"] = "RevitLinkType.Create runs outside a transaction, so this preview measured the " +
                                "file's presence and nothing else; the apply re-reads type status and instance."
                 };
+                ApplicationOutcome.StampRehearsal(preview, 1, 0, 0, 0);
                 DocumentGate.StampConfirmation(preview, gate, "horizun_manage_links", hash, true);
                 return CommandResult.Ok(preview);
             }
@@ -369,7 +376,7 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("The link committed but the re-read does not hold: type " +
                     (reread == null ? "(gone)" : status) + ", instance " +
                     (instanceReread == null ? "(gone)" : "present") + ". Success is not claimed.");
-            return CommandResult.Ok(new JObject
+            var added = new JObject
             {
                 ["operation"] = "add",
                 ["link_type_id"] = Rid.Value(reread.Id),
@@ -377,7 +384,134 @@ namespace Horizun.Revit.Commands
                 ["status_after"] = status,
                 ["path"] = path,
                 ["verified_after_reread"] = true
-            });
+            };
+            // Committed through Guard.Commit above, and both halves re-read: the literal
+            // status is earned here, not assumed.
+            ApplicationOutcome.StampApplied(added, ApplicationOutcome.Committed, 1, 1, 1, 0, 0, 0);
+            return CommandResult.Ok(added);
+        }
+
+        // ---- add_instance: a SECOND placement of a link already in the model. ----
+        //
+        // THE DEAD END THIS CLOSES. Revit holds one RevitLinkType per path, and `add`
+        // says so when it refuses a duplicate: "place another instance of that type, or
+        // change_path it." There was no way to place another instance. The advice named
+        // an operation the command did not have, so the only route to a normal Revit
+        // situation - one linked file placed twice, two towers, a mirrored wing - was
+        // arbitrary Python, which is off by default and reports nothing verified.
+        //
+        // It matters beyond the fixture. A takeoff across links reports one row per
+        // element PER PLACEMENT, told apart by link_instance_id; a bridge that cannot
+        // create the second placement cannot demonstrate that it tells them apart.
+        //
+        // RevitLinkInstance.Create runs INSIDE a transaction, so unlike add's own
+        // RevitLinkType.Create this could rehearse provisionally - but rehearsing would
+        // mean creating an instance and rolling it back, and the instance count is the
+        // fact the token binds. The dry run measures instead, and says which it was.
+        private static CommandResult AddInstance(UIApplication app, JObject request)
+        {
+            GateResult gate = DocumentGate.ForMutation(app, request, "horizun_manage_links");
+            if (!gate.Ok) return gate.Refusal;
+            Document doc = gate.Document;
+
+            JToken typeToken = request["link_type_id"];
+            if (typeToken == null || typeToken.Type != JTokenType.Integer)
+                return CommandResult.Fail("add_instance needs link_type_id: the RevitLinkType to place again, from " +
+                    "operation=list. Nothing was placed.");
+            long rawId = (long)typeToken;
+            if (!Rid.CanRepresentElementId(rawId)) return CommandResult.Fail(Rid.ElementIdRangeError(rawId));
+            RevitLinkType type = doc.GetElement(Rid.ToElementId(rawId)) as RevitLinkType;
+            if (type == null)
+                return CommandResult.Fail("Element " + rawId + " is not a RevitLinkType in '" + doc.Title +
+                    "'. operation=list names every link type this document holds. Nothing was placed.");
+
+            string status = SafeStatus(type);
+            if (status != "Loaded")
+                return CommandResult.Fail("Link type " + rawId + " is '" + status + "', not Loaded. An instance of a " +
+                    "link that is not loaded would be a placement of nothing: reload it first. Nothing was placed.");
+
+            List<ElementId> before = InstancesOf(doc, type.Id);
+            string hash = DocumentGate.PlanHash(request, "operation", "link_type_id");
+            bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
+            if (dryRun)
+            {
+                var preview = new JObject
+                {
+                    ["dry_run"] = true,
+                    ["mode"] = "measured_preview",
+                    ["would"] = "add_instance",
+                    ["link_type_id"] = rawId,
+                    ["name"] = SafeName(type),
+                    ["path"] = LinkPath(type),
+                    ["status"] = status,
+                    ["instances_before"] = before.Count,
+                    ["instances_after_if_applied"] = before.Count + 1,
+                    ["note"] = "the new instance is placed at the link type's own origin, exactly as Revit's Manage " +
+                               "Links places one. Move it afterwards with horizun_transform_elements if it must sit " +
+                               "somewhere else. A takeoff across links reports this placement's rows under ITS OWN " +
+                               "link_instance_id, and counts the linked elements once per placement."
+                };
+                ApplicationOutcome.StampRehearsal(preview, 1, 0, 0, 0);
+                DocumentGate.StampConfirmation(preview, gate, "horizun_manage_links", hash, true);
+                return CommandResult.Ok(preview);
+            }
+            CommandResult refusal = DocumentGate.RequireConfirmation(app, gate, request, "horizun_manage_links", hash);
+            if (refusal != null) return refusal;
+
+            RevitLinkInstance created;
+            using (var tx = new Transaction(doc, "Horizun: place link instance"))
+            {
+                tx.Start();
+                created = RevitLinkInstance.Create(doc, type.Id);
+                if (created == null)
+                {
+                    Guard.RollBack(tx);
+                    return CommandResult.Fail("RevitLinkInstance.Create returned nothing; the transaction rolled back " +
+                        "and no instance was placed.");
+                }
+                Guard.Commit(tx, "Horizun: place link instance");
+            }
+
+            // RE-READ, both halves: the instance is in the model AND it is an instance of
+            // the type that was asked for. A created element that points somewhere else is
+            // a placement of the wrong link, which is worse than a failure.
+            var reread = doc.GetElement(created.Id) as RevitLinkInstance;
+            List<ElementId> after = InstancesOf(doc, type.Id);
+            bool ofThisType = reread != null && reread.GetTypeId() == type.Id;
+            if (reread == null || !ofThisType || after.Count != before.Count + 1)
+                return CommandResult.Fail("The placement committed but the re-read does not hold: instance " +
+                    (reread == null ? "(gone)" : "present, of type " + Rid.Value(reread.GetTypeId())) +
+                    ", instances of type " + rawId + " went from " + before.Count + " to " + after.Count +
+                    ". Success is not claimed.");
+
+            var placed = new JObject
+            {
+                ["operation"] = "add_instance",
+                ["link_type_id"] = rawId,
+                ["link_instance_id"] = Rid.Value(reread.Id),
+                ["name"] = SafeName(type),
+                ["path"] = LinkPath(type),
+                ["status_after"] = SafeStatus(type),
+                ["instances_before"] = before.Count,
+                ["instances_after"] = after.Count,
+                ["instance_ids_after"] = new JArray(after.Select(i => (object)Rid.Value(i)).ToArray()),
+                ["verified_after_reread"] = true,
+                ["means"] = "this linked file is now placed " + after.Count + " time(s) in '" + doc.Title +
+                            "'. A quantity takeoff with include_links measures its elements once PER PLACEMENT and " +
+                            "stamps every row with the link_instance_id it came through."
+            };
+            ApplicationOutcome.StampApplied(placed, ApplicationOutcome.Committed, 1, 1, 1, 0, 0, 0);
+            return CommandResult.Ok(placed);
+        }
+
+        private static List<ElementId> InstancesOf(Document doc, ElementId typeId)
+        {
+            return new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance))
+                .OfType<RevitLinkInstance>()
+                .Where(i => i.GetTypeId() == typeId)
+                .Select(i => i.Id)
+                .OrderBy(i => Rid.Value(i))
+                .ToList();
         }
 
         // ---- change_path: the rewire, said and then re-read. --------------------
@@ -417,6 +551,7 @@ namespace Horizun.Revit.Commands
                     ["note"] = "THIS IS THE REWIRE: every instance above will show the new model after apply. " +
                                "LoadFrom runs outside a transaction; the apply re-reads the type's external path."
                 };
+                ApplicationOutcome.StampRehearsal(preview, 1, 0, 0, 0);
                 DocumentGate.StampConfirmation(preview, gate, "horizun_manage_links", hash, true);
                 return CommandResult.Ok(preview);
             }
@@ -436,7 +571,7 @@ namespace Horizun.Revit.Commands
                     (loadResult == null ? "(null)" : loadResult.LoadResult.ToString()) + "' and the re-read shows " +
                     "status '" + status + "', path '" + pathAfter + "'. The claim 'repointed' is not made.",
                     new JObject { ["path_before"] = pathBefore, ["path_after_reread"] = pathAfter });
-            return CommandResult.Ok(new JObject
+            var repointed = new JObject
             {
                 ["operation"] = "change_path",
                 ["link_type_id"] = Rid.Value(type.Id),
@@ -445,7 +580,12 @@ namespace Horizun.Revit.Commands
                 ["status_after"] = status,
                 ["instances_re_resolved"] = instances.Count,
                 ["verified_after_reread"] = true
-            });
+            };
+            // The same shape the load-state path declares: LoadFrom runs outside a
+            // transaction, so the status stands for 'the re-read held', which `ok`
+            // above established before this line is reached.
+            ApplicationOutcome.StampApplied(repointed, ApplicationOutcome.Committed, 1, 1, 1, 0, 0, 0);
+            return CommandResult.Ok(repointed);
         }
 
         private static string SafeStatus(RevitLinkType type)

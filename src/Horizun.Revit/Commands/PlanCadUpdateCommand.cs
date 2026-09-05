@@ -77,10 +77,17 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return CommandResult.Fail(ex.Message); }
 
             List<JObject> unreadable;
-            CadInstanceFacts facts = CadFacts.Collect(doc, out unreadable)
-                .FirstOrDefault(f => f.ElementId == instanceId);
+            List<CadInstanceFacts> allFacts = CadFacts.Collect(doc, out unreadable);
+            CadInstanceFacts facts = allFacts.FirstOrDefault(f => f.ElementId == instanceId);
             if (facts == null)
                 return CommandResult.Fail("CAD instance " + instanceId + " could not be measured.");
+
+            // THIS PLACEMENT, and every other one in the model. Scope is decided
+            // per placement now: a file linked twice is two placements with one
+            // hash, and the second one's elements are not this run's to touch.
+            CadPlacement placement = CadFacts.Placement(facts);
+            CadSourceIdentity identity = CadPlacementRules.Identity(placement);
+            List<CadPlacement> placementsInModel = allFacts.Select(CadFacts.Placement).Where(p => p != null).ToList();
 
             double? declaredToMm = CadUnits.MillimetresPer(facts.DeclaredUnits);
             if (!declaredToMm.HasValue || Math.Abs(declaredToMm.Value - set.SourceUnitsToMm) > 1e-9)
@@ -134,6 +141,16 @@ namespace Horizun.Revit.Commands
                 if (!string.IsNullOrWhiteSpace(sha)) lineage.Add(sha.Trim().ToLowerInvariant());
             }
 
+            // ...OR WHICH PLACEMENT. A file placed twice cannot be named by its
+            // hash, so a caller may name the placement itself - the ImportInstance
+            // UniqueId the earlier plan's reply reported as placement.id.
+            var lineagePlacements = new List<string>();
+            foreach (JToken token in request["supersedes_placement_ids"] as JArray ?? new JArray())
+            {
+                string id = token?.ToString();
+                if (!string.IsNullOrWhiteSpace(id)) lineagePlacements.Add(id.Trim());
+            }
+
             var minesUnderThisSet = subjects
                 .Where(s => set.Sha256 == null || string.IsNullOrEmpty(s.Provenance.RequirementSetSha256) ||
                             string.Equals(s.Provenance.RequirementSetSha256, set.Sha256, StringComparison.Ordinal))
@@ -142,18 +159,111 @@ namespace Horizun.Revit.Commands
                 .Select(s => s.Provenance.SourceFileSha256)
                 .Where(x => !string.IsNullOrEmpty(x))
                 .Distinct(StringComparer.Ordinal).ToList();
-            bool anyFromThisFile = facts.FileSha256 != null && shas.Contains(facts.FileSha256, StringComparer.Ordinal);
 
-            if (!anyFromThisFile && lineage.Count == 0 && shas.Count > 0)
-                return CommandResult.Fail(
-                    "supersedes_unstated: nothing in '" + title + "' was built from THIS file, and " +
-                    minesUnderThisSet.Count + " element(s) were built under these rules from " + shas.Count +
-                    " other drawing(s): " + string.Join(", ", shas.Take(8)) +
-                    (shas.Count > 8 ? " and more" : "") + ". Planning anyway would report your whole existing " +
-                    "conversion as untouched and this drawing as entirely new work - it would build a second " +
-                    "copy of the building. Say which one this supersedes in supersedes_sha256. Nothing in a DWG " +
-                    "says that one file is a re-issue of another, so it is a statement you make, not one this " +
-                    "bridge can find.");
+            // WHICH ELEMENTS THIS PLACEMENT MAY CLAIM, decided once, at a desk.
+            CadUpdateScope scope = CadPlacementRules.Resolve(minesUnderThisSet, placement, lineage,
+                                                             lineagePlacements, placementsInModel);
+
+            if (scope.AmbiguousLineageElements.Count > 0)
+                return CommandResult.FailWithDetail(
+                    "supersedes_ambiguous: " + scope.AmbiguousLineageElements[0].Says + " " +
+                    scope.AmbiguousLineageElements.Count + " element(s) are in this position. Nothing was planned.",
+                    new JObject { ["scope"] = scope.ToJson() });
+
+            // AMBIGUOUS v1, REFUSED HERE - before the claimable count, before the
+            // transform comparison, before a single action is derived.
+            //
+            // This had no refusal at all. An ambiguous v1 element is out of
+            // scope, so the plan simply went on without it whenever anything else
+            // was claimable - and the drawing entity that built it then matched
+            // nothing in scope and came back as a `create`. Applying that builds a
+            // second wall on top of the one standing. Only the all-ambiguous case
+            // refused, and it refused as scope_unidentified, whose advice is to
+            // run horizun_plan_from_cad - which against this model builds the
+            // whole drawing again. Both outcomes are the harm the ambiguity guard
+            // exists to prevent, so the guard now fires on the ambiguity itself.
+            if (scope.AmbiguousV1.Count > 0)
+                return CommandResult.FailWithDetail(
+                    CadPlacementRules.AmbiguousV1Refusal(scope, title),
+                    new JObject
+                    {
+                        ["scope"] = scope.ToJson(),
+                        ["source"] = identity.ToJson(),
+                        ["ambiguous_v1"] = new JArray(scope.AmbiguousV1.Select(x => x.ToJson()).Take(100))
+                    });
+
+            // THE GUARD THE BACKLOG NAMED (8.4c). It used to fire on "other
+            // hashes exist" and stay silent when this run could claim nothing
+            // for a structural reason - an embedded import, a moved file - so
+            // the plan reported zero of everything about a conversion it had not
+            // looked at. It now fires on "this run can claim nothing", and says
+            // what it looked for and what is there.
+            if (scope.ClaimableCount == 0)
+            {
+                bool nothingStated = lineage.Count == 0 && lineagePlacements.Count == 0;
+                bool otherFilesExist = shas.Any(x => !string.Equals(x, facts.FileSha256, StringComparison.Ordinal));
+                // The lineage-by-hash wording only makes sense for a source that
+                // HAS a hash. An embedded import or a missing file cannot be
+                // named that way, and telling its caller to pass supersedes_sha256
+                // would send them looking for a number that does not exist.
+                bool sourceHasHash = identity.Mode == CadPlacementRules.IdentityFileHash;
+                if (nothingStated && otherFilesExist && sourceHasHash)
+                    return CommandResult.FailWithDetail(
+                        "supersedes_unstated: nothing in '" + title + "' was built from THIS placement, and " +
+                        minesUnderThisSet.Count + " element(s) were built under these rules from " + shas.Count +
+                        " drawing(s): " + string.Join(", ", shas.Take(8)) +
+                        (shas.Count > 8 ? " and more" : "") + ". Planning anyway would report your whole existing " +
+                        "conversion as untouched and this drawing as entirely new work - it would build a second " +
+                        "copy of the building. Say which one this supersedes in supersedes_sha256 (a file placed " +
+                        "once) or supersedes_placement_ids (a placement). Nothing in a DWG says that one file " +
+                        "is a re-issue of another, so it is a statement you make, not one this bridge can find.",
+                        new JObject { ["scope"] = scope.ToJson(), ["source"] = identity.ToJson() });
+                return CommandResult.FailWithDetail(
+                    CadPlacementRules.UnidentifiedRefusal(scope, title) +
+                    " Source identity of this placement: " + identity.Mode + ".",
+                    new JObject { ["scope"] = scope.ToJson(), ["source"] = identity.ToJson() });
+            }
+
+            // HAS THIS PLACEMENT MOVED since its elements were built? Compared
+            // on the v2 records it claims - a v1 record has no transform to
+            // compare and is reported as such rather than as "not moved".
+            CadPlacementMove move = null;
+            var movedRecords = new List<long>();
+            int transformUnknown = 0;
+            foreach (CadAuditSubject s in minesUnderThisSet.Where(x => scope.Claimed.Contains(x.ElementId)))
+            {
+                CadPlacementMove m = CadPlacementRules.CompareTransforms(s.Provenance, placement);
+                if (m.DeltaUnknownBecause != null && !m.Moved) { transformUnknown++; continue; }
+                if (!m.Moved) continue;
+                movedRecords.Add(s.ElementId);
+                if (move == null) move = m;
+            }
+            bool acceptMove = request.Value<bool?>("accept_placement_move") ?? false;
+            if (move != null && !acceptMove)
+                return CommandResult.FailWithDetail(
+                    "placement_moved: CAD instance " + instanceId + " does not sit where it sat when " +
+                    movedRecords.Count + " of its element(s) were built - recorded transform " +
+                    move.RecordedFingerprint + ", now " + move.CurrentFingerprint +
+                    (move.DeltaMm != null
+                        ? ", a shift of " + string.Join(", ", move.DeltaMm.Select(v => v.ToString("0.#", CultureInfo.InvariantCulture))) +
+                          " mm and " + move.RotationDegrees.ToString("0.##", CultureInfo.InvariantCulture) + " degrees"
+                        : ", by an amount that could not be decoded: " + move.DeltaUnknownBecause) +
+                    ". Every semantic id is derived from model coordinates, so planned as-is this update would " +
+                    "read the whole drawing as deleted and redrawn. Nothing was planned. If the placement was " +
+                    "moved ON PURPOSE, send accept_placement_move=true and the plan is re-derived under the new " +
+                    "transform: elements still on their built line follow the drawing, elements a person also " +
+                    "moved are reported as conflict. If it was moved by accident, move it back.",
+                    new JObject
+                    {
+                        ["placement_moved"] = move.ToJson(),
+                        ["elements_built_under_the_old_transform"] = new JArray(movedRecords.Take(200)),
+                        ["scope"] = scope.ToJson()
+                    });
+            if (move != null && acceptMove && (move.From == null || move.To == null))
+                return CommandResult.FailWithDetail(
+                    "placement_moved_undecodable: the placement moved and " + move.DeltaUnknownBecause +
+                    ", so the plan cannot be re-derived under the new transform. Nothing was planned.",
+                    new JObject { ["placement_moved"] = move.ToJson() });
 
             var rejectedPairings = new List<string>();
             foreach (JToken token in request["reject_pairings"] as JArray ?? new JArray())
@@ -186,14 +296,34 @@ namespace Horizun.Revit.Commands
             }
             catch { }
 
-            CadUpdate update = CadUpdateRules.Plan(interpretation.Candidates, subjects, set,
-                                                   facts.FileSha256, accepted, lineage, rejectedPairings,
-                                                   hostByCandidate);
+            CadUpdate update = CadUpdateRules.Plan(interpretation.Candidates, subjects, set, scope,
+                                                   accepted, rejectedPairings, hostByCandidate,
+                                                   acceptMove ? move : null);
 
             // ---------------------------------------------------------- actions
             string levelError;
             JArray actions = Actions(doc, update, set, request, title, out levelError);
             if (levelError != null) return CommandResult.Fail(levelError);
+
+            // WHAT THE APPLY MUST RE-STAMP without touching geometry: a v1 record
+            // this run claimed becomes v2 (it now knows its placement), and under
+            // an accepted move every element left in place is stamped with the
+            // transform it now sits under - or the next plan reports the move
+            // again, forever.
+            JArray restamp = Restamp(update, scope, move != null && acceptMove);
+            JArray candidateIndex = CandidateIndex(update, actions);
+            foreach (JToken row in restamp) candidateIndex.Add(row);
+
+            var placementJson = new JObject
+            {
+                ["id"] = placement.PlacementId,
+                ["instance_id"] = instanceId,
+                ["transform"] = placement.TransformFingerprint,
+                ["origin_mm"] = placement.EncodedOrigin,
+                ["basis"] = placement.EncodedBasis,
+                ["external_path"] = placement.ExternalPath,
+                ["identity"] = identity.Mode
+            };
 
             var result = new JObject
             {
@@ -204,8 +334,37 @@ namespace Horizun.Revit.Commands
                 {
                     ["fingerprint"] = sourceFingerprint,
                     ["file_sha256"] = facts.FileSha256,
-                    ["external_path"] = facts.ExternalPath
+                    ["external_path"] = facts.ExternalPath,
+                    ["identity"] = identity.ToJson()
                 },
+                ["placement"] = placementJson,
+                ["scope"] = scope.ToJson(),
+                ["scope_means"] = "which elements THIS PLACEMENT may claim. claimed: v2 records naming this " +
+                                  "placement or one you named as superseded. migrated_from_v1: records written " +
+                                  "before placement identity, claimable because exactly one placement of their " +
+                                  "file could have built them; the apply rewrites them as v2. ambiguous_v1: two " +
+                                  "placements could have built them - never claimed, never orphaned. " +
+                                  "other_placement: this same file under another placement, untouched.",
+                ["migrated_from_v1"] = new JObject
+                {
+                    ["count"] = scope.MigratedFromV1.Count,
+                    ["element_ids"] = new JArray(scope.MigratedFromV1.OrderBy(x => x).Take(200)),
+                    ["restamped_on_apply"] = restamp.Count(r => r.Value<string>("reason") == CadPlacementRules.RestampMigrated)
+                },
+                ["ambiguous_v1"] = new JArray(scope.AmbiguousV1.Select(x => x.ToJson()).Take(100)),
+                ["placement_moved"] = move == null
+                    ? (JToken)JValue.CreateNull()
+                    : new JObject
+                    {
+                        ["accepted"] = acceptMove,
+                        ["move"] = move.ToJson(),
+                        ["elements_built_under_the_old_transform"] = new JArray(movedRecords.Take(200)),
+                        ["means"] = "the placement does not sit where it sat when these elements were built, and " +
+                                    "you accepted that. The plan is re-derived under the new transform: an element " +
+                                    "still on its built line follows the drawing (set_curve), one already where the " +
+                                    "drawing now puts it is left and re-stamped, one a person ALSO moved is a conflict."
+                    },
+                ["placement_transform_unknown"] = transformUnknown,
                 ["requirement_set"] = new JObject
                 {
                     ["id"] = set.Id, ["version"] = set.Version, ["sha256"] = set.Sha256
@@ -268,19 +427,35 @@ namespace Horizun.Revit.Commands
                     ["requirement_set_sha256"] = set.Sha256,
                     ["source_fingerprint"] = sourceFingerprint,
                     ["source_file_sha256"] = facts.FileSha256,
+                    ["source_path"] = placement.ExternalPath,
+                    ["placement"] = placementJson,
+                    ["placement_move_accepted"] = move != null && acceptMove,
                     ["plan_fingerprint"] = "cadupd:" + CadConversionPlanRules.ActionsFingerprint(actions).Substring(8),
                     ["means"] = "copy this into horizun_apply_cad_update. Without it the elements this update " +
-                                "creates remember nothing, and the NEXT update builds them again."
+                                "creates remember nothing, and the NEXT update builds them again. The placement " +
+                                "block is what lets the next update tell this placement from another of the " +
+                                "same file, and measure whether it has moved."
                 },
-                ["candidate_index"] = CandidateIndex(update, actions),
+                ["candidate_index"] = candidateIndex,
+                ["restamp"] = new JObject
+                {
+                    ["count"] = restamp.Count,
+                    ["means"] = "elements the apply re-stamps WITHOUT touching their geometry: a v1 record this " +
+                                "run claimed becomes v2, and under an accepted move an element left in place is " +
+                                "stamped with the transform it now sits under. They ride in candidate_index under " +
+                                "the key cad-update-restamp."
+                },
                 ["lineage"] = new JObject
                 {
                     ["this_file_sha256"] = facts.FileSha256,
+                    ["this_placement_id"] = placement.PlacementId,
                     ["supersedes"] = new JArray(lineage),
+                    ["supersedes_placement_ids"] = new JArray(lineagePlacements),
                     ["source_hashes_in_the_model"] = new JArray(shas),
-                    ["means"] = "the elements this update is about are the ones built from this file or from a " +
-                                "drawing it supersedes, under these rules. Everything else in the model is left " +
-                                "alone and is not counted here."
+                    ["means"] = "the elements this update is about are the ones built from THIS placement, or " +
+                                "from a placement or file you say it supersedes, under these rules. Another " +
+                                "placement of the same file is not this run's, even with the same hash. " +
+                                "Everything else in the model is left alone and is not counted here."
                 },
                 ["pairings_offered"] = new JArray(update.Actions
                     .Where(a => a.PairedWith != null)
@@ -462,6 +637,39 @@ namespace Horizun.Revit.Commands
             return index;
         }
 
+        /// <summary>
+        /// Elements the apply re-stamps without an action: claimed v1 records
+        /// (they become v2, now naming their placement) and, under an accepted
+        /// move, everything left in place (now naming the transform it sits
+        /// under). Orphans are not here: a record on an element the drawing no
+        /// longer says is left exactly as it was.
+        /// </summary>
+        private static JArray Restamp(CadUpdate update, CadUpdateScope scope, bool moveAccepted)
+        {
+            var rows = new JArray();
+            var seen = new HashSet<long>();
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                if (!a.ElementId.HasValue) continue;
+                if (a.Kind != "leave" && a.Kind != "review") continue;
+                long id = a.ElementId.Value;
+                string reason = null;
+                if (scope.MigratedFromV1.Contains(id)) reason = CadPlacementRules.RestampMigrated;
+                else if (moveAccepted && a.Kind == "leave") reason = CadPlacementRules.RestampPlacementMoved;
+                if (reason == null || !seen.Add(id)) continue;
+                rows.Add(new JObject
+                {
+                    ["key"] = "cad-update-restamp",
+                    ["element_id"] = id,
+                    ["reason"] = reason,
+                    ["candidate_id"] = a.CandidateId,
+                    ["semantic_id"] = a.SemanticId,
+                    ["geometry_id"] = a.GeometryId
+                });
+            }
+            return rows;
+        }
+
         private static JObject Row(string key, CadUpdateAction a, int? elementIndex)
         {
             var o = new JObject
@@ -469,6 +677,9 @@ namespace Horizun.Revit.Commands
                 ["key"] = key,
                 ["candidate_id"] = a.CandidateId,
                 ["semantic_id"] = a.SemanticId,
+                // WITHOUT THIS every element an update created was stamped with
+                // GeometryId null - the one field the relayered rung matches on.
+                ["geometry_id"] = a.GeometryId,
                 ["rule_id"] = a.Evidence.Value<string>("rule_id"),
                 ["layer"] = a.Evidence.Value<string>("layer"),
                 ["confidence"] = a.Evidence.Value<double?>("confidence") ?? 0
@@ -511,10 +722,10 @@ namespace Horizun.Revit.Commands
             var subjects = new List<CadAuditSubject>();
             try
             {
-                if (Schema.Lookup(CadProvenanceStore.SchemaGuid) == null) return subjects;
-                foreach (Element e in new FilteredElementCollector(doc)
-                             .WhereElementIsNotElementType()
-                             .WherePasses(new ExtensibleStorageFilter(CadProvenanceStore.SchemaGuid)))
+                // EVERY VERSION OF THE RECORD. A collector on the current GUID
+                // alone would lose every v1 conversion the day the writer moved
+                // to v2, and report it as a first conversion.
+                foreach (Element e in CadProvenanceStore.Holders(doc))
                 {
                     string problem;
                     CadProvenance p = CadProvenanceStore.Read(e, out problem);

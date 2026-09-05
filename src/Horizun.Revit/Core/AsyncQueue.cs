@@ -32,6 +32,14 @@ namespace Horizun.Revit.Core
         public string ParamsJson;
         public Job Record;
         public DateTime QueuedUtc;
+
+        /// <summary>
+        /// Set when this job's work is an ordered SEQUENCE rather than a single call -
+        /// a read-only sweep over many models, admitted by JobSequenceRules. Null for
+        /// every ordinary submission, which is why nothing about the single-call path
+        /// changes.
+        /// </summary>
+        public System.Collections.Generic.List<SequenceEntry> Sequence;
     }
 
     public static class AsyncQueue

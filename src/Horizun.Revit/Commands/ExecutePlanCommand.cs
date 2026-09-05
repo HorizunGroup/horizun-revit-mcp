@@ -23,7 +23,12 @@ namespace Horizun.Revit.Commands
             "horizun_split_floor_loops", "horizun_split_multilayer_walls", "horizun_split_multilayer_slabs",
             "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_copy_slab_elevations",
             "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
-            "horizun_rectangularize_walls"
+            "horizun_rectangularize_walls",
+            // The one correction horizun_audit_model has always fully specified - a
+            // typed pin - could not be composed into a plan until this line. A test
+            // holds this list to be a superset of every tool the correction registry
+            // names, so the next recipe cannot dead-end the same way.
+            "horizun_manage_links"
         };
 
         public ExecutePlanCommand(Func<string, ICommand> resolve) { _resolve = resolve; }

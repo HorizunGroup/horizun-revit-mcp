@@ -123,6 +123,30 @@ namespace Horizun.Revit.Core
         /// The block every read-only command carries. One shape, so a caller learns to
         /// look for it once rather than per tool.
         /// </summary>
+        /// <summary>
+        /// WHAT THIS MEASUREMENT IS WORTH FOR A LINKED DOCUMENT, and it is less than
+        /// for the host.
+        ///
+        /// MEASURED on Revit 2026, 2026-09-04: a link created with
+        /// RevitLinkOptions(false, WorksetConfiguration) closing one workset by id
+        /// reports, in the LINKED document, every workset IsOpen=true - and the 392
+        /// elements of the workset it was asked to close are queryable through the
+        /// link, exactly as they are when the same type is reloaded with
+        /// OpenAllWorksets. The numbers are identical either way.
+        ///
+        /// So for a link these two numbers are the linked document's own state as
+        /// Revit reports it, and nothing here can confirm the configuration the link
+        /// was LOADED with. A takeoff must not read an absence in a link as a closed
+        /// workset, and must not claim a link's coverage is incomplete on the
+        /// strength of a flag Revit answers open.
+        /// </summary>
+        public const string LinkedDocumentMeans =
+            "for a LINKED document these numbers are the linked model's own workset state as Revit reports it. " +
+            "The API exposes no way to read back the WorksetConfiguration a link was loaded with: a link created " +
+            "with a workset closed still reports every workset open and still hands over that workset's elements " +
+            "(measured, Revit 2026). So an absence inside a link is NOT evidence of a closed workset, and this " +
+            "coverage is not evidence that everything the linked model holds was loaded.";
+
         public JObject ToJson() => new JObject
         {
             ["coverage_complete"] = CoverageComplete,

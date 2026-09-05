@@ -237,23 +237,244 @@ if ($installerSource -notmatch 'procedure RollbackDeployment' -or
 
 # Resolve every local link that will appear in the public repository. Anchors are
 # deliberately ignored here; missing files are the high-cost publication defect.
-$publicDocs = @(
-    'README.md','AGENTS.md','CONTRIBUTING.md','SECURITY.md','LICENSE','NOTICE','THIRD-PARTY-NOTICES.md','llms.txt',
-    'publish/overlay/README.md','publish/overlay/AGENTS.md',
-    'CODE_OF_CONDUCT.md','CODE-SIGNING-POLICY.md',
-    'docs/BENCHMARK.md','docs/FAMILY-AUTHORING.md','docs/HORIZUN-HUB.md','docs/PRIVACY.md','docs/production-readiness.md',
-    'docs/RELEASE-POLICY.md','docs/SIGNPATH-ONBOARDING.md','docs/requirement-set.md','docs/security-model.md','docs/TOOLS.md'
-) | Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
+#
+# THE LIST IS THE EXPORTER'S, NOT A COPY OF IT. This test used to carry its own
+# 21-document list, which omitted CHANGELOG.md, DWG-TO-BIM.md, DIMENSIONS.md and
+# five other documents the projector exports - so a broken link in any of those
+# was invisible here and surfaced only at publication. The allowlists are read
+# from publish/make-public-package.ps1 itself. In the exported repository that
+# private projector is deliberately absent; there the checked tree is already
+# the projection, so the file set on disk is authoritative.
+$projectorPath = Join-Path $repo 'publish\make-public-package.ps1'
+$projector = if (Test-Path -LiteralPath $projectorPath) { Get-Content $projectorPath -Raw } else { $null }
+function Read-AllowList([string]$name) {
+    if (-not $projector) { return @() }
+    $m = [regex]::Match($projector, "\`$$name\s*=\s*@\(([^)]*)\)")
+    if (-not $m.Success) { Fail "publish/make-public-package.ps1 no longer declares `$$name"; return @() }
+    [regex]::Matches($m.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value.Replace('\','/') }
+}
+$allowDocs = @(Read-AllowList 'allowDocs')
+$allowRoot = @(Read-AllowList 'allowRoot')
+$allowDirs = @(Read-AllowList 'allowDirs')
+if ($projector) {
+    $exportedDocs = @($allowRoot | Where-Object { $_ -match '\.(md|txt)$' -or $_ -in @('LICENSE','NOTICE') }) +
+                    @($allowDocs | Where-Object { $_ -match '\.md$' })
+    $publicDocs = @('publish/overlay/README.md','publish/overlay/AGENTS.md') + $exportedDocs |
+        Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
+    if ($allowDocs.Count -lt 15) { Fail "the exporter's allowDocs read back only $($allowDocs.Count) entries; the parser or the list changed shape" }
+}
+else {
+    $publicDocs = @(Get-ChildItem -LiteralPath $repo -Recurse -File -Force |
+        Where-Object { $_.Extension -in @('.md','.txt') -and $_.FullName -notmatch '[\\/]\.(git)[\\/]' } |
+        ForEach-Object { [IO.Path]::GetRelativePath($repo, $_.FullName).Replace('\','/') })
+}
+
+# Is a repository-relative path inside the public projection?
+function Test-Exported([string]$relative) {
+    $r = $relative.Replace('\','/')
+    if ($r.StartsWith('./')) { $r = $r.Substring(2) }
+    if (-not $projector) { return Test-Path -LiteralPath (Join-Path $repo $r) }
+    if ($allowRoot -contains $r -or $allowDocs -contains $r) { return $true }
+    # The overlay supplies the public README, AGENTS, CLAUDE, LICENSE and NOTICE.
+    if ($r -notmatch '/' -and (Test-Path (Join-Path $repo ('publish/overlay/' + $r)))) { return $true }
+    foreach ($d in $allowDirs) { if ($r.StartsWith($d.TrimEnd('/') + '/')) { return $true } }
+    return $false
+}
+
 foreach ($path in $publicDocs) {
     $full = Join-Path $repo $path
     if (-not (Test-Path $full)) { Fail "public document is missing: $path"; continue }
     $base = if ($path.StartsWith('publish/overlay/')) { $repo } else { Split-Path -Parent $full }
     $text = Get-Content $full -Raw
-    foreach ($match in [regex]::Matches($text, '\]\((?!https?://|mailto:|#)([^)#]+)(?:#[^)]+)?\)')) {
+    # Markdown links are matched over the prose only: `Array[Byte](sequence)` in a
+    # code span is not a link, and the projector strips code the same way.
+    $prose = [regex]::Replace([regex]::Replace($text, '(?s)```.*?```', ''), '`[^`\r\n]*`', '')
+    foreach ($match in [regex]::Matches($prose, '\]\((?!https?://|mailto:|#)([^)#]+)(?:#[^)]+)?\)')) {
         $target = [Uri]::UnescapeDataString($match.Groups[1].Value).Replace('/','\')
         if ($target -match '^<.*>$') { continue }
-        if (-not (Test-Path (Join-Path $base $target))) { Fail "$path links to missing '$target'" }
+        if (-not (Test-Path (Join-Path $base $target))) { Fail "$path links to missing '$target'"; continue }
+        # The file exists here; will it exist THERE? A link into docs/evidence or a
+        # program-state ledger resolves in the private tree and 404s in the public one.
+        $rel = [System.IO.Path]::GetRelativePath($repo, [System.IO.Path]::GetFullPath((Join-Path $base $target))).Replace('\','/')
+        if (-not (Test-Exported $rel)) { Fail "$path links to '$rel', which the projector does not export" }
     }
+    # A path cited in backticks is a reference too, and the projector's own link
+    # scan strips code spans before looking. Every `docs/...` or `scripts/...`
+    # citation in an exported document must either be exported or be marked, in
+    # the same passage, as private - so a reader of the public repository is told
+    # rather than sent looking. CHANGELOG.md is history and is exempt: rewriting
+    # released entries to satisfy a checker would falsify the record.
+    if ($path -eq 'CHANGELOG.md') { continue }
+    foreach ($match in [regex]::Matches($text, '`((?:docs|scripts|publish|tests|src)/[^`\s]+)`')) {
+        $cited = $match.Groups[1].Value.TrimEnd('.',',',';',':')
+        if ($cited -match '[*?<>]') { continue }   # a glob or a placeholder, not a file
+        $start = [Math]::Max(0, $match.Index - 240)
+        $window = $text.Substring($start, [Math]::Min(480, $text.Length - $start))
+        $exists = Test-Path -LiteralPath (Join-Path $repo $cited)
+        $exported = Test-Exported $cited
+        if ($exported) {
+            if (-not $exists) { Fail "$path cites '$cited', which the public projection promises but which does not exist" }
+            continue
+        }
+        # In the public checkout an explicitly labelled private evidence path is
+        # absent by design. The private-side run already checked that it exists
+        # before projection and that this explanatory label accompanies it.
+        if (-not $exists -and -not $projector -and $window -match '(?i)private|not (in|part of) the public|not exported|kept out of the public') { continue }
+        if (-not $exists) { Fail "$path cites '$cited', which does not exist"; continue }
+        if ($window -notmatch '(?i)private|not (in|part of) the public|not exported|kept out of the public') {
+            Fail "$path cites '$cited', which the projector does not export, without saying it is private"
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
+# THE EVIDENCE DOCUMENTS ARE A DELIVERABLE, and a deliverable that carries a
+# viewer's error text or half a command is not one.
+#
+# This exists because a published reproduction command had lost a path separator
+# - C:\hz-live\runs\HZ_M2025.rvt had become C:\hz-liveuns\HZ_M2025.rvt - and
+# nothing checked. A command nobody can paste is worse than no command: it looks
+# like instructions.
+# -----------------------------------------------------------------------------
+# THE MATRIX IS A PROJECTION OF THE RECORD. A total edited into the prose must
+# not survive: the renderer re-renders from the JSON and refuses a document that
+# has drifted from it.
+$evidenceRoot = Join-Path $repo 'docs\evidence'
+if (Test-Path -LiteralPath $evidenceRoot) {
+$py = Get-Command python -ErrorAction SilentlyContinue
+if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
+if (-not $py) {
+    Fail 'no Python interpreter on PATH: the acceptance matrix could not be checked against its record'
+}
+else {
+    & $py.Source (Join-Path $repo 'scripts/render-acceptance-matrix.py') --check
+    if ($LASTEXITCODE -ne 0) { Fail 'the published acceptance matrix differs from the record it is rendered from' }
+}
+
+$evidenceDocs = @(Get-ChildItem -Path (Join-Path $repo 'docs/evidence') -Filter '*.md' -File -ErrorAction SilentlyContinue)
+if ($evidenceDocs.Count -eq 0) { Fail 'no evidence documents were found to check' }
+
+# Text that only ever arrives from a renderer, a viewer or a crashed tool.
+$foreignText = @(
+    'FileRenderer', 'processFileResult', 'Line doesnt exist', "Line doesn't exist",
+    'Traceback (most recent call last)', 'System.Management.Automation.',
+    'ParserError:', '<<<<<<<', '>>>>>>>'
+)
+
+foreach ($doc in $evidenceDocs) {
+    $text = Get-Content -LiteralPath $doc.FullName -Raw
+    $lines = $text -split "`n"
+
+    foreach ($needle in $foreignText) {
+        if ($text.Contains($needle)) {
+            Fail ("{0} carries text that belongs to a tool and not to the document: '{1}'" -f $doc.Name, $needle)
+        }
+    }
+
+    # A carriage return inside a UTF-8 document written with LF endings is what a
+    # mangled escape leaves behind, and it hides inside a path.
+    if ($text.Contains([char]13)) {
+        Fail ("{0} contains a carriage return; a path with a `r in it renders as a broken command" -f $doc.Name)
+    }
+
+    # Every fenced block opens and closes.
+    $fences = ([regex]::Matches($text, '(?m)^```')).Count
+    if ($fences % 2 -ne 0) { Fail ("{0} has an unclosed code fence" -f $doc.Name) }
+
+    # EVERY WINDOWS PATH IN A COMMAND MUST BE A PATH. The ones this delivery uses
+    # live under two roots; a separator lost to an escape turns them into names
+    # nobody can open, which is exactly the defect this guards.
+    foreach ($m in [regex]::Matches($text, 'C:\\[A-Za-z0-9_\-.\\{}<>]+')) {
+        $path = $m.Value.TrimEnd('.', ',', ')')
+        if ($path -match '^C:\\hz-live' -and $path -notmatch '^C:\\hz-live(\\|$)') {
+            Fail ("{0} names '{1}', which is not a path under C:\hz-live - a separator was lost" -f $doc.Name, $path)
+        }
+        if ($path -match '^C:\\Users\\[A-Za-z0-9._-]+\\' -and $path -notmatch 'placeholder') {
+            Fail ("{0} names a personal path: {1}" -f $doc.Name, $path)
+        }
+    }
+
+    # A POWERSHELL BLOCK MUST PARSE. Placeholders like <head> are the caller's to
+    # fill, so they are substituted before parsing rather than excused.
+    $inBlock = $false
+    $block = New-Object System.Collections.Generic.List[string]
+    $blockStart = 0
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i].TrimEnd([char]13)
+        if (-not $inBlock -and $line -match '^```powershell') { $inBlock = $true; $blockStart = $i + 1; $block.Clear(); continue }
+        if ($inBlock -and $line -match '^```') {
+            $inBlock = $false
+            $source = ($block -join "`n")
+            $filled = $source -replace '<[a-z_]+>', 'PLACEHOLDER'
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseInput($filled, [ref]$null, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+                Fail ("{0} line {1}: the published PowerShell block does not parse: {2}" -f
+                      $doc.Name, $blockStart, $errors[0].Message)
+            }
+            # A block that ends on a continuation is a truncated command.
+            $lastReal = ($block | Where-Object { $_.Trim() -ne '' } | Select-Object -Last 1)
+            if ($lastReal -and $lastReal.TrimEnd().EndsWith('`')) {
+                Fail ("{0} line {1}: the published command ends on a line continuation - it is truncated" -f
+                      $doc.Name, $blockStart)
+            }
+            continue
+        }
+        if ($inBlock) { $block.Add($line) | Out-Null }
+    }
+    if ($inBlock) { Fail ("{0} ends inside a code fence" -f $doc.Name) }
+}
+}
+
+
+# ---- one installer really prepares every supported client --------------------
+$universalFailures = $failures.Count
+$releaseBootstrap = Get-Content -LiteralPath (Join-Path $repo 'install-release.ps1') -Raw
+$sourceInstaller = Get-Content -LiteralPath (Join-Path $repo 'install.ps1') -Raw
+$installerIss = Get-Content -LiteralPath (Join-Path $repo 'installer\horizun-mcp.iss') -Raw
+if ($releaseBootstrap -notmatch "\[string\]\s*\`$Client\s*=\s*'Both'") {
+    Fail 'install-release.ps1 does not default to configuring both Codex and Claude Code.'
+}
+if ($sourceInstaller -notmatch '(?s)complete-install\.ps1.*?-Client Both') {
+    Fail 'install.ps1 does not ask the completion helper to configure both CLI clients.'
+}
+if ($sourceInstaller -notmatch 'install-claude-desktop-extension\.ps1') {
+    Fail 'install.ps1 does not prepare the Claude Desktop extension.'
+}
+if ($installerIss -notmatch '\{param:HORIZUNCLIENT\|Both\}' -or
+    $installerIss -notmatch 'install-claude-desktop-extension\.ps1') {
+    Fail 'the Windows Setup does not default to both CLI clients and Claude Desktop preparation.'
+}
+if ($failures.Count -eq $universalFailures) {
+    Write-Host '[PASS] one Setup prepares Codex, Claude Code and Claude Desktop' -ForegroundColor Green
+}
+
+# ---- the discarded client route stays out of the product ---------------------
+#
+# This release supports local stdio clients only. The removed remote route must
+# not survive in user-facing docs, installer shortcuts or the staged helper list.
+$discardFailures = $failures.Count
+$discardedRoutePattern = '(?i)chatgpt|tunnel-client|secure\s+mcp\s+tunnel|webmcp'
+foreach ($doc in @('README.md', 'AGENTS.md', 'CHANGELOG.md', 'docs\CLIENTS.md',
+                   'docs\RELEASE-1.2.0.md',
+                   'publish\overlay\README.md', 'publish\overlay\AGENTS.md',
+                   'installer\horizun-mcp.iss', 'scripts\pack.ps1',
+                   'scripts\diagnose-integrations.ps1', 'scripts\uninstall-cleanup.ps1')) {
+    $full = Join-Path $repo $doc
+    if (-not (Test-Path -LiteralPath $full)) { continue }
+    $text = Get-Content -LiteralPath $full -Raw
+    if ($text -match $discardedRoutePattern) {
+        Fail "$doc still contains the discarded remote-client route ('$($Matches[0])')."
+    }
+}
+foreach ($removed in @('scripts\chatgpt-tunnel.ps1', 'scripts\chatgpt-secret.lib.ps1',
+                        'scripts\chatgpt-tunnel.tests.ps1')) {
+    if (Test-Path -LiteralPath (Join-Path $repo $removed)) {
+        Fail "$removed still exists even though that integration was removed from the product."
+    }
+}
+if ($failures.Count -eq $discardFailures) {
+    Write-Host '[PASS] the discarded remote-client route is absent from product code, docs and installer' -ForegroundColor Green
 }
 
 if ($failures.Count -gt 0) {

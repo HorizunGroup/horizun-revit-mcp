@@ -46,6 +46,33 @@ namespace Horizun.Revit
 
                 _dispatcher = new Dispatcher();
                 RegisterCommands(_dispatcher);
+
+                // THE CONTRACT IS WHAT CLIENTS SEE; THE REGISTRY IS WHAT ANSWERS. They are
+                // compared here, once, and the verdict goes into the log and into
+                // horizun_health. A command the contract advertises and nothing registered
+                // is a tool every client can call and nothing can answer - the server
+                // refuses it per call, but the refusal should never be the first place
+                // anybody hears of it.
+                RegistryContract.Report registry = _dispatcher.VerifyAgainstContract();
+                RegistryContract.Startup = registry;
+                if (registry.Clean)
+                {
+                    Log.Info("registry: " + registry.Describe());
+                    Discovery.ClearStartupFailure(_year);
+                }
+                else
+                {
+                    // THE VERDICT IS APPLIED, NOT JUST PUBLISHED. A command the contract
+                    // advertises and nothing registers is a tool every client is told it
+                    // has and nothing can answer. The registered set still goes into the
+                    // discovery file, so the server withholds exactly the affected tools
+                    // and keeps the rest working - and the breadcrumb says why, because
+                    // "the tool disappeared" with no reason is its own kind of failure.
+                    string why = registry.Describe() + " This add-in and its contract were not built from one tree.";
+                    Log.Error(why, null);
+                    Discovery.WriteStartupFailure(_year, why);
+                }
+
                 _dispatcher.Initialize();   // ExternalEvent.Create — UI thread, here.
 
                 // The modal probe's two facts - main window handle and the UI thread's
@@ -73,6 +100,11 @@ namespace Horizun.Revit
                 // either. Without this line the only symptom on someone else's machine is
                 // that nothing happens, which looks exactly like "not installed".
                 Log.Error("STARTUP FAILED - no discovery file was written, so no MCP client can connect.", ex);
+                // Somebody will look for the bridge, not for the log. A duplicate
+                // registration lands here: Dispatcher.Register throws rather than
+                // silently keeping whichever command was registered last.
+                try { Discovery.WriteStartupFailure(_year, "the add-in did not finish starting: " + ex.Message); }
+                catch { }
                 return Result.Succeeded;
             }
         }
@@ -185,6 +217,9 @@ namespace Horizun.Revit
             d.Register(new RectangularizeWallsCommand());
             // Registered last because it resolves and composes the typed commands above.
             d.Register(new ExecutePlanCommand(d.ResolveCommand));
+            // The correction cycle: rehearses and applies audit findings THROUGH the
+            // typed commands above, so it resolves them the same way the plan does.
+            d.Register(new ApplyCorrectionsCommand(d.ResolveCommand));
             d.Register(new PlanFromCadCommand());
             d.Register(new ApplyCadPlanCommand(d.ResolveCommand));
             d.Register(new AuditCadModelCommand());

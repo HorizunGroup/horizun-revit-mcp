@@ -80,6 +80,39 @@ namespace Horizun.Revit.Commands
             }
             catch { f.NamedLocationCount = null; }
 
+            // EACH FIELD GUARDED ON ITS OWN. A document that will not report a
+            // time zone still knows its latitude, and one throw taking out the
+            // whole site would report an unreadable planet.
+            try
+            {
+                SiteLocation site = doc.SiteLocation;
+                if (site == null)
+                {
+                    f.SiteReadable = false;
+                    f.SiteWhy = "the document reports no site location.";
+                }
+                else
+                {
+                    f.SiteReadable = true;
+                    // RADIANS TO DEGREES. The API answers in radians; reporting that
+                    // number as degrees puts every project near the equator and the
+                    // result still looks like a coordinate, so the bug survives review.
+                    try { f.LatitudeDegrees = Math.Round(site.Latitude * 180.0 / Math.PI, 8); }
+                    catch { f.LatitudeDegrees = null; }
+                    try { f.LongitudeDegrees = Math.Round(site.Longitude * 180.0 / Math.PI, 8); }
+                    catch { f.LongitudeDegrees = null; }
+                    try { f.PlaceName = site.PlaceName; }
+                    catch { f.PlaceName = null; }
+                    try { f.TimeZoneHours = site.TimeZone; }
+                    catch { f.TimeZoneHours = null; }
+                }
+            }
+            catch (Exception ex)
+            {
+                f.SiteReadable = false;
+                f.SiteWhy = ex.Message;
+            }
+
             try
             {
                 Units units = doc.GetUnits();
@@ -225,6 +258,72 @@ namespace Horizun.Revit.Commands
                 }
             }
             catch { }
+        }
+
+        // ------------------------------------------- level association
+
+        /// <summary>
+        /// Walks the model elements and asks each one which level it is on.
+        ///
+        /// THE POPULATION IS PUBLISHED, NOT ASSUMED: model-category elements that
+        /// are not types and not view-specific. Nothing is quietly dropped for
+        /// "not needing a level" - a hidden exclusion list is one organisation's
+        /// opinion, and the per-category breakdown shows a reader that Levels
+        /// themselves report no level far more clearly than an omission would.
+        ///
+        /// The answer is Element.LevelId, which is Revit's own consolidated view
+        /// of the association. A read that THROWS is counted apart: it is neither
+        /// associated nor unassociated, and folding it into either invents a fact.
+        /// </summary>
+        internal static LevelAssociationFacts ReadLevelAssociation(Document doc)
+        {
+            var f = new LevelAssociationFacts();
+            foreach (Element e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+            {
+                string categoryName;
+                try
+                {
+                    Category cat = e.Category;
+                    if (cat == null) continue;
+                    if (cat.CategoryType != CategoryType.Model) continue;
+                    if (e.ViewSpecific) continue;
+                    categoryName = cat.Name;
+                }
+                catch
+                {
+                    // Could not even decide whether this element belongs to the
+                    // population, so it is not in it. Counting it as unreadable
+                    // would put it in a denominator it was never admitted to.
+                    continue;
+                }
+
+                f.Examined++;
+                try
+                {
+                    ElementId lid = e.LevelId;
+                    if (lid == null || lid == ElementId.InvalidElementId)
+                    {
+                        f.WithoutLevel++;
+                        long had;
+                        f.WithoutByCategory[categoryName] =
+                            f.WithoutByCategory.TryGetValue(categoryName, out had) ? had + 1 : 1;
+                        f.Unassociated.Add(new UnassociatedElement
+                        {
+                            ElementId = Rid.Value(e.Id),
+                            Category = categoryName,
+                            Name = SafeName(e)
+                        });
+                    }
+                    else
+                    {
+                        f.WithLevel++;
+                        long key = Rid.Value(lid), n;
+                        f.CountByLevel[key] = f.CountByLevel.TryGetValue(key, out n) ? n + 1 : 1;
+                    }
+                }
+                catch { f.Unreadable++; }
+            }
+            return f;
         }
 
         // ------------------------------------------------------------ datums

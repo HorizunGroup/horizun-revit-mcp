@@ -207,8 +207,25 @@ $planViews = @((Invoke-HzToolStrict -Run $run -Tool 'horizun_query_planimetry' -
                    $null -eq (Get-HzProp $_ 'scope_box_id') -and
                    [long](Get-HzProp $_ 'level_id') -eq [long]$level.element_id })
 if ($planViews.Count -eq 0) {
-    throw ('HARNESS: no floor plan on the rooms level without a scope box - a crop written into a ' +
-           'scope-boxed view does not verify, and the batch rolls back')
+    # A disposable harness must build its own prerequisite instead of depending
+    # on whichever views an earlier phase happened to leave behind. A fresh
+    # floor plan has no scope box, so it is a deterministic crop anchor.
+    $anchorName = 'HZ Planimetry Anchor ' + $run.RunId
+    $null = Invoke-HzWrite -Run $run -Tool 'horizun_manage_views' -Label 'create-anchor' -Arguments @{
+        target_document = $Document
+        actions = @(@{ operation = 'create_floor_plan'; key = 'anchor'
+                       name = $anchorName; level_id = [long]$level.element_id })
+    }
+    $planViews = @((Invoke-HzToolStrict -Run $run -Tool 'horizun_query_planimetry' -Label 'q-views-after-anchor' -Arguments @{
+        mode = 'views'; max_rows = 500 }).Result.rows |
+        Where-Object { [string]$_.view_type -eq 'FloorPlan' -and $_.is_template -ne $true -and
+                       $null -eq (Get-HzProp $_ 'scope_box_id') -and
+                       [long](Get-HzProp $_ 'level_id') -eq [long]$level.element_id -and
+                       [string]$_.name -eq $anchorName })
+    if ($planViews.Count -eq 0) {
+        throw ('HARNESS: the typed create_floor_plan call completed but no floor plan on the rooms level ' +
+               'without a scope box could be re-read')
+    }
 }
 $anchor = [long]$planViews[0].view_id
 Add-HzNote $run ("anchored in view {0} ('{1}'), no scope box" -f $anchor, [string]$planViews[0].name)

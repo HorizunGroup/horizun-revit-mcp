@@ -54,7 +54,7 @@ namespace Horizun.Revit.Commands
             if (!set.Ok)
                 return CommandResult.FailWithDetail(
                     "The requirement set was refused, so nothing was planned: " + set.Error,
-                    new JObject { ["code"] = set.Code, ["schema"] = StructuralRequirementSet.SchemaName });
+                    StructuralRequirementSet.RefusalDetail(set));
 
             var narrow = new List<long>();
             foreach (JToken t in request["host_ids"] as JArray ?? new JArray())
@@ -96,7 +96,9 @@ namespace Horizun.Revit.Commands
                     ["title"] = set.Title,
                     ["sha256"] = StructuralRequirementSet.Sha256Of(setJson),
                     ["cover_rules"] = set.CoverRules.Count,
-                    ["reinforcement_rules"] = set.RebarRules.Count
+                    ["reinforcement_rules"] = set.RebarRules.Count,
+                    ["stirrup_zone_rules"] = set.StirrupZoneRules.Count,
+                    ["mat_rules"] = set.MatRules.Count
                 },
                 ["tolerances_mm"] = new JObject
                 {

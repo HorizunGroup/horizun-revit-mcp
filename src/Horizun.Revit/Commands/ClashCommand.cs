@@ -46,33 +46,6 @@ namespace Horizun.Revit.Commands
             "both elements. If links were excluded or unloaded, or geometry failed, the result is reported " +
             "as PARTIAL rather than clean — a zero from this tool means zero. Read-only.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""required"": [""categories_a"", ""categories_b""],
-  ""properties"": {
-    ""categories_a"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1,
-                        ""description"": ""BuiltInCategory names, e.g. [\""OST_StructuralFraming\""]."" },
-    ""categories_b"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1 },
-    ""include_links"": { ""type"": ""boolean"", ""default"": true,
-                         ""description"": ""Include loaded Revit links. Turning this off on a model that HAS links makes the result partial, and it will be labelled as such."" },
-    ""tolerance_mm"": { ""type"": ""number"", ""default"": 0.0,
-                        ""description"": ""Intersections whose overlap is under this are ignored. 0 = report any real overlap."" },
-    ""max_results"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1, ""maximum"": 2000 },
-    ""plan_penetrations"": { ""type"": ""boolean"", ""default"": false,
-                             ""description"": ""Turn each clash pair with exactly one MEP curve into a penetration plan: crossing point (volume-weighted intersection centroid, basis stated), direction, measured cross-section, and - for wall hosts - the opening rectangle, emitted as next_arguments for horizun_create_elements (kind wall_opening). Refusals are per-row and named: linked host, structural host without opt-in, near-vertical run (a floor case), unreadable cross-section. Still read-only."" },
-    ""clearance_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 500,
-                        ""description"": ""Clearance added ALL AROUND the penetrant cross-section when sizing openings."" },
-    ""allow_structural_hosts"": { ""type"": ""boolean"", ""default"": false,
-                                  ""description"": ""Plan penetrations through STRUCTURAL hosts. Off by default: cutting a bearing element is an engineering decision, and this argument is the record that a person made it."" },
-    ""sleeve_type_id"": { ""type"": ""integer"",
-                          ""description"": ""A FamilySymbol to place point-wise at crossings that cannot take a wall opening (floor/framing hosts, near-vertical runs). Without it those rows are refused by name."" },
-    ""cluster_radius_mm"": { ""type"": ""number"", ""default"": 0, ""minimum"": 0, ""maximum"": 5000,
-                             ""description"": ""Crossings of ONE host within this radius fold into one opening (transitive). 0 = every crossing is its own opening."" },
-    ""record_findings"": { ""type"": ""boolean"", ""default"": false,
-                           ""description"": ""Fold this run into the document's durable coordination ledger: stable order-normalized pair identities, open/persisting/regression accounting, and resolved_by_model ONLY when this run's coverage is complete for its scope. Work the ledger with horizun_coordination."" }
-  }
-}";
-
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             var doc = app.ActiveUIDocument?.Document;

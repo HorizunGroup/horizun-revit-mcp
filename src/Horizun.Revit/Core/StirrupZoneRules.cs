@@ -59,6 +59,39 @@ namespace Horizun.Revit.Core
         public List<double> AbsoluteBarPositionsMm = new List<double>();
     }
 
+    /// <summary>
+    /// What a cover-aware zone expansion PREDICTED, carried on every expanded rule
+    /// so the apply can hold the model to it after the commit.
+    ///
+    /// The prediction rests on ONE measured rule (ADR-003 item 7): Revit clamps a
+    /// hosted array to the host's cover plus the bar's model radius at each end.
+    /// So a zone whose first station is at least that far from the host's start,
+    /// and whose last is at least that far from its end, is drawn where it was
+    /// declared. That is an assumption stated here and proved only by the apply's
+    /// post-commit comparison - which is why the flag is called predicted_from_host_cover
+    /// rather than verified.
+    /// </summary>
+    public sealed class StirrupCoverPrediction
+    {
+        public const string Marker = "predicted_from_host_cover";
+
+        /// <summary>host or declared.</summary>
+        public string Source;
+        public double CoverMm;
+        public double BarRadiusMm;
+        /// <summary>cover + radius: how far in from each end of the host span Revit will keep the array.</summary>
+        public double ClampEachEndMm;
+        public double HostSpanMm;
+        /// <summary>HostSpanMm less the clamp at both ends, before any declared offset.</summary>
+        public double UsableSpanMm;
+        /// <summary>The direction the zones run in, unit length.</summary>
+        public double[] Along;
+        /// <summary>This zone's first and last bar STATION from the start of the host span.</summary>
+        public double ZoneStartMm;
+        public double ZoneEndMm;
+        public string ZoneName;
+    }
+
     public sealed class StirrupZoneResult
     {
         public bool Ok { get { return Code == null; } }
@@ -67,9 +100,20 @@ namespace Horizun.Revit.Core
         public List<StirrupZonePlan> Zones = new List<StirrupZonePlan>();
 
         public double SpanMm;
+        /// <summary>The span the zones have to fill: SpanMm less the offsets - and less the cover clamp when one applies.</summary>
         public double UsableSpanMm;
         public double StartOffsetMm;
         public double EndOffsetMm;
+
+        /// <summary>Null when no cover block was declared; the cover the plan was computed with otherwise.</summary>
+        public double? CoverMm;
+        public string CoverSource;
+        public double BarRadiusMm;
+        /// <summary>cover + radius, applied at BOTH ends before the declared offsets. Zero without a cover block.</summary>
+        public double ClampEachEndMm;
+        /// <summary>SpanMm less the clamp at both ends. Equals SpanMm without a cover block.</summary>
+        public double CoverUsableSpanMm;
+        public bool PredictedFromHostCover { get { return CoverMm.HasValue; } }
 
         /// <summary>The closest two stirrups from DIFFERENT zones come, or null when there is only one zone.</summary>
         public double? ClosestBetweenZonesMm;
@@ -101,12 +145,17 @@ namespace Horizun.Revit.Core
         public const string CodeBarsTooClose = "two_zones_put_bars_closer_than_declared";
         public const string CodeNameRepeated = "zone_name_repeated";
         public const string CodeLayoutLongerThanZone = "zone_layout_longer_than_the_zone";
+        public const string CodeCoverNotUsable = "cover_not_usable";
+        public const string CodeCoverNeedsDiameter = "cover_needs_the_bar_diameter";
+        public const string CodeCoverLeavesNoSpan = "cover_leaves_no_span";
+        public const string CodeHostCoverUnknown = "host_cover_not_readable";
 
         public static readonly string[] AllCodes =
         {
             CodeNoZones, CodeTwoRemainders, CodeZoneNotPositive, CodeZonesTooLong, CodeRemainderEmpty,
             CodeSpanNotUsable, CodeOffsetsNotUsable, CodeSymmetricConflict, CodeLayoutRefused,
-            CodeBarsCoincide, CodeBarsTooClose, CodeNameRepeated, CodeLayoutLongerThanZone
+            CodeBarsCoincide, CodeBarsTooClose, CodeNameRepeated, CodeLayoutLongerThanZone,
+            CodeCoverNotUsable, CodeCoverNeedsDiameter, CodeCoverLeavesNoSpan, CodeHostCoverUnknown
         };
 
         /// <summary>Two bars closer than this are the same bar twice, whatever anyone declared.</summary>
@@ -126,6 +175,101 @@ namespace Horizun.Revit.Core
         /// statements about the same metre of beam.
         /// </summary>
         public static StirrupZoneResult Plan(double spanMm, IList<StirrupZoneRequest> zones,
+            bool symmetric, double startOffsetMm, double endOffsetMm,
+            double? minimumClearBetweenZonesMm, double barModelDiameterMm)
+        {
+            return Plan(spanMm, zones, symmetric, startOffsetMm, endOffsetMm, minimumClearBetweenZonesMm,
+                        barModelDiameterMm, null, null);
+        }
+
+        /// <summary>
+        /// The same, told the COVER Revit will clamp the array to.
+        ///
+        /// The arithmetic is the measured rule of ADR-003 item 7 and nothing more:
+        /// Revit keeps a hosted array at least cover + bar radius from each end of
+        /// the host. So the span the zones may use is the host span less that clamp
+        /// at both ends, the declared offsets are measured from the ends of THAT
+        /// span, and every station this predicts is one Revit has no reason to
+        /// move. The radius is the MODEL radius, because that is the one Revit
+        /// counts with (ADR-003 item 3) - which is why a cover block without a
+        /// readable diameter is refused rather than computed with zero.
+        ///
+        /// Zero cover is a legal declaration: the clamp is then the bar radius
+        /// alone. A cover that leaves no span - twice the clamp reaching the host
+        /// length - is refused by name.
+        ///
+        /// ASSUMED, and stated: the host span handed in runs from the host's start
+        /// face to its end face, which is what `span: host_length` measures on a
+        /// location curve. The profile is NOT moved by the cover; it is declared in
+        /// model coordinates and is the outline at the START of the host span.
+        /// </summary>
+        public static StirrupZoneResult Plan(double spanMm, IList<StirrupZoneRequest> zones,
+            bool symmetric, double startOffsetMm, double endOffsetMm,
+            double? minimumClearBetweenZonesMm, double barModelDiameterMm,
+            double? coverMm, string coverSource)
+        {
+            double clamp = 0;
+            if (coverMm.HasValue)
+            {
+                var early = new StirrupZoneResult
+                {
+                    SpanMm = spanMm, StartOffsetMm = startOffsetMm, EndOffsetMm = endOffsetMm,
+                    CoverMm = coverMm, CoverSource = coverSource
+                };
+                if (!Finite(coverMm.Value) || coverMm.Value < 0)
+                {
+                    early.Code = CodeCoverNotUsable;
+                    early.Why = "the cover the zones are planned against must be a finite distance of zero or " +
+                                "more; it is " + coverMm.Value.ToString(CultureInfo.InvariantCulture) + ".";
+                    return early;
+                }
+                if (!Finite(barModelDiameterMm) || barModelDiameterMm <= 0)
+                {
+                    early.Code = CodeCoverNeedsDiameter;
+                    early.Why = "a cover-aware zone predicts where Revit puts the array from the cover PLUS the " +
+                                "bar's model radius, and the bar type reported no model diameter. Computing with " +
+                                "zero would predict stations Revit moves by half a bar.";
+                    return early;
+                }
+                if (!Finite(spanMm) || spanMm <= 0)
+                {
+                    early.Code = CodeSpanNotUsable;
+                    early.Why = "the span the zones lay out along is not a positive, finite length.";
+                    return early;
+                }
+                clamp = coverMm.Value + barModelDiameterMm / 2.0;
+                if (2 * clamp >= spanMm - 1e-9)
+                {
+                    early.Code = CodeCoverLeavesNoSpan;
+                    early.Why = "the host span is " + Mm(spanMm) + " and the cover plus the bar radius takes " +
+                                Mm(clamp) + " at each end - " + Mm(2 * clamp) + " in all - which leaves nothing " +
+                                "for the zones. Revit clamps a hosted array to the host's cover plus the bar " +
+                                "radius (ADR-003 item 7), so no station on this host could be drawn where a " +
+                                "zone declared it.";
+                    early.BarRadiusMm = barModelDiameterMm / 2.0;
+                    early.ClampEachEndMm = clamp;
+                    return early;
+                }
+            }
+
+            // THE DECLARED OFFSETS ARE MEASURED FROM THE USABLE SPAN'S ENDS, so
+            // they stack on the clamp rather than replacing it: a caller declaring
+            // start_offset_mm: 50 under a 30 mm clamp puts the first stirrup 80 mm
+            // in, which is what "50 past where Revit will let it start" means.
+            StirrupZoneResult r = PlanInner(spanMm, zones, symmetric,
+                                            startOffsetMm + clamp, endOffsetMm + clamp,
+                                            minimumClearBetweenZonesMm, barModelDiameterMm);
+            r.StartOffsetMm = startOffsetMm;
+            r.EndOffsetMm = endOffsetMm;
+            r.CoverMm = coverMm;
+            r.CoverSource = coverMm.HasValue ? coverSource : null;
+            r.BarRadiusMm = coverMm.HasValue ? barModelDiameterMm / 2.0 : 0;
+            r.ClampEachEndMm = clamp;
+            r.CoverUsableSpanMm = Finite(spanMm) ? spanMm - 2 * clamp : spanMm;
+            return r;
+        }
+
+        private static StirrupZoneResult PlanInner(double spanMm, IList<StirrupZoneRequest> zones,
             bool symmetric, double startOffsetMm, double endOffsetMm,
             double? minimumClearBetweenZonesMm, double barModelDiameterMm)
         {
@@ -211,11 +355,29 @@ namespace Horizun.Revit.Core
                             "with its own provenance, so two of them cannot share a name.";
                     return r;
                 }
+                // A MIRROR KEEPS BOTH ITS ENDS. The first zone's LAST bar touches the
+                // middle and the first zone may switch it off; the mirror's boundary
+                // is on its FIRST bar, and Revit was measured NOT honouring a
+                // suppressed first bar on a spacing-driven array (ADR-003 item 12).
+                // So the mirror suppresses nothing, and the zone BEFORE it - the
+                // middle - gives up its last bar; the coincidence check below says
+                // so by name when it does not. Copying the first zone's flags
+                // unchanged put a suppressed bar at the far end of the beam.
+                RebarLayoutRequest fl = first.Layout;
                 declared.Add(new StirrupZoneRequest
                 {
                     Name = mirrorName,
                     LengthMm = first.LengthMm,
-                    Layout = first.Layout,
+                    Layout = fl == null ? null : new RebarLayoutRequest
+                    {
+                        Layout = fl.Layout,
+                        Number = fl.Number,
+                        SpacingMm = fl.SpacingMm,
+                        ArrayLengthMm = fl.ArrayLengthMm,
+                        BarDiameterMm = fl.BarDiameterMm,
+                        IncludeFirstBar = true,
+                        IncludeLastBar = true
+                    },
                     Mark = first.Mark
                 });
             }
@@ -432,14 +594,56 @@ namespace Horizun.Revit.Core
         public static StirrupZoneResult Expand(StructuralStirrupZoneRule rule, double spanMm,
             double barModelDiameterMm, out List<StructuralRebarRule> expanded)
         {
+            return Expand(rule, spanMm, barModelDiameterMm, null, out expanded);
+        }
+
+        /// <summary>
+        /// The same, handed the HOST's cover for a rule whose cover block says
+        /// `source: host`. Null when the host has none or the caller could not read
+        /// it - which is a refusal by name when the rule asked for it, never a
+        /// silent zero. A rule without a cover block ignores the argument.
+        /// </summary>
+        public static StirrupZoneResult Expand(StructuralStirrupZoneRule rule, double spanMm,
+            double barModelDiameterMm, double? hostCoverMm, out List<StructuralRebarRule> expanded)
+        {
             expanded = new List<StructuralRebarRule>();
             if (rule == null)
             {
                 return new StirrupZoneResult { Code = CodeNoZones, Why = "there was no stirrup zone rule." };
             }
 
+            double? coverMm = null;
+            string coverSource = null;
+            if (rule.Cover != null)
+            {
+                coverSource = rule.Cover.Source;
+                if (rule.Cover.Source == StructuralStirrupZoneCover.SourceDeclared) coverMm = rule.Cover.DistanceMm;
+                else if (rule.Cover.Source == StructuralStirrupZoneCover.SourceHost)
+                {
+                    if (!hostCoverMm.HasValue)
+                        return new StirrupZoneResult
+                        {
+                            Code = CodeHostCoverUnknown,
+                            CoverSource = coverSource,
+                            SpanMm = spanMm,
+                            Why = "cover: { source: host } asks for the host's common cover, and the host has none " +
+                                  "that could be read - a host whose faces carry different cover types has no " +
+                                  "common cover, and a host that reports none cannot be predicted against. Set " +
+                                  "one with a cover_rule, or declare the distance with source: declared."
+                        };
+                    coverMm = hostCoverMm;
+                }
+                else
+                    return new StirrupZoneResult
+                    {
+                        Code = CodeCoverNotUsable,
+                        Why = "cover.source is '" + rule.Cover.Source + "'; the words are host and declared."
+                    };
+            }
+
             StirrupZoneResult r = Plan(spanMm, rule.Zones, rule.Symmetric, rule.StartOffsetMm,
-                                       rule.EndOffsetMm, rule.MinimumClearBetweenZonesMm, barModelDiameterMm);
+                                       rule.EndOffsetMm, rule.MinimumClearBetweenZonesMm, barModelDiameterMm,
+                                       coverMm, coverSource);
             if (!r.Ok) return r;
 
             double[] unit = RebarContainment.Unit(rule.AlongMm);
@@ -480,6 +684,27 @@ namespace Horizun.Revit.Core
                     AllowNewShape = rule.AllowNewShape,
                     Raw = rule.Raw
                 };
+                if (r.PredictedFromHostCover)
+                {
+                    // WHAT WAS PREDICTED, carried with the rule. The apply compares
+                    // the first bar Revit drew and the span it reports against these
+                    // numbers; the plan publishes them so a reader can see the
+                    // arithmetic before anything is written.
+                    rebar.CoverPrediction = new StirrupCoverPrediction
+                    {
+                        Source = r.CoverSource,
+                        CoverMm = r.CoverMm.Value,
+                        BarRadiusMm = r.BarRadiusMm,
+                        ClampEachEndMm = r.ClampEachEndMm,
+                        HostSpanMm = r.SpanMm,
+                        UsableSpanMm = r.CoverUsableSpanMm,
+                        Along = new[] { unit[0], unit[1], unit[2] },
+                        ZoneStartMm = z.StartMm,
+                        ZoneEndMm = z.AbsolutePositionsMm.Count > 0
+                            ? z.AbsolutePositionsMm[z.AbsolutePositionsMm.Count - 1] : z.StartMm,
+                        ZoneName = z.Name
+                    };
+                }
                 expanded.Add(rebar);
             }
             return r;

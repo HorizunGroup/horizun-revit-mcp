@@ -107,7 +107,13 @@ namespace Horizun.Core.Tests
                 S("aaa", "r1", C("warnings", 9, lowerBound: true, complete: false)));
 
             var one = Assert.Single(c.Changes);
-            Assert.Equal(SnapshotChangeKind.NotComparable, one.Kind);
+            // coverage_changed rather than the blanket not_comparable: the two runs
+            // CAN be lined up, and it is the apparent gain that is unproven. The
+            // property that matters is the same either way - it is not improved.
+            Assert.Equal(SnapshotChangeKind.CoverageChanged, one.Kind);
+            Assert.NotEqual(SnapshotChangeKind.Improved, one.Kind);
+            Assert.Equal(0, c.Improved);
+            Assert.Equal(1, c.CoverageChanged);
             Assert.Contains("smaller sample rather than an improvement", one.Why);
         }
 
@@ -118,8 +124,34 @@ namespace Horizun.Core.Tests
                 S("aaa", "r1", C("warnings", 40)),
                 S("aaa", "r1", C("warnings", 0, lowerBound: true, complete: false)));
 
-            Assert.Equal(SnapshotChangeKind.NotComparable, Assert.Single(c.Changes).Kind);
+            Assert.Equal(SnapshotChangeKind.CoverageChanged, Assert.Single(c.Changes).Kind);
+            Assert.Equal(0, c.Resolved);
             Assert.Contains("smaller sample rather than a fixed model", c.Changes[0].Why);
+        }
+
+
+        [Fact]
+        public void A_comparison_refused_for_different_rules_says_so_in_one_word()
+        {
+            // The fix is to re-run with the earlier profile, not to investigate the
+            // model - so it is named apart from every other refusal.
+            var c = SnapshotRules.Compare(
+                S("aaa", "r1", C("warnings", 5)),
+                S("aaa", "r2", C("warnings", 5)));
+
+            Assert.False(c.Comparable);
+            Assert.Equal(SnapshotChangeKind.ProfileChanged, c.RefusalKind);
+        }
+
+        [Fact]
+        public void A_comparison_refused_for_a_different_model_is_plain_not_comparable()
+        {
+            var c = SnapshotRules.Compare(
+                S("aaa", "r1", C("warnings", 5)),
+                S("bbb", "r1", C("warnings", 5)));
+
+            Assert.False(c.Comparable);
+            Assert.Equal(SnapshotChangeKind.NotComparable, c.RefusalKind);
         }
 
         [Fact]
@@ -326,6 +358,88 @@ namespace Horizun.Core.Tests
             var index = HealthIndexRules.Roll(profile, dims);
             Assert.Null(index.Score);
             Assert.Contains("nothing to average", index.ScoreSuppressedBecause);
+        }
+
+
+        // ------------------------------------------------------------------
+        // COVERAGE AND THE HEADLINE NUMBER.
+        // ------------------------------------------------------------------
+
+        private static HealthDimension Perfect(string name, double weight)
+        {
+            return HealthIndexRules.ScoreDimension(name, null, true, true, true, weight, false);
+        }
+
+        private static HealthDimension Deducted(string name, double points, double weight)
+        {
+            return HealthIndexRules.ScoreDimension(name,
+                new[] { new HealthDeduction { Check = name, Points = points, Why = "deduction" } },
+                true, true, true, weight, false);
+        }
+
+        private static HealthDimension Unmeasured(string name, double weight)
+        {
+            return HealthIndexRules.ScoreDimension(name, null, true, assessable: false,
+                coverageComplete: false, weight: weight, critical: false);
+        }
+
+        [Fact]
+        public void A_perfect_score_over_partial_coverage_is_published_with_its_range()
+        {
+            // THE ONE THAT MATTERS. Every dimension that ran scored 100, and a bare
+            // "100/100" would be read as a verdict on the whole model. The range
+            // says what it actually is: somewhere well below 100, up to 100.
+            var profile = new HealthProfile { Id = "p", Version = "1", Context = HealthContext.Project };
+            var index = HealthIndexRules.Roll(profile, new List<HealthDimension>
+            {
+                Perfect("cleanliness", 2),
+                Perfect("naming", 1),
+                Unmeasured("coordination", 1)
+            });
+
+            Assert.Equal(100.0, index.Score.Value, 6);
+            Assert.True(index.PlausibleLow < 100.0,
+                "a perfect score over partial coverage published no range below 100");
+            Assert.Equal(100.0, index.PlausibleHigh.Value, 6);
+            Assert.True(index.AssessedWeightShare < 1.0);
+            Assert.Equal("coordination", Assert.Single(index.Unassessed));
+        }
+
+        [Fact]
+        public void Full_coverage_collapses_the_range_onto_the_score()
+        {
+            var profile = new HealthProfile { Id = "p", Version = "1", Context = HealthContext.Project };
+            var index = HealthIndexRules.Roll(profile, new List<HealthDimension>
+            {
+                Deducted("a", 20, 1),
+                Deducted("b", 40, 1)
+            });
+
+            Assert.Equal(70.0, index.Score.Value, 6);
+            Assert.Equal(70.0, index.PlausibleLow.Value, 6);
+            Assert.Equal(70.0, index.PlausibleHigh.Value, 6);
+            Assert.Equal(1.0, index.AssessedWeightShare.Value, 6);
+            Assert.Empty(index.Unassessed);
+        }
+
+        [Fact]
+        public void A_majority_unassessed_publishes_no_score_at_all()
+        {
+            // Averaging the minority that ran yields a confident number about a
+            // model mostly unexamined, and 100/100 is the version of that which
+            // does the most damage.
+            var profile = new HealthProfile { Id = "p", Version = "1", Context = HealthContext.Project };
+            var index = HealthIndexRules.Roll(profile, new List<HealthDimension>
+            {
+                Perfect("a", 1),
+                Unmeasured("b", 1), Unmeasured("c", 1), Unmeasured("d", 1)
+            });
+
+            Assert.Null(index.Score);
+            Assert.Contains("most of the model was not assessed", index.ScoreSuppressedBecause);
+            // The range still stands: it is the honest thing that survives.
+            Assert.Equal(25.0, index.PlausibleLow.Value, 6);
+            Assert.Equal(100.0, index.PlausibleHigh.Value, 6);
         }
     }
 }

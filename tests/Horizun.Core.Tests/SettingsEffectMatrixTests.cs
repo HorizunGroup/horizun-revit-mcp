@@ -49,13 +49,27 @@ namespace Horizun.Core.Tests
             {
                 // Reads, and steering which Revit/view the reads come from. Nothing that
                 // changes the model, opens or closes a session, or writes a file.
-                [ReadOnly] = new[] { ToolEffect.ReadOnly, ToolEffect.HostState },
+                //
+                // ExternalSideEffectOnRequest is ADMITTED here, and that is not a hole in
+                // the rung: a tool carrying it writes nothing unless the call declares a
+                // destination, and the destination is refused by
+                // Settings.AllowsExternalSideEffect inside the handler. Admission decides
+                // whether the tool can be called at all; the second check decides what
+                // this call may do. External_destinations_need_the_authorized_rungs below
+                // pins that second half, and ExternalDestinationGateTests pins that every
+                // contract carrying the effect actually performs it.
+                [ReadOnly] = new[]
+                {
+                    ToolEffect.ReadOnly, ToolEffect.HostState,
+                    ToolEffect.ExternalSideEffectOnRequest
+                },
 
                 // The above, plus typed writes INSIDE the document. Still nothing written
                 // outside it, and still no session change.
                 [SafeWrite] = new[]
                 {
                     ToolEffect.ReadOnly, ToolEffect.HostState,
+                    ToolEffect.ExternalSideEffectOnRequest,
                     ToolEffect.Mutating, ToolEffect.MutatingUnlessDryRun
                 },
 
@@ -63,6 +77,7 @@ namespace Horizun.Core.Tests
                 [FullWrite] = new[]
                 {
                     ToolEffect.ReadOnly, ToolEffect.HostState,
+                    ToolEffect.ExternalSideEffectOnRequest,
                     ToolEffect.Mutating, ToolEffect.MutatingUnlessDryRun,
                     ToolEffect.DocumentSession, ToolEffect.ExternalSideEffect
                 },
@@ -72,10 +87,58 @@ namespace Horizun.Core.Tests
                 [UnsafeCode] = new[]
                 {
                     ToolEffect.ReadOnly, ToolEffect.HostState,
+                    ToolEffect.ExternalSideEffectOnRequest,
                     ToolEffect.Mutating, ToolEffect.MutatingUnlessDryRun,
                     ToolEffect.DocumentSession, ToolEffect.ExternalSideEffect
                 }
             };
+
+        /// <summary>
+        /// THE OTHER HALF OF ExternalSideEffectOnRequest, as a property of the ladder.
+        ///
+        /// Admission says a tool may be CALLED; this says whether a call may reach a
+        /// destination. Exactly the two rungs that admit ToolEffect.ExternalSideEffect
+        /// answer yes, so a handler consulting it cannot let a restricted machine write
+        /// what a full_write machine writes - and the refusal names the profile, because
+        /// "not authorized" without saying by what is a support call.
+        /// </summary>
+        [Theory]
+        [InlineData(ReadOnly, false)]
+        [InlineData(SafeWrite, false)]
+        [InlineData(FullWrite, true)]
+        [InlineData(UnsafeCode, true)]
+        public void External_destinations_need_the_authorized_rungs(string profile, bool expected)
+        {
+            WithProfile(profile, () =>
+            {
+                bool allowed = Settings.AllowsExternalSideEffect(out string reason);
+                Assert.Equal(expected, allowed);
+                if (expected) { Assert.Null(reason); return; }
+                Assert.False(string.IsNullOrWhiteSpace(reason));
+                Assert.Contains(profile, reason);
+                Assert.Contains("Nothing was written", reason);
+            });
+        }
+
+        /// <summary>
+        /// The rung a call needs for a destination is the SAME rung the ladder gives
+        /// ToolEffect.ExternalSideEffect. Stated as a property rather than as two lists,
+        /// so a change to one that forgets the other fails here.
+        /// </summary>
+        [Fact]
+        public void The_destination_check_agrees_with_the_external_effect_rung()
+        {
+            foreach (string profile in AllProfiles)
+            {
+                bool byEffect = AllowsEffect(profile, ToolEffect.ExternalSideEffect, out _);
+                bool byCall = false;
+                WithProfile(profile, () => { byCall = Settings.AllowsExternalSideEffect(out _); });
+                Assert.True(byEffect == byCall,
+                    "permission_profile=" + profile + " admits ToolEffect.ExternalSideEffect=" + byEffect +
+                    " but AllowsExternalSideEffect=" + byCall + ". A per-call destination check that disagrees " +
+                    "with the ladder is a second policy nobody declared.");
+            }
+        }
 
         /// <summary>
         /// Every profile answers for every effect, and answers what the ladder says.
@@ -155,6 +218,39 @@ namespace Horizun.Core.Tests
         {
             WithProfile(profile, () =>
                 Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_excel_write_rows"), out _)));
+        }
+
+        /// <summary>
+        /// THE SECOND REPORTED DEFECT, as a test. horizun_budget_compare with no outputs
+        /// reads an .xlsx and writes nothing whatsoever, and it was hidden from the two
+        /// restrictive profiles because the same tool CAN write one. A machine allowed to
+        /// read a budget was refused the reading.
+        /// </summary>
+        [Theory]
+        [InlineData(ReadOnly)]
+        [InlineData(SafeWrite)]
+        [InlineData(FullWrite)]
+        [InlineData(UnsafeCode)]
+        public void Budget_compare_is_reachable_at_every_profile(string profile)
+        {
+            WithProfile(profile, () =>
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_budget_compare"), out string reason), reason));
+        }
+
+        /// <summary>
+        /// ...and it is admitted because of what it IS, not because somebody wrote its
+        /// name into a branch. The effect is the classification; the name-based exceptions
+        /// in IsToolAllowed exist for tools whose effect cannot express them, and this is
+        /// not one.
+        /// </summary>
+        [Fact]
+        public void Budget_compare_declares_the_effect_that_admits_it()
+        {
+            Assert.Equal(ToolEffect.ExternalSideEffectOnRequest, Contract.Find("horizun_budget_compare").Effect);
+            // And the annotation still describes the worst case: a client deciding whether
+            // to ask a human is told what the tool can do, not what one call happened to do.
+            Assert.True(Contract.Find("horizun_budget_compare").OpenWorld);
+            Assert.True(Contract.Find("horizun_budget_compare").Destructive);
         }
 
         /// <summary>Capturing a view writes a PNG. Same rung as the workbook.</summary>

@@ -34,6 +34,10 @@
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
+    <!-- The budget comparison and the rules it runs, so the Excel destination can be
+         proved against a disposable workbook and the Power BI one in dry_run only. -->
+    <Compile Include="..\..\src\Horizun.Server\BudgetCompare.cs" Link="BudgetCompare.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" Link="BudgetComparisonRules.cs" />
     <!-- The concurrency plumbing: one writer, one reply per id, one in-flight
          registry. Linked for the same reason - it needs neither Revit nor a
          running server, only a StringWriter. -->
@@ -49,6 +53,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\HorizunPaths.cs" Link="HorizunPaths.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResultPayload.cs" Link="AsyncResultPayload.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DiscoverySweep.cs" Link="DiscoverySweep.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RegistryContract.cs" Link="RegistryContract.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" Link="CommandResult.cs" />
     <!-- CommandResult now carries the fallback signal, so its type comes with it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\FallbackSignal.cs" Link="FallbackSignal.cs" />
@@ -80,6 +85,11 @@
     <!-- The add-in's job record, so "the server reads where the add-in writes" can be
          asserted with the writer that actually ships rather than a stand-in. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Job.cs" Link="Job.cs" />
+    <!-- The sequence allowlist and the step states, so the SCHEMA and the ADMISSION
+         can be compared against each other rather than kept in step by hand. A tool
+         the schema offers and admission refuses is a documented option the server
+         accepts and the queue then rejects. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\JobSequenceRules.cs" Link="JobSequenceRules.cs" />
     <!-- Job reports a record it could not write rather than swallowing the failure,
          and it reports it through Log. Revit-free, like everything else linked here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Log.cs" Link="Log.cs" />

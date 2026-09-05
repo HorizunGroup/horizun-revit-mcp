@@ -67,8 +67,15 @@ $server = [ordered]@{ passed = $null; failed = $null }
 if (-not $SkipTests) {
     Write-Host '[diagnostics-state] measuring the offline suites...' -ForegroundColor DarkGray
     foreach ($pair in @(@{ p = 'tests\Horizun.Core.Tests'; t = $core }, @{ p = 'tests\Horizun.Server.Tests'; t = $server })) {
-        $out = & dotnet test (Join-Path $repo $pair.p) -c Release --nologo 2>&1 | Out-String
-        if ($out -match 'Failed:\s+(\d+),\s+Passed:\s+(\d+)') {
+        # NOT $out. PowerShell variables are CASE-INSENSITIVE, so `$out` and the
+        # `$Out` destination-path parameter are the SAME variable: assigning the
+        # test log here overwrote the path, and the script then died at the final
+        # Set-Content with "A parameter cannot be found that matches parameter
+        # name 'Encoding'" - an error that names neither the variable nor the
+        # line that broke it. It only ever failed WITHOUT -SkipTests, which is
+        # why it survived: the fast path never runs this loop.
+        $runOutput = & dotnet test (Join-Path $repo $pair.p) -c Release --nologo 2>&1 | Out-String
+        if ($runOutput -match 'Failed:\s+(\d+),\s+Passed:\s+(\d+)') {
             $pair.t.failed = [int]$Matches[1]
             $pair.t.passed = [int]$Matches[2]
         }

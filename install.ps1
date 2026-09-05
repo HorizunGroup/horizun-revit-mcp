@@ -636,7 +636,7 @@ Write-Host "    startup_timeout_sec = 120"
 Write-Host "    tool_timeout_sec = 600"
     Write-Host ""
     Write-Host "For manual recovery, close Claude/Codex before registering, then reopen it." -ForegroundColor Yellow
-Write-Host "  Cursor, Cline, Windsurf, Claude Desktop and other MCP clients - in their"
+Write-Host "  Cursor, Cline, Windsurf and other stdio MCP clients - in their"
 Write-Host "  JSON config (mcpServers), using the SAME path:"
 Write-Host "    { `"mcpServers`": { `"horizun-revit`": { `"command`": `"$($serverExe -replace '\\', '\\')`" } } }"
 Write-Host ""
@@ -664,11 +664,27 @@ $completeInstall = Join-Path $serverInstall 'client-tools\complete-install.ps1'
 if (Test-Path -LiteralPath $completeInstall -PathType Leaf) {
     Write-Host ""
     Write-Host "[Horizun] completing client registration automatically." -ForegroundColor Cyan
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $completeInstall -Client Auto
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $completeInstall -Client Both
     if ($LASTEXITCODE -eq 1) {
         Write-Host "[Horizun] automatic completion failed; binaries remain installed and verified." -ForegroundColor Red
         Write-Host "          Review $env:LOCALAPPDATA\Horizun\install-status.json" -ForegroundColor Red
         exit 1
+    }
+}
+
+# Claude Desktop owns a different packaging format. Prepare its real .mcpb from
+# the installed server as part of the same user-facing installation. The app
+# still requires one documented Install Extension click; the helper records that
+# exact pending action instead of claiming it happened.
+$desktopExtension = Join-Path $serverInstall 'client-tools\install-claude-desktop-extension.ps1'
+if (Test-Path -LiteralPath $desktopExtension -PathType Leaf) {
+    Write-Host ""
+    Write-Host "[Horizun] preparing Claude Desktop, when it is installed." -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $desktopExtension
+    $desktopExit = $LASTEXITCODE
+    if ($desktopExit -eq 1) {
+        Write-Host "[Horizun] Claude Desktop preparation failed; the Revit bridge remains installed and verified." -ForegroundColor Yellow
+        Write-Host "          Use the Start-menu repair shortcut after reviewing install-status.json." -ForegroundColor Yellow
     }
 }
 exit 0

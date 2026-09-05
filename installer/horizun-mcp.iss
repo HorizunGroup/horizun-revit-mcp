@@ -97,17 +97,30 @@ Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: i
 [Icons]
 Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
-Name: "{group}\Configurar Horizun en Codex y Claude"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\Configurar Horizun en Codex y Claude Code"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Completar y verificar instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Auto"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Both"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Estado de instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -StatusOnly"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
+  WorkingDir: "{app}\server\client-tools"
+; --- The per-client integrations. Each shortcut is a WIZARD, not a switch: it
+; reports what it found, does the part a script may do, and names the one step
+; that is the user's. None of them needs Claude Code or Codex CLI to be present,
+; and none of them touches a client's configuration while that client is running.
+Name: "{group}\Instalar o reparar la extension de Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Diagnosticar la extension de Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Diagnose"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Estado de todos los clientes MCP"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\diagnose-integrations.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Limpieza avanzada antes de desinstalar"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\uninstall-cleanup.ps1"""; \
@@ -129,8 +142,14 @@ Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
 ; after the first Revit start. The process is hidden because every durable result
 ; is written to %LOCALAPPDATA%\Horizun\install-status.json.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Auto} {param:HORIZUNNOLIVE|}"; \
+  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Both} {param:HORIZUNNOLIVE|}"; \
   WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait; Check: ShouldCompleteInstall
+; Claude Desktop needs its .mcpb package even on a machine with neither CLI.
+; Preparation is non-destructive and safe while the app is open; the documented
+; Install Extension click remains explicit and is recorded as pending_user_action.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
+  WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait
 
 [UninstallRun]
 ; A pending first-start verification must not survive removal with a command that
@@ -161,7 +180,7 @@ var
 
 function ShouldCompleteInstall(): Boolean;
 begin
-  Result := CompareText(ExpandConstant('{param:HORIZUNCLIENT|Auto}'), 'None') <> 0;
+  Result := CompareText(ExpandConstant('{param:HORIZUNCLIENT|Both}'), 'None') <> 0;
 end;
 
 procedure InitYears;

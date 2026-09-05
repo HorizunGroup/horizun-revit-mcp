@@ -376,12 +376,15 @@ namespace Horizun.Revit.Commands
             // and its verification story is as sound as any location's: the total
             // transform's origin is where the placement stands, and a committed move
             // must show that origin displaced by exactly the requested vector.
-            var link = e as RevitLinkInstance;
-            if (link != null)
+            // The same holds for an ImportInstance - a placed DWG - whose move is
+            // what an incremental update has to detect (measured 2026-09-03: the
+            // typed move refused it as unsampleable). Instance is the base of both.
+            var instance = e as Instance;
+            if (instance != null)
             {
                 try
                 {
-                    Transform total = link.GetTotalTransform();
+                    Transform total = instance.GetTotalTransform();
                     if (total != null) result.Add(total.Origin);
                 }
                 catch { /* no sample stays no sample, and the refusal names it */ }

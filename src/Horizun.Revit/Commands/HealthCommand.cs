@@ -118,6 +118,9 @@ namespace Horizun.Revit.Commands
                 // the sha names a commit this binary is NOT exactly.
                 horizun_commit = Build.Commit,
                 built_from_clean_tree = Build.BuiltFromCleanTree,
+                // The bytes Revit loaded, hashed by the add-in itself. A live run
+                // records THIS rather than hashing a deployment path it guessed.
+                addin_assembly = Build.Assembly_,
                 log_file = Log.PathFor(rvt.VersionNumber),
                 // WHERE THIS ADD-IN KEEPS STATE, and whether it can actually use it.
                 //
@@ -149,6 +152,10 @@ namespace Horizun.Revit.Commands
                 // running on the administrator's environment override should say so
                 // rather than look like a user choice.
                 tool_packs = ToolPacksBlock(),
+                // The startup comparison between Contract.PluginCommands and what
+                // RegisterCommands actually registered. clean=false here is a build
+                // defect, not a runtime condition.
+                registry = RegistryContract.HealthBlock(),
                 // THE JOB LEDGER, folded. queued/running/interrupted are resolved the
                 // way the Session panel resolves them - the record's pid asked of the
                 // OS - so "did my batch survive the restart" is answerable from the

@@ -281,6 +281,11 @@ namespace Horizun.Server
                             _session.InitializedNotificationAccepted();
                             if (_toolListMonitor == null)
                             {
+                                // The list answers the same question a call does: a plugin
+                                // tool the loaded add-in does not register is not advertised.
+                                // Installed before the monitor, so its first snapshot is the
+                                // filtered list rather than the unfiltered one.
+                                Tools.LiveBridge = ResolveLiveBridge;
                                 try { _toolListMonitor = new ToolListMonitor(_writer.Notify); }
                                 catch (Exception ex)
                                 {
@@ -694,6 +699,25 @@ namespace Horizun.Server
             }
         }
 
+        /// <summary>
+        /// The add-in a call would be routed to right now, for the TOOL LIST - never
+        /// throwing, and null whenever the answer is not certain. An ambiguous choice
+        /// (two live instances, nothing saying which) is unknown, and unknown withholds
+        /// nothing: the refusal for that belongs to the call, which can name both.
+        /// </summary>
+        private static Discovered ResolveLiveBridge()
+        {
+            try
+            {
+                TargetSelection t = PipeClient.Target;
+                string y = t.Year ?? (t.Pid != null ? null : TargetYear);
+                string ambiguity;
+                Discovered d = PipeClient.Resolve(y, t.Pid, out ambiguity);
+                return ambiguity == null ? d : null;
+            }
+            catch { return null; }
+        }
+
         private static JToken CallTool(JObject prms, CancellationToken ct)
         {
             // -32602 is INVALID PARAMS, and each of these is a different way of being
@@ -801,12 +825,15 @@ namespace Horizun.Server
                 }
                 Log.Warn(name + ": no bridge to route to" +
                          (string.IsNullOrEmpty(year) ? "" : " for the requested Revit " + year));
+                // A Revit that loaded the add-in and refused to start looks exactly like
+                // a Revit that is not running. If one said why, say so here.
+                string refused = PipeClient.StartupFailures(year);
                 return TextResult(
-                    string.IsNullOrEmpty(year)
+                    (string.IsNullOrEmpty(year)
                         ? "Error: no Revit is reachable. Is Revit running with the Horizun add-in loaded?"
                         : "Error: no Revit " + year + " is reachable. That target was chosen explicitly (" +
                           (target.Year != null ? "horizun_target" : "HORIZUN_REVIT_YEAR") +
-                          "); call horizun_target to see which Revit versions did publish a bridge.", true);
+                          "); call horizun_target to see which Revit versions did publish a bridge.") + refused, true);
             }
 
             // A discovery file can outlive the Revit that wrote it (a crash, or a close that

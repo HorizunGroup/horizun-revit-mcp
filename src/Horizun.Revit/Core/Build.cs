@@ -10,6 +10,7 @@
 // they are running cannot drift apart.
 // -----------------------------------------------------------------------------
 using System;
+using System.Globalization;
 using System.Reflection;
 
 namespace Horizun.Revit.Core
@@ -90,6 +91,61 @@ namespace Horizun.Revit.Core
                     _version = "unknown";
                 }
                 return _version;
+            }
+        }
+
+        private static Newtonsoft.Json.Linq.JObject _assembly;
+
+        /// <summary>
+        /// The FILE Revit actually loaded, hashed: path, SHA-256, size and write time.
+        ///
+        /// WHY THE ADD-IN ANSWERS THIS AND NOT THE HARNESS. A live run used to hash
+        /// %APPDATA%\Autodesk\Revit\&lt;year&gt;\Horizun\Horizun.Revit.dll - a path that
+        /// does not exist (the real one has \Addins\ in it) - so every campaign
+        /// recorded addin_sha256: null and nothing tied a result to the bytes that
+        /// produced it. A development session moves the file somewhere else again,
+        /// so no path a harness can guess is right for every run. The loaded
+        /// assembly knows where it came from; this reports that, and an
+        /// unreadable value stays null rather than becoming a guess.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject Assembly_
+        {
+            get
+            {
+                if (_assembly != null) return _assembly;
+                var o = new Newtonsoft.Json.Linq.JObject
+                {
+                    ["path"] = null,
+                    ["sha256"] = null,
+                    ["bytes"] = null,
+                    ["written_utc"] = null,
+                    ["means"] = "the add-in assembly Revit loaded in THIS process, hashed here rather than " +
+                                "guessed from a deployment path. A null field could not be read and is not a zero."
+                };
+                try
+                {
+                    Assembly asm = typeof(Build).Assembly;
+                    string path = null;
+                    try { path = asm.Location; } catch { }
+                    if (!string.IsNullOrEmpty(path)) o["path"] = path;
+                    if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+                    {
+                        var info = new System.IO.FileInfo(path);
+                        o["bytes"] = info.Length;
+                        o["written_utc"] = info.LastWriteTimeUtc.ToString("o", CultureInfo.InvariantCulture);
+                        using (var sha = System.Security.Cryptography.SHA256.Create())
+                        using (System.IO.FileStream fs = System.IO.File.OpenRead(path))
+                        {
+                            byte[] h = sha.ComputeHash(fs);
+                            var sb = new System.Text.StringBuilder(h.Length * 2);
+                            foreach (byte b in h) sb.Append(b.ToString("x2", CultureInfo.InvariantCulture));
+                            o["sha256"] = sb.ToString();
+                        }
+                    }
+                }
+                catch { /* a field that could not be read stays null */ }
+                _assembly = o;
+                return _assembly;
             }
         }
     }

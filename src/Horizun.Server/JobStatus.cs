@@ -23,6 +23,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -34,6 +35,10 @@ namespace Horizun.Server
     {
         internal const int MaxJobsPerCall = 100;
         internal const int MaxCheckpointsPerJob = 1000;
+        // A sweep is three steps per model; 200 sequence entries is the admission
+        // cap, so this holds every step of the largest admissible sequence and the
+        // omission is still counted rather than silent.
+        internal const int MaxStepsPerJob = 200;
         internal const int MaxRecordBytes = 64 * 1024;
         internal const int MaxCheckpointBytesPerJob = 512 * 1024;
         internal const int MaxResponseBytes = 4 * 1024 * 1024;
@@ -188,6 +193,9 @@ namespace Horizun.Server
             bool resultExternal = false, resultOmittedForBudget = false;
             string resultRef = null;
             long? resultBytes = null;
+            var stepsByKey = new Dictionary<string, JObject>(StringComparer.Ordinal);
+            var stepOrder = new List<string>();
+            int stepsOmitted = 0;
             bool seenStart = false, seenRunning = false, seenResult = false, terminalEventSeen = false;
 
             try
@@ -354,6 +362,30 @@ namespace Horizun.Server
                         { semanticInvalidRecords++; continue; }
                         finished = candidateStatus; finishNote = (string)o["note"]; lastAt = eventAt;
                     }
+                    // ONE STEP OF A SEQUENCE. A sweep over twelve models is one job
+                    // whose work is thirty-six steps, and the caller polling it has no
+                    // other channel. The LAST state written for a key wins - the record
+                    // is append-only, so running then succeeded is two lines about one
+                    // step - and submission order is preserved by first appearance,
+                    // because a report that sorts its steps has lost what a sequence is.
+                    else if (ev == "step")
+                    {
+                        if (!seenStart || !seenRunning || seenResult ||
+                            o["key"]?.Type != JTokenType.String ||
+                            o["tool"]?.Type != JTokenType.String ||
+                            o["status"]?.Type != JTokenType.String ||
+                            !IsStepStatus((string)o["status"]))
+                        { semanticInvalidRecords++; continue; }
+                        lastAt = eventAt;
+                        string stepKey = (string)o["key"];
+                        if (stepsByKey.ContainsKey(stepKey)) stepsByKey[stepKey] = (JObject)o.DeepClone();
+                        else if (stepsByKey.Count >= MaxStepsPerJob) stepsOmitted++;
+                        else
+                        {
+                            stepsByKey[stepKey] = (JObject)o.DeepClone();
+                            stepOrder.Add(stepKey);
+                        }
+                    }
                     else if (ev == "checkpoint")
                     {
                         // A checkpoint proves that execution began. Accepting it while
@@ -493,8 +525,26 @@ namespace Horizun.Server
                 ["capability_gaps"] = capabilityGaps ?? JValue.CreateNull(),
                 ["detail"] = detail ?? JValue.CreateNull(),
                 ["recent_checkpoints"] = checkpoints,
+                // EVERY STEP OF A SEQUENCE, in submission order, in every terminal
+                // state. A step that never ran because an earlier one failed appears
+                // here as not_run: omitting it would make a sweep that stopped at
+                // model three read as a three-model sweep that worked.
+                ["steps"] = new JArray(stepOrder.Select(k => (JToken)stepsByKey[k])),
+                ["step_count"] = stepOrder.Count,
+                ["steps_omitted"] = stepsOmitted,
                 ["what_this_means"] = Explain(state, seenResult, pid, processAlive)
             };
+        }
+
+        /// <summary>
+        /// The five states a step can be in. A status outside them is a record this
+        /// reader does not understand, and it is counted as invalid rather than passed
+        /// through - a caller must not be handed a state whose meaning nobody defined.
+        /// </summary>
+        private static bool IsStepStatus(string value)
+        {
+            return value == "queued" || value == "running" || value == "succeeded" ||
+                   value == "failed" || value == "not_run";
         }
 
         private static bool IsJobTimestamp(string value)

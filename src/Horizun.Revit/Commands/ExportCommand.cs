@@ -145,6 +145,17 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", existing.Where(File.Exists)));
 
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
+
+            // THE PREVENTION GATE, on the rehearsal and again on the apply - each call
+            // measures the document as it stands at that moment. Optional: without
+            // require_gate nothing below changes. A blocked or not-assessable decision
+            // refuses before any exporter runs, and the reply carries the decision
+            // either way. It is deliberately outside the plan hash: it is not a field
+            // that changes WHAT is exported, and a token must not be refused because a
+            // caller added the gate between rehearsal and apply.
+            OperationGateResult gateDecision = OperationGate.Evaluate(app, doc, request["require_gate"],
+                                                                      GatedOperation.Export, Name);
+            if (gateDecision.Refusal != null) return gateDecision.Refusal;
             string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
@@ -204,6 +215,7 @@ namespace Horizun.Revit.Commands
                     ["exporter_available"] = exporterAvailable,
                     ["note"] = "Nothing was exported and no file was created."
                 };
+                if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;
                 if (exporterAvailable) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, exporterAvailable,
                     exporterAvailable
@@ -319,6 +331,7 @@ namespace Horizun.Revit.Commands
             };
             if (preset != null)
                 exportResult["preset"] = VerifyPreset(preset, presetHash, produced);
+            if (gateDecision.Requested) exportResult["prevention"] = gateDecision.Prevention;
             return CommandResult.Ok(exportResult);
         }
 

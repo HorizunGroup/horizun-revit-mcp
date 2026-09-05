@@ -35,7 +35,12 @@ function Add-HzCadLink {
     param(
         [Parameter(Mandatory)]$Run,
         [Parameter(Mandatory)][string]$DwgPath,
-        [string]$Label = 'link'
+        [string]$Label = 'link',
+        # A SECOND placement of a file already linked. The typed command refuses a
+        # duplicate by default - two ImportInstances of one drawing is what the
+        # placement-identity work exists to tell apart - so the harness that wants
+        # exactly that says so, the way a caller would.
+        [switch]$AllowDuplicate
     )
     if (-not (Test-Path -LiteralPath $DwgPath)) {
         throw "HARNESS: the fixture DWG is missing: $(Protect-HzText $DwgPath)"
@@ -60,6 +65,7 @@ function Add-HzCadLink {
             # that asks the drawing.
             units = 'default'
             current_view_only = $true
+            allow_duplicate = [bool]$AllowDuplicate
         })
         $id = Get-HzProp $w.Apply.Result 'element_id'
         if ($null -eq $id) { throw ('HARNESS: {0} linked and returned no element id' -f $typed.Tool) }
@@ -89,8 +95,14 @@ opts.ThisViewOnly = True
 t = Transaction(doc, 'Horizun live fixture: stage a CAD link'); t.Start()
 ok, eid = doc.Link(r'$DwgPath', opts, view)
 t.Commit()
+# ElementId.Value is a 2024+ API. Revit 2023 has IntegerValue only, and reading
+# the wrong one throws where the harness would blame the model.
+def _eid(x):
+    if x is None:
+        return None
+    return x.IntegerValue if hasattr(x, 'IntegerValue') else x.Value
 __output__ = {'status': 'self_reported_verified', 'linked': bool(ok),
-              'element_id': eid.Value if eid else None,
+              'element_id': _eid(eid),
               'host_view': view.Name if view else None}
 "@ | Set-Content -LiteralPath $py -Encoding utf8
     $r = Invoke-HzToolStrict -Run $Run -Tool 'horizun_execute_python' -Label $Label -Arguments @{

@@ -884,7 +884,16 @@ namespace Horizun.Revit.Commands
                         SourceFingerprint = CadFacts.SourceFingerprint(facts),
                         SourceFileSha256 = facts.FileSha256,
                         PlanFingerprint = planFingerprint,
-                        WrittenUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)
+                        WrittenUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
+                        // PROVENANCE v2: the placement kept APART from the file, so
+                        // an update can tell this placement from another of the
+                        // same drawing and can measure whether it has moved since.
+                        PlacementId = facts.UniqueId,
+                        PlacementTransform = facts.TransformFingerprint,
+                        PlacementOrigin = CadPlacementRules.EncodeOrigin(facts.TransformOrigin),
+                        PlacementBasis = CadPlacementRules.EncodeBasis(facts.TransformBasisX, facts.TransformBasisY,
+                                                                       facts.TransformScale ?? 1.0),
+                        SourcePath = string.IsNullOrWhiteSpace(facts.ExternalPath) ? null : facts.ExternalPath
                     };
                     // An element with no candidate is an element nothing can trace.
                     // Writing an EMPTY provenance record would be worse than

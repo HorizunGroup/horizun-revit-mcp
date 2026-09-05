@@ -99,15 +99,22 @@ Download it first and pass `-Version <tag>` to pin a release, or `-Interactive`
 for the Setup wizard. Quiet, latest and automatic client completion are the
 defaults.
 
-### 2 · Let it register your MCP client
+### 2 · Let it configure your MCP client
 
-Installation and registration are one user action. The installer deploys a
-different add-in binary per installed Revit year plus the MCP server, then hands
-off to a helper that **waits for Claude or Codex to close** rather than editing
-the configuration underneath a running client — it makes timestamped backups,
-preserves every other MCP entry, and verifies what it wrote. Durable status
-lives in `%LOCALAPPDATA%\Horizun\install-status.json`, and Start-menu shortcuts
-can resume or inspect it.
+The same Setup serves every supported client and every client runs the same
+installed `horizun-mcp.exe`:
+
+| Client | Setup result | Last step |
+|---|---|---|
+| **Codex** | Registers `horizun-revit` beside existing MCP servers. | Restart Codex. |
+| **Claude Code** | Registers `horizun-revit` at user scope. | Restart Claude Code. |
+| **Claude Desktop** | Builds and stages its `.mcpb` Desktop Extension. | Install the extension once inside Claude Desktop. |
+
+The installer waits for Claude Code or Codex to close before editing their
+configuration, makes timestamped backups, preserves every other MCP entry, and
+verifies what it wrote. Durable status lives in
+`%LOCALAPPDATA%\Horizun\install-status.json`. See the exact per-client procedure
+in **[docs/CLIENTS.md](docs/CLIENTS.md)**.
 
 <details>
 <summary>Manual registration, if you ever need it</summary>
@@ -134,7 +141,7 @@ tool_timeout_sec = 600
 ```
 
 ```json
-// Cursor, Cline, Windsurf, Claude Desktop and other MCP clients
+// Cursor, Cline, Windsurf and other MCP clients
 {
   "mcpServers": {
     "horizun-revit": {
@@ -142,6 +149,14 @@ tool_timeout_sec = 600
     }
   }
 }
+```
+
+**Claude Desktop does not need Claude Code.** Prepare its real `.mcpb` Desktop
+Extension and inspect every supported client from one screen:
+
+```powershell
+pwsh -File scripts/install-claude-desktop-extension.ps1   # a real .mcpb Desktop Extension
+pwsh -File scripts/diagnose-integrations.ps1              # Codex, Claude Code and Claude Desktop
 ```
 
 TOML literal strings (single quotes) take Windows paths as they are; JSON needs
@@ -241,6 +256,7 @@ tool, and what each one refuses — is in **[docs/TOOLS.md](docs/TOOLS.md)**.
 | **Planimetry** | End-to-end documentation directly in Revit, without a PDF control loop: query and audit sheets/views/placements/annotations; correct cited findings; pack ordered views and schedules automatically around fixed obstacles; plan collision-aware tags and semantic dimension chains; apply them through the rehearsed annotation writer; create verified revisions, sheet assignments and clouds; then capture and visually review every real sheet through the `planimetry-review` MCP prompt. Unreadable, truncated, ambiguous or uncaptured work is unknown/refused, never clean. See **[docs/PLANIMETRY-AUDIT.md](docs/PLANIMETRY-AUDIT.md)** and **[docs/PLANIMETRY-PRODUCTION.md](docs/PLANIMETRY-PRODUCTION.md)**. |
 | **Families** | RFT → RFA compilation with parameters, formulas, types, dimensions, nested instances, solid/void forms and MEP connectors; system-type duplication with complete compound structures. |
 | **Interoperability** | PDF, DWG, configurable IFC, Navisworks NWC, multi-view FBX, images, schedules, `.xlsx` written over the OPC package, and direct Power BI push ingestion. |
+| **Quantities → budget** | A takeoff of the quantities YOU name (parameter, geometry volume/area, length, count) per element and per budget code, across loaded links with provenance, where a zero is a measurement and absent / empty / unreadable / invalid are four different answers; then a comparison against a budget baseline read from Excel - added / removed / modified / unchanged / not_comparable per code, with quantity, classification and price deltas kept apart, no unit converted and no price invented - written to Excel and Power BI with each destination reported on its own. See **[docs/QUANTITIES-AND-BUDGET.md](docs/QUANTITIES-AND-BUDGET.md)**. |
 | **DWG → BIM** | Convert a linked drawing into a model through a VERSIONED requirement set that is yours rather than compiled in: link and reload typed, read the geometry with an explicit coverage block naming what cannot be read, plan, rehearse, apply, and stamp every created element with the CAD entity it came from. Walls straight and curved, floors with holes, rooms placed by a point genuinely inside them, doors and windows hosted in the wall the drawing implies, columns, grids, and load-bearing walls and slabs verified by re-reading Revit's own parameter. Then AUDIT the result against the drawing, and plan a second revision against the first with what changed named from a closed vocabulary - unchanged, added, removed, moved, reshaped, retyped, relayered, resized, rehosted, manually diverged, ambiguous, conflict. Nothing is ever deleted automatically and a judgement is never taken silently. The workflow, the requirement-set schema and what a drawing cannot tell you are in **[docs/DWG-TO-BIM.md](docs/DWG-TO-BIM.md)**; **[docs/ADR-001-direct-dwg-reader.md](docs/ADR-001-direct-dwg-reader.md)** records what it deliberately does not read, and why. |
 | **Model surgery** | Layer splitting, floor-loop splitting, ungroup/regroup by parameter, slab elevation copying, toposolid embedding and grading, wall rectangularisation. |
 | **Orchestration** | Up to 100 typed writes in one ordered plan with `${key.path}` references, plus durable background jobs polled without touching Revit. |

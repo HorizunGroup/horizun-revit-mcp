@@ -93,6 +93,15 @@ jobs:
             'scripts/public-consistency.tests.ps1'
             'scripts/python-permission.tests.ps1'
             'scripts/python-stdlib-audit.tests.ps1'
+            'scripts/install-status.tests.ps1'
+            'scripts/dwg-state.tests.ps1'
+            'scripts/live-paths.tests.ps1'
+            'scripts/inventory.tests.ps1'
+            'scripts/provenance.tests.ps1'
+            'scripts/structural-state.tests.ps1'
+            'scripts/parameter-shadowing.tests.ps1'
+            'scripts/integrations.tests.ps1'
+            'scripts/mcpb-portability.tests.ps1'
           )
           foreach ($script in $scripts) {
             Write-Host "==> $script"

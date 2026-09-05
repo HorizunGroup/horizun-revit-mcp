@@ -72,14 +72,6 @@ namespace Horizun.Revit.Commands
             "the filesystem after the write, never 'it did not throw'. Audit is an OPEN option in the Revit API, " +
             "so audit_ran only ever describes the open. It never syncs to central.";
 
-        // The schema the client sees lives in Horizun.Contracts.Contract, once, shared
-        // with the server. This property exists because ICommand declares it; pointing it
-        // at the same contract is the only way to be sure the two cannot drift - which is
-        // the failure this whole file has been correcting all week, in another form.
-        public string ParametersSchema =>
-            Horizun.Contracts.Contract.Find("horizun_document_session")?
-                   .InputSchema?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
-
         // Audit is an OpenOptions flag and Revit never tells you afterwards whether a
         // document was audited. So the only honest source is our own memory of the
         // open WE performed. Anything else is 'unknown', which is not 'false'.

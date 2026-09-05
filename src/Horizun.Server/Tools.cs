@@ -47,10 +47,16 @@ namespace Horizun.Server
                 { "horizun_excel_write_rows", (a, ct) => ExcelWriteRows.Handle(a, ct) },
                 { "horizun_excel_read_rows",  (a, ct) => { ct.ThrowIfCancellationRequested(); return ExcelReadRows.Handle(a); } },
                 { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
+                { "horizun_budget_compare",   (a, ct) => BudgetCompare.Handle(a, ct) },
                 { "horizun_target",           (a, ct) => { ct.ThrowIfCancellationRequested(); return Targets.Handle(a); } }
             };
 
-        private static readonly List<ToolDef> All = Build();
+        /// <summary>
+        /// Every tool this server publishes. Internal rather than private so the tests
+        /// can hold the published surface against the contract directly, instead of
+        /// re-deriving it and comparing two derivations.
+        /// </summary>
+        internal static readonly List<ToolDef> All = Build();
 
         private static List<ToolDef> Build()
         {
@@ -95,12 +101,88 @@ namespace Horizun.Server
             return Horizun.Revit.Core.Settings.IsToolAllowed(contract, out reason);
         }
 
-        public static JArray List(bool advertiseTaskSupport = false)
+        /// <summary>
+        /// The add-in this server would route to right now, or null when none is
+        /// discovered or the choice is ambiguous. Program installs it at startup; a test
+        /// substitutes its own. It must never throw: a tool list that fails because Revit
+        /// is busy is worse than one that lists everything.
+        /// </summary>
+        internal static Func<Discovered> LiveBridge;
+
+        private static Discovered Live()
         {
+            Func<Discovered> f = LiveBridge;
+            if (f == null) return null;
+            try { return f(); } catch { return null; }
+        }
+
+        /// <summary>
+        /// Why this tool is NOT advertised to a client, or null when it is.
+        ///
+        /// A TOOL A CLIENT CAN SEE IS A TOOL A CLIENT WILL CALL. The per-call guard
+        /// already refuses a command the loaded add-in does not register, and refuses a
+        /// server and add-in built from different contracts - but the client had already
+        /// been told the tool was there, so the refusal arrives as a surprise in the
+        /// middle of somebody's work instead of as an absence they could plan around.
+        /// The list now answers the same question the call does.
+        ///
+        /// THE THREE THINGS THIS IS CAREFUL NOT TO DO:
+        ///   - it never withholds a HOST-RESIDENT tool: those are answered in this
+        ///     process and need no Revit at all;
+        ///   - it never treats UNKNOWN as absent: an add-in that published no command
+        ///     list (before schema 3) says nothing about what it has, and a client
+        ///     that started before Revit did has no bridge to ask;
+        ///   - it keeps ONE source. The set of plugin commands comes from the contract
+        ///     and the registration list comes from the add-in's own discovery file;
+        ///     there is no third list here to go stale.
+        /// </summary>
+        internal static string WithheldReason(ToolDef t, Discovered live)
+        {
+            if (t == null) return null;
+            if (t.Host != null) return null;                       // answered here; Revit is not involved
+            if (string.IsNullOrEmpty(t.Command)) return null;      // host-resident by contract
+            if (live == null) return null;                         // no bridge discovered: unknown, not absent
+
+            // Two builds that disagree about the contract cannot exchange arguments
+            // safely, so EVERY plugin tool is unusable until they are redeployed
+            // together. Advertising them all and refusing them all one at a time is
+            // the surprise this exists to remove.
+            if (live.ContractHash != null && live.ContractHash != Horizun.Contracts.Contract.Hash)
+                return "the Horizun add-in loaded in Revit " + live.Year + " (version " +
+                       (live.AddinVersion ?? "unknown") + ", pid " + live.Pid + ") was built from a DIFFERENT " +
+                       "command contract - server " + Horizun.Contracts.Contract.Hash + ", add-in " +
+                       live.ContractHash + ". Close Revit and run install.ps1 so both halves move together.";
+
+            bool? supports = live.Supports(t.Command);
+            if (supports != false) return null;                    // registered, or the add-in published no list
+            return "the Horizun add-in loaded in Revit " + live.Year + " (version " +
+                   (live.AddinVersion ?? "unknown") + ", pid " + live.Pid + ") does not register '" + t.Command +
+                   "', which is the command this tool needs. The two halves were not built from one tree: close " +
+                   "Revit and run install.ps1.";
+        }
+
+        /// <summary>Every tool withheld right now, with the reason - the diagnostic half.</summary>
+        internal static JArray Withheld()
+        {
+            Discovered live = Live();
             var arr = new JArray();
             foreach (var t in All)
             {
+                string why = WithheldReason(t, live);
+                if (why == null) continue;
+                arr.Add(new JObject { ["name"] = t.Name, ["command"] = t.Command, ["reason"] = why });
+            }
+            return arr;
+        }
+
+        public static JArray List(bool advertiseTaskSupport = false)
+        {
+            var arr = new JArray();
+            Discovered live = Live();
+            foreach (var t in All)
+            {
                 if (!IsEnabled(t)) continue;
+                if (WithheldReason(t, live) != null) continue;
                 var published = new JObject
                 {
                     ["name"] = t.Name,

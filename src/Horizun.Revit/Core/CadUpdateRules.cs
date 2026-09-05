@@ -92,6 +92,14 @@ namespace Horizun.Revit.Core
         public string Classification;
         public string CandidateId;
         public string SemanticId;
+        /// <summary>
+        /// WHAT THE THING IS, without the layer. Carried so the apply can stamp
+        /// it: the first version never emitted it, and every element an
+        /// incremental run created was stamped with GeometryId null - which is
+        /// the one field the relayered rung matches on, so those elements could
+        /// never be recognised as "the same shape on another layer".
+        /// </summary>
+        public string GeometryId;
         public long? ElementId;
         public string Says;
         public List<CadPoint> Geometry = new List<CadPoint>();
@@ -117,6 +125,7 @@ namespace Horizun.Revit.Core
             if (PairConfidence.HasValue) o["pair_confidence"] = PairConfidence.Value;
             if (CandidateId != null) o["candidate_id"] = CandidateId;
             if (SemanticId != null) o["semantic_id"] = SemanticId;
+            if (GeometryId != null) o["geometry_id"] = GeometryId;
             if (ElementId.HasValue) o["element_id"] = ElementId.Value;
             if (Geometry.Count > 0)
                 o["geometry_mm"] = new JArray(Geometry.Select(p => new JArray(
@@ -180,14 +189,6 @@ namespace Horizun.Revit.Core
                                      IEnumerable<string> rejectedPairings = null,
                                      IDictionary<string, long> hostBySemanticId = null)
         {
-            var update = new CadUpdate();
-            candidates = candidates ?? new List<CadCandidate>();
-            subjects = subjects ?? new List<CadAuditSubject>();
-            update.CandidatesRead = candidates.Count;
-            update.SubjectsExamined = subjects.Count;
-
-            double tolerance = Math.Max(set != null ? set.PointToleranceMm : 1.0, 0.001);
-
             // WHICH ELEMENTS THIS UPDATE IS ABOUT.
             //
             // An incremental update reads a DIFFERENT FILE by definition - that is
@@ -200,11 +201,49 @@ namespace Horizun.Revit.Core
             // The lineage is the set of source hashes this drawing SUPERSEDES,
             // and it is the caller's statement, not a guess. Nothing in a DWG
             // says one file is a re-issue of another.
-            var known = new HashSet<string>(StringComparer.Ordinal);
-            if (!string.IsNullOrEmpty(sourceFileSha256)) known.Add(sourceFileSha256);
-            if (lineage != null)
-                foreach (string sha in lineage)
-                    if (!string.IsNullOrWhiteSpace(sha)) known.Add(sha);
+            //
+            // This overload scopes by FILE and is blind to placement. The command
+            // uses the scoped overload below; this one remains for the rules that
+            // predate placement identity and for a caller with no placement facts.
+            return Plan(candidates, subjects, set, CadUpdateScope.ByFile(sourceFileSha256, lineage),
+                        accepted, rejectedPairings, hostBySemanticId, null);
+        }
+
+        /// <summary>
+        /// The same plan, scoped by an explicit membership - which elements this
+        /// PLACEMENT may claim, decided once by <see cref="CadPlacementRules.Resolve"/>
+        /// - and, when the caller has accepted that the placement itself moved,
+        /// re-derived under the new transform.
+        /// </summary>
+        public static CadUpdate Plan(IList<CadCandidate> candidates, IList<CadAuditSubject> subjects,
+                                     CadRequirementSet set, CadUpdateScope scope,
+                                     IDictionary<long, string> accepted,
+                                     IEnumerable<string> rejectedPairings,
+                                     IDictionary<string, long> hostBySemanticId,
+                                     CadPlacementMove acceptedMove)
+        {
+            var update = new CadUpdate();
+            candidates = candidates ?? new List<CadCandidate>();
+            subjects = subjects ?? new List<CadAuditSubject>();
+            scope = scope ?? CadUpdateScope.ByFile(null, null);
+            update.CandidatesRead = candidates.Count;
+            update.SubjectsExamined = subjects.Count;
+
+            double tolerance = Math.Max(set != null ? set.PointToleranceMm : 1.0, 0.001);
+
+            // THE PLACEMENT MOVED, AND THE CALLER SAID SO. Every semantic id is
+            // derived from model coordinates, so after a placement move none of
+            // them match and the ordinary matching would read the whole drawing
+            // as deleted and redrawn. The re-derived plan carries each element's
+            // as-built line through the move and matches on where it WOULD be.
+            if (acceptedMove != null && acceptedMove.Moved && acceptedMove.From != null && acceptedMove.To != null)
+            {
+                PlanUnderMovedPlacement(update, candidates, subjects, set, scope, tolerance, acceptedMove);
+                ProposePairings(update, set, tolerance,
+                                new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
+                ApplyAccepted(update, accepted);
+                return update;
+            }
 
             // WHICH ELEMENTS THIS RUN IS ABOUT - asked ONCE, and answered the
             // same way at both ends of it.
@@ -238,14 +277,12 @@ namespace Horizun.Revit.Core
             // "built under other rules" is a reason not to propose deleting
             // something. Belonging to this run and being deletable by it are two
             // questions, and only the second one is about the rules.
-            Func<CadAuditSubject, bool> mine = s =>
-            {
-                CadProvenance prov = s?.Provenance;
-                if (prov == null) return false;
-                if (known.Count == 0) return true;                       // nothing to scope by
-                if (string.IsNullOrEmpty(prov.SourceFileSha256)) return false;   // not this run's to claim
-                return known.Contains(prov.SourceFileSha256);
-            };
+            //
+            // AND NOW SCOPED BY PLACEMENT, not by file. Two placements of one
+            // file share a hash and nothing else; the scope object was resolved
+            // from the placement id (v2) or from what a v1 record can still
+            // prove, and this predicate only asks it.
+            Func<CadAuditSubject, bool> mine = scope.Includes;
 
             var bySemantic = new Dictionary<string, List<CadAuditSubject>>(StringComparer.Ordinal);
             foreach (CadAuditSubject s in subjects)
@@ -301,7 +338,7 @@ namespace Horizun.Revit.Core
                         {
                             Kind = "review",
                             Classification = CadChange.Relayered,
-                            CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = sameShape.ElementId,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = sameShape.ElementId,
                             Geometry = new List<CadPoint>(c.Geometry),
                             Automatic = false,
                             Says = "the same shape is drawn on a DIFFERENT LAYER from the one this element was " +
@@ -332,7 +369,7 @@ namespace Horizun.Revit.Core
                         Kind = "create",
                         Classification = CadChange.Added,
                         CandidateId = c.Id,
-                        SemanticId = c.SemanticId,
+                        SemanticId = c.SemanticId, GeometryId = c.GeometryId,
                         Geometry = new List<CadPoint>(c.Geometry),
                         Automatic = c.EligibleForAutomaticApply,
                         Says = c.EligibleForAutomaticApply
@@ -377,7 +414,7 @@ namespace Horizun.Revit.Core
                     {
                         Kind = "leave",
                         Classification = CadChange.Unchanged,
-                        CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                        CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                         Automatic = true,
                         Says = "the drawing still says exactly what this element was built from, so this update " +
                                "has nothing to do to it. Its provenance does not record the geometry it was " +
@@ -421,7 +458,7 @@ namespace Horizun.Revit.Core
                         {
                             Kind = "review",
                             Classification = CadChange.Rehosted,
-                            CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                             Geometry = new List<CadPoint>(c.Geometry),
                             Automatic = false,
                             Says = "the drawing puts this where it always was, and the element now lives in a " +
@@ -457,7 +494,7 @@ namespace Horizun.Revit.Core
                         {
                             Kind = "review",
                             Classification = CadChange.ManuallyDiverged,
-                            CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                             Geometry = new List<CadPoint>(c.Geometry),
                             Automatic = false,
                             Says = "the drawing has not moved and this element's " + divergence.Field +
@@ -492,7 +529,7 @@ namespace Horizun.Revit.Core
                         {
                             Kind = "review",
                             Classification = CadChange.Resized,
-                            CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                             Geometry = new List<CadPoint>(c.Geometry),
                             Automatic = false,
                             Says = "the element is exactly where the drawing says and the drawing now asks for a " +
@@ -519,7 +556,7 @@ namespace Horizun.Revit.Core
                         {
                             Kind = "review",
                             Classification = CadChange.Retyped,
-                            CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                             Geometry = new List<CadPoint>(c.Geometry),
                             Automatic = false,
                             Says = "the element is exactly where the drawing says, and the rule now asks for a " +
@@ -536,7 +573,7 @@ namespace Horizun.Revit.Core
                     {
                         Kind = "leave",
                         Classification = CadChange.Unchanged,
-                        CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                        CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                         Automatic = true,
                         Says = "unchanged in both: the drawing says what it said, and the element is where it " +
                                "was built. Nothing to do.",
@@ -549,7 +586,7 @@ namespace Horizun.Revit.Core
                 {
                     Kind = "review",
                     Classification = CadChange.ManuallyDiverged,
-                    CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = held.ElementId,
+                    CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
                     Geometry = new List<CadPoint>(c.Geometry),
                     Automatic = false,
                     Says = "A PERSON MOVED THIS and the drawing did not change. Putting it back would undo their " +
@@ -593,6 +630,7 @@ namespace Horizun.Revit.Core
                     Kind = "orphan",
                     Classification = alsoMovedByHand ? CadChange.Conflict : CadChange.Removed,
                     SemanticId = p.SemanticId,
+                    GeometryId = p.GeometryId,
                     ElementId = s.ElementId,
                     Automatic = false,
                     Says = "built from this drawing under these rules, and revision B no longer says it. It may " +
@@ -621,6 +659,178 @@ namespace Horizun.Revit.Core
                             new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
             ApplyAccepted(update, accepted);
             return update;
+        }
+
+        /// <summary>
+        /// The plan for a placement that MOVED since its elements were built, once
+        /// a person has accepted that it did.
+        ///
+        /// Matching by semantic id is impossible here - every id changed with the
+        /// coordinates - so each in-scope element's as-built line is CARRIED
+        /// through the move to where it would be if it had followed the drawing,
+        /// and candidates are matched on that. Three things can then be true of
+        /// an element, and they are the same three the ordinary plan separates:
+        ///
+        ///   it is still where it was built     → the DRAWING moved and nobody
+        ///                                        touched it: set_curve, automatic
+        ///   it is already where it would be     → somebody moved it along with
+        ///                                        the placement: leave, and re-stamp
+        ///   it is somewhere else                → the placement moved AND a person
+        ///                                        moved it: conflict, review
+        ///
+        /// Anything the carried lines do not account for is a create or an
+        /// orphan exactly as before, and the pairing judgement runs on top.
+        /// </summary>
+        private static void PlanUnderMovedPlacement(CadUpdate update, IList<CadCandidate> candidates,
+                                                    IList<CadAuditSubject> subjects, CadRequirementSet set,
+                                                    CadUpdateScope scope, double tolerance, CadPlacementMove move)
+        {
+            var claimed = new HashSet<long>();
+            List<CadAuditSubject> mine = subjects.Where(s => s?.Provenance != null && scope.Includes(s)).ToList();
+            var carriedBy = new Dictionary<long, List<CadPoint>>();
+            foreach (CadAuditSubject s in mine)
+            {
+                List<CadPoint> asBuilt = AsBuilt(s.Provenance);
+                if (asBuilt != null) carriedBy[s.ElementId] = move.Carry(asBuilt);
+            }
+            JObject moveJson = move.ToJson();
+
+            foreach (CadCandidate c in candidates)
+            {
+                if (c == null || c.Geometry == null || c.Geometry.Count == 0) continue;
+                CadAuditSubject held = mine.FirstOrDefault(s =>
+                    !claimed.Contains(s.ElementId) && carriedBy.ContainsKey(s.ElementId) &&
+                    string.Equals(s.Provenance.Layer, c.Layer, StringComparison.Ordinal) &&
+                    SamePlace(carriedBy[s.ElementId], c.Geometry, tolerance));
+
+                if (held == null)
+                {
+                    update.Actions.Add(new CadUpdateAction
+                    {
+                        Kind = "create",
+                        Classification = CadChange.Added,
+                        CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId,
+                        Geometry = new List<CadPoint>(c.Geometry),
+                        Automatic = c.EligibleForAutomaticApply,
+                        Says = "under the moved placement, no element's as-built line lands here: this " +
+                               (c.ProposedKind ?? "element") + " is new in the drawing" +
+                               (c.EligibleForAutomaticApply ? "." : ", but the reading is not one to act on unreviewed: " +
+                                                                    string.Join("; ", c.IneligibleReasons)),
+                        Evidence = new JObject
+                        {
+                            ["rule_id"] = c.RuleId, ["layer"] = c.Layer,
+                            ["confidence"] = Math.Round(c.Confidence, 4),
+                            ["placement_move"] = moveJson
+                        }
+                    });
+                    continue;
+                }
+
+                claimed.Add(held.ElementId);
+                List<CadPoint> asBuilt = AsBuilt(held.Provenance);
+                List<CadPoint> carried = carriedBy[held.ElementId];
+                JObject where = Where(c, held, held.Provenance);
+                where["would_be_at_mm"] = Points(carried);
+                where["placement_move"] = moveJson;
+
+                if (SamePlace(carried, held.Geometry, tolerance))
+                {
+                    update.Actions.Add(new CadUpdateAction
+                    {
+                        Kind = "leave",
+                        Classification = CadChange.Unchanged,
+                        CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId,
+                        ElementId = held.ElementId, Automatic = true,
+                        Says = "the placement moved and this element is already where the drawing now puts it - " +
+                               "somebody moved it along. Nothing to do but re-stamp it under the new transform.",
+                        Evidence = where
+                    });
+                    continue;
+                }
+                if (SamePlace(asBuilt, held.Geometry, tolerance))
+                {
+                    update.Actions.Add(new CadUpdateAction
+                    {
+                        Kind = "set_curve",
+                        Classification = CadChange.Moved,
+                        CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId,
+                        ElementId = held.ElementId,
+                        Geometry = new List<CadPoint>(c.Geometry),
+                        Automatic = true,
+                        Says = "the PLACEMENT moved and nobody has touched this element since it was built: it is " +
+                               "still on the line the drawing used to be on. Re-shaped to follow the drawing, and it " +
+                               "keeps its id, its parameters and everything hosted on it.",
+                        Evidence = where
+                    });
+                    continue;
+                }
+                update.Actions.Add(new CadUpdateAction
+                {
+                    Kind = "review",
+                    Classification = CadChange.Conflict,
+                    CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId,
+                    ElementId = held.ElementId,
+                    Geometry = new List<CadPoint>(c.Geometry),
+                    Automatic = false,
+                    Says = "the PLACEMENT moved and A PERSON ALSO MOVED THIS ELEMENT: it is neither where it was " +
+                           "built nor where the drawing now puts it. Which of the two to honour is not a question " +
+                           "about the drawing. Nothing was changed.",
+                    Evidence = where
+                });
+            }
+
+            foreach (CadAuditSubject s in mine.OrderBy(x => x.ElementId))
+            {
+                if (claimed.Contains(s.ElementId)) continue;
+                CadProvenance p = s.Provenance;
+                bool sameSet = set == null || string.IsNullOrEmpty(p.RequirementSetSha256) ||
+                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal);
+                if (!sameSet) continue;
+                List<CadPoint> asBuilt = AsBuilt(p);
+                if (asBuilt == null)
+                {
+                    // No as-built line: it could not be carried, so nothing here
+                    // can say whether the drawing still has it. Review, not orphan.
+                    update.Actions.Add(new CadUpdateAction
+                    {
+                        Kind = "review", Classification = CadChange.Ambiguous,
+                        SemanticId = p.SemanticId, GeometryId = p.GeometryId, ElementId = s.ElementId,
+                        Automatic = false,
+                        Says = "the placement moved and this element's provenance does not record where it was " +
+                               "BUILT, so its line cannot be carried to where the drawing now is and nothing here " +
+                               "can say whether the drawing still has it. Left alone.",
+                        Evidence = new JObject { ["was_layer"] = p.Layer, ["placement_move"] = moveJson }
+                    });
+                    continue;
+                }
+                List<CadPoint> carried = move.Carry(asBuilt);
+                bool alsoMovedByHand = s.Geometry != null && s.Geometry.Count >= 2 &&
+                                       !SamePlace(asBuilt, s.Geometry, tolerance) &&
+                                       !SamePlace(carried, s.Geometry, tolerance);
+                update.Actions.Add(new CadUpdateAction
+                {
+                    Kind = "orphan",
+                    Classification = alsoMovedByHand ? CadChange.Conflict : CadChange.Removed,
+                    SemanticId = p.SemanticId, GeometryId = p.GeometryId, ElementId = s.ElementId,
+                    Automatic = false,
+                    Says = "built from this placement, and carried through its move no candidate lands on its " +
+                           "line: the drawing no longer says it, or it moved within the drawing as well. Deleting " +
+                           "is never automatic here.",
+                    // The CARRIED line is what a pairing must be judged against:
+                    // a create in this plan is in new coordinates, and the
+                    // as-built line is in old ones.
+                    AsBuiltGeometry = carried,
+                    Evidence = new JObject
+                    {
+                        ["was_layer"] = p.Layer, ["was_rule"] = p.RuleId,
+                        ["built_from_revision"] = p.CandidateId,
+                        ["as_built_mm"] = p.BuiltGeometry,
+                        ["would_be_at_mm"] = Points(carried),
+                        ["also_moved_by_hand"] = alsoMovedByHand,
+                        ["placement_move"] = moveJson
+                    }
+                });
+            }
         }
 
         /// <summary>

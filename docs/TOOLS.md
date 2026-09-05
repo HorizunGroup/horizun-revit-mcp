@@ -4,9 +4,9 @@ Every tool Horizun Revit MCP exposes, what it does, and where it refuses.
 The [README](../README.md) has the short version; this page is the complete
 surface.
 
-This surface is **78 tools** <!--inventory:tools--> - **32** <!--inventory:reads--> of them
-read-only - dispatching **182 operations** <!--inventory:operations--> across
-**619 enumerated argument values** <!--inventory:enumerated_variants-->.
+This surface is **80 tools** <!--inventory:tools--> - **32** <!--inventory:reads--> of them
+read-only - dispatching **192 operations** <!--inventory:operations--> across
+**691 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
@@ -96,7 +96,7 @@ and it is labelled as such everywhere it appears.
 | `horizun_list_schedules` | List native schedules with their actual fields, linked-file setting, itemization and displayed body dimensions. |
 | `horizun_get_schedule_data` | Read the displayed header and body cells of a native schedule with explicit row/column bounds and truncation metadata. |
 | `horizun_split_floor_loops` | One floor per sketch loop, carrying the height offset onto each. |
-| `horizun_split_multilayer_walls` | One wall per material layer, doors and windows re-hosted on the structural one. **Curved walls are REFUSED, not straightened.** |
+| `horizun_split_multilayer_walls` | One SINGLE-LAYER wall per material layer. **The original wall is not deleted**: it becomes the wall of the core, so it keeps its ElementId and UniqueId and every door, window, opening, sweep and reveal stays hosted in it with its own. Straight and circular-arc walls; splines, stacked, slanted, attached, grouped and profile-edited walls are refused by name. Each wall is its own atom and rolls back whole. |
 | `horizun_split_multilayer_slabs` | One floor/ceiling per material layer, profile and curves intact. A slab whose hosted families cannot be put back rolls back alone. |
 | `horizun_ungroup_and_mark` | Ungroup, stamping each member with its origin group — checked BEFORE anything is ungrouped, because an ungrouped-and-unmarked model is unrecoverable. |
 | `horizun_regroup_by_param` | The reverse: rebuild the groups from that stamp. Annotation is excluded and reported, rather than failing the whole call. |
@@ -105,10 +105,16 @@ and it is labelled as such everywhere it appears.
 | `horizun_grade_toposolid_around_floors` | Offset, breaklines and a constant side slope out to daylight. Stations that never daylight are counted, not faked. |
 | `horizun_rectangularize_walls` | Irregular orthogonal walls into rectangular fragments, from real solid geometry. Refuses curves and non-rectangular openings by name. |
 
-The last nine keep their geometry in Python that ships beside the add-in
+Most of those keep their geometry in Python that ships beside the add-in
 (`src/Horizun.Revit/Recipes/`), while the host owns the transaction, the
-`dry_run`, and the re-read after the commit — see `Core/Recipe.cs`. All nine
+`dry_run`, and the re-read after the commit — see `Core/Recipe.cs`. They all
 default to `dry_run: true` and require a single-use confirmation token to write.
+
+`horizun_split_multilayer_walls` is the exception: it is a TYPED command
+(`Commands/SplitMultilayerWallsCommand.cs` and the files beside it) because the
+two counts a recipe could verify — how many walls exist, and whether the original
+is gone — are not the question that operation has to answer. What it verifies
+instead, twice, is in `docs/WALL-LAYER-DECOMPOSITION.md`.
 
 ## Host-resident — answered by the server, no Revit needed
 

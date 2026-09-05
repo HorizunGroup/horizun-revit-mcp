@@ -208,6 +208,45 @@ namespace Horizun.Server
         /// the add-in uses (DiscoverySweep), and owning only the IO. Never throws: hygiene
         /// must not stop the server coming up.
         /// </summary>
+        /// <summary>
+        /// What a Revit said when it REFUSED to publish a bridge, newest first, or an
+        /// empty string when none said anything.
+        ///
+        /// "No Revit is reachable" looks identical whether Revit is closed or the
+        /// add-in loaded and refused to start. The add-in leaves a breadcrumb for the
+        /// second case; this is what turns it into an answer instead of a file nobody
+        /// opens. Never throws: a diagnostic that fails must not replace the message
+        /// it was meant to improve.
+        /// </summary>
+        public static string StartupFailures(string year)
+        {
+            try
+            {
+                string dir = DirectoryOverride ?? Horizun.Revit.Core.HorizunPaths.DiscoveryDir();
+                if (!Directory.Exists(dir)) return "";
+                var lines = new List<string>();
+                string[] files = Directory.GetFiles(dir, "startup-failure-*.json");
+                Array.Sort(files, (a, b) => File.GetLastWriteTimeUtc(b).CompareTo(File.GetLastWriteTimeUtc(a)));
+                foreach (string p in files)
+                {
+                    try
+                    {
+                        JObject o = JObject.Parse(File.ReadAllText(p));
+                        string y = (string)o["revit_year"];
+                        if (!string.IsNullOrEmpty(year) && !string.Equals(y, year, StringComparison.Ordinal)) continue;
+                        int pid = (int?)o["pid"] ?? -1;
+                        if (pid > 0 && !BarePidExists(pid)) continue;   // that Revit is gone; so is the complaint
+                        lines.Add("Revit " + y + " (pid " + pid + ") loaded the add-in and REFUSED to publish a " +
+                                  "bridge: " + (string)o["reason"]);
+                    }
+                    catch { /* an unreadable breadcrumb is not a diagnosis */ }
+                    if (lines.Count >= 3) break;
+                }
+                return lines.Count == 0 ? "" : " " + string.Join(" ", lines);
+            }
+            catch { return ""; }
+        }
+
         public static int SweepStaleDiscovery()
         {
             try

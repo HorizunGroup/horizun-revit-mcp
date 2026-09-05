@@ -65,7 +65,15 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail(
                     "actions_not_a_list: 'actions' arrived as " + actionsToken.Type.ToString().ToLowerInvariant() +
                     " and it must be the LIST horizun_plan_cad_update emitted. Nothing was written.");
-            if (actions == null || actions.Count == 0)
+            JArray index = request["candidate_index"] as JArray ?? new JArray();
+            List<JObject> restampRows = index.OfType<JObject>()
+                .Where(x => string.Equals(x.Value<string>("key"), RestampKey, StringComparison.Ordinal))
+                .ToList();
+            actions = actions ?? new JArray();
+            // A plan may carry NOTHING to build and still have work: v1 records to
+            // migrate, or elements to re-stamp under a moved placement. That is a
+            // write with a visible count, not "nothing automatic".
+            if (actions.Count == 0 && restampRows.Count == 0)
                 return CommandResult.Fail(
                     "actions is required and must carry at least one entry. An update plan with nothing " +
                     "automatic in it is a plan that is waiting for a person, and running it would write nothing " +
@@ -78,8 +86,47 @@ namespace Horizun.Revit.Commands
                     "would create elements that remember nothing, and the NEXT update would build them again. " +
                     "Copy it from horizun_plan_cad_update's reply.");
 
-            JArray index = request["candidate_index"] as JArray ?? new JArray();
+            // THE PLACEMENT HALF OF THE STAMP, from the plan. A plan made under an
+            // accepted placement move is a plan that re-shapes elements to follow
+            // the drawing; the WRITE is where that consent has to be said again,
+            // because the plan was read-only and this is not.
+            JObject placementTemplate = provenanceTemplate["placement"] as JObject;
+            bool planUnderMove = provenanceTemplate.Value<bool?>("placement_move_accepted") ?? false;
+            bool acceptMove = request.Value<bool?>("accept_placement_move") ?? false;
+            if (planUnderMove && !acceptMove)
+                return CommandResult.Fail(
+                    "placement_moved: this plan was re-derived under a placement that MOVED, and applying it " +
+                    "re-shapes elements to follow the drawing. Send accept_placement_move=true here as well - " +
+                    "the plan was read-only, this is the write. Nothing was written.");
+
             bool dryRun = request.Value<bool?>("dry_run") ?? true;
+            string idempotencyKey = request.Value<string>("idempotency_key");
+            string actionsFingerprint = CadConversionPlanRules.ActionsFingerprint(actions) + ":" +
+                                        CadIdentity.Sha256Hex(new JArray(restampRows).ToString(Formatting.None)).Substring(0, 16);
+            string placementId = placementTemplate?.Value<string>("id");
+
+            // A RETRY IS NOT A SECOND RUN. The same key over the same actions
+            // replays what was recorded; the same key over different actions is
+            // refused. Rehearsals are not recorded: a dry run writes nothing, so
+            // there is nothing a replay could hide.
+            if (!dryRun)
+            {
+                CadUpdateLedgerDecision decision = CadUpdateLedger.Decide(idempotencyKey, actionsFingerprint);
+                if (decision.Outcome == "refuse") return CommandResult.Fail(decision.Refusal);
+                if (decision.Outcome == "replay")
+                {
+                    JObject replay = (JObject)(decision.Entry.Reply ?? new JObject()).DeepClone();
+                    replay["replayed"] = true;
+                    replay["replay_count"] = decision.Entry.ReplayCount;
+                    replay["replay_means"] = "idempotency_key '" + idempotencyKey + "' was already applied in " +
+                                             "this Revit session with these same actions, at " +
+                                             decision.Entry.RecordedUtc.ToString("o") + ". NOTHING ran again; " +
+                                             "this is the reply that run produced. The ledger is per session " +
+                                             "and bounded, so a key from another session or a very old one runs afresh.";
+                    return CommandResult.Ok(replay);
+                }
+            }
+            JObject previousPartial = CadUpdateLedger.Describe(CadUpdateLedger.LastPartialFor(placementId));
 
             // ------------------------------------------------------- rehearse
             var rehearsal = new JArray();
@@ -124,6 +171,8 @@ namespace Horizun.Revit.Commands
                     ["rehearsed_cleanly"] = clean,
                     ["rehearsal"] = rehearsal,
                     ["tokens_by_key"] = tokens,
+                    ["restamp_pending"] = restampRows.Count,
+                    ["previous_partial"] = previousPartial,
                     ["means"] = clean
                         ? "every action rehearsed cleanly and nothing was written. Send the same actions with " +
                           "dry_run=false and each action's token from tokens_by_key."
@@ -177,7 +226,8 @@ namespace Horizun.Revit.Commands
 
             // ----------------------------------------------------- provenance
             var stamps = new JArray();
-            int written = 0, anonymous = 0;
+            var restamps = new JArray();
+            int written = 0, anonymous = 0, restamped = 0, migrated = 0, restampFailed = 0;
             using (var t = new Transaction(doc, "Horizun: record CAD update provenance"))
             {
                 t.Start();
@@ -219,10 +269,12 @@ namespace Horizun.Revit.Commands
                         SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint"),
                         SourceFileSha256 = provenanceTemplate.Value<string>("source_file_sha256"),
                         PlanFingerprint = provenanceTemplate.Value<string>("plan_fingerprint"),
+                        SourcePath = provenanceTemplate.Value<string>("source_path"),
                         Confidence = entry.Value<double?>("confidence") ?? 0,
                         WrittenUtc = DateTime.UtcNow.ToString("o"),
                         BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e))
                     };
+                    StampPlacement(p, placementTemplate);
 
                     string why;
                     bool ok = CadProvenanceStore.Write(e, p, out why);
@@ -233,12 +285,65 @@ namespace Horizun.Revit.Commands
                         ["key"] = pair.Key,
                         ["candidate_id"] = p.CandidateId,
                         ["semantic_id"] = p.SemanticId,
+                        ["geometry_id"] = p.GeometryId,
                         ["written"] = ok,
                         ["means"] = ok
                             ? "this element now remembers the entity in THIS revision that it stands for, so the " +
                               "next update recognises it instead of building it again"
                             : "the provenance entity did not land, so this element is ANONYMOUS and the next " +
                               "update will build it again. Revit said: " + (why ?? "(nothing)")
+                    });
+                }
+
+                // RE-STAMPS: no geometry touched, the record rewritten. A v1
+                // record becomes v2 with the placement it was claimed under; an
+                // element left in place under an accepted move takes the
+                // transform it now sits under. Everything else in the record is
+                // kept as read - the entity, the rule, the set, the as-built
+                // line - because none of that changed.
+                foreach (JObject rowJson in restampRows)
+                {
+                    long id = rowJson.Value<long?>("element_id") ?? -1;
+                    string reason = rowJson.Value<string>("reason") ?? "(unstated)";
+                    Element e = null;
+                    try { if (Rid.CanRepresent(id)) e = doc.GetElement(Rid.Make(id)); } catch { }
+                    string problem;
+                    CadProvenance existing = e == null ? null : CadProvenanceStore.Read(e, out problem);
+                    if (existing == null)
+                    {
+                        restampFailed++;
+                        restamps.Add(new JObject
+                        {
+                            ["element_id"] = id, ["reason"] = reason, ["written"] = false,
+                            ["means"] = e == null ? "no such element" : "the element carries no readable provenance to rewrite"
+                        });
+                        continue;
+                    }
+                    bool wasV1 = existing.IsV1;
+                    CadProvenance p = existing.Clone();
+                    p.SchemaVersion = CadProvenanceStore.CurrentVersion;
+                    if (string.IsNullOrEmpty(p.GeometryId)) p.GeometryId = rowJson.Value<string>("geometry_id");
+                    if (string.IsNullOrEmpty(p.SourcePath)) p.SourcePath = provenanceTemplate.Value<string>("source_path");
+                    p.WrittenUtc = DateTime.UtcNow.ToString("o");
+                    StampPlacement(p, placementTemplate);
+
+                    string why;
+                    bool ok = CadProvenanceStore.Write(e, p, out why);
+                    if (ok)
+                    {
+                        restamped++;
+                        if (wasV1 && reason == CadPlacementRules.RestampMigrated) migrated++;
+                    }
+                    else restampFailed++;
+                    restamps.Add(new JObject
+                    {
+                        ["element_id"] = id, ["reason"] = reason, ["written"] = ok,
+                        ["was_version"] = wasV1 ? "v1" : "v2",
+                        ["means"] = ok
+                            ? (wasV1 ? "migrated from v1: this element now names the placement that built it"
+                                     : "re-stamped with the placement's current transform")
+                            : "the rewrite did not land and the element keeps the record it had. Revit said: " +
+                              (why ?? "(nothing)")
                     });
                 }
                 t.Commit();
@@ -255,6 +360,16 @@ namespace Horizun.Revit.Commands
                 ["provenance_written"] = written,
                 ["elements_left_anonymous"] = anonymous,
                 ["provenance"] = stamps,
+                ["provenance_rewritten"] = restamped,
+                ["migrated_from_v1"] = migrated,
+                ["restamp_failed"] = restampFailed,
+                ["restamps"] = restamps,
+                ["restamp_means"] = "provenance_rewritten counts records rewritten WITHOUT touching geometry: " +
+                                    "migrated_from_v1 of them were v1 records that now name their placement; the " +
+                                    "rest were re-stamped under the placement's current transform.",
+                ["placement_move_accepted"] = planUnderMove,
+                ["previous_partial"] = previousPartial,
+                ["replayed"] = false,
                 ["state"] = failures == 0 ? "applied" : "partial",
                 ["atomicity"] = "PER ACTION, not whole. Each typed command is atomic and verified in itself; the " +
                                 "actions commit separately, and the run STOPS at the first failure rather than " +
@@ -267,7 +382,25 @@ namespace Horizun.Revit.Commands
                 ["re_plan_note"] = "the elements stamped above now carry THIS revision, so planning the next " +
                                    "update against this drawing will read them as built rather than missing."
             };
+            // RECORDED AFTER THE WRITE, so a retry replays what actually happened
+            // - partial included. A partial run also leaves its note against the
+            // placement, and the next plan applied there carries it.
+            CadUpdateLedger.Record(idempotencyKey, actionsFingerprint, placementId,
+                                   failures == 0 ? "applied" : "partial", result);
             return CommandResult.Ok(result);
+        }
+
+        private const string RestampKey = "cad-update-restamp";
+
+        /// <summary>The placement half of a stamp, copied from the plan's provenance block.</summary>
+        private static void StampPlacement(CadProvenance p, JObject placement)
+        {
+            if (p == null || placement == null) return;
+            p.PlacementId = placement.Value<string>("id");
+            p.PlacementTransform = placement.Value<string>("transform");
+            p.PlacementOrigin = placement.Value<string>("origin_mm");
+            p.PlacementBasis = placement.Value<string>("basis");
+            if (string.IsNullOrEmpty(p.SourcePath)) p.SourcePath = placement.Value<string>("external_path");
         }
 
         /// <summary>One element this run touched, and how to find the candidate that explains it.</summary>

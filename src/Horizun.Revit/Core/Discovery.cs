@@ -64,6 +64,62 @@ namespace Horizun.Revit.Core
         public static string LegacyFileName(string year) => "revit-" + year + ".json";
 
         /// <summary>
+        /// Where a startup failure is recorded. DELIBERATELY NOT "revit-*.json": the
+        /// server globs that pattern for bridges, and a failure is the opposite of one.
+        /// </summary>
+        public static string FailureFileName(string year) =>
+            "startup-failure-" + year + "-" + System.Diagnostics.Process.GetCurrentProcess().Id + ".json";
+
+        /// <summary>
+        /// Say WHY there is no bridge, where somebody looking for one will find it.
+        ///
+        /// An add-in that fails to initialise writes no discovery file, and the only
+        /// symptom is a server reporting "no Revit has published a bridge" - which is
+        /// what a machine with no Revit open looks like too. The log has the answer and
+        /// nobody reads a log they do not know exists. Best effort: a failure that
+        /// cannot be recorded must not become a second failure.
+        /// </summary>
+        public static void WriteStartupFailure(string year, string reason)
+        {
+            try
+            {
+                string dir = Dir();
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, FailureFileName(year));
+                var payload = new JObject
+                {
+                    ["schema"] = 1,
+                    ["revit_year"] = year,
+                    ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id,
+                    ["failed_utc"] = DateTime.UtcNow.ToString("o"),
+                    ["addin_version"] = Build.Version,
+                    ["addin_commit"] = Build.Commit,
+                    ["reason"] = reason,
+                    ["means"] = "the Horizun add-in loaded in this Revit and REFUSED to publish a bridge. No MCP " +
+                                "client can reach this instance until the cause below is fixed; the add-in did not " +
+                                "take Revit down with it."
+                };
+                string tmp = path + ".tmp";
+                File.WriteAllText(tmp, payload.ToString());
+                if (File.Exists(path)) File.Delete(path);
+                File.Move(tmp, path);
+                RestrictToCurrentUser(path);
+            }
+            catch { /* a breadcrumb that cannot be written is not worth a second failure */ }
+        }
+
+        /// <summary>Remove this instance's failure breadcrumb, if it left one.</summary>
+        public static void ClearStartupFailure(string year)
+        {
+            try
+            {
+                string path = Path.Combine(Dir(), FailureFileName(year));
+                if (File.Exists(path)) File.Delete(path);
+            }
+            catch { }
+        }
+
+        /// <summary>
         /// Publish where we listen, and WHAT WE CAN DO.
         ///
         /// The server's tool list is compiled into the server, and the two halves are

@@ -2,9 +2,9 @@
   <PropertyGroup>
     <!-- One product, one release number. The server and every Revit payload
          inherit this value and are packaged/deployed as an inseparable pair. -->
-    <Version>1.1.6</Version>
-    <!-- Published tags never move. v1.1.6 removes the optional Session panel
-         from Revit's ribbon without changing the MCP capability surface. -->
+    <Version>1.2.0</Version>
+    <!-- Published tags never move. v1.2.0 adds typed multi-layer wall
+         decomposition and the production Model Doctor campaign. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

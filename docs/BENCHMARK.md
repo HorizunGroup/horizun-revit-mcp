@@ -97,7 +97,8 @@ verified distribution; it does not claim Windows publisher authentication.
 P8 reached 5 only after packing, auto-tagging, intent dimensioning, revision
 generation and direct visual evidence all passed in every supported year. The
 matrix, harness commit and each full artifact SHA-256 are pinned in
-`docs/evidence/live-matrix.json`; the score is not inferred from composability.
+`docs/evidence/live-matrix.json` (private evidence, kept out of the public
+repository); the score is not inferred from composability.
 
 ## Market baseline
 

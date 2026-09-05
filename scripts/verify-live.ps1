@@ -1407,7 +1407,9 @@ $psi.UseShellExecute = $false
 $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
 # MEASURED on run 15: without this, a unicode argument (Tubería) reaches the
 # server mojibake - the reply was fine, the REQUEST was not.
-$psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+if ($psi.PSObject.Properties.Name -contains 'StandardInputEncoding') {
+    $psi.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+}
 $proc = [System.Diagnostics.Process]::Start($psi)
 
 # Production calls such as manage_revisions carry arrays nested below the

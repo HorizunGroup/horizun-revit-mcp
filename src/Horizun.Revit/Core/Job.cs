@@ -348,6 +348,33 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// ONE STEP OF A SEQUENCE, written as it changes state.
+        ///
+        /// A sweep over twelve models is one job whose work is thirty-six steps, and
+        /// the caller polling it has no other channel: the reply went away with the
+        /// job_id. So each transition is appended here as it happens rather than
+        /// summarised at the end - a run that dies at model seven must still be able to
+        /// say it reached model seven, and a `running` step whose record simply stops is
+        /// the shape of a process that died mid-model.
+        ///
+        /// Written BEFORE the step runs, not after. A cloud open takes minutes, and a
+        /// step whose start is recorded only on completion is indistinguishable from a
+        /// stuck job for the whole time it is working.
+        /// </summary>
+        public void Step(string key, string tool, string status, string resultRef, string error)
+        {
+            lock (_gate)
+            {
+                Append("{\"event\":\"step\",\"key\":" + Str(key) +
+                       ",\"tool\":" + Str(tool) +
+                       ",\"status\":" + Str(status) +
+                       ",\"result_ref\":" + Str(resultRef) +
+                       ",\"error\":" + Str(error) +
+                       ",\"at\":" + Now() + "}");
+            }
+        }
+
+        /// <summary>
         /// One step done. `done`/`total` are optional — a job that knows it is on item 40
         /// of 300 can say so, and one that only knows it reached a stage says that.
         /// Called from the script as checkpoint("...", done, total).

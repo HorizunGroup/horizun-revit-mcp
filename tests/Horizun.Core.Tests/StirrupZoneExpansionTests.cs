@@ -42,16 +42,18 @@ namespace Horizun.Core.Tests
                     {
                         Name = "start",
                         LengthMm = 1000,
-                        Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100 }
+                        Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100, IncludeLastBar = false }
                     },
                     new StirrupZoneRequest
                     {
                         Name = "middle",
                         LengthMm = null,
+                        // The zone BEFORE a boundary gives up its last bar (ADR-003
+                        // item 12: a suppressed first bar is not honoured by Revit).
                         Layout = new RebarLayoutRequest
                         {
                             Layout = RebarLayout.MaximumSpacing, SpacingMm = 200,
-                            IncludeFirstBar = false, IncludeLastBar = false
+                            IncludeLastBar = false
                         }
                     },
                     new StirrupZoneRequest
@@ -115,7 +117,9 @@ namespace Horizun.Core.Tests
             Assert.Equal(200, made[1].Layout.SpacingMm);
             Assert.Equal(1000, made[0].Layout.ArrayLengthMm);
             Assert.Equal(4000, made[1].Layout.ArrayLengthMm);
-            Assert.False(made[1].Layout.IncludeFirstBar);
+            Assert.False(made[0].Layout.IncludeLastBar);
+            Assert.True(made[1].Layout.IncludeFirstBar);
+            Assert.False(made[1].Layout.IncludeLastBar);
             Assert.True(made[2].Layout.IncludeFirstBar);
         }
 
@@ -214,10 +218,10 @@ namespace Horizun.Core.Tests
             ""span_mm"": 6000,
             ""zones"": [
               { ""name"": ""start"", ""length_mm"": 1000,
-                ""layout"": { ""rule"": ""maximum_spacing"", ""spacing_mm"": 100 } },
+                ""layout"": { ""rule"": ""maximum_spacing"", ""spacing_mm"": 100, ""include_last_bar"": false } },
               { ""name"": ""middle"",
                 ""layout"": { ""rule"": ""maximum_spacing"", ""spacing_mm"": 200,
-                              ""include_first_bar"": false, ""include_last_bar"": false } },
+                              ""include_last_bar"": false } },
               { ""name"": ""end"", ""length_mm"": 1000,
                 ""layout"": { ""rule"": ""maximum_spacing"", ""spacing_mm"": 100 } }
             ]

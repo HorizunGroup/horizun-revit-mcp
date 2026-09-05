@@ -32,6 +32,23 @@ try {
     $rows = @($leak.findings | Where-Object { $_.file -eq 'README.md' -and $_.rule -eq 'sensitive-term' })
     if ($rows.Count -ne 1) { throw 'the same term outside public governance was not reported exactly once' }
 
+    # The scanner is the last line, not the first. Evidence files are WRITTEN by
+    # scripts/consolidate-live-session.py, and a personal account name once
+    # reached a published one because the redaction there matched a path with
+    # separators and missed the same name flattened into a folder name. Run that
+    # script's own redaction assertions here, so the gate covers the writer and
+    # not only the reader.
+    $py = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
+    if (-not $py) {
+        throw 'no Python interpreter on PATH: the evidence-redaction assertions could not be run, and a gate that skips is not a gate'
+    }
+    $consolidator = Join-Path $PSScriptRoot 'consolidate-live-session.py'
+    & $py.Source $consolidator --self-test
+    if ($LASTEXITCODE -ne 0) {
+        throw "the evidence redaction self-test failed with exit $LASTEXITCODE"
+    }
+
     Write-Host '[PASS] public GitHub governance identities are narrow exceptions; the same term elsewhere still fails' -ForegroundColor Green
 }
 finally {

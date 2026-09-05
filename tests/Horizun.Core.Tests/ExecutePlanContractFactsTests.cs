@@ -80,7 +80,9 @@ namespace Horizun.Core.Tests
             // capability no client is told about, and a strict validator rejects.
             Assert.Empty(advertised.Except(enforced));
             Assert.Empty(enforced.Except(advertised));
-            Assert.Equal(20, enforced.Count);
+            // 21 since horizun_manage_links joined: the correction registry's pin
+            // could not be composed atomically without it.
+            Assert.Equal(21, enforced.Count);
         }
 
         // ---- The claims the description makes, one by one ------------------------

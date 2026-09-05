@@ -200,6 +200,7 @@ jobs:
             'scripts/inventory.tests.ps1'
             'scripts/provenance.tests.ps1'
             'scripts/structural-state.tests.ps1'
+            'scripts/parameter-shadowing.tests.ps1'
           )
           foreach ($script in $scripts) {
             Write-Host "==> $script"

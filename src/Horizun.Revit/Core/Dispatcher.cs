@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Autodesk.Revit.UI;
 using Newtonsoft.Json.Linq;
@@ -28,6 +29,12 @@ namespace Horizun.Revit.Core
     {
         private readonly Dictionary<string, ICommand> _commands =
             new Dictionary<string, ICommand>(StringComparer.OrdinalIgnoreCase);
+
+        // Every name handed to Register, in order, repeats included. The dictionary
+        // above cannot remember a second registration of one name; this can, and
+        // it is what the contract comparison at startup reads.
+        private readonly List<string> _registrationAttempts = new List<string>();
+        private readonly HashSet<string> _registeredNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         private ExternalEvent _event;
 
@@ -84,10 +91,27 @@ namespace Horizun.Revit.Core
                 warn: message => Log.Warn(context + ": " + message));
         }
 
+        /// <summary>
+        /// Register one command. A SECOND registration of the same name THROWS: this was
+        /// an indexer assignment, so two classes sharing a Name kept whichever was
+        /// registered last, silently, and the one that answered was not the one somebody
+        /// had tested. A duplicate is a build defect and the add-in says so at startup.
+        /// </summary>
         public void Register(ICommand command)
         {
-            if (command == null) return;
+            if (command == null) throw new ArgumentNullException("command");
+            _registrationAttempts.Add(command.Name);
+            RegistryContract.Admit(_registeredNames, command.Name);
             _commands[command.Name] = command;
+        }
+
+        /// <summary>
+        /// Compare what was registered against what the contract forwards to Revit.
+        /// The contract is the single source: nothing here keeps a second list.
+        /// </summary>
+        public RegistryContract.Report VerifyAgainstContract()
+        {
+            return RegistryContract.Compare(_registrationAttempts, Contract.PluginCommands);
         }
 
         internal ICommand ResolveCommand(string name)
@@ -616,6 +640,11 @@ namespace Horizun.Revit.Core
             AsyncWork work = AsyncQueue.Take();
             if (work == null) return;
 
+            // A SEQUENCE IS ITS OWN RUN. It writes its own steps and finishes its own
+            // record, so the single-call path below is left exactly as it was rather
+            // than growing a second meaning for every line in it.
+            if (work.Sequence != null && work.Sequence.Count > 0) { RunSequence(app, work); return; }
+
             var clock = System.Diagnostics.Stopwatch.StartNew();
             CommandResult result = null;
             try
@@ -713,6 +742,226 @@ namespace Horizun.Revit.Core
 
                 _preferAsync = false;
                 PumpNext();
+            }
+        }
+
+        /// <summary>
+        /// ONE JOB WHOSE WORK IS AN ORDERED SEQUENCE - a read-only sweep over several
+        /// models, on the queue that already exists.
+        ///
+        /// Three rules carry it, and each one is a way a sweep lies:
+        ///
+        ///   THE START IS RECORDED BEFORE THE STEP RUNS. A cloud open takes minutes,
+        ///   and a step whose start is written only on completion is indistinguishable
+        ///   from a stuck job for the whole time it is working.
+        ///
+        ///   EXECUTION STOPS AT THE FIRST FAILURE, and every later step is reported
+        ///   not_run - never omitted, never succeeded. A sequence that stops at step
+        ///   three and returns two steps reads as a two-step sequence that worked.
+        ///
+        ///   WHAT THE SEQUENCE OPENED IS CLOSED ON THE FAILURE PATH. This is exactly
+        ///   where an implementation is tempted to swallow the exception and move on,
+        ///   and the cost of doing so is a document left open in somebody's Revit.
+        /// </summary>
+        private void RunSequence(UIApplication app, AsyncWork work)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            List<SequenceEntry> steps = work.Sequence;
+            // TWO FACTS, NOT ONE INDEX. `stoppedAt = -1` used to mean both "nothing
+            // stopped" and "stopped before the first step ran", and on the second
+            // reading the cleanup closes below were skipped - the one invariant that
+            // must not depend on WHERE the sweep stopped, because its cost is a
+            // document left open in somebody's Revit.
+            int stoppedAt = -1;
+            bool stopped = false;
+            string failure = null;
+
+            try { work.Record.MarkRunning(); } catch { }
+            Job.Ambient = work.Record;
+            try
+            {
+                for (int i = 0; i < steps.Count; i++)
+                {
+                    SequenceEntry step = steps[i];
+                    if (_shuttingDown)
+                    {
+                        failure = "Revit began closing before this step ran.";
+                        stoppedAt = i - 1;
+                        stopped = true;
+                        break;
+                    }
+
+                    step.Status = StepStatus.Running;
+                    step.StartedUtc = DateTime.UtcNow.ToString("o");
+                    // BEFORE the step, not after: see the header.
+                    try { work.Record.Step(step.Key, step.Tool, StepStatus.Running, null, null); } catch { }
+
+                    CommandResult r = RunOneSequenceStep(app, step);
+                    step.FinishedUtc = DateTime.UtcNow.ToString("o");
+
+                    if (r != null && r.Success)
+                    {
+                        step.Status = StepStatus.Succeeded;
+                        try { step.ResultRef = AsyncResultPayload.Serialize(r.Data, work.JobId); }
+                        catch (Exception ex)
+                        {
+                            step.ResultRef = null;
+                            step.Error = "the step succeeded and its result could not be stored: " + ex.Message;
+                        }
+                    }
+                    else
+                    {
+                        step.Status = StepStatus.Failed;
+                        step.Error = r == null ? "the step produced no result." : r.Error;
+                        failure = "step " + step.Key + " (" + step.Tool + ") failed: " + step.Error;
+                        stoppedAt = i;
+                        stopped = true;
+                    }
+                    try { work.Record.Step(step.Key, step.Tool, step.Status, step.ResultRef, step.Error); } catch { }
+
+                    if (step.Status == StepStatus.Failed) break;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("async sequence threw on the UI thread", ex);
+                failure = ex.GetType().Name + ": " + ex.Message;
+                stopped = true;
+                if (stoppedAt < 0) stoppedAt = steps.FindIndex(s => s.Status == StepStatus.Running);
+            }
+            finally
+            {
+                Job.Ambient = null;
+            }
+
+            // WHAT THE SEQUENCE OPENED, THE SEQUENCE CLOSES. The remaining close steps
+            // run even though the sweep has stopped: they are the only reason a failed
+            // model does not leave a document sitting in somebody's Revit. Their own
+            // outcome is recorded honestly - a close that was attempted and failed is
+            // not the same as one that never ran.
+            if (stopped) RunPendingCloses(app, work, steps, stoppedAt);
+
+            // A sweep that ran to the end settles nothing: every step already has its
+            // own outcome. One that stopped settles everything after the stop, and a
+            // stop BEFORE the first step settles all of them.
+            if (stopped) JobSequenceRules.SettleAfterStop(steps, stoppedAt);
+            foreach (SequenceEntry s in steps)
+                if (s.Status == StepStatus.NotRun)
+                    try { work.Record.Step(s.Key, s.Tool, s.Status, null, s.Error); } catch { }
+
+            string terminal = JobSequenceRules.TerminalStatus(steps);
+            var payload = new JObject
+            {
+                ["mode"] = "sequence",
+                ["job_id"] = work.JobId,
+                ["steps"] = JobSequenceRules.StepsJson(steps),
+                ["steps_submitted"] = steps.Count,
+                ["steps_succeeded"] = steps.Count(s => s.Status == StepStatus.Succeeded),
+                ["steps_not_run"] = steps.Count(s => s.Status == StepStatus.NotRun),
+                ["read_only"] = true,
+                ["read_only_means"] = JobSequenceRules.ReadOnlyMeans,
+                ["not_run_means"] = JobSequenceRules.NotRunMeans
+            };
+            try
+            {
+                work.Record.Result(payload.ToString(Newtonsoft.Json.Formatting.None));
+                work.Record.Finish(terminal, failure);
+            }
+            catch (Exception ex) { Log.Error("could not close the async sequence record", ex); }
+
+            Log.Warn("async sequence (" + work.JobId + ") " + terminal + " in " + clock.ElapsedMilliseconds + " ms");
+            _preferAsync = false;
+            PumpNext();
+        }
+
+        /// <summary>
+        /// The close steps of a stopped sweep. ONLY closes: nothing else is retried,
+        /// because the sweep has already failed and running more reads over a Revit in
+        /// an unknown state is how one bad model becomes twelve bad results.
+        ///
+        /// AND ONLY THE CLOSES WHOSE OWN MODEL WAS OPENED. The test is the NEAREST
+        /// PRECEDING open, not any open anywhere in the sequence: in a twelve-model
+        /// sweep that stopped at model three, "some open succeeded" is true because
+        /// model one's did, and the cleanup would then aim closes at nine documents
+        /// this sweep never opened. A close that finds one of them open - because the
+        /// USER has it open - closes the user's document. That is the failure this
+        /// predicate exists to prevent; reporting "a document may be left open" about
+        /// a document that never existed is only the second-worst outcome.
+        /// </summary>
+        private void RunPendingCloses(UIApplication app, AsyncWork work, List<SequenceEntry> steps, int stoppedAt)
+        {
+            Job.Ambient = work.Record;
+            try
+            {
+                for (int i = stoppedAt + 1; i < steps.Count; i++)
+                {
+                    SequenceEntry step = steps[i];
+                    if (step.Tool != "horizun_document_session") continue;
+
+                    // THE NEAREST PRECEDING OPEN, not any open anywhere. "Some
+                    // open succeeded" is true in a twelve-model sweep that
+                    // stopped at model three, because model one's did - and the
+                    // cleanup would then run the closes for models four through
+                    // twelve, each aimed at a document this sweep never opened.
+                    // If the user has one of those open, the sweep closes the
+                    // user's document. Only the open belonging to THIS close can
+                    // justify attempting it.
+                    bool ownOpenSucceeded = false;
+                    for (int j = i - 1; j >= 0; j--)
+                    {
+                        if (steps[j].Tool != "horizun_open_document") continue;
+                        ownOpenSucceeded = steps[j].Status == StepStatus.Succeeded;
+                        break;
+                    }
+                    if (!ownOpenSucceeded) continue;
+                    step.Status = StepStatus.Running;
+                    step.StartedUtc = DateTime.UtcNow.ToString("o");
+                    try { work.Record.Step(step.Key, step.Tool, StepStatus.Running, null, null); } catch { }
+
+                    CommandResult r = RunOneSequenceStep(app, step);
+                    step.FinishedUtc = DateTime.UtcNow.ToString("o");
+                    step.Status = r != null && r.Success ? StepStatus.Succeeded : StepStatus.Failed;
+                    // A close that worked has NO error. Explaining itself in the error
+                    // field would make a reader scanning for failures find one.
+                    step.Error = step.Status == StepStatus.Failed
+                        ? "the sweep had already stopped and this close was attempted anyway: " +
+                          (r == null ? "no result." : r.Error) + " A document may be left open."
+                        : null;
+                    try { work.Record.Step(step.Key, step.Tool, step.Status, null, step.Error); } catch { }
+                }
+            }
+            catch (Exception ex) { Log.Error("a cleanup close threw on the UI thread", ex); }
+            finally { Job.Ambient = null; }
+        }
+
+        private CommandResult RunOneSequenceStep(UIApplication app, SequenceEntry step)
+        {
+            ICommand cmd;
+            if (!_commands.TryGetValue(step.Tool, out cmd))
+                return CommandResult.Fail("Unknown command: " + step.Tool + ".");
+
+            CommandContract contract = Contract.Find(step.Tool);
+            string permissionReason;
+            // Permissions are checked AGAIN here, not only at admission: a sequence can
+            // sit in the queue while the machine owner revokes something.
+            if (contract != null && !Settings.IsToolAllowed(contract, out permissionReason))
+                return CommandResult.Fail(permissionReason + " This sequence step did not run.");
+
+            using (var watch = new Interference(app))
+            {
+                CommandResult r = null;
+                try { r = cmd.Execute(app, step.Arguments.ToString(Newtonsoft.Json.Formatting.None)); }
+                catch (Exception ex) { r = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message); }
+                finally
+                {
+                    object said = watch.Report();
+                    if (said != null)
+                    {
+                        if (r == null) r = CommandResult.Fail(step.Tool + " produced no result.");
+                        r.RevitSaid = said;
+                    }
+                }
+                return r;
             }
         }
 
