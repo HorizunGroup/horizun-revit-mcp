@@ -21,11 +21,10 @@ Baseline de la auditoría: rama `feat/dimension-production`, HEAD
 
 ### Qué es hoy
 
-`SplitMultilayerWallsCommand : RecipeCommand` delega toda la geometría a
-`src/Horizun.Revit/Recipes/split_multilayer_walls.py`, un port del botón pyRevit
-"Partir Muro Multicapa". El host (`Core/Recipe.cs`) aporta lo que el botón no
-tenía: `target_document`, `dry_run` por defecto, token de confirmación, **una**
-transacción, y una verificación post-commit.
+`src/Horizun.Revit/Commands/SplitMultilayerWallsCommand.cs` expone el comando
+tipado y `src/Horizun.Revit/Commands/WallSplitExecutor.cs` ejecuta la geometría.
+La implementación conserva el muro original como la capa núcleo y crea solo las
+capas restantes, dentro de subtransacciones con relectura de cada invariante.
 
 Esa verificación es el problema. `Verifications` declara exactamente dos cuentas:
 

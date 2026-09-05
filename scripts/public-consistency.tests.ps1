@@ -242,9 +242,13 @@ if ($installerSource -notmatch 'procedure RollbackDeployment' -or
 # 21-document list, which omitted CHANGELOG.md, DWG-TO-BIM.md, DIMENSIONS.md and
 # five other documents the projector exports - so a broken link in any of those
 # was invisible here and surfaced only at publication. The allowlists are read
-# from publish/make-public-package.ps1 itself.
-$projector = Get-Content (Join-Path $repo 'publish\make-public-package.ps1') -Raw
+# from publish/make-public-package.ps1 itself. In the exported repository that
+# private projector is deliberately absent; there the checked tree is already
+# the projection, so the file set on disk is authoritative.
+$projectorPath = Join-Path $repo 'publish\make-public-package.ps1'
+$projector = if (Test-Path -LiteralPath $projectorPath) { Get-Content $projectorPath -Raw } else { $null }
 function Read-AllowList([string]$name) {
+    if (-not $projector) { return @() }
     $m = [regex]::Match($projector, "\`$$name\s*=\s*@\(([^)]*)\)")
     if (-not $m.Success) { Fail "publish/make-public-package.ps1 no longer declares `$$name"; return @() }
     [regex]::Matches($m.Groups[1].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value.Replace('\','/') }
@@ -252,16 +256,24 @@ function Read-AllowList([string]$name) {
 $allowDocs = @(Read-AllowList 'allowDocs')
 $allowRoot = @(Read-AllowList 'allowRoot')
 $allowDirs = @(Read-AllowList 'allowDirs')
-$exportedDocs = @($allowRoot | Where-Object { $_ -match '\.(md|txt)$' -or $_ -in @('LICENSE','NOTICE') }) +
-                @($allowDocs | Where-Object { $_ -match '\.md$' })
-$publicDocs = @('publish/overlay/README.md','publish/overlay/AGENTS.md') + $exportedDocs |
-    Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
-if ($allowDocs.Count -lt 15) { Fail "the exporter's allowDocs read back only $($allowDocs.Count) entries; the parser or the list changed shape" }
+if ($projector) {
+    $exportedDocs = @($allowRoot | Where-Object { $_ -match '\.(md|txt)$' -or $_ -in @('LICENSE','NOTICE') }) +
+                    @($allowDocs | Where-Object { $_ -match '\.md$' })
+    $publicDocs = @('publish/overlay/README.md','publish/overlay/AGENTS.md') + $exportedDocs |
+        Where-Object { -not ($_.StartsWith('publish/')) -or (Test-Path (Join-Path $repo 'publish/overlay')) }
+    if ($allowDocs.Count -lt 15) { Fail "the exporter's allowDocs read back only $($allowDocs.Count) entries; the parser or the list changed shape" }
+}
+else {
+    $publicDocs = @(Get-ChildItem -LiteralPath $repo -Recurse -File -Force |
+        Where-Object { $_.Extension -in @('.md','.txt') -and $_.FullName -notmatch '[\\/]\.(git)[\\/]' } |
+        ForEach-Object { [IO.Path]::GetRelativePath($repo, $_.FullName).Replace('\','/') })
+}
 
 # Is a repository-relative path inside the public projection?
 function Test-Exported([string]$relative) {
     $r = $relative.Replace('\','/')
     if ($r.StartsWith('./')) { $r = $r.Substring(2) }
+    if (-not $projector) { return Test-Path -LiteralPath (Join-Path $repo $r) }
     if ($allowRoot -contains $r -or $allowDocs -contains $r) { return $true }
     # The overlay supplies the public README, AGENTS, CLAUDE, LICENSE and NOTICE.
     if ($r -notmatch '/' -and (Test-Path (Join-Path $repo ('publish/overlay/' + $r)))) { return $true }
@@ -296,10 +308,19 @@ foreach ($path in $publicDocs) {
     foreach ($match in [regex]::Matches($text, '`((?:docs|scripts|publish|tests|src)/[^`\s]+)`')) {
         $cited = $match.Groups[1].Value.TrimEnd('.',',',';',':')
         if ($cited -match '[*?<>]') { continue }   # a glob or a placeholder, not a file
-        if (Test-Exported $cited) { continue }
-        if (-not (Test-Path (Join-Path $repo $cited))) { Fail "$path cites '$cited', which does not exist"; continue }
         $start = [Math]::Max(0, $match.Index - 240)
         $window = $text.Substring($start, [Math]::Min(480, $text.Length - $start))
+        $exists = Test-Path -LiteralPath (Join-Path $repo $cited)
+        $exported = Test-Exported $cited
+        if ($exported) {
+            if (-not $exists) { Fail "$path cites '$cited', which the public projection promises but which does not exist" }
+            continue
+        }
+        # In the public checkout an explicitly labelled private evidence path is
+        # absent by design. The private-side run already checked that it exists
+        # before projection and that this explanatory label accompanies it.
+        if (-not $exists -and -not $projector -and $window -match '(?i)private|not (in|part of) the public|not exported|kept out of the public') { continue }
+        if (-not $exists) { Fail "$path cites '$cited', which does not exist"; continue }
         if ($window -notmatch '(?i)private|not (in|part of) the public|not exported|kept out of the public') {
             Fail "$path cites '$cited', which the projector does not export, without saying it is private"
         }
@@ -318,6 +339,8 @@ foreach ($path in $publicDocs) {
 # THE MATRIX IS A PROJECTION OF THE RECORD. A total edited into the prose must
 # not survive: the renderer re-renders from the JSON and refuses a document that
 # has drifted from it.
+$evidenceRoot = Join-Path $repo 'docs\evidence'
+if (Test-Path -LiteralPath $evidenceRoot) {
 $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
 if (-not $py) {
@@ -400,6 +423,7 @@ foreach ($doc in $evidenceDocs) {
         if ($inBlock) { $block.Add($line) | Out-Null }
     }
     if ($inBlock) { Fail ("{0} ends inside a code fence" -f $doc.Name) }
+}
 }
 
 
