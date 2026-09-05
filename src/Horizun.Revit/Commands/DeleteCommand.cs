@@ -67,30 +67,6 @@ namespace Horizun.Revit.Commands
             "name are reported explicitly, attributed to the id that took them. A rolled-back transaction is an " +
             "error, not a count. dry_run defaults to TRUE in purge mode; this is destructive and it is a client's model.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""required"": [""mode""],
-  ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""ids"", ""purge_unused""],
-                ""description"": ""REQUIRED. ids: delete exactly the ids given. purge_unused: ask Revit for unused elements and delete them, repeating until a pass finds none. Omission is refused; it never selects the broader purge operation."" },
-    ""ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
-               ""description"": ""Required for mode='ids'. Ids that do not resolve are reported as not_found, never dropped."" },
-    ""protect_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
-                       ""description"": ""Never delete these, even if a purge pass calls them unused. Use for view templates you are about to assign rather than delete."" },
-    ""target_document"": { ""type"": ""string"",
-                           ""description"": ""REQUIRED. Title or full path of the document to delete from. It must be the document ACTIVE in Revit; this never switches documents for you."" },
-    ""confirmation_token"": { ""type"": ""string"",
-                              ""description"": ""REQUIRED when dry_run=false. The token the dry run of this exact request returned. Single-use, expiring, bound to this document and this request."" },
-    ""dry_run"": { ""type"": ""boolean"",
-                   ""description"": ""Default TRUE in BOTH modes. Opens a transaction, asks Revit what would die (the real dependent closure, cascades included), then ROLLS BACK on purpose, and returns a confirmation_token for that plan."" },
-    ""max_passes"": { ""type"": ""integer"", ""default"": 8, ""minimum"": 1,
-                      ""description"": ""Safety stop for purge. A confirmed apply currently requires 1 because later-pass targets cannot exist during rehearsal; repeat one confirmed pass at a time. Hitting the limit is a stop, not convergence."" },
-    ""transaction_name"": { ""type"": ""string"", ""description"": ""Name of the undo step."" },
-    ""id_cap"": { ""type"": ""integer"", ""default"": 200, ""minimum"": 1,
-                  ""description"": ""How many rows to list. Totals are exact regardless; every list states total vs shown vs truncated."" }
-  }
-}";
-
         // Verdicts. Deliberately explicit strings: "I could not look" and "there is
         // nothing there" must never collapse into the same value downstream.
         private const string V_DELETED = "deleted";

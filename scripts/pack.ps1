@@ -164,7 +164,37 @@ Copy-Item (Join-Path $repo 'scripts\stop-installed-server.ps1') $clientTools -Fo
 Copy-Item (Join-Path $repo 'scripts\hz-call.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\uninstall-cleanup.ps1') $clientTools -Force
 Copy-Item (Join-Path $repo 'scripts\toml-section.lib.ps1') $clientTools -Force
+# The Claude Desktop integration and its libraries travel with the installer,
+# because a shortcut that dot-sources a file the installer did not stage fails
+# at the first line with a message about a path.
+foreach ($tool in @(
+    'install-claude-desktop-extension.ps1',
+    'diagnose-integrations.ps1',
+    'mcp-clients.lib.ps1',
+    'mcpb-manifest.lib.ps1',
+    'mcp-stdio.lib.ps1',
+    'integration-status.lib.ps1')) {
+    Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
+}
 Step '  staged safe Codex/Claude registration, deferred completion and verification helpers'
+
+# --- The Claude Desktop extension, built from THIS staged server. -------------
+#
+# Built here rather than beforehand so its advertised tool list comes from the
+# binary being packaged, not from whatever happens to be installed. It lands
+# under stage\server\, which is what the manifest hashes and the SBOM inventories,
+# so the extension is covered by the same integrity chain as everything else.
+$mcpbDir = Join-Path $stage 'server\integrations\claude-desktop'
+New-Item -ItemType Directory -Path $mcpbDir -Force | Out-Null
+# The canonical version is read again here: the installer's own copy of it is
+# resolved much further down this script, and an extension named for a version
+# this build is not would be the first thing to mislead a diagnosis.
+$stageVersionProps = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
+$stageVersion = [string]($stageVersionProps.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
+$mcpbPath = Join-Path $mcpbDir ("horizun-revit-{0}.mcpb" -f $stageVersion)
+& (Join-Path $repo 'scripts\build-mcpb.ps1') -Output $mcpbPath -ServerPath (Join-Path $stage 'server\horizun-mcp.exe') | Out-Null
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mcpbPath)) { throw 'the Claude Desktop extension did not build' }
+Step ('  built the Claude Desktop extension: {0} ({1:N0} bytes)' -f (Split-Path -Leaf $mcpbPath), (Get-Item $mcpbPath).Length)
 
 # --- The plugin, ONE ARTIFACT PER YEAR. --------------------------------------
 #

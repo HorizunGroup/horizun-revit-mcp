@@ -170,16 +170,12 @@ namespace Horizun.Core.Tests
                 new StirrupZoneRequest
                 {
                     Name = "ends", LengthMm = 1000,
-                    Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100 }
+                    Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100, IncludeLastBar = false }
                 },
                 new StirrupZoneRequest
                 {
                     Name = "middle",
-                    Layout = new RebarLayoutRequest
-                    {
-                        Layout = RebarLayout.MaximumSpacing, SpacingMm = 200,
-                        IncludeFirstBar = false, IncludeLastBar = false
-                    }
+                    Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 200, IncludeLastBar = false }
                 }
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, true, 0, 0, null, 10);
@@ -375,14 +371,14 @@ namespace Horizun.Core.Tests
                 new StirrupZoneRequest
                 {
                     Name = "a", LengthMm = 1000,
-                    Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100 }
+                    Layout = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100, IncludeLastBar = false }
                 },
                 new StirrupZoneRequest
                 {
                     Name = "b",
                     Layout = new RebarLayoutRequest
                     {
-                        Layout = RebarLayout.MaximumSpacing, SpacingMm = 200, IncludeFirstBar = false
+                        Layout = RebarLayout.MaximumSpacing, SpacingMm = 200
                     }
                 }
             };

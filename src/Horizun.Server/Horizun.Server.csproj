@@ -83,6 +83,11 @@
     <Compile Include="..\Horizun.Revit\Core\Idempotency.cs" />
     <Compile Include="..\Horizun.Revit\Core\DurableCommandIdempotency.cs" />
     <Compile Include="..\Horizun.Revit\Core\DurableStoreRetention.cs" />
+    <!-- The budget comparison answers in the server: the join is arithmetic over a
+         takeoff reply and a workbook. Self-contained on purpose - the catalogue
+         status strings it emits are pinned to CodeStatus by a Core test rather than
+         by linking the readiness chain that CodeStatus lives beside. -->
+    <Compile Include="..\Horizun.Revit\Core\BudgetComparisonRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -88,6 +88,19 @@ namespace Horizun.Revit.Core
         public string LengthUnitName;
         public bool? UnitsReadable;
 
+        // WHERE ON EARTH the document says it is. Separate from the control
+        // points: a base point is a drafting decision, a latitude is a claim
+        // about the planet, and a model can have either without the other.
+        public bool? SiteReadable;
+        public string SiteWhy;
+        /// <summary>DEGREES. The API answers in radians and this is the converted value.</summary>
+        public double? LatitudeDegrees;
+        /// <summary>DEGREES. The API answers in radians and this is the converted value.</summary>
+        public double? LongitudeDegrees;
+        public string PlaceName;
+        /// <summary>Hours from UTC, as the document reports it.</summary>
+        public double? TimeZoneHours;
+
         public long ElementsMeasured;
         public long ElementsUnreadable;
         public double? FarthestElementMm;
@@ -149,6 +162,17 @@ namespace Horizun.Revit.Core
                        : f.TrueNorthDegrees.HasValue ? (Fmt(f.TrueNorthDegrees.Value) + " degrees")
                        : "the document would not report an angle to true north"
             };
+            items["site_location"] = new GateItemMeasurement
+            {
+                Name = "site_location",
+                Satisfied = f == null ? (bool?)null : f.SiteReadable,
+                Detail = f == null || f.SiteReadable == null ? "not collected"
+                       : !f.SiteReadable.Value ? (f.SiteWhy ?? "the document would not report a site location")
+                       : (f.LatitudeDegrees.HasValue && f.LongitudeDegrees.HasValue
+                            ? (Fmt(f.LatitudeDegrees.Value) + ", " + Fmt(f.LongitudeDegrees.Value) + " degrees" +
+                               (string.IsNullOrEmpty(f.PlaceName) ? "" : " ('" + f.PlaceName + "')"))
+                            : "a site location exists but would not report its coordinates")
+            };
             items["length_units"] = new GateItemMeasurement
             {
                 Name = "length_units",
@@ -204,6 +228,54 @@ namespace Horizun.Revit.Core
             "measured from the INTERNAL ORIGIN to each element, never from a control point. A survey point far " +
             "from the internal origin is normal and is what a survey point is for; geometry far from it is the " +
             "accuracy problem. These two are different questions and this number answers only the second.";
+
+        /// <summary>
+        /// The two ways a reader misreads a latitude, published beside it.
+        ///
+        /// The API answers in RADIANS. A tool that prints that number as degrees
+        /// puts every project within a few degrees of the equator, and the mistake
+        /// is invisible because the result still looks like a coordinate.
+        ///
+        /// And a site nobody touched is INDISTINGUISHABLE from a site somebody
+        /// chose. Revit templates ship with a real city in them, so an untouched
+        /// document reports a plausible latitude rather than an empty one; 0, 0 is
+        /// likewise a real place in the Gulf of Guinea, not a marker for "unset".
+        /// Deciding which is which needs an expectation the caller supplies. This
+        /// bridge reports the number and refuses to grade it.
+        /// </summary>
+        public const string SiteMeans =
+            "latitude and longitude are reported in DEGREES, converted from the radians the API answers in. " +
+            "A value here is what the document says, NOT evidence that anybody set it: an untouched template " +
+            "reports the city it shipped with, and 0, 0 is a real location rather than a blank. Compare " +
+            "against your own expected site; no expectation was compiled in.";
+
+        /// <summary>
+        /// Why shared position is null, in the reply rather than in a document
+        /// nobody opens.
+        ///
+        /// ImportPlacement exists in every supported year with the values Site,
+        /// Origin, Centered and Shared - but it is an INPUT to
+        /// RevitLinkInstance.Create. RevitLinkInstance declares exactly four
+        /// members of its own (Create, GetLinkDocument, MoveBasePointToHostBasePoint,
+        /// MoveOriginToHostOrigin) and none reads the placement back;
+        /// RevitLinkType carries nothing about an instance's current positioning,
+        /// and no BuiltInParameter holds it. Established by reflection over all
+        /// five RevitAPI.dll assemblies, not from memory.
+        ///
+        /// The tempting substitute is transform similarity, and it is wrong: a
+        /// link placed origin-to-origin in a model whose survey point sits at the
+        /// origin produces the same transform as a shared-positioned one. That
+        /// guess fails precisely on the models where the answer matters.
+        /// </summary>
+        public const string SharedPositionNotObservable =
+            "NOT OBSERVABLE. Revit offers no read path from a placed link back to the placement it was created " +
+            "with: ImportPlacement (Site, Origin, Centered, Shared) is an input to RevitLinkInstance.Create, " +
+            "and nothing on the instance, the type or any BuiltInParameter reports it afterwards - checked by " +
+            "reflection over Revit 2023 through 2027. It is NOT inferred from transform similarity: a link " +
+            "placed origin-to-origin in a model whose survey point is at the origin has the same transform as " +
+            "a shared-positioned one, so that guess is wrong exactly where the answer matters. To answer this " +
+            "you would have to supply the placement recorded when each link was inserted; the document does " +
+            "not retain it.";
 
         public static string OriginNote(long beyond, double radiusMm, long measured, long unreadable)
         {

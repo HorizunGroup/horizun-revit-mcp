@@ -264,18 +264,11 @@ namespace Horizun.Revit.Commands
 
         private static IEnumerable<Element> Stamped(Document doc)
         {
-            List<Element> found = new List<Element>();
-            try
-            {
-                if (Schema.Lookup(CadProvenanceStore.SchemaGuid) == null)
-                    return found;   // nothing has ever been stamped in this session
-                found = new FilteredElementCollector(doc)
-                    .WhereElementIsNotElementType()
-                    .WherePasses(new ExtensibleStorageFilter(CadProvenanceStore.SchemaGuid))
-                    .ToList();
-            }
-            catch { }
-            return found;
+            // EVERY VERSION OF THE RECORD, through the store's own collector: a
+            // filter on the current GUID alone would report every v1 conversion
+            // as bim_without_source the day the writer moved to v2.
+            try { return CadProvenanceStore.Holders(doc); }
+            catch { return new List<Element>(); }
         }
 
         /// <summary>The categories this requirement set can produce, so the sweep is bounded by the rules.</summary>

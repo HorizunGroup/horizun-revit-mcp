@@ -54,7 +54,7 @@ namespace Horizun.Revit.Commands
             if (!set.Ok)
                 return CommandResult.FailWithDetail(
                     "The requirement set was refused, so nothing was audited: " + set.Error,
-                    new JObject { ["code"] = set.Code });
+                    StructuralRequirementSet.RefusalDetail(set));
             string setSha = StructuralRequirementSet.Sha256Of(setJson);
 
             var narrow = new List<long>();

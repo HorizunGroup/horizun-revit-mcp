@@ -252,7 +252,7 @@ Add-HzProbe -Run $run -Id 'O2' -Name 'six audits later, the audit has still neve
 Write-Host "`n== R: what an audit must refuse ==" -ForegroundColor Cyan
 
 $rDoc = Invoke-HzTool -Run $run -Tool 'horizun_audit_cad_model' -Label 'r-doc' `
-    -Arguments (Copy-HzArgs $auditArgs @{ target_document = 'HZ_LIVE_A' })
+    -Arguments (Copy-HzArgs $auditArgs @{ target_document = ($Document + '-NOT-ACTIVE') })
 Add-HzRefusalProbe -Run $run -Id 'R1' -Name 'auditing a model that is not the active one refuses rather than reading as evidence' `
     -Call $rDoc -MustMatch 'reads as evidence'
 

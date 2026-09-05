@@ -590,5 +590,49 @@ namespace Horizun.Core.Tests
             Assert.Contains("Guard.Assimilate", src);
             Assert.Contains("Guard.RollBack(group)", src);
         }
+
+        /// <summary>
+        /// AND IN THAT ORDER, which the assertions above do not check.
+        ///
+        /// Inside an atomic plan every child command's confirmation gate short-circuits:
+        /// DocumentGate.RequireConfirmation opens with `if (_atomicPlanDepth > 0) return
+        /// StillTheSame(...)`, which proves the ACTIVE DOCUMENT has not changed and checks
+        /// no token and no plan hash. That is safe for exactly one reason - the plan as a
+        /// whole was already confirmed against planHash before the depth was entered, and
+        /// children cannot carry tokens of their own because the graph strips
+        /// confirmation_token from every child request.
+        ///
+        /// So the safety of every destructive command reachable from execute_plan rests on
+        /// two lines being in this order. Swap them - hoist the scope above the gate, or
+        /// let an early return skip the gate - and each child would run with its
+        /// confirmation disabled and nothing confirmed in its place, while all five
+        /// Contains assertions above stayed green.
+        ///
+        /// Comments are stripped first: the paragraph you are reading names both calls.
+        /// </summary>
+        [Fact]
+        public void The_plan_is_confirmed_BEFORE_the_scope_that_disables_child_confirmation_is_entered()
+        {
+            // (char)10 rather than an escape: this assertion is about source text, and
+            // the file is stored with LF endings.
+            string code = string.Join(((char)10).ToString(), PlanSource().Split((char)10)
+                .Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+            int confirm = code.IndexOf("DocumentGate.RequireConfirmation", StringComparison.Ordinal);
+            int enter = code.IndexOf("DocumentGate.EnterConfirmedAtomicPlan", StringComparison.Ordinal);
+
+            Assert.True(confirm >= 0, "execute_plan must confirm the plan");
+            Assert.True(enter >= 0, "execute_plan must enter the confirmed atomic scope");
+            Assert.True(confirm < enter,
+                "execute_plan entered the atomic scope BEFORE confirming the plan. Inside that " +
+                "scope every child command's confirmation gate returns early, so the children " +
+                "would run unconfirmed with nothing confirmed in their place.");
+
+            // And the refusal must be returned, not merely computed: a confirmation whose
+            // result is dropped is the same as no confirmation at all.
+            int refusalReturned = code.IndexOf("if (refusal != null) return refusal;", StringComparison.Ordinal);
+            Assert.True(refusalReturned > confirm && refusalReturned < enter,
+                "the confirmation refusal must be returned between confirming and entering the scope");
+        }
     }
 }

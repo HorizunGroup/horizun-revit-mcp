@@ -42,6 +42,7 @@ function Get-StagedLicence([string]$relativePath) {
 
     if ($path.StartsWith('server/', [StringComparison]::OrdinalIgnoreCase)) {
         if ($path.StartsWith('server/client-tools/', [StringComparison]::OrdinalIgnoreCase) -or
+            $path.StartsWith('server/integrations/', [StringComparison]::OrdinalIgnoreCase) -or
             $leaf.StartsWith('horizun-mcp', [StringComparison]::OrdinalIgnoreCase)) {
             return 'Apache-2.0'
         }

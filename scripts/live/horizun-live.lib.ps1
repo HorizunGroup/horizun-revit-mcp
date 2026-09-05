@@ -291,6 +291,51 @@ function Get-HzHealth {
 }
 
 <#
+  Open or activate one explicitly named disposable fixture, then prove Revit
+  really made it active. Opening an already-open file is the typed activation
+  path; it does not reload or save the document.
+#>
+function Set-HzActiveDocument {
+    param(
+        [Parameter(Mandatory)]$Run,
+        [Parameter(Mandatory)][string]$Document,
+        [string]$FilePath
+    )
+
+    $health = Get-HzHealth $Run
+    if ([string](Get-HzPath $health 'active_document','title') -eq $Document) { return $health }
+
+    if (-not $FilePath) {
+        foreach ($open in @(Get-HzProp $health 'open_documents')) {
+            if ([string](Get-HzProp $open 'title') -eq $Document) {
+                $FilePath = [string](Get-HzProp $open 'path')
+                break
+            }
+        }
+    }
+    if (-not $FilePath) {
+        throw "HARNESS: '$Document' is not open and no fixture path was supplied."
+    }
+    if (-not (Test-Path -LiteralPath $FilePath)) {
+        throw "HARNESS: the fixture for '$Document' does not exist at '$FilePath'."
+    }
+
+    $year = [string](Get-HzProp $health 'revit_version')
+    if (-not $year) { throw 'HARNESS: health did not report the Revit year before document activation.' }
+    $null = Invoke-HzToolStrict -Run $Run -Tool 'horizun_document_session' -Label ('activate-' + $Document) -Arguments @{
+        operation = 'open'; file_path = $FilePath; expected_version = $year; allow_upgrade = $false
+        idempotency_key = (New-HzKey $Run ('activate-' + $Document))
+    }
+
+    $after = Get-HzHealth $Run
+    $actual = [string](Get-HzPath $after 'active_document','title')
+    if ($actual -ne $Document) {
+        throw "HARNESS: requested '$Document' but Revit made '$actual' active."
+    }
+    $after
+}
+
+<#
   A document nobody has built in.
 
   A typed open of an ALREADY-OPEN document does not reload it - it answers
@@ -496,7 +541,9 @@ function Get-HzResource {
 #>
 function Get-HzToolList {
     param([Parameter(Mandatory)]$Run)
-    $exe = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
+    # The same server hz-call drives: a development session points both at a
+    # fresh build through HORIZUN_SERVER_EXE, and the installed one is the default.
+    $exe = if ($env:HORIZUN_SERVER_EXE) { $env:HORIZUN_SERVER_EXE } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
     if (-not (Test-Path $exe)) { return $null }
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $exe
@@ -505,7 +552,9 @@ function Get-HzToolList {
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
-    $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    if ($psi.PSObject.Properties.Name -contains 'StandardInputEncoding') {
+        $psi.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    }
     $proc = [Diagnostics.Process]::Start($psi)
     try {
         $send = {
@@ -557,6 +606,11 @@ function Get-HzToolList {
     unverified      the call errored, so the check never ran
     not_covered     this run does not test it, and says so
     fixture_missing the input this needs is absent - NOT a pass, NOT a product failure
+    not_assessable  it ran, but incomplete evidence cannot support a verdict
+    not_applicable  the requested capability does not apply to this case
+    available       the surface exists; another probe owns its live evidence
+    implemented_not_live_verified
+                    code and contract exist, but this run did not measure them
 #>
 function Add-HzProbe {
     param(
@@ -565,7 +619,9 @@ function Add-HzProbe {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Expected,
         [string]$Observed,
-        [ValidateSet('passed', 'failed', 'unverified', 'not_covered', 'fixture_missing')][string]$Status,
+        [ValidateSet('passed', 'failed', 'unverified', 'not_covered', 'fixture_missing',
+                     'not_assessable', 'not_applicable', 'available',
+                     'implemented_not_live_verified')][string]$Status,
         [bool]$Ok,
         $Evidence,
         [string]$Because
@@ -584,6 +640,9 @@ function Add-HzProbe {
     $mark = switch ($Status) {
         'passed' { 'PASS' } 'failed' { 'FAIL' } 'unverified' { 'UNVERIFIED' }
         'not_covered' { 'NOT COVERED' } 'fixture_missing' { 'FIXTURE MISSING' }
+        'not_assessable' { 'NOT ASSESSABLE' } 'not_applicable' { 'NOT APPLICABLE' }
+        'available' { 'AVAILABLE' }
+        'implemented_not_live_verified' { 'IMPLEMENTED, NOT LIVE VERIFIED' }
     }
     $colour = switch ($Status) {
         'passed' { 'Green' } 'failed' { 'Red' } default { 'Yellow' }
@@ -682,7 +741,22 @@ function Limit-HzText {
 function Get-HzSha256 {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    # A FILE REVIT HAS OPEN IS STILL READABLE, AND Get-FileHash WILL NOT READ IT.
+    # Measured 2026-09-03: hashing the active .rvt threw "being used by another
+    # process" and took a gate probe down with it - the file was fine, the share
+    # mode was not. Opened with FileShare.ReadWrite, the same bytes hash cleanly.
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open,
+                                     [System.IO.FileAccess]::Read,
+                                     [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
+        try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try { return ([BitConverter]::ToString($sha.ComputeHash($fs)) -replace '-', '').ToLowerInvariant() }
+            finally { $sha.Dispose() }
+        }
+        finally { $fs.Dispose() }
+    }
+    catch { return $null }
 }
 
 # =============================================================================
@@ -757,13 +831,32 @@ function Get-HzManifest {
         try { $health = Get-HzHealth $Run } catch { $healthSource = 'unavailable: ' + $_.Exception.Message }
     }
     $year = $null; $addinCommit = $null; $addinSha = $null; $serverSha = $null
+    $addinPath = $null; $addinShaSource = 'unavailable'
     if ($health) { $year = [string](Get-HzProp $health 'revit_version') }
-    if ($year) {
-        $addin = Join-Path $env:APPDATA "Autodesk\Revit\$year\Horizun\Horizun.Revit.dll"
+    # THE ADD-IN HASHES ITSELF. This used to build a deployment path by hand and
+    # hash that - and the path it built was wrong (the real one carries \Addins\),
+    # so every campaign recorded addin_sha256: null and no result was tied to the
+    # bytes that produced it. A development session moves the file again, so no
+    # guessed path is right for every run. health.addin_assembly is the loaded
+    # file, hashed in the process that loaded it.
+    if ($health) {
+        $asm = Get-HzProp $health 'addin_assembly'
+        if ($asm) {
+            $addinSha = [string](Get-HzProp $asm 'sha256')
+            $addinPath = [string](Get-HzProp $asm 'path')
+            if ($addinSha) { $addinShaSource = 'health.addin_assembly (hashed by the add-in that loaded it)' }
+        }
+    }
+    if (-not $addinSha -and $year) {
+        # An older add-in has no addin_assembly block. Fall back to the INSTALLED
+        # path, and say that is what was hashed - it is only the same file when
+        # the run is against the installed pair.
+        $addin = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$year\Horizun\Horizun.Revit.dll"
         $addinSha = Get-HzSha256 $addin
+        if ($addinSha) { $addinPath = $addin; $addinShaSource = 'installed add-in path (this build publishes no addin_assembly block)' }
     }
     if ($health) { $addinCommit = [string](Get-HzProp $health 'horizun_commit') }
-    $serverExe = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
+    $serverExe = if ($env:HORIZUN_SERVER_EXE) { $env:HORIZUN_SERVER_EXE } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
     $serverSha = Get-HzSha256 $serverExe
 
     # The contract hash and the tool count from the SERVER that answered, not
@@ -813,6 +906,8 @@ function Get-HzManifest {
         horizun_version = $(if ($health) { Get-HzProp $health 'horizun_version' } else { $null })
         built_from_clean_tree = $(if ($health) { Get-HzProp $health 'built_from_clean_tree' } else { $null })
         addin_sha256 = $addinSha
+        addin_path = $addinPath
+        addin_sha256_source = $addinShaSource
         server_sha256 = $serverSha
         contract_hash = $contractHash
         contract_hash_source = $contractSource
@@ -832,15 +927,23 @@ function Get-HzManifest {
         unverified = $counts.unverified
         not_covered = $counts.not_covered
         fixture_missing = $counts.fixture_missing
+        not_assessable = $counts.not_assessable
+        not_applicable = $counts.not_applicable
+        available = $counts.available
+        implemented_not_live_verified = $counts.implemented_not_live_verified
         probes = @($Run.Probes)
         notes = @($Run.Notes | ForEach-Object { Protect-HzText $_ })
-        counting_rule = 'passed + failed + unverified + not_covered + fixture_missing = probes. Only passed is evidence of a working capability; the other four are named so a total cannot be read as a score.'
+        counting_rule = 'Every published status bucket adds to probes. Only passed is evidence of a working capability; all other states remain named so availability, inapplicability or missing evidence cannot be read as a pass.'
     }
 }
 
 function Get-HzCounts {
     param([Parameter(Mandatory)]$Run)
-    $byStatus = @{ passed = 0; failed = 0; unverified = 0; not_covered = 0; fixture_missing = 0 }
+    $byStatus = @{
+        passed = 0; failed = 0; unverified = 0; not_covered = 0; fixture_missing = 0
+        not_assessable = 0; not_applicable = 0; available = 0
+        implemented_not_live_verified = 0
+    }
     foreach ($p in $Run.Probes) { $byStatus[$p.status] = $byStatus[$p.status] + 1 }
     [pscustomobject]$byStatus
 }
@@ -864,8 +967,9 @@ function Complete-HzRun {
     $c = Get-HzCounts $Run
     $bad = $c.failed
     Write-Host ''
-    Write-Host ('  {0} passed, {1} failed, {2} unverified, {3} not covered, {4} fixture missing' -f
-        $c.passed, $c.failed, $c.unverified, $c.not_covered, $c.fixture_missing) `
+    Write-Host ('  {0} passed, {1} failed, {2} unverified, {3} not covered, {4} fixture missing, {5} not assessable, {6} not applicable, {7} available, {8} implemented not live verified' -f
+        $c.passed, $c.failed, $c.unverified, $c.not_covered, $c.fixture_missing,
+        $c.not_assessable, $c.not_applicable, $c.available, $c.implemented_not_live_verified) `
         -ForegroundColor $(if ($bad) { 'Red' } else { 'Green' })
     Write-Host ("  artifact: {0}" -f $path) -ForegroundColor DarkGray
     Write-Host ("  harness:  {0}  committed={1}  matches_commit={2}" -f

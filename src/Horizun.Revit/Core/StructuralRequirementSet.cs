@@ -72,6 +72,49 @@ namespace Horizun.Revit.Core
     }
 
     /// <summary>
+    /// How a stirrup zone rule learns the cover Revit will clamp its array to.
+    ///
+    /// MEASURED (ADR-003 item 7): Revit shifts a hosted array in by the host's
+    /// cover plus the bar's radius at each end, whatever the declaration says. A
+    /// zone rule that does not know the cover declares stations Revit then moves,
+    /// and the apply correctly reports a model that does not carry what was asked
+    /// for. This block is how the zone planner is TOLD the cover - read from the
+    /// host at resolve time, or declared - so that what it predicts is what Revit
+    /// draws. Absent, the zones are laid out in model coordinates exactly as
+    /// declared, which is the behaviour every existing set was written against.
+    /// </summary>
+    public sealed class StructuralStirrupZoneCover
+    {
+        public const string SourceHost = "host";
+        public const string SourceDeclared = "declared";
+        public static readonly string[] Sources = { SourceHost, SourceDeclared };
+
+        public string Source;
+        /// <summary>Required when Source is declared; refused beside host, because two statements of one number disagree.</summary>
+        public double? DistanceMm;
+    }
+
+    /// <summary>
+    /// What a mat does about the openings in its host. Every word here is a
+    /// design decision, which is why none of them is defaulted: a mat rule over a
+    /// host with a hole and no block is refused BY NAME as soon as a bar would
+    /// cross the hole, naming the openings found and the three policies.
+    /// </summary>
+    public sealed class StructuralMatOpenings
+    {
+        public const string PolicyOmit = "omit";
+        public const string PolicyTrim = "trim";
+        public const string PolicyIgnore = "ignore";
+        public static readonly string[] Policies = { PolicyOmit, PolicyTrim, PolicyIgnore };
+
+        public string Policy;
+        /// <summary>An opening whose largest dimension is below this is ignored. Declared, never defaulted.</summary>
+        public double MinimumSizeMm;
+        /// <summary>trim only: how far short of the opening a trimmed bar stops. Refused beside omit or ignore.</summary>
+        public double? ClearanceMm;
+    }
+
+    /// <summary>
     /// Stirrups declared the way a drawing declares them: a profile, a direction,
     /// and zones along it. This is NOT a fourth kind of thing in the model - it
     /// expands into ordinary reinforcement rules, one per zone, so containment,
@@ -97,6 +140,8 @@ namespace Horizun.Revit.Core
         public double EndOffsetMm;
         public bool Symmetric;
         public double? MinimumClearBetweenZonesMm;
+        /// <summary>Null means "no cover block": model coordinates as declared. See StructuralStirrupZoneCover.</summary>
+        public StructuralStirrupZoneCover Cover;
         public List<StirrupZoneRequest> Zones = new List<StirrupZoneRequest>();
         public StructuralTermination Start = new StructuralTermination();
         public StructuralTermination End = new StructuralTermination();
@@ -118,6 +163,8 @@ namespace Horizun.Revit.Core
         /// <summary>Points OUT of the face the mat sits under. Declared, never inferred.</summary>
         public double[] FaceNormalMm;
         public List<MatComponentRequest> Components = new List<MatComponentRequest>();
+        /// <summary>Null means "no openings block": a bar that would cross a hole refuses the rule by name.</summary>
+        public StructuralMatOpenings Openings;
         public string Mark;
         public bool Required = true;
         public JObject Raw;
@@ -149,6 +196,18 @@ namespace Horizun.Revit.Core
         public bool AllowNewShape;
         /// <summary>Which side of the bar the set marches to. Revit's own default is true.</summary>
         public bool BarsOnNormalSide = true;
+        /// <summary>
+        /// Set ONLY by a cover-aware stirrup zone expansion: what the planner
+        /// predicted from the cover, so the apply can hold the model to it. Never
+        /// parsed from a set.
+        /// </summary>
+        public StirrupCoverPrediction CoverPrediction;
+        /// <summary>
+        /// Set ONLY by a mat expansion over a host with openings: the openings the
+        /// bars were planned around, so the apply can check the drawn bars against
+        /// the same regions. Never parsed from a set.
+        /// </summary>
+        public MatOpeningContext OpeningContext;
         public JObject Raw;
     }
 
@@ -219,6 +278,67 @@ namespace Horizun.Revit.Core
         public const string CodeUnits = "units_not_millimetres";
         public const string CodeNotFinite = "value_is_not_a_finite_number";
         public const string CodeNotANumber = "value_is_not_a_number";
+        public const string CodeUnknownKey = "unknown_key";
+
+        /// <summary>
+        /// The exact field the refusal is about, as a path - "stirrup_zone_rules['B1'].zones[0].lenght_mm" -
+        /// so a caller can locate it by machine rather than by reading the message. Null when the
+        /// refusal is about the set as a whole.
+        /// </summary>
+        public string Path;
+
+        /// <summary>
+        /// For an unknown key: every key that IS admitted at that place, in ordinal order, so the
+        /// caller can pick the right one. Empty for every other refusal.
+        /// </summary>
+        public List<string> Allowed = new List<string>();
+
+        /// <summary>
+        /// For an unknown key: the admitted keys that look like what was typed, closest first.
+        /// A misspelling lands here; an invented key does not.
+        /// </summary>
+        public List<string> DidYouMean = new List<string>();
+
+        // EVERY OBJECT SHAPE IN THIS SCHEMA NAMES ITS KEYS, and a key outside the
+        // list refuses the whole set. A misspelt key used to be read as an absent
+        // one: `lenght_mm` on a zone silently became "the rest of the span",
+        // `start_offset` silently became 0, `matt_rules` silently became a set with
+        // no mats - and the plan that came back looked complete. The three sibling
+        // parsers in this folder refuse unknown keys; this one now does too.
+        public static readonly HashSet<string> RootKeys = Keys(
+            "schema", "units", "requirement_set", "tolerances", "bar_types", "hook_types",
+            "cover_rules", "reinforcement_rules", "stirrup_zone_rules", "mat_rules");
+        public static readonly HashSet<string> HeaderKeys = Keys("id", "version", "title");
+        public static readonly HashSet<string> ToleranceKeys = Keys("length_mm", "spacing_mm", "cover_mm", "angle_degrees");
+        public static readonly HashSet<string> BarTypeKeys = Keys("id", "type_name", "nominal_diameter_mm");
+        public static readonly HashSet<string> HookTypeKeys = Keys("id", "type_name", "none");
+        public static readonly HashSet<string> CoverRuleKeys = Keys(
+            "id", "host", "face", "cover_type_name", "distance_mm", "required");
+        public static readonly HashSet<string> HostKeys = Keys("category", "type_name", "element_ids");
+        public static readonly HashSet<string> RebarRuleKeys = Keys(
+            "id", "host", "bar_type", "shape", "allow_new_shape", "style", "curve_mm", "closed", "normal",
+            "layout", "start", "end", "mark", "required");
+        public static readonly HashSet<string> LayoutKeys = Keys(
+            "rule", "number", "spacing_mm", "array_length_mm", "include_first_bar", "include_last_bar",
+            "bars_on_normal_side");
+        public static readonly HashSet<string> TerminationKeys = Keys("hook_type", "orientation");
+        public static readonly HashSet<string> StirrupZoneRuleKeys = Keys(
+            "id", "host", "bar_type", "shape", "allow_new_shape", "style", "profile_mm", "closed", "along",
+            "span_mm", "span", "start_offset_mm", "end_offset_mm", "symmetric",
+            "minimum_clear_between_zones_mm", "cover", "zones", "start", "end", "mark", "required");
+        public static readonly HashSet<string> ZoneKeys = Keys("name", "length_mm", "mark", "layout");
+        public static readonly HashSet<string> ZoneCoverKeys = Keys("source", "distance_mm");
+        public static readonly HashSet<string> MatRuleKeys = Keys(
+            "id", "host", "face_normal", "components", "openings", "mark", "required");
+        public static readonly HashSet<string> MatOpeningsKeys = Keys("policy", "minimum_size_mm", "clearance_mm");
+        public static readonly HashSet<string> MatComponentKeys = Keys(
+            "name", "mark", "shape", "allow_new_shape", "bar_type", "direction", "offset_from_face_mm",
+            "end_cover_mm", "side_cover_mm", "layout");
+
+        private static HashSet<string> Keys(params string[] names)
+        {
+            return new HashSet<string>(names, StringComparer.Ordinal);
+        }
 
         /// <summary>
         /// The largest tolerance this accepts. A tolerance is the width of the band
@@ -229,11 +349,31 @@ namespace Horizun.Revit.Core
         /// </summary>
         public const double MaxToleranceMm = 500.0;
 
+        /// <summary>
+        /// The machine-readable half of a refusal, for the three commands that load a set:
+        /// code, schema, the exact field path when there is one, and for an unknown key
+        /// the admitted alternatives. One shape, so a caller locates the field the same way
+        /// whether it planned, applied or audited.
+        /// </summary>
+        public static JObject RefusalDetail(StructuralRequirementSet set)
+        {
+            var d = new JObject
+            {
+                ["code"] = set.Code,
+                ["schema"] = SchemaName,
+                ["path"] = set.Path
+            };
+            if (set.Allowed.Count > 0) d["allowed"] = new JArray(set.Allowed);
+            if (set.DidYouMean.Count > 0) d["did_you_mean"] = new JArray(set.DidYouMean);
+            return d;
+        }
+
         /// <summary>Parse and validate. Returns a set whose Ok is false rather than throwing.</summary>
         public static StructuralRequirementSet Load(JObject doc)
         {
             var s = new StructuralRequirementSet();
             if (doc == null) return Fail(s, CodeSchema, "the requirement set is not a JSON object.");
+            if (UnknownKey(s, doc, RootKeys, null) != null) return s;
 
             string schema = doc.Value<string>("schema");
             if (!string.Equals(schema, SchemaName, StringComparison.Ordinal))
@@ -253,6 +393,7 @@ namespace Horizun.Revit.Core
 
             JObject header = doc["requirement_set"] as JObject;
             if (header == null) return Fail(s, CodeMissing, "requirement_set is required and must be an object.");
+            if (UnknownKey(s, header, HeaderKeys, "requirement_set") != null) return s;
             s.Id = header.Value<string>("id");
             s.Version = header.Value<string>("version");
             s.Title = header.Value<string>("title");
@@ -262,6 +403,7 @@ namespace Horizun.Revit.Core
             JObject tol = doc["tolerances"] as JObject;
             if (tol != null)
             {
+                if (UnknownKey(s, tol, ToleranceKeys, "tolerances") != null) return s;
                 s.Tolerances.LengthMm = tol.Value<double?>("length_mm") ?? s.Tolerances.LengthMm;
                 s.Tolerances.SpacingMm = tol.Value<double?>("spacing_mm") ?? s.Tolerances.SpacingMm;
                 s.Tolerances.CoverMm = tol.Value<double?>("cover_mm") ?? s.Tolerances.CoverMm;
@@ -297,6 +439,7 @@ namespace Horizun.Revit.Core
                 var o = t as JObject;
                 if (o == null) return Fail(s, CodeSchema, "every entry in bar_types must be an object.");
                 string id = o.Value<string>("id");
+                if (UnknownKey(s, o, BarTypeKeys, "bar_types[" + s.BarTypes.Count + "]") != null) return s;
                 if (string.IsNullOrWhiteSpace(id)) return Fail(s, CodeMissing, "every bar_types entry needs an id.");
                 if (s.BarTypes.ContainsKey(id)) return Fail(s, CodeDuplicateId, "bar_types has two entries with id '" + id + "'.");
                 string typeName = o.Value<string>("type_name");
@@ -323,6 +466,7 @@ namespace Horizun.Revit.Core
                 var o = t as JObject;
                 if (o == null) return Fail(s, CodeSchema, "every entry in hook_types must be an object.");
                 string id = o.Value<string>("id");
+                if (UnknownKey(s, o, HookTypeKeys, "hook_types[" + s.HookTypes.Count + "]") != null) return s;
                 if (string.IsNullOrWhiteSpace(id)) return Fail(s, CodeMissing, "every hook_types entry needs an id.");
                 if (s.HookTypes.ContainsKey(id)) return Fail(s, CodeDuplicateId, "hook_types has two entries with id '" + id + "'.");
                 string typeName = o.Value<string>("type_name");
@@ -340,10 +484,12 @@ namespace Horizun.Revit.Core
                 var o = t as JObject;
                 if (o == null) return Fail(s, CodeSchema, "every entry in cover_rules must be an object.");
                 var r = new StructuralCoverRule { Id = o.Value<string>("id") };
+                if (UnknownKey(s, o, CoverRuleKeys, "cover_rules[" + s.CoverRules.Count + "]") != null) return s;
                 if (string.IsNullOrWhiteSpace(r.Id)) return Fail(s, CodeMissing, "every cover rule needs an id.");
                 if (!coverIds.Add(r.Id)) return Fail(s, CodeDuplicateId, "two cover rules share the id '" + r.Id + "'.");
+                if (UnknownKey(s, o["host"] as JObject, HostKeys, "cover_rules['" + r.Id + "'].host") != null) return s;
                 string err = ReadSelector(o["host"] as JObject, r.Host, "cover_rules['" + r.Id + "'].host");
-                if (err != null) return Fail(s, CodeMissing, err);
+                if (err != null) return Fail(s, CodeMissing, err, "cover_rules['" + r.Id + "'].host");
                 r.Face = (o.Value<string>("face") ?? "common").Trim();
                 if (!string.Equals(r.Face, "common", StringComparison.Ordinal))
                     return Fail(s, CodeUnknownValue,
@@ -372,11 +518,13 @@ namespace Horizun.Revit.Core
                 var o = t as JObject;
                 if (o == null) return Fail(s, CodeSchema, "every entry in reinforcement_rules must be an object.");
                 var r = new StructuralRebarRule { Id = o.Value<string>("id"), Raw = o };
+                if (UnknownKey(s, o, RebarRuleKeys, "reinforcement_rules[" + s.RebarRules.Count + "]") != null) return s;
                 if (string.IsNullOrWhiteSpace(r.Id)) return Fail(s, CodeMissing, "every reinforcement rule needs an id.");
                 if (!ruleIds.Add(r.Id)) return Fail(s, CodeDuplicateId, "two reinforcement rules share the id '" + r.Id + "'.");
 
+                if (UnknownKey(s, o["host"] as JObject, HostKeys, "reinforcement_rules['" + r.Id + "'].host") != null) return s;
                 string err = ReadSelector(o["host"] as JObject, r.Host, "reinforcement_rules['" + r.Id + "'].host");
-                if (err != null) return Fail(s, CodeMissing, err);
+                if (err != null) return Fail(s, CodeMissing, err, "reinforcement_rules['" + r.Id + "'].host");
 
                 r.BarTypeId = o.Value<string>("bar_type");
                 if (string.IsNullOrWhiteSpace(r.BarTypeId))
@@ -435,13 +583,17 @@ namespace Horizun.Revit.Core
                 if (Math.Abs(r.NormalMm[0]) + Math.Abs(r.NormalMm[1]) + Math.Abs(r.NormalMm[2]) < 1e-9)
                     return Fail(s, CodeGeometry, "reinforcement_rules['" + r.Id + "'].normal is the zero vector.");
 
+                string rat = "reinforcement_rules['" + r.Id + "']";
+                if (UnknownKey(s, o["layout"] as JObject, LayoutKeys, rat + ".layout") != null) return s;
                 string lerr = ReadLayout(o["layout"] as JObject, r, s);
-                if (lerr != null) return Fail(s, CodeLayout, lerr);
+                if (lerr != null) return Fail(s, CodeLayout, lerr, rat + ".layout");
 
+                if (UnknownKey(s, o["start"] as JObject, TerminationKeys, rat + ".start") != null) return s;
+                if (UnknownKey(s, o["end"] as JObject, TerminationKeys, rat + ".end") != null) return s;
                 string terr = ReadTermination(o["start"] as JObject, r.Start, s, r.Id, "start");
-                if (terr != null) return Fail(s, CodeUnknownValue, terr);
+                if (terr != null) return Fail(s, CodeUnknownValue, terr, rat + ".start");
                 terr = ReadTermination(o["end"] as JObject, r.End, s, r.Id, "end");
-                if (terr != null) return Fail(s, CodeUnknownValue, terr);
+                if (terr != null) return Fail(s, CodeUnknownValue, terr, rat + ".end");
 
                 r.Mark = o.Value<string>("mark");
                 r.Required = o.Value<bool?>("required") ?? true;
@@ -481,6 +633,7 @@ namespace Horizun.Revit.Core
                 if (o == null) { Fail(s, CodeSchema, "every entry in stirrup_zone_rules must be an object."); return "x"; }
                 var z = new StructuralStirrupZoneRule { Id = o.Value<string>("id"), Raw = o };
                 string at = "stirrup_zone_rules['" + z.Id + "']";
+                if (UnknownKey(s, o, StirrupZoneRuleKeys, "stirrup_zone_rules[" + s.StirrupZoneRules.Count + "]") != null) return "x";
                 if (string.IsNullOrWhiteSpace(z.Id)) { Fail(s, CodeMissing, "every stirrup zone rule needs an id."); return "x"; }
                 if (!ruleIds.Add(z.Id))
                 {
@@ -490,8 +643,9 @@ namespace Horizun.Revit.Core
                     return "x";
                 }
 
+                if (UnknownKey(s, o["host"] as JObject, HostKeys, at + ".host") != null) return "x";
                 string err = ReadSelector(o["host"] as JObject, z.Host, at + ".host");
-                if (err != null) { Fail(s, CodeMissing, err); return "x"; }
+                if (err != null) { Fail(s, CodeMissing, err, at + ".host"); return "x"; }
 
                 z.BarTypeId = o.Value<string>("bar_type");
                 if (string.IsNullOrWhiteSpace(z.BarTypeId)) { Fail(s, CodeMissing, at + " needs bar_type."); return "x"; }
@@ -612,6 +766,60 @@ namespace Horizun.Revit.Core
                     z.MinimumClearBetweenZonesMm = v;
                 }
 
+                // THE COVER BLOCK. Declared in full or absent in full: a source
+                // with no distance, or a distance beside source: host, are two
+                // statements that could disagree, and the parser will not pick.
+                JToken coverTok = o["cover"];
+                if (coverTok != null && coverTok.Type != JTokenType.Null)
+                {
+                    var co = coverTok as JObject;
+                    if (co == null)
+                    {
+                        Fail(s, CodeSchema, at + ".cover must be an object: { source: host | declared, distance_mm }.", at + ".cover");
+                        return "x";
+                    }
+                    if (UnknownKey(s, co, ZoneCoverKeys, at + ".cover") != null) return "x";
+                    var cover = new StructuralStirrupZoneCover { Source = (co.Value<string>("source") ?? "").Trim() };
+                    if (Array.IndexOf(StructuralStirrupZoneCover.Sources, cover.Source) < 0)
+                    {
+                        Fail(s, CodeUnknownValue,
+                            at + ".cover.source must be " + string.Join(" or ", StructuralStirrupZoneCover.Sources) +
+                            " - got " + Show(co.Value<string>("source")) + ". 'host' reads the host's common cover " +
+                            "when the rule is resolved; 'declared' takes distance_mm. Revit clamps a hosted array " +
+                            "to the host's cover plus the bar radius at each end, and the zone planner has to be " +
+                            "told which number to predict with.", at + ".cover.source");
+                        return "x";
+                    }
+                    string derr;
+                    double? dist = ReadNumber(co["distance_mm"], at + ".cover.distance_mm", out derr);
+                    if (derr != null) { Fail(s, CodeNotANumber, derr, at + ".cover.distance_mm"); return "x"; }
+                    if (cover.Source == StructuralStirrupZoneCover.SourceDeclared)
+                    {
+                        if (!dist.HasValue)
+                        {
+                            Fail(s, CodeMissing,
+                                at + ".cover declares source: declared and no distance_mm. The distance is the " +
+                                "whole declaration; nothing here supplies one.", at + ".cover.distance_mm");
+                            return "x";
+                        }
+                        if (dist.Value < 0)
+                        {
+                            Fail(s, CodeUnknownValue, at + ".cover.distance_mm must be zero or more.", at + ".cover.distance_mm");
+                            return "x";
+                        }
+                        cover.DistanceMm = dist;
+                    }
+                    else if (dist.HasValue)
+                    {
+                        Fail(s, CodeUnknownValue,
+                            at + ".cover declares source: host AND a distance_mm. The host's cover is read from " +
+                            "the model when the rule is resolved, and a number beside it could disagree with " +
+                            "what is read; state one or the other.", at + ".cover.distance_mm");
+                        return "x";
+                    }
+                    z.Cover = cover;
+                }
+
                 var zonesArr = o["zones"] as JArray;
                 if (zonesArr == null || zonesArr.Count == 0)
                 {
@@ -624,6 +832,9 @@ namespace Horizun.Revit.Core
                 {
                     var zo = zt as JObject;
                     if (zo == null) { Fail(s, CodeSchema, at + ".zones must contain objects."); return "x"; }
+                    string zat = at + ".zones[" + z.Zones.Count + "]";
+                    if (UnknownKey(s, zo, ZoneKeys, zat) != null) return "x";
+                    if (UnknownKey(s, zo["layout"] as JObject, LayoutKeys, zat + ".layout") != null) return "x";
                     var req = new StirrupZoneRequest { Name = zo.Value<string>("name"), Mark = zo.Value<string>("mark") };
                     JToken len = zo["length_mm"];
                     if (len != null && len.Type != JTokenType.Null)
@@ -656,10 +867,12 @@ namespace Horizun.Revit.Core
                     z.Zones.Add(req);
                 }
 
+                if (UnknownKey(s, o["start"] as JObject, TerminationKeys, at + ".start") != null) return "x";
+                if (UnknownKey(s, o["end"] as JObject, TerminationKeys, at + ".end") != null) return "x";
                 string terr = ReadTermination(o["start"] as JObject, z.Start, s, z.Id, "start");
-                if (terr != null) { Fail(s, CodeUnknownValue, terr); return "x"; }
+                if (terr != null) { Fail(s, CodeUnknownValue, terr, at + ".start"); return "x"; }
                 terr = ReadTermination(o["end"] as JObject, z.End, s, z.Id, "end");
-                if (terr != null) { Fail(s, CodeUnknownValue, terr); return "x"; }
+                if (terr != null) { Fail(s, CodeUnknownValue, terr, at + ".end"); return "x"; }
 
                 z.Mark = o.Value<string>("mark");
                 z.Required = o.Value<bool?>("required") ?? true;
@@ -677,6 +890,7 @@ namespace Horizun.Revit.Core
                 if (o == null) { Fail(s, CodeSchema, "every entry in mat_rules must be an object."); return "x"; }
                 var m = new StructuralMatRule { Id = o.Value<string>("id"), Raw = o };
                 string at = "mat_rules['" + m.Id + "']";
+                if (UnknownKey(s, o, MatRuleKeys, "mat_rules[" + s.MatRules.Count + "]") != null) return "x";
                 if (string.IsNullOrWhiteSpace(m.Id)) { Fail(s, CodeMissing, "every mat rule needs an id."); return "x"; }
                 if (!ruleIds.Add(m.Id))
                 {
@@ -686,8 +900,9 @@ namespace Horizun.Revit.Core
                     return "x";
                 }
 
+                if (UnknownKey(s, o["host"] as JObject, HostKeys, at + ".host") != null) return "x";
                 string err = ReadSelector(o["host"] as JObject, m.Host, at + ".host");
-                if (err != null) { Fail(s, CodeMissing, err); return "x"; }
+                if (err != null) { Fail(s, CodeMissing, err, at + ".host"); return "x"; }
 
                 string nerr = ReadDirection(o["face_normal"] as JArray, at + ".face_normal", out m.FaceNormalMm);
                 if (nerr != null)
@@ -702,6 +917,78 @@ namespace Horizun.Revit.Core
                 m.Mark = o.Value<string>("mark");
                 m.Required = o.Value<bool?>("required") ?? true;
 
+                // THE OPENINGS BLOCK. Three declared numbers and words, none of
+                // them defaulted: which policy, below what size an opening is
+                // ignored, and how far a trimmed bar stops from the edge. A value a
+                // policy would not use is refused, on the same principle as a layout
+                // that names a spacing it does not use.
+                JToken opTok = o["openings"];
+                if (opTok != null && opTok.Type != JTokenType.Null)
+                {
+                    var oo = opTok as JObject;
+                    if (oo == null)
+                    {
+                        Fail(s, CodeSchema, at + ".openings must be an object: { policy, minimum_size_mm, clearance_mm }.", at + ".openings");
+                        return "x";
+                    }
+                    if (UnknownKey(s, oo, MatOpeningsKeys, at + ".openings") != null) return "x";
+                    var op = new StructuralMatOpenings { Policy = (oo.Value<string>("policy") ?? "").Trim() };
+                    if (Array.IndexOf(StructuralMatOpenings.Policies, op.Policy) < 0)
+                    {
+                        Fail(s, CodeUnknownValue,
+                            at + ".openings.policy must be " + string.Join(", ", StructuralMatOpenings.Policies) +
+                            " - got " + Show(oo.Value<string>("policy")) + ". omit drops every bar that would " +
+                            "cross an opening; trim stops the bar short of it on each side; ignore builds the " +
+                            "bars as declared and reports the crossings.", at + ".openings.policy");
+                        return "x";
+                    }
+                    string oerr;
+                    double? min = ReadNumber(oo["minimum_size_mm"], at + ".openings.minimum_size_mm", out oerr);
+                    if (oerr != null) { Fail(s, CodeNotANumber, oerr, at + ".openings.minimum_size_mm"); return "x"; }
+                    if (!min.HasValue)
+                    {
+                        Fail(s, CodeMissing,
+                            at + ".openings needs minimum_size_mm: openings whose largest dimension is below it " +
+                            "are ignored. It is declared, not defaulted - a sleeve a bar may run past and a " +
+                            "shaft it may not are the same shape at different sizes, and where the line sits " +
+                            "is a decision.", at + ".openings.minimum_size_mm");
+                        return "x";
+                    }
+                    if (min.Value < 0)
+                    {
+                        Fail(s, CodeUnknownValue, at + ".openings.minimum_size_mm must be zero or more.", at + ".openings.minimum_size_mm");
+                        return "x";
+                    }
+                    op.MinimumSizeMm = min.Value;
+                    double? clear = ReadNumber(oo["clearance_mm"], at + ".openings.clearance_mm", out oerr);
+                    if (oerr != null) { Fail(s, CodeNotANumber, oerr, at + ".openings.clearance_mm"); return "x"; }
+                    if (op.Policy == StructuralMatOpenings.PolicyTrim)
+                    {
+                        if (!clear.HasValue)
+                        {
+                            Fail(s, CodeMissing,
+                                at + ".openings declares policy: trim and no clearance_mm - how far short of the " +
+                                "opening a trimmed bar stops. Nothing here supplies one.", at + ".openings.clearance_mm");
+                            return "x";
+                        }
+                        if (clear.Value < 0)
+                        {
+                            Fail(s, CodeUnknownValue, at + ".openings.clearance_mm must be zero or more.", at + ".openings.clearance_mm");
+                            return "x";
+                        }
+                        op.ClearanceMm = clear;
+                    }
+                    else if (clear.HasValue)
+                    {
+                        Fail(s, CodeUnknownValue,
+                            at + ".openings declares policy: " + op.Policy + " and a clearance_mm beside it. Only " +
+                            "trim stops a bar short of an opening, so the number would be ignored - and somebody " +
+                            "wrote it meaning something.", at + ".openings.clearance_mm");
+                        return "x";
+                    }
+                    m.Openings = op;
+                }
+
                 var comps = o["components"] as JArray;
                 if (comps == null || comps.Count == 0)
                 {
@@ -714,6 +1001,9 @@ namespace Horizun.Revit.Core
                 {
                     var co = ct as JObject;
                     if (co == null) { Fail(s, CodeSchema, at + ".components must contain objects."); return "x"; }
+                    string cpath = at + ".components[" + m.Components.Count + "]";
+                    if (UnknownKey(s, co, MatComponentKeys, cpath) != null) return "x";
+                    if (UnknownKey(s, co["layout"] as JObject, LayoutKeys, cpath + ".layout") != null) return "x";
                     var c = new MatComponentRequest
                     {
                         Name = co.Value<string>("name"),
@@ -770,6 +1060,69 @@ namespace Horizun.Revit.Core
                 s.MatRules.Add(m);
             }
             return null;
+        }
+
+        /// <summary>
+        /// The first key of `o` that `known` does not admit, or null. When one is found the
+        /// set is failed with the exact path, the admitted keys and the closest matches, and
+        /// the failed set is returned so the caller can `return`.
+        /// </summary>
+        private static StructuralRequirementSet UnknownKey(StructuralRequirementSet s, JObject o,
+                                                           HashSet<string> known, string at)
+        {
+            if (o == null) return null;
+            foreach (JProperty prop in o.Properties())
+            {
+                if (known.Contains(prop.Name)) continue;
+                string path = string.IsNullOrEmpty(at) ? prop.Name : at + "." + prop.Name;
+                var allowed = known.OrderBy(x => x, StringComparer.Ordinal).ToList();
+                var near = allowed
+                    .Select(k => new { k, d = EditDistance(prop.Name, k) })
+                    .Where(x => x.d <= Math.Max(2, prop.Name.Length / 3) || Related(prop.Name, x.k))
+                    .OrderBy(x => x.d).ThenBy(x => x.k, StringComparer.Ordinal)
+                    .Select(x => x.k).ToList();
+                string where = string.IsNullOrEmpty(at) ? "the root of the set" : at;
+                Fail(s, CodeUnknownKey,
+                     "'" + prop.Name + "' is not a key this schema admits at " + where + "." +
+                     (near.Count > 0 ? " Did you mean " + string.Join(" or ", near.Select(k => "'" + k + "'")) + "?" : "") +
+                     " Admitted here: " + string.Join(", ", allowed) + ". An unknown key is refused rather " +
+                     "than skipped: read as absent it would silently become a default, and the plan would " +
+                     "look complete while carrying less than was asked for.",
+                     path);
+                s.Allowed = allowed;
+                s.DidYouMean = near;
+                return s;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// A key that is the typed one with a unit suffix added or dropped - `spacing`
+        /// for `spacing_mm`, `curve` for `curve_mm` - is a near miss even when the edit
+        /// distance says otherwise.
+        /// </summary>
+        private static bool Related(string typed, string known)
+        {
+            string a = (typed ?? "").ToLowerInvariant(), b = (known ?? "").ToLowerInvariant();
+            if (a.Length < 3 || b.Length < 3) return false;
+            return b.StartsWith(a + "_", StringComparison.Ordinal) || a.StartsWith(b + "_", StringComparison.Ordinal);
+        }
+
+        /// <summary>Levenshtein distance, case-insensitive, for the did-you-mean list only.</summary>
+        internal static int EditDistance(string a, string b)
+        {
+            a = (a ?? "").ToLowerInvariant();
+            b = (b ?? "").ToLowerInvariant();
+            var d = new int[a.Length + 1, b.Length + 1];
+            for (int i = 0; i <= a.Length; i++) d[i, 0] = i;
+            for (int j = 0; j <= b.Length; j++) d[0, j] = j;
+            for (int i = 1; i <= a.Length; i++)
+                for (int j = 1; j <= b.Length; j++)
+                {
+                    int cost = a[i - 1] == b[j - 1] ? 0 : 1;
+                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
+                }
+            return d[a.Length, b.Length];
         }
 
         /// <summary>A number that really is one, or a refusal naming where it was.</summary>
@@ -1044,8 +1397,15 @@ namespace Horizun.Revit.Core
 
         private static StructuralRequirementSet Fail(StructuralRequirementSet s, string code, string message)
         {
+            return Fail(s, code, message, null);
+        }
+
+        private static StructuralRequirementSet Fail(StructuralRequirementSet s, string code, string message,
+                                                     string path)
+        {
             s.Code = code;
             s.Error = message;
+            s.Path = path;
             // A REFUSED SET CARRIES NO RULES. A caller that reads RebarRules without
             // checking Ok must not find a plausible half of somebody's reinforcement.
             s.CoverRules.Clear();

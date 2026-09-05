@@ -3,7 +3,7 @@
 //
 // TOOL PACKS: which tools a session advertises, chosen by the user.
 //
-// Sixty-two tools in one tools/list is a real cost - every client pays for the
+// Every tool in one tools/list is a real cost - every client pays for the
 // schemas in context whether or not the session will ever pack a sheet - and a
 // modeller, an auditor and a Power BI pipeline are three different sessions
 // with three different needs. A pack is a named subset; the user selects packs
@@ -121,13 +121,14 @@ namespace Horizun.Revit.Core
                 },
                 ["audit"] = new[]
                 {
-                    "horizun_audit_model", "horizun_model_scan", "horizun_clash", "horizun_coordination",
-                    "horizun_query_planimetry", "horizun_audit_planimetry", "horizun_capture_view", "horizun_audit_reinforcement"
+                    "horizun_audit_model", "horizun_apply_corrections", "horizun_model_scan", "horizun_clash",
+                    "horizun_coordination", "horizun_query_planimetry", "horizun_audit_planimetry",
+                    "horizun_capture_view", "horizun_audit_reinforcement"
                 },
                 ["coordination"] = new[]
                 {
                     "horizun_clash", "horizun_coordination", "horizun_acc_upload_status", "horizun_file_info",
-                    "horizun_quantities", "horizun_manage_links"
+                    "horizun_quantities", "horizun_manage_links", "horizun_budget_compare"
                 },
                 ["schedules"] = new[]
                 {
@@ -142,11 +143,12 @@ namespace Horizun.Revit.Core
                 ["interoperability"] = new[]
                 {
                     "horizun_export", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
-                    "horizun_manage_links"
+                    "horizun_manage_links", "horizun_budget_compare"
                 },
                 ["powerbi"] = new[]
                 {
-                    "horizun_power_bi_push", "horizun_excel_write_rows", "horizun_excel_read_rows"
+                    "horizun_power_bi_push", "horizun_excel_write_rows", "horizun_excel_read_rows",
+                    "horizun_budget_compare"
                 },
                 ["administration"] = new[]
                 {

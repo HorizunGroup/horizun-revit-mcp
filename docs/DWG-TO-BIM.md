@@ -359,6 +359,94 @@ says one file is a re-issue of another, so it is a statement you make — and
 without it, an update would report your whole existing conversion as untouched
 and the new drawing as entirely new work.
 
+### Which placement, and has it moved
+
+A drawing is not one thing in a model: it is a **file** (bytes on disk, or none
+for an embedded import) **placed** one or more times, each placement its own
+`ImportInstance` with its own transform. Provenance v2 keeps those three
+identities apart, and the update is scoped by **placement**, never by file:
+
+- `placement.id` is the ImportInstance UniqueId. An update for one placement
+  claims only elements stamped with that id (or with a placement you name in
+  `supersedes_placement_ids`). Two links of one file share a hash and nothing
+  else; the other placement's elements are reported under `scope.other_placement`
+  and are never claimed, orphaned or re-stamped.
+- `source.identity.mode` says which identity the run is using: `file_hash` when
+  the file is on disk; `embedded_placement` when there is no external file (then
+  `source_hash: unavailable` — Revit keeps no bytes it will hand back — and
+  identity is the placement id plus its transform); `source_file_missing` when a
+  path is recorded and nothing is there (the run plans against the geometry Revit
+  last loaded, and says so).
+- When the run can claim **nothing**, it refuses with `scope_unidentified`,
+  naming what it looked for and what exists, instead of reporting zero changes
+  about a conversion it never looked at. `supersedes_unstated` still fires when
+  other files are stamped and no lineage was stated.
+- A placement that no longer sits where it sat when its elements were built is
+  refused with `placement_moved` and the delta (`delta_mm`, `rotation_degrees`).
+  Nothing is re-matched as if the drawing had changed. If the move was
+  deliberate, pass `accept_placement_move: true` to **both** the plan and the
+  apply: the plan is re-derived under the new transform — an element still on
+  its built line follows the drawing (`set_curve`, classified `moved`), one
+  already where the drawing now puts it is left and re-stamped, one a person
+  also moved is `conflict`. The person-moved / drawing-moved distinction is kept
+  throughout.
+- `horizun_apply_cad_update` replays a repeated `idempotency_key` with the same
+  actions (`replayed: true`, nothing runs) and refuses the same key over
+  different actions. A run that ended `partial` is remembered against its
+  placement for the session, and the next apply there carries it as
+  `previous_partial`.
+
+**Provenance v1 → v2.** Elements stamped by 1.1.x–1.2.0 carry no placement id.
+They are still read (`provenance_version: "v1"`), and the planner treats them
+explicitly: when the model holds at most one placement of their file — or their
+exact v1 source fingerprint matches this placement — they are claimed and listed
+under `migrated_from_v1`; the apply then rewrites those records as v2 without
+touching a single element's geometry, and reports the count (`migrated_from_v1`,
+inside `provenance_rewritten`). Plan the same drawing again and there is nothing
+left to migrate.
+
+When two or more placements of that file exist, the v1 record cannot say which
+one built it, and the whole run is **refused** with `ambiguous_v1` naming every
+placement that could have — before the claimable count is consulted, before the
+placement transform is compared, and before a single action is derived. The
+refusal is unconditional: it fires even when other elements of that placement
+are perfectly claimable. It has to, because out-of-scope is not the same as
+safe — the drawing entity behind an excluded element matches nothing in scope
+and comes back as a `create`, so a plan that carried on would put a second wall
+on top of the one already standing. The refusal also says explicitly not to
+reach for `horizun_plan_from_cad`, which against a model that already holds the
+conversion builds the whole drawing again. Settle the ownership instead: delete
+or repoint the placement that did not build those elements so exactly one
+remains, or delete the elements and convert them again under one placement.
+
+**How the migration is proved, and what the proof is worth.** The migration can
+only be exercised against a record that genuinely lacks a placement id, and this
+build stamps v2 on everything it touches — so on any machine where the previous
+release is not installed there is nothing to migrate. Step 13 of
+`scripts/live/verify-dwg-incremental.ps1` therefore *converts* with this build
+and then **demotes** the result through `CadProvenanceV1Fixture`, which writes
+the retired v1 schema built from `CadProvenanceV1Shape`: the v1 definition as it
+stood in `CadProvenanceStore` before provenance v2 (`git show
+c56a1be^`) — the same GUID, schema name, vendor id, access levels and
+documentation, the same fifteen fields in the same order with the same types and
+the same single `Number` unit spec, and with the five fields v2 added simply
+absent. Nothing about the shape is invented, `CadProvenanceV1ShapeTests` pins it
+against the field constants still standing in `CadProvenanceStore.cs`, and every
+other value in the record is one this build's own converter wrote.
+
+That establishes that **this build's reader, scope rules, planner and apply
+handle a record of v1's shape**. It does **not** establish that a 1.1.x *binary*
+wrote that shape: no old binary is run, and no fixture can make that claim. The
+evidence for the shape itself is documentary — the definition in this
+repository's own history, cited above.
+
+The fixture is not part of the product. No command resolves it, no tool exposes
+it, and a Core test fails the build if any file under `Commands/` so much as
+names it; the harness reaches it by reflection through
+`horizun_execute_python`, which the machine owner has to have granted first. On
+a machine that has not, step 13 records `fixture_missing` — not passed, and not
+a product failure.
+
 ---
 
 ## Proving it on your own machine
@@ -374,9 +462,9 @@ Eighteen harnesses in a fixed order, preceded by an identity step and followed b
 roll-up, and a refusal to add up results that do not come from the same build. The
 roll-up is then re-checked by arithmetic rather than by reading: every declared count
 recomputed from that artifact's own probes, the totals recomputed as the sum of the
-artifacts, and every harness blob compared against the file committed at that head. `docs/DWG-PROGRAM-STATE.json` is generated
-from that roll-up by `scripts/generate-dwg-state.ps1` — every number in it was
-measured by something else.
+artifacts, and every harness blob compared against the file committed at that head. `docs/DWG-PROGRAM-STATE.json` (a private ledger, kept out of the public
+repository) is generated from that roll-up by `scripts/generate-dwg-state.ps1` —
+every number in it was measured by something else.
 
 The order runs from the narrowest claim to the widest, so the first failure is
 the most specific one. `redteam` is last on purpose: it claims nothing here can
@@ -403,14 +491,26 @@ partial deployment and no flag that permits one.
 requirement-set schema gained rule keys — so the hash moved and an add-in left on
 an older build will refuse. That is the guard working. Update both.
 
-**It changed no stored state.** The provenance written into elements is the same
-schema it was: a model converted before this phase audits and updates against it
-afterwards with no migration, and a model converted after it is readable by the
-same commands. Nothing here rewrites what is already in a document.
+**This build changes stored state, by migration.** Provenance moved from v1 to
+v2 — a new Extensible Storage GUID carrying the placement id, its transform and
+the source path beside the fields v1 had. Revit will not let a schema gain a
+field once a document holds it, so the v1 GUID is never touched and stays
+readable forever: a model converted by 1.1.x–1.2.0 audits and plans against
+this build with no action on your part, its records reported as
+`provenance_version: "v1"`. What is rewritten, and only when you apply an
+update that claims them, is the record on each claimed v1 element — it becomes
+v2, the v1 entity is removed from that element after the v2 write lands, and
+the apply reports the count as `migrated_from_v1`. Nothing else in a document
+is rewritten, and a v1 element two placements could have built is never
+rewritten at all — the whole run is refused instead, before anything is
+modified.
 
-**What a rollback costs.** Reverting the add-in to a build before this phase
-leaves elements that carry provenance it can still read — the record did not
-change — but a requirement set using `naming`, `parameters`, `allow_structural`,
+**What a rollback costs.** Reverting the add-in to a build before this one
+leaves v1 records readable and every v2 record **invisible**: the older build
+looks for the v1 GUID only, so elements stamped or migrated by this build are
+reported as `bim_without_source` by its audit and rebuilt by its update. That
+is loud rather than silent, and it is the reason to migrate a model once and
+not go back. A requirement set using `naming`, `parameters`, `allow_structural`,
 `base_level`/`top_level`, or `produces: shaft | room_separator | opening` is
 refused by the older loader with the unknown key named. That is a refusal rather
 than a silent drop, which is the property worth having: an old build cannot

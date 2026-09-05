@@ -331,6 +331,36 @@ namespace Horizun.Revit.Core
             return "cadsrc:" + CadIdentity.Sha256Hex(basis).Substring(0, 24);
         }
 
+        /// <summary>
+        /// The Revit-free view of a placement: the three identities kept APART
+        /// (file, placement, transform) that provenance v2 records and the scope
+        /// rules decide on. The fingerprint above is kept beside them so a v1
+        /// record can still be matched exactly.
+        /// </summary>
+        public static CadPlacement Placement(CadInstanceFacts f)
+        {
+            if (f == null) return null;
+            bool missing = f.FileError != null && !string.IsNullOrWhiteSpace(f.ExternalPath) &&
+                           f.FileSha256 == null &&
+                           f.FileError.IndexOf("not on this machine", StringComparison.OrdinalIgnoreCase) >= 0;
+            return new CadPlacement
+            {
+                ElementId = f.ElementId,
+                PlacementId = f.UniqueId,
+                FileSha256 = f.FileSha256,
+                ExternalPath = string.IsNullOrWhiteSpace(f.ExternalPath) ? null : f.ExternalPath,
+                FileMissing = missing,
+                FileError = f.FileError,
+                IsLinked = f.IsLinked,
+                SourceFingerprint = SourceFingerprint(f),
+                TransformFingerprint = f.TransformFingerprint,
+                OriginMm = f.TransformOrigin,
+                BasisX = f.TransformBasisX,
+                BasisY = f.TransformBasisY,
+                Scale = f.TransformScale ?? 1.0
+            };
+        }
+
         // ---- small safe readers ---------------------------------------------
         private static T Safe<T>(Func<T> f, T fallback = default(T))
         {

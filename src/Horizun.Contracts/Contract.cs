@@ -44,6 +44,36 @@ namespace Horizun.Contracts
         ExternalSideEffect,
 
         /// <summary>
+        /// READS BY DEFAULT, AND REACHES OUTSIDE THE MODEL ONLY WHEN THE CALL ASKS IT TO.
+        ///
+        /// horizun_budget_compare is the case this exists for. Its whole surface is an
+        /// arithmetic comparison of a takeoff against a workbook, and with no `outputs` it
+        /// creates nothing, sends nothing and asks for no credential. Declared
+        /// ExternalSideEffect - which is what it CAN do - it was hidden from read_only and
+        /// safe_write entirely, so a machine allowed to read a budget was refused the
+        /// reading because the same tool can also write one.
+        ///
+        /// Downgrading the whole tool would have been the other half of that mistake: the
+        /// destinations really are external, and full_write is really the rung that
+        /// authorizes them. So the guarantee is split in two, and BOTH halves are required:
+        ///
+        ///   * ADMISSION is by this effect - every rung admits it, because the call that
+        ///     needs no rung is the common one.
+        ///   * THE DESTINATION is enforced PER CALL inside the handler, through
+        ///     Settings.AllowsExternalSideEffect, which refuses a declared output under a
+        ///     profile that does not authorize external writes and names that profile.
+        ///
+        /// The MCP annotations still describe the WORST case (openWorldHint, and
+        /// destructiveHint where the tool declares it): a client deciding whether to ask a
+        /// person must be told what the tool can do, not what this call happens to do.
+        ///
+        /// A tool classified here that does not enforce its own destinations is a hole,
+        /// not a shortcut. ExternalDestinationGateTests asserts the enforcement exists for
+        /// every contract carrying this effect.
+        /// </summary>
+        ExternalSideEffectOnRequest,
+
+        /// <summary>
         /// Steers the host without changing anything that outlives the session: which
         /// Revit the bridge talks to, what is selected, which view is active. No model
         /// change, no document session, no file written.
@@ -146,6 +176,32 @@ namespace Horizun.Contracts
         /// </summary>
         public const int MaxScriptTextChars = 256 * 1024;
 
+        /// <summary>
+        /// THE PREVENTION GATE, as an argument on the operations this bridge owns.
+        /// One schema, spliced into horizun_save_document and horizun_export, so the
+        /// two cannot drift into accepting different grammars for one decision.
+        /// </summary>
+        private const string RequireGateSchema = @"{ ""type"": ""object"", ""required"": [""profile""],
+      ""description"": ""OPTIONAL PREVENTION GATE. Omit it and this call behaves exactly as before. With it, horizun_audit_model's checks run on the document AS IT STANDS, the profile is evaluated with the audit's own evaluator (the same rows the audit would return for the same requirement_set), and the decision is recorded in the reply as prevention.decision: allowed, blocked, overridden or not_assessable. blocked and not_assessable REFUSE BEFORE THE FILE IS TOUCHED. not_assessable is not a fail: nothing failed, but part of the measurement did not happen (a check that died, an element that could not be read, a closed workset, a requirement over a part nobody can measure) and the reason leads with which. Incomplete coverage may block and may never allow. Every gated reply also carries prevention.not_interceptable: Revit's own Save, Save As, Synchronize with Central and Export menu are NOT intercepted by this add-in, by choice - see docs/evidence/prevention-operation-matrix.md."",
+      ""properties"": {
+        ""profile"": { ""type"": ""object"", ""required"": [""name"", ""version"", ""requirements""],
+          ""description"": ""The standard, as an argument: nothing is compiled in. requirements uses horizun_audit_model's requirement_set grammar; tolerances, readiness_roles, workset_rules and warning_profile configure the checks exactly as they do on the audit."",
+          ""properties"": {
+            ""name"": { ""type"": ""string"" }, ""version"": { ""type"": ""string"", ""description"": ""An override is signed against this."" },
+            ""requirements"": { ""type"": ""object"" }, ""tolerances"": { ""type"": ""object"" },
+            ""readiness_roles"": { ""type"": ""array"" }, ""workset_rules"": { ""type"": ""object"" }, ""warning_profile"": { ""type"": ""object"" }
+          }, ""additionalProperties"": false },
+        ""document_fingerprint"": { ""type"": ""string"", ""description"": ""Optional. The document_fingerprint an audit reported; the gate refuses (not_assessable) if the active document is another one."" },
+        ""finding_set_fingerprint"": { ""type"": ""string"", ""description"": ""Optional. The finding_set_fingerprint of an audit taken in THIS session. The checks are re-run at that audit's top; if they no longer reproduce it the model moved since the audit and the gate refuses (not_assessable) naming both fingerprints."" },
+        ""now_utc"": { ""type"": ""string"", ""description"": ""OPTIONAL, and NOT the authority on the time. On a gated operation an override's expires_utc is judged against THIS MACHINE'S UTC clock, always - a caller cannot send a convenient now_utc to walk past an expired override. Sending one adds a constraint rather than replacing the clock: it must be a real UTC timestamp, it must agree with the machine clock to within 300 seconds (further apart and the gate refuses not_assessable, naming the skew and the tolerance), and where both are valid the LATER of the two is used, so it can bring an expiry forward and never push one back. The reply reports what was used in prevention.clock. The clock-free comparison, where now_utc IS the reference, remains on horizun_audit_model's prevention_gate - which decides nothing and writes nothing."" },
+        ""override"": { ""type"": ""object"", ""description"": ""A SIGNED STATEMENT accepting named failing findings: who, why, when, which operation, which profile version, and exactly what is accepted - by check name, requirement name or finding_id. It covers only what it names; an override that leaves one failing row uncovered blocks."",
+          ""properties"": {
+            ""identity"": { ""type"": ""string"" }, ""reason"": { ""type"": ""string"" }, ""timestamp_utc"": { ""type"": ""string"" },
+            ""operation"": { ""type"": ""string"" }, ""profile_version"": { ""type"": ""string"" }, ""evidence"": { ""type"": ""string"" },
+            ""expires_utc"": { ""type"": ""string"" }, ""findings_ignored"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } }
+          }, ""additionalProperties"": false }
+      }, ""additionalProperties"": false }";
+
         public static readonly List<CommandContract> All = Annotate(new List<CommandContract>{
             new CommandContract
             {
@@ -185,12 +241,16 @@ namespace Horizun.Contracts
                     "disk before and after and both are reported, because Document.Save() returns void and " +
                     "'it did not throw' is not evidence the file changed. Refuses a document that has never been " +
                     "saved (it will not invent a path) and never calls SaveAs. On a workshared model this saves " +
-                    "the LOCAL file only - it is NOT a synchronize with central, and the response says so.",
+                    "the LOCAL file only - it is NOT a synchronize with central, and the response says so. " +
+                    "Optional require_gate: the model is re-audited against a declared profile before the save " +
+                    "and a blocked or not-assessable decision refuses with the file untouched; Revit's own Save " +
+                    "and Synchronize with Central are not intercepted, and the reply says so.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the document to change. It must be the document ACTIVE in Revit; this never switches documents for you. Aliases accepted for compatibility: expected_document, target_document_title."" },
-    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD. If given, the save is refused unless the ACTIVE document's title matches it. Cheap insurance against saving the wrong open model."" }
+    ""expected_document"": { ""type"": ""string"", ""description"": ""GUARD. If given, the save is refused unless the ACTIVE document's title matches it. Cheap insurance against saving the wrong open model."" },
+    ""require_gate"": " + RequireGateSchema + @"
   },
   ""additionalProperties"": false
 }")
@@ -815,7 +875,8 @@ namespace Horizun.Contracts
     ""fbx_lod"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 15, ""default"": 8 },
     ""fbx_stop_on_error"": { ""type"": ""boolean"", ""default"": true },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
+    ""require_gate"": " + RequireGateSchema + @"
   }, ""additionalProperties"": false
 }")
             },
@@ -1071,7 +1132,10 @@ namespace Horizun.Contracts
     ""provenance"": { ""type"": ""object"", ""description"": ""The provenance block from the same reply: which drawing, which rules, which plan. Without it the elements this creates remember nothing."" },
     ""candidate_index"": { ""type"": ""array"", ""description"": ""The candidate_index from the same reply: WHICH drawing entity each element stands for. An action with no entry leaves its elements ANONYMOUS, and the reply says so per element."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Default TRUE. Rehearses every action, writes nothing, and returns a token per action key."" },
-    ""idempotency_key"": { ""type"": ""string"" }
+    ""accept_placement_move"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""Required TRUE when the plan was re-derived under a placement that MOVED (its provenance.placement_move_accepted is true): applying it re-shapes elements to follow the drawing, and the write is where that consent is said again."" },
+    ""idempotency_key"": { ""type"": ""string"",
+      ""description"": ""The same key with the SAME actions replays the recorded reply (replayed: true) and runs nothing; the same key with different actions is refused. Per Revit session, bounded."" }
   },
   ""additionalProperties"": false
 }")
@@ -1106,7 +1170,11 @@ namespace Horizun.Contracts
       ""description"": ""The storey for elements revision B ADDS. Pass the one the first conversion used, or the new walls land on a different floor from the old ones."" },
     ""level_id"": { ""type"": ""integer"", ""description"": ""The same choice by element id."" },
     ""supersedes_sha256"": { ""type"": ""array"", ""maxItems"": 32, ""items"": { ""type"": ""string"" },
-      ""description"": ""The SHA-256 of the drawing file(s) this revision replaces - read them from the audit or from an earlier plan's source.file_sha256. A new revision is a DIFFERENT FILE, so the current hash alone cannot say which elements belong to this conversion; without this the command REFUSES rather than reporting your whole existing model as untouched and this drawing as new work. Nothing in a DWG says one file is a re-issue of another: it is a statement you make."" },
+      ""description"": ""The SHA-256 of the drawing file(s) this revision replaces - read them from the audit or from an earlier plan's source.file_sha256. A new revision is a DIFFERENT FILE, so the current hash alone cannot say which elements belong to this conversion; without this the command REFUSES rather than reporting your whole existing model as untouched and this drawing as new work. Nothing in a DWG says one file is a re-issue of another: it is a statement you make. A file placed more than once cannot be named by its hash - use supersedes_placement_ids."" },
+    ""supersedes_placement_ids"": { ""type"": ""array"", ""maxItems"": 32, ""items"": { ""type"": ""string"" },
+      ""description"": ""The placement id(s) - ImportInstance UniqueIds, reported as placement.id by an earlier plan - this revision replaces. Scope is per PLACEMENT: two links of one file share a hash and nothing else, and an update for one never claims, orphans or re-stamps the other's elements."" },
+    ""accept_placement_move"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""When the placement no longer sits where it sat when its elements were built, the plan REFUSES with placement_moved and the delta. Send true only if the move was deliberate: the plan is then re-derived under the new transform - elements still on their built line follow the drawing (set_curve), elements a person also moved are conflict."" },
     ""reject_pairings"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""string"" },
       ""description"": ""candidate_ids you have decided are genuinely NEW, not an existing element moved. A candidate with an offered pairing is HELD out of the actions by default, because building it unattended puts a second wall beside the first; rejecting the pairing releases it."" },
     ""accept_pairings"": { ""type"": ""array"", ""maxItems"": 500,
@@ -2016,14 +2084,51 @@ namespace Horizun.Contracts
                     "asynchronous queue and return a persistent job_id immediately. The submission is durably " +
                     "idempotent, queued work alternates fairly with interactive calls, permissions are checked " +
                     "again when execution begins, and horizun_job_status exposes queued/running/result/failure or " +
-                    "process-death state without waiting for Revit.",
+                    "process-death state without waiting for Revit. " +
+                    "OR AN ORDERED SEQUENCE: pass 'sequence' ({key, tool, arguments} entries) or 'models' (a " +
+                    "read-only sweep, expanded into open/audit/close per model) instead of tool + arguments, and " +
+                    "the whole run becomes ONE job with one id to poll. A sequence may only name " +
+                    "horizun_open_document, horizun_model_scan, horizun_audit_model, horizun_quantities and " +
+                    "horizun_document_session with operation 'close' - nothing that writes to a model - so a " +
+                    "submission naming any other tool is refused WHOLE with nothing queued. Execution stops at " +
+                    "the first failed step; every later step is reported not_run, never omitted and never " +
+                    "succeeded, and the closes of a stopped sweep still run so no document is left open. " +
+                    "Exactly one of tool+arguments, sequence or models: two shapes in one submission is refused " +
+                    "rather than resolved by precedence.",
                 InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""tool"", ""arguments""],
+  ""type"": ""object"",
   ""properties"": {
-    ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python, horizun_request_python_access and horizun_submit_job are refused."" },
+    ""tool"": { ""type"": ""string"", ""description"": ""An installed Revit-side MCP tool. Host-only tools, horizun_execute_python, horizun_request_python_access and horizun_submit_job are refused. Mutually exclusive with sequence and models."" },
     ""arguments"": { ""type"": ""object"", ""description"": ""The exact typed arguments, including target_document, dry_run/confirmation_token where that tool requires them."" },
+    ""sequence"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200, ""description"": ""An ordered read-only sequence run as ONE job. Only horizun_open_document, horizun_model_scan, horizun_audit_model, horizun_quantities and horizun_document_session (operation 'close') are admissible; anything that writes to a model refuses the whole submission with nothing queued, naming the index."", ""items"": {
+      ""type"": ""object"", ""required"": [""key"", ""tool"", ""arguments""], ""properties"": {
+        ""key"": { ""type"": ""string"", ""description"": ""Unique within the sequence. Steps are reported by key, so two steps sharing one cannot be told apart."" },
+        ""tool"": { ""type"": ""string"", ""enum"": [""horizun_open_document"", ""horizun_model_scan"", ""horizun_audit_model"", ""horizun_quantities"", ""horizun_document_session""] },
+        ""arguments"": { ""type"": ""object"" }
+      }, ""additionalProperties"": false } },
+    ""models"": { ""type"": ""array"", ""minItems"": 1, ""description"": ""A read-only sweep, expanded into open/audit/close per model in listed order. One document at a time; nothing is saved or synchronised; a model that was never opened is reported not_assessed, never clean."", ""items"": {
+      ""type"": ""object"", ""required"": [""id"", ""expected_title""], ""properties"": {
+        ""id"": { ""type"": ""string"", ""description"": ""Stable identifier for this model in the report. Duplicates are refused: a result keyed on a repeated id cannot say which model it came from."" },
+        ""origin"": { ""type"": ""string"", ""enum"": [""local"", ""cloud""], ""default"": ""local"" },
+        ""path"": { ""type"": ""string"", ""description"": ""local only. A downloaded copy of a cloud model is a LOCAL model that resembles it, and offering one as the other is refused."" },
+        ""cloud_project_guid"": { ""type"": ""string"" },
+        ""cloud_model_guid"": { ""type"": ""string"" },
+        ""cloud_region"": { ""type"": ""string"" },
+        ""expected_title"": { ""type"": ""string"", ""description"": ""REQUIRED: what the opened document must be called. Both the audit and the close name their target; a sweep that cannot name it acts on whatever document is in front."" },
+        ""expected_version"": { ""type"": ""string"" },
+        ""profile_version"": { ""type"": ""string"", ""description"": ""Per-model profile, so one sweep can judge models by different rules. Falls back to batch.profile_version."" }
+      }, ""additionalProperties"": false } },
+    ""batch"": { ""type"": ""object"", ""description"": ""Run-wide options for a models sweep."", ""properties"": {
+      ""profile_version"": { ""type"": ""string"" }
+    }, ""additionalProperties"": false },
     ""retain_until_utc"": { ""type"": ""string"", ""format"": ""date-time"", ""description"": ""Optional durable-retention lease for MCP Tasks. Must be a future UTC instant no more than seven days away; it protects this job record from configured retention but does not extend execution."" }
-  }, ""additionalProperties"": false
+  },
+  ""oneOf"": [
+    { ""required"": [""tool"", ""arguments""] },
+    { ""required"": [""sequence""] },
+    { ""required"": [""models""] }
+  ],
+  ""additionalProperties"": false
 }")
             },
             new CommandContract
@@ -2051,7 +2156,8 @@ namespace Horizun.Contracts
           ""horizun_create_elements"", ""horizun_manage_system_types"", ""horizun_transform_elements"", ""horizun_manage_views"", ""horizun_annotate"",
           ""horizun_split_floor_loops"", ""horizun_split_multilayer_walls"", ""horizun_split_multilayer_slabs"",
           ""horizun_ungroup_and_mark"", ""horizun_regroup_by_param"", ""horizun_copy_slab_elevations"",
-          ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls""
+          ""horizun_embed_floors_in_toposolid"", ""horizun_grade_toposolid_around_floors"", ""horizun_rectangularize_walls"",
+          ""horizun_manage_links""
         ] },
         ""arguments"": { ""type"": ""object"", ""description"": ""Arguments for the typed tool. target_document, dry_run, confirmation_token and idempotency_key are controlled by the plan."" }
       }, ""additionalProperties"": false
@@ -2255,11 +2361,59 @@ namespace Horizun.Contracts
     ""top"": { ""type"": ""integer"", ""default"": 50, ""minimum"": 1,
       ""description"": ""Max items returned per bucket. Totals are always exact and independent of this; a shortened list always says truncated=true."" },
     ""sections"": { ""type"": ""array"", ""items"": { ""type"": ""string"",
-        ""enum"": [""document"",""categories"",""cleanliness"",""naming"",""documentation"",""project_info"",""health"",""links"",""worksets"",""design_options"",""lines"",""types""] },
+        ""enum"": [""document"",""categories"",""cleanliness"",""naming"",""documentation"",""project_info"",""health"",""links"",""worksets"",""design_options"",""lines"",""types"",""coordinates"",""datums"",""level_association"",""worksharing"",""families"",""views"",""sheets"",""annotations"",""parameters"",""spatial"",""groups"",""design_options_census"",""phases"",""mep"",""structure"",""federation"",""external_content"",""documentary_context"",""delivery_readiness"",""weight""] },
       ""description"": ""Which sections to run. Default: all of them. A section you did not ask for is reported as 'not_requested', never as empty."" },
     ""target_parameter"": { ""type"": ""string"",
-      ""description"": ""Optional parameter name read off every element type in the 'types' section (e.g. 'Keynote', 'MyOrg_Code'). Reported as absent / empty / value, which are three different things."" }
-  }
+      ""description"": ""Optional parameter name read off every element type in the 'types' section (e.g. 'Keynote', 'MyOrg_Code'). Reported as absent / empty / value, which are three different things. Accepted only when 'types' is among the sections: elsewhere it would read nothing and the reply would look clean."" },
+    ""section_limits"": { ""type"": ""object"",
+      ""description"": ""A budget per section, so one big population does not consume another's. Either a whole number ({\""cleanliness\"": 500}) or an object with 'limit' and 'buckets' ({\""cleanliness\"": {\""limit\"": 20, \""buckets\"": {\""warnings\"": 400}}}). An unknown section name is REFUSED, with the real list."" },
+    ""weight_profile"": { ""type"": ""object"",
+      ""description"": ""Ranks the candidates in the 'weight' section. {version, weights:{in_place_families:10, ...}}. REQUIRED for a ranking: there is no built-in default, because that would be one organisation's opinion about what makes a model heavy compiled into a neutral bridge. Without it the candidates are still reported, UNRANKED, with the reason. Nothing in that section is ever a size in bytes - Revit publishes no per-category size."" },
+    ""cursor"": { ""type"": ""string"",
+      ""description"": ""Resume one bucket where a previous reply stopped. Take it from that bucket's 'next_cursor'. It is checked against the document, the section, the bucket and the contract version, and refused if any differ - it is never read as 'start again', which a caller could not tell from page one."" },
+    ""warning_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Your triage for Revit warnings, keyed by FailureDefinitionId GUID ONLY - a profile keyed on the description text stops matching the day Revit is upgraded or the session language changes, and it stops matching silently. Needs a version; each entry takes severity and optionally label. Revit's OWN severity is always reported beside yours, never replaced by it. Without a profile no warning is triaged, which is NOT a pass."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""naming_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Your naming grammar, per class of object - levels, grids, views, view_templates, sheets, families, types, worksets, links, groups, rooms, spaces, systems, filters. Needs a version. Rules per class: regex, prefix, suffix, separator, segments, min_length, max_length, allowed, forbidden, case, unique, default_words, exceptions. Nothing is compiled in: with no profile every class reports not_requested, NEVER ok. Nothing is ever renamed - you get the name, the rule that failed and a suggestion."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""family_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. YOUR limits for families. Needs a version. Keys: max_types, max_unused_types, max_instances, in_place_allowed_by_category, expected_shared_families, allowed_categories, exceptions. Without one the families section returns FACTS and ranked CANDIDATES and nothing is a violation. Note what this can never tell you: a family loaded into a model reports no file size, and this section does not open .rfa documents, so many types or many instances are INDICATORS and never a weight."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""family_budget"": { ""type"": ""integer"", ""minimum"": 0,
+      ""description"": ""How many families the candidate triage returns (default 20). The reply always states how many were ranked and how many were passed over, so a budget never reads as a complete list."" },
+    ""view_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Rules PER VIEW TYPE - the keys are Revit ViewType names and an unknown one is refused, because a rule filed under a misspelt type never runs and reports every view as acceptable. Needs a version. Per type: template_required, allowed_templates, allowed_scales, expected_detail_level, expected_discipline, expected_phase, expected_phase_filter, crop_required, scope_box_required, required_filters, forbidden_filters, on_sheet_required, exceptions. Properties a view type does not HAVE come back not_applicable - a legend has no level - which is neither a pass nor a failure, and different again from not_readable."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""sheet_rules"": { ""type"": ""object"",
+      ""description"": ""Optional. Rules for sheets and for how much annotation a view type needs. Needs a version. Keys: title_block_required, forbid_multiple_title_blocks, forbid_empty_sheets, forbid_duplicate_numbers, revisions_required, min_viewports, max_viewports, min_annotations_by_view_type, exceptions. required_schedule_names is NOT among them and is REFUSED if sent: it was accepted and never evaluated, and a rule that reports nothing reads as a rule that passed. Note two things this will never say: a sheet that is not empty has NOT been called complete, and a view with one dimension has NOT been called documented. A schedule on a sheet is a ScheduleSheetInstance and not a viewport, so the two counts stay apart."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""parameter_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. A versioned list of parameter rules, each with an id and an identity - name, guid or built_in_parameter. A rule keyed by GUID is NEVER satisfied by a name match: two parameters of one name are two parameters. Per rule: scope, categories, element_classes, required, allow_empty, placeholders, storage_type, specification, expected_binding, regex, allowed_values, forbidden_values, minimum, maximum, unit, exceptions, severity, explanation. PROFILES ARE DATA: no expression, script or code from a profile is executed, and the only caller-supplied thing that runs is the regex, with a timeout. Type parameters are judged once per type with the affected instances counted beside the finding."",
+      ""properties"": { ""version"": { ""type"": ""string"" },
+                        ""rules"": { ""type"": ""array"" } }, ""required"": [""version"", ""rules""] },
+    ""spatial_rules"": { ""type"": ""object"",
+      ""description"": ""Optional. redundant_warning_guids: the FailureDefinitionId guid(s) YOUR Revit uses for a redundant room or space. Revit exposes no IsRedundant - a redundant element reports zero area and no boundary exactly as an unenclosed one does - and no guid is compiled into this bridge, so without this list is_redundant stays null and nothing is called redundant. It is never guessed from the area."",
+      ""properties"": { ""redundant_warning_guids"": { ""type"": ""array"",
+                        ""items"": { ""type"": ""string"" } } } },
+    ""documentary_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Which documentary fields YOUR projects must carry - project name and number, client, status, author, organisation, address, issue date, units, phases, location, templates, sheets, revisions, links, and any shared or project parameter on Project Information. Same shape as parameter_profile and read by the same parser, so wrong_guid and placeholder mean one thing in this bridge rather than two. NOTHING IS COMPILED IN: with no profile every field is not_requested, which is not a pass. A field that does not EXIST and a field that exists and is BLANK are reported apart."",
+      ""properties"": { ""version"": { ""type"": ""string"" },
+                        ""rules"": { ""type"": ""array"" } }, ""required"": [""version"", ""rules""] },
+    ""fourd_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Which parameter carries each 4D role - activity_id, activity_name, WBS, package, zone, front, sequence, start_date, finish_date and any role you name - on WHICH CATEGORIES, on the instance or the type. Same shape as parameter_profile. Roles are measured per LEAF CATEGORY, never as one model-wide average, because the average hides the discipline that has nothing. With no profile every role is not_required, which is NOT a verdict: nothing here says a model is not ready for 4D. Nothing reads a programme file, and a text that looks like an activity id is not proof that it is one."",
+      ""properties"": { ""version"": { ""type"": ""string"" },
+                        ""rules"": { ""type"": ""array"" } }, ""required"": [""version"", ""rules""] },
+    ""fived_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. The same for 5D roles - cost_code, classification_code, item_reference, unit, quantity_source, cost_package, cost_center, resource, assembly and your own. A role whose specification is 'classification_code' is checked against classification_catalogue. A cost parameter carrying a value is NOT a connection to a budget: it is evidence somebody typed a code."",
+      ""properties"": { ""version"": { ""type"": ""string"" },
+                        ""rules"": { ""type"": ""array"" } }, ""required"": [""version"", ""rules""] },
+    ""classification_catalogue"": { ""type"": ""object"",
+      ""description"": ""Optional. YOUR taxonomy: { version, name, codes: { code: is_leaf } }. Leafness is DECLARED, never inferred from a code's shape, because prefix inference guesses a taxonomy's structure and guesses wrong on every standard that reuses its separators. Nothing is compiled in - OmniClass, UniFormat, MasterFormat and every house standard belong to somebody and not to everybody. A GROUP code is reported apart from a leaf: it is real, it passes any regex, and nobody prices a group."",
+      ""properties"": { ""version"": { ""type"": ""string"" },
+                        ""codes"": { ""type"": ""object"" } }, ""required"": [""version"", ""codes""] }
+  },
+  ""additionalProperties"": false
 }")
             },
             new CommandContract
@@ -2534,15 +2688,79 @@ namespace Horizun.Contracts
                    ""dimension"": { ""type"": ""string"", ""enum"": [""4d"", ""5d"", ""traceability"", ""classification"", ""quantity""] },
                    ""parameter_names"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""minItems"": 1 },
                    ""blank_is_absent"": { ""type"": ""boolean"", ""default"": true }
-                 } } }
-  }
+                 } } },
+    ""warning_profile"": { ""type"": ""object"",
+      ""description"": ""Optional. Your triage for Revit warnings, keyed by FailureDefinitionId GUID ONLY - a profile keyed on the description text stops matching the day Revit is upgraded or the session language changes, and it stops matching silently. Needs a version; each entry takes severity and optionally label. Revit's OWN severity is always reported beside yours, never replaced by it. Without a profile no warning is triaged, which is NOT a pass."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] },
+    ""propose_corrections"": { ""type"": ""boolean"", ""default"": false,
+               ""description"": ""Opt-in. Adds a 'corrections' block of TYPED PROPOSALS beside the findings - proposal_id, the typed tool, its arguments, preconditions, expected outcome, risk, reversibility, ambiguities and dry_run. NOTHING IS EXECUTED and executed:false says so. A proposal may name only a tool in the built-in correction registry (published in the same block), with arguments built from typed fields and the registry's own typed constants - never from a finding's text. horizun_execute_python is not in it. States: actionable, requires_input, unsupported, unsafe, already_resolved, not_applicable. A finding whose element list was TRUNCATED yields requires_input rather than a correction over an unknown scope."" },
+    ""store_snapshot"": { ""type"": ""boolean"", ""default"": false,
+               ""description"": ""Opt-in. Stores this read-only audit measurement under the local Horizun data root, never beside the RVT, and compares it with the previous verified snapshot of the same model. The file is hash-verified, atomically replaced and sanitised before writing. This writes no Revit model data."" },
+    ""health_profile"": { ""type"": ""object"",
+               ""description"": ""Opt-in, versioned weights for a transparent health index. No weights are compiled in. Fields: id, version, context, weights [{dimension (an audit check name), weight (>0), critical}]. Each dimension is binary finding presence and the reply includes every deduction, coverage, unassessed dimensions and plausible range; a critical unmeasured dimension suppresses the headline score."",
+               ""required"": [""id"", ""version"", ""weights""],
+               ""properties"": {
+                 ""id"": { ""type"": ""string"" }, ""version"": { ""type"": ""string"" },
+                 ""context"": { ""type"": ""string"", ""enum"": [""project"", ""template"", ""family"", ""coordination""] },
+                 ""weights"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""object"",
+                   ""required"": [""dimension"", ""weight""], ""properties"": {
+                     ""dimension"": { ""type"": ""string"" }, ""weight"": { ""type"": ""number"", ""exclusiveMinimum"": 0 },
+                     ""critical"": { ""type"": ""boolean"", ""default"": false }
+                   }, ""additionalProperties"": false } }
+               }, ""additionalProperties"": false },
+    ""prevention_gate"": { ""type"": ""object"",
+               ""description"": ""Opt-in. Asks whether an operation may proceed GIVEN THIS AUDIT. Answers allow, block, requires_override or not_assessable, and it DECIDES rather than enforces - nothing here cancels a save, and the matrix in docs/evidence/prevention-operation-matrix.md keeps 'gate possible' and 'gate implemented' apart. THE ASYMMETRY: incomplete coverage may BLOCK and may never ALLOW, because a defect found in the part that was examined is real while 'nothing wrong here' is a claim about a whole model that was half looked at. Coverage comes from this run, not from the caller."",
+      ""properties"": {
+        ""operation"": { ""type"": ""string"", ""enum"": [""save"", ""save_as"", ""sync_with_central"", ""export"", ""publish"", ""close_with_save"", ""batch_open_close""] },
+        ""profile_version"": { ""type"": ""string"" },
+        ""now_utc"": { ""type"": ""string"", ""description"": ""Optional in general, but REQUIRED whenever the override carries an expiry: nothing here reads a clock, so this is the only time the gate has. An override with an expiry and no now_utc is REFUSED rather than honoured - an expiry nobody can evaluate is not a pass. Keeping the clock out of the rules is what makes an expiry exact in a test."" },
+        ""override"": { ""type"": ""object"", ""description"": ""A SIGNED STATEMENT, not a flag: who, when, which operation, which profile, and exactly which findings are accepted. It covers only the findings it NAMES, is refused for another operation or profile version, and expires by comparison."",
+          ""properties"": {
+            ""identity"": { ""type"": ""string"" }, ""reason"": { ""type"": ""string"" },
+            ""timestamp_utc"": { ""type"": ""string"" }, ""operation"": { ""type"": ""string"" },
+            ""profile_version"": { ""type"": ""string"" }, ""evidence"": { ""type"": ""string"" },
+            ""expires_utc"": { ""type"": ""string"" },
+            ""findings_ignored"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } }
+          }, ""additionalProperties"": false }
+      }, ""required"": [""operation""], ""additionalProperties"": false },
+    ""workset_rules"": { ""type"": ""object"",
+      ""description"": ""Optional. Which workset each category belongs on, plus the names YOUR session calls an un-renamed default - Revit's own default workset name is localized, so none is compiled in. Needs a version. Keys: by_category, default_workset_names, max_elements_in_wrong_workset. WITH A CLOSED WORKSET the check may FAIL but can never PASS: a closed workset's elements are not in the document, so 'nothing found' would be a claim about elements nobody loaded."",
+      ""properties"": { ""version"": { ""type"": ""string"" } }, ""required"": [""version""] }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_apply_corrections",
+                Command = "horizun_apply_corrections",
+                Description = @"THE CORRECTION CYCLE for horizun_audit_model: select findings by finding_id from an audit taken in this session (its finding_set_fingerprint), REHEARSE each through the typed command the correction registry names - horizun_manage_links pin/reload, horizun_manage_views apply_template (template_view_id as an input), horizun_delete_verified for orphan group types and unplaced rooms - confirm with the token the rehearsal issued, APPLY, and RE-AUDIT the intervened checks per element: corrected, persistent, failed or not_verifiable. Only the findings named run; the rest are listed as skipped, and an empty selection is refused. A scope may narrow to some of a finding's elements and never widen. Before rehearsing AND before applying the cited checks are re-run and compared: a model that moved since the audit refuses as stale_plan with nothing written. A missing input (which template) is requires_input naming it in required_inputs while the other actions still rehearse; one such action withholds the whole token. A DESTRUCTIVE action (the two horizun_delete_verified recipes) must LIST element_ids: omitting them is requires_input naming element_ids rather than read as every element the finding named. ROLLBACK SCOPE IS PER ACTION - each typed call is its own transaction, not one atomic group; compose horizun_execute_plan for that. Every finding type the audit emits has a registry entry, and most say why they cannot be automated. horizun_execute_python is not reachable from here.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""target_document"", ""finding_set_fingerprint"", ""actions""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. The document the audit was taken on; it must be ACTIVE, and its fingerprint must match the audit's."" },
+    ""finding_set_fingerprint"": { ""type"": ""string"", ""description"": ""REQUIRED. From the horizun_audit_model reply. Names one run at one top in THIS session; finding ids belong to it and do not survive a restart."" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 100,
+      ""description"": ""The findings to act on. One entry per finding_id; an empty array is refused rather than read as all."",
+      ""items"": { ""type"": ""object"", ""required"": [""finding_id""], ""properties"": {
+        ""finding_id"": { ""type"": ""string"", ""description"": ""A finding_id from the audit's findings[]."" },
+        ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""integer"" }, ""description"": ""Optional narrowing to some of the elements the finding listed. An id the finding never named refuses the action as scope_widened."" },
+        ""inputs"": { ""type"": ""object"", ""description"": ""Answers to the recipe's required inputs and nothing else - e.g. {\""template_view_id\"": 123} for views_without_template. An input the recipe did not ask for is refused."" }
+      }, ""additionalProperties"": false } },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""true: rehearse every action through its typed tool, write nothing, and return a confirmation_token if all rehearsed cleanly. false: apply under the token."" },
+    ""confirmation_token"": { ""type"": ""string"", ""description"": ""REQUIRED when dry_run=false: the token this exact request's dry run returned. Single use; bound to the document, the audit, the action set and each typed tool's resolved plan."" },
+    ""idempotency_key"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 200,
+      ""description"": ""The shared rule, and it is true here: a retry with the SAME key returns the recorded reply and runs nothing. Measured 2026-09-03. What also prevents a second application, and is stronger, is that confirmation_token is single use and the cited checks are re-run before the apply - so the same actions under a NEW key are refused as a spent token or as a stale plan, with nothing written."" },
+  },
+  ""additionalProperties"": false
 }")
             },
             new CommandContract
             {
                 Name = "horizun_quantities",
                 Command = "horizun_quantities",
-                Description = @"Volume takeoff in m3 from all three sources Revit offers â€” the Volume parameter, the real solid geometry, and the material takeoff â€” reported side by side with the disagreement measured. Handlers that report a single volume are picking one silently; we have measured a 75% gap between the parameter and the geometry on the same beam. COVERAGE IS EXPLICIT AND NEVER A ZERO: a read that failed is reported as failed, so each source carries candidates/measured/not_applicable/failed plus known_total_m3 and total_is_complete, and known_total is the sum over MEASURED elements only. Two sources are compared only where BOTH produced a number: 'all_agree' is null when nothing could be compared and false when coverage is partial â€” it is never true unless every candidate was compared and agreed. Totals from different sources cover different element sets, so total_reconciliation is computed over the intersection, not over each source's own sum. A volume of exactly zero is a measurement, not an absence. Pass element_ids or a category. Read-only.",
+                Description = @"Volume takeoff in m3 from all three sources Revit offers â€” the Volume parameter, the real solid geometry, and the material takeoff â€” reported side by side with the disagreement measured. Handlers that report a single volume are picking one silently; we have measured a 75% gap between the parameter and the geometry on the same beam. COVERAGE IS EXPLICIT AND NEVER A ZERO: a read that failed is reported as failed, so each source carries candidates/measured/not_applicable/failed plus known_total_m3 and total_is_complete, and known_total is the sum over MEASURED elements only. Two sources are compared only where BOTH produced a number: 'all_agree' is null when nothing could be compared and false when coverage is partial â€” it is never true unless every candidate was compared and agreed. Totals from different sources cover different element sets, so total_reconciliation is computed over the intersection, not over each source's own sum. A volume of exactly zero is a measurement, not an absence. Pass element_ids or a category. Read-only. MODE takeoff: pass mode='takeoff' with quantities=[{name, source: parameter|geometry_volume|geometry_area|length|count, parameter?, unit}] and classification_parameter to measure the caller-named quantities per element for the budget join (horizun_budget_compare): every reading is measured | absent | empty | unreadable | invalid - a zero is a measurement and nothing else is - with a per-code rollup that states how many elements each sum covers; include_links=true sweeps loaded Revit links with per-row provenance (element id, document, document path, link instance id, placement, transform) and names links that were NOT loaded. A linked file placed MORE THAN ONCE is one entry per PLACEMENT, each with its own link instance id and transform, counted once per placement and declared in repeated_link_documents. Units are declared by you and never compiled in; Length/Area/Volume parameters are read in m / m2 / m3 and a mismatched declaration is invalid, never silently relabelled.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -2560,7 +2778,22 @@ namespace Horizun.Contracts
                 ""description"": ""Max element rows returned. Totals and coverage are EXACT and independent of this; a shortened list sets truncated=true and rows_matching says how many there were."" },
     ""code_parameter"": { ""type"": ""string"", ""description"": ""Parameter carrying each element's budget/classification code (instance first, then type). Supplied per call - no organisation's parameter is compiled in. Adds 'code' per row and a by_code rollup whose sums state how many elements they cover."" },
     ""only_disagreements"": { ""type"": ""boolean"", ""default"": false,
-                              ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" }
+                              ""description"": ""List only the elements whose sources disagree. Totals still cover everything."" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""volume"", ""takeoff""], ""default"": ""volume"",
+      ""description"": ""volume: the three-source reconciliation above (default). takeoff: measure the caller-named 'quantities' per element with 'classification_parameter', for horizun_budget_compare. The takeoff-only keys are REFUSED in volume mode rather than ignored."" },
+    ""quantities"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 50,
+      ""description"": ""takeoff only. Each: {name, source, parameter?, unit}. source parameter reads a named parameter (instance first, then type; Length/Area/Volume specs come back in m/m2/m3 and 'unit' must say so; other specs raw in your unit; text is invalid, never parsed). geometry_volume (m3) and geometry_area (m2: the total face area of the solids) read the geometry at detail_level; length (m) reads the location curve; count is 1 per element. 'unit' is yours and is written on every reading - nothing is compiled in."",
+      ""items"": { ""type"": ""object"", ""required"": [""name"", ""source"", ""unit""], ""additionalProperties"": false,
+        ""properties"": {
+          ""name"": { ""type"": ""string"", ""minLength"": 1 },
+          ""source"": { ""type"": ""string"", ""enum"": [""parameter"", ""geometry_volume"", ""geometry_area"", ""length"", ""count""] },
+          ""parameter"": { ""type"": ""string"", ""description"": ""Required when source is parameter; refused otherwise."" },
+          ""unit"": { ""type"": ""string"", ""minLength"": 1, ""description"": ""The unit this quantity is billed in, e.g. m3, m2, m, kg, un. Must be m3 / m2 / m for geometry_volume / geometry_area / length."" }
+        } } },
+    ""classification_parameter"": { ""type"": ""string"",
+      ""description"": ""takeoff only, required. The parameter (instance first, then type) carrying each element's budget code. Each row's classification_code is the value, or '(no such parameter)', '(empty)', '(unreadable)' - three non-values kept apart."" },
+    ""include_links"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""takeoff only. Also sweep every LOADED RevitLinkInstance for 'category' (needs category, not element_ids: an id is only unique inside one document). Each row carries element_id, document, document_path, link_instance_id and the placement number, and the documents block adds the link's transform for provenance; links that are not loaded are listed in links_not_loaded and make coverage_complete false. TWO INSTANCES OF ONE LINKED FILE are two placements: the same element id comes back once per placement, told apart by link_instance_id, counted once per placement (which is what the model says), and every repeated file is named in repeated_link_documents."" }
   }
 }")
             },
@@ -2619,13 +2852,13 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_manage_links",
                 Command = "horizun_manage_links",
-                Description = @"List, unload, reload, pin and unpin Revit links, typed and verified. Load-state changes (unload/reload) cannot rehearse provisionally - the API forbids them inside a transaction and a provisional unload would BE an unload - so their dry run is a MEASURED PREVIEW (rehearsal_kind says so) of the status and path the token then binds, and after apply the status is RE-READ from the link type: verified means GetLinkedFileStatus answered what the operation promised. Pin/unpin are element writes and go the normal way: transaction, postcondition inside it, Pinned re-read after commit. No-ops refuse by name (already Unloaded, already pinned); a reload whose file is missing on disk refuses before Revit's dialog machinery can hang the bridge. add/path-change are deliberately not typed yet, and the refusal says so.",
+                Description = @"List, unload, reload, pin and unpin Revit links, typed and verified. Load-state changes (unload/reload) cannot rehearse provisionally - the API forbids them inside a transaction and a provisional unload would BE an unload - so their dry run is a MEASURED PREVIEW (rehearsal_kind says so) of the status and path the token then binds, and after apply the status is RE-READ from the link type: verified means GetLinkedFileStatus answered what the operation promised. Pin/unpin are element writes and go the normal way: transaction, postcondition inside it, Pinned re-read after commit. No-ops refuse by name (already Unloaded, already pinned); a reload whose file is missing on disk refuses before Revit's dialog machinery can hang the bridge. add creates the link type and its first instance; add_instance places ANOTHER instance of a type already in the model - the placement `add` used to send callers to and the command did not have - and re-reads that the new instance exists AND belongs to the type asked for. Both are measured previews on dry run, for the same reason.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""unload"", ""reload"", ""pin"", ""unpin"", ""add"", ""change_path""], ""default"": ""list"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""unload"", ""reload"", ""pin"", ""unpin"", ""add"", ""add_instance"", ""change_path""], ""default"": ""list"" },
     ""path"": { ""type"": ""string"", ""description"": ""add / change_path: the absolute .rvt to link or repoint to - validated (exists, .rvt) before anything is touched. change_path IS the rewire: the dry run names path_before, path_after and every instance that re-resolves, and the apply re-reads the type's external path."" },
-    ""link_type_id"": { ""type"": ""integer"", ""description"": ""unload/reload: the RevitLinkType, from operation=list."" },
+    ""link_type_id"": { ""type"": ""integer"", ""description"": ""unload/reload: the RevitLinkType, from operation=list. add_instance: the loaded type to place AGAIN - Revit holds one link type per path, so a file linked twice is one type with two instances, and each placement's elements are measured on their own in a takeoff with include_links."" },
     ""link_instance_id"": { ""type"": ""integer"", ""description"": ""pin/unpin: the RevitLinkInstance."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""Required for every mutating operation: the document the change lands in."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true },
@@ -2804,7 +3037,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_split_multilayer_walls",
                 Command = "horizun_split_multilayer_walls",
-                Description = @"Split compound walls into ONE WALL PER MATERIAL LAYER: each layer becomes its own wall at its own offset, doors and windows are re-hosted on the structural layer, and the finish walls are joined to it so Revit cuts their openings. Stacked walls are handled through their members - select any member and the whole stack is processed once. CURVED WALLS ARE REFUSED AND REPORTED, NEVER SPLIT: every offset here is built as a straight Line between the centreline's endpoints, which on an arc wall is the CHORD, so splitting one would move the wall and report success. Refusing is the correct answer until an arc-aware offset exists. A single-layer wall is reported as skipped with its reason, and an id that resolves to nothing or to a non-wall comes back in scope.missing_ids / scope.wrong_type_ids. Revit's 'walls overlap' warning is suppressed because layer walls overlap BY CONSTRUCTION; every other warning reaches you. Originals are UNPINNED before deletion - a pinned delete raises a warning nobody is there to dismiss, and an unanswered warning is a modal that holds Revit's UI thread. would_create is reported as null (not guessed) when a stacked wall is in scope, because its layer count is only knowable per member at apply time. VERIFIED AFTER THE COMMIT: created_present re-reads each new id and confirms it is a Wall, deleted_gone confirms each original is absent. dry_run defaults to TRUE.",
+                Description = @"Split compound walls into ONE SINGLE-LAYER WALL PER MATERIAL LAYER, each at the physical position its layer occupied inside the assembly. THE ORIGINAL WALL IS NOT DELETED: it is converted into the single-layer wall of the CORE, so it keeps its ElementId and UniqueId, and every door, window, hosted family, opening, sweep, reveal and embedded curtain wall stays hosted in it - with ITS own ElementId and UniqueId, its parameters, its sill and head heights, its phase, its workset and its nested subcomponents. Only the other layers are created. N layers WITH VOLUME produce exactly N walls; a zero-width membrane keeps its layer number, is reported as not materialised, and does not renumber the layers behind it. THE CORE IS NOT 'the first Structure layer': the core range comes from the compound structure's own core boundaries, and the carrier is the structural layer inside it, or the thickest one, or the thickest core layer when none is structural - ties broken by lowest original index, and the reason reported. A wall with no valid core is REFUSED, never silently hosted on layer 0. Offsets are computed from the layer widths AND the wall's actual location line - all six of WallCenterline, CoreCenterline, FinishFaceExterior, FinishFaceInterior, CoreExterior and CoreInterior - so a wall drawn on its exterior face is not displaced by half its thickness. The exterior direction is MEASURED off the wall's exterior shell face rather than deduced. STRAIGHT AND CIRCULAR-ARC walls are supported; an arc keeps its centre, angles and sense and only its radius changes. Splines, ellipses and degenerate curves are refused by name, never straightened. Refused with an explicit code and nothing written: stacked walls, curtain walls, slanted or tapered walls, walls with an edited profile, attached walls, walls in a group or a design option, walls owned by another user, and any dependency whose equivalence cannot be guaranteed. EACH WALL IS ITS OWN ATOM: it runs in its own SubTransaction and is committed only after the model is re-read - each layer's position measured against its planned offset within 0.5 mm, each resulting type re-read and confirmed single-layer and correctly named, every insert checked by ElementId, UniqueId, host, symbol, placement, flips, level, phase, subcomponents and parameters, and every secondary layer ray-cast at each insert to prove the opening passes through. Anything that fails rolls that wall back WHOLE, leaving it exactly as it was, while the rest of the batch keeps its verified conversions. Type names follow [ORIGINAL TYPE] - [MATERIAL] - [NN] with NN the original layer position counted from the exterior, and a name already taken by a different composition gets a deterministic variant rather than being overwritten; no existing type is ever modified. Provenance is stamped in Extensible Storage, so a second identical call answers already_split instead of duplicating. The confirmation token binds EACH WALL individually - type, compound structure, location line, curve, flip, constraints and dependencies - so a model that moved refuses as stale. Only Revit's walls-overlap warning is suppressed, matched by FailureDefinitionId and not by localised text; any other warning comes back and takes all_verified down with it. originals_deleted is 0 by design. dry_run defaults to TRUE.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""target_document""],
@@ -2812,15 +3045,23 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"",
       ""description"": ""REQUIRED. Title or full path of the model to change. It must be the document ACTIVE in Revit; this never switches documents for you."" },
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" },
-      ""description"": ""Exactly these walls. A stacked-wall MEMBER resolves to its parent stack, and the stack is processed once however many of its members you name. Omit to use view_id."" },
+      ""description"": ""Exactly these walls. An id that resolves to nothing comes back in scope.missing_ids and one that resolves to a non-wall in scope.wrong_type_ids; neither is dropped. OMIT to use view_id. An EMPTY array is REFUSED rather than widened: it is what a caller sends when its own filter matched nothing, and reading that as the whole model would convert a document on the strength of an empty selection."" },
     ""view_id"": { ""type"": ""integer"",
-      ""description"": ""Every eligible wall VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
+      ""description"": ""Every wall VISIBLE IN THIS VIEW. Used only when element_ids is omitted. Omit both and the whole model is in scope."" },
     ""origin_group_param"": { ""type"": ""string"",
-      ""description"": ""OPTIONAL, and never assumed: the name of a text INSTANCE parameter whose value is carried from each original wall onto every layer wall it produces (the pyRevit button this was ported from hard-coded one organisation's '_GrupoOrigen'). Omit it and nothing is copied - the count comes back as null, meaning NOT TRACKED, never as 0."" },
+      ""description"": ""OPTIONAL, and never assumed: the name of a text INSTANCE parameter whose value is carried from the original wall onto every layer wall created from it. Omit it and nothing is copied under that name."" },
+    ""core_carrier_policy"": { ""type"": ""string"", ""enum"": [""structural_in_core_then_thickest""], ""default"": ""structural_in_core_then_thickest"",
+      ""description"": ""How the layer that keeps the original element is chosen: the structural layer INSIDE THE CORE, else the thickest structural one, else the thickest core layer - ties broken by lowest original index. It is an argument rather than an assumption so that a future policy is a contract change instead of a silent behaviour change."" },
+    ""parameter_copy_policy"": { ""type"": ""string"", ""enum"": [""safe_compatible""], ""default"": ""safe_compatible"",
+      ""description"": ""Which parameters are copied onto the newly created layer walls, by stable identifier (BuiltInParameter, then shared GUID) and never by translated name. Read-only, computed and type-driven parameters are reported as skipped rather than silently omitted."" },
+    ""allow_arc_walls"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""Whether circular-arc walls are eligible. Set false to restrict this run to straight walls; arcs then come back refused with unsupported_curve instead of being converted."" },
+    ""failure_policy"": { ""type"": ""string"", ""enum"": [""rollback_wall""], ""default"": ""rollback_wall"",
+      ""description"": ""What happens when a wall cannot be converted with every dependency intact: it is rolled back whole and the rest of the batch continues. There is deliberately NO mode that accepts the loss of a hosted object."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true,
-      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns which walls are eligible, how many layers each has, which were refused and why, plus a single-use confirmation_token."" },
+      ""description"": ""DEFAULTS TO TRUE. A dry run opens no transaction and writes nothing: it returns, per wall, the layer plan with each layer's expected offset and type name, the core range, the chosen carrier and why, the full dependency ledger, the refusals with their codes, and a single-use confirmation_token."" },
     ""confirmation_token"": { ""type"": ""string"",
-      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, bound to this document and this scope."" }
+      ""description"": ""REQUIRED when dry_run=false. The token this exact request's dry run returned. Single-use, expiring, and bound to each wall individually - a wall that moved, was re-typed or gained a door since the dry run refuses as stale_plan and nothing is written."" }
   }
 }")
             },
@@ -3009,6 +3250,7 @@ namespace Horizun.Contracts
             new CommandContract
             {
                 Name = "horizun_job_status",
+                Command = null,           // host-resident: reads the durable job records, never forwarded to Revit
                 Description =
                     "How a long run is going - answered WITHOUT touching Revit. While a long command executes, " +
                     "Revit's UI thread is inside it and the pipe is waiting for it to end, so asking the plugin " +
@@ -3121,6 +3363,89 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_budget_compare",
+                Command = null,           // host-resident: answered in the server, never forwarded to Revit
+                Description =
+                    "Compare a horizun_quantities TAKEOFF (mode 'takeoff' rows, inline or from a JSON file) against a " +
+                    "budget baseline read from an .xlsx through the same OPC reader as horizun_excel_read_rows, and " +
+                    "report per code: added | removed | modified | unchanged | not_comparable, with SEPARATE deltas for " +
+                    "quantity (abs and pct, inside a declared tolerance or not), classification (not in baseline, and " +
+                    "group/unknown against a catalogue you pass) and price (model quantity at the BASELINE unit price - " +
+                    "no price is ever invented; a line without one reports not_available). HONESTY: no unit is converted " +
+                    "without a declared {from, to, factor} (unit_incompatible otherwise), an incomplete read is a lower " +
+                    "bound and is not compared, a fragment (elements without the quantity) is refused unless you opt in, " +
+                    "and every line keeps its element ids, documents and baseline row indices. The structured result " +
+                    "ALWAYS comes back; each declared destination is then written and reported ON ITS OWN - " +
+                    "written | replayed | skipped | failed | in_doubt with evidence - there is no global transaction, so a " +
+                    "failed Excel write does not undo a Power BI push and the reply says so. Excel: a NEW workbook with a " +
+                    "header row and one row per code, written through horizun_excel_write_rows's lock/verify/backup " +
+                    "path; an existing file is refused unless overwrite_policy=replace, and then backed up first. Power " +
+                    "BI: through horizun_power_bi_push with dry_run defaulting to true and its ledger; a lost answer is " +
+                    "reported in_doubt with the ledger key and is never re-sent automatically. PERMISSION: the " +
+                    "comparison ALONE - no 'outputs' - reads a workbook and writes nothing, so it runs at ANY " +
+                    "permission_profile. DECLARING a destination is what needs full_write or unsafe_code, and under a " +
+                    "lower profile the call is refused by name before anything is read.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""baseline""],
+  ""properties"": {
+    ""model_rows"": { ""type"": [""array"", ""object""],
+      ""description"": ""The takeoff: either the per-element rows array or the whole horizun_quantities mode='takeoff' reply (its 'rows' are used; a TRUNCATED reply is refused - re-run with top >= rows_matching). Exactly one of model_rows / model_rows_path."" },
+    ""model_rows_path"": { ""type"": ""string"", ""description"": ""Absolute path to a JSON file holding the same thing (a takeoff reply or a rows array)."" },
+    ""baseline"": { ""type"": ""object"", ""required"": [""file_path"", ""columns""], ""additionalProperties"": false,
+      ""description"": ""The budget: an .xlsx read through horizun_excel_read_rows. Every row below header_row with a non-blank code is a line; blank-code rows are skipped and counted."",
+      ""properties"": {
+        ""file_path"": { ""type"": ""string"" },
+        ""sheet"": { ""type"": ""string"", ""description"": ""Worksheet name (case-insensitive). Omitted: the first sheet."" },
+        ""header_row"": { ""type"": ""integer"", ""minimum"": 1, ""default"": 1, ""description"": ""1-based position of the header row among the sheet's stored rows."" },
+        ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 10000, ""default"": 10000 },
+        ""columns"": { ""type"": ""object"", ""required"": [""code"", ""unit"", ""quantity""], ""additionalProperties"": false,
+          ""description"": ""Which column carries what: a header NAME (case-insensitive) or a 1-based column INDEX."",
+          ""properties"": {
+            ""code"": { ""type"": [""string"", ""integer""] }, ""description"": { ""type"": [""string"", ""integer""] },
+            ""unit"": { ""type"": [""string"", ""integer""] }, ""quantity"": { ""type"": [""string"", ""integer""] },
+            ""unit_price"": { ""type"": [""string"", ""integer""] }, ""currency"": { ""type"": [""string"", ""integer""] }
+          } }
+      } },
+    ""mapping"": { ""type"": ""object"", ""additionalProperties"": false,
+      ""properties"": {
+        ""code_field"": { ""type"": ""string"", ""default"": ""classification_code"", ""description"": ""The model row field carrying the code."" },
+        ""quantity_field"": { ""type"": ""string"", ""description"": ""Pin which takeoff quantity feeds the comparison. Omitted: chosen by UNIT (the quantity whose declared unit equals the baseline's, or has a declared conversion to it); two candidates are refused as ambiguous."" },
+        ""unit_conversions"": { ""type"": ""array"", ""items"": { ""type"": ""object"", ""required"": [""from"", ""to"", ""factor""], ""additionalProperties"": false,
+          ""properties"": { ""from"": { ""type"": ""string"" }, ""to"": { ""type"": ""string"" }, ""factor"": { ""type"": ""number"", ""exclusiveMinimum"": 0 } } },
+          ""description"": ""EXPLICIT ONLY, in the declared direction only: model value in 'from' times factor = value in 'to'. An undeclared pair is unit_incompatible, never converted."" },
+        ""tolerances"": { ""type"": ""object"", ""additionalProperties"": false,
+          ""properties"": { ""quantity_pct"": { ""type"": ""number"", ""minimum"": 0 }, ""quantity_abs"": { ""type"": ""number"", ""minimum"": 0 } },
+          ""description"": ""A line is unchanged when |delta| <= quantity_abs OR |delta|/baseline*100 <= quantity_pct. Neither: exact match."" },
+        ""rules"": { ""type"": ""object"", ""additionalProperties"": false,
+          ""properties"": { ""compare_partial_coverage"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Compare a code even when some of its elements do not carry the quantity. Off, such a code is not_comparable (partial_coverage)."" } } },
+        ""catalogue"": { ""type"": ""object"", ""description"": ""Optional {version, name?, codes: {code: is_leaf}} - the same shape horizun_audit_model's delivery readiness takes. Adds classification.catalogue_status per line (leaf / group_not_terminal / not_in_catalogue). Absent: catalogue_not_supplied, is_leaf null - never guessed."" }
+      } },
+    ""outputs"": { ""type"": ""object"", ""additionalProperties"": false,
+      ""description"": ""Destinations, each written and reported separately. Omit for the comparison alone - no idempotency_key needed, nothing written, and no permission_profile required. Declaring EITHER destination (a dry-run Power BI push included, because its reply reports this machine's credential state) needs permission_profile=full_write or unsafe_code; under read_only or safe_write the whole call is refused before the baseline is read, naming the profile."",
+      ""properties"": {
+        ""excel"": { ""type"": ""object"", ""required"": [""file_path""], ""additionalProperties"": false,
+          ""properties"": {
+            ""file_path"": { ""type"": ""string"", ""description"": ""Absolute path of the .xlsx to CREATE: a new workbook with one sheet, a header row and one row per code."" },
+            ""sheet"": { ""type"": ""string"", ""default"": ""Comparison"" },
+            ""overwrite_policy"": { ""type"": ""string"", ""enum"": [""refuse"", ""replace""], ""default"": ""refuse"",
+              ""description"": ""refuse: an existing file makes this destination 'skipped', nothing touched. replace: the existing file is copied to <file>.<stamp>.horizunbak, then replaced."" }
+          } },
+        ""power_bi"": { ""type"": ""object"", ""required"": [""dataset_id"", ""table""], ""additionalProperties"": false,
+          ""properties"": {
+            ""workspace_id"": { ""type"": ""string"" }, ""dataset_id"": { ""type"": ""string"" },
+            ""table"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 512 },
+            ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""true validates the rows and the destination and sends nothing (status 'skipped', reason dry_run). false pushes one row per code through horizun_power_bi_push's ledger."" }
+          } }
+      } },
+    ""idempotency_key"": { ""type"": ""string"", ""minLength"": 1, ""maxLength"": 200,
+      ""description"": ""REQUIRED when outputs.excel is declared or outputs.power_bi.dry_run is false. An identical retry replays the recorded reply (every destination included) without writing again; the same key with different arguments is refused. The destinations use derived keys <key>/excel and <key>/powerbi in their own ledgers."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_power_bi_push",
                 Command = null,           // host-resident: fixed Microsoft endpoints, never forwarded to Revit
                 Description =
@@ -3209,6 +3534,7 @@ namespace Horizun.Contracts
                 "horizun_pack_sheets",
                 "horizun_manage_revisions",
                 "horizun_execute_plan",
+                "horizun_apply_corrections",
                 "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
                 "horizun_split_floor_loops", "horizun_split_multilayer_walls",
                 "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
@@ -3221,6 +3547,20 @@ namespace Horizun.Contracts
             var external = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_capture_view", "horizun_excel_write_rows"
+            };
+
+            // Reaches outside the model ONLY when the call declares a destination, and
+            // refuses that destination itself under a profile that does not authorize it.
+            //
+            // horizun_budget_compare used to sit in `external` above, with a comment
+            // explaining that a comparison with no outputs writes nothing but the profile
+            // decides on the enum anyway. That was true and it was the defect: reading a
+            // budget and writing one are two different acts, and the tool was hidden from
+            // read_only and safe_write for a capability the caller had not asked for. See
+            // ToolEffect.ExternalSideEffectOnRequest for the two halves of the fix.
+            var externalOnRequest = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_budget_compare"
             };
 
             // Steers the host and leaves no artefact: which Revit answers, what is
@@ -3239,7 +3579,42 @@ namespace Horizun.Contracts
             var destructive = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session",
-                "horizun_export", "horizun_create_family", "horizun_power_bi_push"
+                "horizun_export", "horizun_create_family", "horizun_power_bi_push",
+                // overwrite_policy=replace replaces a workbook (backed up first) and a
+                // non-dry-run push lands rows in a dataset. Same reasons as export and
+                // power_bi_push above.
+                "horizun_budget_compare",
+                // The correction cycle can drive horizun_delete_verified (orphan group
+                // types, unplaced rooms). A composing surface that can delete is
+                // destructive, whatever else it can do.
+                "horizun_apply_corrections",
+                // THREE TOOLS THAT DELETE, AND SAID SO IN THEIR OWN DESCRIPTION WHILE
+                // TELLING EVERY CLIENT THEY WERE SAFE.
+                //
+                // destructiveHint is the annotation an MCP client reads to decide
+                // whether to ask a person first. These three publish text that
+                // convicts them - split_multilayer_slabs: "Originals are unpinned
+                // before deletion"; split_floor_loops: "The original is deleted only
+                // once at least one replacement exists"; ungroup_and_mark:
+                // "Ungrouping destroys the only record of which elements belonged
+                // together" - and all three were absent from this set, while
+                // create_family sat in it for replacing family geometry.
+                //
+                // horizun_split_multilayer_walls is deliberately NOT here: it deletes
+                // nothing. The original becomes the core wall and keeps its
+                // ElementId, and its reply says originals_deleted is 0 by design.
+                "horizun_split_multilayer_slabs", "horizun_split_floor_loops", "horizun_ungroup_and_mark",
+                // AND TWO MORE THAT NO REVIEWER NAMED. Both erase toposolid vertices -
+                // "existing toposolid points within 60cm of each outline are deleted first",
+                // "existing toposolid points inside the graded footprint are deleted first" -
+                // and both call DeletePoint and report points_deleted. Surveyed topography
+                // is not recoverable by running the tool again.
+                //
+                // They were found by A_tool_whose_own_description_admits_deleting_declares_
+                // destructive, which reads the descriptions instead of a second hand-kept
+                // list. The hand-kept list had missed them for the same reason it missed the
+                // other three: it records what somebody remembered, not what the tools do.
+                "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors"
             };
 
             // MCP's openWorldHint. Effect already covers ExternalSideEffect and
@@ -3276,6 +3651,8 @@ namespace Horizun.Contracts
                          new KeyValuePair<string, HashSet<string>>("always (Mutating)", always),
                          new KeyValuePair<string, HashSet<string>>("dryRun (MutatingUnlessDryRun)", dryRun),
                          new KeyValuePair<string, HashSet<string>>("external (ExternalSideEffect)", external),
+                         new KeyValuePair<string, HashSet<string>>(
+                             "externalOnRequest (ExternalSideEffectOnRequest)", externalOnRequest),
                          new KeyValuePair<string, HashSet<string>>("hostState (HostState)", hostState)
                      })
                 foreach (string n in set.Value)
@@ -3289,9 +3666,14 @@ namespace Horizun.Contracts
             // And the other direction: the sets must not overlap, or the if/else chain
             // silently picks whichever branch comes first.
             foreach (string n in external)
+                if (hostState.Contains(n) || externalOnRequest.Contains(n))
+                    throw new InvalidOperationException(
+                        "'" + n + "' is in external AND in one of hostState / externalOnRequest. One of them " +
+                        "decides its effect and the other is a lie about what it does; pick one deliberately.");
+            foreach (string n in externalOnRequest)
                 if (hostState.Contains(n))
                     throw new InvalidOperationException(
-                        "'" + n + "' is in BOTH external and hostState. One of them decides its effect " +
+                        "'" + n + "' is in BOTH externalOnRequest and hostState. One of them decides its effect " +
                         "and the other is a lie about what it does; pick one deliberately.");
 
             foreach (CommandContract c in all)
@@ -3305,6 +3687,7 @@ namespace Horizun.Contracts
                 else if (dryRun.Contains(c.Name)) c.Effect = ToolEffect.MutatingUnlessDryRun;
                 else if (c.Name == "horizun_document_session") c.Effect = ToolEffect.DocumentSession;
                 else if (external.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffect;
+                else if (externalOnRequest.Contains(c.Name)) c.Effect = ToolEffect.ExternalSideEffectOnRequest;
                 else if (hostState.Contains(c.Name)) c.Effect = ToolEffect.HostState;
                 else c.Effect = ToolEffect.ReadOnly;
 
@@ -3312,8 +3695,13 @@ namespace Horizun.Contracts
                 // HostState is listed here so the MCP annotations do not change when the
                 // classification split: navigate and target reported openWorldHint=true
                 // under their old effect and still describe something outside this process.
+                // The WORST case, deliberately. A tool that can reach outside the model
+                // when asked is open-world whether or not this particular call asks:
+                // openWorldHint tells a client what the tool is, and the per-call
+                // enforcement is what decides what a given call may do.
                 c.OpenWorld = openWorld.Contains(c.Name) ||
                               c.Effect == ToolEffect.ExternalSideEffect ||
+                              c.Effect == ToolEffect.ExternalSideEffectOnRequest ||
                               c.Effect == ToolEffect.HostState ||
                               c.Effect == ToolEffect.DocumentSession;
 

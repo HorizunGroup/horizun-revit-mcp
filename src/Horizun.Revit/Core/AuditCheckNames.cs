@@ -45,6 +45,13 @@ namespace Horizun.Revit.Core
         public const string Readiness = "readiness";
 
         /// <summary>
+        /// Workset placement. The only finding here whose coverage can make it
+        /// unassessable rather than clean: a closed workset hides its elements,
+        /// so this may FAIL and can never PASS on a partially loaded model.
+        /// </summary>
+        public const string WorksetPlacement = "workset_placement";
+
+        /// <summary>
         /// Not a finding: the file size is measured beside the findings and injected
         /// into the gate's measurements under this name. It is here because the gate
         /// maps a requirement onto it, and the test below has to know that a mapping

@@ -52,6 +52,15 @@
 // classification with the workbook writer, and refusing the whole bucket would
 // have broken the profile this fix exists to protect.
 //
+// ToolEffect.ExternalSideEffectOnRequest is the same shape of correction one
+// level finer. horizun_budget_compare CAN create a workbook and CAN push a Power
+// BI table, and both really do need full_write - but a call with no `outputs`
+// does neither, and hiding the whole tool refused a read_only machine the
+// arithmetic because the same surface can also write. Admission is by effect, as
+// everything here is; THE DESTINATION is decided per call by
+// AllowsExternalSideEffect below, which the handler must consult before it
+// touches a destination. Two halves, and the tool is only honest with both.
+//
 // The matrix is asserted for every profile against every ToolEffect value in
 // SettingsEffectMatrixTests, so a new effect nobody classified fails a test
 // instead of quietly inheriting whichever branch happens to miss it.
@@ -133,6 +142,29 @@ namespace Horizun.Revit.Core
                 return p == "read_only" || p == "safe_write" || p == "full_write" || p == "unsafe_code"
                     ? p : "read_only"; // malformed privilege never elevates
             }
+        }
+
+        /// <summary>
+        /// MAY THIS CALL REACH OUTSIDE THE MODEL? The rung, asked directly.
+        ///
+        /// IsToolAllowed answers about a TOOL and is consulted once, for advertisement
+        /// and for dispatch. This answers about the OPERATION a call has asked for, and
+        /// is the second half of ToolEffect.ExternalSideEffectOnRequest: a handler
+        /// carrying that effect calls this before it opens a destination, and refuses
+        /// with the sentence returned here. Same two rungs full_write authorizes, decided
+        /// in one place rather than restated in each handler.
+        ///
+        /// It is deliberately NOT about a tool name: the question is what this machine
+        /// permits, and the answer must be the same for the next handler that asks.
+        /// </summary>
+        public static bool AllowsExternalSideEffect(out string reason)
+        {
+            string profile = PermissionProfile;
+            if (profile == "full_write" || profile == "unsafe_code") { reason = null; return true; }
+            reason = "permission_profile=" + profile + " in " + Path() + " does not authorize writing outside the " +
+                     "model. Only full_write and unsafe_code do. Nothing was written, and this machine's owner is " +
+                     "the only person who changes that file.";
+            return false;
         }
 
         public static bool IsToolAllowed(CommandContract contract, out string reason)

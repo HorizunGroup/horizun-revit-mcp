@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "55655509a061809e02034896281cce720301888fff4fe772c99204b1f14c63a4",
-  "generated_from_contract_hash": "3665197e4cece6d80befd093",
+  "generated_from_server_sha": "4a6c503309f8c9527c9426c2bbb2e2f826c3f51c3d88b252db88baf39d57fa72",
+  "generated_from_contract_hash": "d1b3abb98b4d8df680572b29",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "79bb15c409c680bbc567fce9cadab3a66803f72c",
-  "code_candidate_version": "1.1.5",
+  "code_candidate_commit": "a3f88ba3005d86f6660d1c5249b754f1dffddc40",
+  "code_candidate_version": "1.2.0",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "79bb15c409c680bbc567fce9cadab3a66803f72c",
+  "source_tree_head_at_generation": "a3f88ba3005d86f6660d1c5249b754f1dffddc40",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 78,
+    "tools": 80,
     "reads": 32,
-    "writes": 46,
-    "destructive": 7,
-    "operations": 182,
-    "enumerated_variants": 619
+    "writes": 48,
+    "destructive": 14,
+    "operations": 192,
+    "enumerated_variants": 691
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -763,7 +763,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 7,
       "operation_detail": []
     },
     {
@@ -772,7 +772,7 @@
       "destructive": true,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 20,
+      "enumerated_variants": 21,
       "operation_detail": []
     },
     {
@@ -799,7 +799,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 24,
+      "enumerated_variants": 64,
       "operation_detail": []
     },
     {
@@ -875,8 +875,32 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 16,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "prevention_gate.operation",
+          "values": [
+            "save",
+            "save_as",
+            "sync_with_central",
+            "export",
+            "publish",
+            "close_with_save",
+            "batch_open_close"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_apply_corrections",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
       "operations": 0,
-      "enumerated_variants": 5,
+      "enumerated_variants": 0,
       "operation_detail": []
     },
     {
@@ -884,9 +908,19 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 3,
-      "operation_detail": []
+      "operations": 2,
+      "enumerated_variants": 10,
+      "operation_detail": [
+        {
+          "property": "mode",
+          "path": "mode",
+          "values": [
+            "volume",
+            "takeoff"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_clash",
@@ -930,8 +964,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 7,
+      "operations": 8,
+      "enumerated_variants": 8,
       "operation_detail": [
         {
           "property": "operation",
@@ -943,6 +977,7 @@
             "pin",
             "unpin",
             "add",
+            "add_instance",
             "change_path"
           ],
           "source_read_confirmed": true
@@ -1019,7 +1054,7 @@
     {
       "tool": "horizun_split_floor_loops",
       "read_only": false,
-      "destructive": false,
+      "destructive": true,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
@@ -1031,13 +1066,13 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 3,
       "operation_detail": []
     },
     {
       "tool": "horizun_split_multilayer_slabs",
       "read_only": false,
-      "destructive": false,
+      "destructive": true,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
@@ -1046,7 +1081,7 @@
     {
       "tool": "horizun_ungroup_and_mark",
       "read_only": false,
-      "destructive": false,
+      "destructive": true,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
@@ -1073,7 +1108,7 @@
     {
       "tool": "horizun_embed_floors_in_toposolid",
       "read_only": false,
-      "destructive": false,
+      "destructive": true,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
@@ -1082,7 +1117,7 @@
     {
       "tool": "horizun_grade_toposolid_around_floors",
       "read_only": false,
-      "destructive": false,
+      "destructive": true,
       "open_world": false,
       "operations": 0,
       "enumerated_variants": 0,
@@ -1128,6 +1163,15 @@
       "tool": "horizun_excel_write_rows",
       "read_only": false,
       "destructive": false,
+      "open_world": true,
+      "operations": 0,
+      "enumerated_variants": 2,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_budget_compare",
+      "read_only": false,
+      "destructive": true,
       "open_world": true,
       "operations": 0,
       "enumerated_variants": 2,

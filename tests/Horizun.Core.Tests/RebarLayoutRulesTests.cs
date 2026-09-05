@@ -229,21 +229,45 @@ namespace Horizun.Core.Tests
         // ---------------------------------------------- suppressed end bars
 
         [Fact]
-        public void Excluding_both_ends_removes_two_bars_and_keeps_the_positions()
+        public void Excluding_both_ends_is_refused_because_Revit_keeps_one_of_them()
         {
+            // MEASURED 2026-09-03 on Revit 2026 (26.4.0.32): a 16-position array
+            // declared with both ends off came back with IncludeFirstBar true and
+            // one more bar than the plan. The pair is refused, never modelled.
             RebarLayoutPlan p = R(RebarLayout.FixedNumber, number: 5, array: 800, first: false, last: false);
-            Assert.True(p.Ok);
+            Assert.False(p.Ok);
+            Assert.Equal(RebarLayoutRules.CodeBothEndsSuppressed, p.Code);
+            Assert.Contains("one pitch shorter", p.Error);
+        }
+
+        [Fact]
+        public void A_suppressed_first_bar_on_maximum_spacing_is_refused_as_measured()
+        {
+            var req = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100, ArrayLengthMm = 1000, IncludeFirstBar = false };
+            RebarLayoutPlan p = RebarLayoutRules.Resolve(req);
+            Assert.False(p.Ok);
+            Assert.Equal(RebarLayoutRules.CodeFirstBarNotSuppressible, p.Code);
+            // the last bar alone is honoured (measured in the same run)
+            var ok = new RebarLayoutRequest { Layout = RebarLayout.MaximumSpacing, SpacingMm = 100, ArrayLengthMm = 1000, IncludeLastBar = false };
+            Assert.True(RebarLayoutRules.Resolve(ok).Ok);
+        }
+
+        [Fact]
+        public void Excluding_ONE_end_still_removes_that_bar_and_keeps_the_positions()
+        {
+            RebarLayoutPlan p = R(RebarLayout.FixedNumber, number: 5, array: 800, first: false, last: true);
+            Assert.True(p.Ok, p.Error);
             Assert.Equal(5, p.NumberOfBarPositions);   // the ARRAY is still five long
-            Assert.Equal(3, p.Quantity);               // three bars actually stand
+            Assert.Equal(4, p.Quantity);               // four bars actually stand
             Assert.Equal(5, p.PositionsMm.Count);
         }
 
         [Fact]
-        public void Excluding_both_ends_of_a_TWO_bar_set_builds_nothing_and_says_so()
+        public void Excluding_both_ends_of_a_TWO_bar_set_is_refused_the_same_way()
         {
             RebarLayoutPlan p = R(RebarLayout.FixedNumber, number: 2, array: 300, first: false, last: false);
             Assert.False(p.Ok);
-            Assert.Equal(RebarLayoutRules.CodeNothingLeft, p.Code);
+            Assert.Equal(RebarLayoutRules.CodeBothEndsSuppressed, p.Code);
         }
 
         // ------------------------------------------------------------- drift

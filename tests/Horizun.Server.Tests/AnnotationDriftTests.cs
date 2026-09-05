@@ -9,6 +9,7 @@
 // are what keep them honest, because the failure mode is not an exception, it is
 // a plausible-looking wrong hint.
 // -----------------------------------------------------------------------------
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Horizun.Contracts;
@@ -56,6 +57,52 @@ namespace Horizun.Server.Tests
                 Assert.NotNull(c);
                 Assert.True(c.Destructive, name + " must declare Destructive");
             }
+        }
+
+        /// <summary>
+        /// AND THE LIST ABOVE ONLY CATCHES WHAT SOMEBODY REMEMBERED TO NAME. It is a hand
+        /// written array; a tool that deletes is caught by it only if the person who wrote
+        /// the tool also edited this file, which is the same person in the same hour, so it
+        /// records intentions rather than testing them. Three deleting tools were absent
+        /// from it - split_multilayer_slabs, split_floor_loops and ungroup_and_mark - and
+        /// shipped telling every MCP client that destructiveHint was false.
+        ///
+        /// This one derives the obligation from the tool's OWN description instead of a
+        /// second list, so the two cannot drift apart: a description that admits to
+        /// deleting is a confession, and the annotation has to match it. A new deleting
+        /// tool now fails here the moment its description says what it does.
+        ///
+        /// destructiveHint is not decoration. It is what a client reads to decide whether
+        /// to ask a person first, so false on a tool that deletes is not a missing label -
+        /// it is an assurance of safety the tool cannot keep.
+        /// </summary>
+        [Fact]
+        public void A_tool_whose_own_description_admits_deleting_declares_destructive()
+        {
+            // Phrases in which the tool is the one doing the deleting. "is NOT deleted"
+            // does not contain "is deleted", which is how split_multilayer_walls - whose
+            // original survives as the core wall - stays correctly out of this.
+            string[] admissions = { "is deleted", "are deleted", "before deletion", "destroys" };
+
+            var offenders = new List<string>();
+            foreach (CommandContract c in Contract.All)
+            {
+                if (c.Destructive) continue;
+                string text = (c.Description ?? string.Empty).ToLowerInvariant();
+                foreach (string phrase in admissions)
+                {
+                    int at = text.IndexOf(phrase, StringComparison.Ordinal);
+                    if (at < 0) continue;
+                    int from = Math.Max(0, at - 90);
+                    int len = Math.Min(text.Length - from, phrase.Length + 180);
+                    offenders.Add(c.Name + " [" + phrase + "] ..." + text.Substring(from, len) + "...");
+                    break;
+                }
+            }
+
+            Assert.True(offenders.Count == 0,
+                "these tools say they delete and declare destructiveHint=false:" +
+                Environment.NewLine + string.Join(Environment.NewLine, offenders));
         }
 
         /// <summary>

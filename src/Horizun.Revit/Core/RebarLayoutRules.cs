@@ -107,6 +107,8 @@ namespace Horizun.Revit.Core
         public const string CodeStatedNotUsed = "stated_value_not_used_by_this_layout";
         public const string CodeNotFinite = "value_is_not_a_finite_number";
         public const string CodeTooManyBars = "too_many_bar_positions";
+        public const string CodeBothEndsSuppressed = "both_end_bars_suppressed";
+        public const string CodeFirstBarNotSuppressible = "first_bar_suppression_not_honoured";
 
         /// <summary>
         /// The largest array this will resolve. Not a structural opinion - it is the
@@ -182,6 +184,37 @@ namespace Horizun.Revit.Core
                 p.IncludeLastBar = true;
                 return p;
             }
+
+            // BOTH ENDS SUPPRESSED IS REFUSED, NOT SENT. Measured once, Revit 2026
+            // build 26.4.0.32, 2026-09-03: a maximum_spacing array of 16 positions
+            // declared include_first_bar=false AND include_last_bar=false came back
+            // with IncludeFirstBar TRUE, IncludeLastBar false and 15 bars - one more
+            // than the plan, and the post-commit verification caught it. One
+            // observation is not a formula (ADR-003), so nothing here models what
+            // Revit does with the pair; it is refused with the two honest ways out:
+            // suppress one end of this array and the touching end of the
+            // neighbour, or declare the array a pitch shorter.
+            if (!r.IncludeFirstBar && !r.IncludeLastBar)
+                return Fail(p, CodeBothEndsSuppressed,
+                    "include_first_bar and include_last_bar are both false. Revit was measured keeping the " +
+                    "first bar when both are declared off (one extra bar, caught after the commit), so the " +
+                    "pair is refused rather than modelled. Suppress ONE end here and the touching end of the " +
+                    "neighbouring zone, or declare this array one pitch shorter.");
+
+            // AND THE FIRST BAR ALONE, FOR A SPACING-DRIVEN ARRAY. Measured twice on
+            // the same Revit (2026-09-03, probe Z5, commits 4d4c81c and 39f0d1f):
+            // a maximum_spacing zone declared include_first_bar=false was committed
+            // with IncludeFirstBar TRUE and one bar more than the plan, both times,
+            // while include_last_bar=false in the same run was honoured. Which
+            // Revit versions and which other layouts share the behaviour is not
+            // known, so only the measured combination is refused: suppress the LAST
+            // bar of the zone before instead, which was measured to work.
+            if (!r.IncludeFirstBar && r.Layout == RebarLayout.MaximumSpacing)
+                return Fail(p, CodeFirstBarNotSuppressible,
+                    "include_first_bar is false on a maximum_spacing layout. Revit 2026 was measured keeping " +
+                    "that bar anyway (one extra bar, caught after the commit, twice), so the declaration is " +
+                    "refused rather than built and reported as a failure. Suppress the LAST bar of the zone " +
+                    "before this one instead; that was measured to hold.");
 
             int n;
             double array;

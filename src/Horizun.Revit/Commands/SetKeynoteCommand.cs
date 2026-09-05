@@ -51,19 +51,6 @@ namespace Horizun.Revit.Commands
             "not name), writes each type once, and VERIFIES AFTER THE COMMIT: every target is re-resolved from the committed document and its value read fresh, because a value read inside an open transaction can still disappear with it. elements_now_carrying_this_keynote is counted by asking the model again afterwards, never by summing what the plan expected. The counts are kept apart because they answer different questions: requested_ids (every id sent, INCLUDING entries that were not integers), parsed_ids, targets_resolved, writes_accepted_in_transaction (not evidence), writes_verified_after_commit (evidence) and writes_failed. Use scope='instance' to " +
             "refuse any write that would spill onto siblings, or dry_run=true to see the impact first.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""required"": [""element_ids"", ""keynote""],
-  ""properties"": {
-    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1,
-                       ""description"": ""Elements to code. If the Keynote lives on their type, the type is what gets written."" },
-    ""keynote"": { ""type"": ""string"", ""description"": ""The keynote code. Empty string clears it."" },
-    ""scope"": { ""type"": ""string"", ""enum"": [""auto"", ""instance"", ""type""], ""default"": ""auto"",
-                 ""description"": ""auto: write wherever the parameter lives (type if that is the only place). instance: only write an instance-level Keynote; fail rather than spill onto siblings. type: always write the type."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Resolve targets and report the blast radius without writing."" }
-  }
-}";
-
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;

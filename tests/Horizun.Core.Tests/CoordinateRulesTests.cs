@@ -189,5 +189,96 @@ namespace Horizun.Core.Tests
             Assert.Contains("survey point far from the internal origin is normal",
                             CoordinateRules.DistanceMeans);
         }
+
+        // --------------------------------------------------------- site location
+
+        [Fact]
+        public void A_site_nobody_collected_is_not_collected_rather_than_missing()
+        {
+            // bool?, not bool. A fresh facts object must not answer "this model has
+            // no site location" about a question nothing has asked yet.
+            GateItemMeasurement item = CoordinateRules.ReadabilityItems(new CoordinateFacts())["site_location"];
+            Assert.Null(item.Satisfied);
+            Assert.Equal("not collected", item.Detail);
+        }
+
+        [Fact]
+        public void A_readable_site_reports_its_degrees_and_its_place_name()
+        {
+            var f = new CoordinateFacts
+            {
+                SiteReadable = true,
+                LatitudeDegrees = 4.711,
+                LongitudeDegrees = -74.0721,
+                PlaceName = "Bogota"
+            };
+            GateItemMeasurement item = CoordinateRules.ReadabilityItems(f)["site_location"];
+            Assert.True(item.Satisfied);
+            Assert.Contains("4.711", item.Detail);
+            Assert.Contains("-74.072", item.Detail);
+            Assert.Contains("degrees", item.Detail);
+            Assert.Contains("Bogota", item.Detail);
+        }
+
+        [Fact]
+        public void A_site_that_exists_but_will_not_give_coordinates_says_so()
+        {
+            // Readable and empty is a THIRD state: the document has a site location
+            // and would not report where it is. Neither "no site" nor a coordinate.
+            var f = new CoordinateFacts { SiteReadable = true };
+            GateItemMeasurement item = CoordinateRules.ReadabilityItems(f)["site_location"];
+            Assert.True(item.Satisfied);
+            Assert.Contains("would not report its coordinates", item.Detail);
+        }
+
+        [Fact]
+        public void An_unreadable_site_carries_the_reason_it_could_not_be_read()
+        {
+            var f = new CoordinateFacts { SiteReadable = false, SiteWhy = "the document reports no site location." };
+            GateItemMeasurement item = CoordinateRules.ReadabilityItems(f)["site_location"];
+            Assert.False(item.Satisfied);
+            Assert.Contains("no site location", item.Detail);
+        }
+
+        [Fact]
+        public void Zero_zero_is_reported_as_a_place_because_it_is_one()
+        {
+            // The Gulf of Guinea. A tool that treats 0,0 as "unset" reports a model
+            // positioned there as unpositioned, and a template default as a blank.
+            var f = new CoordinateFacts { SiteReadable = true, LatitudeDegrees = 0.0, LongitudeDegrees = 0.0 };
+            GateItemMeasurement item = CoordinateRules.ReadabilityItems(f)["site_location"];
+            Assert.True(item.Satisfied);
+            Assert.Contains("0, 0 degrees", item.Detail);
+        }
+
+        [Fact]
+        public void The_site_says_in_its_own_words_that_it_is_degrees_and_ungraded()
+        {
+            // The radians trap: the API answers in radians and a number printed as
+            // degrees still looks like a coordinate, so the bug survives review.
+            Assert.Contains("DEGREES", CoordinateRules.SiteMeans);
+            Assert.Contains("radians", CoordinateRules.SiteMeans);
+            Assert.Contains("NOT evidence that anybody set it", CoordinateRules.SiteMeans);
+            Assert.Contains("no expectation was compiled in", CoordinateRules.SiteMeans);
+        }
+
+        [Fact]
+        public void Shared_position_is_declared_unobservable_with_the_reason_and_the_refusal()
+        {
+            // The limitation is modelled rather than left open: the field exists,
+            // its value is null, and the reply says why - including the substitute
+            // this refuses to use.
+            string m = CoordinateRules.SharedPositionNotObservable;
+            Assert.Contains("NOT OBSERVABLE", m);
+            Assert.Contains("ImportPlacement", m);
+            Assert.Contains("input to RevitLinkInstance.Create", m);
+            Assert.Contains("2023 through 2027", m);
+            // The refusal is the part that matters: transform similarity is the
+            // wrong answer, not merely an unavailable one.
+            Assert.Contains("NOT inferred from transform similarity", m);
+            Assert.Contains("origin-to-origin", m);
+            // And what a caller would have to bring.
+            Assert.Contains("document does not retain it", m);
+        }
     }
 }

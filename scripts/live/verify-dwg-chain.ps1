@@ -291,7 +291,7 @@ $sSrc = Invoke-HzTool -Run $run -Tool 'horizun_apply_cad_plan' -Label 's-source'
 Add-HzRefusalProbe -Run $run -Id 'S2' -Name 'a forged source fingerprint is refused' -Call $sSrc -MustMatch 'stale_plan'
 
 $otherDoc = Invoke-HzTool -Run $run -Tool 'horizun_apply_cad_plan' -Label 's-doc' `
-    -Arguments (Copy-HzArgs $applyArgs @{ dry_run = $true; target_document = 'HZ_LIVE_A' })
+    -Arguments (Copy-HzArgs $applyArgs @{ dry_run = $true; target_document = ($Document + '-NOT-ACTIVE') })
 Add-HzRefusalProbe -Run $run -Id 'S3' -Name 'aiming the plan at another document refuses' `
     -Call $otherDoc -MustMatch '.' -Expected 'refused by the active-document guard or the target binding'
 

@@ -66,7 +66,7 @@ namespace Horizun.Revit.Commands
             if (!set.Ok)
                 return CommandResult.FailWithDetail(
                     "The requirement set was refused, so nothing was written: " + set.Error,
-                    new JObject { ["code"] = set.Code });
+                    StructuralRequirementSet.RefusalDetail(set));
 
             var narrow = new List<long>();
             foreach (JToken t in request["host_ids"] as JArray ?? new JArray())
@@ -715,6 +715,23 @@ namespace Horizun.Revit.Commands
                     ["why"] = "the same: with no position transforms there is nothing to measure against the " +
                               "host's boundary."
                 };
+                // THE SAME KEYS AS THE MEASURED PATH, for the same reason as above:
+                // a reader looking for the cover or the openings check must find it
+                // failed, not absent.
+                if (b.Rule.CoverPrediction != null)
+                    checks["cover_prediction"] = new JObject
+                    {
+                        ["verified"] = false,
+                        ["status"] = StirrupCoverPrediction.Marker,
+                        ["why"] = "with no position transforms the first and last bar could not be placed, so the " +
+                                  "cover-derived prediction was not compared with anything. Unknown is not a pass."
+                    };
+                if (b.Rule.OpeningContext != null)
+                    checks["clear_of_openings"] = new JObject
+                    {
+                        ["verified"] = false,
+                        ["why"] = "with no position transforms no drawn bar could be measured against the openings."
+                    };
                 ok = false;
             }
             else
@@ -836,6 +853,25 @@ namespace Horizun.Revit.Commands
                 else positionsCheck["why_not_verified"] = spanWhy;
                 checks["positions_match_the_plan"] = positionsCheck;
                 ok &= positionsMatch;
+
+                // THE COVER-DERIVED PREDICTION, held to the model. A cover-aware
+                // zone predicted its first and last station from one measured rule;
+                // this is the comparison that turns predicted_from_host_cover into
+                // evidence or into a finding. The first bar is anchored (measured:
+                // Revit does not move it); the last may be up to one model diameter
+                // short, the same bound the array check holds.
+                if (b.Rule.CoverPrediction != null)
+                    checks["cover_prediction"] = CoverPredictionCheck(b, barPoints, fromModel, measured,
+                                                                      arrayReadMm, arrayModelDiameterMm,
+                                                                      set.Tolerances.LengthMm, ref ok);
+
+                // THE OPENINGS THE MAT WAS PLANNED AROUND, against the bars Revit
+                // drew. Containment already refuses a bar over a void; this says
+                // whether the drawn bars honour the declared policy - and, for trim,
+                // the declared clearance - by the same arithmetic the plan used.
+                if (b.Rule.OpeningContext != null)
+                    checks["clear_of_openings"] = OpeningsCheck(b, barPoints, fromModel, measured,
+                                                                set.Tolerances.LengthMm, ref ok);
             }
 
             // THE ARRAY LENGTH, against what Revit REPORTS rather than what was
@@ -931,6 +967,127 @@ namespace Horizun.Revit.Commands
             row["verified"] = ok;
             row["checks"] = checks;
             return row;
+        }
+
+        /// <summary>
+        /// The first and last station Revit drew, against the ones a cover-aware
+        /// zone predicted. The prediction rests on ADR-003 item 7 - the array is
+        /// clamped to cover + bar radius at each end - and this is the only thing
+        /// that proves it for THIS host: the first bar must sit where the plan put
+        /// it, to the length tolerance, and the last may fall short of its station
+        /// by no more than one model bar diameter, the bound the array check holds.
+        /// </summary>
+        private static JObject CoverPredictionCheck(ResolvedRebarRow b, List<double[]> barPoints, bool fromModel,
+                                                    List<double> measured, double? arrayReadMm,
+                                                    double modelDiameterMm, double toleranceMm, ref bool ok)
+        {
+            StirrupCoverPrediction cp = b.Rule.CoverPrediction;
+            var o = new JObject
+            {
+                ["status"] = StirrupCoverPrediction.Marker,
+                ["source"] = cp.Source,
+                ["cover_mm"] = Math.Round(cp.CoverMm, 3),
+                ["bar_radius_mm"] = Math.Round(cp.BarRadiusMm, 3),
+                ["clamp_each_end_mm"] = Math.Round(cp.ClampEachEndMm, 3),
+                ["host_span_mm"] = Math.Round(cp.HostSpanMm, 3),
+                ["usable_span_mm"] = Math.Round(cp.UsableSpanMm, 3),
+                ["zone"] = cp.ZoneName,
+                ["bar_read_from_model"] = fromModel
+            };
+            double[] along = RebarContainment.Unit(cp.Along);
+            if (along == null || barPoints == null || barPoints.Count == 0 || b.Rule.CurvesMm.Count == 0)
+            {
+                o["verified"] = false;
+                o["why"] = "the zone direction or the drawn bar was not available, so the prediction was not " +
+                           "compared. Unknown is not a pass.";
+                ok = false;
+                return o;
+            }
+
+            double predictedFirst = b.Rule.CurvesMm.Average(p => RebarPlanRules.Project(p, along));
+            double measuredFirst = barPoints.Average(p => RebarPlanRules.Project(p, along));
+            double firstDiff = Math.Abs(measuredFirst - predictedFirst);
+            // The station from the host's start, on the assumption the profile was
+            // declared AT that start - which is what "the outline at the START of
+            // the span" means and what the prediction rests on. Published so a
+            // profile declared elsewhere shows up as a station that is not the
+            // clamp, rather than as an inexplicable failure.
+            double hostStartAt = predictedFirst - cp.ZoneStartMm;
+            o["first_station_predicted_mm"] = Math.Round(cp.ZoneStartMm, 3);
+            o["first_station_measured_mm"] = Math.Round(measuredFirst - hostStartAt, 3);
+            o["first_bar_difference_mm"] = Math.Round(firstDiff, 3);
+            bool firstOk = fromModel && firstDiff <= toleranceMm;
+
+            double predictedLastOffset = b.Layout.PositionsMm.Count > 0
+                ? b.Layout.PositionsMm[b.Layout.PositionsMm.Count - 1] : 0;
+            double measuredLastOffset = measured.Count > 0 ? measured[measured.Count - 1] : 0;
+            double lastShortfall = predictedLastOffset - measuredLastOffset;
+            double allowed = modelDiameterMm > 0 ? modelDiameterMm : 0;
+            bool lastOk = fromModel && lastShortfall >= -toleranceMm && lastShortfall <= allowed + toleranceMm;
+            o["last_station_predicted_mm"] = Math.Round(cp.ZoneEndMm, 3);
+            o["last_station_measured_mm"] = Math.Round(measuredFirst - hostStartAt + measuredLastOffset, 3);
+            o["last_bar_shortfall_mm"] = Math.Round(lastShortfall, 3);
+            o["last_bar_allowed_shortfall_mm"] = Math.Round(allowed, 3);
+            o["array_length_revit_reports_mm"] = arrayReadMm.HasValue
+                ? (JToken)Math.Round(arrayReadMm.Value, 3) : JValue.CreateNull();
+            o["tolerance_mm"] = toleranceMm;
+            o["verified"] = firstOk && lastOk;
+            o["why"] = !fromModel
+                ? "the bar would not return its centreline, so the drawn stations are unknown. Unknown is not a pass."
+                : !firstOk
+                    ? "Revit drew the first bar " + Mm(firstDiff) + " from where the cover-derived plan put it. " +
+                      "Either the host's cover is not what was planned with, or the profile is not at the " +
+                      "host's start, or the measured clamping rule does not hold for this host - the first " +
+                      "bar of a hosted array has not moved in any measured case."
+                    : !lastOk
+                        ? "the last bar falls " + Mm(lastShortfall) + " short of its predicted station, and the " +
+                          "measured bound is one model bar diameter, " + Mm(allowed) + "."
+                        : "the first bar is where the cover-derived plan put it and the last is within the " +
+                          "measured bound; the prediction held for this host.";
+            ok &= firstOk && lastOk;
+            return o;
+        }
+
+        /// <summary>
+        /// The drawn bars against the openings the mat was planned around. What
+        /// counts as verified depends on the policy: under omit and trim no drawn
+        /// bar may have its body over a considered opening, and under trim none
+        /// may stop inside the declared clearance; under ignore the crossings are
+        /// reported and not asserted, because building them was the declaration.
+        /// </summary>
+        private static JObject OpeningsCheck(ResolvedRebarRow b, List<double[]> barPoints, bool fromModel,
+                                             List<double> measured, double toleranceMm, ref bool ok)
+        {
+            MatOpeningContext ctx = b.Rule.OpeningContext;
+            MatOpeningCheck check = MatOpenings.CheckBars(ctx, barPoints, measured, toleranceMm);
+            JObject o = check.ToJson();
+            o["policy"] = ctx.Policy ?? "not_declared";
+            o["openings_considered"] = ctx.Considered.Count();
+            o["bar_read_from_model"] = fromModel;
+            o["source"] = "the centreline Revit drew, offset by GetBarPositionTransform, in the component's own " +
+                          "frame, against the opening rings read from the host's face - the same arithmetic the " +
+                          "plan used to omit or trim.";
+            bool asserted = ctx.Policy != StructuralMatOpenings.PolicyIgnore;
+            if (!asserted)
+            {
+                o["verified"] = JValue.CreateNull();
+                o["asserted"] = false;
+                o["why"] = "policy ignore builds the bars as declared; the crossings are reported here and " +
+                           "inside_host_solid is what refuses a bar really over the void. " + check.Why;
+                return o;
+            }
+            bool clear = fromModel && check.Evaluated && check.Crossing.Count == 0 &&
+                         (ctx.Policy != StructuralMatOpenings.PolicyTrim || check.ShortOfClearance.Count == 0);
+            o["verified"] = clear;
+            if (!fromModel) o["why"] = "the bar would not return its centreline, so this was measured on the " +
+                                       "DECLARED geometry. Unknown is not a pass.";
+            ok &= clear;
+            return o;
+        }
+
+        private static string Mm(double v)
+        {
+            return Math.Round(v, 3).ToString(CultureInfo.InvariantCulture) + " mm";
         }
 
         /// <summary>

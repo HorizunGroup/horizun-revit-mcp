@@ -275,6 +275,71 @@ namespace Horizun.Server
             dim.SetAttributeValue("ref", start + ":" + ColumnLetter(newEndCol) + newEndRow);
         }
 
+        /// <summary>
+        /// A valid, EMPTY .xlsx with one worksheet: the smallest package Excel, openpyxl
+        /// and this file's own reader all accept. It exists so a host-resident tool can
+        /// CREATE a report workbook and then append to it through Handle, inheriting the
+        /// lock, the re-read verification and the durable ledger instead of growing a
+        /// second writer. Nothing about the append path changed: it still refuses to
+        /// invent an xlsx that is not there - this is the caller inventing one on purpose.
+        /// </summary>
+        internal static byte[] MinimalWorkbook(string sheetName)
+        {
+            string problem = SheetNameProblem(sheetName);
+            if (problem != null) throw new ArgumentException(problem);
+            string escaped = new XText(sheetName).ToString().Replace("\"", "&quot;");
+            var parts = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("[Content_Types].xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+                    "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+                    "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+                    "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+                    "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
+                    "</Types>"),
+                new KeyValuePair<string, string>("_rels/.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                    "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
+                    "</Relationships>"),
+                new KeyValuePair<string, string>("xl/workbook.xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+                    "<sheets><sheet name=\"" + escaped + "\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>"),
+                new KeyValuePair<string, string>("xl/_rels/workbook.xml.rels",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+                    "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
+                    "</Relationships>"),
+                new KeyValuePair<string, string>("xl/worksheets/sheet1.xml",
+                    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>" +
+                    "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+                    "<dimension ref=\"A1:A1\"/><sheetData/></worksheet>")
+            };
+            using (var ms = new MemoryStream())
+            {
+                using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+                    foreach (var kv in parts)
+                    {
+                        ZipArchiveEntry e = zip.CreateEntry(kv.Key, CompressionLevel.Optimal);
+                        byte[] data = new UTF8Encoding(false).GetBytes(kv.Value);
+                        using (var w = e.Open()) w.Write(data, 0, data.Length);
+                    }
+                return ms.ToArray();
+            }
+        }
+
+        /// <summary>Excel's own rules for a sheet name, so the workbook opens rather than repairs.</summary>
+        internal static string SheetNameProblem(string sheetName)
+        {
+            if (string.IsNullOrWhiteSpace(sheetName)) return "sheet name is required.";
+            if (sheetName.Length > 31) return "sheet name '" + sheetName + "' is longer than Excel's 31-character limit.";
+            if (sheetName.IndexOfAny(new[] { '[', ']', ':', '*', '?', '/', '\\' }) >= 0)
+                return "sheet name '" + sheetName + "' contains a character Excel forbids ([ ] : * ? / \\).";
+            return null;
+        }
+
         /// <summary>Lowercase hex SHA-256 — the provenance stamp of the produced file.</summary>
         internal static string Sha256Hex(byte[] bytes)
         {

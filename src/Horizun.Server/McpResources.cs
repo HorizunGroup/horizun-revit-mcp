@@ -129,13 +129,36 @@ namespace Horizun.Server
             }.ToString(Formatting.Indented);
         }
 
-        private static string BuildText() => new JObject
+        private static string BuildText()
         {
-            ["server_name"] = "horizun-mcp",
-            ["contract_hash"] = Horizun.Contracts.Contract.Hash,
-            ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
-            ["supported_mcp_protocols"] = new JArray(ProtocolNegotiation.Supported)
-        }.ToString(Formatting.Indented);
+            // WITHHOLDING WITHOUT EXPLAINING IS ITS OWN FAILURE. tools/list no longer
+            // advertises a plugin tool the loaded add-in does not register, which is
+            // right - and it leaves somebody looking for a tool that used to be there
+            // with nothing to read. This is where they read it.
+            JArray withheld;
+            try { withheld = Tools.Withheld(); } catch { withheld = null; }
+            var registry = new JObject
+            {
+                ["withheld_count"] = withheld == null ? (JToken)null : withheld.Count,
+                ["withheld"] = withheld,
+                ["means"] = withheld == null
+                    ? "the withheld list could not be computed in this process."
+                    : (withheld.Count == 0
+                        ? "every tool this server publishes is answerable: host-resident, or a plugin command the " +
+                          "loaded add-in registers. When no Revit has published a bridge nothing is withheld, " +
+                          "because unknown is not absent."
+                        : "these tools are NOT in tools/list. Each names the plugin command its answer needs and " +
+                          "why the loaded add-in cannot give it. Rebuild and redeploy both halves together.")
+            };
+            return new JObject
+            {
+                ["server_name"] = "horizun-mcp",
+                ["contract_hash"] = Horizun.Contracts.Contract.Hash,
+                ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
+                ["supported_mcp_protocols"] = new JArray(ProtocolNegotiation.Supported),
+                ["registry"] = registry
+            }.ToString(Formatting.Indented);
+        }
 
         private static void RejectCursor(JObject prms)
         {

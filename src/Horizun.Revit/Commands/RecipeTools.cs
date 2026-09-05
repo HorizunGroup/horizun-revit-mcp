@@ -31,29 +31,10 @@ namespace Horizun.Revit.Commands
         };
     }
 
-    /// <summary>"Partir Muro Multicapa" — one wall per material layer.</summary>
-    public sealed class SplitMultilayerWallsCommand : RecipeCommand
-    {
-        public override string Name => "horizun_split_multilayer_walls";
-
-        public override string Description =>
-            "Split compound and stacked walls into one wall per material layer, re-hosting doors and windows " +
-            "on the structural layer and joining the finishes to it. CURVED WALLS ARE REFUSED, not straightened.";
-
-        protected override string RecipeName => "split_multilayer_walls";
-
-        protected override string TransactionName => "Horizun: split compound walls";
-
-        // origin_group_param decides whether a parameter is COPIED onto every wall this
-        // creates, so it changes what is written and belongs in the token's scope.
-        protected override string[] ScopeFields => new[] { "element_ids", "view_id", "origin_group_param" };
-
-        protected override VerifiedCount[] Verifications => new[]
-        {
-            new VerifiedCount("layer walls created", "created", "created_present"),
-            new VerifiedCount("original walls deleted", "deleted", "deleted_gone")
-        };
-    }
+    // "Partir Muro Multicapa" USED to live here as a RecipeCommand. It is now a typed
+    // command in SplitMultilayerWallsCommand.cs, because the two counts a recipe could
+    // verify - how many walls exist, and whether the original is gone - are not the
+    // question this operation has to answer. See docs/WALL-LAYER-DECOMPOSITION.md.
 
     /// <summary>"Separar Losas" — one floor/ceiling per material layer.</summary>
     public sealed class SplitMultilayerSlabsCommand : RecipeCommand

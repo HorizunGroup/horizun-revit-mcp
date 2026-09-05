@@ -76,31 +76,6 @@ namespace Horizun.Revit.Commands
             "asked for the UNION, so a binding missing part of it is not what you asked for and the values in the " +
             "dropped categories are gone. The document's SharedParametersFilename is restored afterwards.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""required"": [""spf_path"", ""categories""],
-  ""properties"": {
-    ""spf_path"": { ""type"": ""string"", ""description"": ""Absolute path to the shared parameter file. It is loaded via app.SharedParametersFilename + OpenSharedParameterFile(), and the previous filename is restored afterwards — silently repointing the user's SPF is its own bug."" },
-    ""param_guid"": { ""type"": ""string"", ""description"": ""GUID of the shared parameter in the SPF. Preferred: a GUID identifies a shared parameter, a name does not."" },
-    ""param_name"": { ""type"": ""string"", ""description"": ""Name of the shared parameter in the SPF. Used only if param_guid is absent. A name matching more than one definition is an error, not a guess."" },
-    ""categories"": {
-      ""type"": ""array"", ""minItems"": 1, ""items"": { ""type"": ""string"" },
-      ""description"": ""BuiltInCategory tokens (OST_PipeFitting) or category display names. A category that does not resolve is an error: nothing is bound.""
-    },
-    ""binding_kind"": { ""type"": ""string"", ""enum"": [""Instance"", ""Type""], ""default"": ""Instance"",
-                        ""description"": ""Instance | Type. What is reported is read off the resulting Binding object's own type, not from this field."" },
-    ""group"": { ""type"": ""string"", ""default"": ""PG_IDENTITY_DATA"",
-                 ""description"": ""Parameter group: a PG_ name (PG_IDENTITY_DATA, PG_DATA, PG_TEXT...) or a group schema id (autodesk.parameter.group:identityData)."" },
-    ""merge_existing_categories"": { ""type"": ""boolean"", ""default"": true,
-                                     ""description"": ""true: UNION the categories already bound with the requested ones. false: bind ONLY the requested ones — ReInsert then DROPS every other bound category and LOSES the values stored in them. Leave it true unless you mean exactly that."" },
-    ""allow_vary_between_groups"": { ""type"": ""boolean"", ""default"": true,
-                                     ""description"": ""Call SetAllowVaryBetweenGroups(true) on the InternalDefinition. Without it, writing different values to instances inside Model Groups raises the DESAGRUPAR modal, which hangs the bridge. Reported as read back from the InternalDefinition, never as assumed."" },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: bind shared parameter"" },
-    ""target_document_title"": { ""type"": ""string"",
-                                 ""description"": ""If given, the bind aborts unless the active document's title matches. Binding into whichever model happened to be in front is how a batch lands in the wrong file."" }
-  }
-}";
-
         // The three-way split. `unknown` is not a polite name for `not_bound`: one says
         // the model does not carry the binding, the other says we could not look. Summing
         // them is how "I could not look" gets published as "it is absent".

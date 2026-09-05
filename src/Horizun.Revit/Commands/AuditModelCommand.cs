@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_audit_model — the pre-delivery health check.
@@ -18,14 +18,15 @@
 //     types with zero instances: they carry their full geometry in the file,
 //     never appear in any view, and survive Purge in older Revit. They are pure
 //     invisible weight and the usual reason a model is inexplicably large.
-//   * NOTHING IS SCORED AWAY. No 0-100 health index. A single number invites the
-//     reader to stop reading; the findings are the deliverable.
+//   * NOTHING IS SCORED WITHOUT A PROFILE. A health index is opt-in, weighted by
+//     the caller, and always travels with its coverage and deductions.
 //
 // Read-only by construction: it opens no transaction, so it cannot damage the
 // model it is auditing.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -47,34 +48,319 @@ namespace Horizun.Revit.Commands
             "and file weight. Read-only. Every count is the model's, every list states total vs. shown, " +
             "and any check that could not run is reported as failed rather than skipped silently.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""top"": { ""type"": ""integer"", ""default"": 20, ""minimum"": 1,
-               ""description"": ""How many items to list per finding. Totals are always exact regardless of this."" },
-    ""requirement_set"": { ""type"": ""object"",
-               ""description"": ""A declarative pre-delivery gate over what the audit measured - the standard arrives here, nothing is compiled in. Known requirements: max_warnings, max_in_place_families, max_views_off_sheets, max_file_mb, max_open_mep_connectors, max_unpinned_links, max_views_without_template (numbers), forbid_orphan_group_types, forbid_imported_cad, forbid_room_problems (true enforces, false waives AND records the waiver). The reply gains a gate block with per-requirement rows and a verdict: pass, fail, or not_assessable - a check with incomplete coverage can FAIL a limit (the count is at least that) but can never PASS one, and an unknown requirement refuses the whole gate rather than reading like one that passed."" }
-  }
-}";
+
+
+        /// <summary>
+        /// The configuration the checks read: the caller's profiles and tolerances.
+        /// Read from a request by the audit, and from a `require_gate.profile` by the
+        /// gated save and export - ONE reader, so the gate cannot measure with a
+        /// tolerance the audit would have refused.
+        /// </summary>
+        internal sealed class AuditOptions
+        {
+            // Absent by default: with no request there is no profile, and "absent"
+            // is a different answer from "supplied and empty".
+            public WarningProfile WarningProfile = WarningRules.ReadProfile(null);
+            public WorksetRules WorksetRules = WorksetPlacementRules.Read(null);
+            public JArray ReadinessRoles;
+            public JObject Tolerances;
+            public double FarRadiusMm = CoordinateRules.DefaultFarRadiusMm;
+            public double LinkOffsetMm = 1.0;
+            public double LevelCoincidenceMm = DatumRules.DefaultLevelCoincidenceMm;
+            public double GridCoincidenceMm = DatumRules.DefaultGridCoincidenceMm;
+            public double GridAxisDegrees = DatumRules.DefaultGridAxisToleranceDegrees;
+
+            /// <summary>
+            /// Read the four option keys off any object that carries them. A non-null
+            /// return is the refusal: a misspelled tolerance silently ignored leaves
+            /// the check running on its default while the caller believes otherwise.
+            /// </summary>
+            public static string Read(JObject source, out AuditOptions options)
+            {
+                options = new AuditOptions();
+                if (source == null) return null;
+                options.WarningProfile = WarningRules.ReadProfile(source["warning_profile"]);
+                options.WorksetRules = WorksetPlacementRules.Read(source["workset_rules"]);
+                options.ReadinessRoles = source["readiness_roles"] as JArray;
+                options.Tolerances = source["tolerances"] as JObject;
+
+                var declaredTolerances = new List<KeyValuePair<string, object>>();
+                if (options.Tolerances != null)
+                    foreach (JProperty p in options.Tolerances.Properties())
+                        declaredTolerances.Add(new KeyValuePair<string, object>(p.Name, ((JValue)p.Value)?.Value));
+                string toleranceRefusal = PreDeliveryGateRules.ValidateTolerances(declaredTolerances);
+                if (toleranceRefusal != null) return toleranceRefusal;
+
+                options.FarRadiusMm = ToleranceOr(options.Tolerances, CoordinateRules.ToleranceFarRadius,
+                                                  CoordinateRules.DefaultFarRadiusMm);
+                options.LinkOffsetMm = ToleranceOr(options.Tolerances, CoordinateRules.ToleranceLinkOriginOffset, 1.0);
+                options.LevelCoincidenceMm = ToleranceOr(options.Tolerances, DatumRules.ToleranceLevelCoincidence,
+                                                         DatumRules.DefaultLevelCoincidenceMm);
+                options.GridCoincidenceMm = ToleranceOr(options.Tolerances, DatumRules.ToleranceGridCoincidence,
+                                                        DatumRules.DefaultGridCoincidenceMm);
+                options.GridAxisDegrees = ToleranceOr(options.Tolerances, DatumRules.ToleranceGridAxis,
+                                                      DatumRules.DefaultGridAxisToleranceDegrees);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// One run of the checks, with everything the surfaces built on it read:
+        /// the findings (each carrying its finding_id), the checks that died, the
+        /// named parts, the run's coverage, and the identity of the whole set.
+        /// </summary>
+        internal sealed class AuditRun
+        {
+            public int Top;
+            public JArray Findings = new JArray();
+            public JArray ChecksFailed = new JArray();
+            public JArray IncompleteChecks = new JArray();
+            public Dictionary<string, GateMeasurement> PartCounts =
+                new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
+            public DocumentVisibilityCoverage Visibility;
+            public string DocumentFingerprint;
+            public string FindingSetFingerprint;
+
+            public bool CoverageComplete
+            {
+                get { return ChecksFailed.Count == 0 && IncompleteChecks.Count == 0 && Visibility.CoverageComplete; }
+            }
+
+            public JObject FindingFor(string check)
+            {
+                foreach (JToken t in Findings)
+                    if (t is JObject o && string.Equals((string)o["check"], check, StringComparison.Ordinal)) return o;
+                return null;
+            }
+
+            public bool CheckFailed(string check)
+            {
+                foreach (JToken t in ChecksFailed)
+                    if (t is JObject o && string.Equals((string)o["check"], check, StringComparison.Ordinal)) return true;
+                return false;
+            }
+
+            /// <summary>check -> finding_id for every finding that ran.</summary>
+            public Dictionary<string, string> FindingIds()
+            {
+                var ids = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (JToken t in Findings)
+                    if (t is JObject o && o["check"] != null && o["finding_id"] != null)
+                        ids[(string)o["check"]] = (string)o["finding_id"];
+                return ids;
+            }
+        }
+
+        /// <summary>
+        /// RUN THE CHECKS - all of them, or the named subset the correction cycle
+        /// re-runs before and after it writes. One place, so an apply cannot compare
+        /// its finding against a check that was computed differently from the audit's.
+        ///
+        /// Every finding leaves here with its finding_id stamped, and the run with
+        /// its finding_set_fingerprint - the same document fingerprint the snapshot
+        /// keys on, folded with top and every finding id.
+        /// </summary>
+        internal static AuditRun RunChecks(UIApplication app, Document doc, int top, AuditOptions options,
+                                           ICollection<string> only)
+        {
+            var run = new AuditRun { Top = top };
+            AuditOptions o = options ?? new AuditOptions();
+            Dictionary<string, GateMeasurement> parts = run.PartCounts;
+
+            // The order is the order the findings are published in. Each check is
+            // wrapped so one failure cannot take the run down, but the failure is
+            // REPORTED, never swallowed.
+            var checks = new List<KeyValuePair<string, Func<JObject>>>
+            {
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Warnings, () => Warnings(doc, top, o.WarningProfile)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.WorksetPlacement, () => WorksetPlacement(doc, top, o.WorksetRules)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.OrphanGroupTypes, () => GroupTypes(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.InPlaceFamilies, () => InPlaceFamilies(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.ImportedCad, () => ImportedCad(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.ViewsOffSheets, () => ViewsOffSheets(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Rooms, () => Rooms(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Links, () => Links(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.DesignOptions, () => DesignOptions(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.OpenMepConnectors, () => OpenMepConnectors(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.UnpinnedLinks, () => UnpinnedLinks(doc, top)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.ViewsWithoutTemplate, () => ViewsWithoutTemplate(doc, top)),
+                // THE DIAGNOSTICS P0 SLICE. Each publishes named PARTS beside its count,
+                // so one finding can answer several requirements - "how many levels share
+                // a name" and "how many sit on top of each other" are one area and two
+                // numbers, and the gate used to be able to read only one of them.
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Coordinates,
+                    () => Coordinates(doc, top, o.FarRadiusMm, o.LinkOffsetMm, parts)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Datums,
+                    () => Datums(doc, top, o.LevelCoincidenceMm, o.GridCoincidenceMm, o.GridAxisDegrees, parts)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Readiness,
+                    () => Readiness(doc, top, o.ReadinessRoles, parts))
+            };
+
+            foreach (KeyValuePair<string, Func<JObject>> check in checks)
+            {
+                if (only != null && !only.Contains(check.Key)) continue;
+                Func<JObject> body = check.Value;
+                Run(run.ChecksFailed, check.Key, () => run.Findings.Add(StampIdentity(body(), top)));
+            }
+
+            // A check that RAN but could not read everything it examined. Distinct from
+            // checks_failed, which is a check that died: this one produced a number, and
+            // the number is a lower bound.
+            run.IncompleteChecks = new JArray(
+                run.Findings.Where(f => f["coverage_complete"] != null && (bool)f["coverage_complete"] == false)
+                    .Select(f => (JToken)new JObject
+                    {
+                        ["check"] = f["check"],
+                        ["elements_unreadable"] = f["elements_unreadable"],
+                        ["consequence"] = "'" + f["check"] + "' reports " + f["count"] +
+                                          ", which is a LOWER BOUND. The elements it could not read are unknown, " +
+                                          "not clean."
+                    }));
+
+            // THE THIRD WAY THIS AUDIT CAN FAIL TO SEE THE MODEL, and the only one that
+            // leaves no trace in any check. A check that dies lands in checks_failed; a
+            // check that cannot read an element lands in checks_with_incomplete_coverage.
+            // A CLOSED WORKSET lands nowhere: its elements are not in the document, so
+            // every check ran perfectly over a model with holes in it and reported clean.
+            // See Core/DocumentVisibilityCoverage.cs.
+            run.Visibility = DocumentVisibility.Measure(doc);
+
+            try { run.DocumentFingerprint = DocumentGate.IdentityOf(doc, app?.Application?.VersionNumber)?.FingerprintDigest(); }
+            catch { run.DocumentFingerprint = null; }
+            run.FindingSetFingerprint = FindingIdentity.SetFingerprint(run.DocumentFingerprint, top,
+                                                                        run.FindingIds().Values);
+            return run;
+        }
+
+        /// <summary>
+        /// The finding's identity, from its check, the items it listed and the top
+        /// it listed them under. Stamped here rather than inside Finding() because
+        /// Finding() does not know `top`, and top is part of the identity on purpose.
+        /// </summary>
+        private static JObject StampIdentity(JObject finding, int top)
+        {
+            if (finding == null) return null;
+            long total = finding["total"]?.Type == JTokenType.Integer ? (long)finding["total"] : 0;
+            finding["finding_id"] = FindingIdentity.IdOf((string)finding["check"], finding["items"] as JArray, top, total);
+            return finding;
+        }
+
+        /// <summary>
+        /// The measurements the gate reads, from a run: one per finding, the named
+        /// parts attached to the finding they belong to, and the file size beside
+        /// them. Shared with the gated save and export so their rows are the audit's.
+        /// </summary>
+        internal static Dictionary<string, GateMeasurement> Measurements(Document doc, AuditRun run)
+        {
+            var measurements = new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
+            foreach (JToken finding in run.Findings)
+            {
+                string check = (string)finding["check"];
+                if (check == null) continue;
+                measurements[check] = new GateMeasurement
+                {
+                    Check = check,
+                    Count = finding["count"]?.Type == JTokenType.Integer || finding["count"]?.Type == JTokenType.Float
+                        ? (double?)finding.Value<double>("count") : null,
+                    Ran = true,
+                    CoverageComplete = finding["coverage_complete"] == null || (bool)finding["coverage_complete"]
+                };
+            }
+            // The named parts, attached to the finding they belong to. Without this
+            // a requirement naming "datums.coincident_levels" would resolve to
+            // nothing and report not_measurable forever - which is the shape of
+            // the defect this slice's own gate mapping had.
+            foreach (KeyValuePair<string, GateMeasurement> kv in run.PartCounts)
+            {
+                int dot = kv.Key.IndexOf('.');
+                if (dot <= 0 || dot == kv.Key.Length - 1) continue;
+                string head = kv.Key.Substring(0, dot), tail = kv.Key.Substring(dot + 1);
+                GateMeasurement parent;
+                if (!measurements.TryGetValue(head, out parent)) continue;
+                if (parent.Parts == null)
+                    parent.Parts = new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
+                parent.Parts[tail] = kv.Value;
+            }
+
+            object rawSize = FileSizeMb(doc);
+            double parsedSize;
+            if (rawSize != null && double.TryParse(System.Convert.ToString(rawSize, CultureInfo.InvariantCulture),
+                    NumberStyles.Float, CultureInfo.InvariantCulture, out parsedSize))
+                measurements[AuditCheckNames.FileSizeMb] = new GateMeasurement
+                { Check = AuditCheckNames.FileSizeMb, Count = parsedSize, Ran = true, CoverageComplete = true };
+            return measurements;
+        }
+
+        /// <summary>A requirement_set object as the gate's grammar reads it.</summary>
+        internal static List<KeyValuePair<string, object>> Declared(JObject requirementSet)
+        {
+            var declared = new List<KeyValuePair<string, object>>();
+            if (requirementSet == null) return declared;
+            foreach (JProperty property in requirementSet.Properties())
+            {
+                object value;
+                switch (property.Value.Type)
+                {
+                    case JTokenType.Integer: value = (long)property.Value; break;
+                    case JTokenType.Float: value = (double)property.Value; break;
+                    case JTokenType.Boolean: value = (bool)property.Value; break;
+                    case JTokenType.Array:
+                        var names = new List<string>();
+                        foreach (JToken t in (JArray)property.Value) names.Add(t.Type == JTokenType.String ? (string)t : t.ToString());
+                        value = names;
+                        break;
+                    default: value = (string)property.Value; break;
+                }
+                declared.Add(new KeyValuePair<string, object>(property.Name, value));
+            }
+            return declared;
+        }
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
             var doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No document is open.");
 
             int top = 20;
             JObject requirementSet = null;
-            JObject tolerances = null;
-            JArray readinessRoles = null;
             string targetDocument = null;
+            AuditOptions options;
+            // Both surfaces below are OPT-IN. An audit that always hands back a list
+            // of things it could change to your model is a different tool from one
+            // that tells you what it found.
+            bool proposeCorrections = false;
+            JObject preventionGate = null;
+            bool storeSnapshot = false;
+            JObject healthProfile = null;
             try
             {
                 var request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
-                if (request["top"] != null) top = Math.Max(1, request.Value<int>("top"));
+
+                // THE SAME RULES THE SCAN READS, not a second copy of them. This had
+                // the identical defects: a misspelt option accepted in silence, and
+                // `top` CLAMPED with Math.Max(1, ...) rather than checked - so `top: 0`
+                // became 1 and a reply shaped by a number nobody chose came back
+                // looking like the reply that was asked for.
+                ScanRequestVerdict shape = ScanRequestRules.CheckAudit(request);
+                if (!shape.Ok) return CommandResult.Fail(Name + ": " + shape.Message);
+
+                JToken topToken = request["top"];
+                if (topToken != null && topToken.Type != JTokenType.Null) top = topToken.Value<int>();
                 requirementSet = request["requirement_set"] as JObject;
-                tolerances = request["tolerances"] as JObject;
-                readinessRoles = request["readiness_roles"] as JArray;
                 targetDocument = (string)request["target_document"];
+                proposeCorrections = request["propose_corrections"]?.Type == JTokenType.Boolean &&
+                                     (bool)request["propose_corrections"];
+                preventionGate = request["prevention_gate"] as JObject;
+                storeSnapshot = request["store_snapshot"]?.Type == JTokenType.Boolean &&
+                                (bool)request["store_snapshot"];
+                healthProfile = request["health_profile"] as JObject;
+
+                // The tolerances that configure the checks below. Validated BEFORE anything
+                // is read, because a misspelled tolerance silently ignored leaves the check
+                // running on its default while the caller believes otherwise.
+                string optionsRefusal = AuditOptions.Read(request, out options);
+                if (optionsRefusal != null) return CommandResult.Fail(optionsRefusal);
             }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
@@ -96,78 +382,12 @@ namespace Horizun.Revit.Commands
                     "This command acts on the active document and will NOT switch for you. Asked for '" +
                     targetDocument + "', active is '" + doc.Title + "'.");
 
-            // The tolerances that configure the checks below. Validated BEFORE anything
-            // is read, because a misspelled tolerance silently ignored leaves the check
-            // running on its default while the caller believes otherwise.
-            var declaredTolerances = new List<KeyValuePair<string, object>>();
-            if (tolerances != null)
-                foreach (JProperty p in tolerances.Properties())
-                    declaredTolerances.Add(new KeyValuePair<string, object>(p.Name, ((JValue)p.Value)?.Value));
-            string toleranceRefusal = PreDeliveryGateRules.ValidateTolerances(declaredTolerances);
-            if (toleranceRefusal != null) return CommandResult.Fail(toleranceRefusal);
-
-            double farRadiusMm = ToleranceOr(tolerances, CoordinateRules.ToleranceFarRadius,
-                                             CoordinateRules.DefaultFarRadiusMm);
-            double linkOffsetMm = ToleranceOr(tolerances, CoordinateRules.ToleranceLinkOriginOffset, 1.0);
-            double levelCoincidenceMm = ToleranceOr(tolerances, DatumRules.ToleranceLevelCoincidence,
-                                                    DatumRules.DefaultLevelCoincidenceMm);
-            double gridCoincidenceMm = ToleranceOr(tolerances, DatumRules.ToleranceGridCoincidence,
-                                                   DatumRules.DefaultGridCoincidenceMm);
-            double gridAxisDegrees = ToleranceOr(tolerances, DatumRules.ToleranceGridAxis,
-                                                 DatumRules.DefaultGridAxisToleranceDegrees);
-
-            var findings = new JArray();
-            var checksFailed = new JArray();
-
-            // Each check is wrapped so one failure cannot take the audit down, but
-            // the failure is REPORTED, never swallowed.
-            Run(checksFailed, "warnings", () => findings.Add(Warnings(doc, top)));
-            Run(checksFailed, "group_types", () => findings.Add(GroupTypes(doc, top)));
-            Run(checksFailed, "in_place_families", () => findings.Add(InPlaceFamilies(doc, top)));
-            Run(checksFailed, "imported_cad", () => findings.Add(ImportedCad(doc, top)));
-            Run(checksFailed, "views_off_sheets", () => findings.Add(ViewsOffSheets(doc, top)));
-            Run(checksFailed, "rooms", () => findings.Add(Rooms(doc, top)));
-            Run(checksFailed, "links", () => findings.Add(Links(doc, top)));
-            Run(checksFailed, "design_options", () => findings.Add(DesignOptions(doc, top)));
-            Run(checksFailed, "open_mep_connectors", () => findings.Add(OpenMepConnectors(doc, top)));
-            Run(checksFailed, "unpinned_links", () => findings.Add(UnpinnedLinks(doc, top)));
-            Run(checksFailed, AuditCheckNames.ViewsWithoutTemplate, () => findings.Add(ViewsWithoutTemplate(doc, top)));
-
-            // THE DIAGNOSTICS P0 SLICE. Each publishes named PARTS beside its count,
-            // so one finding can answer several requirements - "how many levels share
-            // a name" and "how many sit on top of each other" are one area and two
-            // numbers, and the gate used to be able to read only one of them.
-            var partCounts = new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
-            Run(checksFailed, AuditCheckNames.Coordinates,
-                () => findings.Add(Coordinates(doc, top, farRadiusMm, linkOffsetMm, partCounts)));
-            Run(checksFailed, AuditCheckNames.Datums,
-                () => findings.Add(Datums(doc, top, levelCoincidenceMm, gridCoincidenceMm, gridAxisDegrees, partCounts)));
-            Run(checksFailed, AuditCheckNames.Readiness,
-                () => findings.Add(Readiness(doc, top, readinessRoles, partCounts)));
-
+            AuditRun run = RunChecks(app, doc, top, options, null);
+            JArray findings = run.Findings;
+            JArray checksFailed = run.ChecksFailed;
+            JArray incompleteChecks = run.IncompleteChecks;
+            DocumentVisibilityCoverage visibility = run.Visibility;
             var issues = findings.Count(f => (bool)f["is_issue"]);
-
-            // A check that RAN but could not read everything it examined. Distinct from
-            // checks_failed, which is a check that died: this one produced a number, and
-            // the number is a lower bound.
-            var incompleteChecks = new JArray(
-                findings.Where(f => f["coverage_complete"] != null && (bool)f["coverage_complete"] == false)
-                        .Select(f => (JToken)new JObject
-                        {
-                            ["check"] = f["check"],
-                            ["elements_unreadable"] = f["elements_unreadable"],
-                            ["consequence"] = "'" + f["check"] + "' reports " + f["count"] +
-                                              ", which is a LOWER BOUND. The elements it could not read are unknown, " +
-                                              "not clean."
-                        }));
-
-            // THE THIRD WAY THIS AUDIT CAN FAIL TO SEE THE MODEL, and the only one that
-            // leaves no trace in any check. A check that dies lands in checks_failed; a
-            // check that cannot read an element lands in checks_with_incomplete_coverage.
-            // A CLOSED WORKSET lands nowhere: its elements are not in the document, so
-            // every check ran perfectly over a model with holes in it and reported clean.
-            // See Core/DocumentVisibilityCoverage.cs.
-            DocumentVisibilityCoverage visibility = DocumentVisibility.Measure(doc);
 
             // ---- the pre-delivery gate: the caller's requirement set over what was
             // MEASURED. Evaluated in Core (PreDeliveryGateRules): a lower bound can
@@ -176,60 +396,9 @@ namespace Horizun.Revit.Commands
             JObject gate = null;
             if (requirementSet != null)
             {
-                var measurements = new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
-                foreach (JToken finding in findings)
-                {
-                    string check = (string)finding["check"];
-                    if (check == null) continue;
-                    measurements[check] = new GateMeasurement
-                    {
-                        Check = check,
-                        Count = finding["count"]?.Type == JTokenType.Integer || finding["count"]?.Type == JTokenType.Float
-                            ? (double?)finding.Value<double>("count") : null,
-                        Ran = true,
-                        CoverageComplete = finding["coverage_complete"] == null || (bool)finding["coverage_complete"]
-                    };
-                }
-                // The named parts, attached to the finding they belong to. Without this
-                // a requirement naming "datums.coincident_levels" would resolve to
-                // nothing and report not_measurable forever - which is the shape of
-                // the defect this slice's own gate mapping had.
-                foreach (KeyValuePair<string, GateMeasurement> kv in partCounts)
-                {
-                    int dot = kv.Key.IndexOf('.');
-                    if (dot <= 0 || dot == kv.Key.Length - 1) continue;
-                    string head = kv.Key.Substring(0, dot), tail = kv.Key.Substring(dot + 1);
-                    GateMeasurement parent;
-                    if (!measurements.TryGetValue(head, out parent)) continue;
-                    if (parent.Parts == null)
-                        parent.Parts = new Dictionary<string, GateMeasurement>(StringComparer.Ordinal);
-                    parent.Parts[tail] = kv.Value;
-                }
-
-                object rawSize = FileSizeMb(doc);
-                double parsedSize;
-                if (rawSize != null && double.TryParse(System.Convert.ToString(rawSize,
-                        System.Globalization.CultureInfo.InvariantCulture),
-                        System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
-                        out parsedSize))
-                    measurements["file_size_mb"] = new GateMeasurement
-                    { Check = "file_size_mb", Count = parsedSize, Ran = true, CoverageComplete = true };
-
-                var declared = new List<KeyValuePair<string, object>>();
-                foreach (JProperty property in requirementSet.Properties())
-                {
-                    object value;
-                    switch (property.Value.Type)
-                    {
-                        case JTokenType.Integer: value = (long)property.Value; break;
-                        case JTokenType.Float: value = (double)property.Value; break;
-                        case JTokenType.Boolean: value = (bool)property.Value; break;
-                        default: value = (string)property.Value; break;
-                    }
-                    declared.Add(new KeyValuePair<string, object>(property.Name, value));
-                }
                 List<GateRow> gateRows; string verdict;
-                string gateError = PreDeliveryGateRules.Evaluate(declared, measurements, out gateRows, out verdict);
+                string gateError = PreDeliveryGateRules.Evaluate(Declared(requirementSet), Measurements(doc, run),
+                                                                 out gateRows, out verdict);
                 if (gateError != null)
                     return CommandResult.Fail("requirement_set refused: " + gateError + " The audit itself was " +
                         "not run to completion for a gate that cannot answer.");
@@ -251,21 +420,67 @@ namespace Horizun.Revit.Commands
                 };
             }
 
+            // THE TWO SURFACES BUILT ON THIS AUDIT. Both read what this run actually
+            // measured rather than a summary of it, and neither writes anything.
+            string fingerprint = run.DocumentFingerprint;
+
+            // THE FINDING SET, RECORDED. horizun_apply_corrections cites this run by
+            // its fingerprint and reads the findings from here rather than from the
+            // caller's copy; the record lives for this session, as tokens do.
+            AuditFindingSetStore.Session.Record(FindingSetRecord.From(run.FindingSetFingerprint, SafeTitle(doc),
+                fingerprint, top, DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture), findings));
+
+            JObject corrections = ProposeCorrections(proposeCorrections, findings, SafeTitle(doc), fingerprint);
+            JObject prevention = DecidePrevention(preventionGate, findings, checksFailed, incompleteChecks,
+                                                  visibility, SafeTitle(doc), fingerprint);
+            long elementCount = new FilteredElementCollector(doc).WhereElementIsNotElementType().GetElementCount();
+            long elementTypeCount = new FilteredElementCollector(doc).WhereElementIsElementType().GetElementCount();
+            bool fullCoverage = run.CoverageComplete;
+            JObject healthIndex = AuditDiagnosticArtifacts.Health(healthProfile, findings, checksFailed);
+            JObject snapshot, trend;
+            double? snapshotFileSize = null;
+            object rawSnapshotFileSize = FileSizeMb(doc);
+            if (rawSnapshotFileSize != null)
+            {
+                double parsedSnapshotFileSize;
+                if (double.TryParse(Convert.ToString(rawSnapshotFileSize, CultureInfo.InvariantCulture),
+                                    NumberStyles.Float, CultureInfo.InvariantCulture, out parsedSnapshotFileSize))
+                    snapshotFileSize = parsedSnapshotFileSize;
+            }
+            AuditDiagnosticArtifacts.SnapshotAndTrend(storeSnapshot, fingerprint, SafeTitle(doc),
+                app.Application.VersionNumber, app.Application.VersionBuild, requirementSet,
+                snapshotFileSize, elementCount, elementTypeCount, findings, checksFailed,
+                fullCoverage, elapsed.ElapsedMilliseconds, out snapshot, out trend);
+
             return CommandResult.Ok(new JObject
             {
                 ["model"] = SafeTitle(doc),
+                ["document_fingerprint"] = fingerprint,
+                // THE IDENTITY OF THIS RUN. Folds the document fingerprint above, top,
+                // and every finding_id below; horizun_apply_corrections cites it and
+                // a gated save may cite it. Two audits of an unchanged model at the
+                // same top reproduce it; a different top does not, by design.
+                ["finding_set_fingerprint"] = run.FindingSetFingerprint,
+                ["finding_set_top"] = top,
+                ["finding_set_means"] = "finding_id and finding_set_fingerprint identify this run for " +
+                                        "horizun_apply_corrections and for require_gate on the bridge's save and " +
+                                        "export. " + FindingIdentity.TopMeans,
                 ["path"] = SafePath(doc),
                 ["file_size_mb"] = FileSizeMb(doc),
                 ["gate"] = gate,
-                ["element_count"] = new FilteredElementCollector(doc).WhereElementIsNotElementType().GetElementCount(),
+                ["element_count"] = elementCount,
                 ["checks_run"] = findings.Count,
                 ["checks_failed"] = checksFailed,
                 ["checks_with_incomplete_coverage"] = incompleteChecks,
                 ["visibility_coverage"] = visibility.ToJson(),
-                ["coverage_complete"] = checksFailed.Count == 0 && incompleteChecks.Count == 0 &&
-                                        visibility.CoverageComplete,
+                ["coverage_complete"] = fullCoverage,
                 ["issues_found"] = issues,
                 ["findings"] = findings,
+                ["corrections"] = corrections,
+                ["prevention"] = prevention,
+                ["snapshot"] = snapshot,
+                ["trend"] = trend,
+                ["health_index"] = healthIndex,
                 ["note"] = (checksFailed.Count > 0 || incompleteChecks.Count > 0 || !visibility.CoverageComplete)
                     ? (checksFailed.Count > 0
                           ? $"{checksFailed.Count} check(s) could not run at all — see checks_failed. "
@@ -309,6 +524,17 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
+        /// A part the bridge CANNOT measure, as opposed to one that measured zero.
+        /// Ran = false is what stops a gate passing on it: EvaluateMax answers
+        /// not_measurable, and a requirement written against it neither passes nor
+        /// fails - it says nobody looked.
+        /// </summary>
+        private static GateMeasurement NotMeasured()
+        {
+            return new GateMeasurement { Count = null, Ran = false, CoverageComplete = false };
+        }
+
+        /// <summary>
         /// WHERE THE MODEL THINKS IT IS. The three control points, the project
         /// location, and how far the GEOMETRY sits from the internal origin.
         ///
@@ -342,8 +568,20 @@ namespace Horizun.Revit.Commands
                 Part(reflected, linksUnreadable == 0);
             parts[AuditCheckNames.Coordinates + "." + CoordinateCheckParts.LinksRotated] =
                 Part(rotated, linksUnreadable == 0);
+            // NOT Part(). A gate must not PASS on this one.
+            //
+            // SharedPositionMatchesHost is null for every link and always will be:
+            // it is assigned in exactly one place, as null, because the Revit API
+            // exposes no read path for it in any of the five supported years. So
+            // `notSharing` is identically 0, and publishing it as a measurement
+            // that RAN made `max_links_not_sharing_position: 0` answer "0 against
+            // a limit of 0, with complete coverage" - a pass, forever, on a fact
+            // nobody looked at, in the gate a team runs before a delivery.
+            //
+            // NotMeasured says what is true: no count happened. The gate then
+            // answers not_measurable, which is the whole point of that status.
             parts[AuditCheckNames.Coordinates + "." + CoordinateCheckParts.LinksNotSharingPosition] =
-                Part(notSharing, linksUnreadable == 0);
+                NotMeasured();
 
             var items = new JArray();
             foreach (OutlierFact o in f.Outliers)
@@ -397,8 +635,11 @@ namespace Horizun.Revit.Commands
                 ["not_sharing_host_position"] = notSharing,
                 ["reflected_means"] = "a negative determinant on the link's transform. It is almost never " +
                                       "intentional and it turns every text in the link backwards.",
-                ["not_sharing_host_position_means"] = "counted only where the link SAID so. A link that would " +
-                                                      "not answer is not counted here, because unknown is not no."
+                ["not_sharing_host_position_means"] = "ALWAYS ZERO, and not a finding: no link can say whether " +
+                                                      "it shares the host's position, because the Revit API " +
+                                                      "exposes no read path for it in any supported year. The " +
+                                                      "pre-delivery gate reports this requirement as " +
+                                                      "not_measurable rather than passing it."
             };
             return finding;
         }
@@ -758,6 +999,213 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
+        /// GUIDED CORRECTIONS - proposed, never performed.
+        ///
+        /// The Doctor stays READ-ONLY: nothing here executes, and the only tools that
+        /// can be named are the ones in CorrectionRegistry. A proposal's arguments are
+        /// built from typed fields and the registry's own typed constants, never from
+        /// a finding's text, because a tool call composed out of a message is how a
+        /// report becomes an arbitrary command.
+        ///
+        /// A finding whose element list was TRUNCATED produces requires_input rather
+        /// than a proposal: correcting the elements that happened to fit in the reply
+        /// is the one mistake this surface must not make.
+        /// </summary>
+        private static JObject ProposeCorrections(bool wanted, JArray findings,
+                                                  string title, string fingerprint)
+        {
+            if (!wanted)
+                return new JObject
+                {
+                    ["status"] = "not_requested",
+                    ["executed"] = false,
+                    ["means"] = "no correction was proposed because none was asked for. That is not a claim " +
+                                "that this model needs none.",
+                    ["registry"] = CorrectionRegistry.Describe()
+                };
+
+            var proposals = new List<CorrectionProposal>();
+            foreach (JToken f in findings ?? new JArray())
+            {
+                var o = f as JObject;
+                if (o == null) continue;
+                if (o["is_issue"]?.Type != JTokenType.Boolean || !(bool)o["is_issue"]) continue;
+
+                string check = (string)o["check"];
+                string findingId = (string)o["finding_id"];
+                var items = (o["items"] as JArray) ?? new JArray();
+
+                CorrectionRecipe recipe;
+                bool hasRecipe = CorrectionRegistry.Default.TryGetValue(check ?? "", out recipe) && recipe != null;
+                bool perElement = hasRecipe && recipe.ElementArgument != null;
+
+                // THE RECIPE'S TYPED FILTER, before the ids are read: a room finding
+                // lists unplaced and unenclosed rooms together, and only the first is
+                // this correction's. The filter reads a code, never the sentence.
+                if (hasRecipe && recipe.ItemFilterField != null)
+                    items = FindingIdentity.ItemsWhere(items, recipe.ItemFilterField, recipe.ItemFilterValues);
+                List<long> ids = FindingIdentity.ElementIdsOf(items);
+
+                // SHOWN < TOTAL IS A TRUNCATED SCOPE. The proposal says so rather than
+                // acting on the elements that fitted in the reply.
+                int shown = o["shown"]?.Type == JTokenType.Integer ? (int)o["shown"] : ids.Count;
+                int total = o["total"]?.Type == JTokenType.Integer ? (int)o["total"] : ids.Count;
+                bool truncated = total > shown;
+
+                if (perElement && !truncated && ids.Count > 0)
+                {
+                    // ONE PROPOSAL PER ELEMENT, because the tool acts on one. The
+                    // finding id stays the FINDING's - it is what an action cites - and
+                    // the proposal id carries the element.
+                    foreach (long id in ids)
+                    {
+                        CorrectionProposal p = GuidedCorrectionRules.Propose(
+                            new Finding
+                            {
+                                FindingId = findingId,
+                                FindingType = check,
+                                DocumentTitle = title,
+                                DocumentFingerprint = fingerprint,
+                                ElementIds = new List<long> { id },
+                                Truncated = false
+                            },
+                            CorrectionRegistry.Default, title, fingerprint, null, null);
+                        p.ProposalId = "prop:" + findingId + ":" + id;
+                        proposals.Add(p);
+                    }
+                }
+                else
+                {
+                    proposals.Add(GuidedCorrectionRules.Propose(
+                        new Finding
+                        {
+                            FindingId = findingId,
+                            FindingType = check,
+                            DocumentTitle = title,
+                            DocumentFingerprint = fingerprint,
+                            ElementIds = ids,
+                            Truncated = truncated
+                        },
+                        CorrectionRegistry.Default, title, fingerprint, null, null));
+                }
+            }
+
+            JObject tally = GuidedCorrectionRules.Tally(proposals);
+            tally["status"] = "ok";
+            // THE FIELD THAT MATTERS. Every proposal is a suggestion; this command
+            // performs none of them, and a reader must be able to see that at a glance.
+            tally["executed"] = false;
+            tally["how_to_execute"] = "horizun_apply_corrections with this reply's finding_set_fingerprint and " +
+                                      "actions naming the finding_ids to act on. It rehearses each through the " +
+                                      "typed tool, issues a token, applies under it, and re-audits.";
+            tally["proposals"] = new JArray(proposals.Select(x => (JToken)GuidedCorrectionRules.ToJson(x)));
+            tally["registry"] = CorrectionRegistry.Describe();
+            return tally;
+        }
+
+        /// <summary>
+        /// THE PREVENTION GATE, decided on the audit that just ran.
+        ///
+        /// The asymmetry is the whole point and it is only real here: the gate reads
+        /// THIS run's coverage, so a scan that could not see the whole model can BLOCK
+        /// on what it found and can never ALLOW. A gate handed a summary instead would
+        /// be deciding on somebody's word for it.
+        ///
+        /// It DECIDES and does not enforce. Horizun subscribes to no DocumentSaving
+        /// event - see docs/evidence/prevention-operation-matrix.md, which keeps "gate
+        /// possible" and "gate implemented" in separate columns because collapsing
+        /// them is how a team comes to believe a gate protects them.
+        /// </summary>
+        private static JObject DecidePrevention(JObject gate, JArray findings,
+                                                JArray checksFailed, JArray incompleteChecks,
+                                                DocumentVisibilityCoverage visibility,
+                                                string title, string fingerprint)
+        {
+            if (gate == null)
+                return new JObject
+                {
+                    ["status"] = "not_requested",
+                    ["means"] = "no operation was submitted to the gate, so it has no opinion. That is not " +
+                                "permission for anything.",
+                    ["operations"] = new JArray(GatedOperation.All.Select(x => (JToken)x))
+                };
+
+            string operation = (string)gate["operation"];
+            if (string.IsNullOrWhiteSpace(operation) || !GatedOperation.All.Contains(operation))
+                return new JObject
+                {
+                    ["status"] = "refused",
+                    ["decision"] = GateDecision.NotAssessable,
+                    ["why"] = "'" + (operation ?? "<none>") + "' is not an operation this bridge can gate. " +
+                              "Known: " + string.Join(", ", GatedOperation.All) + ".",
+                    ["operations"] = new JArray(GatedOperation.All.Select(x => (JToken)x))
+                };
+
+            // THE BLOCKING FINDINGS ARE THIS AUDIT'S OWN, named so an override can
+            // name them back.
+            var blocking = new List<string>();
+            foreach (JToken f in findings ?? new JArray())
+            {
+                var o = f as JObject;
+                if (o == null) continue;
+                if (o["is_issue"]?.Type == JTokenType.Boolean && (bool)o["is_issue"])
+                    blocking.Add((string)o["check"]);
+            }
+
+            var input = new GateInput
+            {
+                Operation = operation,
+                DocumentTitle = title,
+                DocumentFingerprint = fingerprint,
+                ProfileVersion = (string)gate["profile_version"],
+                // COVERAGE FROM THE RUN, not from a caller's assurance.
+                CoverageComplete = checksFailed.Count == 0 && incompleteChecks.Count == 0 &&
+                                   visibility.CoverageComplete,
+                AuditSupplied = true,
+                OperationIsControlled = true,
+                BlockingFindings = blocking,
+                Override = ReadOverride(gate["override"] as JObject)
+            };
+
+            // now_utc through UtcStamp, as the override's expiry is: Newtonsoft parses
+            // an ISO value into a DateTime and a bare (string) cast renders it in the
+            // machine's culture, which an ordinal comparison does not understand.
+            GateVerdict v = PreventionGateRules.Decide(input, UtcStamp.Normalise(gate["now_utc"]));
+            JObject json = PreventionGateRules.ToJson(v);
+            json["status"] = "ok";
+            json["coverage_complete"] = input.CoverageComplete;
+            json["enforced"] = false;
+            json["enforcement_means"] =
+                "this block DECIDES and does not enforce: an audit writes nothing and cancels nothing. The " +
+                "operations this bridge OWNS enforce the same rule when asked - pass require_gate to " +
+                "horizun_save_document or horizun_export and a blocked or not-assessable decision refuses the " +
+                "call before the file is touched. Revit's own Save and Synchronize with Central are NOT " +
+                "intercepted: Horizun subscribes to no DocumentSaving event, by choice rather than by an API " +
+                "limit. See docs/evidence/prevention-operation-matrix.md.";
+            json["enforced_by"] = new JArray("horizun_save_document require_gate", "horizun_export require_gate");
+            json["not_interceptable"] = OperationGateRules.NotInterceptable();
+            return json;
+        }
+
+        private static GateOverride ReadOverride(JObject o)
+        {
+            if (o == null) return null;
+            var ov = new GateOverride
+            {
+                Identity = (string)o["identity"],
+                Reason = (string)o["reason"],
+                TimestampUtc = UtcStamp.Normalise(o["timestamp_utc"]),
+                Operation = (string)o["operation"],
+                ProfileVersion = (string)o["profile_version"],
+                Evidence = (string)o["evidence"],
+                ExpiresUtc = UtcStamp.Normalise(o["expires_utc"])
+            };
+            foreach (JToken t in (o["findings_ignored"] as JArray) ?? new JArray())
+                if (t.Type == JTokenType.String) ov.FindingsIgnored.Add((string)t);
+            return ov;
+        }
+
+        /// <summary>
         /// One check's result, INCLUDING what it could not see.
         ///
         /// checks_failed already reports a check that died outright. It says nothing
@@ -796,27 +1244,179 @@ namespace Horizun.Revit.Commands
         }
 
         // ---- Warnings: the model's own list of what it knows is wrong. ----
-        private static JObject Warnings(Document doc, int top)
+        //
+        // Keyed on FailureDefinitionId, the SAME grouping model_scan uses, so the
+        // two tools cannot report a different number of distinct warnings for one
+        // document. It used to group on GetDescriptionText(), which is localized
+        // and rewritten between versions - see Core/WarningRules.
+        private static JObject Warnings(Document doc, int top, WarningProfile profile)
         {
             var all = doc.GetWarnings();
-            var grouped = all
-                .GroupBy(w => { try { return w.GetDescriptionText(); } catch { return "(description unavailable)"; } })
-                .Select(g => new { desc = g.Key, count = g.Count() })
-                .OrderByDescending(x => x.count)
-                .ToList();
-
-            var items = new JArray(grouped.Take(top).Select(g => (JToken)new JObject
+            var facts = new List<WarningFact>();
+            foreach (var w in all)
             {
-                ["description"] = g.desc,
-                ["occurrences"] = g.count
+                var f = new WarningFact();
+                try { f.DefinitionGuid = w.GetFailureDefinitionId().Guid.ToString("D"); }
+                catch { f.DefinitionGuid = null; }
+                try { f.Description = w.GetDescriptionText(); }
+                catch { f.Description = null; }
+                if (string.IsNullOrEmpty(f.Description)) f.Description = "(description unreadable)";
+                try { f.Severity = w.GetSeverity().ToString(); }
+                catch { f.Severity = null; }
+                try
+                {
+                    foreach (var id in w.GetFailingElements()) f.FailingElementIds.Add(Rid.Value(id));
+                }
+                catch (Exception ex)
+                {
+                    f.IdsReadable = false;
+                    f.IdsError = "GetFailingElements failed: " + ex.Message;
+                }
+                facts.Add(f);
+            }
+
+            List<WarningGroup> groups = WarningRules.Group(facts);
+            WarningRules.Triage(groups, profile);
+
+            var items = new JArray(groups.Take(top).Select(g =>
+            {
+                JObject row = WarningRules.ToJson(g);
+                // The ids are what makes a warning actionable. Reporting a count
+                // without them tells a modeller they have 400 problems and not one
+                // place to start.
+                row["failing_element_ids"] = new JArray(g.FailingElementIds.Take(top).Select(x => (JToken)x));
+                row["failing_element_ids_returned"] = Math.Min(g.FailingElementIds.Count, top);
+                row["failing_element_ids_total"] = g.IdsComplete
+                    ? (JToken)g.FailingElementIds.Count
+                    : JValue.CreateNull();
+                return (JToken)row;
             }));
 
-            return Finding(AuditCheckNames.Warnings, all.Count > 0, all.Count,
-                all.Count == 0
-                    ? "No warnings."
-                    : $"{all.Count} warning(s) across {grouped.Count} distinct message(s). Warnings are Revit " +
-                      "telling you the model already contradicts itself; they do not resolve themselves.",
-                items, grouped.Count);
+            int unstable = groups.Count(g => !g.IdentityIsStable);
+            string summary = all.Count == 0
+                ? "No warnings."
+                : $"{all.Count} warning(s) across {groups.Count} distinct failure definition(s). Warnings are " +
+                  "Revit telling you the model already contradicts itself; they do not resolve themselves. " +
+                  WarningRules.OccurrencesMeans +
+                  (unstable > 0
+                      ? $" CAUTION: {unstable} group(s) could not report a failure definition id and were " +
+                        "grouped by their description text instead, so those must not be compared across " +
+                        "languages or Revit versions."
+                      : "");
+
+            return Finding(AuditCheckNames.Warnings, all.Count > 0, all.Count, summary, items, groups.Count);
+        }
+
+        // ---- Workset placement: the only check here that can come back
+        // unassessable rather than clean.
+        //
+        // A closed workset's elements are not in the document. Nothing can
+        // enumerate them, so a run over a partially loaded model has examined the
+        // part somebody left open - and "no elements on the wrong workset" would
+        // be a claim about elements nobody loaded. It may FAIL; it may never PASS.
+        private static JObject WorksetPlacement(Document doc, int top, WorksetRules rules)
+        {
+            if (rules == null || !rules.Ok)
+                return Finding(AuditCheckNames.WorksetPlacement, false, 0,
+                    rules == null || rules.Absent
+                        ? "No workset rules were supplied, so no element's placement was judged. This is NOT a " +
+                          "pass: which workset a wall belongs on is one organisation's decision and none is " +
+                          "compiled in here."
+                        : "The workset rules were REFUSED (" + rules.Code + "): " + rules.Message +
+                          " Nothing was judged.",
+                    new JArray(), 0);
+
+            bool workshared;
+            try { workshared = doc.IsWorkshared; }
+            catch (Exception ex)
+            {
+                return Finding(AuditCheckNames.WorksetPlacement, false, 0,
+                    "Whether this document is workshared could not be read (" + ex.Message + "), so no " +
+                    "placement was judged. This is not a model without worksets.",
+                    new JArray(), 0);
+            }
+
+            if (!workshared)
+                return Finding(AuditCheckNames.WorksetPlacement, false, 0,
+                    "This document is not workshared, so it has no user worksets and no element can be on the " +
+                    "wrong one. That is an ABSENCE of the question, not an answer of zero.",
+                    new JArray(), 0);
+
+            var byId = new Dictionary<int, string>();
+            int closed = 0;
+            foreach (Workset w in new FilteredWorksetCollector(doc).OfKind(WorksetKind.UserWorkset))
+            {
+                byId[w.Id.IntegerValue] = SafeWorksetName(w);
+                if (!w.IsOpen) closed++;
+            }
+
+            long unreadable = 0;
+            var observed = new List<WorksetMisplacement>();
+            foreach (Element e in new FilteredElementCollector(doc).WhereElementIsNotElementType())
+            {
+                string category = null;
+                try { category = e.Category == null ? null : e.Category.Name; }
+                catch { category = null; }
+                if (category == null) continue;
+
+                string actual = null;
+                try
+                {
+                    string nm;
+                    actual = byId.TryGetValue(e.WorksetId.IntegerValue, out nm) ? nm : null;
+                }
+                catch { unreadable++; continue; }
+
+                observed.Add(new WorksetMisplacement
+                {
+                    ElementId = Rid.Value(e.Id),
+                    Category = category,
+                    ActualWorkset = actual
+                });
+            }
+
+            List<WorksetMisplacement> bad = WorksetPlacementRules.Misplaced(observed, rules);
+            bool coverage = WorksetPlacementRules.CoverageComplete(closed, unreadable);
+            string outcome = WorksetPlacementRules.Outcome(bad.Count, rules.MaxElementsInWrongWorkset, coverage);
+            List<string> defaults = WorksetPlacementRules.DefaultNamed(byId.Values, rules);
+
+            var items = new JArray(bad.Take(top).Select(m => (JToken)new JObject
+            {
+                ["element_id"] = m.ElementId,
+                ["category"] = m.Category,
+                ["actual_workset"] = m.ActualWorkset,
+                ["expected_workset"] = m.ExpectedWorkset
+            }));
+
+            string summary =
+                (bad.Count == 0
+                    ? "No element was found on a workset other than the one declared for its category."
+                    : bad.Count + " element(s) sit on a workset other than the one declared for their category.") +
+                " Outcome: " + outcome.ToUpperInvariant() + ". " +
+                WorksetPlacementRules.CoverageNote(closed, unreadable) +
+                (defaults.Count > 0
+                    ? " " + defaults.Count + " workset(s) still carry a name you declared to be an un-renamed " +
+                      "default: " + string.Join(", ", defaults) + "."
+                    : "") +
+                (rules.MaxElementsInWrongWorkset.HasValue
+                    ? ""
+                    : " No max_elements_in_wrong_workset was declared, so this count cannot pass or fail a gate.");
+
+            JObject f = Finding(AuditCheckNames.WorksetPlacement, bad.Count > 0, bad.Count, summary,
+                                items, bad.Count, (int)Math.Min(unreadable, int.MaxValue));
+            f["outcome"] = outcome;
+            f["coverage_complete"] = coverage;
+            f["coverage_note"] = WorksetPlacementRules.CoverageNote(closed, unreadable);
+            f["coverage_means"] = WorksetPlacementRules.CoverageMeans;
+            f["worksets_closed"] = closed;
+            f["rules_version"] = rules.Version;
+            f["worksets_named_as_default"] = new JArray(defaults.Select(x => (JToken)x));
+            return f;
+        }
+
+        private static string SafeWorksetName(Workset w)
+        {
+            try { return w.Name; } catch { return null; }
         }
 
         // ---- Group types with zero instances: invisible file weight. ----
@@ -1001,8 +1601,12 @@ namespace Horizun.Revit.Commands
         }
 
         // ---- Views without a template: every one is a hand-formatted view. The
-        // correction names the command and leaves template_id as an EXPLICIT hole -
-        // choosing the template is the person's decision, not the audit's.
+        // correction names the command and the INPUT it needs - choosing the template
+        // is the person's decision, not the audit's, and the registry's
+        // requires_input mechanism is how that decision travels: an action on this
+        // finding carries inputs.template_view_id, or it is refused naming it.
+        // There is no placeholder to overwrite; a placeholder in an argument object
+        // is a call that looks complete and is not.
         private static JObject ViewsWithoutTemplate(Document doc, int top)
         {
             int unreadable = 0;
@@ -1023,24 +1627,18 @@ namespace Horizun.Revit.Commands
                 ["correction"] = new JObject
                 {
                     ["tool"] = "horizun_manage_views",
-                    ["arguments"] = new JObject
-                    {
-                        ["target_document"] = doc.Title,
-                        ["actions"] = new JArray(new JObject
-                        {
-                            ["key"] = "template-" + Rid.Value(view.Id),
-                            ["operation"] = "apply_template",
-                            ["view_id"] = Rid.Value(view.Id),
-                            ["template_id"] = "<CHOOSE: the template this view should follow>"
-                        })
-                    }
+                    ["operation"] = "apply_template",
+                    ["view_id"] = Rid.Value(view.Id),
+                    ["requires_input"] = new JArray("template_view_id"),
+                    ["how"] = "horizun_apply_corrections, an action on this finding_id narrowed to this " +
+                              "element with inputs: {template_view_id: <the template's element id>}."
                 }
             }));
             return Finding(AuditCheckNames.ViewsWithoutTemplate, bare.Count > 0, bare.Count,
                 bare.Count == 0
                     ? "Every printable view follows a template."
                     : bare.Count + " printable view(s) follow no template; each row names the typed correction " +
-                      "with template_id left as the person's explicit choice.",
+                      "and the input it requires - which template is the person's explicit choice.",
                 items, bare.Count, unreadable);
         }
 
@@ -1149,15 +1747,23 @@ namespace Horizun.Revit.Commands
             // to drop it, so a model whose rooms all failed to read reported "all rooms
             // are placed and enclosed" - a clean bill issued over nothing.
             int unreadable = 0;
-            var bad = new List<(Element e, string why)>();
+            // TWO PROBLEMS, TWO TYPED CODES. The sentence is for a person; the code is
+            // what the correction registry filters on, because a correction that
+            // deletes UNPLACED rooms must never read "unplaced" out of a sentence that
+            // could be reworded. See RoomProblemCode.
+            var bad = new List<(Element e, string code, string why)>();
             foreach (var r in rooms)
             {
                 try
                 {
                     var area = r.get_Parameter(BuiltInParameter.ROOM_AREA)?.AsDouble() ?? 0.0;
                     var loc = r.Location;
-                    if (loc == null) bad.Add((r, "unplaced (no location — it exists in schedules but bounds nothing)"));
-                    else if (area <= 0.0) bad.Add((r, "not enclosed (area 0 — its boundary is open, so it measures nothing)"));
+                    if (loc == null)
+                        bad.Add((r, RoomProblemCode.Unplaced,
+                                 "unplaced (no location — it exists in schedules but bounds nothing)"));
+                    else if (area <= 0.0)
+                        bad.Add((r, RoomProblemCode.NotEnclosed,
+                                 "not enclosed (area 0 — its boundary is open, so it measures nothing)"));
                 }
                 catch { unreadable++; }
             }
@@ -1166,6 +1772,7 @@ namespace Horizun.Revit.Commands
             {
                 ["id"] = b.e.Id.ToString(),
                 ["name"] = SafeName(b.e),
+                ["problem_code"] = b.code,
                 ["problem"] = b.why
             }));
 

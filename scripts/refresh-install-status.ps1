@@ -93,6 +93,13 @@ function New-StatusDoc([string]$State, [string]$Detail) {
     }
     if ($previous -and $previous.verification_path) { $doc['verification_path'] = $previous.verification_path }
     if ($previous -and $previous.generation) { $doc['generation'] = $previous.generation }
+    # Carried, not rebuilt: the per-client integration states belong to
+    # scripts/integration-status.lib.ps1 and a whole-document rewrite here would
+    # silently discard a pending step the user is waiting on.
+    if ($previous) {
+        $carried = $previous.PSObject.Properties['integrations']
+        if ($carried -and $null -ne $carried.Value) { $doc['integrations'] = $carried.Value }
+    }
     $doc['refreshed_by'] = 'scripts/refresh-install-status.ps1'
     return $doc
 }

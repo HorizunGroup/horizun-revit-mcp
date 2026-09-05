@@ -70,6 +70,22 @@ namespace Horizun.Revit.Core
         public const string Worsened = "worsened";
         public const string Improved = "improved";
         public const string NotComparable = "not_comparable";
+
+        /// <summary>
+        /// The number moved in the improving direction, but one of the runs read
+        /// less of the model than the other. Distinct from not_comparable on
+        /// purpose: not_comparable says the two runs cannot be lined up at all,
+        /// while this says they CAN and the apparent gain is unproven. They lead a
+        /// reader to different next steps - fix the coverage, then compare again.
+        /// </summary>
+        public const string CoverageChanged = "coverage_changed";
+
+        /// <summary>
+        /// The two runs were judged against different rules, so their verdicts
+        /// answer different questions. Named apart from not_comparable because the
+        /// fix is to re-run with the earlier profile, not to investigate the model.
+        /// </summary>
+        public const string ProfileChanged = "profile_changed";
     }
 
     public sealed class SnapshotChange
@@ -89,6 +105,10 @@ namespace Horizun.Revit.Core
         public string FromUtc, ToUtc;
         public List<SnapshotChange> Changes = new List<SnapshotChange>();
         public int New, Resolved, Persistent, Worsened, Improved, NotComparable;
+        /// <summary>Rows where the direction improved but the coverage did not hold.</summary>
+        public int CoverageChanged;
+        /// <summary>Set when the whole comparison was refused, and why in one word.</summary>
+        public string RefusalKind;
     }
 
     public static class SnapshotRules
@@ -147,7 +167,16 @@ namespace Horizun.Revit.Core
             string whyNot;
             c.Comparable = AreComparable(before, after, out whyNot);
             c.WhyNot = whyNot;
-            if (!c.Comparable) return c;
+            if (!c.Comparable)
+            {
+                // A refusal caused by DIFFERENT RULES is named apart from every
+                // other refusal: the fix is to re-run with the earlier profile,
+                // not to go looking at the model.
+                c.RefusalKind = whyNot != null && whyNot.Contains("requirement sets")
+                    ? SnapshotChangeKind.ProfileChanged
+                    : SnapshotChangeKind.NotComparable;
+                return c;
+            }
 
             var byName = new Dictionary<string, SnapshotCheck>(StringComparer.Ordinal);
             foreach (SnapshotCheck s in before.Checks) if (s != null && s.Check != null) byName[s.Check] = s;
@@ -190,6 +219,7 @@ namespace Horizun.Revit.Core
                     case SnapshotChangeKind.Persistent: c.Persistent++; break;
                     case SnapshotChangeKind.Worsened: c.Worsened++; break;
                     case SnapshotChangeKind.Improved: c.Improved++; break;
+                    case SnapshotChangeKind.CoverageChanged: c.CoverageChanged++; break;
                     default: c.NotComparable++; break;
                 }
             }
@@ -225,7 +255,7 @@ namespace Horizun.Revit.Core
             {
                 if (bounded)
                 {
-                    ch.Kind = SnapshotChangeKind.NotComparable;
+                    ch.Kind = SnapshotChangeKind.CoverageChanged;
                     ch.Why = "it reads as resolved, but one of the runs could not read everything it examined, " +
                              "so zero may be a smaller sample rather than a fixed model.";
                     return ch;
@@ -249,7 +279,7 @@ namespace Horizun.Revit.Core
             }
             if (bounded)
             {
-                ch.Kind = SnapshotChangeKind.NotComparable;
+                ch.Kind = SnapshotChangeKind.CoverageChanged;
                 ch.Why = "the number fell from " + Fmt(then.Count.Value) + " to " + Fmt(now.Count.Value) +
                          ", but one of the runs could not read everything, so this may be a smaller sample " +
                          "rather than an improvement.";

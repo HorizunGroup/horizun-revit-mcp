@@ -184,6 +184,53 @@ $dupes = $stagedHashes.GetEnumerator() | Group-Object Value | Where-Object { $_.
 Check 'every staged add-in is a DISTINCT binary' ($dupes.Count -eq 0) `
       (($dupes | ForEach-Object { 'years ' + (($_.Group | ForEach-Object { $_.Key }) -join ' and ') + ' are identical' }) -join '; ')
 
+# --- the Claude Desktop extension ---------------------------------------------
+#
+# It is a shipped artifact like any other, so it is held to the same three
+# questions: is it there, does its manifest satisfy the spec THIS tree validates
+# against, and does it name this release's version. A .mcpb whose manifest says
+# 1.1.6 installs perfectly and then makes every diagnosis wrong.
+. (Join-Path $PSScriptRoot 'mcpb-manifest.lib.ps1')
+$mcpbDir = Join-Path $Stage 'server\integrations\claude-desktop'
+$mcpbFiles = @(Get-ChildItem -LiteralPath $mcpbDir -Filter '*.mcpb' -ErrorAction SilentlyContinue)
+Check 'the Claude Desktop extension is staged' ($mcpbFiles.Count -eq 1) `
+      ("expected exactly one .mcpb under server\integrations\claude-desktop; found " + $mcpbFiles.Count)
+if ($mcpbFiles.Count -eq 1) {
+    $mcpb = $mcpbFiles[0].FullName
+    $stageVersion = $null
+    try { $stageVersion = ([xml](Get-Content (Join-Path $repo 'Directory.Build.props'))).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1 }
+    catch { $stageVersion = $null }
+    try {
+        $pkg = Get-HorizunMcpbManifestFromPackage -Path $mcpb
+        $mcpbProblems = @(Test-HorizunMcpbManifest $pkg.Manifest -ExpectedVersion ([string]$stageVersion))
+        Check 'the extension manifest satisfies the MCPB spec and names this version' ($mcpbProblems.Count -eq 0) `
+              ($mcpbProblems -join '; ')
+        Check 'the extension declares the installed server, not a bundled copy' `
+              ($pkg.Manifest.server.mcp_config.command -like '*horizun-mcp.exe') `
+              ("command is " + $pkg.Manifest.server.mcp_config.command)
+        # A published artifact that carries the building account's home directory
+        # is a privacy defect, not a cosmetic one - and it is invisible unless
+        # something reads the compressed bytes.
+        $account = [IO.Path]::GetFileName($env:USERPROFILE)
+        $mcpbText = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($mcpb))
+        Check 'the extension carries no local account name' `
+              (-not ($mcpbText -match [regex]::Escape($account)) -and -not ($pkg.Text -match [regex]::Escape($account))) `
+              'the packaged bytes contain this machine''s account name'
+        # The extension is part of the payload the manifest hashes, so it is
+        # already covered by the stage/manifest comparison below; this names it
+        # explicitly so a missing entry is a sentence rather than a count.
+        $rel = 'integrations/claude-desktop/' + $mcpbFiles[0].Name
+        $listed = @($doc.Server.Payload | Where-Object { $_.Path -replace '\\', '/' -eq $rel })
+        Check 'the extension is listed in the payload manifest with its hash' ($listed.Count -eq 1) `
+              ("manifest.json has no payload entry for $rel")
+        if ($listed.Count -eq 1) {
+            Check 'the extension hash in the manifest is the extension on disk' `
+                  ((Sha $mcpb) -eq $listed[0].Sha256) 'the staged .mcpb does not match its manifest hash'
+        }
+    }
+    catch { Check 'the extension manifest can be read' $false $_.Exception.Message }
+}
+
 # --- permanent unsigned state of our OWN binaries -----------------------------
 #
 # Public releases deliberately carry no Authenticode publisher identity. The

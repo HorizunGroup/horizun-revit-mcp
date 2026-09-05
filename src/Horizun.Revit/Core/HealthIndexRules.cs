@@ -99,6 +99,27 @@ namespace Horizun.Revit.Core
         public string ScoreSuppressedBecause;
         public List<HealthDimension> Dimensions = new List<HealthDimension>();
         public string Means;
+
+        /// <summary>
+        /// The share of the profile's WEIGHT that actually produced a score, 0..1.
+        /// A score of 92 over a fifth of the weight is a different claim from a
+        /// score of 92 over all of it, and the number alone cannot tell them apart.
+        /// </summary>
+        public double? AssessedWeightShare;
+
+        /// <summary>
+        /// What the score could be once the unassessed dimensions are known: the
+        /// worst case treats every one of them as 0, the best case as 100. When
+        /// coverage is complete the range collapses onto the score.
+        ///
+        /// This is what stops an incomplete run from reporting 100/100 - the
+        /// headline becomes "somewhere between 38 and 100", which is the truth.
+        /// </summary>
+        public double? PlausibleLow;
+        public double? PlausibleHigh;
+
+        /// <summary>Dimensions that could not be measured, named rather than counted.</summary>
+        public List<string> Unassessed = new List<string>();
     }
 
     public static class HealthIndexRules
@@ -249,7 +270,41 @@ namespace Horizun.Revit.Core
                     "not one weighted dimension produced a score, so there is nothing to average.";
                 return index;
             }
-            index.Score = Math.Round(weighted / totalWeight, 2);
+            // COVERAGE, AND WHAT IT DOES TO THE HEADLINE.
+            double allWeight = 0;
+            foreach (HealthDimension d in index.Dimensions)
+            {
+                allWeight += d.Weight;
+                if (d.State != DimensionState.Scored || !d.Score.HasValue) index.Unassessed.Add(d.Dimension);
+            }
+
+            index.AssessedWeightShare = allWeight > 0 ? Math.Round(totalWeight / allWeight, 4) : (double?)null;
+
+            double point = weighted / totalWeight;
+            double missing = allWeight - totalWeight;
+            if (missing < 0) missing = 0;
+
+            // The worst case gives every unmeasured dimension 0 and the best gives
+            // it 100. With full coverage the two collapse onto the score itself.
+            index.PlausibleLow = allWeight > 0 ? Math.Round(weighted / allWeight, 2) : (double?)null;
+            index.PlausibleHigh = allWeight > 0
+                ? Math.Round((weighted + missing * 100.0) / allWeight, 2) : (double?)null;
+
+            // A MAJORITY UNMEASURED CANNOT PRODUCE A SCORE. Averaging the minority
+            // that ran yields a confident number about a model mostly unexamined,
+            // and 100/100 is the version of that which does the most damage.
+            if (index.AssessedWeightShare.HasValue && index.AssessedWeightShare.Value < 0.5)
+            {
+                index.Score = null;
+                index.ScoreSuppressedBecause =
+                    "only " + Math.Round(index.AssessedWeightShare.Value * 100.0, 1) + "% of this profile's " +
+                    "weight produced a score, so most of the model was not assessed. A single number over the " +
+                    "minority that ran would be read as a verdict on the whole. The plausible range and the " +
+                    "dimension scores below stand on their own.";
+                return index;
+            }
+
+            index.Score = Math.Round(point, 2);
             return index;
         }
 

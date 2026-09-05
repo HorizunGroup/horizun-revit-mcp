@@ -157,6 +157,18 @@ function Write-State([string]$State, [string]$Detail, [string]$ResolvedClient, $
     if ($Extra) {
         foreach ($property in $Extra.PSObject.Properties) { $doc[$property.Name] = $property.Value }
     }
+    # THE PER-CLIENT INTEGRATION BLOCK IS NOT OURS TO DROP. This function writes
+    # the whole document, so a Claude Desktop record written by
+    # scripts/integration-status.lib.ps1 would vanish at the next state change -
+    # and the user would be told nothing is pending when something is.
+    if (Test-Path -LiteralPath $StatusPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $StatusPath -Raw | ConvertFrom-Json
+            $carried = $existing.PSObject.Properties['integrations']
+            if ($carried -and $null -ne $carried.Value) { $doc['integrations'] = $carried.Value }
+        }
+        catch { }
+    }
     $tmp = "$generationStatusPath.tmp-$([guid]::NewGuid().ToString('N'))"
     [pscustomobject]$doc | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $tmp -Encoding UTF8
     Move-Item -LiteralPath $tmp -Destination $generationStatusPath -Force

@@ -65,6 +65,17 @@ namespace Horizun.Revit.Commands
                     "your model lives, and this command does not do that. Save it once from Revit, then call this.");
             }
 
+            // THE PREVENTION GATE, BEFORE THE FILE IS TOUCHED. Optional: without
+            // require_gate this command behaves exactly as it always has. With it, the
+            // audit's checks run on the document as it stands, the caller's profile is
+            // evaluated with the audit's own evaluator, and a blocked or not-assessable
+            // decision refuses HERE - above doc.Save() - so a refused save leaves the
+            // file's bytes exactly as they were. The reply carries the decision either
+            // way, and names the save paths this gate does not reach.
+            OperationGateResult gateDecision = OperationGate.Evaluate(app, doc, req["require_gate"],
+                                                                      GatedOperation.Save, Name);
+            if (gateDecision.Refusal != null) return gateDecision.Refusal;
+
             // IsModified is measured, not assumed. Its BEFORE value is what makes the
             // difference between "nothing needed writing" and "something did and was not
             // written", which the old version could not tell apart because it reported
@@ -176,6 +187,7 @@ namespace Horizun.Revit.Commands
                 ["file_before"] = new JObject { ["modified_utc"] = beforeStamp, ["size_bytes"] = beforeSize },
                 ["file_after"] = new JObject { ["modified_utc"] = afterStamp, ["size_bytes"] = afterSize }
             };
+            if (gateDecision.Requested) payload["prevention"] = gateDecision.Prevention;
 
             // A save that cannot be shown to have written is not reported as one. The
             // caller gets the whole measurement either way - a refusal that throws the

@@ -883,7 +883,16 @@ namespace Horizun.Revit.Commands
             double? mod = SafeModelDiameter(barType);
             if (mod.HasValue) dia = mod.Value * FtToMm;
 
-            StirrupZoneResult plan = StirrupZoneRules.Expand(rule, spanMm, dia, out expanded);
+            // THE HOST'S COVER, when the rule asked for it. Read here because only
+            // this side can see the model; the arithmetic that uses it is in Core.
+            // A host with no readable common cover is a refusal by name inside the
+            // expansion, never a zero: Revit clamps the array to the host's cover
+            // whatever this predicts, and predicting with zero is predicting wrong.
+            double? hostCover = null;
+            if (rule.Cover != null && rule.Cover.Source == StructuralStirrupZoneCover.SourceHost)
+                hostCover = HostCoverMm(host);
+
+            StirrupZoneResult plan = StirrupZoneRules.Expand(rule, spanMm, dia, hostCover, out expanded);
             if (!plan.Ok)
             {
                 expanded = new List<StructuralRebarRule>();
@@ -1297,6 +1306,34 @@ namespace Horizun.Revit.Commands
                 }
             };
             if (!string.IsNullOrWhiteSpace(r.Rule.Mark)) o["mark"] = r.Rule.Mark;
+            // A COVER-AWARE ZONE says what it predicted and from what, so the
+            // arithmetic is on the page before anything is written and the apply's
+            // comparison against it can be read as the proof it is.
+            if (r.Rule.CoverPrediction != null)
+            {
+                StirrupCoverPrediction cp = r.Rule.CoverPrediction;
+                o["cover_prediction"] = new JObject
+                {
+                    ["status"] = StirrupCoverPrediction.Marker,
+                    ["source"] = cp.Source,
+                    ["cover_mm"] = Math.Round(cp.CoverMm, 3),
+                    ["bar_radius_mm"] = Math.Round(cp.BarRadiusMm, 3),
+                    ["clamp_each_end_mm"] = Math.Round(cp.ClampEachEndMm, 3),
+                    ["host_span_mm"] = Math.Round(cp.HostSpanMm, 3),
+                    ["usable_span_mm"] = Math.Round(cp.UsableSpanMm, 3),
+                    ["zone"] = cp.ZoneName,
+                    ["first_station_mm"] = Math.Round(cp.ZoneStartMm, 3),
+                    ["last_station_mm"] = Math.Round(cp.ZoneEndMm, 3),
+                    ["means"] =
+                        "the zone was laid out on the host span less cover + bar radius at each end, which is " +
+                        "where Revit clamps a hosted array (ADR-003 item 7). The stations are a PREDICTION from " +
+                        "that measured rule; the apply compares the first bar Revit drew and the span it reports " +
+                        "against them, and only that comparison proves it. The profile is not moved by the cover."
+                };
+            }
+            // A MAT OVER OPENINGS says which holes it saw, which it ignored, and
+            // what the declared policy did to this component's bars.
+            if (r.Rule.OpeningContext != null) o["openings"] = r.Rule.OpeningContext.ToJson();
             if (r.UnresolvedHostIds.Count > 0)
             {
                 o["host_ids_that_resolved_to_nothing"] =

@@ -44,6 +44,30 @@ namespace Horizun.Revit.Core
         public string WrittenUtc;
         public double Confidence;
 
+        // ---- provenance v2: the three identities kept APART -------------------
+        //
+        // SourceFingerprint folds instance, bytes, path and transform into one
+        // irreversible hash. That answers "is this the same everything" and
+        // nothing finer - and the two questions an incremental run actually
+        // asks are finer: WHICH placement of a file linked twice built this,
+        // and has THAT placement moved since. Each needs its own field. A v1
+        // record leaves all of them null, and the planner treats that as "not
+        // recorded" rather than as "recorded as nothing".
+
+        /// <summary>The ImportInstance UniqueId of the placement that built this. Null on a v1 record.</summary>
+        public string PlacementId;
+        /// <summary>The placement's transform fingerprint when the element was built. Null on a v1 record.</summary>
+        public string PlacementTransform;
+        /// <summary>The placement's origin, "x,y,z" in mm - enough to say how far it has moved.</summary>
+        public string PlacementOrigin;
+        /// <summary>The placement's plan basis and scale, "xx,xy,xz;yx,yy,yz;scale".</summary>
+        public string PlacementBasis;
+        /// <summary>The external path when the link had one. Null for an embedded import and on a v1 record.</summary>
+        public string SourcePath;
+
+        /// <summary>Written before placement identity existed: no placement id, no transform, no path.</summary>
+        public bool IsV1 => SchemaVersion < 2 || string.IsNullOrEmpty(PlacementId);
+
         public JObject ToJson() => new JObject
         {
             ["schema_version"] = SchemaVersion,
@@ -63,7 +87,24 @@ namespace Horizun.Revit.Core
             ["plan_fingerprint"] = PlanFingerprint,
             ["built_geometry_mm"] = BuiltGeometry,
             ["written_utc"] = WrittenUtc,
-            ["confidence"] = Math.Round(Confidence, 4)
+            ["confidence"] = Math.Round(Confidence, 4),
+            // v1 or v2 as a WORD, beside the number: a reader deciding whether
+            // this element can be told apart from another placement's needs the
+            // answer, not the arithmetic.
+            ["provenance_version"] = IsV1 ? "v1" : "v2",
+            ["placement"] = IsV1
+                ? (JToken)JValue.CreateNull()
+                : new JObject
+                {
+                    ["id"] = PlacementId,
+                    ["transform"] = PlacementTransform,
+                    ["origin_mm"] = PlacementOrigin,
+                    ["basis"] = PlacementBasis,
+                    ["source_path"] = SourcePath
+                }
         };
+
+        /// <summary>A copy, so a migration can rewrite the placement half without touching the rest.</summary>
+        public CadProvenance Clone() => (CadProvenance)MemberwiseClone();
     }
 }

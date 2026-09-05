@@ -38,9 +38,10 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
-                // the middle owns neither boundary station, so no bar is placed twice
-                Zone("middle", null, RebarLayout.MaximumSpacing, 200, first: false, last: false),
+                // THE ZONE BEFORE A BOUNDARY GIVES UP ITS LAST BAR (ADR-003 item 12:
+                // Revit keeps a suppressed FIRST bar on a spacing-driven array).
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 100, last: false),
+                Zone("middle", null, RebarLayout.MaximumSpacing, 200, last: false),
                 Zone("end", 1000, RebarLayout.MaximumSpacing, 100)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 50, 50, null, 10);
@@ -61,8 +62,8 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 400, RebarLayout.MaximumSpacing, 200),
-                Zone("rest", null, RebarLayout.MaximumSpacing, 500, first: false)
+                Zone("start", 400, RebarLayout.MaximumSpacing, 200, last: false),
+                Zone("rest", null, RebarLayout.MaximumSpacing, 500)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(1400, zones, false, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);
@@ -77,14 +78,15 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 400, RebarLayout.MaximumSpacing, 200),                 // 3 positions, 3 bars
-                Zone("rest", null, RebarLayout.MaximumSpacing, 500, first: false)    // 3 positions, 2 bars
+                Zone("start", 400, RebarLayout.MaximumSpacing, 200, last: false),  // 3 positions, 2 bars
+                Zone("rest", null, RebarLayout.MaximumSpacing, 500)                 // 3 positions, 3 bars
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(1400, zones, false, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);
-            Assert.Equal(3, r.Zones[0].Layout.Quantity);
+            Assert.Equal(3, r.Zones[0].Layout.NumberOfBarPositions);
+            Assert.Equal(2, r.Zones[0].Layout.Quantity);
             Assert.Equal(3, r.Zones[1].Layout.NumberOfBarPositions);
-            Assert.Equal(2, r.Zones[1].Layout.Quantity);
+            Assert.Equal(3, r.Zones[1].Layout.Quantity);
             Assert.Equal(5, r.TotalBars);
         }
 
@@ -95,8 +97,11 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("ends", 1000, RebarLayout.MaximumSpacing, 100),
-                Zone("middle", null, RebarLayout.MaximumSpacing, 200, first: false, last: false)
+                // The ends zone gives up the bar that touches the middle; the middle
+                // gives up ITS last bar against the mirror, which keeps both of its
+                // own (a suppressed first bar is not honoured by Revit - item 12).
+                Zone("ends", 1000, RebarLayout.MaximumSpacing, 100, last: false),
+                Zone("middle", null, RebarLayout.MaximumSpacing, 200, last: false)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, true, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);
@@ -105,7 +110,58 @@ namespace Horizun.Core.Tests
             Assert.Equal("ends_mirrored", r.Zones[2].Name);
             Assert.Equal(1000, r.Zones[2].LengthMm);
             Assert.Equal(5000, r.Zones[2].StartMm);
-            Assert.Equal(r.Zones[0].Layout.Quantity, r.Zones[2].Layout.Quantity);
+            Assert.Equal(r.Zones[0].Layout.NumberOfBarPositions, r.Zones[2].Layout.NumberOfBarPositions);
+            // the mirror keeps BOTH its ends whatever the original declared
+            Assert.True(r.Zones[0].Layout.IncludeFirstBar);
+            Assert.False(r.Zones[0].Layout.IncludeLastBar);
+            Assert.True(r.Zones[2].Layout.IncludeFirstBar);
+            Assert.True(r.Zones[2].Layout.IncludeLastBar);
+        }
+
+        [Fact]
+        public void AMiddleThatKeepsItsLastBarCollidesWithTheMirrorsFirst()
+        {
+            // The mirror never suppresses, so the boundary before it is the
+            // middle's to give up - and this is the refusal that says so.
+            var zones = new List<StirrupZoneRequest>
+            {
+                Zone("ends", 1000, RebarLayout.MaximumSpacing, 100, last: false),
+                Zone("middle", null, RebarLayout.MaximumSpacing, 200)
+            };
+            StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, true, 0, 0, null, 10);
+            Assert.False(r.Ok);
+            Assert.Equal(StirrupZoneRules.CodeBarsCoincide, r.Code);
+            Assert.Contains("ends_mirrored", r.Why);
+        }
+
+        [Fact]
+        public void ASuppressedFirstBarOnAMaximumSpacingZoneIsRefusedByTheLayout()
+        {
+            var zones = new List<StirrupZoneRequest>
+            {
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
+                Zone("middle", null, RebarLayout.MaximumSpacing, 200, first: false),
+                Zone("end", 1000, RebarLayout.MaximumSpacing, 100)
+            };
+            StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 0, 0, null, 10);
+            Assert.False(r.Ok);
+            Assert.Equal(StirrupZoneRules.CodeLayoutRefused, r.Code);
+            Assert.Contains("LAST bar of the zone before", r.Why);
+        }
+
+        [Fact]
+        public void AZoneWithBothEndsOffIsRefusedByTheLayout()
+        {
+            var zones = new List<StirrupZoneRequest>
+            {
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
+                Zone("middle", null, RebarLayout.MaximumSpacing, 200, first: false, last: false),
+                Zone("end", 1000, RebarLayout.MaximumSpacing, 100)
+            };
+            StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 0, 0, null, 10);
+            Assert.False(r.Ok);
+            Assert.Equal(StirrupZoneRules.CodeLayoutRefused, r.Code);
+            Assert.Contains("both false", r.Why);
         }
 
         [Fact]
@@ -217,8 +273,9 @@ namespace Horizun.Core.Tests
             // 5 at 200 is 800 long inside a 1000 zone: the stirrups simply stop
             var zones = new List<StirrupZoneRequest>
             {
+                // 800 long inside 1000: no boundary bar to give up on either side
                 Zone("start", 1000, RebarLayout.NumberWithSpacing, 200, 5),
-                Zone("rest", null, RebarLayout.MaximumSpacing, 300, first: false)
+                Zone("rest", null, RebarLayout.MaximumSpacing, 300)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);
@@ -272,8 +329,8 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
-                Zone("rest", null, RebarLayout.MaximumSpacing, 200, first: false)
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 100, last: false),
+                Zone("rest", null, RebarLayout.MaximumSpacing, 200)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);
@@ -284,10 +341,10 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
-                Zone("rest", null, RebarLayout.MaximumSpacing, 200, first: false)
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 200, last: false),
+                Zone("rest", null, RebarLayout.MaximumSpacing, 200)
             };
-            // the last bar of zone one is at 1000, the first of zone two at 1200
+            // zone one stops at 800 (its bar at 1000 is switched off), zone two starts at 1000
             StirrupZoneResult fine = StirrupZoneRules.Plan(6000, zones, false, 0, 0, 150, 10);
             Assert.True(fine.Ok, fine.Why);
             Assert.Equal(200, fine.ClosestBetweenZonesMm);
@@ -359,8 +416,8 @@ namespace Horizun.Core.Tests
         {
             var zones = new List<StirrupZoneRequest>
             {
-                Zone("start", 1000, RebarLayout.MaximumSpacing, 100),
-                Zone("end", 1000, RebarLayout.MaximumSpacing, 100, first: false)
+                Zone("start", 1000, RebarLayout.MaximumSpacing, 100, last: false),
+                Zone("end", 1000, RebarLayout.MaximumSpacing, 100)
             };
             StirrupZoneResult r = StirrupZoneRules.Plan(6000, zones, false, 0, 0, null, 10);
             Assert.True(r.Ok, r.Why);

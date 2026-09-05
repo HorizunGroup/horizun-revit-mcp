@@ -136,4 +136,36 @@ foreach ($file in $workflowFiles) {
     }
 }
 
+# EVERY DEPLOYMENT GATE ON THE PUSH PATH ALSO RUNS ON A PULL REQUEST.
+#
+# Both workflows name their PowerShell gates in literal arrays, and the arrays
+# had drifted: ci.yml listed 20, pr.yml 14, and all six of the missing ones
+# existed on every branch. A pull request could therefore be green on exactly
+# the checks that would fail on main after the merge. Nothing compared the two
+# arrays - which is why the drift survived, since everything else about these
+# files is compared right here.
+#
+# The direction is deliberate. A gate on the push path and NOT on the PR path is
+# the hole. The reverse, a PR-only gate, is a choice this does not forbid.
+#
+# TWO NAMED EXCEPTIONS, because they CANNOT run on a pull request:
+#   sbom.tests.ps1              needs a staged payload (dist/stage); it throws
+#                               "Nothing staged" without one.
+#   version-consistency.tests.ps1  runs inside build-stage, which is gated on an
+#                               installable tag and the self-hosted runner.
+# Both live only in build-stage (ci.yml). Listing them here keeps the exception
+# visible instead of weakening the rule.
+$gatePattern = "'(scripts/[a-z0-9-]+PERIODtestsPERIODps1)'".Replace('PERIOD', [regex]::Escape('.'))
+$ciGates = [regex]::Matches($ci, $gatePattern) |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$prGates = [regex]::Matches($pr, $gatePattern) |
+    ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+$pushOnlyByDesign = @('scripts/sbom.tests.ps1', 'scripts/version-consistency.tests.ps1')
+$pushOnly = @($ciGates | Where-Object { $prGates -notcontains $_ -and $pushOnlyByDesign -notcontains $_ })
+
+Assert-True ($ciGates.Count -ge 10) `
+    "the ci.yml deployment-gate array parsed as $($ciGates.Count) scripts, which cannot be right - this check would be vacuous."
+Assert-True ($pushOnly.Count -eq 0) `
+    "ci.yml runs these deployment gates and pr.yml does not: $($pushOnly -join ', '). A pull request would be green on exactly the checks that fail after the merge."
+
 Write-Host "workflow security: PASS ($($workflowFiles.Count) workflows, immutable actions, PR isolated from self-hosted/signing)"

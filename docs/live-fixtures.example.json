@@ -86,9 +86,21 @@
     "presented as a statement about the building.",
     "",
     "It cannot be simulated either: whether a workset is open is a property of how the model was",
-    "opened. Any local workshared fixture will do; it does not have to be the same one as Document."
+    "opened. Any local workshared fixture will do; it does not have to be the same one as Document.",
+    "",
+    "A COPY OF A CENTRAL IS STILL A CENTRAL. Measured 2026-09-03 on Revit 2026: a file copied from a",
+    "central and named ..._L is refused by the typed open as a central, and opening it with",
+    "detach=true renames the document to '<title>_detached' - so the title a scan must be given is",
+    "NOT the one in ClosedWorksetDocument. Declare that title in ClosedWorksetDetachedTitle when the",
+    "fixture is a detached copy; leave it empty when the fixture is a real local."
   ],
   "ClosedWorksetDocument": "",
   "_ClosedWorksetName": "Exact user-workset name the typed open must keep closed.",
-  "ClosedWorksetName": ""
+  "ClosedWorksetName": "",
+  "_ClosedWorksetDetachedTitle": [
+    "The title the document ends up with when the fixture is opened detached, when that differs",
+    "from ClosedWorksetDocument. Empty for a real local. This exists because the difference is",
+    "invisible until a scan is refused for naming the wrong active document."
+  ],
+  "ClosedWorksetDetachedTitle": ""
 }

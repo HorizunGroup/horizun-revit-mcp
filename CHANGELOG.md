@@ -3,6 +3,198 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.2.0 — 2026-09-04
+
+The first release since **1.1.6**, and the version stamp has said `1.2.0` since
+the work below started: no `v1.2.0` tag or release exists anywhere, so this is
+that version being finished rather than a new number. MINOR under the release
+policy — new tools, new optional arguments, new fields, new refusals for cases
+that were previously undefined — and **not** a MAJOR: no tool was removed or
+renamed and no returned field changed meaning.
+
+**The contract hash is `d1b3abb98b4d8df680572b29` (80 tools).** It differs from
+1.1.6's, so the server and the Revit add-in **must be installed together**; a
+mixed pair refuses to pair rather than half-working. There is no partial
+deployment and no separate server version.
+
+**One installer now prepares Codex, Claude Code and Claude Desktop.** Every client
+runs the same installed stdio server. The completion helper registers Codex and
+Claude Code beside their existing MCP servers after each client closes, while
+Claude Desktop receives a real Desktop Extension (`.mcpb`, manifest_version 0.3)
+that names the installed server. Its machine-local copy carries the resolved path
+instead of depending on `${HOME}` expansion. The one action owned by Claude
+Desktop — selecting **Install Extension** — is recorded as
+`pending_user_action` with the exact staged package rather than reported as done.
+
+Claude Code and Codex CLI remain optional: the installer does not require either
+executable to install the Revit bridge or prepare Claude Desktop. Per-client state
+is durable in `install-status.json`; backups preserve all existing MCP entries.
+`horizun_execute_python` remains refused by default and connecting any client
+never grants it. See `docs/CLIENTS.md` for the universal GitHub installation and
+the final step for each client.
+
+**Upgrading.** Close Revit and every MCP client, then run the installer and
+acknowledge that it is unsigned — public releases are unsigned by policy and
+carry no Windows publisher identity. The server and the add-in are installed
+together; a mixed pair refuses to pair rather than half-working, so an upgrade
+that stops half-way leaves nothing usable until it is finished or rolled back.
+From source: `git pull`, close Revit, run `install.ps1`.
+
+**Known limits of this release, stated as limits.** The effective state of a
+workset closed on a LINKED model is not readable through the public Revit API
+that was inspected: a link loaded with a workset closed reports every workset
+open and still hands over that workset's elements, so a takeoff cannot tell the
+two loads apart and every linked document row now says so instead of implying a
+coverage it cannot support. A Revit-side failure inside one action of a confirmed
+correction plan, and a geometry read that throws, are proved over the real code
+paths offline but were never produced by Revit in the available fixtures. An
+element held by a second Revit user, a model in ACC and a real Power BI push
+remain unmeasured for want of a second user, an authorised disposable cloud model
+and an authorised test destination — those are absences of a resource, and none
+of them is described here as fixed or as passing.
+
+**Static, at the head:** Core tests 3740, Server tests 476, the add-in compiled
+for Revit 2023–2027 with `-warnaserror` and no warnings, and the 23
+`scripts/*.tests.ps1` gates the PR workflow runs, all passing.
+
+**Live, across FIVE Revit years** (2023, 2024, 2025, 2026, 2027), without
+replacing the installed pair: **878 unique cases - 841 passed, 0 failed, 16
+unverified, 21 fixture-missing** over 87 runs and 3230 recorded results, every
+year measured at the head. Every case carries result_status, evidence_level and
+blocker_kind, and the published matrix is RENDERED from the record rather than
+typed beside it.
+
+NOTHING IS FAILING, and what is not passing is labelled as one of three
+different things: an EXTERNAL BLOCKER (21 cases - a second Revit user, an
+authorised ACC model, an authorised Power BI destination), NOT OBSERVABLE
+through the API (5 - the effective state of a workset closed on a link), or
+STRUCTURALLY VERIFIED but not reproduced live (11 - a Revit-side failure inside
+one action of a confirmed plan, and a geometry read that throws). A condition
+nobody observed is no longer filed as a missing fixture.
+
+- **An action whose postcondition could not be READ is `uncertain`, not
+  `failed`.** The apply loop moved to `CorrectionApplyLoop`, in Core and
+  Revit-free, driven by a delegate - the substitutable thing is the step
+  EXECUTOR, and the shipped command builds exactly one, the one that dispatches
+  the typed child. There is no failure switch in the product. That made all six
+  situations of `rollback_scope: per_action` testable, and one was wrong: a step
+  that came back `uncertain` made its action `failed`, which claims knowledge
+  nobody has. The write may have happened; the action now says so, and the
+  re-audit sends its elements to not_verifiable rather than to failed or
+  corrected. The scope is defined where it is implemented, in five numbered
+  promises, and pinned by CorrectionApplyLoopTests.
+
+- **A workset closed on a LINK is not observable, and the reply says so.**
+  MEASURED: a link created with a WorksetConfiguration closing one workset by id
+  reports every workset open inside the linked document AND hands over that
+  workset's 392 elements - identical, element for element, to the same type
+  reloaded with every workset open. The API exposes no way to read back a link's
+  load configuration. Every linked document row of a takeoff now carries
+  `linked_document_means` - an absence in a link is NOT evidence of a closed
+  workset - the headline stops blaming a link's worksets for an absence, and the
+  probe reports requested_closed apart from observed_closed.
+
+- **An inventory finding is corrected when the item CHANGES, not when it
+  vanishes.** The re-audit judged every correction by disappearance, and the
+  `links` check lists every link type with its status - so a reload that applied,
+  and that the typed child verified as `Loaded`, was reported `persistent` in
+  every Revit year. `CorrectionRecipe.Postcondition` now says which of the two a
+  recipe means: `removed_from_finding` for the defect lists (unchanged) and
+  `item_leaves_the_filter` for the links/reload recipe, judged on the same typed
+  `status` the recipe already filters on. An item that is NO LONGER LISTED is
+  not_verifiable, never corrected - it may have been deleted, or cut off by top.
+  The row publishes the postcondition it applied and the value it read per
+  element. Fixed, and green in all five years; the regression fails on the code
+  before the fix.
+
+- **One broken link hid that defect in every year.** The Snowdon fixtures carry a
+  link whose file is not on disk; it unloads to `NotFound`, the typed command
+  refuses to call that an unload - correctly - and the corrections harness, which
+  only ever tried the FIRST link type, reported the whole reload recipe as a
+  missing fixture. It now tries each link type in turn and says what it tried.
+
+- **`ElementId.Value` is a 2024 API.** The DWG harness read it when staging an
+  imported drawing, so on Revit 2023 the script threw and the harness recorded
+  "Revit gave back no ImportInstance" - a harness bug reported as a missing
+  fixture, in the one year where the fixture was perfectly possible.
+
+- **The evidence pipeline refuses what it cannot count, and chooses what it
+  stands on.** `consolidate-live-session.py` rejects a session carrying a status
+  outside the nine buckets, a run that cannot name its commit and binaries,
+  totals that disagree with the probes, or an undeclared repetition. A CASE is
+  keyed on the SCENARIO rather than the document title, because Revit renames a
+  detached copy and `HZ_CLOSED_L_detached_1` is not new coverage. The accepted
+  run of a case is the latest that QUALIFIES - clean tree, a named candidate, the
+  right contract - and a run that does not qualify is kept as history with the
+  reason it was not chosen; a case with nothing that qualifies fails the session
+  by name. Results are grouped by the bytes that produced them.
+
+- **A run keeps its own binaries.** `run-year-matrix.ps1` copies the signed DLL
+  Revit loaded, the UNSIGNED build it came from and the server executable into
+  the artifact directory, named by hash, because the development store holds one
+  signed copy per year and the next session signs over it. It also reads the
+  server's stamped commit - the driver does not build the server, and a run that
+  records only a hash names a file nobody can attribute afterwards.
+
+- **The server was reproducible all along.** The claim that it does not set
+  `DeterministicSourcePaths`, so a rebuild elsewhere cannot reproduce its bytes,
+  was wrong: `-getProperty` answers true and two worktrees of one commit produce
+  the identical DLL, MVID and apphost. What was actually wrong is that the driver
+  hashed a server it had not built, whose own stamp said it came from another
+  commit and a dirty tree.
+
+- **A signed binary is tied to its source by a hash, not by an MVID alone.**
+  `scripts/live/verify-binary-provenance.ps1` rebuilds the candidate in a
+  throwaway worktree; for every year the rebuild is BYTE-IDENTICAL to the
+  pre-signature artifact the run kept, and the MVID only carries that identity
+  across the signature, which changes the file. Signed files that a later session
+  signed over, and that nobody kept, are named as unrecoverable rather than
+  re-derived.
+
+- **Breaking for a mixed deployment:** the contract hash changed. Deploy the
+  server and the add-in together.
+
+### Landed first, on 2026-09-01
+
+- **Typed multi-layer wall decomposition.**
+  `horizun_split_multilayer_walls` creates one independent wall per volumetric
+  layer and names each type from the original type, material and layer number.
+  The original wall becomes the core carrier, preserving its `ElementId`,
+  `UniqueId`, hosted doors, windows, openings, sweeps, reveals, dimensions and
+  tags. Straight and arc walls, all six location lines, joins, structural
+  footings and hosted reinforcement are verified after commit. Rebar may follow
+  its carrier curve or either constrained face point by point; geometry-derived
+  shape dimensions may change only when both shape ownership and the centreline
+  constraints are proved. A wall that cannot preserve its dependencies rolls
+  back atomically.
+
+- **Model Doctor over the native RVT.** `horizun_model_scan` now exposes 32
+  paged diagnostic sections for performance, model hygiene, naming, families,
+  views, sheets, annotations, coordinates, datums, worksharing, structure,
+  federation and delivery readiness. `horizun_audit_model` adds durable
+  snapshots, trends, a coverage-aware health index, typed correction proposals
+  that remain dry-run, and a prevention decision that never claims to enforce a
+  Revit save. Caller-supplied 4D/5D and documentary profiles stay
+  organisation-neutral; absent profiles are `not_requested`, never a pass or a
+  failure invented by Horizun.
+
+- **Measured in one Revit 2026 session (build 26.4.0.32), on the commits
+  before the version bump.** The wall matrix ran at `b08b7a2` and accounted for
+  all 55 cases: 45/45 executable cases passed, with five unavailable fixtures,
+  one multiuser environment case and four public-API limits kept in separate
+  buckets. The Model Doctor ran at `a792663`: 71 passed, 0 failed, and five
+  cases that need ACC or real multiuser/workset state recorded as
+  fixture-missing rather than simulated. Both binaries carried the same source
+  as this release (`git diff b08b7a2 1b3575c -- src` is empty) but were stamped
+  `1.1.6`; no `1.2.0`-stamped binary has been measured, and Revit 2023, 2024,
+  2025 and 2027 were not opened. Every number is bound to its commit, binary,
+  contract hash and fixture in `docs/evidence/release-1.2.0-live-evidence.md`.
+  Neither campaign saved its disposable fixtures.
+
+- **Breaking migration:** `horizun_audit_model` requires
+  `target_document`. The server and Revit add-in must be upgraded together so
+  their contract hashes match.
+
 ## v1.1.6 — 2026-08-29
 
 - **The optional Session panel has been removed from Revit's ribbon.** Tool

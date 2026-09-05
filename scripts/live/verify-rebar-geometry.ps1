@@ -209,7 +209,7 @@ $run.Fixture['bar_type_provisioned'] = $barTypeReady
 if (-not $barTypeReady) {
     Add-HzNote $run ('the bar type could not be provisioned: horizun_execute_python is the only route and it ' +
                      'is disabled unless the machine owner granted it. Every probe here needs a bar type.')
-    foreach ($id in @('G1', 'G2', 'G3', 'G4', 'G5', 'Z1', 'Z2', 'Z3', 'Z4', 'M1', 'M2', 'M3', 'M4', 'M5', 'A1', 'A2')) {
+    foreach ($id in @('G1', 'G2', 'G3', 'G4', 'G5', 'Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'A1', 'A2')) {
         Add-HzProbe -Run $run -Id $id -Name 'reinforcement geometry probe' `
             -Expected 'a bar type to exist' -Observed 'none could be provisioned' -Status 'fixture_missing' `
             -Evidence @{ why = 'horizun_execute_python is disabled on this machine' }
@@ -300,7 +300,7 @@ $run.Fixture['wall_id'] = $wallId
 $run.Fixture['beam_degrees'] = $deg
 
 if (-not $beamId -or -not $slabId) {
-    foreach ($id in @('G1', 'G2', 'G3', 'G4', 'G5', 'Z1', 'Z2', 'Z3', 'Z4', 'M1', 'M2', 'M3', 'M4', 'M5', 'A1', 'A2')) {
+    foreach ($id in @('G1', 'G2', 'G3', 'G4', 'G5', 'Z1', 'Z2', 'Z3', 'Z4', 'Z5', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'A1', 'A2')) {
         Add-HzProbe -Run $run -Id $id -Name 'reinforcement geometry probe' `
             -Expected 'a beam and a slab to reinforce' `
             -Observed ("beam={0} slab={1}" -f $beamId, $slabId) -Status 'fixture_missing' `
@@ -676,10 +676,16 @@ $zoneRule = [ordered]@{
     start_offset_mm = 0.0
     zones       = @(
         [ordered]@{ name = 'start'; length_mm = 1000.0
-                    layout = [ordered]@{ rule = 'maximum_spacing'; spacing_mm = 100.0 } },
+                    layout = [ordered]@{ rule = 'maximum_spacing'; spacing_mm = 100.0
+                                         include_last_bar = $false } },
+        # THE ZONE BEFORE A BOUNDARY GIVES UP ITS LAST BAR. Revit 2026 was measured
+        # (Z5, twice) keeping a suppressed FIRST bar on a maximum_spacing zone and
+        # honouring a suppressed LAST bar, so the start and middle zones each drop
+        # their last bar and the end zone keeps both - the layout refuses the
+        # other spellings by name.
         [ordered]@{ name = 'middle'
                     layout = [ordered]@{ rule = 'maximum_spacing'; spacing_mm = 200.0
-                                         include_first_bar = $false; include_last_bar = $false } },
+                                         include_last_bar = $false } },
         [ordered]@{ name = 'end'; length_mm = 1000.0
                     layout = [ordered]@{ rule = 'maximum_spacing'; spacing_mm = 100.0 } }
     )
@@ -821,6 +827,103 @@ Add-HzProbe -Run $run -Id 'Z4' `
                  audit_summary = (Get-HzPath $auditZ.Result 'summary')
                  note = ('the expansion is deterministic, which is the only reason the audit can find what the ' +
                          'apply wrote: both sides compute the same rule ids from the same declaration.') }
+
+# ---- Z5. The same zones, told the wall's cover - and this time they must VERIFY.
+#
+# Backlog 9.20, implemented offline and proved only here. The profile sits at
+# the wall's START (x0, not x0 + inset: the cover block moves the zones along
+# the wall, not the outline), span_mm is the wall's full length, and
+# cover: { source: host } makes the planner lay the zones out on the span less
+# cover + bar radius at each end - where ADR-003 item 7 measured Revit clamping
+# a hosted array. If the measured rule holds for this wall, Revit draws the
+# first bar of every zone where the plan predicted it, the apply's
+# cover_prediction check passes, all three sets verify, and the audit has
+# nothing to say beyond the mark family. Any of those failing is a real finding
+# about the prediction, and Z4 above still records what a bare zone does.
+$tieAtStart = @(
+    @($wallX0, ($wallYc - $wHalf), ($wallBotZ + $wallInset)),
+    @($wallX0, ($wallYc + $wHalf), ($wallBotZ + $wallInset)),
+    @($wallX0, ($wallYc + $wHalf), ($wallTopZ - $wallInset)),
+    @($wallX0, ($wallYc - $wHalf), ($wallTopZ - $wallInset))
+)
+$coverZoneRule = [ordered]@{} + $zoneRule
+$coverZoneRule['id'] = 'B-covered'
+$coverZoneRule['profile_mm'] = $tieAtStart
+$coverZoneRule['span_mm'] = ($wallX1 - $wallX0)
+$coverZoneRule['cover'] = [ordered]@{ source = 'host' }
+$planZ5 = Invoke-HzTool -Run $run -Tool 'horizun_plan_reinforcement' -Label 'z5-plan' -Arguments @{
+    target_document = $Document
+    requirement_set = (New-HzSet -Id 'z5' -BarTypeName $barTypeName -Zones @(, $coverZoneRule))
+}
+$z5Predicted = 0
+$z5Clamp = $null
+$z5FirstStation = $null
+if ($planZ5.Ok) {
+    foreach ($row in @(Get-HzPath $planZ5.Result 'reinforcement')) {
+        $rid = [string](Get-HzProp $row 'rule_id')
+        if ($rid -like 'B-covered#*' -and (Get-HzPath $row 'cover_prediction', 'status') -eq 'predicted_from_host_cover') {
+            $z5Predicted++
+            if ($rid -eq 'B-covered#start') {
+                $z5Clamp = Get-HzPath $row 'cover_prediction', 'clamp_each_end_mm'
+                $z5FirstStation = Get-HzPath $row 'cover_prediction', 'first_station_mm'
+            }
+        }
+    }
+}
+$appliedZ5 = Invoke-HzApply -Run $run -Label 'z5-apply' -Arguments @{
+    target_document = $Document
+    requirement_set = (New-HzSet -Id 'z5' -BarTypeName $barTypeName -Zones @(, $coverZoneRule))
+}
+$z5Rows = 0
+$z5Verified = 0
+$z5CoverChecks = @()
+if ($appliedZ5.Apply) {
+    foreach ($row in @(Get-HzPath $appliedZ5.Apply.Result 'verification')) {
+        $z5Rows++
+        if ((Get-HzProp $row 'verified') -eq $true) { $z5Verified++ }
+        $z5CoverChecks += (Get-HzPath $row 'checks', 'cover_prediction')
+    }
+}
+$auditZ5 = Invoke-HzTool -Run $run -Tool 'horizun_audit_reinforcement' -Label 'z5-audit' -Arguments @{
+    requirement_set = (New-HzSet -Id 'z5' -BarTypeName $barTypeName -Zones @(, $coverZoneRule))
+}
+$z5Matched = Get-HzCount $auditZ5.Result @('scope', 'bars_matched')
+# WHAT THE COVER FIXES, AND WHAT IT DOES NOT. The cover-aware zone must leave the
+# audit with NO array_length_differs, quantity_differs or missing_first_bar -
+# those are the findings Z4 measured on a zone that did not know its host. The
+# audit's closed-stirrup findings are a different, pre-existing limitation and
+# appear on Z4 and Z5 alike: the declaration draws a sharp closed rectangle,
+# Revit draws it with bends and reports it as an open shape, and the audit
+# allows 0 mm for the bend (geometry_differs "a closed shape" / "8.485 mm",
+# length_differs by ~68 mm per bar) - the apply's own post-commit check, which
+# reads the drawn centreline, verified the same three sets. rule_built_nothing
+# is reported beside matched=1 on the same rows and is also pre-existing.
+# Measured 2026-09-03 at 0333471; recorded in the backlog, not hidden here.
+$z5Allowed = @('bar_mark_duplicate', 'geometry_differs', 'length_differs', 'rule_built_nothing')
+$z5Unexpected = @()
+foreach ($f in @(Get-HzPath $auditZ5.Result 'findings')) {
+    $c = [string](Get-HzProp $f 'code')
+    if ($c -and $z5Allowed -notcontains $c) { $z5Unexpected += $c }
+}
+Add-HzProbe -Run $run -Id 'Z5' `
+    -Name 'a zone told the host cover predicts the stations Revit draws, and all three sets verify' `
+    -Expected ('three rows marked predicted_from_host_cover, first station = cover + radius, three applied and ' +
+               'verified with cover_prediction true, audit matching three with no array_length_differs, ' +
+               'quantity_differs or missing_first_bar (the closed-stirrup shape findings are a separate, ' +
+               'pre-existing audit limitation shared with Z4)') `
+    -Observed ("predicted={0} clamp={1} first_station={2} applied={3} verified={4} audit_matched={5} unexpected={6}" -f
+        $z5Predicted, $z5Clamp, $z5FirstStation, $z5Rows, $z5Verified, $z5Matched,
+        $(if ($z5Unexpected.Count -eq 0) { 'none' } else { ($z5Unexpected | Sort-Object -Unique) -join ',' })) `
+    -Ok ($z5Predicted -eq 3 -and $null -ne $z5Clamp -and [Math]::Abs([double]$z5Clamp - ([double]$wallCover + 6.0)) -le 0.01 -and
+         $null -ne $z5FirstStation -and [Math]::Abs([double]$z5FirstStation - [double]$z5Clamp) -le 0.01 -and
+         $appliedZ5.Ok -and $z5Rows -eq 3 -and $z5Verified -eq 3 -and $z5Matched -eq 3 -and $z5Unexpected.Count -eq 0) `
+    -Evidence @{ cover_prediction_checks = $z5CoverChecks
+                 failed_checks = $appliedZ5.FailedChecks
+                 refused = $appliedZ5.Refused; why = $appliedZ5.Why
+                 audit_summary = (Get-HzPath $auditZ5.Result 'summary')
+                 note = ('the prediction rests on ADR-003 item 7 - Revit clamps a hosted array to cover + bar radius ' +
+                         'at each end - and this probe is the only thing that proves it for a real host. The bar ' +
+                         'radius is 6 because the fixture bar type is 12 mm nominal AND model.') }
 
 # ================================================================  M: MATS
 
@@ -990,6 +1093,126 @@ Add-HzProbe -Run $run -Id 'M5' `
                          'tenth of a millimetre over 21 and 25 bars. Revit sets a hosted bar length from the ' +
                          'HOST cover and ignores the declaration. Without this refusal the apply commits, ' +
                          're-reads a bar Revit sized itself, and correctly reports failure - every time.') }
+
+# ---- M6 / M7. A slab WITH A HOLE. Backlog 9.19, implemented offline and proved
+# only here. The floor is created with a two-loop profile - the outer 6000 x
+# 4000 and a 1000 x 1000 hole in the middle - so its solid, and therefore the
+# welded mesh the mat reads, carries the opening. M7 asks for the mat with no
+# openings block and requires the refusal BY NAME; M6 declares omit and requires
+# the bars that would cross the hole to be dropped, the rest built as runs, every
+# run verified against the slab solid and clear_of_openings true.
+$hx0 = $sx0 + 2500.0; $hx1 = $hx0 + 1000.0; $hy0 = 1500.0; $hy1 = 2500.0
+$holedProfile = @(
+    @(@($sx0, ($sy0 + 6000.0), 0.0), @($sx1, ($sy0 + 6000.0), 0.0), @($sx1, ($sy1 + 6000.0), 0.0), @($sx0, ($sy1 + 6000.0), 0.0)),
+    @(@($hx0, ($hy0 + 6000.0), 0.0), @($hx1, ($hy0 + 6000.0), 0.0), @($hx1, ($hy1 + 6000.0), 0.0), @($hx0, ($hy1 + 6000.0), 0.0))
+)
+$holedMade = Invoke-HzWrite -Run $run -Tool 'horizun_create_elements' -Label 'fixture-holed-slab' -Arguments @{
+    target_document  = $Document
+    units            = 'mm'
+    transaction_name = "HZ_RG_$TAG holed slab"
+    elements         = @(, [ordered]@{
+            kind = 'floor'; structural = $true; level_id = [long]$level.element_id; profile = $holedProfile })
+}
+$holedId = $null
+if ($holedMade.Ok) {
+    $rows = @(Get-HzPath $holedMade.Apply.Result 'rows')
+    if ($rows.Count -gt 0) { $holedId = [long](Get-HzProp $rows[0] 'element_id') }
+}
+if (-not $holedId) {
+    foreach ($id in @('M6', 'M7')) {
+        Add-HzProbe -Run $run -Id $id -Name 'a mat over a slab with a hole' `
+            -Expected 'a floor with a two-loop profile to reinforce' -Observed 'the holed slab could not be created' `
+            -Status 'fixture_missing' -Evidence @{ create = $holedMade.Apply.Result }
+    }
+}
+else {
+    $holedHosts = Invoke-HzToolStrict -Run $run -Tool 'horizun_query_structure' -Label 'holed-host' -Arguments @{
+        mode = 'hosts'; element_ids = @($holedId)
+    }
+    $holedCover = $null
+    foreach ($h in @(Get-HzPath $holedHosts.Result 'rows')) {
+        if ([long](Get-HzProp $h 'id') -eq $holedId) { $holedCover = Get-HzPath $h 'cover', 'common', 'distance_mm' }
+    }
+    if ($null -eq $holedCover) { $holedCover = $MAT_END_COVER }
+    $HOLED_END = [double]$holedCover
+    $HOLED_SIDE = [Math]::Round($HOLED_END + 20.0, 3)
+    $holedComp = [ordered]@{ name = 'top_x'; direction = @(1, 0, 0); bar_type = 'T'
+                             offset_from_face_mm = 31.0; end_cover_mm = $HOLED_END; side_cover_mm = $HOLED_SIDE
+                             allow_new_shape = $true
+                             layout = [ordered]@{ rule = 'maximum_spacing'; spacing_mm = 200.0 } }
+
+    # M7 first: no block, so the rule must refuse by name and nothing is written.
+    $noPolicy = [ordered]@{ id = 'S-holed-nopolicy'; host = @{ element_ids = @($holedId) }
+                            face_normal = @(0, 0, 1); components = @(, $holedComp) }
+    $planM7 = Invoke-HzTool -Run $run -Tool 'horizun_plan_reinforcement' -Label 'm7-nopolicy' -Arguments @{
+        target_document = $Document
+        requirement_set = (New-HzSet -Id 'm7' -BarTypeName $barTypeName -Mats @(, $noPolicy))
+    }
+    $m7 = if ($planM7.Ok) { Get-HzRefusal $planM7.Result 'S-holed-nopolicy' } else { $null }
+    Add-HzProbe -Run $run -Id 'M7' `
+        -Name 'a mat over a hole with no openings policy is refused by name, naming the hole' `
+        -Expected 'refused, naming openings_present_and_no_policy_declared and the opening found' `
+        -Observed $(if ($m7) { $m7.code + ' / ' + (Limit-HzText $m7.why 300) } else { 'accepted' }) `
+        -Ok ($null -ne $m7 -and $m7.why -like '*openings_present_and_no_policy_declared*' -and $m7.why -like '*opening 0*') `
+        -Evidence @{ refusal = $m7
+                     note = ('the hole is in the solid Revit holds, so the mesh the mat reads carries it; what to do ' +
+                             'about it is a design decision and the bridge asks rather than builds bars over a void.') }
+
+    # M6: omit. The 1000 mm hole sits across bars 8..12 of a 200 mm pitch; they
+    # are dropped and the rest is two runs that must build, verify against the
+    # solid, and read as clear of the opening.
+    $omitMat = [ordered]@{ id = 'S-holed'; host = @{ element_ids = @($holedId) }
+                           face_normal = @(0, 0, 1)
+                           openings = [ordered]@{ policy = 'omit'; minimum_size_mm = 300.0 }
+                           components = @(, $holedComp) }
+    $planM6 = Invoke-HzTool -Run $run -Tool 'horizun_plan_reinforcement' -Label 'm6-omit-plan' -Arguments @{
+        target_document = $Document
+        requirement_set = (New-HzSet -Id 'm6' -BarTypeName $barTypeName -Mats @(, $omitMat))
+    }
+    $m6Ids = @()
+    $m6Omitted = $null
+    $m6Considered = $null
+    if ($planM6.Ok) {
+        foreach ($row in @(Get-HzPath $planM6.Result 'reinforcement')) {
+            $rid = [string](Get-HzProp $row 'rule_id')
+            if ($rid -like 'S-holed#*') {
+                $m6Ids += $rid
+                if ($null -eq $m6Omitted) {
+                    $m6Omitted = @(Get-HzPath $row 'openings', 'component', 'bars_omitted')
+                    $m6Considered = Get-HzPath $row 'openings', 'component', 'openings_considered'
+                }
+            }
+        }
+    }
+    $appliedM6 = Invoke-HzApply -Run $run -Label 'm6-omit-apply' -Arguments @{
+        target_document = $Document
+        requirement_set = (New-HzSet -Id 'm6' -BarTypeName $barTypeName -Mats @(, $omitMat))
+    }
+    $m6Rows = 0; $m6Verified = 0; $m6Clear = 0; $m6Inside = 0
+    if ($appliedM6.Apply) {
+        foreach ($row in @(Get-HzPath $appliedM6.Apply.Result 'verification')) {
+            $m6Rows++
+            if ((Get-HzProp $row 'verified') -eq $true) { $m6Verified++ }
+            if ((Get-HzPath $row 'checks', 'clear_of_openings', 'verified') -eq $true) { $m6Clear++ }
+            if ((Get-HzPath $row 'checks', 'inside_host_solid', 'containment') -eq 'inside') { $m6Inside++ }
+        }
+    }
+    Add-HzProbe -Run $run -Id 'M6' `
+        -Name 'omit drops the bars over the hole, builds the rest as runs, and every run verifies clear of it' `
+        -Expected 'two runs named S-holed#top_x#run1 and #run2, bars omitted reported, both applied, verified, inside and clear_of_openings' `
+        -Observed ("rules={0} omitted={1} considered={2} applied={3} verified={4} inside={5} clear={6}" -f
+            ($m6Ids -join ','), $(if ($m6Omitted) { $m6Omitted.Count } else { 'none' }), $m6Considered,
+            $m6Rows, $m6Verified, $m6Inside, $m6Clear) `
+        -Ok ($m6Ids.Count -eq 2 -and $m6Ids -contains 'S-holed#top_x#run1' -and $m6Ids -contains 'S-holed#top_x#run2' -and
+             $null -ne $m6Omitted -and $m6Omitted.Count -ge 4 -and $m6Considered -eq 1 -and
+             $appliedM6.Ok -and $m6Rows -eq 2 -and $m6Verified -eq 2 -and $m6Inside -eq 2 -and $m6Clear -eq 2) `
+        -Evidence @{ rule_ids = $m6Ids; bars_omitted = $m6Omitted
+                     failed_checks = $appliedM6.FailedChecks
+                     refused = $appliedM6.Refused; why = $appliedM6.Why
+                     note = ('no trimming bars are added around the hole: what replaces the steel is a design ' +
+                             'decision, and the reply says so. The omitted count is compared loosely because it ' +
+                             'depends on where the 200 mm pitch lands relative to the hole, which the model decides.') }
+}
 
 # ==============================================================  A: THE SHAPE
 

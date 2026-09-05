@@ -100,7 +100,7 @@ tool_timeout_sec = 600
 ```
 
 ```json
-// Cursor, Cline, Windsurf, Claude Desktop and other MCP clients
+// Cursor, Cline, Windsurf and other MCP clients
 {
   "mcpServers": {
     "horizun-revit": {
@@ -109,6 +109,22 @@ tool_timeout_sec = 600
   }
 }
 ```
+
+**Claude Desktop has its own route and does not need Claude Code.** The Windows
+Setup is the universal installation path: it registers Codex and Claude Code
+when their configuration exists, and stages the Claude Desktop extension:
+
+```powershell
+pwsh -File scripts/install-claude-desktop-extension.ps1   # the .mcpb extension
+pwsh -File scripts/diagnose-integrations.ps1              # all supported clients, one screen
+```
+
+Claude Desktop installs a real Desktop Extension that names the same installed
+stdio server as Codex and Claude Code. Its final **Install Extension** click is
+inside Claude Desktop; the helper stages and validates the exact `.mcpb` and
+records that pending action. `docs/CLIENTS.md` documents the universal installer,
+every client-specific last step, and where an MSIX install really keeps
+`claude_desktop_config.json`.
 
 TOML literal strings (single quotes) take Windows paths as written; JSON needs
 every backslash doubled. **Raise the tool timeout** if your client has one: a
@@ -298,7 +314,7 @@ tool_timeout_sec = 600
 ```
 
 ```json
-// Cursor, Cline, Windsurf, Claude Desktop y otros clientes MCP
+// Cursor, Cline, Windsurf y otros clientes MCP
 {
   "mcpServers": {
     "horizun-revit": {
@@ -307,6 +323,22 @@ tool_timeout_sec = 600
   }
 }
 ```
+
+**Claude Desktop tiene su propia ruta y no necesita Claude Code.** El Setup de
+Windows es la instalación universal: registra Codex y Claude Code cuando existe
+su configuración, y prepara la extensión de Claude Desktop:
+
+```powershell
+pwsh -File scripts/install-claude-desktop-extension.ps1   # la extension .mcpb
+pwsh -File scripts/diagnose-integrations.ps1              # todos los clientes soportados
+```
+
+Claude Desktop instala una extensión real que apunta al mismo servidor stdio
+instalado que usan Codex y Claude Code. El último clic, **Install Extension**, se
+hace dentro de Claude Desktop; el asistente prepara y valida el `.mcpb` exacto y
+registra esa acción pendiente. `docs/CLIENTS.md` documenta el instalador universal,
+el último paso de cada cliente y dónde guarda realmente
+`claude_desktop_config.json` una instalación MSIX.
 
 Comillas simples en TOML (cadena literal: las barras van tal cual); en JSON hay
 que doblar cada barra. **Sube el tool timeout** si el cliente tiene uno: un

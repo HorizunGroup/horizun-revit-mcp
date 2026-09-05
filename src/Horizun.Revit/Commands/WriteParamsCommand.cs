@@ -78,52 +78,6 @@ namespace Horizun.Revit.Commands
             "writes_confirmed_by_parse_read_back_only and never claimed as verified against your value. Use " +
             "dry_run=true to resolve every target and see what would be written without opening a transaction.";
 
-        public string ParametersSchema => @"{
-  ""type"": ""object"",
-  ""properties"": {
-    ""tabular_source"": {
-      ""type"": ""object"", ""required"": [""path"", ""key_column"", ""value_columns"", ""category""],
-      ""description"": ""The writes come from a CSV instead of the writes array (give one or the other). The file is diffed against the model NOW: ops are generated only for cells whose reading differs (exact string comparison of the displayed value by default - conservative; declare decimal_separator and numeric cells against Double/Integer parameters compare NUMERICALLY instead, unit-aware), row problems (empty key, unmatched, ambiguous) are named per row in the reply's tabular block, duplicate keys in the file refuse the whole call, and the expanded ops ride the normal rehearsal - a file edited between rehearsal and apply refuses as a stale plan. CSV only, by design: this bridge carries no spreadsheet library."",
-      ""properties"": {
-        ""path"": { ""type"": ""string"", ""description"": ""Absolute path to the .csv (UTF-8, BOM tolerated)."" },
-        ""key_column"": { ""type"": ""string"", ""description"": ""Header column whose value finds the element. Exact, case-sensitive."" },
-        ""key_parameter"": { ""type"": ""string"", ""description"": ""Parameter the key is matched against. Default: same name as key_column."" },
-        ""value_columns"": { ""type"": ""object"", ""description"": ""{column: parameter} - each mapped column writes that parameter."", ""additionalProperties"": { ""type"": ""string"" } },
-        ""category"": { ""type"": ""string"", ""description"": ""OST_ BuiltInCategory bounding the element sweep. Required: an unbounded sweep is not a cost to impose silently."" },
-        ""skip_unchanged"": { ""type"": ""boolean"", ""default"": true },
-        ""decimal_separator"": { ""type"": ""string"", ""enum"": [""."", "",""],
-          ""description"": ""DECLARED, never guessed from the file. When present, a cell that parses as a number under this separator and lands on a Double parameter is compared NUMERICALLY against the model's value converted to that parameter's display unit (Integer storage compares the integer), so '300' no longer rewrites a parameter displaying '300.00 mm'. Equal means within 1e-6 relative. A cell that does not parse (a unit suffix, the other separator) falls back to the exact display-string compare, which writes - harmlessly. Absent: every cell uses the exact display-string compare, as before."" }
-      }
-    },
-    ""writes"": {
-      ""type"": ""array"", ""minItems"": 1,
-      ""description"": ""The batch. Each entry names ONE parameter on ONE target."",
-      ""items"": {
-        ""type"": ""object"",
-        ""required"": [""parameter"", ""value""],
-        ""properties"": {
-          ""target_id"": { ""type"": ""integer"", ""description"": ""Element id OR type id. Omit (or set target='project_info') to write a Project Information field. Writing a type id affects every instance of that type."" },
-          ""target"": { ""type"": ""string"", ""enum"": [""project_info""], ""description"": ""Write to the document's Project Information element instead of an id."" },
-          ""parameter"": { ""type"": ""string"", ""description"": ""A BuiltInParameter name (e.g. KEYNOTE_PARAM), a shared/project parameter GUID, or a parameter name as it reads in the UI. A name matching more than one parameter is an error, not a guess."" },
-          ""value"": { ""description"": ""String | number | boolean | null. Coerced to the parameter's storage type; a value that cannot be coerced is an error naming that storage type, never a silent skip. For Double/Integer storage, a STRING value is applied with SetValueString (unit-aware, e.g. '3000 mm'); a NUMBER is applied raw, in Revit internal units (feet)."" }
-        }
-      }
-    },
-    ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: write params"",
-                            ""description"": ""The label of the single undo step this batch becomes."" },
-    ""on_failure"": { ""type"": ""string"", ""enum"": [""atomic"", ""best_effort""], ""default"": ""atomic"",
-                      ""description"": ""atomic: if ANY write fails, roll the whole batch back — nothing partial. best_effort: commit what worked and report the rest."" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": false,
-                   ""description"": ""Resolve every target and parameter and report what WOULD be written. Opens no transaction."" },
-    ""allow_vary_between_groups"": { ""type"": ""boolean"", ""default"": true,
-                                     ""description"": ""Call SetAllowVaryBetweenGroups(true) on project/shared parameters that do not vary yet. Without it Revit throws a modal at write time in any model with groups, which hangs the bridge. Reported as measured off the InternalDefinition, not assumed."" },
-    ""target_document_title"": { ""type"": ""string"",
-                                 ""description"": ""If given, the write aborts unless the active document's title matches. Writing to whichever model happened to be in front is how a batch lands in the wrong file."" },
-    ""max_rows"": { ""type"": ""integer"", ""default"": 500, ""minimum"": 1,
-                    ""description"": ""How many rows to include in the response. Totals are always exact regardless of this; truncation is reported."" }
-  }
-}";
-
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             JObject request;

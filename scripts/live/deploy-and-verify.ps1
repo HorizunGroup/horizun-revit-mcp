@@ -210,12 +210,16 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 15
     $h2 = Call 'horizun_health' @{} 'poll'
     $result = Field $h2 'result'
-    $commit = [string](Field $result 'horizun_commit')
-    if ($commit) {
-        Say ("  health: {0} commit={1}" -f [string](Field $result 'status'), $commit.Substring(0, 12))
+    # NOT $commit: PowerShell is case-insensitive, so that name IS the $Commit
+    # parameter. $expected was resolved from it at line 104 and the comparison
+    # below is sound today - but naming the OBSERVED value after the EXPECTED
+    # one leaves the check one refactor away from comparing a value to itself.
+    $observedCommit = [string](Field $result 'horizun_commit')
+    if ($observedCommit) {
+        Say ("  health: {0} commit={1}" -f [string](Field $result 'status'), $observedCommit.Substring(0, 12))
     }
     # BOTH conditions. An old build reports healthy too.
-    if ([string](Field $result 'status') -eq 'healthy' -and $commit -eq $expected) { $healthy = $true; break }
+    if ([string](Field $result 'status') -eq 'healthy' -and $observedCommit -eq $expected) { $healthy = $true; break }
 }
 if (-not $healthy) {
     throw ("health never reported {0} within {1} minutes. If Revit is up, the security dialog may be " +
@@ -239,6 +243,25 @@ foreach ($file in $OpenDocuments) {
     $res = Field $r 'result'
     Say ("  opened {0}: {1} active_verified={2}" -f (Split-Path $file -Leaf),
         [string](Field $res 'status'), [string](Field $res 'active_document_verified'))
+}
+
+# Opening several documents makes the LAST one active. ActiveDocument is an
+# explicit staging requirement, not a hint about how the caller should order
+# OpenDocuments, so activate it through the same typed open route before the
+# health re-read. An already-open document is not reloaded or saved.
+$activeMatches = @($OpenDocuments | Where-Object {
+    [IO.Path]::GetFileNameWithoutExtension([string]$_) -eq $ActiveDocument
+})
+if ($activeMatches.Count -ne 1) {
+    throw ("ActiveDocument '{0}' must identify exactly one OpenDocuments entry; found {1}." -f
+           $ActiveDocument, $activeMatches.Count)
+}
+$activate = Call 'horizun_document_session' @{
+    operation = 'open'; file_path = [string]$activeMatches[0]; expected_version = [string]$Year
+    allow_upgrade = $false; idempotency_key = [guid]::NewGuid().ToString() } 'activate-required'
+$activateResult = Field $activate 'result'
+if ([string](Field $activateResult 'active_document_verified') -ne 'True') {
+    throw ("the typed activation of '{0}' did not verify the active document" -f $ActiveDocument)
 }
 
 # Do not take the opens' word for it.

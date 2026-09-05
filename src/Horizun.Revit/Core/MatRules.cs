@@ -25,6 +25,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -68,6 +69,10 @@ namespace Horizun.Revit.Core
         /// <summary>The bar direction after it was squared up to the face. See Why.</summary>
         public double[] AlongUsed;
         public string Why;
+        /// <summary>What the openings policy did to this component. Null when the host has no opening.</summary>
+        public MatOpeningReport Openings;
+        /// <summary>How many reinforcement rules this component became - one, unless openings split it.</summary>
+        public int RulesExpanded;
     }
 
     public sealed class MatResult
@@ -79,6 +84,10 @@ namespace Horizun.Revit.Core
         /// <summary>Where the declared face sits, as a distance along the face normal.</summary>
         public double FaceOffsetMm;
         public string HowTheFaceWasFound;
+        /// <summary>How many rings other than the outline the face carries. Zero for a solid slab.</summary>
+        public int OpeningsFound;
+        /// <summary>Null when the face's rings were read; why they could not be otherwise.</summary>
+        public string FaceLoopsWhy;
     }
 
     public static class MatRules
@@ -97,13 +106,17 @@ namespace Horizun.Revit.Core
         public const string CodeCoverNotUsable = "mat_cover_not_usable";
         public const string CodeCoverBelowHostCover = "mat_cover_below_the_host_cover";
         public const string CodeEndCoverNotHostCover = "mat_end_cover_is_not_the_host_cover";
+        public const string CodeOpeningsNeedAPolicy = "openings_present_and_no_policy_declared";
+        public const string CodeOpeningsNotExtractable = "face_loops_not_extractable";
+        public const string CodeOpeningsLeaveNoBars = "openings_leave_no_bars";
 
         public static readonly string[] AllCodes =
         {
             CodeNoComponents, CodeNoBoundary, CodeNormalNotUsable, CodeDirectionNotUsable,
             CodeDirectionNotInFace, CodeNoRoomAlong, CodeNoRoomAcross, CodeLayoutRefused,
             CodeLayersShareAPlane, CodeNameRepeated, CodeOffsetNotUsable, CodeCoverNotUsable,
-            CodeCoverBelowHostCover, CodeEndCoverNotHostCover
+            CodeCoverBelowHostCover, CodeEndCoverNotHostCover, CodeOpeningsNeedAPolicy,
+            CodeOpeningsNotExtractable, CodeOpeningsLeaveNoBars
         };
 
         /// <summary>A direction more than this far from the face is not in it.</summary>
@@ -191,6 +204,24 @@ namespace Horizun.Revit.Core
                 "the outermost plane of the host along the declared face normal. A host with a step in it has " +
                 "more than one plane facing that way, and this is the outermost - the containment check is what " +
                 "catches a bar left hanging over a lower one.";
+
+            // THE HOLES IN THE FACE, read once for the rule. A face whose rings
+            // cannot be read is a refusal when the rule declared an openings
+            // policy - the policy cannot be applied to openings nobody found - and
+            // today's behaviour otherwise, where containment refuses a bar over a
+            // void after the fact.
+            FaceLoops loops = MatOpenings.ExtractFaceLoops(mesh, up, faceAt, MatOpenings.PlaneToleranceMm);
+            r.FaceLoopsWhy = loops.Why;
+            r.OpeningsFound = loops.Ok ? loops.Openings.Count : 0;
+            if (!loops.Ok && rule.Openings != null)
+            {
+                r.Code = CodeOpeningsNotExtractable;
+                r.Why = "this mat declares an openings policy and the rings of the host's face could not be " +
+                        "read, so there is nothing to apply the policy to: " + loops.Why + " Remove the block " +
+                        "to build the mat against the outer extents alone, and rely on containment to refuse " +
+                        "any bar over a void.";
+                return r;
+            }
 
             var names = new HashSet<string>(StringComparer.Ordinal);
             var layers = new List<MatComponentPlan>();
@@ -423,23 +454,211 @@ namespace Horizun.Revit.Core
                 layers.Add(plan);
                 r.Components.Add(plan);
 
-                expanded.Add(new StructuralRebarRule
+                string baseId = rule.Id + "#" + name;
+                Func<double, double, double, RebarLayoutRequest, StructuralRebarRule> make = (ua, ub, v, lay) =>
+                    new StructuralRebarRule
+                    {
+                        Id = baseId,
+                        Host = rule.Host,
+                        BarTypeId = c.BarTypeId,
+                        ShapeName = c.ShapeName,
+                        Style = StructuralStyle.Standard,
+                        CurvesMm = new List<double[]>
+                        {
+                            Point(along, ua, acrossUnit, v, up, depth),
+                            Point(along, ub, acrossUnit, v, up, depth)
+                        },
+                        Closed = false,
+                        NormalMm = new[] { acrossUnit[0], acrossUnit[1], acrossUnit[2] },
+                        BarsOnNormalSide = true,
+                        Layout = lay,
+                        Mark = string.IsNullOrWhiteSpace(c.Mark) ? rule.Mark : c.Mark,
+                        Required = rule.Required,
+                        AllowNewShape = c.AllowNewShape,
+                        Raw = rule.Raw
+                    };
+
+                // NO OPENING IN THE FACE: one rule, exactly as before this file knew
+                // about holes, so every set and every live probe written against a
+                // solid slab reads the same.
+                if (!loops.Ok || loops.Openings.Count == 0)
                 {
-                    Id = rule.Id + "#" + name,
-                    Host = rule.Host,
-                    BarTypeId = c.BarTypeId,
-                    ShapeName = c.ShapeName,
-                    Style = StructuralStyle.Standard,
-                    CurvesMm = new List<double[]> { start, end },
-                    Closed = false,
-                    NormalMm = new[] { acrossUnit[0], acrossUnit[1], acrossUnit[2] },
-                    BarsOnNormalSide = true,
-                    Layout = request,
-                    Mark = string.IsNullOrWhiteSpace(c.Mark) ? rule.Mark : c.Mark,
-                    Required = rule.Required,
-                    AllowNewShape = c.AllowNewShape,
-                    Raw = rule.Raw
-                });
+                    plan.RulesExpanded = 1;
+                    expanded.Add(make(startAlong, startAlong + barLength, startAcross, request));
+                    continue;
+                }
+
+                // THE OPENINGS, IN THIS COMPONENT'S FRAME. Every ring is sized and
+                // judged against minimum_size_mm; with no block declared nothing is
+                // ignored, because the question below is whether a policy is NEEDED.
+                double minSize = rule.Openings == null ? 0 : rule.Openings.MinimumSizeMm;
+                var ctx = new MatOpeningContext
+                {
+                    Policy = rule.Openings == null ? null : rule.Openings.Policy,
+                    MinimumSizeMm = minSize,
+                    ClearanceMm = rule.Openings != null && rule.Openings.ClearanceMm.HasValue ? rule.Openings.ClearanceMm.Value : 0,
+                    BarRadiusMm = compRadius,
+                    Along = new[] { along[0], along[1], along[2] },
+                    Across = new[] { acrossUnit[0], acrossUnit[1], acrossUnit[2] }
+                };
+                for (int k = 0; k < loops.Openings.Count; k++)
+                    ctx.Openings.Add(MatOpenings.Region(loops.Openings[k], k, along, acrossUnit, minSize));
+                var report = new MatOpeningReport
+                {
+                    Policy = ctx.Policy ?? "not_declared",
+                    OpeningsConsidered = ctx.Openings.Count(o => o.Considered),
+                    OpeningsIgnored = ctx.Openings.Count(o => !o.Considered)
+                };
+                ctx.Report = report;
+                plan.Openings = report;
+
+                // EVERY BAR THAT EXISTS, and where its body meets a void. The bar's
+                // station is v; the stretch(es) of u where a bar of this radius at
+                // that station is over a considered opening are its crossings.
+                double u0 = startAlong, u1 = startAlong + barLength;
+                var slots = new List<BarSlot>();
+                for (int k = 0; k < layout.PositionsMm.Count; k++)
+                {
+                    bool suppressed = (k == 0 && !layout.IncludeFirstBar) ||
+                                      (k == layout.PositionsMm.Count - 1 && !layout.IncludeLastBar);
+                    if (suppressed) continue;
+                    var slot = new BarSlot { Index = k, PositionMm = layout.PositionsMm[k], V = startAcross + layout.PositionsMm[k] };
+                    var body = new List<double[]>();
+                    foreach (MatOpeningRegion reg in ctx.Considered)
+                        body.AddRange(MatOpenings.CrossingIntervals(reg.Uv, slot.V, compRadius));
+                    slot.Body = MatOpenings.Clip(MatOpenings.Merge(body), u0, u1);
+                    slots.Add(slot);
+                }
+                report.BarsPlanned = slots.Count;
+                foreach (BarSlot s in slots) if (s.Body.Count > 0) report.BarsCrossing.Add(s.Index);
+
+                if (rule.Openings == null)
+                {
+                    // NO POLICY DECLARED. A bar that would cross a hole is a design
+                    // question, and it is refused here by name rather than built
+                    // and refused by containment with a message about geometry.
+                    if (report.BarsCrossing.Count > 0)
+                    {
+                        r.Code = CodeOpeningsNeedAPolicy;
+                        r.Why = "component '" + name + "': the host's face has " + loops.Openings.Count +
+                                " opening(s) - " + Sizes(ctx) + " - and " + report.BarsCrossing.Count + " of " +
+                                slots.Count + " bar(s) would cross one, and this mat declares no openings block. " +
+                                "What happens at a hole is a design decision: declare openings: { policy: omit " +
+                                "| trim | ignore, minimum_size_mm, clearance_mm (trim) }. omit drops the bars " +
+                                "that cross; trim stops each of them short of the opening by the clearance and " +
+                                "builds the remaining stretches as their own bars; ignore builds them as declared " +
+                                "and reports the crossings - containment then refuses any bar really over the void.";
+                        expanded = new List<StructuralRebarRule>();
+                        return r;
+                    }
+                    // Openings exist and no bar meets one: today's mat, with the
+                    // openings reported and the context carried so the apply can
+                    // confirm the drawn bars miss them too.
+                    report.BarsKept = slots.Count;
+                    report.Runs.Add(new MatOpeningRun { RuleId = baseId, FirstBar = slots.Count > 0 ? slots[0].Index : 0,
+                        LastBar = slots.Count > 0 ? slots[slots.Count - 1].Index : 0, Bars = slots.Count, FromMm = u0, ToMm = u1 });
+                    plan.RulesExpanded = 1;
+                    StructuralRebarRule whole = make(startAlong, startAlong + barLength, startAcross, request);
+                    whole.OpeningContext = ctx;
+                    expanded.Add(whole);
+                    continue;
+                }
+
+                if (rule.Openings.Policy == StructuralMatOpenings.PolicyIgnore)
+                {
+                    report.BarsKept = slots.Count;
+                    report.Runs.Add(new MatOpeningRun { RuleId = baseId, FirstBar = slots.Count > 0 ? slots[0].Index : 0,
+                        LastBar = slots.Count > 0 ? slots[slots.Count - 1].Index : 0, Bars = slots.Count, FromMm = u0, ToMm = u1 });
+                    plan.RulesExpanded = 1;
+                    StructuralRebarRule asDeclared = make(startAlong, startAlong + barLength, startAcross, request);
+                    asDeclared.OpeningContext = ctx;
+                    expanded.Add(asDeclared);
+                    continue;
+                }
+
+                // OMIT or TRIM: each bar keeps a list of stretches - the whole bar,
+                // some of it, or none - and bars with the SAME stretches next to
+                // each other form a run that is one Revit set.
+                bool trim = rule.Openings.Policy == StructuralMatOpenings.PolicyTrim;
+                foreach (BarSlot s in slots)
+                {
+                    if (s.Body.Count == 0) { s.Segments = new List<double[]> { new[] { u0, u1 } }; continue; }
+                    if (!trim) { s.Segments = new List<double[]>(); report.BarsOmitted.Add(s.Index); continue; }
+                    List<double[]> removed = MatOpenings.Clip(MatOpenings.Widen(s.Body, ctx.ClearanceMm), u0, u1);
+                    var trimmed = new MatTrimmedBar { Bar = s.Index, PositionMm = s.PositionMm, RemovedMm = removed };
+                    s.Segments = new List<double[]>();
+                    foreach (double[] seg in MatOpenings.Complement(removed, u0, u1))
+                    {
+                        if (seg[1] - seg[0] < MatOpenings.MinimumSegmentMm) trimmed.DroppedMm.Add(seg);
+                        else s.Segments.Add(seg);
+                    }
+                    trimmed.SegmentsMm = s.Segments;
+                    s.Trimmed = true;
+                    if (s.Segments.Count == 0) report.BarsOmitted.Add(s.Index);
+                    else report.BarsTrimmed.Add(trimmed);
+                }
+
+                var runs = new List<List<BarSlot>>();
+                foreach (BarSlot s in slots)
+                {
+                    if (s.Segments.Count == 0) continue;
+                    List<BarSlot> last = runs.Count > 0 ? runs[runs.Count - 1] : null;
+                    if (last != null && last[last.Count - 1].Index == s.Index - 1 &&
+                        MatOpenings.SameIntervals(last[0].Segments, s.Segments))
+                        last.Add(s);
+                    else runs.Add(new List<BarSlot> { s });
+                }
+                report.BarsKept = runs.Sum(x => x.Count);
+                if (runs.Count == 0)
+                {
+                    r.Code = CodeOpeningsLeaveNoBars;
+                    r.Why = "component '" + name + "': every one of its " + slots.Count + " bar(s) meets an opening " +
+                            "and the " + rule.Openings.Policy + " policy leaves nothing to build. Nothing here " +
+                            "invents a bar; the openings are " + Sizes(ctx) + ".";
+                    expanded = new List<StructuralRebarRule>();
+                    return r;
+                }
+
+                bool untouched = runs.Count == 1 && runs[0].Count == slots.Count && !runs[0][0].Trimmed;
+                int runNo = 0;
+                foreach (List<BarSlot> run in runs)
+                {
+                    runNo++;
+                    BarSlot first = run[0];
+                    int segNo = 0;
+                    foreach (double[] seg in first.Segments)
+                    {
+                        segNo++;
+                        string id = untouched ? baseId
+                            : baseId + "#run" + runNo.ToString(CultureInfo.InvariantCulture) +
+                              (first.Trimmed ? "#seg" + segNo.ToString(CultureInfo.InvariantCulture) : "");
+                        // THE SAME PITCH, as a count and a spacing: number_with_spacing
+                        // reproduces the original stations exactly, and a run of one
+                        // bar is a single. The whole-component layout is what the
+                        // caller declared; a run is what is left of it.
+                        RebarLayoutRequest lay = run.Count == 1
+                            ? new RebarLayoutRequest { Layout = RebarLayout.Single, BarDiameterMm = request.BarDiameterMm }
+                            : new RebarLayoutRequest
+                            {
+                                Layout = RebarLayout.NumberWithSpacing,
+                                Number = run.Count,
+                                SpacingMm = layout.ResultingSpacingMm,
+                                BarDiameterMm = request.BarDiameterMm
+                            };
+                        StructuralRebarRule piece = make(seg[0], seg[1], first.V, lay);
+                        piece.Id = id;
+                        piece.OpeningContext = ctx;
+                        expanded.Add(piece);
+                        report.Runs.Add(new MatOpeningRun
+                        {
+                            RuleId = id, FirstBar = first.Index, LastBar = run[run.Count - 1].Index,
+                            Bars = run.Count, Trimmed = first.Trimmed, FromMm = seg[0], ToMm = seg[1]
+                        });
+                    }
+                }
+                plan.RulesExpanded = report.Runs.Count;
+                plan.Why += " Openings: " + report.BarsOmitted.Count + " bar(s) omitted, " +
+                            report.BarsTrimmed.Count + " trimmed, " + report.Runs.Count + " rule(s) expanded.";
             }
 
             // TWO LAYERS IN ONE PLANE. Crossing bars cannot share an elevation, and
@@ -475,6 +694,27 @@ namespace Horizun.Revit.Core
                 }
 
             return r;
+        }
+
+        /// <summary>One bar of a component while the openings policy is being applied to it.</summary>
+        private sealed class BarSlot
+        {
+            public int Index;
+            public double PositionMm;
+            /// <summary>The bar's station across the face, in the component's v.</summary>
+            public double V;
+            /// <summary>Where the bar's body is over a considered opening, along u, clipped to the bar.</summary>
+            public List<double[]> Body = new List<double[]>();
+            /// <summary>What is built of it: the whole bar, its trimmed stretches, or nothing.</summary>
+            public List<double[]> Segments = new List<double[]>();
+            public bool Trimmed;
+        }
+
+        private static string Sizes(MatOpeningContext ctx)
+        {
+            return string.Join("; ", ctx.Openings.Select(o =>
+                "opening " + o.Index + ": " + Mm(o.UMax - o.UMin) + " along the bars by " + Mm(o.VMax - o.VMin) +
+                " across, largest dimension " + Mm(o.DiameterMm) + (o.Considered ? "" : " (ignored)")));
         }
 
         private static void Extent(HostMesh mesh, double[] dir, out double min, out double max)

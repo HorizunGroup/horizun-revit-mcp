@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Call one Horizun tool over the real MCP transport, from a script.
 
@@ -46,6 +46,14 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+if (-not $Server -and $env:HORIZUN_SERVER_EXE) {
+    # A development session drives a freshly built server against a development
+    # add-in WITHOUT replacing the installed pair (scripts/live/dev-addin-session.ps1).
+    # The live library calls this script without -Server, so the override has to
+    # travel in the environment. Set it only for that shell; the installed server
+    # stays the default everywhere else.
+    $Server = $env:HORIZUN_SERVER_EXE
+}
 if (-not $Server) {
     $Server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
 }
@@ -151,7 +159,17 @@ elseif ($reply) {
     # followed by "what Revit raised while this ran". Parsing the whole block
     # then returns null on precisely the calls that raised a warning or dialog.
     # structuredContent is the machine channel and carries the payload alone.
-    if ($null -ne $reply.result.structuredContent) { $data = $reply.result.structuredContent }
+    #
+    # ASK WHETHER THE PROPERTY EXISTS, not just whether it is null. Under
+    # Set-StrictMode a reply with no structuredContent at all - which is what comes
+    # back when Revit has gone away mid-run - makes the dereference THROW, and the
+    # harness then dies reporting a missing property instead of reporting that the
+    # bridge lost Revit. That is the transport hiding the finding.
+    $resultNames = @()
+    if ($null -ne $reply.result) { $resultNames = @($reply.result.PSObject.Properties.Name) }
+    if ($resultNames -contains 'structuredContent' -and $null -ne $reply.result.structuredContent) {
+        $data = $reply.result.structuredContent
+    }
     elseif ($text) { try { $data = $text | ConvertFrom-Json } catch { $data = $null } }
 }
 
