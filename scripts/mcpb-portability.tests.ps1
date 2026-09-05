@@ -49,6 +49,18 @@ $realServer = Join-Path $repo 'dist\stage\server\horizun-mcp.exe'
 if (-not (Test-Path -LiteralPath $realServer)) {
     $realServer = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
 }
+# A disposable PR runner has neither a release stage nor an installed product.
+# Build the actual server into this test's disposable root instead of skipping
+# the process-launch assertions or assuming a developer-machine installation.
+if ($env:HORIZUN_MCPB_TEST_BUILD_SERVER -eq '1') { $realServer = $null }
+if (-not $realServer -or -not (Test-Path -LiteralPath $realServer -PathType Leaf)) {
+    $serverBuild = Join-Path $root 'server'
+    & dotnet publish (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c Release `
+        -r win-x64 --self-contained false -p:RestoreLockedMode=true -o $serverBuild --nologo -v q
+    if ($LASTEXITCODE -ne 0) { throw "could not build the test server on a clean runner (exit $LASTEXITCODE)" }
+    $realServer = Join-Path $serverBuild 'horizun-mcp.exe'
+    if (-not (Test-Path -LiteralPath $realServer -PathType Leaf)) { throw "test publish produced no horizun-mcp.exe" }
+}
 
 try {
     # ======================================================================
