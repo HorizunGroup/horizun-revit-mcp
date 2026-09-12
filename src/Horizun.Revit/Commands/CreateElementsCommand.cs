@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - compact, typed authoring surface for common BIM elements.
 // -----------------------------------------------------------------------------
 using System;
@@ -17,7 +17,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class CreateElementsCommand : ICommand
+    public sealed partial class CreateElementsCommand : ICommand
     {
         public string Name => "horizun_create_elements";
         public string Description => "Create architectural, structural and MEP BIM elements atomically, then re-read every created id.";
@@ -30,6 +30,8 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
+            string validationMode = request.Value<string>("validation_mode") ?? "arguments";
+            if (validationMode != "arguments" && validationMode != "revit_rollback") return CommandResult.Fail("validation_mode must be arguments or revit_rollback.");
 
             JArray input = request["elements"] as JArray;
             JObject tabularBlock = null;
@@ -50,6 +52,8 @@ namespace Horizun.Revit.Commands
             }
             if (input == null || input.Count == 0) return CommandResult.Fail("elements is required and must be non-empty.");
             if (input.Count > 2000) return CommandResult.Fail("elements exceeds the 2000 item atomic-batch limit.");
+            if(input.Count!=1 && input.OfType<JObject>().Any(x=>x.Value<string>("kind")=="stairs"))
+                return CommandResult.Fail("stairs uses StairsEditScope and must be the sole element in its batch.");
             double scale;
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             if (!Scale(units, out scale)) return CommandResult.Fail("units must be mm, m or feet.");
@@ -121,18 +125,30 @@ namespace Horizun.Revit.Commands
                 if (planned.ExtraPlanFacts != null)
                     foreach (KeyValuePair<string, string> fact in planned.ExtraPlanFacts)
                         row.BeforeValues[fact.Key] = fact.Value;
+                row.BeforeValues["top_level_uid"] = SafePlanUid(planned.TopLevel);
+                row.BeforeValues["top_level_elev_mm"] = SafePlanElevation(planned.TopLevel);
+                row.BeforeValues["host_uid"] = SafePlanUid(planned.Host);
+                if (planned.DisplacedState != null) row.BeforeValues["displacement_source"] = planned.DisplacedState.ToString(Formatting.None);
                 resolvedPlan.Elements.Add(row);
             }
 
             if (dryRun)
             {
+                CommandResult apiRehearsal = null;
+                if (errors.Count == 0 && validationMode == "revit_rollback")
+                {
+                    apiRehearsal = ApplyPlans(doc, request, plans, input.Count, true);
+                    if (!apiRehearsal.Success) return apiRehearsal;
+                }
                 var result = new JObject
                 {
                     ["dry_run"] = true, ["tabular"] = tabularBlock,
                     ["transaction_status"] = "not_started", ["requested"] = input.Count,
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
                     ["plan"] = new JArray(plans.Select(p => p.Summary)),
-                    ["note"] = "Nothing was created and no transaction was opened. Correct every invalid row before apply."
+                    ["validation_level"] = apiRehearsal == null ? "arguments_and_references" : "revit_construction_rolled_back",
+                    ["api_rehearsal"] = apiRehearsal?.Data == null ? null : JToken.FromObject(apiRehearsal.Data),
+                    ["note"] = apiRehearsal == null ? "No transaction opened; API construction and instance parameters are not rehearsed. Correct every invalid row before apply." : "Provisional elements were verified after an inner commit and the entire group was rolled back. No provisional elements remain."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 // THE REHEARSAL CARRIES THE VERDICT TOO. dry_run defaults to true, so
@@ -173,309 +189,9 @@ namespace Horizun.Revit.Commands
             CommandResult moved = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (moved != null) return moved;
 
-            string txName = request.Value<string>("transaction_name");
-            if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: create elements";
-            var created = new List<Created>();
-            using (var tx = new Transaction(doc, txName))
-            {
-                tx.Start();
-                try
-                {
-                    foreach (Plan plan in plans)
-                    {
-                        Element element = Create(doc, plan, created);
-                        if (element == null) throw new InvalidOperationException("item " + plan.Index + " returned no element");
-
-                        // THE BORE, IN THE SAME TRANSACTION. Revit creates a run
-                        // at its type's size and nothing in the geometry says
-                        // otherwise, so a declared diameter is set here and
-                        // re-read after the commit like everything else. A run
-                        // that silently stayed at the default is a 15 mm main
-                        // that looks perfectly correct in plan.
-                        if (plan.Diameter.HasValue)
-                        {
-                            Parameter bore = DiameterParameterOf(element);
-                            if (bore == null || bore.IsReadOnly)
-                                throw new InvalidOperationException(
-                                    "item " + plan.Index + ": this " + plan.Kind + " carries no diameter that can " +
-                                    "be set - a rectangular run has a width and a height, and setting one of them " +
-                                    "for a declared diameter would be a different run. Nothing was created.");
-                            bore.Set(plan.Diameter.Value);
-                        }
-                        created.Add(new Created
-                        {
-                            Index = plan.Index, Kind = plan.Kind, Id = element.Id,
-                            ExpectedTypeId = plan.Type?.Id,
-                            ExpectedStructuralType = plan.Kind == "family_instance" || plan.Kind == "structural_framing" || plan.Kind == "structural_column"
-                                ? (StructuralType?)plan.StructuralType : null,
-                            ExpectedConnected = plan.FittingMembers,
-                            ExpectedInlineConnections = plan.Kind == "accessory_inline",
-                            ExpectedHostId = plan.OpeningHost?.Id ?? plan.SlabHost?.Id ?? plan.InstanceHost?.Id,
-                            ExpectedArc = plan.ArcThird != null,
-                            ExpectedArcCentre = plan.ArcCentre,
-                            ExpectedArcRadius = plan.ArcRadius,
-                            ExpectedStructural = plan.Structural,
-                            ExpectedName = plan.WantName,
-                            ExpectedNumber = plan.WantNumber,
-                            AlsoCreated = plan.AlsoCreated,
-                            ExpectedDiameter = plan.Diameter,
-                            ExpectedSystemName = plan.SystemName,
-                            ExpectedSystemTypeId = plan.Kind == "mep_system" ? plan.SystemType?.Id : null,
-                            ExpectedMembers = plan.SystemMembers?.Select(m => m.Id).ToList()
-                        });
-                    }
-                    Guard.Commit(tx, txName);
-                }
-                catch (Exception ex)
-                {
-                    bool attempted = false; string rb = PlanFailure.NotAttempted;
-                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
-                    return CommandResult.Fail("Atomic creation failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing in this batch was kept"));
-                }
-            }
-
-            var rows = new JArray();
-            int verified = 0;
-            foreach (Created made in created)
-            {
-                Element element = doc.GetElement(made.Id);
-                bool kindMatches = element != null && KindMatches(element, made.Kind);
-                bool typeMatches = made.ExpectedTypeId == null || (element != null && element.GetTypeId() == made.ExpectedTypeId);
-                bool structuralTypeMatches = made.ExpectedStructuralType == null ||
-                    (element is FamilyInstance instance && instance.StructuralType == made.ExpectedStructuralType.Value);
-                // A fitting's whole point is the joints it closed: each approved
-                // connector must re-read as CONNECTED after the commit.
-                bool connectorsMatch = true;
-                if (made.ExpectedConnected != null)
-                    foreach (FittingMember member in made.ExpectedConnected)
-                    {
-                        bool nowConnected = false;
-                        ConnectorManager manager = MepFacts.ManagerOf(doc.GetElement(member.Owner.Id));
-                        if (manager != null)
-                            foreach (Connector candidate in MepFacts.Ordered(manager))
-                                if (candidate.Id == member.ConnectorId) { nowConnected = candidate.IsConnected; break; }
-                        if (!nowConnected) { connectorsMatch = false; break; }
-                    }
-                // An inline accessory is not verified merely because its family
-                // exposes a ConnectorManager.  Re-read both physical piping
-                // connectors after the commit and prove that each one reaches a
-                // DIFFERENT Pipe.  This caught a Revit 2023 failure where ConnectTo
-                // looked successful inside the transaction but the committed model
-                // carried a valve with two open connectors.
-                bool inlineConnectionsMatch = true;
-                JObject inlineConnectionsRow = null;
-                if (made.ExpectedInlineConnections)
-                {
-                    var connectedPipeIds = new HashSet<long>();
-                    int pipingConnectors = 0, connectedPipingConnectors = 0;
-                    ConnectorManager manager = MepFacts.ManagerOf(element);
-                    if (manager != null)
-                        foreach (Connector connector in MepFacts.Ordered(manager))
-                        {
-                            if (connector.Domain != Domain.DomainPiping) continue;
-                            pipingConnectors++;
-                            bool reachesPipe = false;
-                            try
-                            {
-                                foreach (Connector other in connector.AllRefs)
-                                {
-                                    if (!(other?.Owner is Pipe pipe)) continue;
-                                    connectedPipeIds.Add(Rid.Value(pipe.Id));
-                                    reachesPipe = true;
-                                }
-                            }
-                            catch { }
-                            if (connector.IsConnected && reachesPipe) connectedPipingConnectors++;
-                        }
-                    inlineConnectionsMatch = pipingConnectors == 2 &&
-                                             connectedPipingConnectors == 2 &&
-                                             connectedPipeIds.Count == 2;
-                    inlineConnectionsRow = new JObject
-                    {
-                        ["piping_connectors"] = pipingConnectors,
-                        ["connected_to_pipe"] = connectedPipingConnectors,
-                        ["distinct_pipes"] = connectedPipeIds.Count,
-                        ["pipe_ids"] = new JArray(connectedPipeIds.Cast<object>().ToArray()),
-                        ["verified"] = inlineConnectionsMatch
-                    };
-                }
-                // LOAD-BEARING, RE-READ. Wall.Create takes the flag and a Floor
-                // is told afterwards, so neither is proof; the parameter Revit
-                // actually holds is. A wall that reports itself structural and is
-                // not appears in no analytical model and no structural schedule,
-                // and nothing about it looks wrong in plan.
-                bool structuralMatches = true;
-                JObject structuralRow = null;
-                if (made.ExpectedStructural.HasValue)
-                {
-                    bool? readBack = StructuralOf(element);
-                    structuralMatches = readBack.HasValue && readBack.Value == made.ExpectedStructural.Value;
-                    structuralRow = new JObject
-                    {
-                        ["requested"] = made.ExpectedStructural.Value,
-                        ["read"] = readBack.HasValue ? (JToken)new JValue(readBack.Value) : JValue.CreateNull(),
-                        ["verified"] = structuralMatches
-                    };
-                }
-
-                // THE BORE, RE-READ. A drawn line carries no width, so the size
-                // comes from the rule - and a run built at the type's default
-                // instead is a 15 mm main that looks perfectly correct in plan
-                // and fails every flow calculation downstream.
-                bool diameterMatches = true;
-                JObject diameterRow = null;
-                if (made.ExpectedDiameter.HasValue)
-                {
-                    double? readBack = DiameterOf(element);
-                    // A tenth of a millimetre, in feet: Revit stores sizes as
-                    // doubles and a nominal bore rounds.
-                    diameterMatches = readBack.HasValue &&
-                                      Math.Abs(readBack.Value - made.ExpectedDiameter.Value) <= 0.1 / 304.8;
-                    diameterRow = new JObject
-                    {
-                        ["requested_mm"] = Math.Round(made.ExpectedDiameter.Value * 304.8, 3),
-                        ["read_mm"] = readBack.HasValue
-                            ? (JToken)new JValue(Math.Round(readBack.Value * 304.8, 3)) : JValue.CreateNull(),
-                        ["verified"] = diameterMatches
-                    };
-                }
-
-                // THE NAME, RE-READ. Setting a property is not evidence that it
-                // took: Revit renames on collision in some paths and refuses in
-                // others, and a room's number is assigned by Revit the instant it
-                // is placed. A command that reported a name it never confirmed
-                // would put the wrong grid reference on every dimension drawn
-                // from it.
-                bool identityMatches = true;
-                JObject identityRow = null;
-                if (made.ExpectedName != null || made.ExpectedNumber != null)
-                {
-                    identityRow = new JObject();
-                    if (made.ExpectedName != null)
-                    {
-                        string readName = IdentityOf(element, made.Kind, false);
-                        bool ok = string.Equals(readName, made.ExpectedName, StringComparison.Ordinal);
-                        identityMatches &= ok;
-                        identityRow["name_requested"] = made.ExpectedName;
-                        identityRow["name_read"] = readName;
-                        identityRow["name_verified"] = ok;
-                    }
-                    if (made.ExpectedNumber != null)
-                    {
-                        string readNumber = IdentityOf(element, made.Kind, true);
-                        bool ok = string.Equals(readNumber, made.ExpectedNumber, StringComparison.Ordinal);
-                        identityMatches &= ok;
-                        identityRow["number_requested"] = made.ExpectedNumber;
-                        identityRow["number_read"] = readNumber;
-                        identityRow["number_verified"] = ok;
-                    }
-                }
-
-                bool hostMatches = made.ExpectedHostId == null ||
-                    (element is Opening opening && opening.Host != null && opening.Host.Id == made.ExpectedHostId) ||
-                    (element is FamilyInstance hosted && hosted.Host != null && hosted.Host.Id == made.ExpectedHostId);
-                // The system's own facts, re-read: what it is CALLED, what type it was
-                // made from, and WHICH elements it carries - not the count of Add calls
-                // that did not throw.
-                bool systemMatches = true;
-                JObject systemRow = null;
-                if (made.ExpectedSystemName != null)
-                {
-                    string nameAfter = Safe(() => (element as MEPSystem)?.Name);
-                    ElementId typeAfter = null;
-                    try { typeAfter = (element as MEPSystem)?.GetTypeId(); } catch { }
-                    var membersAfter = new List<long>();
-                    try
-                    {
-                        if (element is MEPSystem readSystem)
-                            foreach (Element memberAfter in readSystem.Elements)
-                                membersAfter.Add(Rid.Value(memberAfter.Id));
-                    }
-                    catch { }
-                    var expected = (made.ExpectedMembers ?? new List<ElementId>()).Select(Rid.Value).ToList();
-                    var missing = expected.Where(id => !membersAfter.Contains(id)).ToList();
-                    bool nameOk = string.Equals(nameAfter, made.ExpectedSystemName, StringComparison.Ordinal);
-                    bool typeOk = made.ExpectedSystemTypeId == null ||
-                                  (typeAfter != null && typeAfter == made.ExpectedSystemTypeId);
-                    systemMatches = nameOk && typeOk && missing.Count == 0;
-                    systemRow = new JObject
-                    {
-                        ["name_requested"] = made.ExpectedSystemName,
-                        ["name_read"] = nameAfter,
-                        ["name_verified"] = nameOk,
-                        ["system_type_verified"] = typeOk,
-                        ["members_requested"] = expected.Count,
-                        ["members_read"] = membersAfter.Count,
-                        ["members_missing"] = new JArray(missing.Cast<object>().ToArray()),
-                        ["members_verified"] = missing.Count == 0,
-                        ["members_read_ids"] = new JArray(membersAfter.Cast<object>().ToArray())
-                    };
-                }
-                // THE CURVE, when one was declared. "e is Wall" proves nothing
-                // about curvature: Revit accepts an axis and can produce something
-                // else when the type or a join forces it, and a command that
-                // reported an arc it never built would be the exact false success
-                // this bridge exists to prevent.
-                JObject curveRow = VerifyCurve(element, made);
-                bool curveMatches = curveRow == null || (bool)curveRow["verified"];
-
-                bool rowVerified = kindMatches && typeMatches && structuralTypeMatches && connectorsMatch &&
-                                   inlineConnectionsMatch &&
-                                   hostMatches && systemMatches && curveMatches && structuralMatches &&
-                                   diameterMatches && identityMatches;
-                if (rowVerified) verified++;
-                var verifyRow = new JObject
-                {
-                    ["index"] = made.Index, ["kind"] = made.Kind, ["element_id"] = Rid.Value(made.Id),
-                    ["present_after_commit"] = element != null, ["kind_verified"] = kindMatches,
-                    ["type_verified"] = typeMatches, ["structural_type_verified"] = structuralTypeMatches,
-                    ["verified"] = rowVerified,
-                    ["actual_class"] = element?.GetType().Name, ["actual_category"] = Safe(() => element?.Category?.Name)
-                };
-                // EVERY ELEMENT THIS ROW MADE. One call can produce a chain, and a
-                // row that names only the first leaves the rest anonymous - no
-                // provenance, so the audit calls them bim_without_source and no
-                // incremental update ever touches them again.
-                if (made.AlsoCreated != null && made.AlsoCreated.Count > 0)
-                {
-                    var everyId = new JArray { Rid.Value(made.Id) };
-                    foreach (ElementId extra in made.AlsoCreated) everyId.Add(Rid.Value(extra));
-                    verifyRow["element_ids"] = everyId;
-                    verifyRow["elements_created"] = everyId.Count;
-                    verifyRow["elements_created_means"] =
-                        "this row asked for one thing and Revit made " + everyId.Count + " elements from it - " +
-                        "a chain of curves is one separator and several model curves. element_id names the " +
-                        "first; element_ids names all of them, and every one is stamped with this row's " +
-                        "origin so none of them is anonymous.";
-                }
-                if (curveRow != null) verifyRow["curve_verified"] = curveRow;
-                if (structuralRow != null) verifyRow["structural_verified"] = structuralRow;
-                if (identityRow != null) verifyRow["identity_verified"] = identityRow;
-                if (diameterRow != null) verifyRow["diameter_verified"] = diameterRow;
-                if (systemRow != null) verifyRow["mep_system"] = systemRow;
-                if (made.ExpectedConnected != null) verifyRow["connectors_verified"] = connectorsMatch;
-                if (inlineConnectionsRow != null) verifyRow["inline_connections"] = inlineConnectionsRow;
-                if (made.ExpectedHostId != null) verifyRow["host_verified"] = hostMatches;
-                rows.Add(verifyRow);
-            }
-            if (verified != created.Count)
-                return CommandResult.Fail("The transaction committed, but only " + verified + " of " + created.Count +
-                    " created ids were re-read as the requested kinds. Inspect the model; success is not claimed. Verification: " +
-                    rows.ToString(Formatting.None));
-
-            var ceResult = new JObject
-            {
-                ["dry_run"] = false, ["tabular"] = tabularBlock, ["transaction_status"] = "Committed", ["transaction_name"] = txName,
-                ["requested"] = input.Count, ["created_verified"] = verified,
-                ["verification"] = new JObject { ["intended"] = plans.Count, ["actual"] = verified, ["verified"] = verified == plans.Count },
-                ["rows"] = rows
-            };
-            // Entries that never became a plan are unresolved: they were asked for and no
-            // element was created for them, which is not the same as a creation that failed.
-            ApplicationOutcome.StampApplied(ceResult, ApplicationOutcome.Committed, input.Count, verified,
-                                            verified, input.Count - plans.Count, 0, 0);
-            return CommandResult.Ok(ceResult);
+            var applied = ApplyPlans(doc, request, plans, input.Count);
+            if (applied.Data is JObject appliedData) appliedData["tabular"] = tabularBlock;
+            return applied;
         }
 
         // ---- CSV rows into family_instance entries. -----------------------------
@@ -547,8 +263,8 @@ namespace Horizun.Revit.Commands
                     !double.TryParse(row[yColumn], System.Globalization.NumberStyles.Float, culture, out y))
                     return "row " + (r + 1) + " (cells: " + string.Join(" | ", row) + ") has no numeric x/y under " +
                            "the declared separator '" + decimalSeparator + "'.";
-                if (zColumn >= 0 && row.Length > zColumn &&
-                    !double.TryParse(row[zColumn], System.Globalization.NumberStyles.Float, culture, out z))
+                if (zColumn >= 0 && (row.Length <= zColumn ||
+                    !double.TryParse(row[zColumn], System.Globalization.NumberStyles.Float, culture, out z)))
                     return "row " + (r + 1) + " (cells: " + string.Join(" | ", row) + "): the z value is not " +
                            "numeric under the declared separator '" + decimalSeparator + "'.";
                 if (rotationColumn >= 0 && row.Length > rotationColumn && row[rotationColumn].Trim().Length > 0 &&
@@ -567,9 +283,12 @@ namespace Horizun.Revit.Commands
                     y = relativeEast * sin + relativeNorth * cos;
                     z = z - elevation / scale;
                 }
+                // No Z column means placement on the explicitly selected level.
+                // An explicit Z is absolute in the declared coordinate system.
+                if (zColumn < 0) z = ((Level)doc.GetElement(Rid.Make(levelId))).ProjectElevation / scale;
                 var entry = new JObject
                 {
-                    ["kind"] = "family_instance",
+                    ["kind"] = "family_instance", ["coordinate_mode"] = "absolute",
                     ["type_id"] = typeId,
                     ["level_id"] = levelId,
                     ["point"] = new JArray(x, y, z),
@@ -596,8 +315,13 @@ namespace Horizun.Revit.Commands
             var p = new Plan { Index = index, Kind = kind, Input = item, Scale = scale };
             try
             {
+                string invalid = Horizun.Contracts.ToolInputRules.ValidateCreation(item, kind);
+                if (invalid != null) throw new ArgumentException(invalid);
                 switch (kind)
                 {
+                    case "stairs": PlanStairs(doc,p); break;
+                    case "wall_profile": PlanProfileWall(doc,p); break;
+                    case "displacement": PlanDisplacement(doc,p); break;
                     case "level":
                         if (item["elevation"] == null) throw new ArgumentException("elevation is required");
                         p.Elevation = Finite(item.Value<double>("elevation"), "elevation") * scale;
@@ -634,26 +358,24 @@ namespace Horizun.Revit.Commands
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<FloorType>(doc, item, "type_id");
                         if (p.Type == null) p.Type = doc.GetElement(Floor.GetDefaultFloorType(doc, false)) as FloorType;
                         if (p.Type == null) throw new ArgumentException("type_id was omitted and Revit reports no default architectural FloorType");
-                        p.Loops = Loops(item["profile"] as JArray, scale);
+                        p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "floor");
                         break;
                     case "ceiling":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<CeilingType>(doc, item, "type_id");
                         if (p.Type == null) p.Type = new FilteredElementCollector(doc).OfClass(typeof(CeilingType)).Cast<CeilingType>().FirstOrDefault();
                         if (p.Type == null) throw new ArgumentException("type_id was omitted and the document has no CeilingType");
-                        p.Loops = Loops(item["profile"] as JArray, scale);
+                        p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "ceiling");
                         break;
                     case "roof":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Optional<RoofType>(doc, item, "type_id");
                         if (p.Type == null) p.Type = new FilteredElementCollector(doc).OfClass(typeof(RoofType)).Cast<RoofType>().FirstOrDefault();
                         if (p.Type == null) throw new ArgumentException("type_id was omitted and the document has no RoofType");
-                        p.Loops = Loops(item["profile"] as JArray, scale);
+                        p.Loops = Loops(item["profile"], scale, doc.Application.ShortCurveTolerance);
                         RequireHorizontal(p.Loops, "roof");
                         if (p.Loops.Count != 1) throw new ArgumentException("roof currently requires exactly one closed footprint loop");
-                        p.SlopeRadians = Finite(item.Value<double?>("slope_degrees") ?? 0, "slope_degrees") * Math.PI / 180.0;
-                        if (p.SlopeRadians < 0 || p.SlopeRadians >= Math.PI / 2)
-                            throw new ArgumentException("slope_degrees must be at least 0 and less than 90");
+                        ReadRoofSlopes(p);
                         break;
                     case "room":
                         p.Level = Need<Level>(doc, item, "level_id"); p.Start = Point(item["point"], scale, false);
@@ -1092,8 +814,10 @@ namespace Horizun.Revit.Commands
                         // the record that a person made it.
                         Wall openingHost = Need<Wall>(doc, item, "host_id");
                         p.Type = null;
-                        p.Start = Point(item["corner_1"], scale, true);
-                        p.End = Point(item["corner_2"], scale, true);
+                        if ((item["start"] != null || item["end"] != null) && (item["corner_1"] != null || item["corner_2"] != null))
+                            throw new ArgumentException("Use start/end or corner_1/corner_2, not both.");
+                        p.Start = Point(item["corner_1"] ?? item["start"], scale, true);
+                        p.End = Point(item["corner_2"] ?? item["end"], scale, true);
                         NonZero(p.Start, p.End);
                         string hostCode, hostReason;
                         bool hostIsStructural = false;
@@ -1126,7 +850,7 @@ namespace Horizun.Revit.Commands
                         string noWidth = NoWidthAlongHost(openingHost, p.Start, p.End);
                         if (noWidth != null) throw new ArgumentException(noWidth);
 
-                        p.OpeningHost = openingHost;
+                        p.OpeningHost = openingHost; p.Host = openingHost;
                         p.ExtraPlanFacts = new Dictionary<string, string>
                         {
                             { "opening.host_uid", SafePlanUid(openingHost) },
@@ -1312,6 +1036,7 @@ namespace Horizun.Revit.Commands
                         "element kinds and this is not one of them. Nothing was created.",
                         FallbackSignal.ReasonUnsupportedKind);
                 }
+                NormalizePlan(doc, p);
                 p.Summary = new JObject { ["index"] = index, ["kind"] = kind, ["references_resolved"] = true };
                 if (p.FittingMembers != null)
                 {
@@ -1350,6 +1075,8 @@ namespace Horizun.Revit.Commands
         {
             switch (p.Kind)
             {
+                case "wall_profile": return CreateProfileWall(doc,p);
+                case "displacement": return DisplacementElement.Create(doc,p.DisplacedIds,p.Displacement,p.OwnerView,null);
                 case "level":
                     Level level = Level.Create(doc, p.Elevation);
                     SetIdentity(level, BuiltInParameter.DATUM_TEXT, p.WantName, "name");
@@ -1381,9 +1108,16 @@ namespace Horizun.Revit.Commands
                     Curve wallAxis = p.ArcThird == null
                         ? (Curve)Line.CreateBound(p.Start, p.End)
                         : Arc.Create(p.Start, p.End, p.ArcThird);
-                    return Wall.Create(doc, wallAxis, p.Type.Id, p.Level.Id, p.Height,
+                    Wall wall = Wall.Create(doc, wallAxis, p.Type.Id, p.Level.Id, p.Height,
                         p.Offset,
                         p.Input.Value<bool?>("flip") == true, p.Structural == true);
+                    if (p.TopLevel != null)
+                    {
+                        if (!wall.get_Parameter(BuiltInParameter.WALL_HEIGHT_TYPE).Set(p.TopLevel.Id))
+                            throw new InvalidOperationException("top_level_id was not accepted");
+                        SetDouble(wall, BuiltInParameter.WALL_TOP_OFFSET, p.TopOffset);
+                    }
+                    return wall;
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
                     // THE PARAMETER, not an overload. Floor.Create's structural
@@ -1399,19 +1133,24 @@ namespace Horizun.Revit.Commands
                                 "asked for structural and nothing would have been changed");
                         structuralParam.Set(p.Structural.Value ? 1 : 0);
                     }
+                    SetDouble(madeFloor, BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM, p.Offset);
                     return madeFloor;
                 case "ceiling":
-                    return Ceiling.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
+                    Ceiling ceiling = Ceiling.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
+                    SetDouble(ceiling, BuiltInParameter.CEILING_HEIGHTABOVELEVEL_PARAM, p.Offset);
+                    return ceiling;
                 case "roof":
                     var footprint = new CurveArray();
                     foreach (Curve curve in p.Loops[0]) footprint.Append(curve);
-                    ModelCurveArray boundaries;
+                    ModelCurveArray boundaries = new ModelCurveArray();
                     FootPrintRoof roof = doc.Create.NewFootPrintRoof(footprint, p.Level, (RoofType)p.Type, out boundaries);
-                    foreach (ModelCurve edge in boundaries)
+                    SetDouble(roof, BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM, p.Offset);
+                    p.RoofEdges = boundaries.Cast<ModelCurve>().ToList();
+                    foreach (ModelCurve edge in p.RoofEdges)
                     {
-                        bool definesSlope = p.SlopeRadians > 0;
-                        roof.set_DefinesSlope(edge, definesSlope);
-                        if (definesSlope) roof.set_SlopeAngle(edge, p.SlopeRadians);
+                        int index = MatchEdge(p, edge.GeometryCurve);
+                        roof.set_DefinesSlope(edge, p.DefinesSlope[index]);
+                        if (p.DefinesSlope[index]) roof.set_SlopeAngle(edge, p.Slopes[index]);
                     }
                     return roof;
                 case "room":
@@ -1435,21 +1174,12 @@ namespace Horizun.Revit.Commands
                 {
                     FamilySymbol symbol = (FamilySymbol)p.Type;
                     if (!symbol.IsActive) { symbol.Activate(); doc.Regenerate(); }
-                    Element placedInstance;
-                    if (p.InstanceHost != null)
-                        placedInstance = p.Level == null
-                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.InstanceHost, p.StructuralType)
-                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.InstanceHost, p.Level, p.StructuralType);
-                    else
-                        placedInstance = p.Level == null
-                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
-                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
-                    if (System.Math.Abs(p.RotationRadians) > 1e-9)
-                    {
-                        Line axis = Line.CreateBound(p.Start, new XYZ(p.Start.X, p.Start.Y, p.Start.Z + 1));
-                        ElementTransformUtils.RotateElement(doc, placedInstance.Id, axis, p.RotationRadians);
-                    }
-                    return placedInstance;
+                    FamilyInstance placed = p.Host != null
+                        ? p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType) : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType)
+                        : p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
+                        : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
+                    PositionInstance(doc, p, placed);
+                    return placed;
                 }
                 case "duct": return Duct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
                 case "pipe": return Pipe.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
@@ -1462,7 +1192,9 @@ namespace Horizun.Revit.Commands
                 case "structural_column":
                     FamilySymbol column = (FamilySymbol)p.Type;
                     if (!column.IsActive) { column.Activate(); doc.Regenerate(); }
-                    return doc.Create.NewFamilyInstance(p.Start, column, p.Level, StructuralType.Column);
+                    FamilyInstance placedColumn = doc.Create.NewFamilyInstance(p.Start, column, p.Level, StructuralType.Column);
+                    PositionInstance(doc, p, placedColumn);
+                    return placedColumn;
                 case "wall_opening":
                     return doc.Create.NewOpening(p.OpeningHost, p.Start, p.End);
                 case "accessory_inline":
@@ -2054,6 +1786,8 @@ namespace Horizun.Revit.Commands
         {
             switch (kind)
             {
+                case "wall_profile": return e is Wall;
+                case "displacement": return e is DisplacementElement;
                 case "level": return e is Level; case "grid": return e is Grid; case "wall": return e is Wall;
                 case "floor": return e is Floor; case "ceiling": return e is Ceiling; case "roof": return e is FootPrintRoof;
                 case "room": return e is Autodesk.Revit.DB.Architecture.Room;
@@ -2119,8 +1853,8 @@ namespace Horizun.Revit.Commands
             JArray a = token as JArray;
             int minimum = requireZ ? 3 : 2;
             if (a == null || a.Count < minimum || a.Count > 3) throw new ArgumentException("point/start/end must contain " + minimum + " XYZ coordinates");
-            return new XYZ(Finite(a[0].Value<double>(), "X") * scale, Finite(a[1].Value<double>(), "Y") * scale,
-                Finite(a.Count > 2 ? a[2].Value<double>() : 0, "Z") * scale);
+            return new XYZ(GeometryInput.Number(a[0], "X") * scale, GeometryInput.Number(a[1], "Y") * scale,
+                (a.Count > 2 ? GeometryInput.Number(a[2], "Z") : 0) * scale);
         }
         /// <summary>
         /// OPEN CHAINS of curves, for the things Revit takes as a run rather than
@@ -2144,19 +1878,16 @@ namespace Horizun.Revit.Commands
             return result;
         }
 
-        private static IList<CurveLoop> Loops(JArray profile, double scale)
+        private static IList<CurveLoop> Loops(JToken profile, double scale, double shortCurveTolerance = 1e-6)
         {
-            if (profile == null || profile.Count == 0) throw new ArgumentException("profile requires at least one loop");
             var result = new List<CurveLoop>();
-            foreach (JArray loopToken in profile.OfType<JArray>())
+            foreach (var contour in GeometryInput.HorizontalProfile(profile, scale, shortCurveTolerance))
             {
-                if (loopToken.Count < 3) throw new ArgumentException("every profile loop needs at least three points");
-                List<XYZ> points = loopToken.Select(t => Point(t, scale, true)).ToList();
                 var loop = new CurveLoop();
-                for (int i = 0; i < points.Count; i++) loop.Append(Line.CreateBound(points[i], points[(i + 1) % points.Count]));
+                var points = contour.Select(v => new XYZ(v[0], v[1], v[2])).ToList();
+                for (int i = 0; i < points.Count; i++) loop.Append(Line.CreateBound(points[i], points[(i+1)%points.Count]));
                 result.Add(loop);
             }
-            if (result.Count != profile.Count) throw new ArgumentException("every profile entry must be an array of XYZ points");
             return result;
         }
         /// <summary>
@@ -2396,7 +2127,7 @@ namespace Horizun.Revit.Commands
             try
             {
                 if (level == null) return "";
-                return System.Math.Round(level.Elevation * 304.8, 1)
+                return System.Math.Round(level.ProjectElevation * 304.8, 1)
                              .ToString(System.Globalization.CultureInfo.InvariantCulture);
             }
             catch { return "<unreadable>"; }
@@ -2455,7 +2186,7 @@ namespace Horizun.Revit.Commands
 
         private sealed class Plan
         {
-            public int Index; public string Kind; public JObject Input; public double Scale, Elevation, Height, Offset, SlopeRadians;
+            public int Index; public string Kind; public JObject Input; public double Scale, Elevation, Height, Offset;
             public XYZ Start, End; public Level Level; public Element Type, SystemType; public IList<CurveLoop> Loops;
             /// <summary>Open runs of curves, for the kinds Revit does not take as a boundary.</summary>
             public IList<List<Curve>> Chains;
@@ -2487,6 +2218,17 @@ namespace Horizun.Revit.Commands
             public int SeparatorSegments;
             /// <summary>The bore the row declared, in FEET. Null: the type decides.</summary>
             public double? Diameter; public double ArcRadius;
+            public List<StairRunSpec> StairRuns;
+            public List<StairLandingSpec> StairLandings;
+            public int DesiredRisers;
+            public double TreadDepth;
+            public List<Curve> WallProfile;
+            public XYZ ProfileNormal, ProfileOrigin, Displacement;
+            public List<ElementId> DisplacedIds;
+            public View3D OwnerView;
+            public JObject DisplacedState;
+            public List<ManageSystemTypesCommand.Write> ParameterWrites;
+            public double Rotation, TopOffset; public Element Host; public double[] Slopes; public bool[] DefinesSlope; public List<ModelCurve> RoofEdges;
             public StructuralType StructuralType; public JObject Summary;
             public string FittingSubtype; public List<FittingMember> FittingMembers;
             public Element TakeoffMain; public int? TakeoffMainBatchIndex;
@@ -2532,6 +2274,7 @@ namespace Horizun.Revit.Commands
             /// <summary>Siblings one call made beside the row's own element. Never dropped.</summary>
             public List<ElementId> AlsoCreated = new List<ElementId>();
             public double? ExpectedDiameter; public double ExpectedArcRadius; public bool ExpectedArc;
+            public Plan Plan;
         }
     }
 }

@@ -90,6 +90,17 @@ namespace Horizun.Revit.Commands
                     Action = ModifyingOperations.Contains(op) ? PlannedAction.Modify : PlannedAction.Create,
                     BeforeValues = new Dictionary<string, string>()
                 };
+                row.ProposedValues = new Dictionary<string,string> { { "specification", a.ToString(Formatting.None) } };
+                if (op == "apply_template" && a["view_id"] != null)
+                {
+                    View targetView = doc.GetElement(Rid.Make(a.Value<long>("view_id"))) as View;
+                    if (targetView != null)
+                    {
+                        row.ElementId = Rid.Value(targetView.Id);
+                        row.BeforeValues["template_view_id"] = Rid.Value(targetView.ViewTemplateId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        row.ProposedValues["template_view_id"] = a.Value<string>("template_view_id");
+                    }
+                }
                 foreach (string field in RefIdFields)
                 {
                     long? id = a.Value<long?>(field);
@@ -149,6 +160,13 @@ namespace Horizun.Revit.Commands
                     {
                         JObject action = (JObject)input[i];
                         Element result = Apply(doc, action, aliases, scale);
+                        if (action["view_scale"] != null)
+                        {
+                            if (!(result is View scaleView))
+                                throw new InvalidOperationException("operation '" + action.Value<string>("operation") +
+                                    "' asked for view_scale but produced a " + (result?.GetType().Name ?? "null") + ", not a view.");
+                            ApplyViewScale(doc, scaleView, action.Value<int>("view_scale"), action.Value<string>("operation"));
+                        }
                         if (result == null)
                             throw new InvalidOperationException(
                                 "operation '" + action.Value<string>("operation") + "' returned no element. " +
@@ -157,7 +175,11 @@ namespace Horizun.Revit.Commands
                         if (!string.IsNullOrWhiteSpace(key)) aliases[key] = result.Id;
                         applied.Add(new Applied { Index = i, Operation = action.Value<string>("operation"), Id = result.Id,
                             TargetId = TargetId(doc, action, aliases), Action = action, Scale = scale,
-                            Batch = input });
+                            Batch = input,
+                            SheetId = action.Value<string>("operation") == "place_view" || action.Value<string>("operation") == "place_schedule"
+                                ? Resolve<ViewSheet>(doc, action, "sheet_id", "sheet_key", aliases).Id : null,
+                            ViewId = action.Value<string>("operation") == "place_view"
+                                ? Resolve<View>(doc, action, "view_id", "view_key", aliases).Id : null });
                     }
                     doc.Regenerate();
                     foreach (Applied action in applied)
@@ -185,12 +207,28 @@ namespace Horizun.Revit.Commands
                 Element e = a.Id == null ? null : doc.GetElement(a.Id);
                 bool ok = Verify(doc, a, e);
                 if (ok) verified++;
-                rows.Add(new JObject
+                var row = new JObject
                 {
                     ["index"] = a.Index, ["operation"] = a.Operation,
                     ["element_id"] = a.Id == null ? JValue.CreateNull() : new JValue(Rid.Value(a.Id)),
                     ["present_after_commit"] = e != null, ["verified"] = ok, ["actual_class"] = e?.GetType().Name
-                });
+                };
+                if (a.Action["view_scale"] != null && e is View scaled)
+                {
+                    row["view_scale_requested"] = a.Action.Value<int>("view_scale");
+                    int reread; try { reread = scaled.Scale; } catch { reread = -1; }
+                    row["view_scale"] = reread;
+                    row["view_scale_verified"] = reread == a.Action.Value<int>("view_scale");
+                }
+                if (e is Viewport placed && string.Equals(a.Operation, "place_view", StringComparison.OrdinalIgnoreCase))
+                {
+                    XYZ center = placed.GetBoxCenter();
+                    row["sheet_id"] = Rid.Value(placed.SheetId);
+                    row["view_id"] = Rid.Value(placed.ViewId);
+                    row["actual_center_internal_feet"] = new JArray(center.X, center.Y, center.Z);
+                    row["center_error_on_sheet_internal_feet"] = SheetDistance(center, Point(a.Action["point"]) * a.Scale);
+                }
+                rows.Add(row);
             }
             if (verified != applied.Count)
                 return CommandResult.Fail("The transaction committed, but only " + verified + " of " + applied.Count +
@@ -258,6 +296,16 @@ namespace Horizun.Revit.Commands
         {
             unsupportedReason = null;
             if (a == null) return "action is not an object";
+            if (a["view_scale"] != null && (a["view_scale"].Type != JTokenType.Integer || a.Value<int>("view_scale") < 1 || a.Value<int>("view_scale") > 24000))
+                return "view_scale must be an integer in 1..24000";
+            // Revit's own static validity check runs before any transaction opens, so a
+            // scale it will not accept refuses here instead of rolling a batch back.
+            if (a["view_scale"] != null && !View.IsValidViewScale(a.Value<int>("view_scale")))
+                return "view_scale " + a.Value<int>("view_scale") + " is not a scale Revit accepts (View.IsValidViewScale)";
+            if (a["view_scale"] != null && !ScalableOperations.Contains(a.Value<string>("operation") ?? ""))
+                return "view_scale applies to operations that create, duplicate or retemplate a GRAPHICAL view (" +
+                       string.Join(", ", ScalableOperations) + "); '" + a.Value<string>("operation") +
+                       "' produces nothing with a drawing scale, so the argument would be ignored and is refused";
             string op = (a.Value<string>("operation") ?? "").ToLowerInvariant();
             string key = a.Value<string>("key");
             if (!string.IsNullOrWhiteSpace(key) && known.ContainsKey(key)) return "key '" + key + "' is duplicated";
@@ -495,6 +543,46 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        /// <summary>Every operation whose result carries a drawing scale.</summary>
+        private static readonly string[] ScalableOperations =
+        {
+            "create_floor_plan", "create_ceiling_plan", "create_structural_plan", "create_area_plan",
+            "create_drafting", "create_3d", "create_callout", "create_section", "create_elevation",
+            "duplicate_view", "apply_template"
+        };
+
+        /// <summary>
+        /// Assign a view scale and PROVE it, or throw with the exact reason. A template
+        /// that controls View Scale silently wins over the property setter, so it is
+        /// detected first; a perspective, sheet or schedule has no scale at all; and
+        /// the value is re-read after assignment because "did not throw" is not
+        /// "was kept".
+        /// </summary>
+        private static void ApplyViewScale(Document doc, View view, int wanted, string op)
+        {
+            if (view is ViewSheet || view is ViewSchedule)
+                throw new InvalidOperationException(op + ": view_scale cannot apply to a " + view.GetType().Name + "; it has no drawing scale.");
+            if (view is View3D three && three.IsPerspective)
+                throw new InvalidOperationException(op + ": view_scale cannot apply to a perspective 3D view.");
+            if (!View.IsValidViewScale(wanted))
+                throw new InvalidOperationException(op + ": Revit rejects view_scale " + wanted + " (View.IsValidViewScale).");
+            ElementId templateId = view.ViewTemplateId;
+            if (templateId != null && templateId != ElementId.InvalidElementId && doc.GetElement(templateId) is View template)
+            {
+                var controlled = new HashSet<ElementId>(template.GetTemplateParameterIds());
+                foreach (ElementId id in template.GetNonControlledTemplateParameterIds()) controlled.Remove(id);
+                foreach (BuiltInParameter bp in new[] { BuiltInParameter.VIEW_SCALE, BuiltInParameter.VIEW_SCALE_PULLDOWN_METRIC, BuiltInParameter.VIEW_SCALE_PULLDOWN_IMPERIAL })
+                    if (controlled.Contains(new ElementId(bp)))
+                        throw new InvalidOperationException(op + ": view_scale " + wanted + " cannot be applied because view template '" +
+                            template.Name + "' (" + Rid.Value(templateId) + ") controls View Scale; the assignment would be overridden. " +
+                            "Apply a template that leaves scale uncontrolled, or change the scale on the template itself.");
+            }
+            if (view.Scale != wanted) view.Scale = wanted;
+            int actual = view.Scale;
+            if (actual != wanted)
+                throw new InvalidOperationException(op + ": view_scale " + wanted + " was assigned but the view reads back " + actual + "; Revit did not keep it.");
+        }
+
         private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)
         {
             string op = a.Value<string>("operation").ToLowerInvariant();
@@ -724,7 +812,13 @@ namespace Horizun.Revit.Commands
             }
             ViewSheet targetSheet = Resolve<ViewSheet>(doc, a, "sheet_id", "sheet_key", aliases);
             XYZ point = Point(a["point"]) * scale;
-            if (op == "place_view") return Viewport.Create(doc, targetSheet.Id, Resolve<View>(doc, a, "view_id", "view_key", aliases).Id, point);
+            if (op == "place_view")
+            {
+                Viewport placed = Viewport.Create(doc, targetSheet.Id, Resolve<View>(doc, a, "view_id", "view_key", aliases).Id, point);
+                doc.Regenerate();
+                placed.SetBoxCenter(point);
+                return placed;
+            }
             if (op == "place_schedule") return ScheduleSheetInstance.Create(doc, targetSheet.Id, Resolve<ViewSchedule>(doc, a, "schedule_id", "schedule_key", aliases).Id, point);
             throw new InvalidOperationException("unsupported operation");
         }
@@ -788,6 +882,7 @@ namespace Horizun.Revit.Commands
         private static bool Verify(Document doc, Applied a, Element e)
         {
             if (e == null) return false;
+            if (a.Action["view_scale"] != null && (!(e is View scaleView) || scaleView.Scale != a.Action.Value<int>("view_scale"))) return false;
             switch (a.Operation.ToLowerInvariant())
             {
                 case "create_floor_plan": return e is ViewPlan floor && floor.ViewType == ViewType.FloorPlan;
@@ -812,9 +907,17 @@ namespace Horizun.Revit.Commands
                 }
                 case "duplicate_view": return e is View;
                 case "apply_template": return e is View && a.TargetId != null && ((View)e).ViewTemplateId == a.TargetId;
-                case "create_sheet": return e is ViewSheet;
-                case "place_view": return e is Viewport;
-                case "place_schedule": return e is ScheduleSheetInstance;
+                case "create_sheet":
+                    if (!(e is ViewSheet sheet) || !NumberMatches(sheet, a.Action)) return false;
+                    string sheetName = a.Action.Value<string>("name");
+                    if (!string.IsNullOrWhiteSpace(sheetName) && sheet.Name != sheetName) return false;
+                    if (a.Action["title_block_type_id"] != null && !new FilteredElementCollector(doc, sheet.Id)
+                        .OfCategory(BuiltInCategory.OST_TitleBlocks).WhereElementIsNotElementType()
+                        .Any(b => Rid.Value(b.GetTypeId()) == a.Action.Value<long>("title_block_type_id"))) return false;
+                    return true;
+                case "place_view": return e is Viewport viewport && viewport.SheetId == a.SheetId &&
+                    viewport.ViewId == a.ViewId && SheetDistance(viewport.GetBoxCenter(), Point(a.Action["point"]) * a.Scale) < 1e-6;
+                case "place_schedule": return e is ScheduleSheetInstance schedule && schedule.OwnerViewId == a.SheetId;
                 case "create_area_plan": return e is ViewPlan area && area.ViewType == ViewType.AreaPlan;
                 case "create_callout":
                     // A callout of a plan is a Detail view; of a section, a Section or
@@ -988,6 +1091,9 @@ namespace Horizun.Revit.Commands
             catch { return false; }
         }
 
+        private static double SheetDistance(XYZ actual, XYZ expected) =>
+            new XYZ(actual.X, actual.Y, 0).DistanceTo(new XYZ(expected.X, expected.Y, 0));
+
         private static ElementId TargetId(Document d, JObject a, Dictionary<string, ElementId> aliases)
         {
             try
@@ -1099,7 +1205,7 @@ namespace Horizun.Revit.Commands
         { return element?.Category != null && Rid.Value(element.Category.Id) == (long)category; }
         private sealed class Applied
         {
-            public int Index; public string Operation; public ElementId Id, TargetId;
+            public int Index; public string Operation; public ElementId Id, TargetId, SheetId, ViewId;
             public JObject Action; public double Scale;
             /// <summary>The whole batch, so a verifier can see what LATER actions did to its subject.</summary>
             public JArray Batch;

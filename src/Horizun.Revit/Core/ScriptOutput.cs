@@ -36,6 +36,8 @@ namespace Horizun.Revit.Core
 
         /// <summary>Set only when the structure could NOT be serialized. Null otherwise.</summary>
         public string Note { get; internal set; }
+        public string FullOutputPath { get; internal set; }
+        public int? OriginalChars { get; internal set; }
 
         /// <summary>True when the caller is getting less than the script produced.</summary>
         public bool Lossy => Kind == "text_only";
@@ -64,13 +66,14 @@ namespace Horizun.Revit.Core
                    "a file from inside the script and return the path. ---";
         }
 
-        public static ScriptOutputRendering Render(object value)
+        public static ScriptOutputRendering Render(object value, int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars,
+                                                   Func<string,string> persist = null)
         {
             if (value == null)
                 return new ScriptOutputRendering { Value = JValue.CreateNull(), Kind = "absent" };
 
             if (value is string s)
-                return new ScriptOutputRendering { Value = new JValue(s), Kind = "scalar" };
+                return Bound(new ScriptOutputRendering { Value = new JValue(s), Kind = "scalar" }, maxChars, persist);
 
             if (value is bool || value is int || value is long || value is short || value is byte ||
                 value is uint || value is ulong || value is ushort || value is sbyte ||
@@ -84,7 +87,7 @@ namespace Horizun.Revit.Core
             {
                 try
                 {
-                    return Bound(new ScriptOutputRendering { Value = JToken.FromObject(value), Kind = "structure" });
+                    return Bound(new ScriptOutputRendering { Value = JToken.FromObject(value), Kind = "structure" }, maxChars, persist);
                 }
                 catch (Exception ex)
                 {
@@ -117,22 +120,28 @@ namespace Horizun.Revit.Core
         /// mistaken for the data.
         /// </summary>
         private static ScriptOutputRendering Bound(ScriptOutputRendering r,
-                                                   int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars)
+                                                   int maxChars = Horizun.Contracts.Contract.MaxScriptTextChars, Func<string,string> persist = null)
         {
             string json;
             try { json = r.Value.ToString(Newtonsoft.Json.Formatting.None); }
             catch { return r; }
             if (json.Length <= maxChars) return r;
 
+            string fullPath = null, persistenceError = null;
+            try { fullPath = persist?.Invoke(json); }
+            catch(Exception ex) { persistenceError = ex.Message; }
             return new ScriptOutputRendering
             {
+                OriginalChars = json.Length, FullOutputPath = fullPath,
                 Value = JValue.CreateNull(),
                 Kind = "too_large",
                 Note = "__output__ serialized to " + json.Length + " characters, over the " + maxChars +
                        " limit, so NONE of it is returned. It is not truncated: half a structure is still a " +
                        "valid structure, and a caller iterating it would get a complete-looking wrong answer. " +
                        "Return a summary, or write the full result to a file from inside the script - " +
-                       "json.dump(...) - and put the path in __output__ instead."
+                       "json.dump(...) - and put the path in __output__ instead." +
+                       (fullPath == null ? "" : " The complete JSON was preserved at: " + fullPath) +
+                       (persistenceError == null ? "" : " Preserving full output failed: " + persistenceError)
             };
         }
 

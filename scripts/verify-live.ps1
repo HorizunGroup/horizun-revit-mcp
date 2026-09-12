@@ -259,7 +259,8 @@ if ([string]::IsNullOrWhiteSpace($FamilyTemplate)) {
         # template paths as "illegal characters" through NewFamilyDocument even
         # though Windows itself can open them; this probe is about the typed plan,
         # not localization support.
-        $templates = @(Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue)
+        $templates = @(Get-ChildItem -LiteralPath $templateRoot -Recurse -Filter '*.rft' -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.BaseName -match '^(Metric Generic Model|Generic Model|Modelo gen.rico m.trico)$' })
         $candidateTemplate = $templates |
                              Where-Object { $_.FullName -cmatch '^[\x20-\x7E]+$' } |
                              Sort-Object FullName | Select-Object -First 1
@@ -2819,8 +2820,8 @@ else {
             $instDim = Invoke-WriteApply 'horizun_create_elements' @{
                 target_document = $wDoc; units = 'mm'
                 elements = @(
-                    @{ kind = 'family_instance'; type_id = $boxTypeId; point = @($dimX, 0, 0); level_id = $levelId },
-                    @{ kind = 'family_instance'; type_id = $boxTypeId; point = @($dimX, 2000, 0); level_id = $levelId })
+                    @{ kind = 'family_instance'; coordinate_mode = 'absolute'; type_id = $boxTypeId; point = @($dimX, 0, 0); level_id = $levelId },
+                    @{ kind = 'family_instance'; coordinate_mode = 'absolute'; type_id = $boxTypeId; point = @($dimX, 2000, 0); level_id = $levelId })
             } 'dim-box-instances'
             if ($instDim.stage -eq 'apply' -and -not $instDim.answer.isError -and $instDim.answer.data -and
                 (All-Rows $instDim.answer.data.rows { param($r) $r.verified -eq $true }) -and
@@ -2835,7 +2836,7 @@ else {
         if (-not $dimCylGap) {
             $instCyl = Invoke-WriteApply 'horizun_create_elements' @{
                 target_document = $wDoc; units = 'mm'
-                elements = @(@{ kind = 'family_instance'; type_id = $cylTypeId; point = @(($dimX + 4000), 0, 0); level_id = $levelId })
+                elements = @(@{ kind = 'family_instance'; coordinate_mode = 'absolute'; type_id = $cylTypeId; point = @(($dimX + 4000), 0, 0); level_id = $levelId })
             } 'dim-cyl-instance'
             if ($instCyl.stage -eq 'apply' -and -not $instCyl.answer.isError -and $instCyl.answer.data -and
                 @($instCyl.answer.data.rows).Count -gt 0 -and @($instCyl.answer.data.rows)[0].verified -eq $true) {
@@ -7253,12 +7254,12 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-s
                     Complete-ProductionCase 2 $t0 'fail' ('auto-tag planner did not produce one complete safe action: ' + (Get-DimShortText $tagPlan.text))
                 } else {
                     $pa=@($tagPlan.data.next_arguments.actions)[0]
+                    # Exercise the complete planner contract, including new layout
+                    # and text postconditions. A hand-copied subset hid regressions.
+                    $plannedTagAction=@{}
+                    foreach($property in $pa.PSObject.Properties) { $plannedTagAction[$property.Name]=$property.Value }
                     $tagWrite=Invoke-WriteApply 'horizun_annotate' @{
-                        target_document=$wDoc; units='mm'; actions=@(@{
-                            operation='tag'; view_id=[long]$pa.view_id; element_id=[long]$pa.element_id
-                            point=@([double]$pa.point[0],[double]$pa.point[1],[double]$pa.point[2])
-                            add_leader=[bool]$pa.add_leader; tag_mode=[string]$pa.tag_mode
-                            orientation=[string]$pa.orientation; tag_type_id=[long]$pa.tag_type_id })
+                        target_document=$wDoc; units='mm'; actions=@($plannedTagAction)
                     } 'production-tag'
                     $tagId=$null
                     if ($tagWrite.answer.data -and @($tagWrite.answer.data.rows).Count -eq 1) { $tagId=@($tagWrite.answer.data.rows)[0].element_id }
@@ -7267,7 +7268,23 @@ __output__ = {'status': 'self_reported_verified', 'summary': 'restored the pre-s
                             -Evidence @{ target_id=$pipe3; tag_id=$tagId; tag_type_id=$planTagTypeId; planner=$tagPlan.data }
                         $null=Invoke-WriteApply 'horizun_delete_verified' @{ target_document=$wDoc; mode='ids'; ids=@([long]$tagId); id_cap=10 } 'production-tag-cleanup'
                     } else {
-                        Complete-ProductionCase 2 $t0 'fail' ('planned tag did not reach committed_verified: stage=' + $tagWrite.stage + ' ' + (Get-DimShortText $tagWrite.answer.text))
+                        # A family self-provisioned from the EMPTY multi-category template
+                        # renders nothing, and a tag with no extent cannot be laid out or
+                        # verified - the bridge refuses it BY NAME at rehearsal (measured
+                        # 2026-09-08). That refusal is correct, and it is NOT the guarantee
+                        # this case names (a committed, verified tag), so the case is
+                        # unverified on such a fixture rather than failed or passed; the
+                        # committed path is proved by verify-deliverable-stabilization.ps1
+                        # with a real labelled family.
+                        $rehearsalReason=''
+                        try { $rehearsalReason=[string](@($tagWrite.answer.data.rehearsal.actions)[0].reason) } catch { $rehearsalReason='' }
+                        if ($tagWrite.stage -eq 'dry_run' -and $planTagTypeHow -ne 'found in the model' -and $rehearsalReason -match 'no readable extent') {
+                            Complete-ProductionCase 2 $t0 'unverified' ('the fixture has no labelled multi-category tag family; the empty template family was refused by name at rehearsal (' + (Get-DimShortText $rehearsalReason) + '), so the committed path is not provable here') `
+                                -Evidence @{ stage=$tagWrite.stage; tag_type_how=$planTagTypeHow; rehearsal_reason=$rehearsalReason; reply=$tagWrite.answer.data }
+                        } else {
+                            Complete-ProductionCase 2 $t0 'fail' ('planned tag did not reach committed_verified: stage=' + $tagWrite.stage + ' ' + (Get-DimShortText $tagWrite.answer.text)) `
+                                -Evidence @{ stage=$tagWrite.stage; tag_type_how=$planTagTypeHow; rehearsal_reason=$rehearsalReason; reply=$tagWrite.answer.data; text=$tagWrite.answer.text }
+                        }
                     }
                 }
             }
@@ -9113,7 +9130,7 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
         else {
             $pl8 = Invoke-WriteApply 'horizun_create_elements' @{
                 target_document=$wDoc; units='mm'
-                elements=@(@{ kind='family_instance'; type_id=[long]$sleeveType8; level_id=[long]$levelId
+                elements=@(@{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$sleeveType8; level_id=[long]$levelId
                               point=@(($w12X+2000),30000,0); rotation_degrees=30 })
             } 'w12-sleeve'
             if ($pl8.stage -eq 'apply' -and -not $pl8.answer.isError -and [int]$pl8.answer.data.created_verified -eq 1) {
@@ -9593,7 +9610,7 @@ __output__ = {'status': 'self_reported_verified', 'loaded': bool(loaded)}
             if ($sym5) {
                 $pl5 = Invoke-WriteApply 'horizun_create_elements' @{
                     target_document=$wDoc; units='mm'
-                    elements=@(@{ kind='family_instance'; type_id=[long]$sym5; level_id=[long]$levelId
+                    elements=@(@{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$sym5; level_id=[long]$levelId
                                   point=@($w13X,8000,0) })
                 } 'w13-rl-place'
                 if ($pl5.stage -eq 'apply' -and -not $pl5.answer.isError) { $inst5 = @($pl5.answer.data.rows)[0].element_id }
@@ -10706,9 +10723,9 @@ __output__ = out
             $freeMk = Invoke-WriteApply 'horizun_create_elements' @{
                 target_document=$wDoc; units='mm'
                 elements=@(
-                    @{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                    @{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$equipSym; level_id=[long]$levelId
                        point=@(($w14X+20000),0,1200) },
-                    @{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                    @{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$equipSym; level_id=[long]$levelId
                        point=@(($w14X+22000),0,1200) })
             } 'w14-sysfree'
             $freeRows = if ($freeMk.answer.data) { @($freeMk.answer.data.rows) } else { @() }
@@ -10887,7 +10904,7 @@ __output__ = out
             $t0 = Get-Date
             $unclMk = Invoke-WriteApply 'horizun_create_elements' @{
                 target_document=$wDoc; units='mm'
-                elements=@(@{ kind='family_instance'; type_id=[long]$accSym; level_id=[long]$levelId
+                elements=@(@{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$accSym; level_id=[long]$levelId
                               point=@(($w14X+28000),0,1200) })
             } 'w14-sysuncl'
             $unclId = if ($unclMk.stage -eq 'apply' -and -not $unclMk.answer.isError) {
@@ -10933,7 +10950,7 @@ __output__ = out
             } else {
                 $mmMk = Invoke-WriteApply 'horizun_create_elements' @{
                     target_document=$wDoc; units='mm'
-                    elements=@(@{ kind='family_instance'; type_id=[long]$equipSym; level_id=[long]$levelId
+                    elements=@(@{ kind='family_instance'; coordinate_mode='absolute'; type_id=[long]$equipSym; level_id=[long]$levelId
                                   point=@(($w14X+30000),0,1200) })
                 } 'w14-sysmismatch'
                 $mmId = if ($mmMk.stage -eq 'apply' -and -not $mmMk.answer.isError) {
@@ -10975,6 +10992,39 @@ __output__ = out
 
 
     }
+}
+
+# RFA authoring is independent of piping content. Keep its coverage separate so
+# a missing pipe fixture cannot silently skip a perfectly usable family probe.
+. (Join-Path $PSScriptRoot 'live-family.probes.ps1')
+$familyProbeName = 'create_family saves a native RFA and independently re-reads its version and loaded type values'
+if ($writeGate) {
+    Add-Write $familyProbeName 'horizun_create_family' 'not_covered' $writeGate
+} else {
+    $familyArtifacts = Join-Path ([IO.Path]::GetTempPath()) "horizun-live-families-$probeRun"
+    $null = New-Item -ItemType Directory -Path $familyArtifacts -Force
+    $familyResult = Invoke-HorizunFamilyProbe -Document $WriteDocument -Template $FamilyTemplate `
+        -Year $Year -OutputDirectory $familyArtifacts -RunId $probeRun `
+        -Apply { param($tool,$arguments,$key) Invoke-WriteApply $tool $arguments $key } `
+        -Call { param($tool,$arguments) Invoke-Write $tool $arguments }
+    Add-Write $familyProbeName 'horizun_create_family' $familyResult.outcome $familyResult.detail
+}
+
+. (Join-Path $PSScriptRoot 'live-optimization.probes.ps1')
+if ($writeGate) {
+    Add-Write 'query response modes preserve whole-set facts with fewer bytes' 'horizun_query_model' 'not_covered' $writeGate
+    Add-Write 'named workflow preview and committed pin state agree' 'horizun_execute_plan' 'not_covered' $writeGate
+    Add-Write 'async results survive repeated submission and completed jobs refuse replay' 'horizun_submit_job' 'not_covered' $writeGate
+} else {
+    $queryProof = Invoke-HorizunQueryEfficiencyProbe -Category $QuantityCategory `
+        -Call {param($tool,$arguments) Invoke-Write $tool $arguments}
+    Add-Write 'query response modes preserve whole-set facts with fewer bytes' 'horizun_query_model' $queryProof.outcome $queryProof.detail
+    $workflowProof = Invoke-HorizunWorkflowPreviewProbe -Document $WriteDocument -ElementId $pipeA `
+        -Apply {param($tool,$arguments,$key) Invoke-WriteApply $tool $arguments $key} -Call {param($tool,$arguments) Invoke-Write $tool $arguments}
+    Add-Write 'named workflow preview and committed pin state agree' 'horizun_execute_plan' $workflowProof.outcome $workflowProof.detail
+    $asyncProof = Invoke-HorizunAsyncRecoveryProbe -RunId $probeRun -Category $QuantityCategory `
+        -Call {param($tool,$arguments) Invoke-Write $tool $arguments}
+    Add-Write 'async results survive repeated submission and completed jobs refuse replay' 'horizun_submit_job' $asyncProof.outcome $asyncProof.detail
 }
 
 $proc.StandardInput.Close()
@@ -11506,7 +11556,7 @@ if ($duplicateNames.Count -gt 0) {
 if ($Json) {
     $dir = Split-Path -Parent $Json
     if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
-    $report | ConvertTo-Json -Depth 8 | Out-File -FilePath $Json -Encoding utf8
+    $report | ConvertTo-Json -Depth 40 | Out-File -FilePath $Json -Encoding utf8
     Write-Host "  wrote $Json"
 }
 

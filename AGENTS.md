@@ -164,8 +164,11 @@ when it is merely busy.
   open **on another monitor** — a Revit that has been
   "starting" for minutes with the CPU idle is often this dialog hiding.
 - With a document open, a **Horizun Hub** tab appears in the ribbon. Its
-  **Estado del puente** button answers "is this working, and which version?"
-  without leaving Revit.
+  **Connection status** button (**Estado de conexión** on a Spanish Revit - every
+  label follows Revit's own language) answers "is this working, and which
+  version?" without leaving Revit. **Advanced options** opens one menu with the
+  owner-local controls (BIM mode, action history, pause MCP, central
+  protection), each shown with its current state.
 
 ### Verify
 
@@ -403,8 +406,11 @@ minutos, y un timeout de 60 s por defecto abandona trabajo que sigue corriendo
   que lleva minutos "arrancando" con la CPU quieta suele tener este diálogo
   escondido.
 - Con un documento abierto aparece la pestaña **Horizun Hub** en la cinta. Su
-  botón **Estado del puente** responde "¿está funcionando y qué versión?" sin
-  salir de Revit.
+  botón **Estado de conexión** (en un Revit en inglés, **Connection status**: todos
+  los rótulos siguen el idioma del propio Revit) responde "¿está funcionando y
+  qué versión?" sin salir de Revit. **Opciones avanzadas** abre un solo menú
+  con los controles locales del dueño (modo BIM, historial de acciones, pausar
+  MCP, protección central), cada uno con su estado actual.
 
 ### Verificar
 

@@ -33,6 +33,56 @@ namespace Horizun.Core.Tests
             });
         }
 
+        [Fact]
+        public void LocalBimModeCanSelectOnlyTypedPermissionRungs()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write""}", () =>
+            {
+                Assert.True(Settings.TrySetPermissionProfile("read_only", out string auditError), auditError);
+                Assert.Equal("read_only", Settings.PermissionProfile);
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_create_elements"), out _));
+
+                Assert.True(Settings.TrySetPermissionProfile("full_write", out string fullError), fullError);
+                Assert.Equal("full_write", Settings.PermissionProfile);
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _));
+
+                Assert.False(Settings.TrySetPermissionProfile("unsafe_code", out string unsafeError));
+                Assert.Contains("administrator-only", unsafeError);
+                Assert.Equal("full_write", Settings.PermissionProfile);
+            });
+        }
+
+        [Fact]
+        public void LocalMcpPauseHidesEveryToolExceptHealth()
+        {
+            WithSettings(@"{""permission_profile"":""full_write""}", () =>
+            {
+                Assert.True(Settings.TrySetMcpPaused(true, out string pauseError), pauseError);
+                Assert.True(Settings.McpPaused);
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_health"), out _));
+                Assert.False(Settings.IsToolAllowed(Contract.Find("horizun_export"), out string refusal));
+                Assert.Contains("MCP is paused", refusal);
+
+                Assert.True(Settings.TrySetMcpPaused(false, out string resumeError), resumeError);
+                Assert.False(Settings.McpPaused);
+                Assert.True(Settings.IsToolAllowed(Contract.Find("horizun_export"), out _));
+            });
+        }
+
+        [Fact]
+        public void LocalCentralProtectionIsAnExplicitPersistedChoice()
+        {
+            WithSettings(@"{""permission_profile"":""safe_write""}", () =>
+            {
+                Assert.False(Settings.ForceReadOnlyOnWorkshared);
+                Assert.True(Settings.TrySetForceReadOnlyOnWorkshared(true, out string enableError), enableError);
+                Assert.True(Settings.ForceReadOnlyOnWorkshared);
+                Assert.True(Settings.TrySetForceReadOnlyOnWorkshared(false, out string disableError), disableError);
+                Assert.False(Settings.ForceReadOnlyOnWorkshared);
+            });
+        }
+
         /// <summary>
         /// A fresh install permits typed in-document writes, but neither external/session
         /// effects nor arbitrary code. Consent must be explicit.

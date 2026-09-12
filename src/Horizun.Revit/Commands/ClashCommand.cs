@@ -680,6 +680,7 @@ namespace Horizun.Revit.Commands
                     elements.Add(new JObject
                     {
                         ["kind"] = "family_instance",
+                        ["coordinate_mode"] = "absolute",
                         ["type_id"] = sleeveTypeId.Value,
                         ["point"] = PointMm(detail.Centroid),
                         ["rotation_degrees"] = Math.Round(rotation, 2)

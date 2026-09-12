@@ -48,6 +48,8 @@ New-Item -ItemType Directory -Path $root | Out-Null
 # own into its place, because the generator resolves it relative to the repo -
 # and a test that reads the live file would pass for the wrong reason.
 $evidence = Join-Path $repo 'docs\evidence\structure-matrix.json'
+$evidenceDirectory = Split-Path -Parent $evidence
+$hadEvidenceDirectory = Test-Path -LiteralPath $evidenceDirectory
 $backup = Join-Path $root 'structure-matrix.real.json'
 $hadEvidence = Test-Path -LiteralPath $evidence
 if ($hadEvidence) { Copy-Item -LiteralPath $evidence -Destination $backup -Force }
@@ -288,6 +290,12 @@ finally {
     foreach ($p in $written) { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force } }
     if ($hadEvidence) { Copy-Item -LiteralPath $backup -Destination $evidence -Force }
     elseif (Test-Path -LiteralPath $evidence) { Remove-Item -LiteralPath $evidence -Force }
+    # A public checkout has no private evidence directory. Do not leave an
+    # empty fixture directory that makes subsequent public gates expect it.
+    if (-not $hadEvidenceDirectory -and (Test-Path -LiteralPath $evidenceDirectory) -and
+        @(Get-ChildItem -LiteralPath $evidenceDirectory -Force).Count -eq 0) {
+        [IO.Directory]::Delete($evidenceDirectory) # non-recursive, refuses nonempty
+    }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
 

@@ -1,12 +1,12 @@
-﻿# Tool reference
+# Tool reference
 
 Every tool Horizun Revit MCP exposes, what it does, and where it refuses.
 The [README](../README.md) has the short version; this page is the complete
 surface.
 
 This surface is **80 tools** <!--inventory:tools--> - **32** <!--inventory:reads--> of them
-read-only - dispatching **192 operations** <!--inventory:operations--> across
-**691 enumerated argument values** <!--inventory:enumerated_variants-->.
+read-only - dispatching **204 operations** <!--inventory:operations--> across
+**798 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
@@ -14,6 +14,10 @@ asks the built server for `tools/list` - the same call a client makes - and writ
 any marked number drifts from it. An enumerated value is an ARGUMENT, not a proven
 behaviour: what actually works is counted by the live harness artifact, never by a
 schema.
+
+Local optimization behavior and verification are documented in
+[Internal MCP optimization](OPTIMIZATION-PLAN.md): query response modes,
+never-started job recovery, named workflows and bounded change previews.
 
 Three properties hold across the whole table, and they are why the list is
 shorter than a raw tool count would be:

@@ -2,6 +2,7 @@
 // Horizun Revit MCP - exports verified against the filesystem after Revit returns.
 // -----------------------------------------------------------------------------
 using System;
+using System.Globalization;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -140,7 +141,27 @@ namespace Horizun.Revit.Commands
 
             bool exporterAvailable = format != "nwc" || OptionalFunctionalityUtils.IsNavisworksExporterAvailable();
 
-            List<string> existing = CandidateFiles(format, output);
+            bool pdfCombine = request.Value<bool?>("pdf_combine") ?? true;
+            bool emitManifest = request.Value<bool?>("emit_manifest") ?? false;
+            if (format != "pdf" && (request["pdf_combine"] != null || emitManifest || request["pdf_print"] != null))
+                return CommandResult.Fail("pdf_combine, emit_manifest and pdf_print are PDF-only options.");
+            // THE PRINT POLICY. Parsed before anything else is decided so that a
+            // wrong field refuses here, by name, and is never silently dropped on
+            // the way to the exporter. Absent -> the policy defaults, with nothing
+            // counted as requested.
+            PdfPrintPolicy printPolicy;
+            int hostYear;
+            try
+            {
+                if (!int.TryParse(app.Application.VersionNumber, NumberStyles.Integer, CultureInfo.InvariantCulture, out hostYear))
+                    return CommandResult.Fail("The host Revit year could not be read from VersionNumber '" + app.Application.VersionNumber + "'.");
+                printPolicy = PdfPrintPolicy.Parse(request["pdf_print"], request.Value<string>("units") ?? "mm", hostYear);
+            }
+            catch (ArgumentException ex) { return CommandResult.Fail(ex.Message + " Nothing was exported."); }
+            string[] pdfPaths = format == "pdf" ? DeliveryPdf.Paths(output,pdfCombine,views.Select(v=>Rid.Value(v.Id))) : new string[0];
+            string manifestPath = output + ".manifest.json";
+            List<string> existing = format == "pdf" ? pdfPaths.ToList() : CandidateFiles(format, output);
+            if (emitManifest) existing.Add(manifestPath);
             if (!overwrite && existing.Any(File.Exists))
                 return CommandResult.Fail("Output already exists and overwrite=false: " + string.Join(", ", existing.Where(File.Exists)));
 
@@ -156,10 +177,32 @@ namespace Horizun.Revit.Commands
             OperationGateResult gateDecision = OperationGate.Evaluate(app, doc, request["require_gate"],
                                                                       GatedOperation.Export, Name);
             if (gateDecision.Refusal != null) return gateDecision.Refusal;
+            // THE DELIVERY GATE. With delivery_id, this export is the publish stage of a
+            // ledgered delivery: every recorded scope is re-read first, and the file is
+            // touched only if the gate is open - complete, audited, every sheet approval
+            // still current. A closed gate refuses before any exporter runs.
+            JObject deliveryRecord = null; JObject deliveryGate = null; JArray deliveryReverification = null;
+            string deliveryId = request.Value<string>("delivery_id");
+            if (deliveryId != null)
+            {
+                if (format != "pdf") return CommandResult.Fail("delivery_id applies to the PDF publication stage only.");
+                string ledgerRefusal;
+                deliveryRecord = DeliveryLedgerHost.Load(deliveryId, out ledgerRefusal);
+                if (deliveryRecord == null) return CommandResult.Fail(ledgerRefusal);
+                string mismatch = DeliveryLedgerHost.DocumentMismatch(app, doc, deliveryRecord);
+                if (mismatch != null) return CommandResult.Fail(mismatch);
+                deliveryReverification = DeliveryLedgerHost.Reverify(doc, deliveryRecord, deliveryId, DateTime.UtcNow);
+                deliveryGate = DeliveryLedger.PublishGate(deliveryRecord);
+                if (!deliveryGate.Value<bool>("open"))
+                    return CommandResult.FailWithDetail("The delivery publish gate is closed for '" + deliveryId + "': " +
+                        string.Join("; ", deliveryGate["reasons"].Values<string>()) + ". Nothing was exported.",
+                        new JObject { ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification });
+            }
             string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
-                "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error");
+                "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error", "pdf_combine", "emit_manifest",
+                "pdf_print", "units", "delivery_id");
             // ---- The MATERIALISED plan: the SOURCES and the DESTINATION as they stand. --
             // An export publishes the model outward, and two ambient facts shape what
             // lands on disk: WHICH views/schedule the ids resolve to - a renamed or
@@ -210,6 +253,12 @@ namespace Horizun.Revit.Commands
                 var result = new JObject
                 {
                     ["dry_run"] = true, ["format"] = format, ["output_path"] = output,
+                    ["planned_files"] = new JArray(format == "pdf" ? pdfPaths : new[]{output}),
+                    ["delivery"] = deliveryGate == null ? (JToken)JValue.CreateNull() : new JObject { ["delivery_id"] = deliveryId, ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification },
+                    ["print_policy"] = format == "pdf" ? (JToken)new JObject { ["requested"] = printPolicy.Requested.DeepClone(),
+                        ["effective"] = printPolicy.Canonical(), ["verified_from_output"] = new JArray(PdfPrintPolicy.VerifiableFromOutput),
+                        ["means"] = "effective is what the exporter will be handed; only paper_format and orientation are proved from the produced pages" } : JValue.CreateNull(),
+                    ["manifest_path"] = emitManifest ? manifestPath : null,
                     ["views"] = new JArray(views.Select(v => new JObject { ["id"] = Rid.Value(v.Id), ["name"] = v.Name })),
                     ["schedule"] = schedule?.Name, ["overwrite"] = overwrite,
                     ["exporter_available"] = exporterAvailable,
@@ -236,13 +285,25 @@ namespace Horizun.Revit.Commands
 
             var before = Snapshot(folder);
             bool apiAccepted = false;
+            JObject pdfApplied = null;
             try
             {
                 switch (format)
                 {
                     case "pdf":
-                        var pdf = new PDFExportOptions { Combine = true, FileName = System.IO.Path.GetFileName(output) };
-                        apiAccepted = doc.Export(folder, views.Select(v => v.Id).ToList(), pdf); break;
+                        apiAccepted = true;
+                        for(int p=0;p<pdfPaths.Length;p++)
+                        {
+                            // Single-view calls give deterministic one-file-per-view names.
+                            // Revit appends .pdf itself. Including the extension
+                            // produces name.pdf.pdf and violates the approved path.
+                            var pdf = new PDFExportOptions { Combine = true, FileName = System.IO.Path.GetFileNameWithoutExtension(pdfPaths[p]) };
+                            pdfApplied = ApplyPrintPolicy(pdf, printPolicy);
+                            bool accepted = doc.Export(folder, pdfCombine ? views.Select(v=>v.Id).ToList() : new List<ElementId>{views[p].Id}, pdf);
+                            apiAccepted = apiAccepted && accepted;
+                            if (!accepted) throw new InvalidOperationException("PDF exporter rejected output " + pdfPaths[p]);
+                        }
+                        break;
                     case "dwg":
                         apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output),
                             new List<ElementId> { views[0].Id }, BuildDwgOptions(request)); break;
@@ -305,16 +366,20 @@ namespace Horizun.Revit.Commands
                         schedule.Export(folder, System.IO.Path.GetFileName(output), new ViewScheduleExportOptions()); apiAccepted = true; break;
                 }
             }
-            catch (Exception ex) { return CommandResult.Fail("Revit export failed: " + ex.Message); }
+            catch (Exception ex) { return CommandResult.FailWithDetail("Revit export failed: " + ex.Message,
+                new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
+                    ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) }); }
 
             var after = Snapshot(folder);
             List<string> produced = after.Where(kv => kv.Value.Size > 0 &&
-                    MatchesOutput(format, output, kv.Key) &&
+                    (format == "pdf" ? pdfPaths.Contains(kv.Key,StringComparer.OrdinalIgnoreCase) : MatchesOutput(format, output, kv.Key)) &&
                     (!before.TryGetValue(kv.Key, out Stamp old) || old.Size != kv.Value.Size || old.Mtime != kv.Value.Mtime))
                 .Select(kv => kv.Key).OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
             if (produced.Count == 0)
-                return CommandResult.Fail("Revit returned from export (accepted=" + apiAccepted +
-                    "), but no new or changed non-empty file was measured in " + folder + ". Success is not claimed.");
+                return CommandResult.FailWithDetail("Revit returned from export (accepted=" + apiAccepted +
+                    "), but no new or changed non-empty file was measured in " + folder + ". Success is not claimed.",
+                    new JObject { ["external_files_may_exist"]=true,["rollback_available"]=false,
+                        ["planned_files"]=new JArray(format=="pdf"?pdfPaths:new[]{output}) });
 
             var files = new JArray();
             foreach (string path in produced)
@@ -331,8 +396,224 @@ namespace Horizun.Revit.Commands
             };
             if (preset != null)
                 exportResult["preset"] = VerifyPreset(preset, presetHash, produced);
+            if (format == "pdf")
+            {
+                var verifiedPdf=new JArray();
+                try
+                {
+                    if (produced.Count!=pdfPaths.Length) throw new InvalidOperationException("Not every requested PDF was produced or changed.");
+                    var pageVerdicts=new List<JObject>();
+                    for(int i=0;i<pdfPaths.Length;i++)
+                    {
+                        JObject file=DeliveryPdf.Inspect(pdfPaths[i],pdfCombine?views.Count:1);
+                        List<View> sources=pdfCombine?views:new List<View>{views[i]};
+                        file["source_views"]=new JArray(sources.Select(v=>new JObject {
+                            ["id"]=Rid.Value(v.Id),["unique_id"]=v.UniqueId,["name"]=v.Name,
+                            ["sheet_number"]=(v as ViewSheet)?.SheetNumber,
+                            ["revision_ids"]=v is ViewSheet sheet ? new JArray(sheet.GetAllRevisionIds().Select(Rid.Value)) : new JArray() }));
+                        if (file.Value<bool>("page_count_verified")!=true) throw new InvalidOperationException("PDF page count mismatch.");
+                        // Every produced page is judged against the print policy: the
+                        // page geometry PdfPig read is compared with the requested paper
+                        // (or with the sheet's own size for Default). This is the one
+                        // place a PDF can testify about paper and orientation.
+                        var pages=(JArray)file["page_geometry"];
+                        var filePages=new JArray();
+                        for(int pg=0;pg<pages.Count;pg++)
+                        {
+                            View source=pg<sources.Count?sources[pg]:null;
+                            JObject verdict=printPolicy.VerifyPage(pages[pg].Value<double>("width_points"),pages[pg].Value<double>("height_points"),
+                                SheetPoints(source), 2.0, TitleblockPoints(doc, source));
+                            verdict["page"]=pages[pg]["page"].DeepClone();
+                            verdict["source_view_id"]=source==null?(JToken)JValue.CreateNull():Rid.Value(source.Id);
+                            filePages.Add(verdict); pageVerdicts.Add(verdict);
+                        }
+                        file["page_verdicts"]=filePages;
+                        verifiedPdf.Add(file);
+                    }
+                    JObject printReport=printPolicy.Report(pdfApplied,pageVerdicts);
+                    if (!printReport.Value<bool>("verifiable_options_held"))
+                        // Every reason the report holds against the policy is named: a page
+                        // that contradicts it (verified_mismatch), an option the exporter
+                        // rewrote (applied_mismatch) and a page larger than its titleblock.
+                        throw new InvalidOperationException("The produced PDF contradicts the print policy: " +
+                            string.Join("; ",((JArray)printReport["options"]).Where(r=>r.Value<string>("status")==PdfPrintPolicy.StatusVerifiedMismatch
+                                                                                    || r.Value<string>("status")==PdfPrintPolicy.StatusAppliedMismatch)
+                                .Select(r=>r.Value<string>("option")+" ("+r.Value<string>("status")+") - "+r.Value<string>("reason"))
+                                .Concat(((JArray)printReport["composition"]["pages_exceeding_titleblock"]).Select(c=>"page "+c["page"]+" (sheet "+c["source_view_id"]+") - "+c.Value<string>("reason")))));
+                    var manifest=new JObject { ["schema"]="horizun.delivery-manifest/1",["utc"]=DateTime.UtcNow.ToString("o"),
+                        ["document"]=doc.Title,["combined"]=pdfCombine,["files"]=verifiedPdf,
+                        ["print_policy"]=printReport,
+                        ["source_mapping"]="export invocation mapping; page identity and visual content are not independently verified",
+                        ["visual_approval"]="required",["package_verified"]=true };
+                    exportResult["delivery"]=manifest;
+                    if (emitManifest)
+                    {
+                        DeliveryPdf.WriteManifestVerified(manifestPath, manifest, overwrite);
+                        exportResult["manifest_path"]=manifestPath;
+                    }
+                    if (deliveryRecord != null)
+                    {
+                        // The publish stage is recorded from what was just verified: the
+                        // produced files and their hashes. A ledger write failure is
+                        // reported, never hidden - the files exist either way.
+                        DateTime now=DateTime.UtcNow; string why;
+                        var facts=new JObject { ["idempotency_key"]=request.Value<string>("idempotency_key"),
+                            ["files"]=new JArray(verifiedPdf.OfType<JObject>().Select(f=>new JObject { ["path"]=f["path"].DeepClone(),["sha256"]=f["sha256"].DeepClone(),["bytes"]=f["bytes"].DeepClone() })),
+                            ["manifest_path"]=emitManifest?(JToken)manifestPath:JValue.CreateNull() };
+                        JObject publishStage=((JArray)deliveryRecord["stages"]).OfType<JObject>().FirstOrDefault(st=>st.Value<string>("kind")==DeliveryLedger.KindPublish);
+                        var ledgerNotes=new JArray();
+                        if (publishStage==null) ledgerNotes.Add("the delivery has no publish stage to record");
+                        else
+                        {
+                            string pk=publishStage.Value<string>("key");
+                            foreach(string step in new[]{DeliveryLedger.InProgress,DeliveryLedger.Completed})
+                            {
+                                if (publishStage.Value<string>("status")==step) continue;
+                                JObject stepFacts=step==DeliveryLedger.Completed?facts:null;
+                                if (!DeliveryLedger.TryTransition(deliveryRecord,pk,step,stepFacts,now,out why)) { ledgerNotes.Add(why); break; }
+                                try { DeliveryLedger.AppendEvent(FileJobSink.Instance,DeliveryLedgerHost.Directory(),deliveryId,DeliveryLedger.TransitionEvent(pk,step,stepFacts,now)); }
+                                catch(Exception ex) { ledgerNotes.Add("ledger write failed: "+ex.Message); break; }
+                            }
+                        }
+                        exportResult["delivery_ledger"]=new JObject { ["delivery_id"]=deliveryId,["publish_stage"]=publishStage?["status"]?.DeepClone(),
+                            ["publish_gate_at_export"]=deliveryGate,["reverification"]=deliveryReverification,["notes"]=ledgerNotes };
+                    }
+                }
+                catch(Exception ex) { return CommandResult.FailWithDetail("PDF package verification failed: "+ex.Message,
+                    new JObject { ["files"]=files,["pdf_evidence"]=verifiedPdf,["external_files_may_exist"]=true,["rollback_available"]=false }); }
+            }
             if (gateDecision.Requested) exportResult["prevention"] = gateDecision.Prevention;
             return CommandResult.Ok(exportResult);
+        }
+
+        /// <summary>
+        /// Set every policy option on Revit's option object and READ EACH ONE BACK.
+        /// The returned object is what the exporter was actually handed, not what
+        /// was asked for; the two are compared in the print report.
+        /// </summary>
+        private static JObject ApplyPrintPolicy(PDFExportOptions pdf, PdfPrintPolicy policy)
+        {
+            pdf.PaperFormat = (ExportPaperFormat)Enum.Parse(typeof(ExportPaperFormat), policy.PaperFormat);
+            pdf.PaperOrientation = policy.Orientation == "portrait" ? PageOrientationType.Portrait
+                                 : policy.Orientation == "landscape" ? PageOrientationType.Landscape : PageOrientationType.Auto;
+            // Margins and LowerLeft are one enum value in Revit's API (measured on 2026:
+            // both are 1 and Margins reads back as LowerLeft), so the policy offers
+            // lower_left and sets the offsets on it.
+            pdf.PaperPlacement = policy.Placement == "lower_left" ? PaperPlacementType.LowerLeft : PaperPlacementType.Center;
+            if (policy.Placement == "lower_left" && policy.OriginOffsetXFeet.HasValue)
+            {
+                pdf.OriginOffsetX = policy.OriginOffsetXFeet ?? 0;
+                pdf.OriginOffsetY = policy.OriginOffsetYFeet ?? 0;
+            }
+            pdf.ZoomType = policy.Zoom == "zoom" ? ZoomType.Zoom : ZoomType.FitToPage;
+            if (policy.Zoom == "zoom" && policy.ZoomPercentage.HasValue) pdf.ZoomPercentage = policy.ZoomPercentage.Value;
+            pdf.ColorDepth = policy.ColorDepth == "black_line" ? ColorDepthType.BlackLine
+                           : policy.ColorDepth == "grayscale" ? ColorDepthType.GrayScale : ColorDepthType.Color;
+            pdf.RasterQuality = policy.RasterQuality == "low" ? RasterQualityType.Low
+                              : policy.RasterQuality == "medium" ? RasterQualityType.Medium
+                              : policy.RasterQuality == "presentation" ? RasterQualityType.Presentation : RasterQualityType.High;
+            pdf.ExportQuality = (PDFExportQualityType)Enum.Parse(typeof(PDFExportQualityType), "DPI" + policy.ExportQualityDpi);
+            pdf.AlwaysUseRaster = policy.AlwaysUseRaster;
+            pdf.HideCropBoundaries = policy.HideCropBoundaries;
+            pdf.HideScopeBoxes = policy.HideScopeBoxes;
+            pdf.HideReferencePlane = policy.HideReferencePlanes;
+            pdf.HideUnreferencedViewTags = policy.HideUnreferencedViewTags;
+            pdf.MaskCoincidentLines = policy.MaskCoincidentLines;
+            pdf.ReplaceHalftoneWithThinLines = policy.ReplaceHalftoneWithThinLines;
+            pdf.ViewLinksInBlue = policy.ViewLinksInBlue;
+            pdf.StopOnError = policy.StopOnError;
+#if !REVIT2023 && !REVIT2024
+            pdf.SetExportInBackground(policy.ExportInBackground);
+#endif
+            var applied = new JObject
+            {
+                ["paper_format"] = pdf.PaperFormat.ToString(),
+                ["orientation"] = pdf.PaperOrientation == PageOrientationType.Portrait ? "portrait"
+                                : pdf.PaperOrientation == PageOrientationType.Landscape ? "landscape" : "auto",
+                ["placement"] = pdf.PaperPlacement == PaperPlacementType.LowerLeft ? "lower_left" : "center",
+                ["origin_offset_x"] = pdf.PaperPlacement == PaperPlacementType.LowerLeft && policy.OriginOffsetXFeet.HasValue ? (JToken)pdf.OriginOffsetX : JValue.CreateNull(),
+                ["origin_offset_y"] = pdf.PaperPlacement == PaperPlacementType.LowerLeft && policy.OriginOffsetYFeet.HasValue ? (JToken)pdf.OriginOffsetY : JValue.CreateNull(),
+                ["zoom"] = pdf.ZoomType == ZoomType.Zoom ? "zoom" : "fit_to_page",
+                ["zoom_percentage"] = pdf.ZoomType == ZoomType.Zoom ? (JToken)pdf.ZoomPercentage : JValue.CreateNull(),
+                ["color_depth"] = pdf.ColorDepth == ColorDepthType.BlackLine ? "black_line"
+                                : pdf.ColorDepth == ColorDepthType.GrayScale ? "grayscale" : "color",
+                ["raster_quality"] = pdf.RasterQuality.ToString().ToLowerInvariant(),
+                ["export_quality_dpi"] = int.Parse(pdf.ExportQuality.ToString().Substring(3), CultureInfo.InvariantCulture),
+                ["always_use_raster"] = pdf.AlwaysUseRaster,
+                ["hide_crop_boundaries"] = pdf.HideCropBoundaries,
+                ["hide_scope_boxes"] = pdf.HideScopeBoxes,
+                ["hide_reference_planes"] = pdf.HideReferencePlane,
+                ["hide_unreferenced_view_tags"] = pdf.HideUnreferencedViewTags,
+                ["mask_coincident_lines"] = pdf.MaskCoincidentLines,
+                ["replace_halftone_with_thin_lines"] = pdf.ReplaceHalftoneWithThinLines,
+                ["view_links_in_blue"] = pdf.ViewLinksInBlue,
+                ["stop_on_error"] = pdf.StopOnError
+            };
+#if !REVIT2023 && !REVIT2024
+            applied["export_in_background"] = pdf.GetExportInBackground();
+#endif
+            return applied;
+        }
+
+        /// <summary>A sheet's own paper size in points, from its outline; null for anything else.</summary>
+        private static double[] SheetPoints(View view)
+        {
+            var sheet = view as ViewSheet;
+            if (sheet == null) return null;
+            try
+            {
+                BoundingBoxUV outline = sheet.Outline;
+                if (outline == null) return null;
+                double w = outline.Max.U - outline.Min.U, h = outline.Max.V - outline.Min.V;
+                if (w <= 0 || h <= 0) return null;
+                return new[] { PdfPrintPolicy.FeetToPoints(w), PdfPrintPolicy.FeetToPoints(h) };
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// The paper the titleblock DECLARES, in points: its SHEET_WIDTH / SHEET_HEIGHT
+        /// parameters (instance first, then type). Not its bounding box - measured live
+        /// 2026-09-08: the box of a titleblock includes its labels, so an overflowing
+        /// sheet number widened the box exactly as much as it widened the page and the
+        /// two agreed with each other. Null when there is not exactly one titleblock or
+        /// the parameters cannot be read; the verdict then makes no composition claim.
+        /// </summary>
+        private static double[] TitleblockPoints(Document doc, View view)
+        {
+            var sheet = view as ViewSheet;
+            if (sheet == null) return null;
+            try
+            {
+                var blocks = new FilteredElementCollector(doc, sheet.Id).OfCategory(BuiltInCategory.OST_TitleBlocks)
+                    .WhereElementIsNotElementType().ToElements();
+                if (blocks.Count != 1) return null;
+                Element block = blocks[0];
+                double? w = DeclaredLength(block, BuiltInParameter.SHEET_WIDTH), h = DeclaredLength(block, BuiltInParameter.SHEET_HEIGHT);
+                if (!w.HasValue || !h.HasValue)
+                {
+                    Element type = doc.GetElement(block.GetTypeId());
+                    if (type != null)
+                    {
+                        w = w ?? DeclaredLength(type, BuiltInParameter.SHEET_WIDTH);
+                        h = h ?? DeclaredLength(type, BuiltInParameter.SHEET_HEIGHT);
+                    }
+                }
+                if (!w.HasValue || !h.HasValue || w.Value <= 0 || h.Value <= 0) return null;
+                return new[] { PdfPrintPolicy.FeetToPoints(w.Value), PdfPrintPolicy.FeetToPoints(h.Value) };
+            }
+            catch { return null; }
+        }
+
+        private static double? DeclaredLength(Element e, BuiltInParameter bp)
+        {
+            try
+            {
+                Parameter p = e.get_Parameter(bp);
+                if (p == null || !p.HasValue || p.StorageType != StorageType.Double) return null;
+                return p.AsDouble();
+            }
+            catch { return null; }
         }
 
         private static DWGExportOptions BuildDwgOptions(JObject request)
@@ -397,7 +678,8 @@ namespace Horizun.Revit.Commands
                         case "combine":
                         {
                             readBack = produced.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) + " file(s)";
-                            row["verified"] = option.Value != "true" || produced.Count == 1;
+                            row["verified"] = option.Value == "true" ? produced.Count == 1 : produced.Count > 0;
+                            row["note"] = "Exact expected-file and page counts are verified separately by delivery evidence.";
                             break;
                         }
                     }

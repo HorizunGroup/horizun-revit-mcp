@@ -1,0 +1,14 @@
+{
+  "schema": "horizun.enterprise-settings-policy/1",
+  "policy_id": "example-audit-first",
+  "version": "0.1.0",
+  "description": "Example only. Copy, review and version it under the organisation's own governance before deployment.",
+  "settings": {
+    "permission_profile": "read_only",
+    "mcp_paused": false,
+    "force_read_only_on_workshared": true,
+    "enable_execute_python": false,
+    "allowed_tools": [],
+    "denied_tools": []
+  }
+}

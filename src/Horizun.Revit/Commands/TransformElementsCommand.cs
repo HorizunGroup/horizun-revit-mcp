@@ -81,6 +81,7 @@ namespace Horizun.Revit.Commands
                     var planned = new PlannedElement
                     {
                         UniqueId = SafePlanUniqueId(e),
+                        ElementId = Rid.Value(e.Id),
                         Category = e.Category == null ? null : e.Category.Name,
                         TypeName = SafePlanTypeName(doc, e),
                         // change_type REPLACES the type; move/rotate/copy do not. Both are
@@ -96,9 +97,17 @@ namespace Horizun.Revit.Commands
                         BeforeValues = new Dictionary<string, string>
                         {
                             { "operation", p.Operation ?? "" },
-                            { "type_id", p.TypeId == null ? "" : Rid.Value(p.TypeId).ToString() }
+                            { "type_id", Rid.Value(e.GetTypeId()).ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                            { "pinned", e.Pinned.ToString() },
+                            { "wall_join_allowed", p.Operation == "wall_join" ? WallUtils.IsWallJoinAllowedAtEnd((Wall)e, p.JoinEnd).ToString() : "" },
                         }
                     };
+                    planned.ProposedValues = new Dictionary<string, string> {
+                        { "operation", p.Operation },
+                        { "specification", input[p.Index].ToString(Formatting.None) }
+                    };
+                    if (p.Operation == "pin" || p.Operation == "unpin") planned.ProposedValues["pinned"] = (p.Operation == "pin").ToString();
+                    if (p.TypeId != null) planned.ProposedValues["type_id"] = Rid.Value(p.TypeId).ToString(System.Globalization.CultureInfo.InvariantCulture);
                     resolvedPlan.Elements.Add(planned);
                 }
             }
@@ -190,11 +199,20 @@ namespace Horizun.Revit.Commands
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" &&
-                    op != "change_type" && op != "set_curve")
+                    op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, pin, unpin, change_type and set_curve only. Nothing was written.",
+                        "rotate, pin, unpin, change_type, set_curve, move_tag_head and set_tag_leader only. Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
+                var allowed = new HashSet<string>(new[] { "operation", "element_ids" });
+                if(op=="move" || op=="copy") allowed.Add("vector");
+                if(op=="rotate") allowed.UnionWith(new[] { "axis_start", "axis_end", "angle_degrees" });
+                if(op=="change_type") allowed.Add("type_id");
+                if(op=="wall_join") allowed.UnionWith(new[] { "join_end", "allow" });
+                if(op=="set_curve") allowed.UnionWith(new[] { "start", "end" });
+                if(op=="move_tag_head") allowed.UnionWith(new[] { "point", "vector" });
+                if(op=="set_tag_leader") allowed.UnionWith(new[] { "has_leader", "leader_end_condition", "leader_end", "leader_elbow", "leader_visible" });
+                foreach(var field in o.Properties()) if(!allowed.Contains(field.Name)) throw new ArgumentException(field.Name+" is not applicable to "+op);
                 JArray ids = o["element_ids"] as JArray;
                 if (ids == null || ids.Count == 0 || ids.Count > 2000) throw new ArgumentException("element_ids must contain 1..2000 ids");
                 var p = new Plan { Index = index, Operation = op, Ids = new List<ElementId>(), Samples = new Dictionary<long, List<XYZ>>() };
@@ -206,7 +224,36 @@ namespace Horizun.Revit.Commands
                     if (element == null) throw new ArgumentException("ElementId " + raw + " does not exist in the host document");
                     if (!claimed.Add(raw)) throw new ArgumentException("ElementId " + raw + " appears in more than one operation; sequential transforms are ambiguous, combine them deliberately first");
                     p.Ids.Add(element.Id);
-                    if (op == "move" || op == "rotate")
+                    if (op == "move_tag_head" || op == "set_tag_leader")
+                    {
+                        // The 8B tag block. IndependentTag only: room/space tags carry a head
+                        // but a different leader API, and a rule that half-applies is worse
+                        // than a named limit.
+                        var tag = element as IndependentTag;
+                        if (tag == null)
+                            throw new ArgumentException("ElementId " + raw + " is a " + element.GetType().Name + ", not an " +
+                                "IndependentTag; " + op + " edits independent tags only (room, space and area tags are not " +
+                                "covered by this operation - a documented limit, not a guess).");
+                        bool pinnedTag;
+                        try { pinnedTag = tag.Pinned; } catch { pinnedTag = false; }
+                        if (pinnedTag)
+                            throw new ArgumentException("ElementId " + raw + " is PINNED; unpin it deliberately first.");
+                        XYZ head;
+                        try { head = tag.TagHeadPosition; }
+                        catch (Exception ex) { throw new ArgumentException("the head position of tag " + raw + " could not be read (" + ex.Message + ")"); }
+                        p.HeadBefore[raw] = head;
+                        if (op == "set_tag_leader")
+                        {
+                            IList<Reference> refs;
+                            try { refs = tag.GetTaggedReferences(); }
+                            catch (Exception ex) { throw new ArgumentException("the tagged references of tag " + raw + " could not be read (" + ex.Message + ")"); }
+                            if (refs == null || refs.Count != 1)
+                                throw new ArgumentException("tag " + raw + " tags " + (refs == null ? 0 : refs.Count) + " references; " +
+                                    "set_tag_leader addresses the leader of exactly one tagged reference, so a multi-reference tag is refused rather than guessed.");
+                            p.TagRefs[raw] = refs[0];
+                        }
+                    }
+                    if (op == "move" || op == "rotate" || op == "copy")
                     {
                         List<XYZ> sample = Samples(element);
                         if (sample.Count == 0) throw new ArgumentException("ElementId " + raw + " has no LocationPoint/LocationCurve sample, so " + op + " cannot be verified");
@@ -238,6 +285,13 @@ namespace Horizun.Revit.Commands
                         p.Samples[raw] = Samples(element);
                     }
                 }
+                if(op=="wall_join")
+                {
+                    if(o["join_end"]?.Type!=JTokenType.Integer || (o.Value<int>("join_end")!=0 && o.Value<int>("join_end")!=1) || o["allow"]?.Type!=JTokenType.Boolean)
+                        throw new ArgumentException("wall_join requires join_end=0 or 1 and boolean allow.");
+                    if(p.Ids.Any(id=>!(doc.GetElement(id) is Wall))) throw new ArgumentException("wall_join targets must all be walls.");
+                    p.JoinEnd=o.Value<int>("join_end"); p.JoinAllowed=o.Value<bool>("allow");
+                }
                 if (op == "move" || op == "copy") p.Vector = Point(o["vector"], scale, "vector");
                 if (op == "rotate")
                 {
@@ -265,6 +319,62 @@ namespace Horizun.Revit.Commands
                         if (!doc.GetElement(id).IsValidType(p.TypeId))
                             throw new ArgumentException("type_id " + typeId + " is not valid for ElementId " + Rid.Value(id));
                 }
+                if (op == "move_tag_head")
+                {
+                    bool hasPoint = o["point"] != null, hasVector = o["vector"] != null;
+                    if (hasPoint == hasVector)
+                        throw new ArgumentException("move_tag_head takes exactly one of point (an absolute head position, one tag only) or vector (a displacement applied to every tag listed).");
+                    if (hasPoint)
+                    {
+                        if (ids.Count != 1) throw new ArgumentException("move_tag_head with point takes exactly one element_id: one absolute position belongs to one head.");
+                        p.HeadPoint = Point(o["point"], scale, "point");
+                    }
+                    else p.Vector = Point(o["vector"], scale, "vector");
+                }
+                if (op == "set_tag_leader")
+                {
+                    int named = 0;
+                    if (o["has_leader"] != null)
+                    {
+                        if (o["has_leader"].Type != JTokenType.Boolean) throw new ArgumentException("has_leader must be a boolean");
+                        p.HasLeader = o.Value<bool>("has_leader"); named++;
+                    }
+                    if (o["leader_end_condition"] != null)
+                    {
+                        string c = (o.Value<string>("leader_end_condition") ?? "").ToLowerInvariant();
+                        if (c != "attached" && c != "free") throw new ArgumentException("leader_end_condition must be attached or free");
+                        p.EndCondition = c == "free" ? LeaderEndCondition.Free : LeaderEndCondition.Attached; named++;
+                    }
+                    if (o["leader_visible"] != null)
+                    {
+                        if (o["leader_visible"].Type != JTokenType.Boolean) throw new ArgumentException("leader_visible must be a boolean");
+                        p.LeaderVisible = o.Value<bool>("leader_visible"); named++;
+                    }
+                    if (o["leader_end"] != null) { p.LeaderEnd = Point(o["leader_end"], scale, "leader_end"); named++; }
+                    if (o["leader_elbow"] != null) { p.LeaderElbow = Point(o["leader_elbow"], scale, "leader_elbow"); named++; }
+                    if (named == 0)
+                        throw new ArgumentException("set_tag_leader names no edit: give at least one of has_leader, leader_end_condition, leader_end, leader_elbow, leader_visible.");
+                    foreach (ElementId id in p.Ids)
+                    {
+                        var tag = (IndependentTag)doc.GetElement(id);
+                        long raw = Rid.Value(id);
+                        bool hasLeaderNow; try { hasLeaderNow = tag.HasLeader; } catch { hasLeaderNow = false; }
+                        bool willHaveLeader = p.HasLeader ?? hasLeaderNow;
+                        LeaderEndCondition condNow; try { condNow = tag.LeaderEndCondition; } catch { condNow = LeaderEndCondition.Attached; }
+                        LeaderEndCondition willBe = p.EndCondition ?? condNow;
+                        if (p.EndCondition.HasValue)
+                        {
+                            bool assignable; try { assignable = tag.CanLeaderEndConditionBeAssigned(p.EndCondition.Value); } catch { assignable = false; }
+                            if (!assignable)
+                                throw new ArgumentException("tag " + raw + " cannot take leader_end_condition=" + (p.EndCondition.Value == LeaderEndCondition.Free ? "free" : "attached") +
+                                    " (CanLeaderEndConditionBeAssigned is false: its tagged element or category does not allow it). Nothing was written.");
+                        }
+                        if ((p.LeaderEnd != null || p.LeaderElbow != null || p.LeaderVisible.HasValue) && !willHaveLeader)
+                            throw new ArgumentException("tag " + raw + " has no leader and this operation does not set has_leader=true, so leader_end/leader_elbow/leader_visible have nothing to act on.");
+                        if (p.LeaderEnd != null && willBe != LeaderEndCondition.Free)
+                            throw new ArgumentException("tag " + raw + ": leader_end applies only to a FREE leader end; this leader is attached and the operation does not set leader_end_condition=free. Revit ignores a free end on an attached leader, so the request is refused rather than dropped.");
+                    }
+                }
                 p.Summary = new JObject { ["index"] = index, ["operation"] = op, ["targets"] = p.Ids.Count, ["verifiable"] = true };
                 return p;
             }
@@ -285,6 +395,27 @@ namespace Horizun.Revit.Commands
                 case "rotate": ElementTransformUtils.RotateElements(doc, p.Ids, p.Axis, p.Angle); break;
                 case "pin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = true; break;
                 case "unpin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = false; break;
+                case "move_tag_head":
+                    foreach (ElementId id in p.Ids)
+                    {
+                        var tag = (IndependentTag)doc.GetElement(id);
+                        tag.TagHeadPosition = p.HeadPoint ?? p.HeadBefore[Rid.Value(id)].Add(p.Vector);
+                    }
+                    break;
+                case "set_tag_leader":
+                    foreach (ElementId id in p.Ids)
+                    {
+                        var tag = (IndependentTag)doc.GetElement(id);
+                        Reference r = p.TagRefs[Rid.Value(id)];
+                        // Order matters: a leader must exist before its condition, end,
+                        // elbow or visibility can be addressed.
+                        if (p.HasLeader.HasValue) tag.HasLeader = p.HasLeader.Value;
+                        if (p.EndCondition.HasValue) tag.LeaderEndCondition = p.EndCondition.Value;
+                        if (p.LeaderEnd != null) tag.SetLeaderEnd(r, p.LeaderEnd);
+                        if (p.LeaderElbow != null) tag.SetLeaderElbow(r, p.LeaderElbow);
+                        if (p.LeaderVisible.HasValue) tag.SetIsLeaderVisible(r, p.LeaderVisible.Value);
+                    }
+                    break;
                 case "change_type": foreach (ElementId id in p.Ids) doc.GetElement(id).ChangeTypeId(p.TypeId); break;
                 case "set_curve":
                     foreach (ElementId id in p.Ids)
@@ -292,6 +423,9 @@ namespace Horizun.Revit.Commands
                         var lc = doc.GetElement(id).Location as LocationCurve;
                         if (lc != null) lc.Curve = p.Curve;
                     }
+                    break;
+                case "wall_join":
+                    foreach(var id in p.Ids) { if(p.JoinAllowed) WallUtils.AllowWallJoinAtEnd((Wall)doc.GetElement(id),p.JoinEnd); else WallUtils.DisallowWallJoinAtEnd((Wall)doc.GetElement(id),p.JoinEnd); }
                     break;
             }
         }
@@ -304,12 +438,78 @@ namespace Horizun.Revit.Commands
                 int present = p.Created == null ? 0 : p.Created.Count(id => doc.GetElement(id) != null);
                 detail["copies_expected"] = p.Ids.Count; detail["copies_present"] = present;
                 detail["created_ids"] = new JArray((p.Created ?? new List<ElementId>()).Select(id => (JToken)Rid.Value(id)));
-                return present == p.Ids.Count;
+                var remaining=(p.Created ?? new List<ElementId>()).Select(doc.GetElement).Where(e=>e!=null).ToList();
+                int matched=0;
+                foreach(var sourceId in p.Ids)
+                {
+                    var source=doc.GetElement(sourceId); var before=p.Samples[Rid.Value(sourceId)];
+                    int index=remaining.FindIndex(e=>e.GetTypeId()==source.GetTypeId() && e.GetType()==source.GetType() &&
+                        Samples(e).Count==before.Count && (MatchesSamples(before,Samples(e),p,false) || (before.Count==2 && MatchesSamples(before,Samples(e),p,true))));
+                    if(index<0) continue; matched++; remaining.RemoveAt(index);
+                }
+                detail["copies_geometry_verified"]=matched;
+                return present == p.Ids.Count && matched==p.Ids.Count;
             }
             int good = 0;
+            var tagRows = new JArray();
             foreach (ElementId id in p.Ids)
             {
                 Element e = doc.GetElement(id); if (e == null) continue;
+                if (p.Operation == "move_tag_head" || p.Operation == "set_tag_leader")
+                {
+                    var tag = e as IndependentTag;
+                    var row = new JObject { ["element_id"] = Rid.Value(id) };
+                    bool ok = tag != null;
+                    if (tag != null)
+                    {
+                        if (p.Operation == "move_tag_head")
+                        {
+                            XYZ expected = p.HeadPoint ?? p.HeadBefore[Rid.Value(id)].Add(p.Vector);
+                            XYZ actual = null; try { actual = tag.TagHeadPosition; } catch { }
+                            ok = actual != null && actual.DistanceTo(expected) <= TagPositionToleranceFeet;
+                            row["head_before_feet"] = Arr(p.HeadBefore[Rid.Value(id)]);
+                            row["head_expected_feet"] = Arr(expected);
+                            row["head_read_feet"] = actual == null ? (JToken)JValue.CreateNull() : Arr(actual);
+                            row["tolerance_feet"] = TagPositionToleranceFeet;
+                        }
+                        else
+                        {
+                            Reference r = p.TagRefs[Rid.Value(id)];
+                            if (p.HasLeader.HasValue)
+                            {
+                                bool v; try { v = tag.HasLeader; } catch { v = !p.HasLeader.Value; }
+                                row["has_leader"] = new JObject { ["requested"] = p.HasLeader.Value, ["read"] = v }; ok = ok && v == p.HasLeader.Value;
+                            }
+                            if (p.EndCondition.HasValue)
+                            {
+                                LeaderEndCondition c; bool readable = true; try { c = tag.LeaderEndCondition; } catch { c = LeaderEndCondition.Attached; readable = false; }
+                                bool m = readable && c == p.EndCondition.Value;
+                                row["leader_end_condition"] = new JObject { ["requested"] = p.EndCondition.Value.ToString().ToLowerInvariant(), ["read"] = readable ? (JToken)c.ToString().ToLowerInvariant() : JValue.CreateNull() }; ok = ok && m;
+                            }
+                            if (p.LeaderEnd != null)
+                            {
+                                XYZ v = null; try { v = tag.GetLeaderEnd(r); } catch { }
+                                bool m = v != null && v.DistanceTo(p.LeaderEnd) <= TagPositionToleranceFeet;
+                                row["leader_end"] = new JObject { ["requested_feet"] = Arr(p.LeaderEnd), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m }; ok = ok && m;
+                            }
+                            if (p.LeaderElbow != null)
+                            {
+                                XYZ v = null; try { v = tag.GetLeaderElbow(r); } catch { }
+                                bool m = v != null && v.DistanceTo(p.LeaderElbow) <= TagPositionToleranceFeet;
+                                row["leader_elbow"] = new JObject { ["requested_feet"] = Arr(p.LeaderElbow), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m }; ok = ok && m;
+                            }
+                            if (p.LeaderVisible.HasValue)
+                            {
+                                bool v; try { v = tag.IsLeaderVisible(r); } catch { v = !p.LeaderVisible.Value; }
+                                row["leader_visible"] = new JObject { ["requested"] = p.LeaderVisible.Value, ["read"] = v }; ok = ok && v == p.LeaderVisible.Value;
+                            }
+                        }
+                    }
+                    row["verified"] = ok;
+                    tagRows.Add(row);
+                    if (ok) good++;
+                    continue;
+                }
                 if (p.Operation == "pin" && e.Pinned) good++;
                 else if (p.Operation == "unpin" && !e.Pinned) good++;
                 else if (p.Operation == "change_type" && e.GetTypeId() == p.TypeId) good++;
@@ -337,6 +537,7 @@ namespace Horizun.Revit.Commands
                     const double onTheLine = 0.5 / 304.8;
                     if (off0 <= onTheLine && off1 <= onTheLine) good++;
                 }
+                else if(p.Operation=="wall_join" && WallUtils.IsWallJoinAllowedAtEnd((Wall)e,p.JoinEnd)==p.JoinAllowed) good++;
                 else if (p.Operation == "move" || p.Operation == "rotate")
                 {
                     List<XYZ> after = Samples(e), before = p.Samples[Rid.Value(id)];
@@ -349,14 +550,20 @@ namespace Horizun.Revit.Commands
                 }
             }
             detail["targets_verified"] = good;
+            if (tagRows.Count > 0) detail["tags"] = tagRows;
             return good == p.Ids.Count;
         }
+
+        /// <summary>0.003 mm: under anything a drawing shows, over floating-point noise.</summary>
+        private const double TagPositionToleranceFeet = 1e-5;
+
+        private static JArray Arr(XYZ p) => new JArray(p.X, p.Y, p.Z);
 
         private static bool MatchesSamples(List<XYZ> before, List<XYZ> after, Plan p, bool reverse)
         {
             for (int i = 0; i < before.Count; i++)
             {
-                XYZ expected = p.Operation == "move" ? before[i] + p.Vector : p.Rotation.OfPoint(before[i]);
+                XYZ expected = p.Operation == "move" || p.Operation == "copy" ? before[i] + p.Vector : p.Rotation.OfPoint(before[i]);
                 int actualIndex = reverse ? after.Count - 1 - i : i;
                 if (expected.DistanceTo(after[actualIndex]) > 1e-6) return false;
             }
@@ -445,11 +652,19 @@ namespace Horizun.Revit.Commands
 
         private sealed class Plan
         {
+            public int JoinEnd; public bool JoinAllowed;
             public int Index; public string Operation; public List<ElementId> Ids, Created; public XYZ Vector;
             public Line Axis; public double Angle; public Transform Rotation; public ElementId TypeId;
             /// <summary>set_curve: the line this element's LocationCurve is being set to.</summary>
             public Line Curve;
             public Dictionary<long, List<XYZ>> Samples; public JObject Summary;
+            // move_tag_head / set_tag_leader
+            public XYZ HeadPoint;
+            public readonly Dictionary<long, XYZ> HeadBefore = new Dictionary<long, XYZ>();
+            public readonly Dictionary<long, Reference> TagRefs = new Dictionary<long, Reference>();
+            public bool? HasLeader, LeaderVisible;
+            public LeaderEndCondition? EndCondition;
+            public XYZ LeaderEnd, LeaderElbow;
         }
     }
 }

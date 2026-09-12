@@ -32,6 +32,7 @@ namespace Horizun.Revit.Core
     public sealed class PackingResult
     {
         public bool Ok;
+        public bool NoFit;
         public string Error;
         public PlanBox Usable;
         public List<PackingPlacement> Placements = new List<PackingPlacement>();
@@ -53,7 +54,7 @@ namespace Horizun.Revit.Core
             result.Usable = PlanimetryGeometry.Expand(sheet, -marginFeet);
             if (!result.Usable.Valid || result.Usable.Width <= toleranceFeet ||
                 result.Usable.Height <= toleranceFeet)
-                return Refuse(result, "the margins leave no usable sheet area");
+                return Refuse(result, "the margins leave no usable sheet area", true);
 
             List<PlanBox> obstacles = (fixedObstacles ?? Enumerable.Empty<PlanBox>()).ToList();
             if (obstacles.Any(b => !b.Valid))
@@ -71,7 +72,7 @@ namespace Horizun.Revit.Core
                     return Refuse(result, "item '" + item.Key + "' has an unreadable or non-positive size");
                 if (item.Width > result.Usable.Width + toleranceFeet ||
                     item.Height > result.Usable.Height + toleranceFeet)
-                    return Refuse(result, "item '" + item.Key + "' is larger than the usable sheet area");
+                    return Refuse(result, "item '" + item.Key + "' is larger than the usable sheet area", true);
             }
 
             var occupied = new List<PlanBox>(obstacles);
@@ -102,7 +103,7 @@ namespace Horizun.Revit.Core
                 if (!chosen.Valid)
                 {
                     result.Placements.Clear();
-                    return Refuse(result, "item '" + item.Key + "' cannot fit with the requested margin, gap and fixed placements");
+                    return Refuse(result, "item '" + item.Key + "' cannot fit with the requested margin, gap and fixed placements", true);
                 }
                 occupied.Add(chosen);
                 result.Placements.Add(new PackingPlacement { Key = item.Key, Box = chosen });
@@ -126,10 +127,11 @@ namespace Horizun.Revit.Core
         private static bool FiniteNonNegative(double v)
             => !double.IsNaN(v) && !double.IsInfinity(v) && v >= 0.0;
 
-        private static PackingResult Refuse(PackingResult result, string error)
+        private static PackingResult Refuse(PackingResult result, string error, bool noFit = false)
         {
             result.Ok = false;
             result.Error = error;
+            result.NoFit = noFit;
             return result;
         }
     }

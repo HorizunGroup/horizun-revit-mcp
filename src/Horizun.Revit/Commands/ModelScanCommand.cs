@@ -94,6 +94,9 @@ namespace Horizun.Revit.Commands
             // clean-looking scan came back.
             ScanRequestVerdict shape = ScanRequestRules.Check(request, AllSections);
             if (!shape.Ok) return CommandResult.Fail(Name + ": " + shape.Message);
+            string responseMode = request.Value<string>("response_mode") ?? "full";
+            if (responseMode != "full" && responseMode != "summary")
+                return CommandResult.Fail("response_mode must be full or summary.");
 
             var wanted = request.Value<string>("target_document_title");
             if (string.IsNullOrWhiteSpace(wanted))
@@ -278,7 +281,7 @@ namespace Horizun.Revit.Commands
                 return WeightAttributionFromScan.ToJson(ranked, built);
             });
 
-            return CommandResult.Ok(new JObject
+            return CommandResult.Ok(ProgressiveResponse.Scan(new JObject
             {
                 ["document_title"] = actual,
                 ["document_verified"] = true,
@@ -324,7 +327,7 @@ namespace Horizun.Revit.Commands
                 // it once rather than per tool.
                 ["visibility_coverage"] = coverage.ToJson(),
                 ["sections"] = result
-            });
+            }, request));
         }
 
         // ---- Section plumbing: failure is structural, not a flag in a footnote. ----

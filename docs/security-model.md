@@ -80,6 +80,31 @@ closed to core-only (health, target, jobs, submit — the four that survive any
 configuration), and the environment override `HORIZUN_TOOL_PACKS` is read from
 the server process an administrator controls, never from a request.
 
+### 2b. Local operational controls
+
+The Revit **BIM Production** panel has one button, **Advanced options** (in the
+language Revit runs in: *Opciones avanzadas* on a Spanish Revit), which opens a
+Horizun menu with the owner-local controls the server and add-in enforce
+through the same settings file - each row shows its current state, and
+clicking it runs the same command the former dedicated buttons ran:
+
+- **Pause MCP** sets `mcp_paused=true`. Every tool except `horizun_health` is
+  hidden and refused. Health remains visible only so a client can learn that it
+  is paused; an MCP request cannot resume it.
+- **BIM mode** selects `read_only`, `safe_write` or `full_write`. Selecting
+  full write requires a second local acknowledgement. It never enables Python.
+- **Central protection** sets `force_read_only_on_workshared=true`. Operations
+  that could write, change a document session or create an external side effect
+  are refused on workshared models and when Revit cannot determine that state.
+  A command with explicit `dry_run=true` remains available because it commits
+  nothing. This policy is checked on Revit's UI thread beside the active
+  document; it is not merely a ribbon warning.
+
+Each operation also writes a local JSONL receipt built from its own reply. The
+receipt is an audit trail of reported facts, not a second source of truth or a
+central log service. See [ENTERPRISE-POLICY.md](ENTERPRISE-POLICY.md) for
+repeatable deployment of these local restrictions.
+
 **What this does NOT defend against:** anything running as the same Windows user.
 A process with that user's rights can read the discovery file, present the token,
 and drive Revit. That is not a gap to be closed at this layer — such a process can

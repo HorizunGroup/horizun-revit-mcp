@@ -101,6 +101,15 @@ namespace Horizun.Server
                             "and verification harnesses cannot answer a question, and a run that stops to ask has " +
                             "failed just as surely as one that guessed. In that situation state the ambiguity, do " +
                             "nothing, and let the operator resolve it in the next run.\n\n" +
+                            "READ PROGRESSIVELY. Start horizun_query_model with response_mode=summary for counts, " +
+                            "then compact with explicit fields for relevant IDs. Model scans accept response_mode=summary " +
+                            "and explicit sections; summary reduces payload, not scan work. Preserve coverage warnings. " +
+                            "cache_mode=reuse is opt-in for host-only non-workshared model queries; bypass for fresh verification. " +
+                            "For room deliverables, plan with horizun_plan_views, then rehearse document_rooms through " +
+                            "horizun_execute_plan with explicit rooms, types, template, scale and placements. " +
+                            "For corrections, use horizun_audit_model then horizun_apply_corrections and inspect re-audit findings. " +
+                            "Family recipes rectangular_prism and rectangular_tube require explicit types; only height flexes. " +
+                            "Inspect measured flex and the PNG before accepting content.\n\n" +
                             "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +
                             "rules are compiled in. Where a command needs one it is passed in at call time. The " +
                             "delivery workflows built on top of these commands - model audits, classification, " +

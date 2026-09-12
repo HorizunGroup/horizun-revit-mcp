@@ -27,6 +27,12 @@
         "resolved": "13.0.3",
         "contentHash": "HrC5BXdl00IP9zeV+0Z848QWPAoCr9P3bDEZguI+gkLcBKAOxix/tLEAAHC+UvDNPv4a2d18lOReHMOagPa+zQ=="
       },
+      "PdfPig": {
+        "type": "Direct",
+        "requested": "[0.1.13, )",
+        "resolved": "0.1.13",
+        "contentHash": "2AUWNKHbkDr2Ofgi2vVPN/Ya++jhsuHd54xeKveqKOwDiAy2E2QhczOUKyU29ADRHoEJgQUhwHFgtbD6nCZ2WA=="
+      },
       "System.Text.Encoding.CodePages": {
         "type": "Direct",
         "requested": "[8.0.0, )",

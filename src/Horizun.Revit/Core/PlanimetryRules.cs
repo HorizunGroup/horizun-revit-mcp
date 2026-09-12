@@ -1262,7 +1262,43 @@ namespace Horizun.Revit.Core
                 case "inside_extent": InsideExtent(snap, rule, t, opt, r); return;
                 case "minimum_gap": MinimumGap(snap, rule, t, opt, r); return;
                 case "requires_tag": RequiresTag(snap, rule, t, opt, r); return;
+                case "fits_titleblock_cell": FitsTitleblockCell(snap, rule, t, r); return;
             }
+        }
+
+        /// <summary>
+        /// Does the sheet's number/name fit the caller's titleblock cell? The estimate is
+        /// character count x text height x average advance; it is named as an estimate in
+        /// the finding, and a text that does not fit is a finding - never something to
+        /// trim or rename on the sheet's behalf.
+        /// </summary>
+        private static void FitsTitleblockCell(PlanimetrySnapshot snap, PlanimetryRule rule, RuleTarget t,
+                                               PlanimetryAuditResult r)
+        {
+            TitleblockCellFit fit = rule.CellFit;
+            if (t.Sheet == null || fit == null) return;
+            bool readable;
+            JToken value = Field(t, fit.Field, out readable);
+            if (!readable)
+            {
+                r.Findings.Add(UnknownForRule(snap, rule, t,
+                    new JObject { ["field"] = fit.Field, ["reason"] = "the sheet's " + fit.Field + " could not be read" }));
+                return;
+            }
+            string text = AsText(value) ?? "";
+            double estimated = fit.EstimatedWidth(text);
+            if (estimated <= fit.CellWidth) return;
+            r.Findings.Add(FailForRule(snap, rule, t,
+                new JObject
+                {
+                    ["field"] = fit.Field, ["value"] = text, ["characters"] = text.Length,
+                    ["estimated_text_width"] = Math.Round(estimated, 3),
+                    ["cell_width"] = fit.CellWidth, ["text_height"] = fit.TextHeight,
+                    ["char_width_factor"] = fit.CharWidthFactor,
+                    ["estimate"] = "characters x text_height x char_width_factor; an estimate of the rendered label, not a glyph measurement",
+                    ["action"] = "shorten or restructure the " + fit.Field + " in the project, or widen the titleblock cell; the value is never trimmed or renamed here"
+                },
+                new JObject { ["fits_titleblock_cell"] = rule.Value }));
         }
 
         private static void AllowedType(PlanimetrySnapshot snap, PlanimetryRule rule, RuleTarget t,

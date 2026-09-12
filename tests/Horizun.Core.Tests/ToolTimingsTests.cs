@@ -14,6 +14,17 @@ namespace Horizun.Core.Tests
     public class ToolTimingsTests
     {
         public ToolTimingsTests() { ToolTimings.Reset(); }
+        [Fact]
+        public void Percentiles_are_nearest_rank_over_the_recent_ring_only()
+        {
+            ToolTimings.Record("t", 10000);
+            for (int i = 1; i <= 32; i++) ToolTimings.Record("t", i);
+            var t = ToolTimings.Snapshot()["tools"]["t"];
+            Assert.Equal(16, (long)t["recent_p50_ms"]);
+            Assert.Equal(31, (long)t["recent_p95_ms"]);
+            Assert.Equal(10000, (long)t["max_ms"]);
+            Assert.Contains("nearest-rank", (string)t["percentile_method"]);
+        }
 
         [Fact]
         public void The_lifetime_average_and_the_recent_average_answer_different_questions()

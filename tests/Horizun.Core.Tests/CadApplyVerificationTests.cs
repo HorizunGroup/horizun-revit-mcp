@@ -40,7 +40,7 @@ namespace Horizun.Core.Tests
         /// <summary>Every verifyRow["..."] key horizun_create_elements can emit.</summary>
         private static HashSet<string> KeysCreateEmits()
         {
-            string create = Source("Commands", "CreateElementsCommand.cs");
+            string create = Source("Commands", "CreateElementsProductionVerification.cs");
             var keys = new HashSet<string>(StringComparer.Ordinal);
             foreach (Match m in Regex.Matches(create, @"verifyRow\[""(?<k>[a-z_]+)""\]\s*="))
                 keys.Add(m.Groups["k"].Value);

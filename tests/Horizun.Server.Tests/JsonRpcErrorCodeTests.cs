@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json.Linq;
@@ -87,17 +88,31 @@ namespace Horizun.Server.Tests
             var replies = new List<JObject>();
             using (var proc = Process.Start(psi))
             {
+                var stderr = proc.StandardError.ReadToEndAsync();
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                Exception writeError = null;
+                try
+                {
                 foreach (string l in lines) proc.StandardInput.WriteLine(l);
                 proc.StandardInput.Close();
-
-                string line;
-                while ((line = proc.StandardOutput.ReadLine()) != null)
+                }
+                catch (IOException ex) { writeError = ex; }
+                if (!proc.WaitForExit(60000))
                 {
-                    line = line.Trim();
+                    try { proc.Kill(); } catch { }
+                    throw new Xunit.Sdk.XunitException("Server did not terminate within 60 seconds: " + psi.FileName);
+                }
+                string diagnostic = stderr.GetAwaiter().GetResult();
+                string output = stdout.GetAwaiter().GetResult();
+                Assert.True(proc.ExitCode == 0 && writeError == null,
+                    "Server failed to start or communicate. Executable: " + psi.FileName + "; exit=" + proc.ExitCode +
+                    "; stdin=" + writeError?.Message + "; stderr=" + diagnostic);
+                foreach (string rawLine in output.Split('\n'))
+                {
+                    string line = rawLine.Trim();
                     if (line.Length == 0) continue;
                     try { replies.Add(JObject.Parse(line)); } catch { /* not a JSON-RPC line */ }
                 }
-                if (!proc.WaitForExit(60000)) { try { proc.Kill(); } catch { } }
             }
             return replies;
         }
@@ -279,9 +294,9 @@ namespace Horizun.Server.Tests
                 "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tasks/list\",\"params\":{}}");
 
             Assert.Equal(5, replies.Count);
-            Assert.Equal(4, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
+            Assert.Equal(5, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
-            Assert.Equal(4, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
+            Assert.Equal(20, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);
             Assert.Equal(-32601, (int)replies.Find(x => (int?)x["id"] == 15)["error"]["code"]);
         }

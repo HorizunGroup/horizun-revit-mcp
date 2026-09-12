@@ -291,13 +291,22 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void No_Revit_event_subscription_was_added_beyond_the_two_in_Interference()
+        public void Event_subscriptions_are_limited_to_interference_and_read_cache_invalidation()
         {
             string dir = Path.Combine(Root().FullName, "src", "Horizun.Revit");
             var offenders = new List<string>();
             foreach (string file in Directory.GetFiles(dir, "*.cs", SearchOption.AllDirectories))
             {
                 string text = File.ReadAllText(file);
+                if (file.EndsWith("QueryCacheLifecycle.cs", StringComparison.Ordinal))
+                {
+                    var attached = Regex.Matches(text, @"\.(\w+)\s*\+=").Cast<Match>().Select(m => m.Groups[1].Value).OrderBy(x => x).ToArray();
+                    var detached = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).OrderBy(x => x).ToArray();
+                    Assert.Equal(new[] { "DocumentChanged", "DocumentClosing", "DocumentOpened", "DocumentSaved", "DocumentSavedAs", "DocumentSynchronizedWithCentral", "ViewActivated" }.OrderBy(x => x), attached);
+                    Assert.Equal(attached, detached);
+                    Assert.Equal(7, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);
+                    continue;
+                }
                 foreach (string ev in new[] { "DocumentSaving", "DocumentSavingAs", "DocumentSynchronizingWithCentral",
                                               "DocumentClosing", "FileExporting", "DocumentOpened", "DocumentChanged",
                                               "ViewActivated", "Idling" })

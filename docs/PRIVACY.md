@@ -40,6 +40,17 @@ requires it:
 All other bridge traffic uses local standard input/output and authenticated
 Windows named pipes.
 
+## Optional organisation-operated Application Insights receipts
+
+An administrator can explicitly enable the optional Azure Application Insights
+forwarder documented in [ENTERPRISE-DEPLOYMENT.md](ENTERPRISE-DEPLOYMENT.md).
+It is disabled by default and remains under the organisation's own Azure tenant.
+The forwarder sends only allowlisted operational receipt metadata: tool name,
+success, dry-run state, transaction status, verified flag, duration and a
+one-way receipt hash. It does not send model names, paths, element IDs, prompts,
+tool arguments, usernames or credentials. The Azure connection string is stored
+only in a Windows DPAPI-protected local configuration.
+
 ## Credentials and sensitive model data
 
 Credentials remain in user-controlled environment variables or client

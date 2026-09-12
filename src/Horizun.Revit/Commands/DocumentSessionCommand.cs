@@ -111,6 +111,14 @@ namespace Horizun.Revit.Commands
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
             var operation = (request.Value<string>("operation") ?? "").Trim().ToLowerInvariant();
+            string argumentError = Horizun.Contracts.ToolInputRules.ValidateSession(request, operation);
+            if (argumentError != null)
+                return CommandResult.FailWithDetail(argumentError, new JObject
+                {
+                    ["code"] = "invalid_operation_arguments", ["operation"] = operation,
+                    ["write_started"] = false, ["changes_applied"] = false,
+                    ["transaction_status"] = "not_started"
+                });
             switch (operation)
             {
                 case "inspect": return Inspect(app, request);
@@ -664,6 +672,19 @@ namespace Horizun.Revit.Commands
             if (saveAs && File.Exists(targetPath) && !overwrite)
                 return CommandResult.Fail("Destination already exists and overwrite=false: " + targetPath +
                                           ". Refusing to replace a file nobody asked to replace.");
+
+            // Saving is a filesystem effect: no Revit rollback can rehearse it.
+            // Stop before either Save API, even for an existing destination.
+            if (request.Value<bool?>("dry_run") == true)
+                return CommandResult.Ok(new JObject
+                {
+                    ["operation"] = saveAs ? "save_as" : "save", ["dry_run"] = true,
+                    ["validation_level"] = "arguments_and_document", ["saved"] = false,
+                    ["write_started"] = false, ["changes_applied"] = false,
+                    ["transaction_status"] = "not_started", ["target_path"] = targetPath,
+                    ["document_path"] = SafePath(doc), ["destination_exists"] = File.Exists(targetPath),
+                    ["note"] = "Save was not called. Filesystem permissions and Revit save acceptance are not proven by this validation."
+                });
 
             var before = StatFile(targetPath);
             // Probe the file BEFORE the write, or there is no before-version and any

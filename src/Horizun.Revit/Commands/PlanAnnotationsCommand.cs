@@ -35,12 +35,71 @@ namespace Horizun.Revit.Commands
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             double toFeet;
             if (!DimensionPlanRules.UnitScale(units, out toFeet)) return CommandResult.Fail("units must be mm, m or feet.");
+            string distanceSpace = request.Value<string>("distance_space") ?? "model";
+            try
+            {
+                View distanceView = doc.GetElement(Rid.Make(request.Value<long?>("view_id") ?? -1)) as View;
+                if (distanceView == null) return CommandResult.Fail("view_id is required.");
+                // Only layout distances scale; element/probe coordinates retain units.
+                foreach (string key in new[] { "offset", "chain_separation", "clearance", "max_displacement" })
+                {
+                    double defaultValue = key == "clearance" ? 10 : key == "max_displacement" ? (distanceSpace=="paper"?30:1200) : 15;
+                    if (key == "chain_separation" && request[key] == null) continue;
+                    request[key] = DeliveryLayoutRules.Distance(request.Value<double?>(key) ?? defaultValue,
+                        toFeet, distanceView.Scale, distanceSpace) / toFeet;
+                }
+                request["distance_space"] = "model";
+            }
+            catch (Exception ex) { return CommandResult.Fail("Invalid layout distances: " + ex.Message); }
             string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
+            if(operation=="dimension_set") return PlanSet(app,doc,request,units,distanceSpace);
             if (operation == "auto_tags") return PlanTags(doc, request, units, toFeet);
             if (operation == "intent_dimension") return PlanDimension(app, doc, request, units, toFeet);
             if (AutoDimensionRules.KnownOperations.Contains(operation))
                 return PlanAutoDimension(doc, request, operation, units, toFeet);
             return CommandResult.Fail(AutoDimensionRules.OperationError(operation));
+        }
+
+        // =====================================================================
+        private CommandResult PlanSet(UIApplication app,Document doc,JObject request,string units,string distanceSpace)
+        {
+            var sets=request["sets"] as JArray;
+            if(sets==null || sets.Count<1 || sets.Count>30 || sets.Any(s=>!(s is JObject)))
+                return CommandResult.Fail("dimension_set requires 1..30 named sets with explicit reference intent.");
+            var actions=new JArray();var rows=new JArray();var roles=new HashSet<string>(StringComparer.Ordinal);
+            var identities=new HashSet<string>(StringComparer.Ordinal);
+            foreach(JObject spec in sets)
+            {
+                string role=spec.Value<string>("role");
+                if(string.IsNullOrWhiteSpace(role) || !roles.Add(role)) return CommandResult.Fail("Each dimension set role must be nonempty and unique.");
+                string op=spec.Value<string>("operation");
+                if(op!="intent_dimension" && !AutoDimensionRules.KnownOperations.Contains(op))
+                    return CommandResult.Fail("A dimension set must select intent_dimension or a supported auto_dimension operation.");
+                if(spec["offset"]==null || spec["dimension_type_id"]==null || spec["side"]==null)
+                    return CommandResult.Fail("Each set requires explicit offset, dimension_type_id and side; general/partial/thickness/opening criteria are never guessed.");
+                var args=(JObject)spec.DeepClone();args.Remove("role");
+                args["view_id"]=request["view_id"].DeepClone();args["units"]=units;
+                if(args["distance_space"]==null) args["distance_space"]=distanceSpace;
+                CommandResult plan=Execute(app,args.ToString());
+                var data=plan.Data as JObject;
+                if(!plan.Success || data?.Value<bool?>("safe_to_execute")!=true ||
+                    data.Value<bool?>("coverage_complete")==false ||
+                    (data["coverage"]!=null && data.Value<string>("coverage")!="complete"))
+                    return CommandResult.FailWithDetail("Dimension set '"+role+"' did not produce complete coverage. No annotation was created.",
+                        new JObject { ["role"]=role,["error"]=plan.Error,["planner"]=data });
+                foreach(JObject a in (JArray)data["next_arguments"]["actions"])
+                {
+                    string identity=string.Join("|",((JArray)a["references"]).Values<string>().OrderBy(x=>x,StringComparer.Ordinal));
+                    if(!identities.Add(identity)) return CommandResult.Fail("Two dimension sets duplicate the same references; resolve the redundant role.");
+                    actions.Add(a.DeepClone());
+                }
+                rows.Add(new JObject { ["role"]=role,["plan"]=data });
+            }
+            if(actions.Count>500) return CommandResult.Fail("Dimension set exceeds 500 actions.");
+            return CommandResult.Ok(new JObject { ["operation"]="dimension_set",["view_id"]=request["view_id"].DeepClone(),
+                ["coverage_complete"]=true,["safe_to_execute"]=true,["sets"]=rows,["next_tool"]="horizun_annotate",
+                ["next_arguments"]=AnnotateRequest(doc,units,actions),
+                ["acceptance"]="Native rehearsal verifies references and values. Capture the view to approve glyph spacing and leader crossings; no visual approval is inferred." });
         }
 
         // =====================================================================
@@ -271,11 +330,28 @@ namespace Horizun.Revit.Commands
             if (tagType.HasValue && (!Rid.CanRepresent(tagType.Value) || !(doc.GetElement(Rid.Make(tagType.Value)) is ElementType)))
                 return CommandResult.Fail("tag_type_id must identify an ElementType in the active document.");
 
-            List<Box2> occupied = AnnotationBoxes(doc, view);
+            HashSet<long> accepted;
+            try { accepted = AnnotationVisibility.ReadAccepted(request["accept_unmeasurable"]); }
+            catch (ArgumentException ex) { return CommandResult.Fail(ex.Message); }
+
+            List<Box2> occupied;
+            HashSet<long> existing;
+            JObject coverage;
+            try
+            {
+                AnnotationSurvey survey = AnnotationLayout.Survey(doc, view, null, accepted);
+                coverage = survey.Coverage;
+                // A blocked survey is a structured refusal with ids, not a sentence.
+                if (!survey.Complete)
+                    return CommandResult.FailWithDetail(AnnotationVisibility.RefusalMessage(coverage), coverage);
+                occupied = survey.Obstacles.Select(b => new Box2(b.MinX, b.MinY, b.MaxX, b.MaxY)).ToList();
+                existing = ExistingTargets(doc, view.Id);
+            }
+            catch (AnnotationCoverageException ex) { return CommandResult.FailWithDetail(ex.Message, ex.Coverage); }
+            catch (Exception ex) { return CommandResult.Fail("Annotation coverage is unknown: " + ex.Message); }
             var actions = new JArray();
             var skipped = new JArray();
             var unreadable = new JArray();
-            var existing = ExistingTargets(doc, view.Id);
             XYZ right = view.RightDirection.Normalize(), up = view.UpDirection.Normalize(), origin = view.Origin;
             int ordinal = 0;
             foreach (Element target in targets.OrderBy(e => Rid.Value(e.Id)))
@@ -329,7 +405,12 @@ namespace Horizun.Revit.Commands
                     ["point"] = Point(chosen, 1.0 / toFeet), ["add_leader"] = addLeader,
                     ["tag_mode"] = request.Value<string>("tag_mode") ?? "by_category",
                     ["orientation"] = request.Value<string>("orientation") ?? "horizontal"
+                    , ["avoid_collisions"] = true, ["layout_clearance"] = clearance / toFeet,
+                    ["layout_max_displacement"] = request.Value<double?>("max_displacement") ?? 1200,
+                    ["require_tag_text"] = true
                 };
+                if (accepted.Count > 0)
+                    action["layout_accept_unmeasurable"] = new JArray(accepted.OrderBy(x => x));
                 if (tagType.HasValue) action["tag_type_id"] = tagType.Value;
                 actions.Add(action); ordinal++;
             }
@@ -341,6 +422,8 @@ namespace Horizun.Revit.Commands
                 ["operation"] = "auto_tags", ["view_id"] = Rid.Value(view.Id),
                 ["requested"] = targets.Count, ["planned"] = ordinal, ["skipped"] = skipped,
                 ["unreadable"] = unreadable, ["coverage_complete"] = complete,
+                ["annotation_coverage"] = coverage,
+                ["clearance_scope"] = coverage.Value<string>("clearance_scope"),
                 ["safe_to_execute"] = complete && actions.Count > 0,
                 ["next_tool"] = "horizun_annotate", ["next_arguments"] = next,
                 ["note"] = "This planner made no model changes. Run the returned horizun_annotate dry run; only its rehearsal proves the selected tag family/type can tag each target."
@@ -352,8 +435,13 @@ namespace Horizun.Revit.Commands
             string error;
             View view = ResolveView(doc, request, out error);
             if (view == null) return CommandResult.Fail(error);
-            List<Element> targets = ResolveTargets(doc, request["element_ids"] as JArray, 32, out error);
-            if (targets == null || targets.Count < 2)
+            var referenceTargets=request["reference_targets"] as JArray;
+            if(referenceTargets!=null && (request["element_ids"]!=null || referenceTargets.Count<2 || referenceTargets.Count>32 ||
+                referenceTargets.Any(t=>!(t is JObject) || t["element_id"]?.Type!=JTokenType.Integer || t["selector"]?.Type!=JTokenType.String)))
+                return CommandResult.Fail("reference_targets requires 2..32 {element_id,selector,probe_point?} entries, without element_ids.");
+            List<Element> targets = ResolveTargets(doc, referenceTargets==null ? request["element_ids"] as JArray :
+                new JArray(referenceTargets.Select(t=>(long)t["element_id"]).Distinct()), 32, out error);
+            if (targets == null || (referenceTargets==null && targets.Count < 2))
                 return CommandResult.Fail(error ?? "intent_dimension requires at least two distinct element_ids.");
             string selector = (request.Value<string>("selector") ?? "centerline").ToLowerInvariant();
             string axis = (request.Value<string>("axis") ?? "auto").ToLowerInvariant();
@@ -370,7 +458,29 @@ namespace Horizun.Revit.Commands
                 ["max_results"] = 500, ["offset"] = 0, ["units"] = units
             };
             if (request["probe_point"] != null) refsRequest["probe_point"] = request["probe_point"].DeepClone();
-            CommandResult refsResult = new DimensionReferencesCommand().Execute(app, refsRequest.ToString());
+            CommandResult refsResult;
+            if(referenceTargets==null) refsResult=new DimensionReferencesCommand().Execute(app,refsRequest.ToString());
+            else
+            {
+                var combined=new JArray();
+                for(int slot=0;slot<referenceTargets.Count;slot++)
+                {
+                    JObject spec=(JObject)referenceTargets[slot];
+                    if(spec.Properties().Any(p=>p.Name!="element_id" && p.Name!="selector" && p.Name!="probe_point"))
+                        return CommandResult.Fail("Unknown reference_targets field.");
+                    var one=(JObject)refsRequest.DeepClone();one["element_ids"]=new JArray((long)spec["element_id"]);
+                    one["selectors"]=new JArray((string)spec["selector"]);one.Remove("probe_point");
+                    if(spec["probe_point"]!=null) one["probe_point"]=spec["probe_point"].DeepClone();
+                    var answer=new DimensionReferencesCommand().Execute(app,one.ToString());
+                    var body=answer.Data as JObject;
+                    if(!answer.Success || body?.Value<bool?>("truncated")!=false ||
+                        body["coverage"]?.Value<int?>("inspected")!=1 || ((JArray)body["coverage"]["unreadable"]).Count!=0)
+                        return CommandResult.Fail("Reference target "+slot+" has incomplete coverage: "+answer.Error);
+                    foreach(JObject row in (JArray)body["rows"]) { row["request_slot"]=slot;combined.Add(row); }
+                }
+                refsResult=CommandResult.Ok(new JObject { ["rows"]=combined,["coverage"]=new JObject {
+                    ["inspected"]=targets.Count,["unreadable"]=new JArray() },["truncated"]=false });
+            }
             if (!refsResult.Success) return CommandResult.Fail("Reference planning failed: " + refsResult.Error);
             JObject data = refsResult.Data as JObject ?? JObject.FromObject(refsResult.Data);
             JObject coverage = data["coverage"] as JObject;
@@ -379,18 +489,22 @@ namespace Horizun.Revit.Commands
 
             var selected = new List<DimRef>();
             JArray rows = data["rows"] as JArray ?? new JArray();
-            foreach (Element target in targets)
+            int targetSlot=0;
+            foreach (Element target in referenceTargets==null ? targets :
+                referenceTargets.Select(t=>targets.Single(e=>Rid.Value(e.Id)==(long)t["element_id"])).ToList())
             {
                 long id = Rid.Value(target.Id);
                 List<JObject> candidates = rows.OfType<JObject>().Where(r => r.Value<long>("element_id") == id &&
                     r.Value<bool>("compatible_with_dimension") && !r.Value<bool>("ambiguous") &&
-                    !string.IsNullOrWhiteSpace(r.Value<string>("stable_representation")) && r["representative_point"] is JArray).ToList();
+                    !string.IsNullOrWhiteSpace(r.Value<string>("stable_representation")) && r["representative_point"] is JArray &&
+                    (referenceTargets==null || r.Value<int?>("request_slot")==targetSlot)).ToList();
                 if (candidates.Count != 1)
                     return CommandResult.Fail("Element " + id + " produced " + candidates.Count + " unambiguous compatible '" + selector +
                         "' references; exactly one is required. Choose a narrower selector/probe point. Nothing was written.");
                 JArray p = (JArray)candidates[0]["representative_point"];
                 selected.Add(new DimRef { Id = id, Stable = candidates[0].Value<string>("stable_representation"),
                     Point = new XYZ(p[0].Value<double>() * toFeet, p[1].Value<double>() * toFeet, p[2].Value<double>() * toFeet) });
+                targetSlot++;
             }
 
             XYZ right = view.RightDirection.Normalize(), up = view.UpDirection.Normalize(), origin = view.Origin;
@@ -427,7 +541,7 @@ namespace Horizun.Revit.Commands
             var actions = new JArray(action);
             return CommandResult.Ok(new JObject
             {
-                ["operation"] = "intent_dimension", ["view_id"] = Rid.Value(view.Id), ["selector"] = selector,
+                ["operation"] = "intent_dimension", ["view_id"] = Rid.Value(view.Id), ["selector"] = referenceTargets==null ? selector : "per_target",
                 ["axis_resolved"] = horizontal ? "horizontal" : "vertical", ["side"] = side,
                 ["coverage_complete"] = true, ["safe_to_execute"] = true,
                 ["reference_rows"] = new JArray(selected.Select(r => new JObject { ["element_id"] = r.Id, ["stable_representation"] = r.Stable })),
@@ -478,31 +592,9 @@ namespace Horizun.Revit.Commands
                     if (tag.OwnerViewId != viewId) continue;
                     foreach (ElementId id in tag.GetTaggedLocalElementIds()) result.Add(Rid.Value(id));
                 }
-                catch { }
+                catch (Exception ex) { throw new InvalidOperationException("Could not inspect existing tag " + Rid.Value(tag.Id) + ": " + ex.Message); }
             }
             return result;
-        }
-
-        private static List<Box2> AnnotationBoxes(Document doc, View view)
-        {
-            var boxes = new List<Box2>(); XYZ right = view.RightDirection.Normalize(), up = view.UpDirection.Normalize(), origin = view.Origin;
-            IEnumerable<Element> elements = new FilteredElementCollector(doc).WhereElementIsNotElementType()
-                .Where(e => e is IndependentTag || e is TextNote || e is Dimension);
-            foreach (Element e in elements)
-            {
-                try
-                {
-                    if (e.OwnerViewId != view.Id) continue;
-                    BoundingBoxXYZ bb = e.get_BoundingBox(view); if (bb == null) continue;
-                    var corners = new[] { new XYZ(bb.Min.X,bb.Min.Y,bb.Min.Z), new XYZ(bb.Min.X,bb.Max.Y,bb.Min.Z),
-                        new XYZ(bb.Max.X,bb.Min.Y,bb.Max.Z), new XYZ(bb.Max.X,bb.Max.Y,bb.Max.Z) };
-                    double[] xs = corners.Select(p => p.Subtract(origin).DotProduct(right)).ToArray();
-                    double[] ys = corners.Select(p => p.Subtract(origin).DotProduct(up)).ToArray();
-                    boxes.Add(new Box2(xs.Min(), ys.Min(), xs.Max(), ys.Max()));
-                }
-                catch { }
-            }
-            return boxes;
         }
 
         private static IEnumerable<int[]> Ring(int r)

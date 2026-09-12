@@ -372,6 +372,7 @@ namespace Horizun.Revit.Commands
                     {
                         case DimensionEditRules.ActionFieldClass.Identity:
                         case DimensionEditRules.ActionFieldClass.Edit:
+                        case DimensionEditRules.ActionFieldClass.Modifier:
                             continue;
                         case DimensionEditRules.ActionFieldClass.ReferenceReplacement:
                             // NOT a capability gap and NOT a Python matter: the Revit API
@@ -470,7 +471,7 @@ namespace Horizun.Revit.Commands
                 if (a["segments"] != null)
                 {
                     RequireEligible("segments", segCount);
-                    p.Segments = PlanSegments(a["segments"], segCount);
+                    p.Segments = PlanSegments(doc, d, a, a["segments"], segCount, scale, raw);
                     editNames.Add("segments");
                 }
 
@@ -487,6 +488,62 @@ namespace Horizun.Revit.Commands
                     editNames.Add("reset_text_position");
                 }
 
+                // Text position and leaders (the 8B block). The DESIGN decision - where
+                // the text goes - is the caller's, as an explicit absolute point or an
+                // explicit view-plane offset in model or paper distance; the bridge only
+                // refuses what Revit cannot honour and proves what it wrote.
+                if (a["text_position"] != null || a["text_offset"] != null)
+                {
+                    if (a["text_position"] != null && a["text_offset"] != null)
+                        throw new ArgumentException("text_position and text_offset are two answers to one question; give one");
+                    string which = a["text_position"] != null ? "text_position" : "text_offset";
+                    RequireEligible(which, segCount);
+                    if (p.ResetTextPosition)
+                        throw new ArgumentException(which + " and reset_text_position contradict each other in one action");
+                    bool adjustable;
+                    try { adjustable = d.IsTextPositionAdjustable(); } catch { adjustable = false; }
+                    if (!adjustable)
+                        throw new ArgumentException("dimension " + raw + " reports IsTextPositionAdjustable()=false: Revit " +
+                                                    "does not let its text move, so " + which + " cannot be honoured. Nothing was written.");
+                    XYZ current;
+                    try { current = d.TextPosition; }
+                    catch (Exception ex)
+                    {
+                        throw new ArgumentException("the current text position of dimension " + raw + " could not be read (" +
+                                                    ex.Message + "), so a moved position could not be proved against a re-read");
+                    }
+                    p.TextPositionBefore = current;
+                    p.TextPositionTarget = a["text_position"] != null
+                        ? Point(a["text_position"], scale, "text_position")
+                        : ViewPlaneOffset(doc, d, current, a["text_offset"], a, scale, "text_offset", raw);
+                    editNames.Add(which);
+                }
+                if (a["leader"] != null)
+                {
+                    if (a["leader"].Type != JTokenType.Boolean) throw new ArgumentException("leader must be a boolean");
+                    p.Leader = a.Value<bool>("leader");
+                    editNames.Add("leader");
+                }
+                if (a["leader_end"] != null)
+                {
+                    RequireEligible("leader_end", segCount);
+                    bool hasLeader;
+                    try { hasLeader = d.HasLeader; } catch { hasLeader = false; }
+                    if (!(p.Leader ?? hasLeader))
+                        throw new ArgumentException("leader_end needs a leader: dimension " + raw + " has none and this action " +
+                                                    "does not set leader=true");
+                    p.LeaderEnd = Point(a["leader_end"], scale, "leader_end");
+                    editNames.Add("leader_end");
+                }
+
+                if (a["distance_space"] != null)
+                {
+                    // A qualifier with nothing to qualify is refused by name, not
+                    // accepted as an edit of nothing.
+                    bool segmentOffset = (a["segments"] as JArray)?.OfType<JObject>().Any(so => so["text_offset"] != null) == true;
+                    string orphan = DimensionEditRules.ModifierWithoutTarget(a["text_offset"] != null, segmentOffset);
+                    if (orphan != null) throw new ArgumentException(orphan);
+                }
                 if (editNames.Count == 0)
                     throw new ArgumentException("the action names no edit - include at least one of: " +
                                                 DimensionEditRules.EditFieldsSentence());
@@ -526,7 +583,8 @@ namespace Horizun.Revit.Commands
             return t.Value<string>();
         }
 
-        private static List<SegEdit> PlanSegments(JToken token, int segCount)
+        private static List<SegEdit> PlanSegments(Document doc, Dimension d, JObject a, JToken token, int segCount,
+                                                  double scale, long raw)
         {
             JArray segs = token as JArray;
             if (segs == null || segs.Count == 0)
@@ -539,9 +597,12 @@ namespace Horizun.Revit.Commands
                 if (so == null) throw new ArgumentException("segments entries must be objects");
                 foreach (JProperty sp in so.Properties())
                     if (sp.Name != "index" && sp.Name != "prefix" && sp.Name != "suffix" && sp.Name != "above" &&
-                        sp.Name != "below" && sp.Name != "value_override" && sp.Name != "lock")
+                        sp.Name != "below" && sp.Name != "value_override" && sp.Name != "lock" &&
+                        sp.Name != "text_position" && sp.Name != "text_offset" && sp.Name != "reset_text_position" &&
+                        sp.Name != "leader_end")
                         throw new ArgumentException("segments[] entries accept index, prefix, suffix, above, below, " +
-                                                    "value_override and lock; '" + sp.Name + "' is none of them");
+                                                    "value_override, lock, text_position, text_offset, reset_text_position " +
+                                                    "and leader_end; '" + sp.Name + "' is none of them");
                 if (so["index"] == null || so["index"].Type != JTokenType.Integer)
                     throw new ArgumentException("segments[].index is required and must be an integer");
                 long si = so.Value<long>("index");
@@ -562,6 +623,46 @@ namespace Horizun.Revit.Commands
                     if (so["lock"].Type != JTokenType.Boolean)
                         throw new ArgumentException("segments[" + si + "].lock must be a boolean");
                     se.Lock = so.Value<bool>("lock");
+                    segEdits++;
+                }
+                if (so["reset_text_position"] != null)
+                {
+                    if (so["reset_text_position"].Type != JTokenType.Boolean || !so.Value<bool>("reset_text_position"))
+                        throw new ArgumentException("segments[" + si + "].reset_text_position must be true when present; omit it otherwise");
+                    se.ResetTextPosition = true;
+                    segEdits++;
+                }
+                if (so["text_position"] != null || so["text_offset"] != null)
+                {
+                    if (so["text_position"] != null && so["text_offset"] != null)
+                        throw new ArgumentException("segments[" + si + "]: text_position and text_offset are two answers to one question; give one");
+                    if (se.ResetTextPosition)
+                        throw new ArgumentException("segments[" + si + "]: a text position and reset_text_position contradict each other");
+                    DimensionSegment seg = SegmentAt(d, (int)si);
+                    if (seg == null) throw new ArgumentException("segments[" + si + "] does not resolve on dimension " + raw);
+                    bool adjustable;
+                    try { adjustable = seg.IsTextPositionAdjustable(); } catch { adjustable = false; }
+                    if (!adjustable)
+                        throw new ArgumentException("segment " + si + " of dimension " + raw + " reports IsTextPositionAdjustable()=false; " +
+                                                    "Revit does not let its text move. Nothing was written.");
+                    XYZ current;
+                    try { current = seg.TextPosition; }
+                    catch (Exception ex) { throw new ArgumentException("segments[" + si + "]: the current text position could not be read (" + ex.Message + ")"); }
+                    se.TextPositionBefore = current;
+                    se.TextPositionTarget = so["text_position"] != null
+                        ? Point(so["text_position"], scale, "segments[" + si + "].text_position")
+                        : ViewPlaneOffset(doc, d, current, so["text_offset"], a, scale, "segments[" + si + "].text_offset", raw);
+                    segEdits++;
+                }
+                if (so["leader_end"] != null)
+                {
+                    bool hasLeader;
+                    try { hasLeader = d.HasLeader; } catch { hasLeader = false; }
+                    bool requested = a["leader"] != null && a["leader"].Type == JTokenType.Boolean && a.Value<bool>("leader");
+                    if (!(requested || hasLeader))
+                        throw new ArgumentException("segments[" + si + "].leader_end needs a leader: dimension " + raw +
+                                                    " has none and this action does not set leader=true");
+                    se.LeaderEnd = Point(so["leader_end"], scale, "segments[" + si + "].leader_end");
                     segEdits++;
                 }
                 if (segEdits == 0)
@@ -612,8 +713,15 @@ namespace Horizun.Revit.Commands
                     if (se.Below != null) s.Below = se.Below;
                     if (se.ValueOverride != null) s.ValueOverride = se.ValueOverride;
                     if (se.Lock.HasValue) s.IsLocked = se.Lock.Value;
+                    if (se.ResetTextPosition) s.ResetTextPosition();
+                    if (se.TextPositionTarget != null) s.TextPosition = se.TextPositionTarget;
+                    if (se.LeaderEnd != null) s.LeaderEndPosition = se.LeaderEnd;
                 }
             if (p.ResetTextPosition) d.ResetTextPosition();
+            // Leader before leader end: an end has nothing to attach to otherwise.
+            if (p.Leader.HasValue) d.HasLeader = p.Leader.Value;
+            if (p.TextPositionTarget != null) d.TextPosition = p.TextPositionTarget;
+            if (p.LeaderEnd != null) d.LeaderEndPosition = p.LeaderEnd;
         }
 
         // ---------------------------------------------------------------------
@@ -716,7 +824,33 @@ namespace Horizun.Revit.Commands
                     TextCheck(fields, at + ".value_override", se.ValueOverride, delegate { return seg.ValueOverride; }, ref allOk);
                     if (se.Lock.HasValue)
                         BoolCheck(fields, at + ".lock", se.Lock.Value, delegate { return seg.IsLocked; }, ref allOk);
+                    if (se.TextPositionTarget != null)
+                        PointCheck(fields, at + ".text_position", se.TextPositionTarget, se.TextPositionBefore, delegate { return seg.TextPosition; }, ref allOk);
+                    if (se.LeaderEnd != null)
+                        PointCheck(fields, at + ".leader_end", se.LeaderEnd, null, delegate { return seg.LeaderEndPosition; }, ref allOk);
+                    if (se.ResetTextPosition)
+                    {
+                        XYZ afterSeg = null; string readErr = null;
+                        try { afterSeg = seg.TextPosition; } catch (Exception ex) { readErr = ex.Message; }
+                        var fr = new JObject
+                        {
+                            ["field"] = at + ".reset_text_position", ["requested"] = true,
+                            ["text_position_before_feet"] = se.TextPositionBefore == null ? (JToken)JValue.CreateNull() : new JArray(se.TextPositionBefore.X, se.TextPositionBefore.Y, se.TextPositionBefore.Z),
+                            ["text_position_after_feet"] = afterSeg == null ? (JToken)JValue.CreateNull() : new JArray(afterSeg.X, afterSeg.Y, afterSeg.Z),
+                            ["match"] = true,
+                            ["verification"] = "invocation_completed: Revit publishes no predicate for a segment's default text position"
+                        };
+                        if (readErr != null) fr["read_error"] = readErr;
+                        fields.Add(fr);
+                    }
                 }
+
+            if (p.TextPositionTarget != null)
+                PointCheck(fields, "text_position", p.TextPositionTarget, p.TextPositionBefore, delegate { return d.TextPosition; }, ref allOk);
+            if (p.Leader.HasValue)
+                BoolCheck(fields, "leader", p.Leader.Value, delegate { return d.HasLeader; }, ref allOk);
+            if (p.LeaderEnd != null)
+                PointCheck(fields, "leader_end", p.LeaderEnd, null, delegate { return d.LeaderEndPosition; }, ref allOk);
 
             if (p.ResetTextPosition)
             {
@@ -1020,6 +1154,47 @@ namespace Horizun.Revit.Commands
             return result;
         }
 
+        /// <summary>A requested point against its re-read, within the move tolerance.</summary>
+        private static void PointCheck(JArray fields, string name, XYZ requested, XYZ before, Func<XYZ> read, ref bool ok)
+        {
+            XYZ actual = null; string readError = null;
+            try { actual = read(); } catch (Exception ex) { readError = ex.Message; }
+            bool m = actual != null && actual.DistanceTo(requested) <= DimensionEditRules.DefaultPositionToleranceFeet;
+            ok = ok && m;
+            var f = new JObject
+            {
+                ["field"] = name,
+                ["requested_feet"] = new JArray(requested.X, requested.Y, requested.Z),
+                ["before_feet"] = before == null ? (JToken)JValue.CreateNull() : new JArray(before.X, before.Y, before.Z),
+                ["read_feet"] = actual == null ? (JToken)JValue.CreateNull() : new JArray(actual.X, actual.Y, actual.Z),
+                ["tolerance_feet"] = DimensionEditRules.DefaultPositionToleranceFeet,
+                ["match"] = m
+            };
+            if (readError != null) f["read_error"] = readError;
+            fields.Add(f);
+        }
+
+        /// <summary>
+        /// An explicit [dx, dy] in the owner view's plane, in the call's units, scaled by
+        /// the view scale when distance_space is paper. Signed: the shared distance rule
+        /// only accepts magnitudes, so the sign travels separately.
+        /// </summary>
+        private static XYZ ViewPlaneOffset(Document doc, Dimension d, XYZ current, JToken token, JObject a, double scale,
+                                           string name, long raw)
+        {
+            JArray o = token as JArray;
+            if (o == null || o.Count != 2 || o.Any(t => t.Type != JTokenType.Integer && t.Type != JTokenType.Float))
+                throw new ArgumentException(name + " must be [dx, dy] in the owner view's plane, in units");
+            View view = doc.GetElement(d.OwnerViewId) as View;
+            if (view == null)
+                throw new ArgumentException("dimension " + raw + " has no readable owner view, so a view-plane offset has no axes");
+            string space = a.Value<string>("distance_space") ?? "model";
+            double dx = o[0].Value<double>(), dy = o[1].Value<double>();
+            double fx = DeliveryLayoutRules.Distance(Math.Abs(dx), scale, view.Scale, space) * Math.Sign(dx);
+            double fy = DeliveryLayoutRules.Distance(Math.Abs(dy), scale, view.Scale, space) * Math.Sign(dy);
+            return current.Add(view.RightDirection.Multiply(fx)).Add(view.UpDirection.Multiply(fy));
+        }
+
         private static XYZ Point(JToken token, double scale, string name)
         {
             JArray a = token as JArray;
@@ -1069,6 +1244,9 @@ namespace Horizun.Revit.Commands
             public List<SegEdit> Segments;
             public bool ResetTextPosition;
             public XYZ TextPositionBefore;
+            public XYZ TextPositionTarget;
+            public bool? Leader;
+            public XYZ LeaderEnd;
             public JObject Summary;
         }
 
@@ -1077,6 +1255,8 @@ namespace Horizun.Revit.Commands
             public int SegIndex;
             public string Prefix, Suffix, Above, Below, ValueOverride;
             public bool? Lock;
+            public bool ResetTextPosition;
+            public XYZ TextPositionBefore, TextPositionTarget, LeaderEnd;
         }
     }
 }

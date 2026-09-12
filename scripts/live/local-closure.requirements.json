@@ -1,0 +1,50 @@
+{
+  "schema": "horizun.local-closure/1",
+  "title": "Cierre local 2026-09-09",
+  "supersedes": "The -tags2 and -tags3 runs are kept as historical evidence: -tags2 pages carried a sheet name that printed through the titleblock, and -tags3 pages moved that collision onto the view scale. The -tags4 runs are the same measurements on pages where each name fits its own field, and the acceptances are bound to those PDFs.",
+  "means": "What this particular closure had to cover. Read by verify-local-closure.ps1, which answers 'complete' only when every one of these is satisfied. Roots are relative to -EvidenceRoot; a '..' root deliberately reuses evidence from an earlier session's folder, and is only written here when that evidence is still valid for the final code.",
+  "visual_acceptance": "visual-acceptance.json",
+  "requirements": [
+    {
+      "id": "driver-safety-suite",
+      "kind": "offline_suite",
+      "summary": "session-tests-summary.json",
+      "means": "The driver's safety rules, exercised without Revit. Zero failed AND zero skipped: a skipped case is not a covered case."
+    },
+    {
+      "id": "foreign-document-refusal",
+      "kind": "intentional_refusal",
+      "root": "ym-2026-foreign2",
+      "year": "2026",
+      "document": "HZ_DESECHABLE_NO_REGISTRADO_2026",
+      "recovery": "ym-2026-foreign2/recovery/recovery.json",
+      "means": "A real document the driver never opened, met by the real close path: refused, nothing closed, the session left running and written down - and then recovered deliberately, with the manifest verified back."
+    },
+
+    { "id": "year-2023-driver", "kind": "year_matrix", "root": "ym-2023-tags4", "year": "2023" },
+    { "id": "year-2023-dimension", "kind": "harness_probe", "root": "ym-2023-tags4", "artifact": "deliverable-visual-*.json", "probe": "dimension-text-displaced" },
+    { "id": "year-2023-tag", "kind": "harness_probe", "root": "ym-2023-tags4", "artifact": "deliverable-visual-*.json", "probe": "tag-with-leader" },
+    { "id": "year-2023-pdf", "kind": "harness_probe", "root": "ym-2023-tags4", "artifact": "deliverable-visual-*.json", "probe": "sheet-exported-to-pdf" },
+    { "id": "year-2023-visual", "kind": "visual", "root": "ym-2023-tags4", "artifact": "deliverable-visual-*.json", "year": "2023" },
+
+    { "id": "year-2024-driver", "kind": "year_matrix", "root": "ym-2024-tags4", "year": "2024" },
+    { "id": "year-2024-dimension", "kind": "harness_probe", "root": "ym-2024-tags4", "artifact": "deliverable-visual-*.json", "probe": "dimension-text-displaced" },
+    { "id": "year-2024-tag", "kind": "harness_probe", "root": "ym-2024-tags4", "artifact": "deliverable-visual-*.json", "probe": "tag-with-leader" },
+    { "id": "year-2024-pdf", "kind": "harness_probe", "root": "ym-2024-tags4", "artifact": "deliverable-visual-*.json", "probe": "sheet-exported-to-pdf" },
+    { "id": "year-2024-visual", "kind": "visual", "root": "ym-2024-tags4", "artifact": "deliverable-visual-*.json", "year": "2024" },
+
+    { "id": "year-2025-driver", "kind": "year_matrix", "root": "ym-2025-tags4", "year": "2025" },
+    { "id": "year-2025-dimension", "kind": "harness_probe", "root": "ym-2025-tags4", "artifact": "deliverable-visual-*.json", "probe": "dimension-text-displaced" },
+    { "id": "year-2025-tag", "kind": "harness_probe", "root": "ym-2025-tags4", "artifact": "deliverable-visual-*.json", "probe": "tag-with-leader" },
+    { "id": "year-2025-pdf", "kind": "harness_probe", "root": "ym-2025-tags4", "artifact": "deliverable-visual-*.json", "probe": "sheet-exported-to-pdf" },
+    { "id": "year-2025-visual", "kind": "visual", "root": "ym-2025-tags4", "artifact": "deliverable-visual-*.json", "year": "2025" },
+
+    { "id": "year-2026-driver", "kind": "year_matrix", "root": "ym-2026-tags4", "year": "2026" },
+    { "id": "year-2026-tag", "kind": "harness_probe", "root": "ym-2026-tags4", "artifact": "deliverable-visual-*.json", "probe": "tag-with-leader" },
+    { "id": "year-2026-visual", "kind": "visual", "root": "ym-2026-tags4", "artifact": "deliverable-visual-*.json", "year": "2026" },
+
+    { "id": "year-2027-driver", "kind": "year_matrix", "root": "ym-2027-tags4", "year": "2027" },
+    { "id": "year-2027-tag", "kind": "harness_probe", "root": "ym-2027-tags4", "artifact": "deliverable-visual-*.json", "probe": "tag-with-leader" },
+    { "id": "year-2027-visual", "kind": "visual", "root": "ym-2027-tags4", "artifact": "deliverable-visual-*.json", "year": "2027" }
+  ]
+}

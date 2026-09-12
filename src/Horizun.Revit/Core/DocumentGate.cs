@@ -263,7 +263,8 @@ namespace Horizun.Revit.Core
 
             o["document"] = gate.Identity?.Describe();
             o["document_fingerprint"] = gate.Identity?.FingerprintDigest();
-            if (!dryRun) return;
+            if (_pendingPlan != null) o["change_preview"] = PlanPreview.Describe(_pendingPlan);
+            if (!dryRun) { _pendingPlan = null; return; }
 
             Confirmation issued = Confirmations.Issue(commandName, gate.Fingerprint, planHash, null,
                                                       _pendingPlan?.Fingerprint(), _pendingPlan);

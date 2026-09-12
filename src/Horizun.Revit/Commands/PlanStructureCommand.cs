@@ -120,6 +120,7 @@ namespace Horizun.Revit.Commands
                 elements.Add(new JObject
                 {
                     ["kind"] = "structural_column",
+                    ["coordinate_mode"] = "level_offset",
                     ["type_id"] = Rid.Value(symbol.Id),
                     ["level_id"] = Rid.Value(level.Id),
                     ["point"] = new JArray(Math.Round(crossing.X * 304.8, 1), Math.Round(crossing.Y * 304.8, 1), 0)

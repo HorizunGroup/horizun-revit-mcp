@@ -55,7 +55,7 @@ if (-not $Server -and $env:HORIZUN_SERVER_EXE) {
     $Server = $env:HORIZUN_SERVER_EXE
 }
 if (-not $Server) {
-    $Server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe'
+    $Server = if ($env:HORIZUN_SERVER_EXE) { $env:HORIZUN_SERVER_EXE } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 }
 if (-not (Test-Path $Server)) { throw "MCP server not found: $Server" }
 

@@ -19,6 +19,7 @@ namespace Horizun.Server
         private const string ContractUri = "horizun://contract/tools";
         private const string SecurityUri = "horizun://security/current-profile";
         private const string BuildUri = "horizun://build/identity";
+        private const string WorkflowsUri = "horizun://workflows/bim-production";
 
         public static JObject List(JObject prms)
         {
@@ -38,7 +39,10 @@ namespace Horizun.Server
                         "application/json", Encoding.UTF8.GetByteCount(SecurityText())),
                     Def(BuildUri, "build-identity", "Build identity",
                         "Version-independent contract and protocol identity of the running server.",
-                        "application/json", Encoding.UTF8.GetByteCount(BuildText()))
+                        "application/json", Encoding.UTF8.GetByteCount(BuildText())),
+                    Def(WorkflowsUri, "bim-production-workflows", "BIM Production Workflows",
+                        "Task-oriented workflow catalog over the installed typed tool surface.",
+                        "application/json", Encoding.UTF8.GetByteCount(WorkflowText()))
                 }
             };
         }
@@ -57,6 +61,7 @@ namespace Horizun.Server
                 case ContractUri: mime = "application/json"; text = ContractText(); break;
                 case SecurityUri: mime = "application/json"; text = SecurityText(); break;
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
+                case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
             }
             return new JObject
@@ -115,6 +120,9 @@ namespace Horizun.Server
             return new JObject
             {
                 ["permission_profile"] = Horizun.Revit.Core.Settings.PermissionProfile,
+                ["mcp_paused"] = Horizun.Revit.Core.Settings.McpPaused,
+                ["mcp_paused_means"] = "When true, only horizun_health is available until the local Revit owner resumes MCP.",
+                ["force_read_only_on_workshared"] = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
                 ["execute_python_allowed"] = python,
                 ["execute_python_temporary_grant_until_utc"] = until == null
                     ? JValue.CreateNull() : JToken.FromObject(until.Value.ToString("O")),
@@ -159,6 +167,8 @@ namespace Horizun.Server
                 ["registry"] = registry
             }.ToString(Formatting.Indented);
         }
+
+        private static string WorkflowText() => McpWorkflowCatalog.Document().ToString(Formatting.Indented);
 
         private static void RejectCursor(JObject prms)
         {

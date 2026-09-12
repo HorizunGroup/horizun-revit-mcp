@@ -1,0 +1,9 @@
+{
+  "requirement_set": {
+    "id": "horizun-planimetry-baseline",
+    "version": "0.1.0",
+    "title": "Generic planimetry baseline — complete project policy before use"
+  },
+  "units": "mm",
+  "rules": []
+}

@@ -20,7 +20,8 @@ namespace Horizun.Core.Tests
             {
                 string path = Path.Combine(d.FullName, "src", "Horizun.Revit", "Commands",
                                            "CreateElementsCommand.cs");
-                if (File.Exists(path)) return File.ReadAllText(path);
+                if (File.Exists(path)) return File.ReadAllText(path) + File.ReadAllText(
+                    Path.Combine(Path.GetDirectoryName(path), "CreateElementsProductionVerification.cs"));
                 d = d.Parent;
             }
             throw new InvalidOperationException("repository root not found");

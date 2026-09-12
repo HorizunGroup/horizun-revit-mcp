@@ -30,7 +30,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class CaptureViewCommand : ICommand
+    public sealed partial class CaptureViewCommand : ICommand
     {
         public string Name => "horizun_capture_view";
 
@@ -43,9 +43,13 @@ namespace Horizun.Revit.Commands
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
             string viewName; long viewId; int pixelSize;
+            JObject req;
             try
             {
-                JObject req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                req = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson);
+                var allowed = new HashSet<string>(TemporaryFields) { "view_name","view_id","pixel_size","target_document" };
+                foreach(var field in req.Properties()) if(!allowed.Contains(field.Name)) return CommandResult.Fail("Unknown capture argument: "+field.Name);
+                if(req["view_id"]!=null && req["view_name"]!=null) return CommandResult.Fail("Specify view_id or view_name, not both.");
                 viewName = req.Value<string>("view_name");
                 viewId = req.Value<long?>("view_id") ?? 0;
                 pixelSize = req.Value<int?>("pixel_size") ?? 1600;
@@ -100,7 +104,8 @@ namespace Horizun.Revit.Commands
             }
 
             string dir = Path.Combine(Path.GetTempPath(), "Horizun", "captures",
-                                      DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+                                      Guid.NewGuid().ToString("N"));
+            if (HasTemporaryOptions(req)) return CaptureTemporary(app, req, view);
             string stem = Path.Combine(dir, "view");
             try { Directory.CreateDirectory(dir); }
             catch (Exception ex) { return CommandResult.Fail("Could not create the output folder: " + ex.Message); }
@@ -173,6 +178,7 @@ namespace Horizun.Revit.Commands
                 pixel_height = height > 0 ? (int?)height : null,
                 requested_pixel_size = pixelSize,
                 sha256 = Sha256(produced),
+                spatial = CaptureSpatial(view, width, height),
                 note = width > 0 && width != pixelSize
                     ? "Revit fitted the image to the view's aspect; the width it produced (" + width +
                       ") is not the pixel_size requested (" + pixelSize + ")."

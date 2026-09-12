@@ -63,6 +63,8 @@ namespace Horizun.Revit.Core
         /// apply overwrites a change nobody in this conversation ever saw.
         /// </summary>
         public IDictionary<string, string> BeforeValues;
+        public IDictionary<string, string> ProposedValues;
+        public long? ElementId;
 
         /// <summary>
         /// Geometry fingerprint where the plan depends on shape or position - a rounded
@@ -186,6 +188,7 @@ namespace Horizun.Revit.Core
             sb.Append(e.Level ?? "").Append(F);
             sb.Append(e.HostUniqueId ?? "").Append(F);
             sb.Append(e.GeometryFingerprint ?? "").Append(F);
+            if (e.ElementId.HasValue) sb.Append("element_id=").Append(e.ElementId.Value.ToString(CultureInfo.InvariantCulture)).Append(F);
 
             if (e.BeforeValues != null && e.BeforeValues.Count > 0)
             {
@@ -198,6 +201,13 @@ namespace Horizun.Revit.Core
                     if (!e.BeforeValues.TryGetValue(k, out v)) v = null;
                     sb.Append(k).Append('=').Append(v ?? " null").Append(R);
                 }
+            }
+            if (e.ProposedValues != null && e.ProposedValues.Count > 0)
+            {
+                var proposed = new Newtonsoft.Json.Linq.JObject();
+                var keys = new List<string>(e.ProposedValues.Keys); keys.Sort(StringComparer.Ordinal);
+                foreach (string key in keys) proposed[key] = e.ProposedValues[key];
+                sb.Append(F).Append("proposed=").Append(proposed.ToString(Newtonsoft.Json.Formatting.None));
             }
             return sb.ToString();
         }

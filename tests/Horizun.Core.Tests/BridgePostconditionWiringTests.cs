@@ -92,7 +92,9 @@ namespace Horizun.Core.Tests
         [Fact]
         public void Python_permission_ui_follows_the_revit_language_with_english_fallback()
         {
-            string ribbon = Source("src/Horizun.Revit/Ribbon.cs");
+            // The language decision moved to RibbonText (one place for every ribbon word);
+            // the facts below hold across the two files.
+            string ribbon = Source("src/Horizun.Revit/Ribbon.cs") + Source("src/Horizun.Revit/RibbonText.cs");
             string request = Source("src/Horizun.Revit/Commands/RequestPythonAccessCommand.cs");
 
             Assert.Contains("ControlledApplication.Language", ribbon);

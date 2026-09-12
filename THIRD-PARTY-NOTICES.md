@@ -22,6 +22,7 @@ lawyer, and nothing here should be read as an answer to it.
 | --- | --- | --- | --- |
 | Newtonsoft.Json | 13.0.3 | MIT | JSON on the pipe and in every reply. Revit ships its own copy, but the add-in cannot rely on which version. |
 | IronPython | 3.4.2 | Apache-2.0 | The scripting escape hatch. |
+| PdfPig (UglyToad.PdfPig assemblies) | 0.1.13 | Apache-2.0 | Reopens exported PDFs to verify page counts and page geometry. [Package, license and source](https://www.nuget.org/packages/PdfPig/0.1.13). |
 | IronPython.Modules | 3.4.2 | Apache-2.0 | Ships with IronPython; required by the standard library. |
 | IronPython.SQLite | 3.4.2 | Apache-2.0 | Ships with IronPython. Contains a managed port of SQLite (public domain). |
 | IronPython.Wpf | 3.4.2 | Apache-2.0 | Ships with IronPython. |

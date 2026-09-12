@@ -397,6 +397,29 @@ try {
         if (Test-Path -LiteralPath $installedClientTools) { Remove-Item $installedClientTools -Recurse -Force }
         Copy-Item (Join-Path $serverStage 'client-tools') $installedClientTools -Recurse -Force
 
+        # A pre-release source installer once left the Claude Desktop package
+        # under server\integrations\. That directory is not executable payload,
+        # but retaining it inside the server root makes exact verification either
+        # lie or fail. Preserve it under the user integration state root instead;
+        # the move is reversible with the rest of this transaction.
+        $legacyServerIntegrations = Join-Path $serverInstall 'integrations'
+        if (Test-Path -LiteralPath $legacyServerIntegrations -PathType Container) {
+            $integrationStateRoot = Join-Path $env:LOCALAPPDATA 'Horizun\integrations'
+            New-Item -ItemType Directory -Path $integrationStateRoot -Force | Out-Null
+            $relocatedIntegrations = Join-Path $integrationStateRoot `
+                ('legacy-server-payload-' + [guid]::NewGuid().ToString('N'))
+            $undo.Add([pscustomobject]@{
+                What = 'legacy server integration package location'
+                Action = {
+                    if (Test-Path -LiteralPath $relocatedIntegrations) {
+                        Move-Item -LiteralPath $relocatedIntegrations -Destination $legacyServerIntegrations -Force
+                    }
+                }.GetNewClosure()
+            })
+            Move-Item -LiteralPath $legacyServerIntegrations -Destination $relocatedIntegrations -Force
+            Write-Host ("    moved legacy extension package outside server payload: {0}" -f $relocatedIntegrations)
+        }
+
         # Release Setup installs dist/stage/manifest.json. A source build needs
         # the same on-disk identity contract, generated from the exact staged
         # bytes in this run, so verify-install can prove server + selected Revit

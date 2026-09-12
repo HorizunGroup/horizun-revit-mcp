@@ -34,6 +34,18 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Disabled_retention_can_skip_inventory_on_the_mutation_path()
+        {
+            string record = Record("unrelated", "invalid JSON must remain untouched", 100);
+            var report = DurableStoreRetention.Apply(_root, DurableStoreKind.Idempotency,
+                Settings(), _now, inventoryWhenDisabled: false);
+            Assert.Equal(0, report.FilesSeen);
+            Assert.Equal(0, report.RemovedFiles);
+            Assert.Contains("not measured", report.Note);
+            Assert.Equal("invalid JSON must remain untouched", File.ReadAllText(record));
+        }
+
+        [Fact]
         public void Jobs_remove_only_old_finished_records()
         {
             string finished = Record("finished", "{\"event\":\"start\"}\n{\"event\":\"finish\"}", 40);

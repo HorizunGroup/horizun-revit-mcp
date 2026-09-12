@@ -253,6 +253,12 @@ namespace Horizun.Revit.Transport
                 {
                     reply = PipeEnvelope.Of(id, false, null, "No command given.");
                 }
+                else if (string.Equals(command, "__horizun_request_status", StringComparison.Ordinal))
+                {
+                    var status=_dispatcher.ObserveRequest((string)req["params"]?["wire_id"]);
+                    status["python_runtime"]=RuntimeWarmup.Python.Snapshot();
+                    reply=PipeEnvelope.Of(id,true,status,null);
+                }
                 else if (string.Equals(command, "__horizun_cancel_queued", StringComparison.Ordinal))
                 {
                     string target = (string)req["params"]?["wire_id"];

@@ -3,8 +3,9 @@
   <!--
     Tests for the host-resident catalog leaf resolver. It LINKS the single source
     file CatalogLookup.cs rather than referencing the server exe, so the pure leaf
-    rule and its sha256 provenance can be proven in isolation — the test build
-    depends only on this file and Newtonsoft.Json, nothing else in the server.
+    rule and its sha256 provenance can be proven in isolation. Wire tests also
+    build the server executable, without referencing its assembly, so an old
+    local binary cannot stand in for the current source.
   -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
@@ -16,6 +17,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\Horizun.Server\Horizun.Server.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The MCP `instructions` string. Its own file precisely so it can be asserted:
          it is the only channel the protocol gives a server for telling a client agent
          how to behave, so trimming it has to fail a test. -->
@@ -25,6 +30,7 @@
     <Compile Include="..\..\src\Horizun.Server\ProtocolNegotiation.cs" Link="ProtocolNegotiation.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpSession.cs" Link="McpSession.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpResources.cs" Link="McpResources.cs" />
+    <Compile Include="..\..\src\Horizun.Server\McpWorkflowCatalog.cs" Link="McpWorkflowCatalog.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpLogging.cs" Link="McpLogging.cs" />

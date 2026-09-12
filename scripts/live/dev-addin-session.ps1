@@ -56,25 +56,70 @@ $devManifest = Join-Path $addins 'Horizun-dev-session.addin'
 $devDir = Join-Path $DevRoot "$Year\Horizun"
 
 # That Revit must be closed: a manifest is read at startup and a DLL in use
-# cannot be replaced. Other years are not our business here.
-$running = @(Get-Process Revit -ErrorAction SilentlyContinue | Where-Object {
-    try { $_.MainModule.FileName -like "*\Revit $Year\*" } catch { $false } })
-if ($running.Count -gt 0) { throw "Revit $Year is running (pid $($running[0].Id)). Close it first; other Revit years are left alone." }
+# cannot be replaced. Other years are not our business here - but a Revit whose
+# YEAR COULD NOT BE DETERMINED might be this one, and "its MainModule threw" is
+# not "there is no Revit". The old filter swallowed that failure inside a
+# try/catch and the process simply left the list, which is how a manifest could
+# be renamed under a running Revit. The classifier lives in
+# year-matrix.session.ps1 so this script and the driver cannot disagree about it,
+# and it is re-checked here even when the driver already checked: this script is
+# also run by hand, minutes later.
+. (Join-Path $PSScriptRoot 'year-matrix.session.ps1')
+$probes = New-HzMatrixProbes -Repo $repo -ServerExe $null
+$allowed = Test-HzManifestChangeAllowed -Probes $probes -Year $Year
+if (-not $allowed.ok) {
+    throw ($allowed.why + " Close it first - normally, by whoever owns it; this script neither kills a process nor " +
+           "escalates to identify one. Other Revit years are left alone and nothing was changed.")
+}
 
 if ($Restore) {
-    if (Test-Path -LiteralPath $devManifest) { Remove-Item -LiteralPath $devManifest -Force; Write-Host "[dev-session] removed $devManifest" }
-    if (Test-Path -LiteralPath $aside) {
-        if (Test-Path -LiteralPath $installed) { throw "Both $installed and $aside exist; resolve by hand - nothing was changed." }
-        Rename-Item -LiteralPath $aside -NewName 'Horizun.addin'
-        Write-Host "[dev-session] restored $installed"
-    } else {
-        Write-Host "[dev-session] nothing to restore for $Year"
+    # VALIDATE BEFORE TOUCHING ANYTHING. The old order removed the development
+    # manifest FIRST and only then discovered that both Horizun.addin and the
+    # aside copy existed - so it threw "resolve by hand" having already deleted
+    # the manifest that was loading the add-in, and the year was left with none.
+    if ((Test-Path -LiteralPath $aside) -and (Test-Path -LiteralPath $installed)) {
+        Write-Host ("[dev-session] CONFLICT: both $installed and $aside exist. NOTHING WAS CHANGED - resolve by hand: " +
+                    "the aside copy is the one this script renamed, so the question is which of the two is the " +
+                    "installed manifest, and that is not a guess to make for you.") -ForegroundColor Red
+        exit 3
     }
+    $changed = @(); $pending = @()
+    if (Test-Path -LiteralPath $devManifest) {
+        try { Remove-Item -LiteralPath $devManifest -Force -ErrorAction Stop; $changed += "removed $devManifest" }
+        catch { $pending += "could not remove $devManifest : $($_.Exception.Message)" }
+    }
+    if (Test-Path -LiteralPath $aside) {
+        try { Rename-Item -LiteralPath $aside -NewName 'Horizun.addin' -ErrorAction Stop; $changed += "restored $installed" }
+        catch { $pending += "could not rename $aside back to Horizun.addin : $($_.Exception.Message)" }
+    }
+    elseif (-not (Test-Path -LiteralPath $installed)) {
+        # Not an error HERE: this script cannot know whether the year ever had an
+        # installed manifest. It says so, and the caller that holds the snapshot
+        # from before the session decides whether that is a finding.
+        Write-Host ("[dev-session] NOTE: no aside copy and no $installed - this year has no installed manifest. " +
+                    "Nothing was invented; a caller that expected one must treat this as a finding.") -ForegroundColor Yellow
+    }
+    foreach ($c in $changed) { Write-Host "[dev-session] $c" }
+    if ($pending.Count -gt 0) {
+        # EXACTLY what changed and what is still pending, so a partial failure is
+        # recoverable by hand instead of being a mystery.
+        foreach ($p in $pending) { Write-Host "[dev-session] PENDING: $p" -ForegroundColor Red }
+        Write-Host ("[dev-session] PARTIAL RESTORE. Changed: " +
+                    $(if ($changed.Count -gt 0) { $changed -join '; ' } else { 'nothing' })) -ForegroundColor Red
+        exit 4
+    }
+    if ($changed.Count -eq 0) { Write-Host "[dev-session] nothing to restore for $Year" }
     exit 0
 }
 
 # ---- Enable -----------------------------------------------------------------
+# Both refusals BEFORE the first file is written: the copy and the signature are
+# wasted work if the manifest cannot be swapped afterwards, and a half-prepared
+# development directory invites a second run to think it is ready.
 if (Test-Path -LiteralPath $devManifest) { throw "A development session is already enabled for $Year ($devManifest). Run -Restore first." }
+if ((Test-Path -LiteralPath $installed) -and (Test-Path -LiteralPath $aside)) {
+    throw "$aside already exists from an earlier session; resolve by hand - nothing was changed."
+}
 $bin = Join-Path $repo "src\Horizun.Revit\bin\$Config"
 $dll = Join-Path $bin 'Horizun.Revit.dll'
 if (-not (Test-Path -LiteralPath $dll)) { throw "No build at $dll. Build with: dotnet build src/Horizun.Revit/Horizun.Revit.csproj -c $Config -p:RevitYear=$Year" }
@@ -107,6 +152,8 @@ if ($cert.Count -eq 1) {
 }
 
 if (Test-Path -LiteralPath $installed) {
+    # The conflict was already refused at the top, before anything was copied;
+    # re-checked here because the rename is the irreversible half.
     if (Test-Path -LiteralPath $aside) { throw "$aside already exists from an earlier session; resolve by hand - nothing was changed." }
     Rename-Item -LiteralPath $installed -NewName 'Horizun.addin.dev-session-aside'
     Write-Host "[dev-session] set aside $installed"

@@ -74,6 +74,7 @@ namespace Horizun.Revit.Core
                     int recentCount = (int)Math.Min(ring.Calls, RingSize);
                     long recentTotal = 0;
                     for (int i = 0; i < recentCount; i++) recentTotal += ring.Samples[i];
+                    long[] ordered = ring.Samples.Take(recentCount).OrderBy(x => x).ToArray();
                     tools[pair.Key] = new JObject
                     {
                         ["calls"] = ring.Calls,
@@ -82,6 +83,9 @@ namespace Horizun.Revit.Core
                         ["max_ms"] = ring.MaxMs,
                         ["recent_avg_ms"] = recentCount == 0 ? 0 : recentTotal / recentCount,
                         ["recent_window"] = recentCount
+                        , ["recent_p50_ms"] = ordered.Length == 0 ? 0 : ordered[(int)Math.Ceiling(ordered.Length * .50) - 1]
+                        , ["recent_p95_ms"] = ordered.Length == 0 ? 0 : ordered[(int)Math.Ceiling(ordered.Length * .95) - 1]
+                        , ["percentile_method"] = "nearest-rank over recent_window, not lifetime"
                     };
                 }
                 return new JObject

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // A stdio MCP server. It reads newline-delimited JSON-RPC from stdin, answers the
@@ -408,11 +408,12 @@ namespace Horizun.Server
                 {
                     ["event"] = "tool_started", ["tool"] = toolName, ["request_id"] = key
                 }, _writer.Notify);
-                using (var heartbeat = StartHeartbeat(progressToken, toolName, clock, cts.Token))
+                JObject bridgeObservation=null;
+                using (var heartbeat = StartHeartbeat(progressToken, toolName, clock, cts.Token, observation:()=>Volatile.Read(ref bridgeObservation)))
                 {
                     try
                     {
-                        JToken result = CallTool(prms, cts.Token);
+                        JToken result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status));
                         if (cts.IsCancellationRequested)
                         {
                             // Two events race after cancellation: PipeClient may observe
@@ -547,12 +548,12 @@ namespace Horizun.Server
 
         /// <summary>
         /// A heartbeat while a call waits for Revit, only when the caller asked for one.
-        /// It may be queued or executing; the stdio half cannot observe that boundary, so
-        /// it names both instead of calling queued work "running". No invented percentage.
+        /// Request-specific observations arrive over a separate authenticated control
+        /// connection; until one arrives the state remains unknown. No invented percentage.
         /// </summary>
         private static IDisposable StartHeartbeat(JToken progressToken, string tool,
                                                   System.Diagnostics.Stopwatch clock, CancellationToken ct,
-                                                  string relatedTaskId = null)
+                                                  string relatedTaskId = null, Func<JObject> observation = null)
         {
             if (progressToken == null || progressToken.Type == JTokenType.Null) return new NoHeartbeat();
 
@@ -571,8 +572,8 @@ namespace Horizun.Server
                             ["progress"] = clock.ElapsedMilliseconds / 1000,
                             ["message"] = "'" + tool + "' is still waiting for Revit to answer (" +
                                           clock.ElapsedMilliseconds / 1000 + " s). It may be waiting in the FIFO " +
-                                          "queue or executing on Revit's UI thread; this side cannot distinguish " +
-                                          "those states. No percentage is reported because Revit does not report one."
+                                          "queue or executing on Revit's UI thread; no request-specific observation " +
+                                          "is available yet. No percentage is reported because Revit does not report one."
                         };
                         if (!string.IsNullOrWhiteSpace(relatedTaskId))
                             progress["_meta"] = new JObject
@@ -580,6 +581,13 @@ namespace Horizun.Server
                                 ["io.modelcontextprotocol/related-task"] =
                                     new JObject { ["taskId"] = relatedTaskId }
                             };
+                        JObject measured=observation?.Invoke();
+                        if(measured!=null)
+                        {
+                            progress["message"]="'"+tool+"': bridge state="+(string)measured["state"]+", elapsed="+clock.ElapsedMilliseconds/1000+" s; Python runtime="+(string)measured["python_runtime"]?["state"]+". No completion percentage is inferred.";
+                            if(!(progress["_meta"] is JObject)) progress["_meta"]=new JObject();
+                            progress["_meta"]["horizun_bridge"]=measured.DeepClone();
+                        }
                         _writer.Notify("notifications/progress", progress);
                     }
                 }
@@ -718,7 +726,9 @@ namespace Horizun.Server
             catch { return null; }
         }
 
-        private static JToken CallTool(JObject prms, CancellationToken ct)
+        private static JToken CallTool(JObject prms, CancellationToken ct) => CallTool(prms,ct,null);
+
+        private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe)
         {
             // -32602 is INVALID PARAMS, and each of these is a different way of being
             // invalid. They used to collapse: a missing name became "Unknown tool: ''",
@@ -910,13 +920,19 @@ namespace Horizun.Server
             {
                 reply = PipeClient.Send(d, def.Command, args,
                                         def.Command == "horizun_health" ? HealthTimeoutMs : CommandTimeoutMs,
-                                        ct);
+                                        ct,observe);
             }
             catch (Exception ex)
             {
                 Log.Error(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") FAILED in " +
                           clock.ElapsedMilliseconds + " ms", ex);
-                return TextResult("Error talking to Revit: " + ex.Message, true);
+                return ErrorResult("Error talking to Revit: " + ex.Message, null, null,
+                    ex.Data["horizun_transport_detail"] as JObject ?? new JObject
+                    {
+                        ["code"] = "revit_transport_failed", ["tool"] = name,
+                        ["exception_type"] = ex.GetType().FullName, ["exception_message"] = ex.Message,
+                        ["write_started"] = null, ["changes_applied"] = null, ["transaction_status"] = "unknown"
+                    });
             }
 
             bool ok = reply["success"] != null && reply["success"].Type == JTokenType.Boolean && (bool)reply["success"];

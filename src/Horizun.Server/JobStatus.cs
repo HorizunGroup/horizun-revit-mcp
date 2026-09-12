@@ -197,6 +197,7 @@ namespace Horizun.Server
             var stepOrder = new List<string>();
             int stepsOmitted = 0;
             bool seenStart = false, seenRunning = false, seenResult = false, terminalEventSeen = false;
+            bool resumeGuardPresent = false;
 
             try
             {
@@ -231,6 +232,9 @@ namespace Horizun.Server
                         if (seenStart || seenRunning || seenResult || string.IsNullOrWhiteSpace(candidateTool))
                         { semanticInvalidRecords++; continue; }
                         seenStart = true;
+                        resumeGuardPresent = o["resume_guard"]?["schema"]?.Type == JTokenType.Integer &&
+                            (int)o["resume_guard"]["schema"] == 1 && o["resume_guard"]?["durable_start_required"]?.Type == JTokenType.Boolean &&
+                            (bool)o["resume_guard"]["durable_start_required"];
                         tool = candidateTool; startedAt = eventAt;
                         // The pid of the Revit that opened this record. Absent in records
                         // written before it was stamped; a 0 means the writer could not
@@ -532,6 +536,14 @@ namespace Horizun.Server
                 ["steps"] = new JArray(stepOrder.Select(k => (JToken)stepsByKey[k])),
                 ["step_count"] = stepOrder.Count,
                 ["steps_omitted"] = stepsOmitted,
+                ["recovery"] = new JObject
+                {
+                    ["resume_candidate"] = resumeGuardPresent && (state == "not_started" || (state == "queued" && processAlive == false)),
+                    ["action"] = state == "ok" ? "read_result" :
+                        (resumeGuardPresent && (state == "not_started" || (state == "queued" && processAlive == false))) ? "resume_never_started" :
+                        ((state == "queued" || state == "running") && processAlive != false) ? "poll_same_job" : "inspect_before_retry",
+                    ["note"] = "Only never-started jobs may use submit_job.resume_from_job_id with idempotency_key=resume:<job_id>. The submit guard rechecks the record, document and arguments. Checkpoints are progress, not permission to repeat writes."
+                },
                 ["what_this_means"] = Explain(state, seenResult, pid, processAlive)
             };
         }

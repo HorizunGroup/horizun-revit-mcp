@@ -25,7 +25,24 @@
          same reason Reconcile is: it decides which caller gets which result, and
          that decision must be provable without a Revit in the room. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ProgressiveResponse.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FamilyRecipe.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLayoutRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationVisibility.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PdfPrintPolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPreflight.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPlan.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPdf.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\AsyncResumeGuard.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WorkflowPlan.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PlanPreview.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RequestGate.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PixelCalibration.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RuntimeWarmup.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRules.cs" />
@@ -274,6 +291,9 @@
          not say: an empty checklist is not a pass, and a property that could not be
          read is not agreement. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PostconditionCheck.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceSnapshot.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GeometryInput.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\SourceTrace.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Transport\PipeEnvelope.cs" />
     <!-- Comment/string masking for the typed-overlap advisory. A live run advised a
          script whose only mention of the API was in a comment. -->
@@ -495,6 +515,7 @@
          Revit itself ships). Pinned deliberately: a mismatch here would test a different
          serializer than the one that runs. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="PdfPig" Version="0.1.13" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />

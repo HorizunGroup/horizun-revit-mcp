@@ -71,12 +71,13 @@ namespace Horizun.Revit.Core
             DurableStoreKind kind,
             Func<string, string> setting = null,
             DateTime? utcNow = null,
-            string protectedPath = null)
+            string protectedPath = null,
+            bool inventoryWhenDisabled = true)
         {
             if (kind != DurableStoreKind.Jobs)
-                return ApplyUnlocked(directory, kind, setting, utcNow, protectedPath);
+                return ApplyUnlocked(directory, kind, setting, utcNow, protectedPath, inventoryWhenDisabled);
             using (AcquireJobStoreMutex())
-                return ApplyUnlocked(directory, kind, setting, utcNow, protectedPath);
+                return ApplyUnlocked(directory, kind, setting, utcNow, protectedPath, inventoryWhenDisabled);
         }
 
         private static DurableStoreRetentionReport ApplyUnlocked(
@@ -84,7 +85,8 @@ namespace Horizun.Revit.Core
             DurableStoreKind kind,
             Func<string, string> setting,
             DateTime? utcNow,
-            string protectedPath)
+            string protectedPath,
+            bool inventoryWhenDisabled)
         {
             var report = new DurableStoreRetentionReport();
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory)) return report;
@@ -107,6 +109,11 @@ namespace Horizun.Revit.Core
             if (days == 0 && maxBytes == 0)
             {
                 report.Note = prefix + " retention keeps records forever (both limits are 0).";
+                if (!inventoryWhenDisabled)
+                {
+                    report.Note += " Inventory not requested; counts are not measured.";
+                    return report;
+                }
                 return InventoryOnly(directory, kind, protectedPath, report, now);
             }
 

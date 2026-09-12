@@ -220,7 +220,8 @@ namespace Horizun.Core.Tests
 
             Assert.NotNull(row["point"]);
             Assert.Null(row["profile"]);
-            Assert.Equal(3, ((JArray)row["point"]).Count);
+            // Room placement consumes XY; elevation belongs to its resolved level.
+            Assert.Equal(2, ((JArray)row["point"]).Count);
         }
 
         private static double SignedArea(List<CadPoint> ring)

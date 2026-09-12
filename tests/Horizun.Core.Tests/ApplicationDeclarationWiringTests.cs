@@ -25,6 +25,16 @@ namespace Horizun.Core.Tests
 {
     public class ApplicationDeclarationWiringTests
     {
+        [Fact]
+        public void Background_job_admission_uses_a_snapshot_and_never_reads_the_Revit_API()
+        {
+            string src = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Commands", "SubmitJobCommand.cs"));
+            Assert.DoesNotContain("ActiveUIDocument", src);
+            Assert.DoesNotContain("app.Application", src);
+            Assert.DoesNotContain("DocumentGate.IdentityOf", src);
+            Assert.Contains("_documentSnapshot()", src);
+        }
+
         private static string RepoRoot()
         {
             var d = new DirectoryInfo(AppContext.BaseDirectory);
@@ -501,6 +511,15 @@ namespace Horizun.Core.Tests
             int allowlistEnd = src.IndexOf("};", src.IndexOf("HashSet<string> Allowed", StringComparison.Ordinal),
                                            StringComparison.Ordinal);
             string afterAllowlist = src.Substring(allowlistEnd);
+            // Workflow expansion now invokes a read-only planner. This is not an
+            // applied/verified decision; keep the execution-declaration invariant
+            // strict outside that explicit, permission-checked preflight callback.
+            int expansion = afterAllowlist.IndexOf("request = WorkflowPlan.Expand(", StringComparison.Ordinal);
+            int expansionEnd = afterAllowlist.IndexOf("JArray actions = request", expansion, StringComparison.Ordinal);
+            string planner = afterAllowlist.Substring(expansion, expansionEnd - expansion);
+            Assert.Contains("ChildPermitted(\"horizun_plan_views\"", planner);
+            Assert.Contains("_resolve(\"horizun_plan_views\")", planner);
+            afterAllowlist = afterAllowlist.Remove(expansion, expansionEnd - expansion);
 
             // The command naming ITSELF is identity, not a decision about another tool.
             var toolNamesInLogic = Regex.Matches(afterAllowlist, "\"horizun_[a-z_]+\"")

@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - one composable query instead of a tool per question.
 // -----------------------------------------------------------------------------
 using System;
@@ -21,15 +21,30 @@ namespace Horizun.Revit.Commands
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            var timer = System.Diagnostics.Stopwatch.StartNew();
             JObject request;
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
+            try { request = QueryResponseOptions.Prepare(request); }
+            catch (ArgumentException ex) { return CommandResult.Fail(ex.Message); }
+            string responseMode = request.Value<string>("response_mode") ?? "full";
 
             Document host = app.ActiveUIDocument?.Document;
             if (host == null) return CommandResult.Fail("No active Revit document.");
 
             bool includeLinks = request["include_links"] == null || request.Value<bool>("include_links");
             string scope = (request.Value<string>("scope") ?? "model").ToLowerInvariant();
+            // Conservative eligibility: a workset or view visibility toggle can be
+            // non-transactional. Federated and workshared queries always remeasure.
+            bool reuse = request.Value<string>("cache_mode") == "reuse";
+            bool cacheEligible = reuse && QueryCacheLifecycle.Ready && !includeLinks && scope == "model" && !host.IsWorkshared;
+            long cacheEpoch = QueryCacheLifecycle.Cache.Epoch;
+            var cacheRequest = (JObject)request.DeepClone();
+            cacheRequest.Remove("cache_mode"); cacheRequest.Remove("include_diagnostics");
+            string cacheKey = cacheEligible ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(host).ToString(CultureInfo.InvariantCulture) + ":" +
+                RequestFingerprint.Sha256Hex(RequestFingerprint.Canonical(cacheRequest)) : null;
+            if (cacheEligible && QueryCacheLifecycle.Cache.TryGet(cacheKey, cacheEpoch, out JObject cached))
+                return Finish(cached, request, timer, 0, "hit", null, cacheEpoch);
             if (scope != "model" && scope != "current_view" && scope != "view")
                 return CommandResult.Fail("scope must be model, current_view or view.");
             if (includeLinks && scope != "model")
@@ -64,9 +79,10 @@ namespace Horizun.Revit.Commands
             {
                 var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
                 {
-                    "unique_id", "category", "name", "family", "type", "type_id", "level",
+                    "source_reference", "unique_id", "category", "name", "family", "type", "type_id", "level",
                     "is_element_type", "source_kind", "source_model", "link_instance_id",
-                    "host_id", "host_category"
+                    "host_id", "host_category",
+                    "is_view_template", "view_template_id", "view_type"
                 };
                 foreach (string f in returnFields)
                     if (!known.Contains(f))
@@ -74,6 +90,7 @@ namespace Horizun.Revit.Commands
                                                   string.Join(", ", known.OrderBy(x => x)) + ". element_id is always present.");
                 fieldSet = new HashSet<string>(returnFields, StringComparer.OrdinalIgnoreCase);
             }
+            if (responseMode == "summary") fieldSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // ---- Aggregation, requested. Measured need (field report 2026-08-04): every
             // query in a real session ended in group-and-count, none possible server-side,
@@ -127,12 +144,14 @@ namespace Horizun.Revit.Commands
 
             int maxRows = Math.Max(1, Math.Min(500, request.Value<int?>("max_rows") ?? 100));
             var matched = new List<Row>();
+            var summary = responseMode == "summary" && !includeMep ? new QuerySummaryAccumulator() : null;
             var unreadable = new JArray();
             int unreadableTotal = 0;
+            long collectionStartMs = timer.ElapsedMilliseconds;
 
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
                     predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
+                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
 
             if (includeLinks)
             {
@@ -164,8 +183,27 @@ namespace Horizun.Revit.Commands
                     }
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal);
+                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
                 }
+            }
+
+            long collectMs = timer.ElapsedMilliseconds - collectionStartMs;
+            string cacheStatus = !reuse ? "bypass" : cacheEligible ? "miss" : "ineligible";
+            if (summary != null)
+            {
+                JObject summaryCoverage = FederatedVisibility.Measure(host, includeLinks);
+                var summaryResult = new JObject
+                {
+                    ["document"] = host.Title, ["scope"] = scope,
+                    ["view_id"] = viewId == null ? JValue.CreateNull() : new JValue(Rid.Value(viewId)),
+                    ["include_links"] = includeLinks, ["matched_total"] = summary.Count,
+                    ["coverage_complete"] = summaryCoverage.Value<bool>("coverage_complete") && unreadableTotal == 0,
+                    ["unreadable_total"] = unreadableTotal, ["unreadable_shown"] = unreadable.Count,
+                    ["unreadable_truncated"] = unreadableTotal > unreadable.Count, ["unreadable"] = unreadable,
+                    ["federated_coverage"] = summaryCoverage, ["summary"] = summary.ToJson()
+                };
+                return Finish(QueryResponseOptions.Shape(summaryResult, responseMode), request, timer, collectMs,
+                              cacheStatus, cacheKey, cacheEpoch);
             }
 
             matched = matched.OrderBy(r => r.SourceKind, StringComparer.Ordinal)
@@ -189,7 +227,7 @@ namespace Horizun.Revit.Commands
             if (groupBy.Count > 0)
             {
                 JObject aggCoverage = FederatedVisibility.Measure(host, includeLinks);
-                return CommandResult.Ok(new JObject
+                return Finish(new JObject
                 {
                     ["document"] = host.Title,
                     ["scope"] = scope,
@@ -207,7 +245,7 @@ namespace Horizun.Revit.Commands
                     ["unreadable"] = unreadable,
                     ["federated_coverage"] = aggCoverage,
                     ["note"] = "Aggregated server-side; no rows were returned. Drop group_by to page through rows."
-                });
+                }, request, timer, collectMs, cacheStatus, cacheKey, cacheEpoch);
             }
 
             List<Row> page = matched.Skip(offset).Take(maxRows).ToList();
@@ -257,7 +295,31 @@ namespace Horizun.Revit.Commands
                     ["open_connectors"] = mepOpenTotal
                 };
             }
-            return CommandResult.Ok(queryResult);
+            return Finish(QueryResponseOptions.Shape(queryResult, responseMode), request, timer, collectMs,
+                          cacheStatus, cacheKey, cacheEpoch);
+        }
+
+        private static CommandResult Finish(JObject result, JObject request, System.Diagnostics.Stopwatch timer,
+                                            long collectMs, string cacheStatus, string cacheKey, long epoch)
+        {
+            // Never cache an incomplete measurement. Diagnostic metadata describes
+            // this invocation, not the original miss, and is not stored in the cache.
+            if (cacheKey != null && result.Value<bool?>("coverage_complete") == true)
+                QueryCacheLifecycle.Cache.Store(cacheKey, epoch, result);
+            if (request.Value<bool?>("include_diagnostics") == true)
+            {
+                long measuredMs = timer.ElapsedMilliseconds;
+                int responseBytes = Encoding.UTF8.GetByteCount(result.ToString(Formatting.None));
+                result["query_diagnostics"] = new JObject
+                {
+                    ["cache"] = cacheStatus, ["collect_ms"] = collectMs,
+                    ["prepare_shape_and_cache_ms"] = Math.Max(0, measuredMs - collectMs),
+                    ["command_ms"] = measuredMs, ["data_bytes_before_diagnostics"] = responseBytes,
+                    ["scope"] = "command only; excludes transport and queue wait",
+                    ["cache_eligibility"] = "opt-in, host-only, non-workshared, model scope; 5-second maximum age"
+                };
+            }
+            return CommandResult.Ok(result);
         }
 
         private static void Collect(Document source, string sourceKind, string sourceName, long? linkId,
@@ -265,12 +327,16 @@ namespace Horizun.Revit.Commands
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
                                     double coordinateScale, bool includeTypes, bool includeMep, HashSet<string> fields,
                                     bool compactParameters, List<Row> rows, JArray unreadable,
-                                    ref int unreadableTotal)
+                                    ref int unreadableTotal, QuerySummaryAccumulator summary = null)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
             FilteredElementCollector collector = viewId == null
                 ? new FilteredElementCollector(source)
                 : new FilteredElementCollector(source, viewId);
+            // Native quick filtering avoids materialising every category in managed
+            // code. Keep the TextNoteType supplement below for its special category.
+            if (categoryIds != null && categoryIds.Count > 0)
+                collector.WherePasses(new ElementMulticategoryFilter(categoryIds.Select(Rid.Make).ToList()));
             // Revit refuses extraction from a collector with no native filter, even
             // though the LINQ Cast/Where compiles. Apply a real ElementFilter before
             // iteration. The OR is an explicit pass over types + instances when the
@@ -309,7 +375,7 @@ namespace Horizun.Revit.Commands
                 candidates = byId;
             }
 
-            bool supplementTextTypes = includeTypes && RequestsTextNotes(categories);
+            bool supplementTextTypes = includeTypes && RequestsTextNotes(categories) && request["element_ids"] == null;
             if (supplementTextTypes)
             {
                 IEnumerable<Element> textTypes = new FilteredElementCollector(source)
@@ -318,6 +384,8 @@ namespace Horizun.Revit.Commands
                     .GroupBy(e => Rid.Value(e.Id)).Select(g => g.First());
             }
 
+            var typeCache = new Dictionary<long, Element>();
+            var levelCache = new Dictionary<long, string>();
             foreach (Element element in candidates)
             {
                 long id = Rid.Value(element.Id);
@@ -329,11 +397,18 @@ namespace Horizun.Revit.Commands
                         if (categoryId == null || !categoryIds.Contains(categoryId.Value)) continue;
                     }
 
-                    Element type = element is ElementType ? element : source.GetElement(element.GetTypeId());
-                    string elementName = Safe(() => element.Name);
+                    Element type = element as ElementType;
+                    if (type == null)
+                    {
+                        long typeId = Rid.Value(element.GetTypeId());
+                        if (!typeCache.TryGetValue(typeId, out type))
+                        { type = source.GetElement(element.GetTypeId()); typeCache[typeId] = type; }
+                    }
+                    string elementName = summary == null || !string.IsNullOrWhiteSpace(request.Value<string>("name"))
+                        ? Safe(() => element.Name) : null;
                     string family = type is ElementType et ? Safe(() => et.FamilyName) : null;
                     string typeName = type == null ? null : Safe(() => type.Name);
-                    string level = LevelName(source, element);
+                    string level = LevelName(source, element, levelCache);
 
                     if (!Contains(elementName, request.Value<string>("name")) ||
                         !Contains(family, request.Value<string>("family")) ||
@@ -349,7 +424,8 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
 
-                    Box elementBox = ElementBox(element, transform);
+                    Box elementBox = QueryResponseOptions.ReadBounds(queryBox != null, includeBox,
+                        () => ElementBox(element, transform));
                     if (queryBox != null)
                     {
                         if (elementBox == null)
@@ -365,8 +441,18 @@ namespace Horizun.Revit.Commands
                     // apart are not an answer. Everything else is the caller's choice -
                     // the identity and federation fields repeat identically down a page,
                     // and at ~741 measured characters per row they were most of the bill.
+                    if (summary != null)
+                    {
+                        summary.Add(CategoryName(source, element), level, sourceKind, sourceName, linkId, id);
+                        continue;
+                    }
                     var json = new JObject { ["element_id"] = id };
                     if (fields == null || fields.Contains("unique_id")) json["unique_id"] = Safe(() => element.UniqueId);
+                    if (fields != null && fields.Contains("source_reference"))
+                    {
+                        try { json["source_reference"] = SourceTraceStorage.Read(element); }
+                        catch(Exception ex) { json["source_reference_error"] = ex.Message; }
+                    }
                     string categoryName = CategoryName(source, element);
                     if (fields == null || fields.Contains("category")) json["category"] = categoryName;
                     if (fields == null || fields.Contains("name")) json["name"] = elementName;
@@ -375,6 +461,9 @@ namespace Horizun.Revit.Commands
                     if (fields == null || fields.Contains("type_id")) json["type_id"] = type == null ? JValue.CreateNull() : new JValue(Rid.Value(type.Id));
                     if (fields == null || fields.Contains("level")) json["level"] = level;
                     if (fields == null || fields.Contains("is_element_type")) json["is_element_type"] = element is ElementType;
+                    if (fields != null && fields.Contains("is_view_template")) json["is_view_template"] = element is View view ? (JToken)view.IsTemplate : JValue.CreateNull();
+                    if (fields != null && fields.Contains("view_template_id")) json["view_template_id"] = element is View templateView ? (JToken)Rid.Value(templateView.ViewTemplateId) : JValue.CreateNull();
+                    if (fields != null && fields.Contains("view_type")) json["view_type"] = element is View typedView ? (JToken)typedView.ViewType.ToString() : JValue.CreateNull();
                     if (fields == null || fields.Contains("source_kind")) json["source_kind"] = sourceKind;
                     if (fields == null || fields.Contains("source_model")) json["source_model"] = sourceName;
                     if (fields == null || fields.Contains("link_instance_id")) json["link_instance_id"] = linkId == null ? JValue.CreateNull() : new JValue(linkId.Value);
@@ -857,6 +946,7 @@ namespace Horizun.Revit.Commands
         {
             JObject copy = (JObject)request.DeepClone();
             copy.Remove("cursor"); copy.Remove("max_rows");
+            copy.Remove("cache_mode"); copy.Remove("include_diagnostics");
             return RequestFingerprint.Sha256Hex(RequestFingerprint.Canonical(copy));
         }
 
@@ -883,7 +973,7 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { error = "cursor is invalid: " + ex.Message + ". Re-run without cursor."; return false; }
         }
 
-        private static string LevelName(Document doc, Element element)
+        private static string LevelName(Document doc, Element element, Dictionary<long, string> cache)
         {
             // The order is: where the category ACTUALLY keeps its level, most specific
             // first. Walls carry theirs in WALL_BASE_CONSTRAINT and expose no LEVEL_PARAM
@@ -903,8 +993,10 @@ namespace Horizun.Revit.Commands
             if (p == null) return null;
             if (p.StorageType == StorageType.ElementId)
             {
+                long key = Rid.Value(p.AsElementId());
+                if (cache.TryGetValue(key, out string cached)) return cached;
                 Element level = doc.GetElement(p.AsElementId());
-                if (level != null) return Safe(() => level.Name);
+                if (level != null) { string name = Safe(() => level.Name); cache[key] = name; return name; }
             }
             return Safe(() => p.AsValueString());
         }

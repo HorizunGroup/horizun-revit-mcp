@@ -144,7 +144,8 @@ namespace Horizun.Revit.Core
         public static readonly string[] EditFields =
         {
             "set_type_id", "move_by", "prefix", "suffix", "above", "below",
-            "value_override", "eq", "lock", "segments", "reset_text_position"
+            "value_override", "eq", "lock", "segments", "reset_text_position",
+            "text_position", "text_offset", "leader", "leader_end"
         };
 
         public static string EditFieldsSentence()
@@ -162,6 +163,15 @@ namespace Horizun.Revit.Core
             "replace_references", "references", "set_references"
         };
 
+        /// <summary>
+        /// Fields that QUALIFY an edit without being one. distance_space says how a
+        /// text_offset is measured (model or paper, scaled by the view); on its own it
+        /// edits nothing, so an action carrying it without a text_offset is refused
+        /// by name rather than silently accepted. Found live (c7, 2026-09-08): the
+        /// contract published distance_space and the command refused it as unknown.
+        /// </summary>
+        public static readonly string[] ModifierFields = { "distance_space" };
+
         public enum ActionFieldClass
         {
             /// <summary>element_id - names the target, edits nothing.</summary>
@@ -169,6 +179,9 @@ namespace Horizun.Revit.Core
 
             /// <summary>A typed edit this command implements.</summary>
             Edit,
+
+            /// <summary>A qualifier of an edit (distance_space) - accepted only beside the edit it qualifies.</summary>
+            Modifier,
 
             /// <summary>A reference swap - impossible in the API itself, on every path.</summary>
             ReferenceReplacement,
@@ -190,7 +203,21 @@ namespace Horizun.Revit.Core
             foreach (string f in EditFields)
                 if (string.Equals(name, f, StringComparison.OrdinalIgnoreCase))
                     return ActionFieldClass.Edit;
+            foreach (string f in ModifierFields)
+                if (string.Equals(name, f, StringComparison.OrdinalIgnoreCase))
+                    return ActionFieldClass.Modifier;
             return ActionFieldClass.Unknown;
+        }
+
+        /// <summary>
+        /// The refusal for distance_space on an action with no text_offset to qualify -
+        /// at the element level or inside segments[]. Null when the action carries one.
+        /// </summary>
+        public static string ModifierWithoutTarget(bool hasElementTextOffset, bool hasSegmentTextOffset)
+        {
+            if (hasElementTextOffset || hasSegmentTextOffset) return null;
+            return "distance_space qualifies text_offset (element level or segments[]) and this action carries no " +
+                   "text_offset; on its own it edits nothing. Nothing was written.";
         }
 
         // ---------------------------------------------------------------------
@@ -204,14 +231,22 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] SingleSegmentOnlyFields =
         {
-            "prefix", "suffix", "above", "below", "value_override", "lock"
+            "prefix", "suffix", "above", "below", "value_override", "lock",
+            "text_position", "text_offset", "leader_end"
         };
 
         /// <summary>Fields that only mean anything when there are segments to address.</summary>
         public static readonly string[] MultiSegmentOnlyFields = { "eq", "segments" };
 
         /// <summary>Fields indifferent to the segment count.</summary>
-        public static readonly string[] AnySegmentFields = { "set_type_id", "move_by", "reset_text_position" };
+        public static readonly string[] AnySegmentFields = { "set_type_id", "move_by", "reset_text_position", "leader" };
+
+        /// <summary>
+        /// A text or leader position is re-read and compared to the requested point.
+        /// Revit stores XYZ in double-precision feet; 1e-5 ft is 0.003 mm, well under
+        /// anything a drawing can show and well over floating-point noise.
+        /// </summary>
+        public const double DefaultPositionToleranceFeet = 1e-5;
 
         /// <summary>
         /// Revit reports a single-segment dimension as NumberOfSegments == 0 (the value

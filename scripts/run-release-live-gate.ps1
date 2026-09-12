@@ -29,7 +29,8 @@ param(
     [string]$Json,
     [int]$StartupTimeoutSec = 600,
     [int]$OpenTimeoutSec = 900,
-    [switch]$ValidateFixturesOnly
+    [switch]$ValidateFixturesOnly,
+    [switch]$OptimizationOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,7 +56,10 @@ if (-not $Manifest) {
                 else { Join-Path $repo 'dist\stage\manifest.json' }
 }
 if (-not $Server) { $Server = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
-if (-not $Json) { $Json = Join-Path $repo ("artifacts\live\live-{0}.json" -f $Year) }
+if (-not $Json) {
+    $Json = if ($OptimizationOnly) { Join-Path $repo ("artifacts\optimization\optimization-{0}.json" -f $Year) }
+            else { Join-Path $repo ("artifacts\live\live-{0}.json" -f $Year) }
+}
 
 function Stage([string]$message) {
     Write-Host ("[{0:HH:mm:ss}] {1}" -f (Get-Date), $message) -ForegroundColor Cyan
@@ -190,8 +194,12 @@ Copy-Item -Path $inactiveModel -Destination $linkSource -Force
 # server root under the stable user profile.
 $dataRoot = Join-Path $env:USERPROFILE ".horizun\release-runs\$runId"
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
-'{"permission_profile":"unsafe_code","enable_execute_python":true}' |
-    Set-Content (Join-Path $dataRoot 'settings.json') -Encoding utf8
+# Isolation must not turn Python back on after the owner disabled it. Preserve
+# the owner's permission decision; absent settings keep the bridge's defaults.
+$ownerSettings = Join-Path $env:USERPROFILE '.horizun\settings.json'
+if (Test-Path -LiteralPath $ownerSettings -PathType Leaf) {
+    Copy-Item -LiteralPath $ownerSettings -Destination (Join-Path $dataRoot 'settings.json')
+}
 
 $oldDataRoot = $env:HORIZUN_DATA_ROOT
 $oldTargetYear = $env:HORIZUN_REVIT_YEAR
@@ -202,7 +210,7 @@ $ownedPid = $null
 
 try {
     Stage "starting Revit $Year in this interactive Windows session"
-    $launched = Start-Process -FilePath $revitExe -PassThru
+    $launched = Start-Process -FilePath $revitExe -PassThru -WindowStyle Hidden
     $ownedPid = $launched.Id
 
     $health = Wait-ForHealth (Get-Date).AddSeconds($StartupTimeoutSec)
@@ -255,6 +263,16 @@ try {
         throw 'The disposable release source did not open active with measured all-worksets evidence.'
     }
 
+    if ($OptimizationOnly) {
+        $localSwitch=@()
+        if($manifestDoc.CleanTree -eq $false) {$localSwitch=@('-LocalBuild')}
+        & pwsh -NoProfile -File (Join-Path $repo 'scripts\verify-optimization-live.ps1') -Year $Year `
+            -Document $activeReleaseTitle -Server $Server -ExpectedCommit ([string]$manifestDoc.Commit) `
+            -Json $Json -Disposable $disposable -Category $quantityCategory `
+            -ExpectedServerSha256 ([string]$manifestDoc.Server.Sha256) -ExpectedAddinSha256 ([string]$addin.Sha256) @localSwitch
+        if ($LASTEXITCODE -ne 0) { throw "Typed optimization verification failed; see $Json" }
+        return
+    }
     Stage "running the full release gate; it will open '$releaseTitle' with workset '$closedWorkset' closed"
     $verify = Join-Path $repo 'scripts\verify-live.ps1'
     $verifyArgs = @(

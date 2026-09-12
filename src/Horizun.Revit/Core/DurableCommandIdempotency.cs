@@ -35,6 +35,7 @@ namespace Horizun.Revit.Core
         public string Key { get; internal set; }
         public string Command { get; internal set; }
         public string Fingerprint { get; internal set; }
+        public string PreviousSourceSha256 { get; internal set; }
         public string Path { get; internal set; }
         public CommandResult ReplayResult { get; internal set; }
         public string Message { get; internal set; }
@@ -57,7 +58,7 @@ namespace Horizun.Revit.Core
             _retentionLog = retentionLog;
         }
 
-        public DurableCommandDecision Claim(string key, string command, string fingerprint)
+        public DurableCommandDecision Claim(string key, string command, string fingerprint, string sourceSha256 = null)
         {
             if (string.IsNullOrWhiteSpace(key))
                 throw new ArgumentException("An idempotency key is required.", "key");
@@ -75,7 +76,7 @@ namespace Horizun.Revit.Core
             try
             {
                 DurableStoreRetentionReport retention = DurableStoreRetention.Apply(
-                    dir, DurableStoreKind.Idempotency, Settings.RawValue, _utcNow(), path);
+                    dir, DurableStoreKind.Idempotency, Settings.RawValue, _utcNow(), path, inventoryWhenDisabled: false);
                 if (retention.RemovedFiles > 0 || retention.Errors.Count > 0 ||
                     (!string.IsNullOrEmpty(retention.Note) && retention.Note.IndexOf("keeps records forever", StringComparison.Ordinal) < 0))
                     _retentionLog?.Invoke("idempotency retention: " + retention.Summary());
@@ -131,6 +132,7 @@ namespace Horizun.Revit.Core
                         ["event"] = "claimed",
                         ["command"] = command,
                         ["fingerprint"] = fingerprint,
+                        ["source_sha256"] = sourceSha256,
                         ["pid"] = _pid(),
                         ["at_utc"] = _utcNow().ToString("o")
                     });
@@ -148,11 +150,13 @@ namespace Horizun.Revit.Core
                     return new DurableCommandDecision
                     {
                         Outcome = DurableCommandOutcome.Conflict,
+                        PreviousSourceSha256 = (string)claim["source_sha256"],
                         Key = key, Command = command, Fingerprint = fingerprint, Path = path,
                         Message = "idempotency_key '" + key + "' already identifies a DIFFERENT operation (" +
                                   (oldCommand ?? "unknown command") + ", claimed " +
                                   ((string)claim["at_utc"] ?? "at an unknown time") + "). Nothing ran. " +
-                                  "Keep a key only for an identical retry; generate a new UUID for deliberate new work."
+                                  "Keep a key only for an identical retry; generate a new UUID for deliberate new work." +
+                                  (sourceSha256 == null ? "" : " Previous source SHA-256: " + ((string)claim["source_sha256"] ?? "unknown (legacy claim)") + "; submitted: " + sourceSha256 + ".")
                     };
 
                 if (completed != null)

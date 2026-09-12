@@ -43,6 +43,21 @@ namespace Horizun.Revit.Core
         public PlanimetryRequirementSetException(string message) : base(message) { }
     }
 
+    /// <summary>The caller's titleblock cell geometry for one sheet text field.</summary>
+    public sealed class TitleblockCellFit
+    {
+        public string Field;
+        public double CellWidth;          // in the units of the call
+        public double TextHeight;         // in the units of the call
+        public double CharWidthFactor;    // average glyph advance / text height
+
+        /// <summary>Estimated width of a text at this cell's label size, in call units.</summary>
+        public double EstimatedWidth(string text)
+        {
+            return (text ?? "").Length * TextHeight * CharWidthFactor;
+        }
+    }
+
     /// <summary>One selector predicate: a field of the entity, compared one way.</summary>
     public sealed class PlanimetrySelector
     {
@@ -81,6 +96,9 @@ namespace Horizun.Revit.Core
         public JToken Value;
         public Regex Pattern;            // compiled when Operator is a regex one
         public string Message;
+
+        /// <summary>Parsed fits_titleblock_cell value. Null for every other operator.</summary>
+        public TitleblockCellFit CellFit;
 
         /// <summary>Parsed requires_tag value. Empty for every other operator.</summary>
         public List<TagRequirement> TagRequirements = new List<TagRequirement>();
@@ -186,7 +204,7 @@ namespace Horizun.Revit.Core
             { "minimum_gap", true }, { "inside_extent", true },
             { "allowed_type", true }, { "allowed_template", true }, { "allowed_scale", true },
             { "required_parameter", true }, { "forbid_numeric_override", false },
-            { "requires_tag", true }
+            { "requires_tag", true }, { "fits_titleblock_cell", true }
         };
 
         /// <summary>Which entities each whole-entity operator is meaningful for. An operator
@@ -201,7 +219,8 @@ namespace Horizun.Revit.Core
             { "allowed_scale", new[] { "view" } },
             { "required_parameter", new[] { "sheet", "view" } },
             { "forbid_numeric_override", new[] { "dimension" } },
-            { "requires_tag", new[] { "view" } }
+            { "requires_tag", new[] { "view" } },
+            { "fits_titleblock_cell", new[] { "sheet" } }
         };
 
         public static bool IsWholeEntityOperator(string op)
@@ -526,7 +545,53 @@ namespace Horizun.Revit.Core
                     foreach (JToken v in (JArray)rule.Value)
                         rule.TagRequirements.Add(ParseTagRequirement(rule, v, set));
                     break;
+                case "fits_titleblock_cell":
+                    rule.CellFit = ParseCellFit(rule, rule.Value);
+                    break;
             }
+        }
+
+        private static readonly HashSet<string> CellFitKeys = new HashSet<string>(StringComparer.Ordinal)
+        { "field", "cell_width", "text_height", "char_width_factor" };
+
+        /// <summary>
+        /// The titleblock cell a sheet text must fit, as the CALLER's geometry. Nothing
+        /// about any titleblock is compiled in: the cell width and the label text height
+        /// come from the profile, in the units of the call, and the fit is an estimate
+        /// from character count - declared as such in every finding.
+        /// </summary>
+        private static TitleblockCellFit ParseCellFit(PlanimetryRule rule, JToken v)
+        {
+            JObject o = v as JObject;
+            if (o == null)
+                throw new PlanimetryRequirementSetException(
+                    "Rule '" + rule.Id + "' fits_titleblock_cell takes an object {field, cell_width, text_height, char_width_factor?}.");
+            foreach (JProperty prop in o.Properties())
+                if (!CellFitKeys.Contains(prop.Name))
+                    throw new PlanimetryRequirementSetException(
+                        "Rule '" + rule.Id + "' fits_titleblock_cell has unknown key '" + prop.Name +
+                        "'. Known: " + string.Join(", ", CellFitKeys.OrderBy(x => x, StringComparer.Ordinal)) + ".");
+            var fit = new TitleblockCellFit { Field = o.Value<string>("field") };
+            if (fit.Field != "sheet_number" && fit.Field != "name")
+                throw new PlanimetryRequirementSetException(
+                    "Rule '" + rule.Id + "' fits_titleblock_cell.field must be sheet_number or name.");
+            if (!IsNumber(o["cell_width"]) || o.Value<double>("cell_width") <= 0)
+                throw new PlanimetryRequirementSetException(
+                    "Rule '" + rule.Id + "' fits_titleblock_cell.cell_width must be a positive number, in the units of the call.");
+            if (!IsNumber(o["text_height"]) || o.Value<double>("text_height") <= 0)
+                throw new PlanimetryRequirementSetException(
+                    "Rule '" + rule.Id + "' fits_titleblock_cell.text_height must be a positive number, in the units of the call.");
+            fit.CellWidth = o.Value<double>("cell_width");
+            fit.TextHeight = o.Value<double>("text_height");
+            fit.CharWidthFactor = 0.6;
+            if (o["char_width_factor"] != null)
+            {
+                if (!IsNumber(o["char_width_factor"]) || o.Value<double>("char_width_factor") < 0.3 || o.Value<double>("char_width_factor") > 1.5)
+                    throw new PlanimetryRequirementSetException(
+                        "Rule '" + rule.Id + "' fits_titleblock_cell.char_width_factor must be 0.3..1.5 (average glyph advance as a fraction of text height).");
+                fit.CharWidthFactor = o.Value<double>("char_width_factor");
+            }
+            return fit;
         }
 
         private static readonly HashSet<string> TagRequirementKeys = new HashSet<string>(StringComparer.Ordinal)

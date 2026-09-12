@@ -3,6 +3,26 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.3.0 — release candidate
+
+Requested geometry is re-read after commit, with atomic rollback on mismatch.
+Creation adds explicit point coordinate modes, per-edge roof slopes, wall
+profiles, stairs, displacement sets and per-element parameters/source references.
+Architectural type and family-symbol duplication gains real rollback rehearsal.
+Existing production creation, MEP connections, tag editing and curve editing are
+preserved. `wall_join` uses `join_end`, keeping `end` as the curve endpoint.
+
+Save operations respect `dry_run`. Python source/include hashes participate in
+idempotency, structured transport errors preserve the underlying cause, and
+progress reports distinguish queueing from execution. Temporary capture options
+restore view state; eligible plan/section captures return measured world-to-pixel
+calibration. Python remains owner-controlled and self-reported.
+
+The README, installation FAQ and LLM instructions foreground the downloadable
+Windows installer and distinguish its included runtime from the SDK needed only
+to compile source. See [release details](docs/RELEASE-1.3.0.md). Final package and
+live release-matrix evidence are still pending; this entry is not a release claim.
+
 ## v1.2.1 — 2026-09-04
 
 ChatGPT Work is a supported client through OpenAI's Secure MCP Tunnel. The

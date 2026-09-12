@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Compose verified typed commands into one confirmed, atomic Revit operation.
 // -----------------------------------------------------------------------------
 using System;
@@ -20,6 +20,7 @@ namespace Horizun.Revit.Commands
             "horizun_write_params_verified", "horizun_delete_verified", "horizun_create_schedule",
             "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
             "horizun_create_elements", "horizun_manage_system_types", "horizun_transform_elements", "horizun_manage_views", "horizun_annotate",
+            "horizun_pack_sheets",
             "horizun_split_floor_loops", "horizun_split_multilayer_walls", "horizun_split_multilayer_slabs",
             "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_copy_slab_elevations",
             "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
@@ -42,6 +43,18 @@ namespace Horizun.Revit.Commands
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
+            try
+            {
+                request = WorkflowPlan.Expand(request, args =>
+                {
+                    if (!ChildPermitted("horizun_plan_views", out string why)) throw new ArgumentException(why);
+                    ICommand planner = _resolve("horizun_plan_views") ?? throw new ArgumentException("Room planner is not registered.");
+                    CommandResult planned = planner.Execute(app, args.ToString(Formatting.None));
+                    if (!planned.Success) throw new ArgumentException(planned.Error);
+                    return planned.Data as JObject ?? throw new ArgumentException("Room planner returned no structured result.");
+                });
+            }
+            catch (ArgumentException ex) { return CommandResult.Fail(ex.Message + " Nothing ran."); }
             JArray actions = request["actions"] as JArray;
             if (actions == null || actions.Count == 0 || actions.Count > 100)
                 return CommandResult.Fail("actions must contain 1..100 entries.");
@@ -304,6 +317,12 @@ namespace Horizun.Revit.Commands
                                     : "action '" + key + "' failed: " + result.Error);
                             }
                             results[key] = ToToken(result.Data);
+                            if (Job.Ambient != null)
+                            {
+                                Job.Ambient.Write("plan action " + key + " verified; provisional until group commit", i + 1, actions.Count);
+                                if (!Job.Ambient.RecordIsComplete)
+                                    throw new InvalidOperationException("Progress could not be persisted; rolling back the atomic plan: " + Job.Ambient.WriteFault);
+                            }
                         }
                     }
                     Guard.Assimilate(group, groupName);

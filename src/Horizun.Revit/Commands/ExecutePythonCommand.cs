@@ -26,6 +26,7 @@
 // stream — routing it through Runtime.IO returned UTF-16-as-UTF-8 ("h\0o\0l\0a").
 // -----------------------------------------------------------------------------
 using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.IO;
 using System.Security.Cryptography;
@@ -161,42 +162,47 @@ namespace Horizun.Revit.Commands
             lock (_engineLock)
             {
                 if (_engine != null) return _engine;
-
-                // IronPython asks for the ANSI codepage (1252) while it builds the
-                // engine. On .NET 5+ that codepage is not in the base library, so
-                // CreateEngine throws "No data is available for encoding 1252" unless
-                // the provider is registered first. The registration is process-wide
-                // and idempotent: it looked intermittent because another add-in in
-                // the same Revit process sometimes registered it before us.
-#if NET
-                try { System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance); }
-                catch { }
-#endif
-                ScriptEngine eng = Python.CreateEngine();
-
-                foreach (var asm in new[]
-                {
-                    typeof(Document).Assembly,       // RevitAPI
-                    typeof(UIApplication).Assembly,  // RevitAPIUI
-                    typeof(System.Uri).Assembly      // System
-                })
-                {
-                    try { eng.Runtime.LoadAssembly(asm); } catch { }
-                }
-
-                // Point at the bundled stdlib so `import json` resolves.
+                RuntimeWarmup.Python.Begin();
                 try
                 {
-                    string here = Path.GetDirectoryName(typeof(ExecutePythonCommand).Assembly.Location);
-                    var paths = new List<string>(eng.GetSearchPaths());
-                    foreach (string candidate in new[] { Path.Combine(here, "Lib"), here })
-                        if (Directory.Exists(candidate) && !paths.Contains(candidate)) paths.Add(candidate);
-                    eng.SetSearchPaths(paths);
-                }
-                catch { }
+                    // IronPython asks for the ANSI codepage (1252) while it builds the
+                    // engine. On .NET 5+ that codepage is not in the base library, so
+                    // CreateEngine throws "No data is available for encoding 1252" unless
+                    // the provider is registered first. The registration is process-wide
+                    // and idempotent: it looked intermittent because another add-in in
+                    // the same Revit process sometimes registered it before us.
+#if NET
+                    try { System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance); }
+                    catch { }
+#endif
+                    ScriptEngine eng = Python.CreateEngine();
 
-                _engine = eng;
-                return _engine;
+                    foreach (var asm in new[]
+                    {
+                        typeof(Document).Assembly,       // RevitAPI
+                        typeof(UIApplication).Assembly,  // RevitAPIUI
+                        typeof(System.Uri).Assembly      // System
+                    })
+                    {
+                        try { eng.Runtime.LoadAssembly(asm); } catch { }
+                    }
+
+                    // Point at the bundled stdlib so `import json` resolves.
+                    try
+                    {
+                        string here = Path.GetDirectoryName(typeof(ExecutePythonCommand).Assembly.Location);
+                        var paths = new List<string>(eng.GetSearchPaths());
+                        foreach (string candidate in new[] { Path.Combine(here, "Lib"), here })
+                            if (Directory.Exists(candidate) && !paths.Contains(candidate)) paths.Add(candidate);
+                        eng.SetSearchPaths(paths);
+                    }
+                    catch { }
+
+                    _engine = eng;
+                    RuntimeWarmup.Python.Ready();
+                    return _engine;
+                }
+                catch (Exception ex) { RuntimeWarmup.Python.Failed(ex); throw; }
             }
         }
 
@@ -214,6 +220,10 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static readonly (Regex Pattern, string TypedCommand, string Hint)[] TypedOverlaps =
         {
+            (new Regex(@"\b(Wall|Floor)\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_create_elements", "Creates walls/floors with post-commit geometry checks."),
+            (new Regex(@"\bNewOpening\s*\(", RegexOptions.Compiled),
+             "horizun_create_elements", "kind=wall_opening covers rectangular wall openings; other opening variants may still require Python. Openings may have no Comments parameter."),
             (new Regex(@"\bViewSheet\s*\.\s*Create\s*\(", RegexOptions.Compiled),
              "horizun_manage_views",
              "operation=\"create_sheet\" creates a sheet in the same verified batch as everything else that command does."),
@@ -300,14 +310,14 @@ namespace Horizun.Revit.Commands
             // follow: the size limit below and the SHA-256 measure what was read, so
             // code_path is not a way around either.
             //
-            // The DURABLE idempotency claim is the one exception, and it is stated rather
-            // than glossed: the dispatcher takes it over the REQUEST before this command
-            // runs, and the request names the path, not the bytes. So the same key with an
-            // edited file replays the recorded answer instead of running the new script -
-            // at-most-once doing its job. A changed script needs a new key, and the
-            // response says so.
+            // The dispatcher freezes and hashes this source before durable admission.
+            // Async jobs carry the same snapshot and never re-read its path.
             SourceResolution source = ResolveSource(request);
             if (source.Error != null) return CommandResult.Fail(source.Error);
+            string responseMode = request.Value<string>("response_mode") ?? "compact";
+            if (responseMode != "compact" && responseMode != "full") return CommandResult.Fail("response_mode must be compact or full. Nothing ran.");
+            int outputLimit = request.Value<int?>("max_output_chars") ?? MaxScriptChars;
+            if (outputLimit < 1024 || outputLimit > MaxScriptChars) return CommandResult.Fail("max_output_chars must be between 1024 and " + MaxScriptChars + ". Nothing ran.");
             string code = source.Code;
 
             if (code.Length > MaxScriptChars)
@@ -376,6 +386,8 @@ namespace Horizun.Revit.Commands
                 try
                 {
                     ScriptSource compileOnly = SourceFor(GetEngine(), code, source.Path);
+                    foreach (var include in source.Includes)
+                        SourceFor(GetEngine(), (string)include["code"], (string)include["path"]).Compile();
                     compileOnly.Compile(); // parse and compile; nothing executes
                 }
                 catch (Exception ex)
@@ -482,18 +494,22 @@ namespace Horizun.Revit.Commands
                 // reads outcomes anyway.
                 var queued = new JObject
                 {
+                    ["run_async"] = false,
+                    ["target_document"] = request.Value<string>("target_document")
+                                          ?? request.Value<string>("expected_document")
+                                          ?? request.Value<string>("target_document_title"),
                     // The RESOLVED source, never the path. A code_path run reads the file
                     // once, HERE, at submit: the deferred run must execute the script the
                     // fingerprint was taken of, not whatever that path holds twenty
                     // minutes later when the queue reaches it.
                     ["code"] = code,
                     ["code_origin_path"] = source.Path,
+                    ["source_includes"] = source.Includes.DeepClone(),
+                    ["response_mode"] = request["response_mode"],
+                    ["max_output_chars"] = outputLimit,
                     // The dispatcher runs the script itself; a second async hop would
                     // queue it forever.
-                    ["run_async"] = false,
-                    ["target_document"] = request.Value<string>("target_document")
-                                          ?? request.Value<string>("expected_document")
-                                          ?? request.Value<string>("target_document_title")
+                    ["helpers_version"] = 1
                 };
 
                 Job asyncJob = null;
@@ -646,6 +662,7 @@ namespace Horizun.Revit.Commands
             Log.Warn("execute_python RUN by '" + SafeUser(app) + "' on '" + SafeTitle(doc) + "', " +
                      code.Length + " chars");
 
+            JObject warningsBefore = PythonHostObservations.Warnings(doc);
             ScriptEngine engine = GetEngine();
             ScriptScope scope = engine.CreateScope();
             scope.SetVariable("uiapp", app);
@@ -741,6 +758,9 @@ namespace Horizun.Revit.Commands
                 // engine parses it in the test suite - a syntax error here breaks every
                 // execute_python call on the machine and no C# compiler would see it.
                 engine.Execute(ScriptPrelude.Prologue, scope);
+
+                foreach (var include in source.Includes)
+                    SourceFor(engine, (string)include["code"], (string)include["path"]).Execute(scope);
 
                 ScriptSource script = SourceFor(engine, code, source.Path);
                 script.Execute(scope);
@@ -851,23 +871,39 @@ namespace Horizun.Revit.Commands
                 ? (JToken)null
                 : printedCaptureError;
 
+            raised["warning_delta"] = PythonHostObservations.Delta(warningsBefore, PythonHostObservations.Warnings(doc));
             if (error != null)
+            {
+                raised["code"] = "python_execution_failed";
+                raised["tool"] = Name;
+                raised["write_started"] = null;
+                raised["changes_applied"] = null;
+                raised["transaction_status"] = leftModifiable ? "left_open" : "not_modifiable";
                 return CommandResult.FailWithDetail(
                     error + (string.IsNullOrEmpty(printed) ? "" : "\n--- stdout before the error ---\n" + printed),
                     raised);
+            }
 
             // A dict assigned to __output__ used to come back as the string
             // "IronPython.Runtime.PythonDictionary": ToString() on a value that does not
             // override it, published as if it were the data. Now it is serialized, and
             // when it cannot be, the reply SAYS the structure was lost.
-            ScriptOutputRendering rendered = ScriptOutput.Render(output);
+            ScriptOutputRendering rendered = ScriptOutput.Render(output, outputLimit, json =>
+            {
+                string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Horizun", "python-output");
+                Directory.CreateDirectory(directory);
+                string path = System.IO.Path.Combine(directory, Guid.NewGuid().ToString("N") + ".json");
+                File.WriteAllText(path, json, new System.Text.UTF8Encoding(false));
+                if (File.ReadAllText(path, System.Text.Encoding.UTF8) != json) throw new IOException("Output file verification failed.");
+                return path;
+            });
 
             // What the script CLAIMS, classified without crediting it. The ceiling for
-            // arbitrary code is self_reported_verified - the host never re-reads the
-            // model after Python, so no field here may read as a bridge guarantee.
+            // arbitrary code is self_reported_verified. Limited ID observations below
+            // do not verify script intent or geometry and cannot raise that ceiling.
             EvidenceReport evidence = ScriptEvidence.Classify(rendered.Value);
 
-            return CommandResult.Ok(new
+            var response = JObject.FromObject(new
             {
                 mode = "sync",
                 executed = true,
@@ -924,6 +960,20 @@ namespace Horizun.Revit.Commands
                 job_file = job.Path,
                 checkpoints = job.Checkpoints
             });
+            response["warning_delta"] = raised["warning_delta"];
+            response["host_observations"] = PythonHostObservations.CreatedIds(doc, rendered.Value);
+            response["execution_sha256"] = request["execution_sha256"];
+            response["runtime"] = new JObject { ["python"] = typeof(IronPython.Hosting.Python).Assembly.GetName().Version.ToString(), ["clr"] = Environment.Version.ToString(), ["helpers_version"] = 1 };
+            response["output_truncated"] = rendered.Kind == "too_large";
+            response["output_original_chars"] = rendered.OriginalChars;
+            response["output_full_path"] = rendered.FullOutputPath;
+            if (responseMode == "compact")
+            {
+                foreach (string field in new[] { "evidence_contract", "host_verification_note", "transaction_policy" }) response.Remove(field);
+                response["contract_ref"] = "horizun://contract/tools";
+            }
+            return CommandResult.Ok(response);
+
         }
 
         /// <summary>
@@ -943,6 +993,7 @@ namespace Horizun.Revit.Commands
             public bool ReadNow;                // THIS call read it off disk
             public string Encoding;             // null when the source arrived inline
             public bool NewlinesNormalized;
+            public JArray Includes;
             public string Error;
 
             /// <summary>
@@ -959,20 +1010,12 @@ namespace Horizun.Revit.Commands
                     ["chars"] = Code == null ? 0 : Code.Length,
                     ["decoded_as"] = Encoding,
                     ["newlines_normalized"] = NewlinesNormalized,
+                    ["includes"] = new JArray(Includes.Select(i => new JObject { ["path"] = i["path"], ["sha256"] = i["sha256"] })),
+                    ["helpers_version"] = 1,
                     ["read_from_disk_by_this_call"] = ReadNow,
-                    ["note"] = Path == null
-                        ? "The source arrived inline."
-                        : ReadNow
-                            ? "The source was READ FROM DISK AT THIS INSTANT: the size limit and " +
-                              "submitted_source_sha256 measure these bytes, not the path. The DURABLE " +
-                              "idempotency claim does not - it is taken over the request, and the request names " +
-                              "the path - so re-sending the same idempotency_key after editing the file REPLAYS " +
-                              "this answer and runs nothing. That is at-most-once doing its job, not a silent " +
-                              "re-run; a changed script is new work and needs a new key."
-                            : "The source came from the queue, having been read from this path when the job was " +
-                              "SUBMITTED. The file is not re-read here, deliberately: a deferred run must execute " +
-                              "the script its fingerprint was taken of, not whatever the path holds now. The name " +
-                              "is carried so tracebacks and this record can point at the real file."
+                    ["note"] = "Source is frozen before durable admission. Same key with different source " +
+                        "is refused with both hashes; queued work executes its admitted snapshot. " +
+                        "SHA-256 covers UTF-8 of the decoded submitted text (file newlines normalized)."
                 };
             }
         }
@@ -985,107 +1028,13 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static SourceResolution ResolveSource(JObject request)
         {
-            string code = request.Value<string>("code");
-            string path = request.Value<string>("code_path");
-
-            bool hasCode = !string.IsNullOrWhiteSpace(code);
-            bool hasPath = !string.IsNullOrWhiteSpace(path);
-
-            if (hasCode && hasPath)
-                return new SourceResolution
-                {
-                    Error = "Both 'code' and 'code_path' were sent. Send exactly ONE: running either of them " +
-                            "would be a guess about which script you meant, and the other would be silently " +
-                            "ignored. Nothing ran."
-                };
-
-            if (!hasCode && !hasPath)
-                return new SourceResolution
-                {
-                    Error = "One of 'code' (the Python source inline) or 'code_path' (a .py file on this machine, " +
-                            "read as UTF-8 unless it declares otherwise) is required. Nothing ran."
-                };
-
-            // Inline - including the queue's copy of a code_path run, which carries the
-            // file it came from so a traceback can still name it.
-            if (hasCode)
-                return new SourceResolution
-                {
-                    Code = code,
-                    Path = request.Value<string>("code_origin_path"),
-                    ReadNow = false
-                };
-
-            string full;
-            try { full = System.IO.Path.GetFullPath(path); }
-            catch (Exception ex)
-            {
-                return new SourceResolution
-                {
-                    Error = "code_path '" + path + "' is not a usable path: " + ex.Message + ". Nothing ran."
-                };
-            }
-
-            try
-            {
-                if (!File.Exists(full))
-                    return new SourceResolution
-                    {
-                        Error = "code_path does not exist: " + full +
-                                (string.Equals(full, path, StringComparison.OrdinalIgnoreCase)
-                                    ? ""
-                                    : " (resolved from '" + path + "')") +
-                                ". The file is read on the machine RUNNING REVIT, which is this one. Nothing ran."
-                    };
-            }
-            catch (Exception ex)
-            {
-                return new SourceResolution
-                {
-                    Error = "code_path " + full + " could not be tested: " + ex.Message + ". Nothing ran."
-                };
-            }
-
-            byte[] raw;
-            try
-            {
-                // ReadWrite|Delete: the same share mode the rest of this codebase uses to
-                // read a file something else may be holding - an editor with the driver
-                // open must not be able to fail the run.
-                using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read,
-                                               FileShare.ReadWrite | FileShare.Delete))
-                using (var ms = new MemoryStream())
-                {
-                    fs.CopyTo(ms);
-                    raw = ms.ToArray();
-                }
-            }
-            catch (Exception ex)
-            {
-                return new SourceResolution
-                {
-                    Error = "code_path " + full + " could not be read: " + ex.Message + ". Nothing ran."
-                };
-            }
-
-            DecodedSource decoded = PythonSourceText.Decode(raw);
-            if (!decoded.Ok)
-                return new SourceResolution { Error = "code_path " + full + ": " + decoded.Error };
-
-            if (string.IsNullOrWhiteSpace(decoded.Text))
-                return new SourceResolution
-                {
-                    Error = "code_path " + full + " decoded to " + raw.Length + " byte(s) of nothing but " +
-                            "whitespace. An empty script is not a run. Nothing ran."
-                };
-
+            var source = PythonSourceSnapshot.Resolve(request);
             return new SourceResolution
             {
-                Code = decoded.Text,
-                Path = full,
-                ReadNow = true,
-                Encoding = decoded.Encoding,
-                NewlinesNormalized = decoded.NewlinesNormalized
+                Code = source.Code, Path = source.Path, ReadNow = source.ReadNow,
+                Encoding = source.Encoding, NewlinesNormalized = source.NewlinesNormalized,
+                Includes = source.Includes,
+                Error = source.Error
             };
         }
 

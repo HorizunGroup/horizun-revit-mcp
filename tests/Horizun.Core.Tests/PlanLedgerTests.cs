@@ -19,6 +19,17 @@ namespace Horizun.Core.Tests
 {
     public class PlanLedgerTests
     {
+        [Fact]
+        public void Completed_graph_serializes_dictionary_results_without_throwing_after_commit()
+        {
+            var original = new JObject { ["rows"] = new JArray(new JObject { ["element_id"] = 42 }) };
+            var results = new System.Collections.Generic.Dictionary<string, JToken> { ["pin"] = original };
+            JObject reply = new PlanLedger().SuccessPayloadFromResults("test", results);
+            Assert.Equal(42, (int)reply["results"]["pin"]["rows"][0]["element_id"]);
+            Assert.Equal("Committed", (string)reply["transaction_status"]);
+            Assert.Null(original.Parent);
+        }
+
         private static JObject Apply(string txStatus, int requested, int applied, int verified,
                                      int unresolved = 0, int failed = 0, int unknown = 0)
         {

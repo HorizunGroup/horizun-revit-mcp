@@ -20,6 +20,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -67,6 +68,31 @@ namespace Horizun.Revit.Core
         public int PendingCount { get { lock (_lock) return _pending.Count; } }
         public int Capacity => _maxDepth;
         public bool HasPending { get { lock (_lock) return _pending.Count > 0; } }
+
+        public JObject Observe(string wireId)
+        {
+            lock(_lock)
+            {
+                var result=new JObject { ["wire_id"]=wireId,["state"]="not_found_or_finished",["queued_count"]=_pending.Count,["observed_utc"]=DateTime.UtcNow.ToString("o") };
+                if(string.IsNullOrWhiteSpace(wireId)) { result["state"]="invalid_request_id"; return result; }
+                if(_inFlight!=null && string.Equals(_inFlight.WireId,wireId,StringComparison.Ordinal))
+                {
+                    result["state"]="executing";
+                    result["execution_elapsed_ms"]=Math.Max(0,(DateTime.UtcNow-_inFlight.StartedUtc).TotalMilliseconds);
+                    return result;
+                }
+                int position=0;
+                foreach(var request in _pending)
+                {
+                    position++;
+                    if(!string.Equals(request.WireId,wireId,StringComparison.Ordinal)) continue;
+                    result["state"]="queued"; result["queue_position"]=position;
+                    result["queue_wait_ms"]=Math.Max(0,(DateTime.UtcNow-request.QueuedUtc).TotalMilliseconds);
+                    break;
+                }
+                return result;
+            }
+        }
 
         public Request Begin(string name, string paramsJson, out string refusal)
             => Begin(null, name, paramsJson, out refusal);

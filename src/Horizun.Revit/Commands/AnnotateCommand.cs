@@ -421,6 +421,19 @@ namespace Horizun.Revit.Commands
                 View view = Need<View>(doc, a, "view_id");
                 if (view.IsTemplate) throw new ArgumentException("view_id is a template");
                 var p = new Plan { Index = index, Operation = op, View = view, Input = a, Scale = scale };
+                foreach (string key in new[] { "layout_clearance", "layout_max_displacement" })
+                    if (a[key] != null && (op != "tag" || (a[key].Type != JTokenType.Integer && a[key].Type != JTokenType.Float) ||
+                        !DeliveryLayoutRules.Finite(a.Value<double>(key)) || a.Value<double>(key) < 0))
+                        throw new ArgumentException(key + " requires a finite nonnegative tag layout distance.");
+                foreach (string key in new[] { "avoid_collisions", "require_tag_text" })
+                    if (a[key] != null && (op != "tag" || a[key].Type != JTokenType.Boolean))
+                        throw new ArgumentException(key + " is a boolean tag option only.");
+                if (a["layout_accept_unmeasurable"] != null)
+                {
+                    if (op != "tag")
+                        throw new ArgumentException("layout_accept_unmeasurable is a tag option only.");
+                    p.LayoutAccepted = AnnotationVisibility.ReadAccepted(a["layout_accept_unmeasurable"]);
+                }
                 if (op == "text" || op == "tag")
                 {
                     // The schema carries the dimension fields on EVERY action (one
@@ -1188,6 +1201,16 @@ namespace Horizun.Revit.Commands
                             " is not valid for the tag Revit created for element " + Rid.Value(p.Target.Id) + ".");
                     tag.ChangeTypeId(p.Type.Id);
                 }
+                tag.TagHeadPosition = p.Point;
+                p.TagPoint = p.Point;
+                if (p.Input.Value<bool?>("avoid_collisions") == true)
+                {
+                    p.TagCoverage = new JObject();
+                    p.TagPoint = AnnotationLayout.Place(doc,p.View,tag,p.Point,
+                        (p.Input.Value<double?>("layout_clearance") ?? 10)*p.Scale,
+                        (p.Input.Value<double?>("layout_max_displacement") ?? 1200)*p.Scale,
+                        p.LayoutAccepted, p.TagCoverage);
+                }
                 return tag;
             }
             switch (p.Operation)
@@ -1343,14 +1366,19 @@ namespace Horizun.Revit.Commands
                     else
                     {
                         Element e = p.Created == null ? null : doc.GetElement(p.Created);
-                        constructible = Verify(p, e);
+                        string why;
+                        constructible = Verify(p, e, out why);
+                        if (constructible && e is IndependentTag measuredTag)
+                            p.TagRehearsal = AnnotationLayout.Evidence(measuredTag,p.View);
                         row = new JObject
                         {
                             ["index"] = p.Index, ["operation"] = p.Operation,
                             ["constructible"] = constructible,
-                            ["reason"] = constructible ? null : "created, but the annotation would not verify " +
-                                                                "(see this command's text/tag verification)"
+                            ["reason"] = constructible ? null : (why ?? "created, but the annotation would not verify " +
+                                                                "(see this command's text/tag verification)")
                         };
+                        if (p.TagCoverage != null && p.TagCoverage.HasValues)
+                            row["annotation_coverage"] = p.TagCoverage.DeepClone();
                     }
                     if (!(row["constructible"] is JValue jc && jc.Type == JTokenType.Boolean && (bool)jc.Value))
                         re.NotConstructibleCount++;
@@ -1755,14 +1783,29 @@ namespace Horizun.Revit.Commands
             Element e = p.Created == null ? null : doc.GetElement(p.Created);
             if (!DimensionPlanRules.IsDimensionOperation(p.Operation))
             {
-                ok = Verify(p, e);
+                string why;
+                ok = Verify(p, e, out why);
                 var legacy = new JObject
                 {
                     ["index"] = p.Index, ["operation"] = p.Operation,
                     ["element_id"] = p.Created == null ? JValue.CreateNull() : new JValue(Rid.Value(p.Created)),
                     ["verified"] = ok
                 };
+                if (!ok && why != null) legacy["reason"] = why;
+                if (p.TagCoverage != null && p.TagCoverage.HasValues)
+                    legacy["annotation_coverage"] = p.TagCoverage.DeepClone();
                 if (e != null) { try { legacy["unique_id"] = e.UniqueId; } catch { legacy["unique_id"] = null; } }
+                if (e is IndependentTag tag)
+                {
+                    try
+                    {
+                        legacy["tag_evidence"] = AnnotationLayout.Evidence(tag,p.View);
+                        bool held = p.TagRehearsal != null && JToken.DeepEquals(p.TagRehearsal,legacy["tag_evidence"]);
+                        legacy["matches_rehearsal"] = held; ok = ok && held; legacy["verified"] = ok;
+                        legacy["layout_method"] = "conservative annotation bounding boxes; visual approval remains separate";
+                    }
+                    catch(Exception ex) { ok=false; legacy["verified"]=false; legacy["unreadable"]=ex.Message; }
+                }
                 return legacy;
             }
             Measured m = Measure(doc, p, e);
@@ -1873,19 +1916,75 @@ namespace Horizun.Revit.Commands
 
         private static bool Verify(Plan p, Element e)
         {
+            string ignored;
+            return Verify(p, e, out ignored);
+        }
+
+        /// <summary>
+        /// The same verification, with the reason it failed. "Could not measure the
+        /// annotations" and "the tag is in the wrong place" are different findings and
+        /// a caller cannot act on the first if both arrive as a bare false.
+        /// </summary>
+        private static bool Verify(Plan p, Element e, out string reason)
+        {
+            reason = null;
             // Revit re-encodes a note's line endings and appends a terminating '\r'
             // (measured on 2023: 'D7_PROBE' reads back 'D7_PROBE\r'), so the comparison
             // is on the normalised text - the rule and its evidence live in
             // DimensionPlanRules.StoredTextMatches, where they are unit-tested.
-            if (p.Operation == "text") return e is TextNote note && DimensionPlanRules.StoredTextMatches(p.Text, note.Text);
+            if (p.Operation == "text")
+            {
+                bool okText = e is TextNote note && DimensionPlanRules.StoredTextMatches(p.Text, note.Text);
+                if (!okText) reason = "the created text note does not read back with the requested text";
+                return okText;
+            }
             if (p.Operation == "tag")
             {
+                try
+                {
                 IndependentTag tag = e as IndependentTag;
-                if (tag == null || !tag.GetTaggedLocalElementIds().Any(id => id == p.Target.Id)) return false;
+                if (tag == null || !tag.GetTaggedLocalElementIds().Any(id => id == p.Target.Id))
+                { reason = "the created element is not a tag on element " + Rid.Value(p.Target.Id); return false; }
                 Element expected = p.Type ?? p.EffectiveTagType;
-                return expected == null || tag.GetTypeId() == expected.Id;
+                if (expected != null && tag.GetTypeId() != expected.Id)
+                { reason = "the committed tag type is not the bound type " + Rid.Value(expected.Id); return false; }
+                if (tag.OwnerViewId != p.View.Id || tag.IsOrphaned || tag.TagHeadPosition.DistanceTo(p.TagPoint ?? p.Point)>1e-6 ||
+                    tag.HasLeader != (p.Input.Value<bool?>("add_leader")==true) ||
+                    tag.TagOrientation != ((p.Input.Value<string>("orientation") ?? "horizontal") == "vertical" ? TagOrientation.Vertical : TagOrientation.Horizontal))
+                { reason = "the committed tag differs from the plan in view, orphan state, head position, leader or orientation"; return false; }
+                if (p.Input.Value<bool?>("require_tag_text")==true && (string.IsNullOrWhiteSpace(tag.TagText) || tag.TagText.Trim()=="?"))
+                { reason = "require_tag_text is on and the tag reads '" + (tag.TagText ?? "") + "': the tag family " +
+                           "produces no readable text for this element"; return false; }
+                if (p.Input.Value<bool?>("avoid_collisions")==true)
+                {
+                    // A coverage refusal is NOT the same finding as an overlap, and it
+                    // travels with its ids instead of collapsing into a bare false.
+                    AnnotationSurvey survey = AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted);
+                    p.TagCoverage = survey.Coverage;
+                    if (!survey.Complete) { reason = AnnotationVisibility.RefusalMessage(survey.Coverage); return false; }
+                    if (!DeliveryLayoutRules.Clear(AnnotationLayout.OwnBox(tag,p.View), survey.Obstacles,
+                            (p.Input.Value<double?>("layout_clearance")??10)*p.Scale, survey.Bounds))
+                    { reason = "the committed tag overlaps a measured annotation or leaves the view limit (" +
+                               survey.Coverage["bounds"].Value<string>("source") + "); " +
+                               survey.Obstacles.Count + " obstacle(s) were measured"; return false; }
+                }
+                return true;
+                }
+                catch (AnnotationCoverageException ex)
+                {
+                    p.TagCoverage = ex.Coverage; reason = ex.Message; return false;
+                }
+                catch (Exception ex)
+                {
+                    // Rehearsal remains responsible for a confirmed rollback; the reason
+                    // still names what threw instead of disappearing.
+                    reason = "tag verification could not complete: " + ex.GetType().Name + ": " + ex.Message;
+                    return false;
+                }
             }
-            return e is Dimension dimension && dimension.References != null && dimension.References.Size == p.References.Size;
+            bool okDim = e is Dimension dimension && dimension.References != null && dimension.References.Size == p.References.Size;
+            if (!okDim) reason = "the created dimension does not read back with the requested reference count";
+            return okDim;
         }
 
         // ---------------------------------------------------------------------
@@ -1906,6 +2005,7 @@ namespace Horizun.Revit.Commands
                         { "target", SafePlanIdName(planned.Target) },
                         { "type", SafePlanIdName(planned.Operation == "tag" ? (planned.Type ?? planned.EffectiveTagType) : planned.Type) },
                         { "existing_tags_for_target_in_view", planned.ExistingTagCount.ToString(CultureInfo.InvariantCulture) },
+                        { "tag_rehearsal", planned.TagRehearsal?.ToString(Formatting.None) ?? "" },
                         { "references", planned.References == null ? "" :
                               planned.References.Size.ToString(CultureInfo.InvariantCulture) }
                     }
@@ -2168,6 +2268,12 @@ namespace Horizun.Revit.Commands
             public ElementId Created;
             public int ExistingTagCount;
             public ElementType EffectiveTagType;
+            public XYZ TagPoint;
+            public JObject TagRehearsal;
+            /// <summary>Ids the caller explicitly accepted as unmeasurable; never a blanket switch.</summary>
+            public HashSet<long> LayoutAccepted = new HashSet<long>();
+            /// <summary>The annotation coverage this tag was judged against.</summary>
+            public JObject TagCoverage;
 
             // Dimension production.
             public readonly List<Reference> RefList = new List<Reference>();
