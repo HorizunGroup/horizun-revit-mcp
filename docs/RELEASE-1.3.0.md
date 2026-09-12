@@ -3,6 +3,11 @@
 This release strengthens geometry verification and execution contracts while
 retaining the production tools from the 1.2.1 development line.
 
+- BIM production workflows are available through MCP resources and prompts,
+  with owner-local mode, pause, receipt history and workshared protection controls.
+- Deliverable production gains annotation and sheet-placement checks, PDF page
+  verification and a delivery ledger. Optional enterprise policies and receipt
+  forwarding remain explicit configuration, with no automatic data upload.
 - Creation checks requested geometry after commit: elevations, offsets, location,
   orientation, profiles and roof slopes. Geometry mismatches roll back the batch.
 - Point placements declare `coordinate_mode`: `absolute` or `level_offset`.

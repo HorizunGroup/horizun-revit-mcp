@@ -5,6 +5,11 @@ assumed. Dates are the day the work landed.
 
 ## v1.3.0 — release candidate
 
+Integrates the BIM production workflows, owner-local mode and history controls,
+workshared protection, annotation/sheet checks, PDF verification and delivery
+ledger developed after 1.2.1. Enterprise policy and receipt forwarding remain
+optional and explicitly configured.
+
 Requested geometry is re-read after commit, with atomic rollback on mismatch.
 Creation adds explicit point coordinate modes, per-edge roof slopes, wall
 profiles, stairs, displacement sets and per-element parameters/source references.
