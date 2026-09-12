@@ -1359,10 +1359,7 @@ namespace Horizun.Revit.Commands
                     for (int v = 0; v < p.ProfilePoints.Count; v++)
                         profile.Add(Line.CreateBound(p.ProfilePoints[v],
                                                      p.ProfilePoints[(v + 1) % p.ProfilePoints.Count]));
-                    var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, p.ProfilePoints[0]);
-                    SketchPlane sketch = SketchPlane.Create(doc, plane);
-                    BeamSystem system = BeamSystem.Create(doc, profile, sketch, p.BeamDirection, false);
-                    system.Level = p.Level;
+                    BeamSystem system = BeamSystem.Create(doc, profile, p.Level, p.BeamDirection, false);
                     if (p.BeamType != null)
                     {
                         if (!p.BeamType.IsActive) { p.BeamType.Activate(); doc.Regenerate(); }
