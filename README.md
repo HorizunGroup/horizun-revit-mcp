@@ -1,5 +1,12 @@
 # Horizun Revit MCP — an MCP server for Autodesk Revit
 
+**[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** —
+public `.exe` installer with the MCP server runtime and Revit add-ins included.
+**No Git, Visual Studio or .NET SDK required.** Windows x64 and an installed
+Revit 2023–2027 are required; close Revit before installation.
+[Download and installation FAQ / Descargar e instalar](docs/INSTALL.md).
+Public releases are unsigned; see [verification and first-start instructions](#install).
+
 [![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Point Claude — or Codex, Cursor, Cline, Windsurf, any MCP client — at a running
@@ -212,14 +219,16 @@ build failure changes nothing; a failure after that rolls back through its undo
 ledger and tells you the exact state you are in. To update: `git pull`, close
 Revit, run it again.
 
-Or hand the whole thing to an agent — paste this into **Claude Code** or
-**Codex** in any folder:
+For an ordinary installation through an agent, use the published installer.
+Source compilation above is for development. Paste this into your agent:
 
 ```
-Clone https://github.com/HorizunGroup/horizun-revit-mcp into this folder, read its
-AGENTS.md, and follow the install procedure there. Install and verify the binaries,
-then confirm the automatic completion status. Do not edit an active client's
-configuration; let the installed helper finish registration after that client exits.
+Install the latest stable Windows release of Horizun Revit MCP from
+https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest. Read
+https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/INSTALL.md first.
+Use the published installer, verify its hash and explain its unsigned publisher
+status. Do not clone or compile the source or install a development SDK.
+Preserve other MCP entries and report pending client connection/restart steps.
 ```
 
 Both pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
