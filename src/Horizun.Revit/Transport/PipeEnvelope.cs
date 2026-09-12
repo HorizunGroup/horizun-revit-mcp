@@ -40,6 +40,31 @@ namespace Horizun.Revit.Transport
         /// </summary>
         public static JObject Of(string id, CommandResult result)
         {
+            try { return Build(id, result); }
+            catch (System.Exception ex)
+            {
+                // Only primitives and an already-JSON diagnostic in this fallback.
+                // A bad observer payload must never turn the original Revit failure
+                // into a misleading "Malformed request" exception.
+                var reply = Of(id, false, null, (result?.Error ?? "Command result could not be serialized.") +
+                    " Transport serialization failed: " + ex.Message);
+                reply["detail"] = new JObject
+                {
+                    ["code"] = "result_serialization_failed", ["correlation_id"] = id,
+                    ["exception_type"] = ex.GetType().FullName, ["exception_message"] = ex.Message,
+                    ["original_error"] = result?.Error, ["original_success"] = result?.Success,
+                    ["original_detail"] = result?.Detail?.DeepClone(),
+                    ["write_started"] = result?.Detail?["write_started"]?.DeepClone(),
+                    ["changes_applied"] = result?.Detail?["changes_applied"]?.DeepClone(),
+                    ["transaction_status"] = result?.Detail?["transaction_status"]?.DeepClone(),
+                    ["observation_complete"] = false
+                };
+                return reply;
+            }
+        }
+
+        private static JObject Build(string id, CommandResult result)
+        {
             JObject reply = result.Success
                 ? Of(id, true, result.Data, null)
                 : Of(id, false, null, result.Error);

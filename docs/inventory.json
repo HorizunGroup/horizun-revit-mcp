@@ -3,14 +3,14 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "4a6c503309f8c9527c9426c2bbb2e2f826c3f51c3d88b252db88baf39d57fa72",
-  "generated_from_contract_hash": "d1b3abb98b4d8df680572b29",
+  "generated_from_server_sha": "00452a34018cd6c05bce31f5a0a00f43386546078955bc34973bbbe0d87e3213",
+  "generated_from_contract_hash": "01296b8ae7892a9506cac794",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "a3f88ba3005d86f6660d1c5249b754f1dffddc40",
-  "code_candidate_version": "1.2.0",
+  "code_candidate_commit": "6d92768ce2175486f9b4bfc922c2b55f0f2b463c",
+  "code_candidate_version": "1.3.0",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "a3f88ba3005d86f6660d1c5249b754f1dffddc40",
+  "source_tree_head_at_generation": "6d92768ce2175486f9b4bfc922c2b55f0f2b463c",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
@@ -19,8 +19,8 @@
     "reads": 32,
     "writes": 48,
     "destructive": 14,
-    "operations": 192,
-    "enumerated_variants": 691
+    "operations": 213,
+    "enumerated_variants": 1091
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -92,7 +92,7 @@
       "destructive": false,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 11,
       "operation_detail": []
     },
     {
@@ -131,8 +131,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 28,
-      "enumerated_variants": 42,
+      "operations": 36,
+      "enumerated_variants": 313,
       "operation_detail": [
         {
           "property": "kind",
@@ -160,13 +160,28 @@
             "accessory_inline",
             "mep_system",
             "shaft",
-            "room_separator"
+            "room_separator",
+            "wall_profile",
+            "displacement",
+            "stairs"
           ],
           "source_read_confirmed": true
         },
         {
           "property": "fitting",
           "path": "elements.fitting",
+          "values": [
+            "elbow",
+            "union",
+            "transition",
+            "tee",
+            "takeoff"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "fitting",
+          "path": "elements.oneOf.fitting",
           "values": [
             "elbow",
             "union",
@@ -184,7 +199,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 12,
-      "enumerated_variants": 46,
+      "enumerated_variants": 48,
       "operation_detail": [
         {
           "property": "kind",
@@ -227,7 +242,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 20,
+      "enumerated_variants": 22,
       "operation_detail": []
     },
     {
@@ -245,7 +260,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 56,
+      "enumerated_variants": 69,
       "operation_detail": []
     },
     {
@@ -253,20 +268,23 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 7,
-      "enumerated_variants": 10,
+      "operations": 10,
+      "enumerated_variants": 17,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operations.operation",
           "values": [
+            "wall_join",
             "move",
             "copy",
             "rotate",
             "pin",
             "unpin",
             "change_type",
-            "set_curve"
+            "set_curve",
+            "move_tag_head",
+            "set_tag_leader"
           ],
           "source_read_confirmed": true
         }
@@ -351,7 +369,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 29,
+      "enumerated_variants": 77,
       "operation_detail": []
     },
     {
@@ -378,7 +396,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 3,
+      "enumerated_variants": 5,
       "operation_detail": []
     },
     {
@@ -569,7 +587,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 36,
+      "enumerated_variants": 37,
       "operation_detail": []
     },
     {
@@ -612,8 +630,8 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 6,
-      "enumerated_variants": 29,
+      "operations": 7,
+      "enumerated_variants": 32,
       "operation_detail": [
         {
           "property": "operation",
@@ -621,6 +639,7 @@
           "values": [
             "auto_tags",
             "intent_dimension",
+            "dimension_set",
             "auto_dimension_grids",
             "auto_dimension_levels",
             "auto_dimension_curtain_walls",
@@ -673,14 +692,20 @@
       "read_only": true,
       "destructive": false,
       "open_world": false,
-      "operations": 1,
-      "enumerated_variants": 10,
+      "operations": 7,
+      "enumerated_variants": 24,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
-            "room_views"
+            "room_views",
+            "deliverable_set",
+            "delivery_open",
+            "delivery_status",
+            "delivery_record",
+            "delivery_approve",
+            "delivery_invalidate"
           ],
           "source_read_confirmed": true
         }
@@ -771,9 +796,20 @@
       "read_only": false,
       "destructive": true,
       "open_world": false,
-      "operations": 0,
-      "enumerated_variants": 21,
-      "operation_detail": []
+      "operations": 3,
+      "enumerated_variants": 41,
+      "operation_detail": [
+        {
+          "property": "kind",
+          "path": "workflow.room_sheets.placements.kind",
+          "values": [
+            "plan",
+            "section",
+            "elevation"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_request_python_access",
@@ -790,7 +826,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 0,
+      "enumerated_variants": 2,
       "operation_detail": []
     },
     {
@@ -799,7 +835,7 @@
       "destructive": false,
       "open_world": false,
       "operations": 0,
-      "enumerated_variants": 64,
+      "enumerated_variants": 66,
       "operation_detail": []
     },
     {
@@ -836,7 +872,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 5,
-      "enumerated_variants": 7,
+      "enumerated_variants": 9,
       "operation_detail": [
         {
           "property": "operation",

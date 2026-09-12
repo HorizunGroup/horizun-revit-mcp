@@ -10,10 +10,14 @@
 // reading a DLL. For a tool people are meant to adopt, invisible is indistinct
 // from absent.
 //
-// So: one tab, one panel, three buttons. STATUS answers the support question
+// So: one tab, two panels, four buttons. STATUS answers the support question
 // without leaving Revit — loaded, which version, which commit, is the bridge
 // listening, where is the log. PYTHON makes arbitrary-code consent a local,
 // visible, persistent human action. HUB is where the layer above this one lives.
+// ADVANCED OPTIONS opens one Horizun-styled menu with the owner-local controls
+// (BIM mode, action history, pause MCP, central protection), each shown with
+// its current state. Every label, tooltip and dialog follows the language Revit
+// itself runs in (RibbonText).
 //
 // A ribbon must never be the reason Revit fails to start: everything here is
 // wrapped, and a failure is logged and swallowed. The bridge does not depend on
@@ -22,6 +26,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Windows.Media.Imaging;
 using Autodesk.Revit.Attributes;
@@ -29,6 +34,7 @@ using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Horizun.Revit.Core;
 using Horizun.Contracts;
+using Newtonsoft.Json.Linq;
 using BridgeSettings = Horizun.Revit.Core.Settings;
 
 namespace Horizun.Revit
@@ -53,42 +59,27 @@ namespace Horizun.Revit
 
             RibbonPanel panel = app.CreateRibbonPanel(TabName, PanelName);
             string asm = Assembly.GetExecutingAssembly().Location;
-            bool spanish = PythonPermissionCommand.IsSpanishLanguage(app.ControlledApplication.Language);
+            bool es = RibbonText.IsSpanish(app.ControlledApplication.Language);
 
             var status = new PushButtonData(
-                "HorizunBridgeStatus", "Estado\ndel puente", asm, typeof(BridgeStatusCommand).FullName)
+                "HorizunBridgeStatus", RibbonText.StatusLabel(es), asm, typeof(BridgeStatusCommand).FullName)
             {
-                ToolTip = "¿Está el puente activo, y con qué versión?",
-                LongDescription =
-                    "Muestra la versión y el commit del add-in cargado, si el canal con el cliente MCP está " +
-                    "escuchando, y dónde está el registro. Es la primera pregunta de cualquier soporte, y se " +
-                    "responde sin salir de Revit."
+                ToolTip = RibbonText.StatusTooltip(es),
+                LongDescription = RibbonText.StatusDescription(es)
             };
 
             var hub = new PushButtonData(
-                "HorizunOpenHub", "Horizun\nHub", asm, typeof(OpenHubCommand).FullName)
+                "HorizunOpenHub", RibbonText.HubLabel(es), asm, typeof(OpenHubCommand).FullName)
             {
-                ToolTip = "Abrir Horizun Hub",
-                LongDescription =
-                    "Este puente es la mitad genérica: transporte, garantías y una superficie de comandos sobre " +
-                    "la API de Revit. Los flujos de entrega construidos encima — auditorías de modelo, " +
-                    "clasificación, homologación de familias, control de calidad de entrega — viven en Horizun Hub."
+                ToolTip = RibbonText.HubTooltip(es),
+                LongDescription = RibbonText.HubDescription(es)
             };
 
             var python = new PushButtonData(
-                "HorizunPythonPermission", "Python\nON/OFF", asm, typeof(PythonPermissionCommand).FullName)
+                "HorizunPythonPermission", RibbonText.PythonLabel(es), asm, typeof(PythonPermissionCommand).FullName)
             {
-                ToolTip = spanish
-                    ? "Activar persistentemente o revocar la ejecución Python"
-                    : "Persistently enable or revoke Python execution",
-                LongDescription = spanish
-                    ? "horizun_execute_python ejecuta código arbitrario con los permisos del usuario. Está " +
-                      "apagado por defecto. Este botón permite al dueño presente en Revit activarlo hasta que " +
-                      "él mismo lo desactive, o revocarlo inmediatamente. La activación nunca puede concedérsela " +
-                      "un cliente MCP por sí solo."
-                    : "horizun_execute_python runs arbitrary code with the user's Windows permissions. It is " +
-                      "off by default. This button lets the owner present in Revit enable it until they disable " +
-                      "it themselves, or revoke it immediately. An MCP client can never grant itself access."
+                ToolTip = RibbonText.PythonTooltip(es),
+                LongDescription = RibbonText.PythonDescription(es)
             };
 
             AddImages(status, "status");
@@ -99,6 +90,18 @@ namespace Horizun.Revit
             panel.AddItem(python);
             panel.AddItem(hub);
 
+            // The owner-local controls, behind one button. Four buttons for four
+            // rarely-touched switches spent ribbon space and taught nothing; one
+            // menu names each control, says what it does and shows its state.
+            RibbonPanel production = app.CreateRibbonPanel(TabName, RibbonText.ProductionPanel(es));
+            var advanced = new PushButtonData(
+                "HorizunAdvancedOptions", RibbonText.AdvancedLabel(es), asm, typeof(AdvancedOptionsCommand).FullName)
+            {
+                ToolTip = RibbonText.AdvancedTooltip(es),
+                LongDescription = RibbonText.AdvancedDescription(es)
+            };
+            AddImages(advanced, "status");
+            production.AddItem(advanced);
         }
 
         /// <summary>
@@ -121,6 +124,45 @@ namespace Horizun.Revit
         }
     }
 
+    /// <summary>
+    /// The "Advanced options" button: shows the Horizun menu, then runs exactly the
+    /// command the chosen row stands for. The menu decides nothing by itself.
+    /// </summary>
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class AdvancedOptionsCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool es = RibbonText.IsSpanish(data);
+                IntPtr owner = IntPtr.Zero;
+                try { owner = data.Application.MainWindowHandle; } catch { }
+
+                string selected;
+                using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                {
+                    var window = new AdvancedOptionsWindow(es, owner);
+                    window.ShowDialog();
+                    selected = window.Selected;
+                }
+                switch (selected)
+                {
+                    case AdvancedOptionsWindow.OptionMode: return new BimModeCommand().Execute(data, ref message, elements);
+                    case AdvancedOptionsWindow.OptionHistory: return new AuditHistoryCommand().Execute(data, ref message, elements);
+                    case AdvancedOptionsWindow.OptionPause: return new PauseMcpCommand().Execute(data, ref message, elements);
+                    case AdvancedOptionsWindow.OptionCentral: return new CentralProtectionCommand().Execute(data, ref message, elements);
+                    default: return Result.Cancelled;
+                }
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
+        }
+    }
+
     [Transaction(TransactionMode.ReadOnly)]
     public sealed class BridgeStatusCommand : IExternalCommand
     {
@@ -128,6 +170,7 @@ namespace Horizun.Revit
         {
             try
             {
+                bool es = RibbonText.IsSpanish(data);
                 string year = data.Application.Application.VersionNumber;
                 // Read from DISK, not from a field: the question is whether an MCP client
                 // could connect right now, and the discovery file is what a client reads.
@@ -138,27 +181,38 @@ namespace Horizun.Revit
                 var td = new TaskDialog("Horizun RVT MCP")
                 {
                     MainInstruction = published
-                        ? "El puente está activo."
-                        : "El puente NO está publicado.",
+                        ? RibbonText.T(es, "El asistente puede conectarse a este Revit.", "The assistant can connect to this Revit.")
+                        : RibbonText.T(es, "El asistente NO puede conectarse a este Revit.", "The assistant can NOT connect to this Revit."),
                     MainContent =
-                        "Versión: " + Build.Version + "\n" +
-                        "Commit: " + (Build.Commit ?? "desconocido") +
-                        (Build.BuiltFromCleanTree ? "" : "  (árbol con cambios sin confirmar)") + "\n" +
+                        RibbonText.T(es, "Versión de Horizun: ", "Horizun version: ") + Build.Version +
+                            "  (" + (Build.Commit ?? RibbonText.T(es, "compilación desconocida", "unknown build")) +
+                            (Build.BuiltFromCleanTree ? "" : RibbonText.T(es, ", con cambios sin confirmar", ", with uncommitted changes")) + ")\n" +
                         "Revit: " + year + "\n\n" +
-                        "Perfil: " + BridgeSettings.PermissionProfile + "\n" +
-                        PythonStatusLine(PythonPermissionCommand.IsSpanishLanguage(
-                            data.Application.Application.Language)) + "\n\n" +
+                        RibbonText.T(es, "Qué puede hacer el asistente: ", "What the assistant may do: ") + RibbonText.ModeName(es, BridgeSettings.PermissionProfile) + "\n" +
+                        RibbonText.T(es, "Ahora mismo está: ", "Right now it is: ") +
+                            (Dispatcher.CurrentActivityDescription() ?? RibbonText.T(es, "sin hacer nada; Revit está libre", "doing nothing; Revit is free")) + "\n" +
+                        RibbonText.T(es, "Asistente: ", "Assistant: ") + (BridgeSettings.McpPaused ? RibbonText.T(es, "EN PAUSA", "PAUSED") : RibbonText.T(es, "activo", "active")) + "\n" +
+                        RibbonText.T(es, "Modelos compartidos: ", "Shared models: ") +
+                            (BridgeSettings.ForceReadOnlyOnWorkshared ? RibbonText.T(es, "protegidos (solo consulta)", "protected (look only)") : RibbonText.T(es, "sin protección especial", "no special protection")) + "\n" +
+                        PythonStatusLine(es) + "\n\n" +
                         (published
-                            ? "Descubrimiento: " + discovery + "\n\nUn cliente MCP que arranque ahora encontrará " +
-                              "este Revit. Si aun así falla, casi siempre es que el servidor y el add-in vienen " +
-                              "de commits distintos: compáralos con horizun_health."
-                            : "No hay fichero de descubrimiento, así que ningún cliente MCP puede encontrar este " +
-                              "Revit. El registro dice por qué falló el arranque.") +
-                        "\n\nRegistro: " + Log.PathFor(year),
+                            ? RibbonText.T(es,
+                                "Conexión lista. Si el asistente aun así no responde, casi siempre es que el " +
+                                "complemento de Revit y el asistente tienen versiones distintas: pídele al asistente " +
+                                "que revise el estado de la conexión.",
+                                "Connection ready. If the assistant still does not respond, the Revit add-in and " +
+                                "the assistant almost always have different versions: ask the assistant to check " +
+                                "the connection status.")
+                            : RibbonText.T(es,
+                                "Este Revit no está anunciado, así que el asistente no puede encontrarlo. El registro " +
+                                "explica qué falló al arrancar.",
+                                "This Revit is not announced, so the assistant cannot find it. The log explains what " +
+                                "failed at start-up.")) +
+                        "\n\n" + RibbonText.T(es, "Registro (para soporte): ", "Log (for support): ") + Log.PathFor(year),
                     CommonButtons = TaskDialogCommonButtons.Close
                 };
-                td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "Abrir el registro");
-                td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "Abrir Horizun Hub");
+                td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, RibbonText.T(es, "Abrir el registro", "Open the log"));
+                td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, RibbonText.T(es, "Abrir Horizun Hub", "Open Horizun Hub"));
 
                 TaskDialogResult r = td.Show();
                 if (r == TaskDialogResult.CommandLink1) OpenPath(Log.PathFor(year));
@@ -186,15 +240,15 @@ namespace Horizun.Revit
         {
             bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out _);
             DateTimeOffset? until = BridgeSettings.ExecutePythonTemporaryGrantUntilUtc;
-            if (!allowed) return "Python: OFF";
+            if (!allowed) return spanish ? "Scripts de Python: bloqueados" : "Python scripts: blocked";
             if (until != null)
                 return (spanish
-                    ? "Python: ON por un permiso temporal heredado hasta "
-                    : "Python: ON under a legacy temporary grant until ") +
+                    ? "Scripts de Python: permitidos por un permiso temporal antiguo hasta "
+                    : "Python scripts: allowed under an old temporary permission until ") +
                     until.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
             return spanish
-                ? "Python: ON persistente hasta que el usuario lo desactive"
-                : "Python: persistently ON until the user disables it";
+                ? "Scripts de Python: permitidos hasta que los apagues"
+                : "Python scripts: allowed until you turn them off";
         }
     }
 
@@ -206,7 +260,7 @@ namespace Horizun.Revit
             try
             {
                 bool allowed = BridgeSettings.IsToolAllowed(Contract.Find("horizun_execute_python"), out string refusal);
-                bool spanish = IsSpanishLanguage(data.Application.Application.Language);
+                bool spanish = RibbonText.IsSpanish(data);
                 if (allowed) return Disable(ref message, spanish);
                 return Enable(ref message, refusal, null, spanish);
             }
@@ -329,11 +383,8 @@ namespace Horizun.Revit
             return Result.Succeeded;
         }
 
-        internal static bool IsSpanishLanguage(object language)
-        {
-            string value = language == null ? "" : language.ToString();
-            return value.IndexOf("Spanish", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
+        /// <summary>Kept for callers outside this file; the decision lives in RibbonText.</summary>
+        internal static bool IsSpanishLanguage(object language) => RibbonText.IsSpanish(language);
     }
 
     [Transaction(TransactionMode.ReadOnly)]
@@ -343,6 +394,250 @@ namespace Horizun.Revit
         {
             BridgeStatusCommand.OpenPath(Ribbon.HubUrl);
             return Result.Succeeded;
+        }
+    }
+
+    /// <summary>
+    /// A small, local permission control rather than a second control plane. It writes
+    /// the same settings file the server and dispatcher read before every call, so a
+    /// changed mode is effective on the next MCP request without restarting Revit.
+    /// </summary>
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class BimModeCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool es = RibbonText.IsSpanish(data);
+                string current = BridgeSettings.PermissionProfile;
+                string title = RibbonText.T(es, "Horizun — ¿Qué puede hacer el asistente?", "Horizun — What may the assistant do?");
+                var dialog = new TaskDialog(title)
+                {
+                    MainInstruction = RibbonText.T(es, "Ahora: ", "Now: ") + RibbonText.ModeName(es, current),
+                    MainContent = RibbonText.T(es,
+                        "Elige hasta dónde puede llegar el asistente en este Revit. Los scripts de Python se " +
+                        "permiten aparte, con el botón «Permitir scripts».",
+                        "Choose how far the assistant may go in this Revit. Python scripts are allowed " +
+                        "separately, with the \"Allow scripts\" button."),
+                    CommonButtons = TaskDialogCommonButtons.Cancel
+                };
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+                    RibbonText.T(es, "Solo consultar", "Look only"),
+                    RibbonText.T(es, "Puede mirar el modelo y responder preguntas; no cambia nada ni crea archivos.",
+                                     "It may look at the model and answer questions; it changes nothing and creates no files."));
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2,
+                    RibbonText.T(es, "Modificar el modelo abierto", "Change the open model"),
+                    RibbonText.T(es, "Puede crear y editar elementos con comandos que comprueban cada cambio, solo en el archivo abierto.",
+                                     "It may create and edit elements with commands that check every change, only in the open file."));
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink3,
+                    RibbonText.T(es, "Modificar, exportar y manejar documentos", "Change, export and handle documents"),
+                    RibbonText.T(es, "Además puede exportar (PDF, DWG…), abrir, cerrar y guardar documentos. Actívalo solo si lo autorizas.",
+                                     "It may also export (PDF, DWG…), open, close and save documents. Enable it only if you authorise it."));
+
+                TaskDialogResult selected;
+                using (Interference.WithDialogAnswer(DialogAnswer.Human)) selected = dialog.Show();
+                string profile = selected == TaskDialogResult.CommandLink1 ? "read_only" :
+                                 selected == TaskDialogResult.CommandLink2 ? "safe_write" :
+                                 selected == TaskDialogResult.CommandLink3 ? "full_write" : null;
+                if (profile == null) return Result.Cancelled;
+
+                if (profile == "full_write")
+                {
+                    var confirm = new TaskDialog(RibbonText.T(es, "Horizun — confirmar", "Horizun — confirm"))
+                    {
+                        MainInstruction = RibbonText.T(es,
+                            "Este nivel deja al asistente crear archivos y abrir, cerrar o guardar documentos.",
+                            "This level lets the assistant create files and open, close or save documents."),
+                        MainContent = RibbonText.T(es,
+                            "No permite scripts de Python. Confirma solo si autorizas esos efectos en este equipo.",
+                            "It does not allow Python scripts. Confirm only if you authorise those effects on this computer."),
+                        CommonButtons = TaskDialogCommonButtons.Cancel,
+                        VerificationText = RibbonText.T(es, "Entiendo lo que permite este nivel", "I understand what this level allows")
+                    };
+                    confirm.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, RibbonText.T(es, "Activar este nivel", "Enable this level"));
+                    using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                    {
+                        if (confirm.Show() != TaskDialogResult.CommandLink1 || !confirm.WasVerificationChecked())
+                            return Result.Cancelled;
+                    }
+                }
+
+                if (!BridgeSettings.TrySetPermissionProfile(profile, out string error))
+                {
+                    message = error;
+                    return Result.Failed;
+                }
+
+                using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                    TaskDialog.Show(title, RibbonText.T(es, "Listo. Desde la siguiente acción del asistente: ", "Done. From the assistant's next action: ") + RibbonText.ModeName(es, profile) + ".");
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Read-only window onto the dispatcher receipt ledger. It never fabricates a
+    /// history from log lines: each row is a receipt built from the command reply.
+    /// </summary>
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class AuditHistoryCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool es = RibbonText.IsSpanish(data);
+                string title = RibbonText.T(es, "Horizun — ¿Qué ha hecho el asistente?", "Horizun — What has the assistant done?");
+                string directory = ReceiptLedger.DefaultDirectory();
+                if (!Directory.Exists(directory))
+                {
+                    using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                        TaskDialog.Show(title, RibbonText.T(es,
+                            "Todavía no hay acciones registradas. Cuando el asistente haga algo en tus modelos quedará anotado aquí:\n",
+                            "No actions recorded yet. When the assistant does something in your models it will be noted here:\n") + directory);
+                    return Result.Succeeded;
+                }
+
+                string[] files = Directory.GetFiles(directory, "receipts-*.jsonl")
+                    .OrderByDescending(File.GetLastWriteTimeUtc).Take(7).ToArray();
+                var rows = new System.Collections.Generic.List<string>();
+                foreach (string file in files)
+                {
+                    string[] lines;
+                    try { lines = File.ReadAllLines(file); }
+                    catch { continue; }
+                    for (int i = lines.Length - 1; i >= 0 && rows.Count < 10; i--)
+                    {
+                        try
+                        {
+                            JObject row = JObject.Parse(lines[i]);
+                            rows.Add((string)row["utc"] + "  " + (string)row["tool"] + "  " +
+                                (string)row["outcome"] + "  " +
+                                (row["dry_run"] == null ? "" : "dry_run=" + row["dry_run"] + "  ") +
+                                (row["total_ms"] == null ? "" : row["total_ms"] + " ms"));
+                        }
+                        catch { /* malformed historical line is not a receipt */ }
+                    }
+                    if (rows.Count >= 10) break;
+                }
+
+                string content = rows.Count == 0
+                    ? RibbonText.T(es, "Todavía no hay ninguna acción legible.", "No readable action yet.")
+                    : string.Join("\n", rows);
+                var dialog = new TaskDialog(title)
+                {
+                    MainInstruction = RibbonText.T(es, "Últimas ", "Latest ") + rows.Count +
+                                      RibbonText.T(es, " acciones del asistente (fecha, acción, resultado, simulación, duración)", " assistant actions (date, action, outcome, rehearsal, duration)"),
+                    MainContent = content + "\n\n" + RibbonText.T(es, "Carpeta con el registro completo: ", "Folder with the full record: ") + directory,
+                    CommonButtons = TaskDialogCommonButtons.Close
+                };
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, RibbonText.T(es, "Abrir la carpeta", "Open the folder"));
+                TaskDialogResult answer;
+                using (Interference.WithDialogAnswer(DialogAnswer.Human)) answer = dialog.Show();
+                if (answer == TaskDialogResult.CommandLink1) BridgeStatusCommand.OpenPath(directory);
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
+        }
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class PauseMcpCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool es = RibbonText.IsSpanish(data);
+                bool pausing = !BridgeSettings.McpPaused;
+                string title = "Horizun — " + (pausing ? RibbonText.T(es, "pausar el asistente", "pause the assistant") : RibbonText.T(es, "reanudar el asistente", "resume the assistant"));
+                var dialog = new TaskDialog(title)
+                {
+                    MainInstruction = pausing
+                        ? RibbonText.T(es, "El asistente quedará en pausa.", "The assistant will be paused.")
+                        : RibbonText.T(es, "El asistente volverá a funcionar.", "The assistant will work again."),
+                    MainContent = pausing
+                        ? RibbonText.T(es,
+                            "No podrá hacer nada en Revit hasta que lo reanudes desde este mismo menú. Lo que ya esté en marcha termina; lo nuevo se rechaza. Solo podrá decir que está en pausa.",
+                            "It will be able to do nothing in Revit until you resume it from this same menu. Whatever is already running finishes; anything new is refused. It will only be able to say that it is paused.")
+                        : RibbonText.T(es,
+                            "Volverá a poder trabajar con los permisos que tengas configurados.",
+                            "It will be able to work again with the permissions you have configured."),
+                    CommonButtons = TaskDialogCommonButtons.Cancel
+                };
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+                    pausing ? RibbonText.T(es, "Pausar ahora", "Pause now") : RibbonText.T(es, "Reanudar ahora", "Resume now"));
+                using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                    if (dialog.Show() != TaskDialogResult.CommandLink1) return Result.Cancelled;
+
+                if (!BridgeSettings.TrySetMcpPaused(pausing, out string error))
+                {
+                    message = error;
+                    return Result.Failed;
+                }
+                using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                    TaskDialog.Show(title, pausing
+                        ? RibbonText.T(es, "El asistente está en pausa.", "The assistant is paused.")
+                        : RibbonText.T(es, "El asistente vuelve a estar activo.", "The assistant is active again."));
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
+        }
+    }
+
+    [Transaction(TransactionMode.ReadOnly)]
+    public sealed class CentralProtectionCommand : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements)
+        {
+            try
+            {
+                bool es = RibbonText.IsSpanish(data);
+                bool enabling = !BridgeSettings.ForceReadOnlyOnWorkshared;
+                var dialog = new TaskDialog(RibbonText.T(es, "Horizun — modelos compartidos", "Horizun — shared models"))
+                {
+                    MainInstruction = enabling
+                        ? RibbonText.T(es, "Los modelos compartidos quedarán protegidos: el asistente solo podrá consultarlos.", "Shared models will be protected: the assistant will only be able to look at them.")
+                        : RibbonText.T(es, "Los modelos compartidos dejarán de estar protegidos.", "Shared models will no longer be protected."),
+                    MainContent = enabling
+                        ? RibbonText.T(es,
+                            "Vale para los modelos de trabajo compartido (centrales, en la nube, con subproyectos) y para cualquier modelo del que Revit no pueda decir si es compartido. El asistente no los modificará, exportará ni cerrará; las simulaciones siguen permitidas.",
+                            "It applies to shared models (central, cloud, with worksets) and to any model Revit cannot tell is shared or not. The assistant will not change, export or close them; rehearsals stay allowed.")
+                        : RibbonText.T(es,
+                            "Volverán a regirse por lo que elijas en «¿Qué puede hacer el asistente?».",
+                            "They will follow again whatever you choose under \"What may the assistant do?\"."),
+                    CommonButtons = TaskDialogCommonButtons.Cancel
+                };
+                dialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+                    enabling ? RibbonText.T(es, "Proteger", "Protect") : RibbonText.T(es, "Quitar la protección", "Remove the protection"));
+                using (Interference.WithDialogAnswer(DialogAnswer.Human))
+                    if (dialog.Show() != TaskDialogResult.CommandLink1) return Result.Cancelled;
+                if (!BridgeSettings.TrySetForceReadOnlyOnWorkshared(enabling, out string error))
+                {
+                    message = error;
+                    return Result.Failed;
+                }
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                message = ex.Message;
+                return Result.Failed;
+            }
         }
     }
 }

@@ -179,6 +179,17 @@ namespace Horizun.Core.Tests
             Assert.Equal("structure", r.Kind);
             Assert.Equal(42, (int)r.Value["walls"]);
         }
+        [Fact]
+        public void Output_limit_retains_full_valid_JSON_through_the_persistence_callback()
+        {
+            string saved=null;
+            var value=new System.Collections.Generic.Dictionary<string,object> { ["data"]=new string('x',5000) };
+            var result=ScriptOutput.Render(value,1024,json=>{ saved=json; return "fixture-output.json"; });
+            Assert.Equal("too_large",result.Kind);
+            Assert.Equal("fixture-output.json",result.FullOutputPath);
+            Assert.Equal(5000,Newtonsoft.Json.Linq.JObject.Parse(saved)["data"].Value<string>().Length);
+            Assert.Equal(saved.Length,result.OriginalChars);
+        }
 
         private sealed class Unserializable
         {

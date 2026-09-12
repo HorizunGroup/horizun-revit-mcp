@@ -30,6 +30,8 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
             Document project = gate.Document;
+            try { request = FamilyRecipe.Expand(request); }
+            catch (Exception ex) { return CommandResult.Fail("Invalid family recipe: " + ex.Message); }
             if (project.IsFamilyDocument)
                 return CommandResult.Fail("horizun_create_family starts from a project document and creates a separate loadable RFA. For an already-open RFA use horizun_family_apply.");
 

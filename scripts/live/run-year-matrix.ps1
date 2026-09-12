@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Run a set of live harnesses against ONE Revit year, in an isolated development
   session, and put the machine back the way it was - including when a harness fails.
@@ -10,8 +10,10 @@
 
   This driver does one year at a time:
 
-    1. REFUSES if a Revit of that year is already running. Somebody may be
-       working in it, and this script will not close somebody else's session.
+    1. REFUSES if a Revit of that year is already running - or if any Revit is
+       running whose year could NOT be determined, because an unreadable
+       MainModule is not "no Revit". Somebody may be working in it, and this
+       script will not close somebody else's session.
     2. Builds the add-in FOR THAT YEAR (bin is shared across years, so the
        previous year's output would otherwise be loaded and the TFM guard would
        refuse it - or worse, not).
@@ -19,8 +21,20 @@
        for a signed copy of the build. The installed pair is not replaced.
     4. Starts Revit BY ITS EXECUTABLE and waits for the bridge to publish.
     5. Runs each harness with HORIZUN_SERVER_EXE pointed at the fresh server.
-    6. Closes ONLY the Revit it started, and restores the manifest - in a
-       finally block, so a harness that throws still leaves the machine clean.
+    6. Closes ONLY the Revit it started - and only after proving, right before
+       the close, that it is still the same process (pid + start time +
+       executable), that the bridge can say what is open AND answers for that
+       pid, and that every open document is one THIS RUN REGISTERED, matched by
+       the path the bridge publishes rather than by its title. One foreign
+       document, one doubtful identity or one unanswered question and the Revit
+       is LEFT RUNNING, written down as recovery pending. Each close is aimed at
+       the registered path and refused if the bridge's own rehearsal resolves a
+       different document; the open set is re-read before every close and once
+       more before the process is asked to exit normally through its own window.
+       It is never killed. Then the manifest is restored - only with no Revit of
+       that year and no Revit of an unknown year running, and believed only when
+       the restore's exit code AND the disk agree with the snapshot taken before
+       anything changed. See year-matrix.session.ps1 for the rules and their tests.
 
   Every step's result is written to a per-year JSON summary beside the harness
   artifacts, so a year that could not run says why instead of being absent.
@@ -58,18 +72,33 @@ param(
     # at all, and the document is then titled '<name>_detached', which is what a
     # harness must be told to expect.
     [switch]$PrepareDetach,
+    # A FIXTURE SAVED BY AN EARLIER REVIT IS UPGRADED IRREVERSIBLY when a later one
+    # opens it, and the bridge refuses to do that unless it is asked in words. One
+    # base fixture with an independent copy per year is exactly that case, so the
+    # permission is a switch of this driver rather than something it assumes: the
+    # per-year check above already prints WHICH year saved the file, and the copy
+    # named in -PrepareDocument is the only file this can touch.
+    [switch]$PrepareAllowUpgrade,
     # A fixture no typed command can build. Run through horizun_execute_python
     # AFTER the document is open and BEFORE the harnesses, so a harness that would
     # otherwise report fixture_missing has its condition. Nothing is saved: the
     # staging lives as long as the session.
     [string]$PrepareScript,
     [string[]]$DismissStartupDialog = @('External Tool*'),
+    # THERE IS NO -RehearsalTitlePattern ANY MORE, deliberately. It used to grant
+    # ownership by title - '^HZ_' among them - and a title is not a proof: a
+    # user's model called HZ_PROYECTO_USUARIO satisfied it exactly as well as a
+    # fixture did, and the register below would then have closed it. Ownership is
+    # now the path of a document this run itself opened, read back from the
+    # bridge; see year-matrix.session.ps1.
     [switch]$SkipBuild
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $server = Join-Path $repo 'src\Horizun.Server\bin\Release\net8.0\horizun-mcp.exe'
 if (-not (Test-Path -LiteralPath $server)) { throw "no server build at $server. Build it first." }
+. (Join-Path $PSScriptRoot 'year-matrix.session.ps1')
+$probes = New-HzMatrixProbes -Repo $repo -ServerExe $server
 
 # WHICH SERVER IS THIS, beyond its hash. The driver does not build the server, so
 # the file it is handed may have been compiled at any commit - and a run that
@@ -83,8 +112,10 @@ catch { $serverStamp = $null }
 $repoHead = (& git -C $repo rev-parse HEAD).Trim()
 $serverMatchesTree = ($serverStamp -ne $null) -and ($serverStamp -like "*$repoHead*")
 if (-not $serverMatchesTree) {
-    Write-Host ("=== THE SERVER ON DISK IS STAMPED '{0}' AND THE TREE IS AT {1}. Every run of this sweep will " +
-                "record that server's hash; build it from this tree if that is not what you meant." -f
+    # -f binds tighter than +: without the inner parentheses only the second
+    # string is formatted and the warning prints a literal '{0}' (seen 2026-09-09).
+    Write-Host (("=== THE SERVER ON DISK IS STAMPED '{0}' AND THE TREE IS AT {1}. Every run of this sweep will " +
+                 "record that server's hash; build it from this tree if that is not what you meant.") -f
                 $serverStamp, $repoHead.Substring(0, 7)) -ForegroundColor Yellow
 }
 if (-not $ArtifactRoot) { $ArtifactRoot = Join-Path $repo 'artifacts\live\year-matrix' }
@@ -104,11 +135,13 @@ if ($unqualified.Count -gt 0 -and $Years.Count -gt 1) {
 }
 
 $discovery = Join-Path $env:USERPROFILE '.horizun\discovery'
+$repoStatus = Get-HzRepoStatus -Repo $repo
 $summary = [ordered]@{
     schema = 'horizun.year-matrix/1'
     started_utc = (Get-Date).ToUniversalTime().ToString('o')
     repo_head = (& git -C $repo rev-parse HEAD).Trim()
-    repo_tracked_clean = ([string](& git -C $repo status --porcelain) -eq '')
+    repo_tracked_clean = ($repoStatus.Count -eq 0)
+    repo_status = $repoStatus
     server_exe = $server
     server_sha256 = (Get-FileHash $server).Hash.ToLower()
     server_stamp = $serverStamp
@@ -146,12 +179,11 @@ function Close-HzStartupDialog {
         $sb = New-Object System.Text.StringBuilder ($len + 1)
         $null = [HzWin.Native]::GetWindowText($hWnd, $sb, $sb.Capacity)
         $title = $sb.ToString()
-        foreach ($t in $Titles) {
-            if ($title -like $t) {
-                $null = [HzWin.Native]::PostMessage($hWnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
-                $script:HzClosedTitles += $title
-                break
-            }
+        # Only a title in the allow-list, and never one that could be a save,
+        # discard, sync or security prompt - those are a person's decisions.
+        if (Test-HzDialogTitleAllowed -Title $title -Allowed $Titles) {
+            $null = [HzWin.Native]::PostMessage($hWnd, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+            $script:HzClosedTitles += $title
         }
         return $true
     }
@@ -160,28 +192,41 @@ function Close-HzStartupDialog {
     $script:HzClosedTitles
 }
 
-function Get-YearRevit([string]$Year) {
-    @(Get-Process Revit -ErrorAction SilentlyContinue | Where-Object {
-        try { $_.MainModule.FileName -like "*\Revit $Year\*" } catch { $false } })
-}
-
 foreach ($year in $Years) {
     $row = [ordered]@{ year = $year; state = 'not_run'; why = $null; document = $null; runs = @() }
     $exe = "C:\Program Files\Autodesk\Revit $year\Revit.exe"
     $enabled = $false
     $started = $null
+    $identity = $null
+    # The register of what this run opens. Nothing is in it yet, and nothing that
+    # is not in it will be closed - including a document whose title looks like a
+    # fixture's.
+    $ledger = New-HzRehearsalLedger
+    $yearDir = Join-Path $ArtifactRoot $year
+    New-Item -ItemType Directory -Force -Path $yearDir | Out-Null
+    # THE BASELINE THE RESTORE IS JUDGED AGAINST, read before anything changes:
+    # which manifests exist, what the installed one points at, and whether the
+    # installed DLL is there and hashable. A hash alone could not tell "there was
+    # no installation" from "the installation vanished".
+    $stateAtStart = Get-HzYearStateAtStart -Probes $probes -Year $year
+    $row.state_at_start = $stateAtStart
+    $row.installed_dll_sha256_at_start = [string](Get-HzField $stateAtStart.installed_dll 'sha256')
     try {
         if (-not (Test-Path -LiteralPath $exe)) {
             $row.state = 'not_installed'; $row.why = "no Revit $year on this machine"
-            $summary.years += $row; continue
+            continue
         }
         # SOMEBODY ELSE'S SESSION IS NOT OURS TO CLOSE. A year already running is
-        # reported as blocked and skipped; the sweep continues with the rest.
-        $running = Get-YearRevit $year
-        if ($running.Count -gt 0) {
+        # reported as blocked and skipped; the sweep continues with the rest. So is
+        # a Revit whose year could not be determined: it MAY be this year, and an
+        # unreadable MainModule is not "no Revit".
+        $allowed = Test-HzManifestChangeAllowed -Probes $probes -Year $year
+        if (-not $allowed.ok) {
             $row.state = 'blocked'
-            $row.why = "Revit $year is already running (pid $($running[0].Id)). This driver will not close a session it did not start."
-            $summary.years += $row; continue
+            $row.why = $allowed.why + ' This driver will not close a session it did not start.'
+            $row.blocking_pids = @($allowed.pids)
+            $row.revit_processes = $allowed.classes
+            continue
         }
 
         if (-not $SkipBuild) {
@@ -189,18 +234,41 @@ foreach ($year in $Years) {
             & dotnet build (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj') -c Release -p:RevitYear=$year -warnaserror --nologo -v q
             if ($LASTEXITCODE -ne 0) {
                 $row.state = 'build_failed'; $row.why = "dotnet build -p:RevitYear=$year exited $LASTEXITCODE"
-                $summary.years += $row; continue
+                continue
             }
         }
 
         Write-Host "=== $year : enabling the development session ===" -ForegroundColor Cyan
-        & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'dev-addin-session.ps1') -Year $year -Enable
-        if ($LASTEXITCODE -ne 0) { throw "dev-addin-session -Enable exited $LASTEXITCODE" }
+        $enable = Invoke-HzYearEnable -Probes $probes -Year $year
+        if (-not $enable.ok) {
+            # NOTHING STARTS AFTER A FAILED ENABLE. A Revit started here would load
+            # whatever manifest the failure left, and the finally block must not
+            # find a process it cannot account for.
+            $row.state = 'enable_failed'; $row.why = $enable.why
+            continue
+        }
         $enabled = $true
 
-        Get-ChildItem $discovery -Filter "revit-$year-*.json" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        # Other instances' discovery files are theirs: nothing is deleted here.
+        # The wait below looks for the file of the pid this driver starts.
         $started = Start-Process -FilePath $exe -PassThru
-        Write-Host "=== $year : started pid $($started.Id); waiting for the bridge ===" -ForegroundColor Cyan
+        $identity = New-HzSessionIdentity -Probes $probes -ProcessId $started.Id -ExpectedExe $exe
+        $row.session = $identity
+        # The register belongs to THIS process from here on. A register with no
+        # session, or one bound to another pid, closes nothing.
+        Register-HzRehearsalSession -Ledger $ledger -Identity $identity
+        # The close path may meet a LATE third-party modal (Revit 2023 raised its
+        # "External Tool Failure" a minute after start, 2026-09-09). The module may
+        # ask this probe to dismiss it: only a title in -DismissStartupDialog, only
+        # on the pid this driver started, and Test-HzDialogTitleAllowed refuses
+        # every save/discard/sync/security title before any window is touched.
+        $script:HzOwnPid = $started.Id
+        $probes.DismissStartupDialog = {
+            param([string]$Title)
+            if (-not (Test-HzDialogTitleAllowed -Title $Title -Allowed $script:DismissStartupDialog)) { return @() }
+            return @(Close-HzStartupDialog -OwnerPid $script:HzOwnPid -Titles $script:DismissStartupDialog)
+        }
+        Write-Host ("=== {0} : started pid {1} ({2}, {3}); waiting for the bridge ===" -f $year, $identity.pid, $identity.exe, $identity.start_time) -ForegroundColor Cyan
 
         $deadline = (Get-Date).AddSeconds($BridgeTimeoutSec)
         $bridge = $null
@@ -238,13 +306,11 @@ foreach ($year in $Years) {
             $row.why = ("Revit $year published no bridge within $BridgeTimeoutSec s. A security dialog for an " +
                         "unsigned add-in, or a modal on another monitor, holds the UI thread and looks exactly " +
                         "like this.")
-            $summary.years += $row; continue
+            continue
         }
 
         $env:HORIZUN_SERVER_EXE = $server
         $env:HORIZUN_REVIT_YEAR = $year
-        $yearDir = Join-Path $ArtifactRoot $year
-        New-Item -ItemType Directory -Force -Path $yearDir | Out-Null
 
         # THE EXACT BINARIES THIS YEAR RAN, kept where nothing overwrites them.
         # The development store holds ONE signed copy per year and the next
@@ -267,6 +333,14 @@ foreach ($year in $Years) {
             $kept[$pair.k] = [ordered]@{ sha256 = $sha; kept_at = $dest; source = $pair.p }
         }
         $row.binaries = $kept
+        # THE ADD-IN THIS YEAR ACTUALLY LOADS, as a token the harness strings can
+        # carry: '{addin_sha256}' becomes the SHA-256 of the signed copy the session
+        # enabled (the unsigned build if no certificate signed it). A harness that
+        # demands -ExpectedAddinSha256 can then refuse a wrong binary per year
+        # without the caller knowing the hash before the build.
+        $script:AddinSha = $null
+        if ($kept['addin_signed']) { $script:AddinSha = $kept['addin_signed'].sha256 }
+        elseif ($kept['addin_unsigned']) { $script:AddinSha = $kept['addin_unsigned'].sha256 }
 
         # Open the fixture this year's harnesses measure, through the typed open,
         # so a failure here is reported as a fixture problem rather than as every
@@ -279,7 +353,7 @@ foreach ($year in $Years) {
         if ($doc) {
             if (-not (Test-Path -LiteralPath $doc)) {
                 $row.state = 'fixture_missing'; $row.why = "the document for $year is not on this machine: $doc"
-                $summary.years += $row; continue
+                continue
             }
             # WHAT VERSION SAVED THIS FILE - asked of the header, not of the open.
             # horizun_file_info reads it without opening anything, so an
@@ -315,7 +389,7 @@ foreach ($year in $Years) {
                 $row.state = 'fixture_incompatible'
                 $row.why = ("the document was saved by Revit $savedYear and cannot be opened by Revit $year. " +
                             "Give this year its own fixture: -PrepareDocument '$year=<a file saved by $year or earlier>'")
-                $summary.years += $row; continue
+                continue
             }
             if ($savedYear -and $savedYear -lt [int]$year) {
                 Write-Host ("=== {0} : the fixture was saved by Revit {1} and WILL BE UPGRADED in place by {0}" -f
@@ -324,6 +398,7 @@ foreach ($year in $Years) {
             }
             $script:PrepareTag = 0
             $script:OpenedTitle = $null
+            $script:LastRegistration = $null
             function Open-YearFixture {
                 param([string]$Path, [string]$Year, [string]$Dir, [string]$Repo)
                 $script:PrepareTag++
@@ -334,6 +409,7 @@ foreach ($year in $Years) {
                 $openArgs = @{ path = ($Path.Replace([char]92, '/')); expected_version = $Year; activate = $true
                     idempotency_key = ('year-matrix-open-' + $Year + '-' + (Get-Date -Format 'yyyyMMddHHmmssfff')) }
                 if ($PrepareDetach) { $openArgs['detach'] = $true }
+                if ($PrepareAllowUpgrade) { $openArgs['allow_upgrade'] = $true }
                 ($openArgs | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $argsFile -Encoding utf8
                 & pwsh -NoProfile -File (Join-Path $Repo 'scripts\hz-call.ps1') -Tool horizun_open_document `
                     -ArgumentsPath $argsFile -Json $outFile -Quiet -TimeoutSec 900
@@ -356,21 +432,63 @@ foreach ($year in $Years) {
                     }
                 }
                 catch { }
+                # REGISTERED FROM WHAT THE BRIDGE SAYS IS OPEN, not from what was
+                # asked for. The file this driver named and the document Revit ended
+                # up with are not always the same thing - a detached open renames it
+                # and gives it NO path at all - and the register has to hold the
+                # identity the close path will compare against, which is the one
+                # health publishes. A registration that cannot be made is recorded
+                # and the session is simply never closed automatically.
+                if (-not $reply.is_error -and $script:OpenedTitle) {
+                    $reg = Register-HzOpenedDocument -Probes $probes -Ledger $ledger -Identity $identity `
+                        -Year $Year -Dir $Dir -SourceFile $Path -ExpectedTitle $script:OpenedTitle
+                    $script:LastRegistration = $reg
+                    if (-not $reg.ok) {
+                        Write-Host ("=== {0} : the open could NOT be registered ({1}). This session will not be closed automatically." -f
+                                    $Year, $reg.why) -ForegroundColor Yellow
+                    }
+                }
                 return (-not $reply.is_error)
             }
-            if (-not (Open-YearFixture -Path $doc -Year $year -Dir $yearDir -Repo $repo)) {
+            $opened = Open-YearFixture -Path $doc -Year $year -Dir $yearDir -Repo $repo
+            if (-not $opened) {
+                # A late startup modal refuses the open (Revit 2023, 2026-09-09: the
+                # dialog came after the settle window above). Dismiss ONLY an
+                # allow-listed title on this pid, then ask once more.
+                $lastOut = Join-Path $yearDir ("prepare-open-$script:PrepareTag.out.json")
+                $refusal = if (Test-Path -LiteralPath $lastOut) { Get-Content -LiteralPath $lastOut -Raw } else { '' }
+                $modal = Get-HzModalDialogTitle -Text $refusal
+                if ($modal) {
+                    $shut = @(& $probes.DismissStartupDialog $modal)
+                    foreach ($t in $shut) {
+                        if ($dismissed -notcontains $t) { $dismissed += $t }
+                        Write-Host ("=== {0} : closed a startup dialog that refused the open: '{1}'" -f $year, $t) -ForegroundColor Yellow
+                    }
+                    if ($shut.Count -gt 0) {
+                        $row.dismissed_dialogs = $dismissed
+                        Start-Sleep -Seconds 2
+                        $opened = Open-YearFixture -Path $doc -Year $year -Dir $yearDir -Repo $repo
+                    }
+                }
+            }
+            if (-not $opened) {
                 $row.state = 'fixture_open_failed'
                 $row.why = "horizun_open_document refused $doc on Revit $year; see $yearDir"
-                $summary.years += $row; continue
+                continue
             }
             $row.document = $doc
             $row.document_title = $script:OpenedTitle
+            # What the register actually holds for this year, so the summary shows
+            # WHY a session was or was not closed automatically.
+            $row.document_registration = $script:LastRegistration
+            $row.registered_documents = @($ledger.documents)
+            if (@($ledger.registration_failures).Count -gt 0) { $row.registration_failures = @($ledger.registration_failures) }
 
             if ($PrepareScript) {
                 if (-not (Test-Path -LiteralPath $PrepareScript)) {
                     $row.state = 'fixture_missing'
                     $row.why = "the preparation script is not on this machine: $PrepareScript"
-                    $summary.years += $row; continue
+                    continue
                 }
                 $stageArgs = Join-Path $yearDir 'prepare-script.args.json'
                 $stageOut = Join-Path $yearDir 'prepare-script.out.json'
@@ -391,7 +509,7 @@ foreach ($year in $Years) {
                 if (-not $stageOk) {
                     $row.state = 'fixture_missing'
                     $row.why = "the preparation script did not report success; see $stageOut"
-                    $summary.years += $row; continue
+                    continue
                 }
                 Write-Host ("=== {0} : staged the fixture with {1}" -f $year, (Split-Path $PrepareScript -Leaf))
             }
@@ -420,6 +538,7 @@ foreach ($year in $Years) {
             # detached open, whose name is only known once Revit has made it.
             $parts = $h.Trim()
             if ($script:OpenedTitle) { $parts = $parts.Replace('{title}', $script:OpenedTitle) }
+            if ($script:AddinSha) { $parts = $parts.Replace('{addin_sha256}', $script:AddinSha) }
             $rest = $parts.Substring($file.Length).Trim()
             Write-Host "--- $year : $file $rest" -ForegroundColor DarkCyan
             $cmd = "& '$path' $rest -ArtifactDir '$yearDir'"
@@ -436,17 +555,57 @@ foreach ($year in $Years) {
         $row.state = 'error'; $row.why = $_.Exception.Message
     }
     finally {
-        # THE MACHINE GOES BACK EVEN WHEN THE TEST FAILS. A manifest left swapped
-        # is a Revit that loads a development build tomorrow without anybody
-        # meaning it to.
-        if ($started -and -not $started.HasExited) {
-            try { Stop-Process -Id $started.Id -Force -ErrorAction Stop; Start-Sleep -Seconds 6 } catch { }
+        # THE MACHINE GOES BACK EVEN WHEN THE TEST FAILS - but never by force. A
+        # Revit this driver started is closed only after it is proved to be the
+        # same process with only the rehearsal's own fixtures open; otherwise it
+        # is left running and written down. A manifest is restored only with no
+        # Revit of that year running, and the restore is checked on disk.
+        $pending = @()
+        if ($identity) {
+            # AN EXCEPTION IN HERE MUST NOT COST THE REPORT. If the close path
+            # throws - an unreadable process, a probe that dies - the failure is
+            # recorded, the restore is still evaluated (with its own guards), and
+            # the year still appears in the summary. A finally block that throws
+            # takes the whole sweep with it and leaves nothing written down.
+            try {
+                $close = Close-HzRehearsalSession -Probes $probes -Identity $identity -Ledger $ledger -Year $year -Dir $yearDir
+            }
+            catch {
+                $close = [ordered]@{ state = 'left_running_error'; identity = $identity
+                                     why = ("the close path itself failed: " + $_.Exception.Message +
+                                            " Nothing was closed by force; the process is left as it is.") }
+            }
+            $row.close = $close
+            if ($close.state -notin @('closed', 'already_exited')) {
+                Write-Host ("=== {0} : REVIT LEFT RUNNING ({1}): {2}" -f $year, $close.state, $close.why) -ForegroundColor Red
+                $pending += "close: $($close.state) - $($close.why)"
+            }
+            elseif ($close.state -eq 'closed') {
+                # Only the discovery file of the pid this driver started and closed.
+                Get-ChildItem $discovery -Filter "revit-$year-$($identity.pid).json" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
         }
-        if ($enabled) {
-            try { & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'dev-addin-session.ps1') -Year $year -Restore }
-            catch { $row.why = ($row.why + " ; RESTORE FAILED: " + $_.Exception.Message).Trim(' ;') }
+        try {
+            $restore = Restore-HzYearSession -Probes $probes -Year $year -StateAtStart $stateAtStart
         }
-        Get-ChildItem $discovery -Filter "revit-$year-*.json" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+        catch {
+            $restore = @{ ok = $false; state = 'restore_failed'
+                          why = ("the restore path itself failed: " + $_.Exception.Message) }
+        }
+        $row.restore = $restore
+        if (-not $restore.ok) {
+            Write-Host ("=== {0} : MANIFEST NOT RESTORED ({1}): {2}" -f $year, $restore.state, $restore.why) -ForegroundColor Red
+            $pending += "restore: $($restore.state) - $($restore.why)"
+        }
+        if ($pending.Count -gt 0) {
+            $row.recovery_pending = Write-HzRecoveryPending -Dir $ArtifactRoot -Year $year -Record ([ordered]@{ session = $identity; close = $row.close; restore = $restore; state_before = $row.state; why_before = $row.why })
+            # The summary keeps what happened BEFORE the close, too: a row that
+            # only said "recovery_pending" hid that the open had been refused.
+            $row.state_before = $row.state
+            $row.why_before = $row.why
+            $row.state = 'recovery_pending'
+            $row.why = (($pending -join ' ; ') + " ; see " + $row.recovery_pending)
+        }
         $summary.years += $row
     }
 }
@@ -462,5 +621,7 @@ foreach ($y in $summary.years) {
     foreach ($r in $y.runs) { Write-Host ("           {0,-38} {1}" -f $r.harness, $r.state) -ForegroundColor DarkGray }
 }
 Write-Host "  summary: $out" -ForegroundColor Cyan
+$pendingRows = @($summary.years | Where-Object { $_.state -eq 'recovery_pending' })
+foreach ($p in $pendingRows) { Write-Host ("  RECOVERY PENDING for {0}: {1}" -f $p.year, $p.recovery_pending) -ForegroundColor Red }
 $bad = @($summary.years | Where-Object { $_.state -notin @('green', 'blocked', 'not_installed') })
-exit $(if ($bad.Count -gt 0) { 1 } else { 0 })
+exit $(if ($pendingRows.Count -gt 0) { 2 } elseif ($bad.Count -gt 0) { 1 } else { 0 })

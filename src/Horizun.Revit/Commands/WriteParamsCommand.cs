@@ -250,9 +250,11 @@ namespace Horizun.Revit.Commands
                 resolvedPlan.Elements.Add(new PlannedElement
                 {
                     UniqueId = SafeUniqueId(r.Target),
+                    ElementId = r.TargetId,
                     Category = r.Target?.Category?.Name,
                     TypeName = r.TargetName,
                     Action = PlannedAction.Modify,
+                    ProposedValues = new Dictionary<string, string> { { r.ParamSpec ?? "", r.Requested?.ToString(Formatting.None) } },
                     BeforeValues = new Dictionary<string, string>
                     {
                         // The BEFORE value is the fact this plan depends on: an apply whose

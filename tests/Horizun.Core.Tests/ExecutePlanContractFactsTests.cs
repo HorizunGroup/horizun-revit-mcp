@@ -80,9 +80,9 @@ namespace Horizun.Core.Tests
             // capability no client is told about, and a strict validator rejects.
             Assert.Empty(advertised.Except(enforced));
             Assert.Empty(enforced.Except(advertised));
-            // 21 since horizun_manage_links joined: the correction registry's pin
-            // could not be composed atomically without it.
-            Assert.Equal(21, enforced.Count);
+            // Sheet packing participates so a multi-sheet assignment is atomic.
+            Assert.Contains("horizun_pack_sheets", enforced);
+            Assert.Equal(22, enforced.Count);
         }
 
         // ---- The claims the description makes, one by one ------------------------

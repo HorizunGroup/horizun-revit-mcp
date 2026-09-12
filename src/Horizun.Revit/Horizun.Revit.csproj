@@ -149,6 +149,7 @@
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="PdfPig" Version="0.1.13" />
     <!-- The scripting escape hatch. IronPython is Apache-2.0 (a separate project);
          StdLib ships the standard library so `import json` works. -->
     <PackageReference Include="IronPython" Version="3.4.2" />

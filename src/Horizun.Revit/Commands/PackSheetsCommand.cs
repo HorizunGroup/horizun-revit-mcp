@@ -36,6 +36,7 @@ namespace Horizun.Revit.Commands
             if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
             if (doc.IsReadOnly) return CommandResult.Fail("The document is read-only; sheet packing cannot run.");
+            if (request["sheets"] != null) return PackMany(app,request);
 
             double toFeet, fromFeet;
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
@@ -64,7 +65,22 @@ namespace Horizun.Revit.Commands
 
             PlanBox sheetBox = SheetBox(sheet);
             if (!sheetBox.Valid) return CommandResult.Fail("Packing refused: sheet extent is unreadable. Nothing was written.");
-            string planHash = DocumentGate.PlanHash(request, "sheet_id", "units", "margin", "gap", "tolerance", "items");
+            try
+            {
+                if (request["usable_rect"] != null)
+                {
+                    PlanBox usable=DeliveryLayoutRules.ReadBox(request["usable_rect"],toFeet);
+                    if(!PlanimetryGeometry.Contains(sheetBox,usable,tolerance)) throw new ArgumentException("usable_rect lies outside the sheet.");
+                    sheetBox=usable;
+                }
+                if(request["reserved_zones"] is JArray zones)
+                    for(int i=0;i<zones.Count;i++)
+                        fixedObstacles.Add(new Obstacle { Id=ElementId.InvalidElementId,Key="reserved_zone:"+i,
+                            Box=DeliveryLayoutRules.ReadBox(zones[i],toFeet) });
+                else if(request["reserved_zones"]!=null) throw new ArgumentException("reserved_zones must be an array of rectangles.");
+            }
+            catch(Exception ex) { return CommandResult.Fail("Invalid sheet layout profile: "+ex.Message); }
+            string planHash = DocumentGate.PlanHash(request, "sheet_id", "units", "margin", "gap", "tolerance", "items", "usable_rect", "reserved_zones");
             ResolvedPlan resolved = Resolved(doc, gate, app, sheet, items, fixedObstacles, sheetBox);
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
 
@@ -88,7 +104,9 @@ namespace Horizun.Revit.Commands
                 sheetBox, fixedObstacles.Select(o => o.Box),
                 items.Select(i => new PackingItem { Key = i.Key, Width = i.Width, Height = i.Height }),
                 margin, gap, tolerance);
-            if (!packed.Ok) return CommandResult.Fail("Packing refused: " + packed.Error + ". Nothing was written.");
+            if (!packed.Ok) return CommandResult.FailWithDetail("Packing refused: " + packed.Error + ". Nothing was written.",
+                new JObject { ["code"] = packed.NoFit ? "packing_no_fit" : "packing_invalid_geometry",
+                    ["measurement_rollback_status"] = measurementRollback, ["applied"] = false });
             foreach (PackingPlacement p in packed.Placements)
             {
                 Item item = items.Single(i => i.Key == p.Key);
@@ -378,7 +396,87 @@ namespace Horizun.Revit.Commands
                 obstacles.Add(new Obstacle { Id = si.Id, Element = si, Box = box });
             }
             obstacles = obstacles.OrderBy(o => Rid.Value(o.Id)).ToList();
+            // Sheet-owned annotations and generic annotation symbols are not empty
+            // paper. Titleblock graphics need explicit reserved zones: their outer
+            // bounding box usually describes the entire sheet.
+            foreach(Element e in new FilteredElementCollector(doc,sheet.Id).WhereElementIsNotElementType())
+            {
+                if(e.OwnerViewId!=sheet.Id || e is Viewport || e is ScheduleSheetInstance) continue;
+                if(!(e is TextNote) && !(e is IndependentTag) && !(e is FamilyInstance fi && fi.Category?.CategoryType==CategoryType.Annotation &&
+                    Rid.Value(fi.Category.Id)!=(long)BuiltInCategory.OST_TitleBlocks)) continue;
+                try
+                {
+                    BoundingBoxXYZ b=e.get_BoundingBox(sheet);
+                    if(b==null) throw new InvalidOperationException("missing bounds");
+                    // Sheet coordinates are paper XY.
+                    var corners=new List<XYZ>();
+                    foreach(double x in new[]{b.Min.X,b.Max.X}) foreach(double y in new[]{b.Min.Y,b.Max.Y}) foreach(double z in new[]{b.Min.Z,b.Max.Z})
+                        corners.Add(b.Transform.OfPoint(new XYZ(x,y,z)));
+                    obstacles.Add(new Obstacle { Id=e.Id,Element=e,Box=PlanBox.FromCorners(corners.Min(p=>p.X),corners.Min(p=>p.Y),corners.Max(p=>p.X),corners.Max(p=>p.Y)) });
+                }
+                catch(Exception ex) { error="Sheet annotation "+Rid.Value(e.Id)+" is unreadable: "+ex.Message; return false; }
+            }
             return true;
+        }
+
+        private CommandResult PackMany(UIApplication app,JObject request)
+        {
+            // First fit in caller-specified sheet and item order, never change
+            // scale or create an extra sheet without an explicit request.
+            var sheets=request["sheets"] as JArray;
+            var items=request["items"] as JArray;
+            if(request["sheet_id"]!=null || sheets==null || sheets.Count<1 || sheets.Count>30 ||
+                items==null || items.Count<1 || items.Count>100 || sheets.Any(s=>!(s is JObject)) || items.Any(i=>!(i is JObject)))
+                return CommandResult.Fail("Multi-sheet packing requires sheets[1..30], items[1..100], and no sheet_id.");
+            foreach(JObject s in sheets)
+                if(s.Properties().Any(p=>!new[]{"sheet_id","usable_rect","reserved_zones","margin","gap","tolerance","units"}.Contains(p.Name)))
+                    return CommandResult.Fail("Unknown candidate-sheet field; no setting is silently ignored.");
+            if(items.OfType<JObject>().Any(i=>i["viewport_id"]!=null || i["schedule_instance_id"]!=null))
+                return CommandResult.Fail("Multi-sheet distribution accepts only unplaced view_id/schedule_id items. Existing placements remain fixed.");
+            if(items.Select(i=>(string)i["key"]).Any(string.IsNullOrWhiteSpace) || items.Select(i=>(string)i["key"]).Distinct().Count()!=items.Count)
+                return CommandResult.Fail("All placement keys must be nonempty and globally unique.");
+            if(sheets.Select(s=>(long?)s["sheet_id"]).Distinct().Count()!=sheets.Count)
+                return CommandResult.Fail("Candidate sheet IDs must be unique.");
+            var assigned=sheets.Select(s=>new JArray()).ToArray();
+            var args=sheets.OfType<JObject>().Select(s=> {
+                var a=(JObject)s.DeepClone();
+                a["target_document"]=request["target_document"]?.DeepClone(); a["dry_run"]=true;
+                foreach(string key in new[]{"units","margin","gap","tolerance"}) if(a[key]==null && request[key]!=null) a[key]=request[key].DeepClone();
+                return a;
+            }).ToArray();
+            var refusals=new JArray();
+            foreach(JObject item in items)
+            {
+                bool fit=false;
+                for(int i=0;i<args.Length;i++)
+                {
+                    var candidate=(JArray)assigned[i].DeepClone(); candidate.Add(item.DeepClone());
+                    args[i]["items"]=candidate;
+                    CommandResult rehearsal=Execute(app,args[i].ToString(Formatting.None));
+                    JObject data=rehearsal.Data as JObject ?? rehearsal.Detail;
+                    if(!rehearsal.Success && data?.Value<string>("code")!="packing_no_fit")
+                        return rehearsal;
+                    // A failed rollback is not a packing miss: stop immediately.
+                    if(data==null || data.Value<string>("state")=="uncertain" ||
+                        data.Value<string>("measurement_rollback_status")!="RolledBack" ||
+                        (rehearsal.Success && data.Value<string>("rehearsal_rollback_status")!="RolledBack"))
+                        return CommandResult.FailWithDetail("Uncertain packing rehearsal; no further candidates attempted.",data);
+                    if(rehearsal.Success && data.Value<bool?>("constructible")==true)
+                    { assigned[i]=candidate;fit=true;break; }
+                    refusals.Add(new JObject { ["item"]=item["key"]?.DeepClone(),["sheet_id"]=args[i]["sheet_id"]?.DeepClone(),["error"]=rehearsal.Error,["detail"]=data });
+                }
+                if(!fit) return CommandResult.FailWithDetail("No candidate sheet can accommodate the complete requested item set at its current scales.",
+                    new JObject { ["refusals"]=refusals,["applied"]=false });
+            }
+            var graph=new JArray();
+            for(int i=0;i<args.Length;i++) if(assigned[i].Count>0)
+            {
+                args[i]["items"]=assigned[i]; args[i].Remove("dry_run");
+                graph.Add(new JObject { ["key"]="sheet_"+i,["tool"]=Name,["arguments"]=args[i] });
+            }
+            var plan=(JObject)request.DeepClone();
+            plan.Remove("sheets");plan.Remove("sheet_id");plan.Remove("items");plan["actions"]=graph;
+            return new ExecutePlanCommand(tool=>tool==Name?this:null).Execute(app,plan.ToString(Formatting.None));
         }
 
         private static ResolvedPlan Resolved(Document doc, GateResult gate, UIApplication app, ViewSheet sheet,
@@ -408,7 +506,7 @@ namespace Horizun.Revit.Commands
             foreach (Obstacle obstacle in obstacles)
                 plan.Elements.Add(new PlannedElement
                 {
-                    UniqueId = "obstacle:" + Rid.Value(obstacle.Id), Category = "fixed_obstacle",
+                    UniqueId = obstacle.Key ?? ("obstacle:" + Rid.Value(obstacle.Id)), Category = "fixed_obstacle",
                     Action = PlannedAction.Read,
                     GeometryFingerprint = PlanimetryGeometry.Signature(obstacle.Box),
                     BeforeValues = new Dictionary<string, string> { { "element", SafeId(obstacle.Element) } }
@@ -571,7 +669,7 @@ namespace Horizun.Revit.Commands
                 if (present)
                 {
                     foreach (Obstacle obstacle in obstacles)
-                        if (Conflict(box, obstacle.Box, gap, tolerance)) conflicts.Add(Rid.Value(obstacle.Id));
+                        if (Conflict(box, obstacle.Box, gap, tolerance)) conflicts.Add(obstacle.Key == null ? (JToken)new JValue(Rid.Value(obstacle.Id)) : new JValue(obstacle.Key));
                     foreach (Item other in items.Where(i => string.CompareOrdinal(i.Key, item.Key) < 0))
                         if (actual[other.Key].Valid && Conflict(box, actual[other.Key], gap, tolerance))
                             conflicts.Add(other.Key);
@@ -732,7 +830,7 @@ namespace Horizun.Revit.Commands
             public double Width, Height, AnchorOffsetX, AnchorOffsetY;
         }
 
-        private sealed class Obstacle { public ElementId Id; public Element Element; public PlanBox Box; }
+        private sealed class Obstacle { public ElementId Id; public string Key; public Element Element; public PlanBox Box; }
         private sealed class Rehearsal
         {
             public bool Ok, RollbackConfirmed;

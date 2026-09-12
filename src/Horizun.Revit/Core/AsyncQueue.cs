@@ -40,6 +40,7 @@ namespace Horizun.Revit.Core
         /// changes.
         /// </summary>
         public System.Collections.Generic.List<SequenceEntry> Sequence;
+        public string DocumentFingerprint;
     }
 
     public static class AsyncQueue

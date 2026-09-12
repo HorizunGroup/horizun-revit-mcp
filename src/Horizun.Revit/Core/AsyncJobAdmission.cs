@@ -16,6 +16,7 @@
 // commands need a UIApplication and cannot be tested without a Revit; this can.
 // -----------------------------------------------------------------------------
 using System;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -31,13 +32,13 @@ namespace Horizun.Revit.Core
         /// worse than a refusal.
         /// </summary>
         public static bool TryOpenProtected(string tool, IJobSink sink, DateTimeOffset? retainUntilUtc,
-                                            out Job job, out string refusal)
+                                            out Job job, out string refusal, JObject resumeContext = null)
         {
             job = null;
             refusal = null;
             try
             {
-                job = Job.Start(tool, sink);
+                job = Job.Start(tool, sink, resumeContext);
                 if (retainUntilUtc.HasValue) job.ProtectUntil(retainUntilUtc.Value);
                 return true;
             }

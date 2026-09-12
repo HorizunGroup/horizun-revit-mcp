@@ -135,6 +135,52 @@ def dialog_answer(answer):
     model it touched. A model that will not open unattended is still a finding;
     this only lets you measure one that would otherwise not be measurable at all.'''
     return __HzDialogAnswer(__hz_dialog_scope, answer)
+
+# Version 1 helpers are scoped to this execution, not installed in sys.modules.
+import types as _hz_types
+from contextlib import contextmanager as _hz_contextmanager
+horizun = _hz_types.ModuleType('horizun')
+horizun.version = 1
+
+@_hz_contextmanager
+def _hz_transaction(name='Horizun script'):
+    from Autodesk.Revit.DB import Transaction, SubTransaction, TransactionStatus
+    if doc is None:
+        raise RuntimeError('A document is required for a transaction')
+    tx = SubTransaction(doc) if doc.IsModifiable else Transaction(doc, name)
+    try:
+        if tx.Start() != TransactionStatus.Started:
+            raise RuntimeError('Transaction did not start')
+        try:
+            yield tx
+            status = tx.Commit()
+            if status != TransactionStatus.Committed:
+                raise RuntimeError('Transaction did not commit: ' + str(status))
+        except:
+            if tx.GetStatus() == TransactionStatus.Started:
+                status = tx.RollBack()
+                if status != TransactionStatus.RolledBack:
+                    raise RuntimeError('Rollback is unconfirmed: ' + str(status))
+            raise
+    finally:
+        tx.Dispose()
+
+def _hz_report(status='completed_unverified', created_ids=None, modified_ids=None,
+               deleted_ids=None, evidence=None, warnings=None, summary=None):
+    global __output__
+    __output__ = dict(status=status, summary=summary, created_ids=list(created_ids or []),
+                     modified_ids=list(modified_ids or []), deleted_ids=list(deleted_ids or []),
+                     verification=dict(checked=bool(evidence), evidence=list(evidence or [])),
+                     warnings=list(warnings or []))
+    return __output__
+
+def _hz_out_reference(dotnet_type):
+    import clr
+    return clr.Reference[dotnet_type]()
+
+horizun.transaction = _hz_transaction
+horizun.report = _hz_report
+horizun.out_reference = _hz_out_reference
 ";
 
         /// <summary>Runs after the caller's script, whatever happened to it.</summary>

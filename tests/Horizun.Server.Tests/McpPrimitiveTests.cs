@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,7 +18,7 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            Assert.Equal(4, resources.Count);
+            Assert.Equal(5, resources.Count);
             foreach (JObject resource in resources)
             {
                 Assert.StartsWith("horizun://", (string)resource["uri"]);
@@ -29,6 +30,22 @@ namespace Horizun.Server.Tests
                 Assert.Equal(resource["uri"], content["uri"]);
                 Assert.False(string.IsNullOrWhiteSpace((string)content["text"]));
             }
+        }
+
+        [Fact]
+        public void Workflow_catalog_is_a_structured_installed_resource()
+        {
+            JObject read = McpResources.Read(new JObject { ["uri"] = "horizun://workflows/bim-production" });
+            JObject catalog = JObject.Parse((string)read["contents"][0]["text"]);
+            JArray workflows = (JArray)catalog["workflows"];
+            Assert.Equal("horizun.workflow-catalog/1", (string)catalog["schema"]);
+            Assert.True(workflows.Count >= 9);
+            Assert.All(workflows.OfType<JObject>(), flow =>
+            {
+                Assert.False(string.IsNullOrWhiteSpace((string)flow["prompt"]));
+                Assert.NotEmpty((JArray)flow["tools"]);
+                Assert.False(string.IsNullOrWhiteSpace((string)flow["evidence"]));
+            });
         }
 
         [Fact]
@@ -61,7 +78,16 @@ namespace Horizun.Server.Tests
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
-            Assert.Equal(4, prompts.Count);
+            Assert.Equal(20, prompts.Count);
+            foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
+            {
+                Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));
+                var prompt = McpPrompts.Get(new JObject { ["name"] = item.Item1, ["arguments"] = new JObject { [item.Item2] = "explicit fixture specification" } });
+                string text = (string)prompt["messages"][0]["content"]["text"];
+                Assert.Contains("horizun_health", text);
+                Assert.Contains("dry_run=true", text);
+                Assert.Contains("cache_mode=bypass", text);
+            }
 
             McpError missing = Assert.Throws<McpError>(() => McpPrompts.Get(new JObject
             {
@@ -84,6 +110,32 @@ namespace Horizun.Server.Tests
             Assert.Equal("user", (string)message["role"]);
             Assert.Equal("text", (string)message["content"]["type"]);
             Assert.Contains("horizun_health", (string)message["content"]["text"]);
+
+            JObject workflow = McpPrompts.Get(new JObject
+            {
+                ["name"] = "safe-batch-parameter-update",
+                ["arguments"] = new JObject { ["updates"] = "door ids 10 and 11; Type Mark = D-101" }
+            });
+            string workflowText = (string)workflow["messages"][0]["content"]["text"];
+            Assert.Contains("dry_run=true", workflowText);
+            Assert.Contains("Do not apply", workflowText);
+
+            JObject coordination = McpPrompts.Get(new JObject
+            {
+                ["name"] = "architecture-structure-coordination"
+            });
+            Assert.Contains("horizun_clash", (string)coordination["messages"][0]["content"]["text"]);
+
+            JObject report = McpPrompts.Get(new JObject
+            {
+                ["name"] = "qaqc-report-export",
+                ["arguments"] = new JObject
+                {
+                    ["workbook_path"] = "C:\\reports\\qaqc.xlsx",
+                    ["evidence_source"] = "receipt 4f6a"
+                }
+            });
+            Assert.Contains(".horizunbak", (string)report["messages"][0]["content"]["text"]);
         }
 
         [Fact]

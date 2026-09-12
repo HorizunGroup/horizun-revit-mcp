@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -27,6 +27,44 @@ namespace Horizun.Revit.Core
 {
     public sealed class Dispatcher : IExternalEventHandler
     {
+        // A short, privacy-safe operational fact for the local Revit UI and
+        // horizun_health. Parameters and model names never enter it: an operator
+        // needs to know that Revit is busy and with which tool, not project data.
+        private static readonly object ActivityLock = new object();
+        private static string _activeTool;
+        private static DateTime _activeToolStartedUtc;
+
+        public static string CurrentActivityDescription()
+        {
+            lock (ActivityLock)
+            {
+                if (string.IsNullOrEmpty(_activeTool)) return null;
+                int seconds = (int)Math.Max(0, (DateTime.UtcNow - _activeToolStartedUtc).TotalSeconds);
+                return "Revit is executing '" + _activeTool + "' (" + seconds + " s elapsed).";
+            }
+        }
+
+        private static void BeginActivity(string tool)
+        {
+            lock (ActivityLock)
+            {
+                _activeTool = tool;
+                _activeToolStartedUtc = DateTime.UtcNow;
+            }
+        }
+
+        private static void EndActivity(string tool)
+        {
+            lock (ActivityLock)
+            {
+                if (string.Equals(_activeTool, tool, StringComparison.OrdinalIgnoreCase))
+                {
+                    _activeTool = null;
+                    _activeToolStartedUtc = default(DateTime);
+                }
+            }
+        }
+
         private readonly Dictionary<string, ICommand> _commands =
             new Dictionary<string, ICommand>(StringComparer.OrdinalIgnoreCase);
 
@@ -44,6 +82,17 @@ namespace Horizun.Revit.Core
         private bool _preferAsync;
         private volatile bool _shuttingDown;
         private int _backgroundRaiseScheduled;
+        private volatile string _documentSnapshot;
+        internal string DocumentSnapshot => _documentSnapshot;
+        private void CaptureDocument(UIApplication app)
+        {
+            try
+            {
+                var doc = app.ActiveUIDocument?.Document;
+                _documentSnapshot = doc == null ? "" : DocumentGate.IdentityOf(doc, app.Application.VersionNumber).Fingerprint();
+            }
+            catch { _documentSnapshot = null; }
+        }
 
         /// <summary>
         /// The ExternalEvent behind IWorkRaiser, which is the ONLY Revit-dependent part
@@ -422,6 +471,7 @@ namespace Horizun.Revit.Core
         /// <summary>The ExternalEvent callback — runs on Revit's UI thread.</summary>
         public void Execute(UIApplication app)
         {
+            CaptureDocument(app);
             // Fairness between ordinary waiting callers and explicit run_async jobs.
             // If both queues stay busy, turns alternate; neither can starve the other.
             if (_preferAsync && AsyncQueue.Count > 0)
@@ -443,6 +493,7 @@ namespace Horizun.Revit.Core
                 return;
             }
 
+            BeginActivity(req.Name);
             DurableCommandDecision durableClaim = null;
             try
             {
@@ -464,6 +515,28 @@ namespace Horizun.Revit.Core
                     req.Result = CommandResult.Fail(permissionReason + " Nothing ran.");
                     return;
                 }
+                if (BlocksWorksharedWrite(app, contract, request, out string worksharedRefusal))
+                {
+                    req.Result = CommandResult.Fail(worksharedRefusal + " Nothing ran.");
+                    return;
+                }
+                string sourceSha = null;
+                if (request != null && req.Name == "horizun_execute_python")
+                {
+                    var source = PythonSourceSnapshot.Resolve(request);
+                    if (source.Error != null)
+                    {
+                        req.Result = CommandResult.FailWithDetail(source.Error, new JObject
+                        {
+                            ["code"] = "source_resolution_failed", ["write_started"] = false,
+                            ["changes_applied"] = false
+                        });
+                        return;
+                    }
+                    sourceSha = source.ExecutionSha256;
+                    request = source.ExecutionRequest(request);
+                    req.ParamsJson = request.ToString(Newtonsoft.Json.Formatting.None);
+                }
                 if (request != null && RequiresIdempotency(contract, request))
                 {
                     string key = request.Value<string>("idempotency_key");
@@ -479,7 +552,7 @@ namespace Horizun.Revit.Core
                     string documentFingerprint = DocumentFingerprintFor(app, contract, request);
                     string fingerprint = RequestFingerprint.OfOperation(
                         req.Name, documentFingerprint, request, "idempotency_key", "confirmation_token");
-                    try { durableClaim = _idempotency.Claim(key, req.Name, fingerprint); }
+                    try { durableClaim = _idempotency.Claim(key, req.Name, fingerprint, sourceSha); }
                     catch (Exception ex)
                     {
                         req.Result = CommandResult.Fail(
@@ -496,7 +569,16 @@ namespace Horizun.Revit.Core
                     }
                     if (!durableClaim.IsFresh)
                     {
-                        req.Result = CommandResult.Fail(durableClaim.Message);
+                        req.Result = CommandResult.FailWithDetail(durableClaim.Message, new JObject
+                        {
+                            ["code"] = "idempotency_" + durableClaim.Outcome.ToString().ToLowerInvariant(),
+                            ["previous_source_sha256"] = durableClaim.PreviousSourceSha256,
+                            ["submitted_source_sha256"] = sourceSha,
+                            ["hash_scope"] = "execution_bundle_v1: normalized main source, ordered include snapshots and helpers version",
+                            ["previous_execution_sha256"] = durableClaim.PreviousSourceSha256,
+                            ["submitted_execution_sha256"] = sourceSha,
+                            ["write_started"] = false, ["changes_applied"] = false
+                        });
                         return;
                     }
                 }
@@ -532,7 +614,15 @@ namespace Horizun.Revit.Core
                 // A command threw instead of returning Fail. Surface it; never let the
                 // UI-thread callback die with an unobserved exception.
                 Log.Error($"'{req.Name}' threw on the UI thread", ex);
-                req.Result = CommandResult.Fail(ex.GetType().Name + ": " + ex.Message);
+                req.Result = CommandResult.FailWithDetail(ex.GetType().Name + ": " + ex.Message, new JObject
+                {
+                    ["code"] = "unhandled_command_exception", ["tool"] = req.Name,
+                    ["correlation_id"] = req.WireId, ["phase"] = "handler",
+                    ["exception_type"] = ex.GetType().FullName, ["exception_message"] = ex.Message,
+                    ["inner_exception_type"] = ex.InnerException?.GetType().FullName,
+                    ["inner_exception_message"] = ex.InnerException?.Message,
+                    ["write_started"] = null, ["changes_applied"] = null, ["transaction_status"] = "unknown"
+                });
             }
             finally
             {
@@ -550,6 +640,7 @@ namespace Horizun.Revit.Core
                             "new key until the model has been inspected.");
                     }
                 }
+                CaptureDocument(app);
                 // A result nobody is waiting for is still worth a line in the log: it is
                 // the only record that the work Revit was holding the thread for is done.
                 if (req.Abandoned)
@@ -557,9 +648,45 @@ namespace Horizun.Revit.Core
                              $"result discarded ({(req.Result != null && req.Result.Success ? "it had succeeded" : "it had failed")}). " +
                              "The UI thread is free again.");
                 _gate.Complete(req);
+                EndActivity(req.Name);
                 _preferAsync = AsyncQueue.Count > 0;
                 PumpNext();
             }
+        }
+
+        /// <summary>
+        /// A machine owner can designate workshared models as audit-only. The decision
+        /// sits on the UI thread, beside the actual active document; a ribbon warning
+        /// alone would be bypassable by any MCP call. Unknown worksharing state blocks
+        /// a possible write for the same reason an unreadable lock is not an unlocked
+        /// model. Dry runs are explicitly admitted because the command's own contract
+        /// says they roll back.
+        /// </summary>
+        private static bool BlocksWorksharedWrite(UIApplication app, CommandContract contract, JObject request,
+                                                  out string refusal)
+        {
+            refusal = null;
+            if (!Settings.ForceReadOnlyOnWorkshared || contract == null ||
+                contract.Effect == ToolEffect.ReadOnly || contract.Effect == ToolEffect.HostState)
+                return false;
+
+            // A declared dry run is the only safe exemption. An omitted dry_run on a
+            // write-capable surface must not be treated as true by a generic gate: each
+            // command owns its defaults, and this policy is deliberately conservative.
+            if (contract.Effect == ToolEffect.MutatingUnlessDryRun && request?.Value<bool?>("dry_run") == true)
+                return false;
+
+            bool? workshared = null;
+            try { workshared = app?.ActiveUIDocument?.Document?.IsWorkshared; }
+            catch { }
+            if (workshared == false) return false;
+
+            refusal = workshared == true
+                ? "This machine is configured with force_read_only_on_workshared=true and the active document is workshared. " +
+                  "Typed writes, document-session operations and external side effects are refused; run a dry_run or disable this local policy from the Revit ribbon after approval."
+                : "This machine is configured with force_read_only_on_workshared=true but the active document's workshared state could not be read. " +
+                  "An unknown collaboration state is not permission to write; run a dry_run or resolve the document state locally.";
+            return true;
         }
 
         private static bool RequiresIdempotency(CommandContract contract, JObject request)
@@ -581,7 +708,7 @@ namespace Horizun.Revit.Core
                 case ToolEffect.DocumentSession:
                     string operation = (request.Value<string>("operation") ?? "").ToLowerInvariant();
                     if (operation == "inspect" || string.IsNullOrEmpty(operation)) return false;
-                    if (operation == "close" && request.Value<bool?>("dry_run") == true) return false;
+                    if (request.Value<bool?>("dry_run") == true) return false;
                     return true;
                 default:
                     return false;
@@ -647,6 +774,7 @@ namespace Horizun.Revit.Core
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
             CommandResult result = null;
+            bool began = false;
             try
             {
                 ICommand cmd;
@@ -664,16 +792,31 @@ namespace Horizun.Revit.Core
                         // this it opens its own, and the caller polls an id whose
                         // checkpoint_count never leaves zero while the progress accumulates
                         // in a second file it was never told about. Measured on a 150 s job.
-                        Job.Ambient = work.Record;
                         // The record moves from queued to running HERE, and not before.
                         // Until this line the entry was waiting for a turn on the UI
                         // thread, and job_status must be able to say which of the two it
                         // is - "no finish line" used to cover queued, running and died.
-                        try { work.Record.MarkRunning(); } catch { }
+                        if (work.DocumentFingerprint != null)
+                        {
+                            if (work.DocumentFingerprint.Length == 0)
+                            {
+                                if (app.ActiveUIDocument?.Document != null)
+                                    throw new InvalidOperationException("A document opened after this job was admitted. Nothing was executed.");
+                            }
+                            else
+                            {
+                                CommandResult moved = DocumentGate.StillTheSame(app, work.DocumentFingerprint, work.Command);
+                                if (moved != null) throw new InvalidOperationException(moved.Error);
+                            }
+                        }
+                        AsyncResumeGuard.Begin(work.Record);
+                        began = true;
+                        Job.Ambient = work.Record;
                         try { result = cmd.Execute(app, work.ParamsJson); }
                         finally
                         {
                             Job.Ambient = null;
+                            CaptureDocument(app);
                             object said = watch.Report();
                             if (said != null)
                             {
@@ -731,9 +874,13 @@ namespace Horizun.Revit.Core
                         result.CapabilityGaps.ToString(Newtonsoft.Json.Formatting.None);
                     string detailJson = result.Detail == null ? null :
                         result.Detail.ToString(Newtonsoft.Json.Formatting.None);
-                    work.Record.Result(result.Success ? payloadJson : null,
-                                       revitSaidJson, fallbackJson, gapsJson, detailJson);
-                    work.Record.Finish(result.Success ? "ok" : "failed", result.Success ? null : result.Error);
+                    if (began)
+                    {
+                        work.Record.Result(result.Success ? payloadJson : null,
+                                           revitSaidJson, fallbackJson, gapsJson, detailJson);
+                        work.Record.Finish(result.Success ? "ok" : "failed", result.Success ? null : result.Error);
+                    }
+                    else work.Record.Finish("not_started", result?.Error ?? "The command never started.");
                 }
                 catch (Exception ex) { Log.Error("could not close the async job record", ex); }
 
@@ -999,6 +1146,8 @@ namespace Horizun.Revit.Core
 
         public bool CancelQueued(string wireId, out string detail)
             => _gate.CancelQueued(wireId, out detail);
+
+        public JObject ObserveRequest(string wireId) => _gate.Observe(wireId);
 
         public int Shutdown()
         {

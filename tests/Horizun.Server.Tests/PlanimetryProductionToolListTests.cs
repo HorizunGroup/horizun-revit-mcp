@@ -51,7 +51,7 @@ namespace Horizun.Server.Tests
                 string[] ops = plan["properties"]["operation"]["enum"].Select(x => (string)x).ToArray();
                 Assert.Equal(new[]
                 {
-                    "auto_tags", "intent_dimension",
+                    "auto_tags", "intent_dimension", "dimension_set",
                     "auto_dimension_grids", "auto_dimension_levels",
                     "auto_dimension_curtain_walls", "auto_dimension_openings"
                 }, ops);
@@ -67,8 +67,9 @@ namespace Horizun.Server.Tests
                     c["then"]["required"].Any(r => (string)r == "element_ids"));
                 Assert.Contains(allOf.OfType<JObject>(), c =>
                     (string)c["if"]?["properties"]?["operation"]?["const"] == "intent_dimension" &&
-                    c["then"]?["required"] != null &&
-                    c["then"]["required"].Any(r => (string)r == "element_ids"));
+                    c["then"]?["oneOf"] is JArray alternatives &&
+                    alternatives.Any(a=>a["required"].Any(r=>(string)r=="element_ids")) &&
+                    alternatives.Any(a=>a["required"].Any(r=>(string)r=="reference_targets")));
                 Assert.NotNull(plan["properties"]["link_instance_id"]);
                 Assert.NotNull(plan["properties"]["chain_separation"]);
 

@@ -382,94 +382,132 @@ namespace Horizun.Server
         /// so a cancel notification changed nothing about when this returned.
         /// </summary>
         public static JObject Send(Discovered d, string command, JObject args, int timeoutMs,
-                                   CancellationToken ct = default(CancellationToken))
+                                   CancellationToken ct = default(CancellationToken), Action<JObject> observe = null)
         {
-            ct.ThrowIfCancellationRequested();
             string wireId = Guid.NewGuid().ToString("N");
-
-            using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+            bool possiblySubmitted = false, cancelledBeforeStart = false;
+            string phase = "connect";
+            try
             {
-                // Connect in slices so a cancel between them is noticed. ConnectAsync
-                // exists on newer targets only, and this file is shared, so the wait is
-                // chunked rather than made async.
-                const int connectBudgetMs = 5000;
-                const int sliceMs = 250;
-                var connectClock = System.Diagnostics.Stopwatch.StartNew();
-                while (true)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    try { pipe.Connect(sliceMs); break; }
-                    catch (TimeoutException)
-                    {
-                        if (connectClock.ElapsedMilliseconds >= connectBudgetMs)
-                            throw new TimeoutException(
-                                "Could not connect to Revit's bridge within " + connectBudgetMs + " ms. Nothing was sent.");
-                    }
-                }
-
-                var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
-
-                var req = new JObject
-                {
-                    ["id"] = wireId,
-                    ["command"] = command,
-                    ["params"] = args ?? new JObject(),
-                    ["token"] = d.Token
-                };
-
-                // Last check before the write. Past this point the command IS in Revit's
-                // hands and cancelling can only stop us listening for the answer.
                 ct.ThrowIfCancellationRequested();
-                writer.WriteLine(req.ToString(Newtonsoft.Json.Formatting.None));
 
-                // BOUNDED. This was StreamReader.ReadLineAsync(), which reads until it
-                // finds a newline however far away that is - so the size of this process
-                // was decided by whatever came back down the pipe. The add-in caps what it
-                // sends, but the two halves ship separately and a server built today
-                // routinely meets an add-in installed months ago, so neither end may be
-                // the only gate. Same limit, from the shared contract, at both ends.
-                var reader = new BoundedLineReader(pipe, Horizun.Contracts.Contract.MaxReplyBytes);
-                var task = System.Threading.Tasks.Task.Run(() => reader.ReadLine());
-                int waited = WaitHandle.WaitAny(
-                    new[] { ((IAsyncResult)task).AsyncWaitHandle, ct.WaitHandle }, timeoutMs);
-
-                if (waited == WaitHandle.WaitTimeout)
+                using (var pipe = new NamedPipeClientStream(".", d.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
                 {
-                    CancelAttempt cancel = TryCancelQueued(d, wireId);
-                    if (cancel.CancelledBeforeStart == true)
-                        throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. The request " +
-                            "was still waiting in Revit's FIFO queue and was removed. It NEVER STARTED: nothing " +
-                            "was executed and nothing was written.");
-                    throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. " +
-                        CancellationUncertainty(command, cancel));
-                }
+                    // Connect in slices so a cancel between them is noticed. ConnectAsync
+                    // exists on newer targets only, and this file is shared, so the wait is
+                    // chunked rather than made async.
+                    const int connectBudgetMs = 5000;
+                    const int sliceMs = 250;
+                    var connectClock = System.Diagnostics.Stopwatch.StartNew();
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        try { pipe.Connect(sliceMs); break; }
+                        catch (TimeoutException)
+                        {
+                            if (connectClock.ElapsedMilliseconds >= connectBudgetMs)
+                                throw new TimeoutException(
+                                    "Could not connect to Revit's bridge within " + connectBudgetMs + " ms. Nothing was sent.");
+                        }
+                    }
 
-                if (waited == 1)
-                {
-                    CancelAttempt cancel = TryCancelQueued(d, wireId);
-                    if (cancel.CancelledBeforeStart == true)
+                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+
+                    var req = new JObject
+                    {
+                        ["id"] = wireId,
+                        ["command"] = command,
+                        ["params"] = args ?? new JObject(),
+                        ["token"] = d.Token
+                    };
+
+                    // Last check before the write. Past this point the command IS in Revit's
+                    // hands and cancelling can only stop us listening for the answer.
+                    ct.ThrowIfCancellationRequested();
+                    phase = "send";
+                    // A partial pipe write is already an uncertain submission.
+                    possiblySubmitted = true;
+                    writer.WriteLine(req.ToString(Newtonsoft.Json.Formatting.None));
+                    phase = "receive";
+
+                    // BOUNDED. This was StreamReader.ReadLineAsync(), which reads until it
+                    // finds a newline however far away that is - so the size of this process
+                    // was decided by whatever came back down the pipe. The add-in caps what it
+                    // sends, but the two halves ship separately and a server built today
+                    // routinely meets an add-in installed months ago, so neither end may be
+                    // the only gate. Same limit, from the shared contract, at both ends.
+                    var reader = new BoundedLineReader(pipe, Horizun.Contracts.Contract.MaxReplyBytes);
+                    var task = System.Threading.Tasks.Task.Run(() => reader.ReadLine());
+                    var waiting = System.Diagnostics.Stopwatch.StartNew();
+                    int waited;
+                    do
+                    {
+                        int remaining = (int)Math.Max(0, timeoutMs - waiting.ElapsedMilliseconds);
+                        waited = WaitHandle.WaitAny(new[] { ((IAsyncResult)task).AsyncWaitHandle, ct.WaitHandle }, observe == null ? remaining : Math.Min(remaining, 5000));
+                        if (waited != WaitHandle.WaitTimeout || waiting.ElapsedMilliseconds >= timeoutMs) break;
+                        try { observe?.Invoke(ReadRequestStatus(d, wireId)); } catch { /* Observability never cancels work. */ }
+                    } while (true);
+
+                    if (waited == WaitHandle.WaitTimeout)
+                    {
+                        CancelAttempt cancel = TryCancelQueued(d, wireId);
+                        cancelledBeforeStart = cancel.CancelledBeforeStart == true;
+                        if (cancel.CancelledBeforeStart == true)
+                            throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. The request " +
+                                "was still waiting in Revit's FIFO queue and was removed. It NEVER STARTED: nothing " +
+                                "was executed and nothing was written.");
+                        throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. " +
+                            CancellationUncertainty(command, cancel));
+                    }
+
+                    if (waited == 1)
+                    {
+                        CancelAttempt cancel = TryCancelQueued(d, wireId);
+                        cancelledBeforeStart = cancel.CancelledBeforeStart == true;
+                        if (cancel.CancelledBeforeStart == true)
+                            throw new OperationCanceledException(
+                                "Cancelled while waiting for Revit to answer '" + command + "'. The request was still " +
+                                "in the FIFO queue and was removed before it started. Nothing was executed or written.", ct);
                         throw new OperationCanceledException(
-                            "Cancelled while waiting for Revit to answer '" + command + "'. The request was still " +
-                            "in the FIFO queue and was removed before it started. Nothing was executed or written.", ct);
-                    throw new OperationCanceledException(
-                        "Cancelled while waiting for Revit to answer '" + command + "'. " +
-                        CancellationUncertainty(command, cancel), ct);
-                }
+                            "Cancelled while waiting for Revit to answer '" + command + "'. " +
+                            CancellationUncertainty(command, cancel), ct);
+                    }
 
-                BoundedLine reply = task.Result;
-                if (reply.Outcome == BoundedLineOutcome.TooLong)
-                    throw new IOException(
-                        "Revit's reply to '" + command + "' was " + reply.Bytes + " bytes, over the " +
-                        Horizun.Contracts.Contract.MaxReplyBytes + " byte limit, so it was NOT read into memory and " +
-                        "cannot be returned. THE COMMAND ITSELF RAN: whatever it was going to do inside Revit, it " +
-                        "did - only the answer is lost. Ask for less of the model at a time (a narrower category, " +
-                        "a smaller id list, or a view) rather than re-running this unchanged.");
-                if (reply.Outcome == BoundedLineOutcome.Failed)
-                    throw new IOException(reply.Error);
-                if (reply.Outcome == BoundedLineOutcome.EndOfStream)
-                    throw new IOException("Pipe closed before a reply arrived" +
-                                          (reply.Bytes > 0 ? " (" + reply.Bytes + " bytes of one had been sent)." : "."));
-                return JObject.Parse(reply.Line);
+                    BoundedLine reply = task.Result;
+                    if (reply.Outcome == BoundedLineOutcome.TooLong)
+                        throw new IOException(
+                            "Revit's reply to '" + command + "' was " + reply.Bytes + " bytes, over the " +
+                            Horizun.Contracts.Contract.MaxReplyBytes + " byte limit, so it was NOT read into memory and " +
+                            "cannot be returned. THE COMMAND ITSELF RAN: whatever it was going to do inside Revit, it " +
+                            "did - only the answer is lost. Ask for less of the model at a time (a narrower category, " +
+                            "a smaller id list, or a view) rather than re-running this unchanged.");
+                    if (reply.Outcome == BoundedLineOutcome.Failed)
+                        throw new IOException(reply.Error);
+                    if (reply.Outcome == BoundedLineOutcome.EndOfStream)
+                        throw new IOException("Pipe closed before a reply arrived" +
+                                              (reply.Bytes > 0 ? " (" + reply.Bytes + " bytes of one had been sent)." : "."));
+                    return JObject.Parse(reply.Line);
+                }
+            }
+            catch (Exception ex)
+            {
+                bool nothingStarted = !possiblySubmitted || cancelledBeforeStart;
+                ex.Data["horizun_transport_detail"] = new JObject
+                {
+                    ["code"] = "revit_transport_failed",
+                    ["tool"] = command,
+                    ["operation"] = args?["operation"],
+                    ["correlation_id"] = wireId,
+                    ["phase"] = phase,
+                    ["exception_type"] = ex.GetType().FullName,
+                    ["exception_message"] = ex.Message,
+                    ["request_may_have_been_submitted"] = possiblySubmitted,
+                    ["cancelled_before_start"] = cancelledBeforeStart,
+                    ["write_started"] = nothingStarted ? (JToken)false : null,
+                    ["changes_applied"] = nothingStarted ? (JToken)false : null,
+                    ["transaction_status"] = nothingStarted ? "not_started" : "unknown"
+                };
+                throw;
             }
         }
 
@@ -477,6 +515,29 @@ namespace Horizun.Server
         {
             public bool? CancelledBeforeStart;
             public string State;
+        }
+
+        private static JObject ReadRequestStatus(Discovered target, string wireId)
+        {
+            try
+            {
+                using (var pipe = new NamedPipeClientStream(".", target.PipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+                {
+                    pipe.Connect(250);
+                    var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true };
+                    string id = "observe-" + Guid.NewGuid().ToString("N");
+                    writer.WriteLine(new JObject { ["id"] = id, ["command"] = "__horizun_request_status", ["params"] = new JObject { ["wire_id"] = wireId }, ["token"] = target.Token }.ToString(Newtonsoft.Json.Formatting.None));
+                    var task = System.Threading.Tasks.Task.Run(() => new BoundedLineReader(pipe, 65536).ReadLine());
+                    if (!task.Wait(500)) return new JObject { ["state"] = "unobserved", ["reason"] = "status_timeout" };
+                    var line = task.Result;
+                    if (line.Outcome != BoundedLineOutcome.Ok) throw new IOException("Status response unavailable.");
+                    var reply = JObject.Parse(line.Line);
+                    if ((string)reply["id"] != id || reply.Value<bool?>("success") != true || !(reply["data"] is JObject data) || (string)data["wire_id"] != wireId)
+                        throw new IOException("Status response was not correlated with this request.");
+                    return data;
+                }
+            }
+            catch (Exception ex) { return new JObject { ["state"] = "unobserved", ["reason"] = ex.GetType().Name }; }
         }
 
         /// <summary>

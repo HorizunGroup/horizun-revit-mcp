@@ -1,0 +1,25 @@
+{
+  "id": "horizun-model-health-baseline",
+  "version": "0.1.0",
+  "purpose": "Example only. Calibrate and copy into a project-owned profile before using it as a delivery gate.",
+  "requirement_set": {
+    "max_warnings": 0,
+    "max_in_place_families": 0,
+    "max_views_off_sheets": 0,
+    "max_unpinned_links": 0,
+    "max_duplicate_level_names": 0,
+    "max_coincident_levels": 0,
+    "max_duplicate_grid_names": 0,
+    "max_coincident_grids": 0,
+    "forbid_orphan_group_types": true,
+    "forbid_imported_cad": true,
+    "forbid_room_problems": true,
+    "require_coordinate_facts": ["internal_origin", "project_base_point", "survey_point", "project_location", "true_north", "length_units"]
+  },
+  "tolerances": {
+    "origin_distance_mm": 1000000,
+    "level_coincidence_mm": 1,
+    "grid_coincidence_mm": 1,
+    "grid_axis_tolerance_degrees": 0.5
+  }
+}

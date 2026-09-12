@@ -144,6 +144,17 @@ namespace Horizun.Revit.Core
         public PostconditionCheck Compare(string what, long requested, long found)
             => Record(what, requested, found, requested == found);
 
+        public PostconditionCheck Measure(string what, double requested, double found, double tolerance, string unit, string method)
+        {
+            if (double.IsNaN(found) || double.IsInfinity(found)) return Unreadable(what, requested, "non-finite measurement");
+            if (double.IsNaN(requested) || double.IsInfinity(requested) || double.IsNaN(tolerance) || double.IsInfinity(tolerance) || tolerance < 0)
+                throw new ArgumentException("Requested value and tolerance must be finite; tolerance must be non-negative.");
+            Record(what, requested, found, Math.Abs(requested - found) <= tolerance);
+            var row = _checks[_checks.Count - 1];
+            row["unit"] = unit; row["tolerance"] = tolerance; row["method"] = method;
+            return this;
+        }
+
         /// <summary>
         /// The property could not be re-read. NOT a failure and NOT a pass - it is the
         /// absence of a measurement, and it makes the whole checklist unverified with the

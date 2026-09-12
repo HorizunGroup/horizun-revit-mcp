@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP - verified authoring of project-resident system-family types.
 // -----------------------------------------------------------------------------
 using System;
@@ -25,6 +25,8 @@ namespace Horizun.Revit.Commands
             GateResult gate = DocumentGate.ForMutation(app, request, Name);
             if (!gate.Ok) return gate.Refusal;
             Document doc = gate.Document;
+            string validationMode = request.Value<string>("validation_mode") ?? "arguments";
+            if (validationMode != "arguments" && validationMode != "revit_rollback") return CommandResult.Fail("validation_mode must be arguments or revit_rollback.");
             if (doc.IsFamilyDocument) return CommandResult.Fail("System-family types live in a project document, not in an RFA.");
             string units = (request.Value<string>("units") ?? "mm").ToLowerInvariant();
             if (!TryScale(units, out double scale)) return CommandResult.Fail("units must be mm, m or feet.");
@@ -39,18 +41,20 @@ namespace Horizun.Revit.Commands
                 try
                 {
                     if (!(actions[i] is JObject action)) throw new ArgumentException("action is not an object");
+                    foreach (var field in action.Properties())
+                        if (!new[] { "source_type_id", "new_name", "values", "compound_structure", "junction_preference" }.Contains(field.Name))
+                            throw new ArgumentException("Unknown type action argument: " + field.Name);
+                    if (action["values"] != null && !(action["values"] is JObject)) throw new ArgumentException("values must be an object.");
                     long raw = action.Value<long?>("source_type_id") ?? -1;
                     if (!Rid.CanRepresent(raw) || !(doc.GetElement(Rid.Make(raw)) is ElementType source))
                         throw new ArgumentException("source_type_id must identify an ElementType");
-                    if (source is FamilySymbol)
-                        throw new ArgumentException("source_type_id is a loadable FamilySymbol; use horizun_create_family/family tools, not system-type duplication");
                     string name = action.Value<string>("new_name");
                     if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("new_name is required");
                     name = name.Trim();
-                    string uniqueness = source.GetType().FullName + "\n" + name;
+                    string uniqueness = source.GetType().FullName + ":" + (source is FamilySymbol symbol ? symbol.Family.UniqueId : "") + "\n" + name;
                     if (!targetNames.Add(uniqueness)) throw new ArgumentException("new_name '" + name + "' is duplicated for " + source.GetType().Name);
                     if (new FilteredElementCollector(doc).WhereElementIsElementType().Cast<ElementType>()
-                        .Any(x => x.GetType() == source.GetType() && string.Equals(x.Name, name, StringComparison.Ordinal)))
+                        .Any(x => x.GetType() == source.GetType() && (!(source is FamilySymbol sf) || (x is FamilySymbol xf && xf.Family.Id == sf.Family.Id)) && string.Equals(x.Name, name, StringComparison.Ordinal)))
                         throw new ArgumentException(source.GetType().Name + " named '" + name + "' already exists");
                     JObject values = action["values"] as JObject ?? new JObject();
                     var writes = new List<Write>();
@@ -65,6 +69,15 @@ namespace Horizun.Revit.Commands
                     CompoundPlan compound = BuildCompoundPlan(doc, action["compound_structure"], scale);
                     if (compound != null && !(source is HostObjAttributes))
                         throw new ArgumentException("compound_structure is only valid for a HostObjAttributes system type such as WallType, FloorType, RoofType or CeilingType");
+                    if (compound != null)
+                    {
+                        using (var inherited = ((HostObjAttributes)source).GetCompoundStructure())
+                        {
+                            if (inherited == null) throw new ArgumentException("The source has no compound structure to inherit compatible settings from.");
+                            if (action["compound_structure"]["end_cap"] == null) compound.EndCap = inherited.EndCap;
+                            if (action["compound_structure"]["opening_wrapping"] == null) compound.OpeningWrapping = inherited.OpeningWrapping;
+                        }
+                    }
                     if (compound != null) ValidateCompound((HostObjAttributes)source, compound);
                     JunctionPlan junction = null;
                     if (action["junction_preference"] is JObject junctionToken)
@@ -105,7 +118,7 @@ namespace Horizun.Revit.Commands
                             junction.TapFitting = tapSymbol;
                         }
                     }
-                    plans.Add(new Plan { Index = i, Source = source, NewName = name, Writes = writes, Compound = compound, Junction = junction });
+                    plans.Add(new Plan { Index = i, Source = source, NewName = name, Writes = writes, Compound = compound, Junction = junction, SourceState = SourceState(source) });
                 }
                 catch (Exception ex) { errors.Add(new JObject { ["index"] = i, ["error"] = ex.Message }); }
             }
@@ -160,9 +173,15 @@ namespace Horizun.Revit.Commands
 
             if (dryRun)
             {
+                CommandResult apiRehearsal = null;
+                if (errors.Count == 0 && validationMode == "revit_rollback")
+                {
+                    apiRehearsal = ApplyTypePlans(doc, plans, "Horizun: rehearse types", true);
+                    if (!apiRehearsal.Success) return apiRehearsal;
+                }
                 var result = new JObject
                 {
-                    ["dry_run"] = true, ["transaction_status"] = "not_started", ["requested"] = actions.Count,
+                    ["dry_run"] = true, ["transaction_status"] = "not_started", ["validation_level"] = apiRehearsal == null ? "arguments_and_compound_structure" : "revit_construction_rolled_back", ["api_construction_rehearsed"] = apiRehearsal != null, ["api_rehearsal"] = apiRehearsal?.Data == null ? null : JToken.FromObject(apiRehearsal.Data), ["requested"] = actions.Count,
                     ["valid"] = plans.Count, ["invalid"] = errors.Count, ["errors"] = errors,
                     ["plan"] = new JArray(plans.Select(x => new JObject
                     {
@@ -170,7 +189,7 @@ namespace Horizun.Revit.Commands
                         ["source_name"] = x.Source.Name, ["new_name"] = x.NewName, ["parameters"] = new JArray(x.Writes.Select(w => w.Spec)),
                         ["compound_structure"] = x.Compound?.Summary()
                     })),
-                    ["note"] = "No type was duplicated and no transaction was opened."
+                    ["note"] = apiRehearsal == null ? "No transaction opened; SetCompoundStructure on a type was not rehearsed." : "Provisional duplicates were constructed, verified and rolled back."
                 };
                 if (errors.Count == 0) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 // Invalid entries make this a partial rehearsal, not a clean one: the token
@@ -195,53 +214,17 @@ namespace Horizun.Revit.Commands
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
 
-            string txName = request.Value<string>("transaction_name") ?? "Horizun: manage system family types";
-            using (var tx = new Transaction(doc, txName))
-            {
-                tx.Start();
-                try
-                {
-                    foreach (Plan plan in plans)
-                    {
-                        plan.CreatedId = plan.Source.Duplicate(plan.NewName).Id;
-                        ElementType created = doc.GetElement(plan.CreatedId) as ElementType;
-                        if (created == null) throw new InvalidOperationException("Duplicate returned no ElementType for action " + plan.Index);
-                        if (plan.Junction != null && created is MEPCurveType pipeCreated)
-                        {
-                            // The duplicate INHERITS the source's routing preferences; this
-                            // sets the junction the caller asked for ON THE NEW TYPE ONLY,
-                            // and the verify below re-reads both facts from the model.
-                            RoutingPreferenceManager routingCreated = pipeCreated.RoutingPreferenceManager;
-                            if (plan.Junction.Kind == "tap")
-                            {
-                                if (!plan.Junction.TapFitting.IsActive) { plan.Junction.TapFitting.Activate(); doc.Regenerate(); }
-                                routingCreated.AddRule(RoutingPreferenceRuleGroupType.Junctions,
-                                    new RoutingPreferenceRule(plan.Junction.TapFitting.Id, "Horizun tap"));
-                                routingCreated.PreferredJunctionType = PreferredJunctionType.Tap;
-                            }
-                            else routingCreated.PreferredJunctionType = PreferredJunctionType.Tee;
-                        }
-                        foreach (Write write in plan.Writes)
-                        {
-                            Parameter parameter = ResolveParameter(created, write.Spec, out string why);
-                            if (parameter == null) throw new InvalidOperationException("duplicated type lost parameter '" + write.Spec + "': " + why);
-                            Apply(parameter, write);
-                        }
-                        if (plan.Compound != null)
-                            ApplyCompound((HostObjAttributes)created, plan.Compound);
-                    }
-                    Guard.Commit(tx, txName);
-                }
-                catch (Exception ex)
-                {
-                    bool attempted = false; string rb = PlanFailure.NotAttempted;
-                    if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
-                    return CommandResult.Fail("Atomic system-type creation failed: " + ex.Message + ". " +
-                        PlanFailure.SingleTransactionOutcome(attempted, rb, "no duplicate in this batch was kept"));
-                }
-            }
+            return ApplyTypePlans(doc, plans, request.Value<string>("transaction_name") ?? "Horizun: manage types", false);
+        }
 
-            var rows = new JArray(); int verified = 0;
+        private static JArray VerifyTypes(Document doc, List<Plan> plans, out int verified)
+        {
+            try { return ReadTypes(doc,plans,out verified); }
+            catch(Exception ex) { verified=0; return new JArray(new JObject { ["verified"]=false,["measurement_complete"]=false,["error"]=ex.Message }); }
+        }
+        private static JArray ReadTypes(Document doc, List<Plan> plans, out int verified)
+        {
+            var rows = new JArray(); verified = 0;
             foreach (Plan plan in plans)
             {
                 ElementType fresh = doc.GetElement(plan.CreatedId) as ElementType;
@@ -250,7 +233,7 @@ namespace Horizun.Revit.Commands
                 foreach (Write write in plan.Writes)
                 {
                     Parameter parameter = fresh == null ? null : ResolveParameter(fresh, write.Spec, out string _);
-                    JToken actual = Read(parameter); bool ok = parameter != null && JToken.DeepEquals(actual, write.Expected);
+                    JToken actual = Read(parameter); bool ok = parameter != null && (write.Expected.Type == JTokenType.Float ? actual.Type == JTokenType.Float && Math.Abs(actual.Value<double>() - write.Expected.Value<double>()) <= 1e-9 : JToken.DeepEquals(actual, write.Expected));
                     if (!ok) valuesOk = false;
                     parameters.Add(new JObject
                     {
@@ -279,32 +262,103 @@ namespace Horizun.Revit.Commands
                         ["verified"] = junctionOk
                     };
                 }
-                bool okAll = typeOk && valuesOk && compoundOk && junctionOk; if (okAll) verified++;
+                bool sourceUnchanged = JToken.DeepEquals(plan.SourceState, SourceState((ElementType)doc.GetElement(plan.Source.Id)));
+                bool okAll = typeOk && valuesOk && compoundOk && junctionOk && sourceUnchanged; if (okAll) verified++;
                 rows.Add(new JObject
                 {
                     ["index"] = plan.Index, ["source_type_id"] = Rid.Value(plan.Source.Id), ["new_type_id"] = Rid.Value(plan.CreatedId),
                     ["class"] = fresh?.GetType().Name, ["name"] = fresh?.Name, ["type_verified"] = typeOk,
-                    ["parameters_verified"] = valuesOk, ["compound_structure_verified"] = compoundOk,
+                    ["source_unchanged"] = sourceUnchanged, ["parameters_verified"] = valuesOk, ["compound_structure_verified"] = compoundOk,
                     ["verified"] = okAll, ["parameters"] = parameters, ["compound_structure"] = compound,
                     ["junction_preference"] = junction
                 });
             }
-            if (verified != plans.Count)
-                return CommandResult.Fail("The transaction committed, but only " + verified + " of " + plans.Count +
-                    " system types passed post-commit verification. Inspect the model: " + rows.ToString(Formatting.None));
-            var mstResult = new JObject
-            {
-                ["transaction_status"] = "Committed", ["transaction_name"] = txName,
-                ["created_verified"] = verified, ["rows"] = rows
-            };
-            // Reached only when verified == plans.Count; anything less returned a failure
-            // above. The declaration states that fact where a composing caller can read it.
-            ApplicationOutcome.StampApplied(mstResult, ApplicationOutcome.Committed,
-                                            plans.Count, verified, verified, 0, 0, 0);
-            return CommandResult.Ok(mstResult);
+            return rows;
         }
 
-        private static Parameter ResolveParameter(Element element, string spec, out string why)
+        private static CommandResult ApplyTypePlans(Document doc, List<Plan> plans, string txName, bool rehearsal)
+        {
+            var rows = new JArray(); bool started = false;
+            using (var group = new TransactionGroup(doc, txName))
+            {
+                try
+                {
+                    if (group.Start() != TransactionStatus.Started) throw new InvalidOperationException("Type transaction group did not start.");
+                    using (var tx = new Transaction(doc,txName))
+                    {
+                        if (tx.Start() != TransactionStatus.Started) throw new InvalidOperationException("Type transaction did not start.");
+                        started = true;
+                        foreach (Plan plan in plans)
+                        {
+                            plan.CreatedId = plan.Source.Duplicate(plan.NewName).Id;
+                            var created = (ElementType)doc.GetElement(plan.CreatedId);
+                        if (plan.Junction != null && created is MEPCurveType pipeCreated)
+                        {
+                            // The duplicate INHERITS the source's routing preferences; this
+                            // sets the junction the caller asked for ON THE NEW TYPE ONLY,
+                            // and the verify below re-reads both facts from the model.
+                            RoutingPreferenceManager routingCreated = pipeCreated.RoutingPreferenceManager;
+                            if (plan.Junction.Kind == "tap")
+                            {
+                                if (!plan.Junction.TapFitting.IsActive) { plan.Junction.TapFitting.Activate(); doc.Regenerate(); }
+                                routingCreated.AddRule(RoutingPreferenceRuleGroupType.Junctions,
+                                    new RoutingPreferenceRule(plan.Junction.TapFitting.Id, "Horizun tap"));
+                                routingCreated.PreferredJunctionType = PreferredJunctionType.Tap;
+                            }
+                            else routingCreated.PreferredJunctionType = PreferredJunctionType.Tee;
+                        }
+
+                            foreach (Write write in plan.Writes)
+                            {
+                                var parameter = ResolveParameter(created,write.Spec,out string why);
+                                if (parameter == null) throw new InvalidOperationException(why);
+                                Apply(parameter,write);
+                            }
+                            if (plan.Compound != null) ApplyCompound((HostObjAttributes)created,plan.Compound);
+                        }
+                        doc.Regenerate(); Guard.Commit(tx,txName);
+                    }
+                    rows = VerifyTypes(doc,plans,out int verified);
+                    if (verified != plans.Count) throw new InvalidOperationException("Type, parameter, composition or source postcondition failed.");
+                    if (rehearsal)
+                    {
+                        var rb = Guard.RollBack(group);
+                        if (!rb.Confirmed || plans.Any(p=>doc.GetElement(p.CreatedId)!=null)) throw new InvalidOperationException("Rehearsal rollback was not verified.");
+                        var typeRehearsalResult = new JObject { ["transaction_status"]=rb.StatusName,["changes_applied"]=false,["provisional_elements_absent"]=true,["provisional_verification"]=rows };
+                        ApplicationOutcome.StampRehearsal(typeRehearsalResult,plans.Count,0,0,0);
+                        return CommandResult.Ok(typeRehearsalResult);
+                    }
+                    Guard.Assimilate(group,txName);
+                }
+                catch (Exception ex)
+                {
+                    string rb = "not_attempted", rbError = null;
+                    try { if (group.GetStatus()==TransactionStatus.Started) rb=Guard.RollBack(group).StatusName; }
+                    catch(Exception rollback) { rb="failed"; rbError=rollback.Message; }
+                    return CommandResult.FailWithDetail("Type creation failed: "+ex.Message,new JObject
+                    { ["code"]="type_creation_failed",["tool"]="horizun_manage_system_types",["exception_type"]=ex.GetType().FullName,["exception_message"]=ex.Message,
+                      ["write_started"]=started,["changes_applied"]=rb=="RolledBack" || !started ? (JToken)false : null,
+                      ["transaction_status"]=group.GetStatus().ToString(),["rollback_status"]=rb,["rollback_error"]=rbError,["verification"]=rows });
+                }
+            }
+            rows=VerifyTypes(doc,plans,out int finalVerified);
+            if(finalVerified!=plans.Count) return CommandResult.FailWithDetail("Post-assimilation type verification failed.",new JObject
+            { ["write_started"]=true,["changes_applied"]=true,["transaction_status"]="Committed",["verification"]=rows });
+            var result=new JObject { ["transaction_status"]="Committed",["created_verified"]=finalVerified,["rows"]=rows };
+            ApplicationOutcome.StampApplied(result,ApplicationOutcome.Committed,plans.Count,finalVerified,finalVerified,0,0,0);
+            return CommandResult.Ok(result);
+        }
+
+        private static JObject SourceState(ElementType source)
+        {
+            if(source==null) throw new InvalidOperationException("Source type is missing.");
+            var values=new JObject();
+            foreach(Parameter parameter in source.Parameters.Cast<Parameter>().OrderBy(p=>Rid.Value(p.Id)))
+                values[Rid.Value(parameter.Id).ToString(System.Globalization.CultureInfo.InvariantCulture)]=Read(parameter);
+            return new JObject { ["name"]=source.Name,["unique_id"]=source.UniqueId,["parameters"]=values };
+        }
+
+        internal static Parameter ResolveParameter(Element element, string spec, out string why)
         {
             why = null;
             if (Enum.TryParse(spec, true, out BuiltInParameter bip) && Enum.IsDefined(typeof(BuiltInParameter), bip))
@@ -329,6 +383,9 @@ namespace Horizun.Revit.Commands
         {
             if (token == null || token.Type == JTokenType.Null) return null;
             if (!(token is JObject spec)) throw new ArgumentException("compound_structure must be an object");
+            foreach (var field in spec.Properties())
+                if (!new[] { "layers", "exterior_shell_layers", "interior_shell_layers", "structural_layer_index", "variable_layer_index", "end_cap", "opening_wrapping" }.Contains(field.Name))
+                    throw new ArgumentException("Unknown compound_structure argument: " + field.Name);
             JArray rows = spec["layers"] as JArray;
             if (rows == null || rows.Count < 1 || rows.Count > 100)
                 throw new ArgumentException("compound_structure.layers must contain 1..100 layers ordered exterior to interior");
@@ -354,6 +411,9 @@ namespace Horizun.Revit.Commands
             for (int i = 0; i < rows.Count; i++)
             {
                 if (!(rows[i] is JObject row)) throw new ArgumentException("every compound_structure layer must be an object");
+                foreach (var field in row.Properties())
+                    if (!new[] { "function", "width", "material_id", "wraps", "deck_profile_id", "deck_embedding" }.Contains(field.Name))
+                        throw new ArgumentException("Unknown layer argument: " + field.Name);
                 string rawFunction = row.Value<string>("function") ?? "None";
                 if (string.Equals(rawFunction, "thermal_or_air", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(rawFunction, "thermal_or_air_layer", StringComparison.OrdinalIgnoreCase)) rawFunction = "Insulation";
@@ -503,7 +563,7 @@ namespace Horizun.Revit.Commands
         }
         private static double Finite(double value, string field)
         { if (double.IsNaN(value) || double.IsInfinity(value)) throw new ArgumentException(field + " must be finite"); return value; }
-        private static void ValidateValue(Parameter parameter, JToken value)
+        internal static void ValidateValue(Parameter parameter, JToken value)
         {
             if (value == null || value.Type == JTokenType.Null)
             {
@@ -527,29 +587,46 @@ namespace Horizun.Revit.Commands
                 default: throw new ArgumentException("unsupported storage type " + parameter.StorageType);
             }
         }
-        private static void Apply(Parameter parameter, Write write)
+        internal static void Apply(Parameter parameter, Write write)
         {
             JToken value = write.Requested;
             bool accepted;
             switch (parameter.StorageType)
             {
-                case StorageType.String: accepted = parameter.Set(value.Type == JTokenType.String ? value.Value<string>() : value.ToString(Formatting.None)); break;
+                case StorageType.String:
+                    string text = value.Type == JTokenType.String ? value.Value<string>() : value.ToString(Formatting.None);
+                    write.Expected = text; accepted = parameter.Set(text); break;
                 case StorageType.Integer:
-                    if (value.Type == JTokenType.String) { accepted = parameter.SetValueString(value.Value<string>()); write.ParsedByRevit = true; }
-                    else accepted = parameter.Set(value.Type == JTokenType.Boolean ? (value.Value<bool>() ? 1 : 0) : value.Value<int>()); break;
+                    int integer;
+                    if (value.Type == JTokenType.String)
+                    {
+                        if (!int.TryParse(value.Value<string>(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out integer))
+                            throw new ArgumentException("Integer parameter needs an invariant integer, not an unverified display string.");
+                    }
+                    else integer = value.Type == JTokenType.Boolean ? (value.Value<bool>() ? 1 : 0) : value.Value<int>();
+                    write.Expected = integer; accepted = parameter.Set(integer); break;
                 case StorageType.Double:
-                    if (value.Type == JTokenType.String) { accepted = parameter.SetValueString(value.Value<string>()); write.ParsedByRevit = true; }
-                    else accepted = parameter.Set(value.Value<double>()); break;
+                    double number;
+                    if (value.Type == JTokenType.String)
+                    {
+                        if (!UnitFormatUtils.TryParse(parameter.Element.Document.GetUnits(), parameter.Definition.GetDataType(), value.Value<string>(), out number))
+                            throw new ArgumentException("Cannot parse parameter '" + write.Spec + "' with the document's units.");
+                        write.ParsedByRevit = true;
+                    }
+                    else number = value.Value<double>();
+                    Finite(number, "Double parameter value");
+                    write.Expected = number; accepted = parameter.Set(number); break;
                 case StorageType.ElementId:
                     long raw = value == null || value.Type == JTokenType.Null ? -1 : value.Value<long>();
                     if (!Rid.CanRepresent(raw)) throw new InvalidOperationException("ElementId value is outside range");
-                    accepted = parameter.Set(Rid.Make(raw)); break;
+                    write.Expected = raw; accepted = parameter.Set(Rid.Make(raw)); break;
                 default: throw new InvalidOperationException("unsupported storage type " + parameter.StorageType);
             }
             if (!accepted) throw new InvalidOperationException("Revit rejected Set for parameter '" + write.Spec + "'");
-            write.Expected = Read(parameter);
+            // Expected was derived from the requested value BEFORE Set, never from its result.
         }
-        private static JToken Read(Parameter parameter)
+
+        internal static JToken Read(Parameter parameter)
         {
             if (parameter == null) return JValue.CreateNull();
             switch (parameter.StorageType)
@@ -598,8 +675,8 @@ namespace Horizun.Revit.Commands
         }
 
         private sealed class JunctionPlan { public string Kind; public FamilySymbol TapFitting; }
-        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public JunctionPlan Junction; public ElementId CreatedId; }
-        private sealed class Write { public string Spec; public JToken Requested, Expected; public bool ParsedByRevit; }
+        private sealed class Plan { public int Index; public ElementType Source; public string NewName; public List<Write> Writes; public CompoundPlan Compound; public ElementId CreatedId; public JObject SourceState; public JunctionPlan Junction; }
+        internal sealed class Write { public string Spec; public JToken Requested, Expected; public bool ParsedByRevit; }
         private sealed class CompoundPlan
         {
             public readonly List<LayerPlan> Layers = new List<LayerPlan>();

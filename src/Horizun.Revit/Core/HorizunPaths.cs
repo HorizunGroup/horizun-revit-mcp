@@ -164,6 +164,8 @@ namespace Horizun.Revit.Core
         public static string DiscoveryDir() => System.IO.Path.Combine(DataRoot(), "discovery");
         public static string JobsDir() => System.IO.Path.Combine(DataRoot(), "jobs");
         public static string IdempotencyDir() => System.IO.Path.Combine(DataRoot(), "idempotency");
+        /// <summary>One append-only event file per delivery (DeliveryLedger).</summary>
+        public static string DeliveriesDir() => System.IO.Path.Combine(DataRoot(), "deliveries");
         public static string LogsDir() => System.IO.Path.Combine(DataRoot(), "logs");
 
         /// <summary>

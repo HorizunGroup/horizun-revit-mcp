@@ -238,6 +238,16 @@ namespace Horizun.Revit.Core
         /// proof has to stop agreeing with it, loudly, instead of going on reporting a full
         /// verification because a row exists.
         /// </summary>
+        public JObject SuccessPayloadFromResults(string groupName, System.Collections.Generic.IDictionary<string, JToken> results)
+        {
+            // JObject(object) cannot consume a dictionary: it enumerates KeyValuePair
+            // values and throws after the Revit group already committed.
+            var mapped = new JObject();
+            if (results != null)
+                foreach (var entry in results) mapped[entry.Key] = entry.Value?.DeepClone() ?? JValue.CreateNull();
+            return SuccessPayload(groupName, mapped);
+        }
+
         public JObject SuccessPayload(string groupName, JObject results)
         {
             return new JObject

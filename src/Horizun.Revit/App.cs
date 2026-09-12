@@ -1,4 +1,4 @@
-﻿// -----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit add-in entry point. On startup we build the dispatcher, register the
@@ -74,6 +74,8 @@ namespace Horizun.Revit
                 }
 
                 _dispatcher.Initialize();   // ExternalEvent.Create — UI thread, here.
+                try { QueryCacheLifecycle.Attach(app); }
+                catch (Exception cex) { Log.Warn("query cache disabled: " + cex.Message); }
 
                 // The modal probe's two facts - main window handle and the UI thread's
                 // native id - can only be captured here, on the UI thread. Best effort:
@@ -111,6 +113,7 @@ namespace Horizun.Revit
 
         public Result OnShutdown(UIControlledApplication app)
         {
+            try { QueryCacheLifecycle.Detach(app); } catch { }
             // ORDER MATTERS. Stop the pipe FIRST so nothing new can be queued while we
             // are closing the records of what is already there, then drain.
             try { _pipe?.Stop(); } catch { }
@@ -226,7 +229,7 @@ namespace Horizun.Revit
             d.Register(new PlanCadUpdateCommand());
             d.Register(new ApplyCadUpdateCommand(d.ResolveCommand));
             d.Register(new ManageCadLinksCommand());
-            d.Register(new SubmitJobCommand(d.ResolveCommand));
+            d.Register(new SubmitJobCommand(d.ResolveCommand, () => d.DocumentSnapshot));
             // more commands land here as they are ported.
         }
     }

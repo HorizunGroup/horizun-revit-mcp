@@ -5,6 +5,13 @@ $failures = New-Object System.Collections.Generic.List[string]
 
 function Fail([string]$message) { $failures.Add($message) | Out-Null }
 
+# Path.GetRelativePath is not available in Windows PowerShell 5.1.
+function Get-SourceRelativePath([string]$fullPath) {
+    $baseUri = [Uri]([IO.Path]::GetFullPath($repo).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar)
+    $targetUri = [Uri][IO.Path]::GetFullPath($fullPath)
+    [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\','/')
+}
+
 $props = [xml](Get-Content (Join-Path $repo 'Directory.Build.props'))
 $version = [string]($props.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1)
 if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Fail "invalid canonical Version '$version'" }
@@ -264,9 +271,22 @@ if ($projector) {
     if ($allowDocs.Count -lt 15) { Fail "the exporter's allowDocs read back only $($allowDocs.Count) entries; the parser or the list changed shape" }
 }
 else {
-    $publicDocs = @(Get-ChildItem -LiteralPath $repo -Recurse -File -Force |
-        Where-Object { $_.Extension -in @('.md','.txt') -and $_.FullName -notmatch '[\\/]\.(git)[\\/]' } |
-        ForEach-Object { [IO.Path]::GetRelativePath($repo, $_.FullName).Replace('\','/') })
+    if (Test-Path -LiteralPath (Join-Path $repo '.git')) {
+        $tracked = @(& git -C $repo ls-files --cached --others --exclude-standard)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot establish the public source file set with git ls-files.' }
+    } else {
+        # Source ZIP: prune generated directories before descending into them.
+        $pending = New-Object 'System.Collections.Generic.Stack[string]'
+        $pending.Push($repo)
+        $tracked = @(while ($pending.Count -gt 0) {
+            foreach ($entry in Get-ChildItem -LiteralPath $pending.Pop() -Force) {
+                if ($entry.PSIsContainer) {
+                    if ($entry.Name -notin @('.git','artifacts','bin','obj','node_modules')) { $pending.Push($entry.FullName) }
+                } else { Get-SourceRelativePath $entry.FullName }
+            }
+        })
+    }
+    $publicDocs = @($tracked | Where-Object { $_ -match '\.(md|txt)$' -and $_ -notmatch '(^|/)(artifacts|bin|obj|node_modules)/' } | Sort-Object -Unique)
 }
 
 # Is a repository-relative path inside the public projection?
@@ -285,7 +305,7 @@ foreach ($path in $publicDocs) {
     $full = Join-Path $repo $path
     if (-not (Test-Path $full)) { Fail "public document is missing: $path"; continue }
     $base = if ($path.StartsWith('publish/overlay/')) { $repo } else { Split-Path -Parent $full }
-    $text = Get-Content $full -Raw
+    $text = [string](Get-Content $full -Raw)
     # Markdown links are matched over the prose only: `Array[Byte](sequence)` in a
     # code span is not a link, and the projector strips code the same way.
     $prose = [regex]::Replace([regex]::Replace($text, '(?s)```.*?```', ''), '`[^`\r\n]*`', '')
@@ -295,7 +315,7 @@ foreach ($path in $publicDocs) {
         if (-not (Test-Path (Join-Path $base $target))) { Fail "$path links to missing '$target'"; continue }
         # The file exists here; will it exist THERE? A link into docs/evidence or a
         # program-state ledger resolves in the private tree and 404s in the public one.
-        $rel = [System.IO.Path]::GetRelativePath($repo, [System.IO.Path]::GetFullPath((Join-Path $base $target))).Replace('\','/')
+        $rel = Get-SourceRelativePath (Join-Path $base $target)
         if (-not (Test-Exported $rel)) { Fail "$path links to '$rel', which the projector does not export" }
     }
     # A path cited in backticks is a reference too, and the projector's own link

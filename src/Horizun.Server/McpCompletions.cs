@@ -53,6 +53,23 @@ namespace Horizun.Server
                     case "read-only-audit" when argumentName == "focus":
                         candidates = AuditFocus;
                         break;
+                    case "model-health-audit" when argumentName == "scope":
+                    case "sheet-qaqc" when argumentName == "scope":
+                    case "family-qaqc" when argumentName == "scope":
+                    case "room-area-audit" when argumentName == "scope":
+                    case "parameter-compliance" when argumentName == "standard":
+                    case "quantity-export-pack" when argumentName == "scope":
+                    case "dwg-to-bim-review" when argumentName == "requirement_set":
+                    case "safe-batch-parameter-update" when argumentName == "updates":
+                    case "architecture-structure-coordination" when argumentName == "scope":
+                    case "mep-coordination-review" when argumentName == "scope":
+                    case "western-forms-concrete-review" when argumentName == "requirement_set":
+                    case "qaqc-report-export" when argumentName == "workbook_path":
+                    case "qaqc-report-export" when argumentName == "evidence_source":
+                        // These describe project-specific content. Completion must not
+                        // guess a standard, target set or destination from public text.
+                        candidates = Array.Empty<string>();
+                        break;
                     case "health-first":
                         throw new McpError(-32602, "Prompt 'health-first' has no arguments to complete.");
                     case "verified-change" when argumentName == "objective" ||
@@ -64,6 +81,18 @@ namespace Horizun.Server
                         break;
                     case "read-only-audit":
                     case "verified-change":
+                    case "model-health-audit":
+                    case "sheet-qaqc":
+                    case "family-qaqc":
+                    case "parameter-compliance":
+                    case "room-area-audit":
+                    case "quantity-export-pack":
+                    case "dwg-to-bim-review":
+                    case "safe-batch-parameter-update":
+                    case "architecture-structure-coordination":
+                    case "mep-coordination-review":
+                    case "western-forms-concrete-review":
+                    case "qaqc-report-export":
                         throw new McpError(-32602,
                             "Prompt '" + prompt + "' has no argument named '" + argumentName + "'.");
                     case "planimetry-review" when argumentName == "scope":

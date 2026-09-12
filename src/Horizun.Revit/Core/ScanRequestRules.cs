@@ -71,6 +71,7 @@ namespace Horizun.Revit.Core
         public static readonly string[] KnownKeys =
         {
             "target_document_title",
+            "response_mode",
             "top",
             "sections",
             "target_parameter",

@@ -615,11 +615,12 @@ namespace Horizun.Revit.Core
                     // room's centroid is outside it, and a room placed there lands
                     // in the corridor next door.
                     if (c.InteriorPoint == null) return null;
-                    o["point"] = Pt(c.InteriorPoint.Value);
+                    o["point"] = new JArray(Round(c.InteriorPoint.Value.X), Round(c.InteriorPoint.Value.Y));
                     break;
 
                 case "family_instance":
                 case "structural_column":
+                    o["coordinate_mode"] = "absolute";
                     o["point"] = Pt(c.Geometry[0]);
 
                     // A DOOR IS NOT A THING THAT STANDS IN A ROOM.

@@ -93,6 +93,8 @@ namespace Horizun.Revit.Commands
                 // The two questions every support conversation starts with, answered before
                 // they are asked: which build of ours is running, and where is its log.
                 horizun_version = Build.Version,
+                contract_hash = Horizun.Contracts.Contract.Hash,
+                python_runtime = RuntimeWarmup.Python.Snapshot(),
                 // Where this bridge comes from, and where the layer above it lives.
                 // Stated here because the design property it names is real and a caller
                 // acts on it: nothing organisation-specific is compiled in, so a command
@@ -152,6 +154,20 @@ namespace Horizun.Revit.Commands
                 // running on the administrator's environment override should say so
                 // rather than look like a user choice.
                 tool_packs = ToolPacksBlock(),
+                // Product-operational controls are reported by the same command that
+                // establishes the active document.  A client must be able to explain
+                // why an otherwise valid request will be refused without attempting a
+                // write just to discover the policy.
+                operational_controls = new
+                {
+                    permission_profile = Horizun.Revit.Core.Settings.PermissionProfile,
+                    mcp_paused = Horizun.Revit.Core.Settings.McpPaused,
+                    force_read_only_on_workshared = Horizun.Revit.Core.Settings.ForceReadOnlyOnWorkshared,
+                    note = "These are local machine controls shared by the ribbon and MCP server. " +
+                           "When MCP is paused only horizun_health remains callable; central protection " +
+                           "refuses potential writes to a workshared active document."
+                },
+                current_action = Dispatcher.CurrentActivityDescription(),
                 // The startup comparison between Contract.PluginCommands and what
                 // RegisterCommands actually registered. clean=false here is a build
                 // defect, not a runtime condition.

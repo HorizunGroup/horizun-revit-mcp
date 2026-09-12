@@ -351,7 +351,15 @@ function Copy-HorizunPluginPayloadToStage {
 # SHA-256 of a file, for proving a copy landed intact rather than assuming it did.
 function Get-HorizunFileHash([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
-    (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead((Resolve-Path -LiteralPath $Path).Path)
+    try {
+        return ([BitConverter]::ToString($algorithm.ComputeHash($stream)) -replace '-', '').ToLowerInvariant()
+    }
+    finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
 }
 
 <#
@@ -385,7 +393,7 @@ function Get-HorizunPayloadListing([string]$Root) {
         if ($rel -like 'lib/*') { $stdlib += [pscustomobject]@{ Rel = $rel; File = $f } ; continue }
         $files += [pscustomobject]@{
             Path   = $rel
-            Sha256 = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLower()
+            Sha256 = Get-HorizunFileHash $f.FullName
             Size   = $f.Length
         }
     }
@@ -401,7 +409,7 @@ function Get-HorizunPayloadListing([string]$Root) {
         })
         foreach ($s in $orderedStdlib) {
             [void]$sb.Append($s.Rel).Append([char]31)
-            [void]$sb.Append((Get-FileHash $s.File.FullName -Algorithm SHA256).Hash.ToLower()).Append([char]30)
+            [void]$sb.Append((Get-HorizunFileHash $s.File.FullName)).Append([char]30)
         }
         $sha = [System.Security.Cryptography.SHA256]::Create()
         try {

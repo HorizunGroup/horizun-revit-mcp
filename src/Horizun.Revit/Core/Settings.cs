@@ -145,6 +145,82 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// Local emergency pause for MCP work. This is separate from read_only:
+        /// read_only still permits audits, whereas a pause hides and refuses every
+        /// tool except health so an operator can establish that the bridge is paused.
+        /// Only the local Revit ribbon writes it.
+        /// </summary>
+        public static bool McpPaused
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                return state != FileState.Malformed && o?["mcp_paused"]?.Type == JTokenType.Boolean &&
+                       (bool)o["mcp_paused"];
+            }
+        }
+
+        public static bool TrySetMcpPaused(bool paused, out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["mcp_paused"] = paused;
+                o["mcp_paused_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
+        /// Optional local policy for shared models. When enabled, a workshared or
+        /// unreadable workshared state is treated as audit-only for every operation
+        /// that could write. A dry run remains allowed because it commits nothing.
+        /// </summary>
+        public static bool ForceReadOnlyOnWorkshared
+        {
+            get
+            {
+                FileState state;
+                JObject o = Read(out state);
+                return state != FileState.Malformed && o?["force_read_only_on_workshared"]?.Type == JTokenType.Boolean &&
+                       (bool)o["force_read_only_on_workshared"];
+            }
+        }
+
+        public static bool TrySetForceReadOnlyOnWorkshared(bool enabled, out string error)
+        {
+            return TryUpdate(o =>
+            {
+                o["force_read_only_on_workshared"] = enabled;
+                o["force_read_only_on_workshared_changed_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
+        /// Persist an owner-selected typed-tool permission rung. This is deliberately
+        /// exposed only to the local Revit ribbon: an MCP request must never be able
+        /// to make itself more capable. Python remains separately owner-gated.
+        /// </summary>
+        public static bool TrySetPermissionProfile(string profile, out string error)
+        {
+            error = null;
+            if (profile != "read_only" && profile != "safe_write" && profile != "full_write")
+            {
+                error = "Only read_only, safe_write and full_write may be selected from Revit. " +
+                        "unsafe_code is an administrator-only profile.";
+                return false;
+            }
+
+            return TryUpdate(o =>
+            {
+                o["permission_profile"] = profile;
+                o["permission_profile_selected_from_revit_at_utc"] = DateTimeOffset.UtcNow.ToString("O");
+                return true;
+            }, out error);
+        }
+
+        /// <summary>
         /// MAY THIS CALL REACH OUTSIDE THE MODEL? The rung, asked directly.
         ///
         /// IsToolAllowed answers about a TOOL and is consulted once, for advertisement
@@ -171,6 +247,12 @@ namespace Horizun.Revit.Core
         {
             reason = null;
             if (contract == null) { reason = "Unknown tool contract."; return false; }
+            if (McpPaused && contract.Name != "horizun_health")
+            {
+                reason = contract.Name + " is hidden/refused because MCP is paused by the local Revit owner. " +
+                         "Only horizun_health remains available to report that state; resume from the Revit ribbon.";
+                return false;
+            }
             JObject settings = Read();
             HashSet<string> denied = Strings(settings?["denied_tools"] as JArray);
             HashSet<string> allowed = Strings(settings?["allowed_tools"] as JArray);

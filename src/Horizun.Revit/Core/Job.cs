@@ -231,12 +231,12 @@ namespace Horizun.Revit.Core
         /// SubmitJobCommand never fired. Here the id is not assigned until the write has
         /// happened.
         /// </summary>
-        public static Job Start(string tool, IJobSink sink = null)
+        public static Job Start(string tool, IJobSink sink = null, JObject resumeContext = null)
         {
             var job = new Job(sink);
             try
             {
-                job.OpenRecord(tool);
+                job.OpenRecord(tool, resumeContext);
                 job.IsDurable = true;
                 return job;
             }
@@ -284,7 +284,7 @@ namespace Horizun.Revit.Core
         /// Create the directory, name the file, write the start line. Every failure
         /// propagates - which of the two Start methods called it decides what that means.
         /// </summary>
-        private void OpenRecord(string tool)
+        private void OpenRecord(string tool, JObject resumeContext = null)
         {
             string dir = Dir();
             _sink.EnsureDirectory(dir);
@@ -317,7 +317,8 @@ namespace Horizun.Revit.Core
             catch (InvalidOperationException) { pid = 0; }
             catch (PlatformNotSupportedException) { pid = 0; }
 
-            _sink.Append(path, "{\"event\":\"start\",\"tool\":" + Str(tool) + ",\"pid\":" + pid + ",\"at\":" + Now() + "}");
+            _sink.Append(path, "{\"event\":\"start\",\"tool\":" + Str(tool) + ",\"pid\":" + pid +
+                (resumeContext == null ? "" : ",\"resume_guard\":" + resumeContext.ToString(Formatting.None)) + ",\"at\":" + Now() + "}");
 
             // Only now, once the line is on disk. An id is a promise that a record
             // exists; assigning it before the write is what let the promise be broken.

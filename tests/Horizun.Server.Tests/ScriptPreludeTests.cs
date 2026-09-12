@@ -69,6 +69,78 @@ namespace Horizun.Server.Tests
             engine.CreateScriptSourceFromString(ScriptPrelude.Epilogue, SourceCodeKind.Statements).Compile();
         }
 
+        [Theory]
+        [InlineData(false, false)]
+        [InlineData(false, true)]
+        [InlineData(true, false)]
+        [InlineData(true, true)]
+        public void Transaction_helper_commits_or_rolls_back_and_always_disposes(bool nested, bool fail)
+        {
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            scope.SetVariable("nested", nested);
+            scope.SetVariable("fail_body", fail);
+            engine.Execute(@"
+import sys, types
+fake_db = types.ModuleType('Autodesk.Revit.DB')
+class Status:
+    Started = 'Started'
+    Committed = 'Committed'
+    RolledBack = 'RolledBack'
+class Doc:
+    IsModifiable = nested
+doc = Doc()
+events = []
+class Transaction:
+    def __init__(self, doc, name=None):
+        events.append(self.__class__.__name__)
+        self.state = None
+    def Start(self):
+        self.state = Status.Started
+        return self.state
+    def Commit(self):
+        events.append('commit')
+        self.state = Status.Committed
+        return self.state
+    def RollBack(self):
+        events.append('rollback')
+        self.state = Status.RolledBack
+        return self.state
+    def GetStatus(self):
+        return self.state
+    def Dispose(self):
+        events.append('dispose')
+class SubTransaction(Transaction):
+    pass
+fake_db.Transaction = Transaction
+fake_db.SubTransaction = SubTransaction
+fake_db.TransactionStatus = Status
+sys.modules['Autodesk'] = types.ModuleType('Autodesk')
+sys.modules['Autodesk.Revit'] = types.ModuleType('Autodesk.Revit')
+sys.modules['Autodesk.Revit.DB'] = fake_db
+caught = False
+try:
+    with horizun.transaction('fixture'):
+        if fail_body:
+            raise ValueError('body failure')
+except ValueError:
+    caught = True
+trace = ','.join(events)
+", scope);
+            Assert.Equal(fail, (bool)scope.GetVariable("caught"));
+            Assert.Equal((nested ? "SubTransaction" : "Transaction") + (fail ? ",rollback,dispose" : ",commit,dispose"), (string)scope.GetVariable("trace"));
+        }
+
+        [Fact]
+        public void Report_helper_preserves_evidence_without_inventing_verification()
+        {
+            var engine = Python.CreateEngine();
+            var scope = Prepared(engine, _ => "[]", _ => new FakeScope(), new FakeJob());
+            engine.Execute("horizun.report(created_ids=[42], summary='placed')\nunchecked = __output__['verification']['checked']\nhorizun.report('self_reported_verified', created_ids=[42], evidence=[{'z': 10.32}])\nchecked = __output__['verification']['checked']\n", scope);
+            Assert.False((bool)scope.GetVariable("unchecked"));
+            Assert.True((bool)scope.GetVariable("checked"));
+        }
+
         [Fact]
         public void Checkpoint_reaches_the_record_and_stdout_is_captured_not_lost()
         {

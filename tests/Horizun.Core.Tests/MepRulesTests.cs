@@ -13,6 +13,18 @@ namespace Horizun.Core.Tests
 {
     public class MepRulesTests
     {
+        [Fact]
+        public void Elbow_axes_recover_the_virtual_corner_from_trimmed_ports()
+        {
+            var a = new ConnectorFact { X=9, Y=0, Z=3, DirX=-2 };
+            var b = new ConnectorFact { X=10, Y=1, Z=3, DirY=4 };
+            Assert.Equal(new[] { 10.0, 0.0, 3.0 }, MepRules.AxisIntersection(a,b,1e-6));
+            Assert.Equal(new[] { 10.0, 0.0, 3.0 }, MepRules.AxisIntersection(b,a,1e-6));
+            b.Z=4;
+            Assert.Null(MepRules.AxisIntersection(a,b,1e-6));
+            b.Z=3; b.DirY=0; b.DirX=1;
+            Assert.Null(MepRules.AxisIntersection(a,b,1e-6));
+        }
         private static ConnectorFact C(int id, double xMm, double yMm, bool connected = false,
                                        string domain = "piping", double dx = 1, double dy = 0)
         {

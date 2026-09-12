@@ -107,8 +107,29 @@ namespace Horizun.Core.Tests
         [Fact]
         public void A_field_the_table_does_not_know_is_never_eligible()
         {
-            Assert.NotNull(DimensionEditRules.EligibilityError("leader", Single));
-            Assert.NotNull(DimensionEditRules.EligibilityError("leader", Multi));
+            // 'leader' became a real field on 2026-09-08 (8B); the unknown example moved.
+            Assert.NotNull(DimensionEditRules.EligibilityError("colour", Single));
+            Assert.NotNull(DimensionEditRules.EligibilityError("colour", Multi));
+        }
+
+        [Fact]
+        public void Text_position_and_leader_end_are_single_segment_and_leader_is_any_segment()
+        {
+            // 8B: the text of a multi-segment dimension is addressed per segment, so the
+            // element-level position fields are refused there with the segments[] hint;
+            // the leader belongs to the whole dimension.
+            Assert.Null(DimensionEditRules.EligibilityError("text_position", Single));
+            Assert.Null(DimensionEditRules.EligibilityError("text_offset", Single));
+            Assert.Null(DimensionEditRules.EligibilityError("leader_end", Single));
+            Assert.NotNull(DimensionEditRules.EligibilityError("text_position", Multi));
+            Assert.NotNull(DimensionEditRules.EligibilityError("text_offset", Multi));
+            Assert.NotNull(DimensionEditRules.EligibilityError("leader_end", Multi));
+            Assert.Null(DimensionEditRules.EligibilityError("leader", Single));
+            Assert.Null(DimensionEditRules.EligibilityError("leader", Multi));
+            foreach (string f in new[] { "text_position", "text_offset", "leader", "leader_end" })
+                Assert.Equal(DimensionEditRules.ActionFieldClass.Edit, DimensionEditRules.ClassifyActionField(f));
+            // 0.003 mm: under anything a drawing shows, over floating-point noise.
+            Assert.Equal(1e-5, DimensionEditRules.DefaultPositionToleranceFeet);
         }
 
         [Fact]
@@ -183,6 +204,22 @@ namespace Horizun.Core.Tests
         {
             Assert.Equal(DimensionEditRules.ActionFieldClass.ReferenceReplacement,
                          DimensionEditRules.ClassifyActionField(field));
+        }
+
+        [Fact]
+        public void Distance_space_is_a_modifier_that_edits_nothing_on_its_own()
+        {
+            // The contract publishes distance_space beside text_offset; live (c7) the
+            // command refused it as an unknown field. It qualifies an edit, it is not one.
+            Assert.Equal(DimensionEditRules.ActionFieldClass.Modifier, DimensionEditRules.ClassifyActionField("distance_space"));
+            Assert.Equal(DimensionEditRules.ActionFieldClass.Modifier, DimensionEditRules.ClassifyActionField("Distance_Space"));
+            Assert.DoesNotContain("distance_space", DimensionEditRules.EditFields);
+            Assert.Null(DimensionEditRules.ModifierWithoutTarget(true, false));
+            Assert.Null(DimensionEditRules.ModifierWithoutTarget(false, true));
+            string refusal = DimensionEditRules.ModifierWithoutTarget(false, false);
+            Assert.Contains("distance_space", refusal);
+            Assert.Contains("text_offset", refusal);
+            Assert.Contains("Nothing was written", refusal);
         }
 
         [Fact]

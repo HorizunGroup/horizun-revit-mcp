@@ -1,11 +1,6 @@
 # Horizun Revit MCP — an MCP server for Autodesk Revit
 
-**[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** —
-public `.exe` installer with the MCP server runtime and Revit add-ins included.
-**No Git, Visual Studio or .NET SDK required.** Windows x64 and an installed
-Revit 2023–2027 are required; close Revit before installation.
-[Download and installation FAQ / Descargar e instalar](docs/INSTALL.md).
-Public releases are unsigned; see [verification and first-start instructions](#install).
+**[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** — public Windows installer with the server runtime and Revit add-ins included. **No Git, Visual Studio or .NET SDK required.** Requires Windows x64 and Revit 2023–2027; close Revit before installation. [Download and installation FAQ / Descargar e instalar](docs/INSTALL.md). Public releases are unsigned; see [verification and first-start instructions](#install).
 
 [![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
@@ -29,6 +24,33 @@ where a command needs one, it is an input supplied at call time.
 that turn these commands into delivery workflows live in
 [Horizun Hub](https://horizunhub.com). This repository is the socket; the Hub is
 what plugs into it.
+
+For a concise product explanation for BIM teams and decision makers, see
+**[Horizun Revit MCP — Product overview](docs/PRODUCT-OVERVIEW.md)**.
+
+## BIM Production Mode
+
+Horizun Revit MCP is also a practical BIM-production surface: an auditable way
+to inspect, prepare and change a real Revit model. Start with a workflow rather
+than a tool name. Each workflow states its scope, whether it writes, the
+permission rung it needs and the evidence it returns.
+
+- **[Start in five steps](docs/QUICK-START-BIM.md)** — connect a model and run a
+  first read-only audit.
+- **[What can Horizun do today?](docs/WHAT-CAN-HORIZUN-DO.md)** — capabilities,
+  permissions and evidence by BIM task.
+- **[Production workflows](docs/WORKFLOWS.md)** — copy-ready prompts for model,
+  sheets, families, rooms, quantities and DWG-to-BIM work.
+- **[BIM Standards Pack](standards/README.md)** — optional, generic and editable
+  baseline profiles. They are data, not rules embedded in the add-in.
+- **[Open Source and Horizun Hub](docs/HORIZUN-HUB.md)** — what is public,
+  generic bridge capability and what belongs to governed delivery workflows.
+
+The bridge remains organisation-neutral: a supplied pack is a starting point,
+not a claim that every project should use the same naming, limits or parameters.
+Project and company rules must be reviewed, versioned and supplied explicitly.
+
+![BIM Production workflow: identify the model, audit, rehearse, apply a verified typed change, and retain evidence](docs/assets/bim-production-workflow.svg)
 
 ## What you can ask it
 

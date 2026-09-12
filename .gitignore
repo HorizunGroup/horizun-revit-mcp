@@ -1,5 +1,6 @@
 bin/
 obj/
+node_modules/
 *.user
 .vs/
 build/
@@ -17,3 +18,7 @@ __pycache__/
 build_horizun_jr_*.py
 deliverables/
 docx_render/
+
+# Local visual/inspection artifacts produced while checking the committed QA/QC template.
+examples/qaqc-report-template-preview.png
+examples/qaqc-report-template.xlsx.inspect.ndjson

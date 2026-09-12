@@ -31,7 +31,9 @@ namespace Horizun.Revit.Commands
     public sealed class SubmitJobCommand : ICommand
     {
         private readonly Func<string, ICommand> _resolve;
-        public SubmitJobCommand(Func<string, ICommand> resolve) { _resolve = resolve; }
+        private readonly Func<string> _documentSnapshot;
+        public SubmitJobCommand(Func<string, ICommand> resolve, Func<string> documentSnapshot)
+        { _resolve = resolve; _documentSnapshot = documentSnapshot; }
         public string Name => "horizun_submit_job";
         public string Description => "Queue an installed Revit command and return a persistent job id immediately.";
 
@@ -45,6 +47,8 @@ namespace Horizun.Revit.Commands
             JArray sequence = request["sequence"] as JArray;
             JArray models = request["models"] as JArray;
             bool hasToolShape = !string.IsNullOrWhiteSpace(tool) || arguments != null;
+            if (request["resume_from_job_id"] != null && (sequence != null || models != null))
+                return CommandResult.Fail("resume_from_job_id supports single-command jobs only. Nothing was queued.");
 
             // A SWEEP IS A SEQUENCE. Expanding the model list here rather than in a
             // second execution path means the read-only allowlist, the step reporting
@@ -94,13 +98,34 @@ namespace Horizun.Revit.Commands
             // create two unrelated retry identities for one operation.
             JObject queuedArguments = (JObject)arguments.DeepClone();
             queuedArguments.Remove("idempotency_key");
+            // Admission runs on the pipe thread with app=null. Only consume the
+            // immutable identity last captured on Revit's UI thread; never call its API.
+            string documentKey = _documentSnapshot();
+            if (documentKey == null)
+                return CommandResult.Fail("Call horizun_health before submitting work so its document identity is known. Nothing was queued.");
+            string resumeFrom = request.Value<string>("resume_from_job_id");
+            if (!string.IsNullOrWhiteSpace(resumeFrom))
+            {
+                try
+                {
+                    AsyncResumeGuard.Validate(resumeFrom, request.Value<string>("idempotency_key"), tool,
+                        queuedArguments, documentKey, pid =>
+                        {
+                            try { using (var process = System.Diagnostics.Process.GetProcessById(pid)) return !process.HasExited; }
+                            catch (ArgumentException) { return false; }
+                            catch { return true; }
+                        });
+                }
+                catch (Exception ex) { return CommandResult.Fail(ex.Message + " Nothing was queued."); }
+            }
             // The record before the queue, and the record is not optional here. The old
             // guard tested job.Id, which Job.Start assigned before anything could fail,
             // so it never fired: an unwritable jobs directory produced a queued command
             // and a job_id that addressed nothing.
             Job job;
             string admissionRefusal;
-            if (!AsyncJobAdmission.TryOpenProtected(tool, retainUntilUtc, out job, out admissionRefusal))
+            if (!AsyncJobAdmission.TryOpenProtected(tool, null, retainUntilUtc, out job, out admissionRefusal,
+                AsyncResumeGuard.Context(tool, queuedArguments, documentKey)))
                 return CommandResult.Fail(admissionRefusal);
 
             string refusal;
@@ -110,7 +135,8 @@ namespace Horizun.Revit.Commands
                 Command = tool,
                 ParamsJson = queuedArguments.ToString(Formatting.None),
                 Record = job,
-                QueuedUtc = DateTime.UtcNow
+                QueuedUtc = DateTime.UtcNow,
+                DocumentFingerprint = documentKey
             }, out refusal))
             {
                 try { job.Finish("not_started", refusal); } catch { }
@@ -121,6 +147,7 @@ namespace Horizun.Revit.Commands
                 ["mode"] = "async", ["job_id"] = job.Id, ["tool"] = tool, ["status"] = "queued",
                 ["queue_depth"] = AsyncQueue.Count, ["queue_capacity"] = AsyncQueue.MaxDepth,
                 ["executed"] = false, ["poll_with"] = "horizun_job_status with job_id=" + job.Id,
+                ["resumed_from_job_id"] = resumeFrom,
                 ["note"] = "The command has not run yet. Its result, failure, warnings and terminal state will be written to this job record."
             });
         }
