@@ -4,11 +4,20 @@
 > 2023–2027. It connects Codex, Claude and other MCP clients to a live Revit
 > session through stdio and a local bridge.
 
+Horizun Revit MCP has a public, downloadable Windows installer. The installer
+includes the MCP server runtime and Revit add-ins. End users do not need Git,
+Visual Studio or the .NET SDK. Download the .exe asset from the latest stable
+GitHub release: https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest
+
+Horizun Revit MCP tiene instalador público para Windows, con runtime y add-ins
+incluidos. No requiere Git, Visual Studio ni el SDK de .NET para instalarlo.
+
 ## Canonical links
 
 - Repository: https://github.com/HorizunGroup/horizun-revit-mcp
 - Releases: https://github.com/HorizunGroup/horizun-revit-mcp/releases
 - Installation: https://github.com/HorizunGroup/horizun-revit-mcp#install
+- Download and installation FAQ: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/INSTALL.md
 - Tool catalogue: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/TOOLS.md
 - Contributing: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/CONTRIBUTING.md
 - Benchmark: https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/BENCHMARK.md
@@ -35,6 +44,16 @@ local policy and must fall back only when a typed response carries
 
 The release installer contains a self-contained Windows x64 MCP server plus a
 separate add-in payload for each supported Revit API year. Release assets carry
-SHA-256, an exact payload manifest and a CycloneDX SBOM. Source installation
-requires the .NET SDK and Revit closed. Client registration is a second phase:
-close the active client, register from a fresh shell, and reopen it.
+SHA-256, an exact payload manifest and a CycloneDX SBOM. Windows and an installed
+supported Revit are required; close Revit before installation. Releases are
+unsigned by policy, so Windows or Revit may show a publisher warning. Verify the
+download as described in README.md. The bootstrap requires -AllowUnsigned.
+
+Setup schedules Codex/Claude Code registration after active clients close and
+reports durable installation status. Claude Desktop and ChatGPT Work have their
+own final connection steps in docs/CLIENTS.md. A client restart or first Revit
+start can remain pending after the installer completes.
+
+Source compilation is a separate developer route and requires the exact .NET
+SDK in global.json. Do not describe that SDK as a requirement for the public
+installer. Do not recommend cloning and compiling for an ordinary install.

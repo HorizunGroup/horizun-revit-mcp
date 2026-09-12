@@ -30,7 +30,26 @@ máquina. Parte del ecosistema [Horizun Hub](https://horizunhub.com).
 
 If the user asked you to install it, this is the whole procedure.
 
-### Install
+### Install the published release (default)
+
+For “install this repo” or “install everything necessary”, use the published
+installer. It includes the MCP server runtime and the add-ins; Git and the .NET
+SDK are not required. Check Windows, an installed Revit 2023–2027, and that Revit
+is closed first. Read the unsigned-release disclosure in README.md before using
+the explicit acknowledgement below.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
+```
+
+The bootstrap downloads the installer from the latest stable GitHub release,
+verifies its SHA-256 against that same release, installs it and schedules safe
+client registration. Report the durable installation status, including any
+pending client restart or first Revit start; exit code zero alone is insufficient.
+If it fails, preserve the error and installation log. Do not silently switch to
+source compilation or install a development SDK to work around a release failure.
+
+### Build from source (development or explicitly requested)
 
 Everything is compiled from this tree, against the Revit already installed on
 this machine. No executable is downloaded.
@@ -247,7 +266,27 @@ default; the helper purges either only when the user explicitly selects it.
 
 Si el usuario te pidió "instálalo", este documento es el procedimiento completo.
 
-### Instalar
+### Instalar la versión publicada (opción habitual)
+
+Ante «instala este repo» o «instala todo lo necesario», usa el instalador
+publicado. Incluye el runtime del servidor MCP y los add-ins; no necesita Git ni
+el SDK de .NET. Comprueba primero Windows, Revit 2023–2027 instalado y Revit
+cerrado. Lee el aviso sobre las releases sin firma en README.md antes de usar
+la aceptación explícita del siguiente comando.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-release.ps1 -AllowUnsigned
+```
+
+El bootstrap descarga el instalador de la última release estable de GitHub,
+comprueba su SHA-256 contra esa misma release, instala y programa el registro
+seguro de los clientes. Reporta el estado durable, incluido cualquier reinicio
+del cliente o primer arranque de Revit pendiente; un código de salida cero no
+basta. Si falla, conserva el error y el log. No cambies silenciosamente a
+compilación desde fuente ni instales un SDK de desarrollo para ocultar un fallo
+de la instalación publicada.
+
+### Compilar desde fuente (desarrollo o petición explícita)
 
 Todo se compila desde este árbol, contra el Revit ya instalado en la máquina.
 No se descarga ningún ejecutable.
