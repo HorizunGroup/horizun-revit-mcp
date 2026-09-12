@@ -221,7 +221,7 @@ de calidad. `docs/TOOLS.md` actualizado; `inventory.tests.ps1` y
   compilado del árbol `5498141-dirty` (sin commit, por diseño de esta sesión).
 - Revit 2026 arrancado por su ejecutable (no abriendo un archivo); nuevo pid
   42956; `horizun_health` por el servidor de desarrollo
-  (`src/Horizun.Server/bin/Release/net8.0/horizun-mcp.exe`) respondió
+  (binario local de desarrollo, no incluido en el repositorio) respondió
   `healthy` con ese hash y cero documentos.
 - Fixture desechable `C:\hz-live\HZ_WRITE.rvt` abierto por `horizun_open_document`
   tipado (sin diálogos); activo como `HZ_WRITE`. No se guarda nunca.

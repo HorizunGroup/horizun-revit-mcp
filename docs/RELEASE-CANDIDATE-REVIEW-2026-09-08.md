@@ -78,7 +78,7 @@ pendientes de publicación de la sección final (todos fuera de este alcance).
 | --- | --- |
 | Commit de producto | `7fe8693` (árbol limpio, estampado limpio) |
 | DLL Revit 2026 cargada | `8adb404f8b5450561653752cb0c30202ebaf19d18c61ad23781a62d581e6dfe9` (`%USERPROFILE%\.horizun\dev-addin-2026-09-08-c14\2026\Horizun\Horizun.Revit.dll`, firmada con el certificado local) |
-| Servidor de desarrollo | `f4daacdd28f96aa9f39e142a497751c4fbdcef6e910f9e88a894…` (`src/Horizun.Server/bin/Release/net8.0/horizun-mcp.exe`) |
+| Servidor de desarrollo | `f4daacdd28f96aa9f39e142a497751c4fbdcef6e910f9e88a894…` (binario local de desarrollo, no incluido en el repositorio) |
 | Revit | 2026.4 (26.4.0.32), `English_USA`, pid 35476, sesión aislada |
 | Arneses | `verify-deliverable-stabilization.ps1` (44 casos), `verify-deliverable-production.ps1` (15), `verify-live.ps1` (241) con `-ExpectedCommit`, `-ExpectedAddinSha256`, `-ExpectedServerSha256` |
 | Fixtures | `HZ_WRITE` (estabilización y general), `HZ_WRITE3` + `HZ_LIVE_B` (verify-live); nunca guardados durante las corridas |
