@@ -38,6 +38,23 @@ namespace Horizun.Core.Tests
             Assert.True(restarted.Claim("new-key", "horizun_execute_python", Fingerprint(changed.ExecutionRequest(request)), changed.Sha256).IsFresh);
         }
         [Fact]
+        public void Frozen_file_retains_decoding_evidence_without_reading_the_file_again()
+        {
+            string file = Path.Combine(dir, "source.py");
+            File.WriteAllText(file, "name = 'geometría'\r\n");
+            var request = new JObject { ["code_path"] = file };
+            var admitted = PythonSourceSnapshot.Resolve(request);
+            var frozen = admitted.ExecutionRequest(request);
+            File.Delete(file);
+            var execution = PythonSourceSnapshot.Resolve(frozen);
+            Assert.Null(execution.Error);
+            Assert.Equal(admitted.Code, execution.Code);
+            Assert.Equal(admitted.Encoding, execution.Encoding);
+            Assert.True(execution.NewlinesNormalized);
+            Assert.True(execution.ReadNow);
+            Assert.Equal(admitted.ExecutionSha256, execution.ExecutionSha256);
+        }
+        [Fact]
         public void Missing_file_and_escaping_root_are_refused()
         {
             Assert.NotNull(PythonSourceSnapshot.Resolve(new JObject { ["code_path"] = Path.Combine(dir, "missing.py") }).Error);

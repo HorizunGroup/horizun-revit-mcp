@@ -399,6 +399,9 @@ namespace Horizun.Contracts
                     "mm/m/feet units; every referenced type and level resolves before a transaction opens. Dry-run " +
                     "is the default, apply requires confirmation and idempotency, and every created id is re-read " +
                     "after commit against every supported requested property. Inapplicable fields are refused. " +
+                    "For a same-batch elbow, run endpoints name nominal junctions: verification intersects " +
+                    "committed connector axes and checks attachment; physical_start_feet/physical_end_feet " +
+                    "report the trimmed run separately. " +
                     "XYZ coordinates use the internal origin; point families require coordinate_mode. Horizontal " +
                     "profiles carry absolute Z, and an explicit offset must agree with that plane and level. " +
                     "A validation dry run opens no transaction and is not an API construction rehearsal.",

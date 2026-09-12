@@ -28,6 +28,12 @@ namespace Horizun.Revit.Core
                 {
                     result.Code = code;
                     result.Path = request.Value<string>("code_origin_path");
+                    if (request.Value<int?>("source_snapshot_version") == 1)
+                    {
+                        result.Encoding = request.Value<string>("source_encoding");
+                        result.NewlinesNormalized = request.Value<bool?>("source_newlines_normalized") ?? false;
+                        result.ReadNow = request.Value<bool?>("source_read_at_admission") ?? false;
+                    }
                 }
                 else
                 {
@@ -106,6 +112,9 @@ namespace Horizun.Revit.Core
             frozen["code"] = Code;
             if (Path != null) frozen["code_origin_path"] = Path;
             frozen["source_snapshot_version"] = 1;
+            frozen["source_encoding"] = Encoding;
+            frozen["source_newlines_normalized"] = NewlinesNormalized;
+            frozen["source_read_at_admission"] = ReadNow;
             frozen["source_sha256"] = Sha256;
             frozen["execution_sha256"] = ExecutionSha256;
             frozen["helpers_version"] = 1;

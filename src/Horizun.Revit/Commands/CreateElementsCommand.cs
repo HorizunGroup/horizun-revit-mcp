@@ -630,7 +630,7 @@ namespace Horizun.Revit.Commands
                         if (loopToken == null || loopToken.Count < 3 || loopToken.Count > 12)
                             throw new ArgumentException("profile must carry 3..12 [x,y] points; they close automatically");
                         p.ProfilePoints = new List<XYZ>();
-                        double z = p.Level.Elevation;
+                        double z = p.Level.ProjectElevation;
                         foreach (JToken pointToken in loopToken)
                         {
                             var xy = pointToken as JArray;
@@ -1362,6 +1362,7 @@ namespace Horizun.Revit.Commands
                     var plane = Plane.CreateByNormalAndOrigin(XYZ.BasisZ, p.ProfilePoints[0]);
                     SketchPlane sketch = SketchPlane.Create(doc, plane);
                     BeamSystem system = BeamSystem.Create(doc, profile, sketch, p.BeamDirection, false);
+                    system.Level = p.Level;
                     if (p.BeamType != null)
                     {
                         if (!p.BeamType.IsActive) { p.BeamType.Activate(); doc.Regenerate(); }
@@ -2275,6 +2276,7 @@ namespace Horizun.Revit.Commands
             public List<ElementId> AlsoCreated = new List<ElementId>();
             public double? ExpectedDiameter; public double ExpectedArcRadius; public bool ExpectedArc;
             public Plan Plan;
+            public List<Created> Batch;
         }
     }
 }

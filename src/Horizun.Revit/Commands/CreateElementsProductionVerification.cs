@@ -30,7 +30,7 @@ namespace Horizun.Revit.Commands
                         }
                         created.Add(new Created
                         {
-                            Index = plan.Index, Kind = plan.Kind, Id = element.Id, Plan = plan,
+                            Index = plan.Index, Kind = plan.Kind, Id = element.Id, Plan = plan, Batch = created,
                             ExpectedTypeId = plan.Type?.Id,
                             ExpectedStructuralType = plan.Kind == "family_instance" || plan.Kind == "structural_framing" || plan.Kind == "structural_column"
                                 ? (StructuralType?)plan.StructuralType : null,

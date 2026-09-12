@@ -42,7 +42,7 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(actions[i] is JObject action)) throw new ArgumentException("action is not an object");
                     foreach (var field in action.Properties())
-                        if (!new[] { "source_type_id", "new_name", "values", "compound_structure" }.Contains(field.Name))
+                        if (!new[] { "source_type_id", "new_name", "values", "compound_structure", "junction_preference" }.Contains(field.Name))
                             throw new ArgumentException("Unknown type action argument: " + field.Name);
                     if (action["values"] != null && !(action["values"] is JObject)) throw new ArgumentException("values must be an object.");
                     long raw = action.Value<long?>("source_type_id") ?? -1;

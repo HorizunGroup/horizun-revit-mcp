@@ -447,7 +447,7 @@ $probes = @(
     # the very change that made it necessary - a probe that had gone out of date
     # with the product it checks.
     @{ Name = 'execute_python matches its per-machine switch (enabled: runs; disabled: refuses)'
-       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 6 * 7"; target_document = $Document; idempotency_key = "live-python-enabled-$probeRun" }
+       Tool = 'horizun_execute_python'; Args = @{ code = "__output__ = 6 * 7"; response_mode = 'full'; target_document = $Document; idempotency_key = "live-python-enabled-$probeRun" }
        Needs = 'Document'
        NotCovered = 'whether execute_python runs or refuses (needs -Document; it requires target_document like every other mutating command)'
        Check = { param($d)
@@ -839,13 +839,13 @@ __output__ = {"status": "completed_unverified", "summary": "advisory probe; noth
     @{ Name = 'execute_python refuses with neither code nor code_path'
        Tool = 'horizun_execute_python'
        Args = @{ target_document = 'ZZ_NO_SUCH_MODEL_ZZ'; idempotency_key = "live-codeneither-$probeRun" }
-       ExpectError = "One of 'code'|hidden/refused by permission_profile" },
+       ExpectError = "Send exactly one of code or code_path|hidden/refused by permission_profile" },
 
     @{ Name = 'execute_python says a missing code_path is missing, and names the machine'
        Tool = 'horizun_execute_python'
        Args = @{ code_path = 'C:\ZZ_NO_SUCH_DRIVER_ZZ.py'; target_document = 'ZZ_NO_SUCH_MODEL_ZZ'
                  idempotency_key = "live-codemissing-$probeRun" }
-       ExpectError = 'code_path does not exist|hidden/refused by permission_profile' },
+       ExpectError = 'Cannot resolve Python source:.*(Could not find|does not exist)|hidden/refused by permission_profile' },
 
     # ---- 5.28: the name every pyRevit caller types --------------------------
     @{ Name = '__revit__ resolves to the UIApplication, beside app, uiapp and doc'
@@ -8729,6 +8729,7 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
                     $columnElements = @()
                     foreach ($e in @($plan8.data.next_arguments.arguments.elements)) {
                         $columnElements += @{ kind=[string]$e.kind; type_id=[long]$e.type_id
+                                              coordinate_mode=[string]$e.coordinate_mode
                                               level_id=[long]$e.level_id
                                               point=@([double]$e.point[0], [double]$e.point[1], [double]$e.point[2]) }
                     }

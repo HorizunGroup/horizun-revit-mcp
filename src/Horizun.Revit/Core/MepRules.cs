@@ -43,6 +43,25 @@ namespace Horizun.Revit.Core
         public const string CodeDomainMismatch = "connector_domain_mismatch";
         public const string CodeNotCoincident = "connectors_not_coincident";
 
+        /// <summary>Intersection of measured connector axes, never a requested point substituted for a measurement.</summary>
+        public static double[] AxisIntersection(ConnectorFact a, ConnectorFact b, double tolerance)
+        {
+            double aa = a.DirX*a.DirX + a.DirY*a.DirY + a.DirZ*a.DirZ;
+            double bb = a.DirX*b.DirX + a.DirY*b.DirY + a.DirZ*b.DirZ;
+            double cc = b.DirX*b.DirX + b.DirY*b.DirY + b.DirZ*b.DirZ;
+            double wx = a.X-b.X, wy = a.Y-b.Y, wz = a.Z-b.Z;
+            double dd = a.DirX*wx + a.DirY*wy + a.DirZ*wz;
+            double ee = b.DirX*wx + b.DirY*wy + b.DirZ*wz;
+            double denominator = aa*cc-bb*bb;
+            if (aa < 1e-12 || cc < 1e-12 || denominator < 1e-12*aa*cc) return null;
+            double t = (bb*ee-cc*dd)/denominator, u = (aa*ee-bb*dd)/denominator;
+            var point = new[] { a.X+t*a.DirX, a.Y+t*a.DirY, a.Z+t*a.DirZ };
+            double dx = point[0]-b.X-u*b.DirX, dy = point[1]-b.Y-u*b.DirY, dz = point[2]-b.Z-u*b.DirZ;
+            if (double.IsNaN(t) || double.IsInfinity(t) || double.IsNaN(u) || double.IsInfinity(u) ||
+                dx*dx+dy*dy+dz*dz > tolerance*tolerance) return null;
+            return point;
+        }
+
         public static double Distance(ConnectorFact a, ConnectorFact b)
         {
             double dx = a.X - b.X, dy = a.Y - b.Y, dz = a.Z - b.Z;

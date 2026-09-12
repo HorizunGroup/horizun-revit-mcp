@@ -229,6 +229,43 @@ namespace Horizun.Revit.Commands
             try { return ReadCreated(doc, made); }
             catch (Exception ex) { return new JObject { ["index"] = made.Index, ["element_id"] = Rid.Value(made.Id), ["verified"] = false, ["error"] = ex.Message, ["measurement_complete"] = false }; }
         }
+
+        private static Created BatchElbowAt(Created made, XYZ requested)
+        {
+            return made.Batch?.FirstOrDefault(c => c.Plan.FittingSubtype == "elbow" &&
+                c.ExpectedConnected?.Any(m => m.Owner?.Id == made.Id && m.Fact != null &&
+                    new XYZ(m.Fact.X, m.Fact.Y, m.Fact.Z).DistanceTo(requested) <= GeometryInput.Tolerance) == true);
+        }
+
+        private static XYZ ReadElbowJunction(Document doc, Created made, Created fitting, int end)
+        {
+            var curve = (MEPCurve)doc.GetElement(made.Id);
+            XYZ physical = ((LocationCurve)curve.Location).Curve.GetEndPoint(end);
+            XYZ requested = end == 0 ? made.Plan.Start : made.Plan.End;
+            XYZ other = end == 0 ? made.Plan.End : made.Plan.Start;
+            XYZ outward = (requested-other).Normalize();
+            double trim = (requested-physical).DotProduct(outward);
+            if ((physical-other).CrossProduct(outward).GetLength() > GeometryInput.Tolerance ||
+                trim < -GeometryInput.Tolerance || trim >= requested.DistanceTo(other))
+                throw new InvalidOperationException("The elbow moved its run off the requested axis or outside the requested segment.");
+            var ports = MepFacts.Ordered(MepFacts.ManagerOf(doc.GetElement(fitting.Id)))
+                .Where(c => c.ConnectorType == ConnectorType.End).ToList();
+            if (ports.Count != 2) throw new InvalidOperationException("An elbow must expose exactly two physical end connectors.");
+            bool attached = MepFacts.Ordered(curve.ConnectorManager).Any(c =>
+                c.Origin.DistanceTo(physical) <= GeometryInput.Tolerance &&
+                ports.Any(p => p.Origin.DistanceTo(physical) <= GeometryInput.Tolerance && p.IsConnectedTo(c)));
+            if (!attached || ports.Any(c => !c.IsConnected))
+                throw new InvalidOperationException("The measured run end is not connected to the planned elbow.");
+            ConnectorFact Axis(Connector c)
+            {
+                XYZ origin = c.Origin, direction = c.CoordinateSystem.BasisZ;
+                return new ConnectorFact { X=origin.X, Y=origin.Y, Z=origin.Z,
+                    DirX=direction.X, DirY=direction.Y, DirZ=direction.Z };
+            }
+            double[] intersection = MepRules.AxisIntersection(Axis(ports[0]), Axis(ports[1]), GeometryInput.Tolerance);
+            if (intersection == null) throw new InvalidOperationException("The elbow connector axes do not define one measurable junction.");
+            return new XYZ(intersection[0], intersection[1], intersection[2]);
+        }
         private static JObject ReadCreated(Document doc, Created made)
         {
             Plan p = made.Plan;
@@ -243,7 +280,7 @@ namespace Horizun.Revit.Commands
             if (p.Type != null) Exact("type_id", Rid.Value(p.Type.Id), () => Rid.Value(e.GetTypeId()));
             if (p.Level != null)
             {
-                Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(e is MEPCurve mep ? mep.ReferenceLevel.Id : e.LevelId));
+                Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(e is MEPCurve mep ? mep.ReferenceLevel.Id : e is BeamSystem beamSystem ? beamSystem.Level.Id : e.LevelId));
                 Numeric("level_elevation", p.Level.ProjectElevation, () => ((Level)doc.GetElement(p.Level.Id)).ProjectElevation);
             }
             if (p.WantName != null) Exact("name", p.WantName, () => IdentityOf(e, p.Kind, false));
@@ -273,13 +310,17 @@ namespace Horizun.Revit.Commands
             }
             if (p.Start != null && p.Kind != "wall_opening")
             {
-                XYZ PointNow() => e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
+                Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
+                XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
                 for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
-                { int a = axis; Numeric("start_" + "xyz"[a], p.Start[a], () => PointNow()[a]); }
+                { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => PointNow()[a]); }
             }
             if (p.End != null && p.Kind != "wall_opening")
+            {
+                Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
                 for (int axis = 0; axis < 3; axis++)
-                { int a = axis; Numeric("end_" + "xyz"[a], p.End[a], () => (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+                { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+            }
             if (p.Kind == "wall")
             {
                 Numeric("height", p.Height, () => e.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM).AsDouble());
@@ -346,6 +387,13 @@ namespace Horizun.Revit.Commands
             {
                 row["coordinate_reference"] = "internal_origin"; row["absolute_z_feet"] = point.Point.Z;
                 row["level_elevation_feet"] = p.Level.ProjectElevation; row["offset_feet"] = point.Point.Z - p.Level.ProjectElevation;
+            }
+            if (e is MEPCurve physicalRun && physicalRun.Location is LocationCurve physicalCurve)
+            {
+                XYZ a=physicalCurve.Curve.GetEndPoint(0), b=physicalCurve.Curve.GetEndPoint(1);
+                row["physical_start_feet"] = new JArray(a.X,a.Y,a.Z);
+                row["physical_end_feet"] = new JArray(b.X,b.Y,b.Z);
+                row["endpoint_verification"] = "Same-batch elbows: requested junctions are compared to intersections of committed connector axes; physical endpoints and attachment are measured separately. Other endpoints compare directly.";
             }
             if (e is FootPrintRoof diagnosticRoof)
             {
