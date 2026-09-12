@@ -1921,8 +1921,8 @@ function Invoke-Write($tool, $arguments) {
                   text = 'the reply carried no content'; data = $null }
     }
     $text = $content[0].text
-    $data = $null
-    if ($text) {
+    $data = $m.result.structuredContent
+    if ($null -eq $data -and $text) {
         try { $data = $text | ConvertFrom-Json }
         catch {
             # A refusal reads "Error: <sentence> {json}", and the verdict this tier
@@ -1959,6 +1959,17 @@ function Invoke-WriteApply($tool, $arguments, $keyName) {
     $apply['confirmation_token'] = $d.data.confirmation_token
     $apply['idempotency_key'] = ("live-write-{0}-{1}" -f $keyName, $probeRun)
     return @{ stage = 'apply'; answer = (Invoke-Write $tool $apply); dry = $d }
+}
+
+# The creation error contract is structured. Human wording can change without
+# changing the measured rollback, and a matching sentence alone is not proof.
+function Test-CreationRollback($answer) {
+    $state = $answer.structured
+    return ($answer.isError -eq $true -and $null -ne $state -and
+        $state.code -eq 'revit_creation_failed' -and
+        $state.transaction_status -eq 'RolledBack' -and
+        $state.rollback_status -eq 'RolledBack' -and
+        $state.changes_applied -eq $false)
 }
 
 # Every row of a verification table agreed. An empty table is not agreement:
@@ -2312,7 +2323,8 @@ else {
     $wx = 500000
     $wy = 0
 
-    function New-ProbePipe($x1, $y1, $z1, $x2, $y2, $z2, $typeId, $key) {
+    function New-ProbePipe([double]$x1, [double]$y1, [double]$z1,
+                          [double]$x2, [double]$y2, [double]$z2, $typeId, $key) {
         $r = Invoke-WriteApply 'horizun_create_elements' @{
             target_document = $wDoc; units = 'mm'
             elements = @(@{ kind='pipe'; start=@($x1,$y1,$z1); end=@($x2,$y2,$z2)
@@ -9071,7 +9083,11 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
         $vp1 = New-ProbePipe ($w12X+1000) 25000 -1000 ($w12X+1000) 25000 1000 $pipeType 'w12-v1'
         $vp1Id = $null
         if ($vp1.stage -eq 'apply' -and -not $vp1.answer.isError) { $vp1Id = @($vp1.answer.data.rows)[0].element_id }
-        if (-not $floorId -or -not $vp1Id) { Complete-W12Case 6 $t0 'unverified' 'the floor or the vertical pipe could not be staged' }
+        if (-not $floorId -or -not $vp1Id) {
+            Complete-W12Case 6 $t0 'unverified' ('the floor or the vertical pipe could not be staged: floor=' +
+                (Get-DimShortText $mkF.answer.text) + '; pipe=' + (Get-DimShortText $vp1.answer.text)) `
+                -Evidence @{ floor=$mkF; vertical_pipe=$vp1 }
+        }
         else {
             $cl6 = Invoke-Write 'horizun_clash' @{
                 categories_a=@('OST_PipeCurves'); categories_b=@('OST_Floors'); include_links=$false
@@ -10690,10 +10706,10 @@ __output__ = out
                             Complete-W14Case 10 $t0 'pass' ('THE POSITIVE: a real takeoff committed verified on the type whose junction preference reads Tap, using the authored Spud fitting (fitting count ' + $fitBefore + ' -> ' + $fitAfter + ')') `
                                 -Evidence @{ tap_type=$tt; fitting=$tapSym; row=$tkRow2 }
                         } elseif ($tkGo.answer.isError -and $tkGo.answer.text -match 'Failed to insert takeoff' -and
-                                  $tkGo.answer.text -match 'rolled back' -and $fitAfter -eq $fitBefore) {
+                                  (Test-CreationRollback $tkGo.answer) -and $fitAfter -eq $fitBefore) {
                             Complete-W14Case 10 $t0 'pass' ('MEASURED BOUNDARY, not a guess: the typed configuration verified (preference re-read Tap, Part Type gate passed) and REVIT ITSELF refused the insert - "Failed to insert takeoff". The product rolled the batch back WHOLE and said so: the fitting count is unchanged at ' + $fitAfter + '. An authored Spud family satisfies the gate but not NewTakeoffFitting; the positive needs an Autodesk MEP content tap, which this machine does not ship. Una negativa no prueba la positiva - this probe claims only what it measured.') `
                                 -Evidence @{ tap_type=$tt; fitting=$tapSym; fittings_before=$fitBefore; fittings_after=$fitAfter
-                                             revit_said=(Get-DimShortText $tkGo.answer.text) }
+                                             revit_said=(Get-DimShortText $tkGo.answer.text); rollback=$tkGo.answer.structured }
                         } else {
                             Complete-W14Case 10 $t0 'fail' ('neither a verified takeoff nor a clean whole rollback: stage=' + $tkGo.stage +
                                 ' fittings ' + $fitBefore + '->' + $fitAfter + ' ' + (Get-DimShortText $tkGo.answer.text))

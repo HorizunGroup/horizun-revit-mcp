@@ -40,6 +40,51 @@ $applySource = Get-Content -LiteralPath $apply -Raw
 $verifyLivePath = Join-Path $repo 'scripts\verify-live.ps1'
 $verifyLiveSource = Get-Content -LiteralPath $verifyLivePath -Raw
 
+# Run the actual harness helpers without starting Revit or the MCP server.
+# Untyped PowerShell positional arguments bind a negative literal as a string;
+# the strict XYZ contract correctly rejects that string when serialized to JSON.
+$parseErrors = $null; $parseTokens = $null
+$harnessAst = [System.Management.Automation.Language.Parser]::ParseInput(
+    $verifyLiveSource, [ref]$parseTokens, [ref]$parseErrors)
+if (@($parseErrors).Count) { throw 'verify-live.ps1 did not parse' }
+foreach ($helper in @('New-ProbePipe', 'Invoke-Write', 'Get-JsonObjects', 'Test-CreationRollback')) {
+    $node = $harnessAst.Find({ param($ast)
+        $ast -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $ast.Name -eq $helper
+    }, $true)
+    if (-not $node) { throw "Missing harness helper $helper" }
+    . ([scriptblock]::Create($node.Extent.Text))
+}
+function Invoke-WriteApply($tool, $arguments, $keyName) { return $arguments }
+$wDoc = 'disposable'; $levelId = 30; $pipeSystem = 40
+$pipeRequest = New-ProbePipe 651000 25000 -1000 651000 25000 1000 50 'negative-z'
+$roundTrip = $pipeRequest | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+if ($roundTrip.elements[0].start[2] -is [string] -or $roundTrip.elements[0].start[2] -ne -1000) {
+    $failures.Add('negative fixture elevations must serialize as JSON numbers')
+} else { Write-Host '  PASS  negative pipe elevations survive PowerShell binding as JSON numbers' }
+
+function Send-Rpc($request) { }
+function Read-Rpc { return $script:fixtureReply }
+$script:writeCallId = 0
+$script:fixtureReply = '{"result":{"isError":true,"content":[{"type":"text","text":"Error: Failed to insert takeoff."}],"structuredContent":{"code":"revit_creation_failed","transaction_status":"RolledBack","rollback_status":"RolledBack","changes_applied":false}}}' | ConvertFrom-Json
+$failureReply = Invoke-Write 'horizun_create_elements' @{}
+if (-not (Test-CreationRollback $failureReply) -or $failureReply.data.transaction_status -ne 'RolledBack') {
+    $failures.Add('the creation rollback must be read from structuredContent without parsing human prose')
+}
+$failureReply.structured.rollback_status = 'Unknown'
+if (Test-CreationRollback $failureReply) { $failures.Add('an unknown rollback cannot pass') }
+$failureReply.structured.rollback_status = 'RolledBack'
+$failureReply.structured.changes_applied = $true
+if (Test-CreationRollback $failureReply) { $failures.Add('a response reporting changes cannot prove whole rollback') }
+$script:fixtureReply = '{"result":{"isError":true,"content":[{"type":"text","text":"Everything rolled back"}],"structuredContent":null}}' | ConvertFrom-Json
+if (Test-CreationRollback (Invoke-Write 'horizun_create_elements' @{})) {
+    $failures.Add('rollback wording without structured evidence cannot pass')
+}
+$script:fixtureReply = '{"result":{"isError":false,"content":[{"type":"text","text":"{\"created_verified\":1}"}],"structuredContent":null}}' | ConvertFrom-Json
+if ((Invoke-Write 'horizun_create_elements' @{}).data.created_verified -ne 1) {
+    $failures.Add('legacy text-only JSON replies must remain readable')
+}
+Write-Host '  PASS  rollback requires structured transaction, rollback and no-change evidence'
+
 # One redirected StreamReader permits one asynchronous read at a time. A former
 # tool-pack probe started a raw ReadLineAsync every two seconds while the prior
 # read was still pending; the release matrix then died after several minutes
