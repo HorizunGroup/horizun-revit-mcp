@@ -6,6 +6,7 @@
 // whose third stage is invalid must be refused whole, with every finding, not
 // executed for two stages and abandoned.
 // -----------------------------------------------------------------------------
+using System.IO;
 using System.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
@@ -17,7 +18,7 @@ namespace Horizun.Core.Tests
     {
         private static JObject Profile()
         {
-            return JObject.Parse(@"{
+            JObject profile = JObject.Parse(@"{
               ""id"": ""arch"", ""version"": ""1"", ""units"": ""mm"",
               ""views"": [{
                 ""view_id"": 101,
@@ -43,6 +44,9 @@ namespace Horizun.Core.Tests
                              ""assertion"": {""field"": ""sheet_number"", ""operator"": ""matches"", ""value"": ""^A""}}]
               }
             }");
+            // Path validation follows the host OS; no file is created by preflight.
+            profile["publication"]["output_path"] = Path.Combine(Path.GetTempPath(), "delivery.pdf");
+            return profile;
         }
 
         private static JObject[] Errors(JObject result) => ((JArray)result["errors"]).Cast<JObject>().ToArray();
@@ -173,7 +177,7 @@ namespace Horizun.Core.Tests
         public void OutputPathMustBeAbsoluteAndAPdf()
         {
             JObject p = Profile();
-            p["publication"]["output_path"] = "C:/ApprovedOutput/delivery.dwg";
+            p["publication"]["output_path"] = Path.Combine(Path.GetTempPath(), "delivery.dwg");
             Assert.Contains(Errors(DeliveryPreflight.Static(p, 2026)), e => e.Value<string>("field") == "publication.output_path" && e.Value<string>("message").Contains(".pdf"));
         }
 
