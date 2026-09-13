@@ -3,7 +3,56 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v1.3.0 — release candidate
+## v1.3.1 — 2026-09-13
+
+The 1.3 release. Everything described under v1.3.0 below ships here; that tag
+was never published, because its five-year live matrix was not clean and
+published tags in this repository cannot move.
+
+**Geometry on a level whose elevation is not zero.** Four defects, each measured
+live in Revit 2023 and 2026 against the 1.3.0 candidate, each invisible while
+every fixture used a level at elevation zero.
+
+- A wall asked for an absolute base Z was verified against its `LocationCurve`,
+  which sits on the level's reference plane, not on the physical base. A wall
+  based at Z=0 on a level at 5 ft reports `LocationCurve.Z` 5.0 with a base
+  offset of −5.0, while its solid starts at 0 — where it was asked to. The
+  postcondition therefore refused correct geometry and rolled the batch back.
+  Z is now compared against the element's own base constraint, re-read after the
+  commit, and the solid's measured elevation span is published beside it.
+- A structural column was never placed where it was asked. Revit drops the Z of
+  the creation point, and translating the instance by that Z changes nothing.
+  The elevation a level-based instance obeys is its base offset, so the move is
+  confined to XY and the elevation goes through the parameter that governs it.
+- `level_elevation` re-read the level that was *requested*, which can only agree
+  with itself. It now re-reads the level the committed element carries.
+- `BeamSystem.Create` can silently bind another level — measured, the lowest
+  level of an Autodesk MEP sample binds one level up — and refuses a level with
+  no plan view through a message that names a parameter. Both are refused by
+  name now.
+
+**Tags.** `horizun_create_family` gains `source_path`, which loads an `.rfa`
+that already exists and re-reads the family and its types from the project
+afterwards; the public Revit API cannot create a label in an annotation family,
+so a usable tag family can only come from a file. A label-only tag family —
+which is every stock Autodesk tag — publishes no extent in the API, and
+requiring one refused all of them for a fact that says nothing about whether the
+tag is correct. Placement is verified by view, host, head, orientation, leader
+and text; the missing extent is reported with its reason, and layout says when
+it placed a tag as a point rather than claiming a clearance it did not take.
+
+**Claude Desktop.** Setup staged a `.mcpb` under `%LOCALAPPDATA%` — a folder
+Explorer hides and a file picker cannot browse to — and asked the user to find
+it. The helper now writes the documented configuration entry and finishes on its
+own; `-Extension` keeps the package route and puts the file on the Desktop with
+Explorer opened on it. The installer's own dialogs now speak the language the
+user chose and name the shortcuts that really exist: the success dialog was
+English in a Spanish install and pointed at a shortcut name that was not on the
+Start menu. The command-line shortcut no longer closes its own window on an
+unlabelled hex fingerprint, and a machine with only Claude Desktop is told so
+instead of getting an error about two CLIs it never installed.
+
+## v1.3.0 — tagged, never published
 
 Integrates the BIM production workflows, owner-local mode and history controls,
 workshared protection, annotation/sheet checks, PDF verification and delivery
@@ -27,6 +76,8 @@ The README, installation FAQ and LLM instructions foreground the downloadable
 Windows installer and distinguish its included runtime from the SDK needed only
 to compile source. See [release details](docs/RELEASE-1.3.0.md). Final package and
 live release-matrix evidence are still pending; this entry is not a release claim.
+Its live matrix failed on Revit 2023 and left two probes unverified in every
+year. The tag stays where it is; the work ships as v1.3.1 above.
 
 ## v1.2.1 — 2026-09-04
 
