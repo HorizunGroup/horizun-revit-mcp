@@ -83,6 +83,14 @@ function Act($what, $ok, $detail) {
     $actions.Add([pscustomobject]@{ action = $what; ok = [bool]$ok; detail = $detail }) | Out-Null
     if ($ok) { Say $what 'Green' } else { Say "$what - $detail" 'Red'; $problems.Add("$what : $detail") | Out-Null }
 }
+# THE PACKAGE ONLY BLOCKS THE RUN THAT NEEDS IT. A default run connects Claude
+# Desktop through its configuration; reporting that whole run as failed because
+# no .mcpb was lying around would call a working integration broken.
+function Step($what, $ok, $detail, $blocking = $true) {
+    if ($ok -or $blocking) { Act $what $ok $detail; return }
+    $actions.Add([pscustomobject]@{ action = $what; ok = $false; detail = $detail; blocking = $false }) | Out-Null
+    Say "$what - $detail" 'DarkGray'
+}
 
 $stageRoot = Join-Path $env:LOCALAPPDATA 'Horizun\integrations\claude-desktop'
 $handoverPath = $null
@@ -241,17 +249,17 @@ if ($PackagePath -and (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
     try {
         $pkg = Get-HorizunMcpbManifestFromPackage -Path $PackagePath
         $mp = @(Test-HorizunMcpbManifest $pkg.Manifest)
-        if ($mp.Count -gt 0) { Act 'validate the package manifest' $false ($mp -join '; ') }
+        if ($mp.Count -gt 0) { Step 'validate the package manifest' $false ($mp -join '; ') $Extension }
         else {
             Act ("package {0} carries a valid manifest: {1} {2}" -f (Split-Path -Leaf $PackagePath), $pkg.Manifest.name, $pkg.Manifest.version) $true $null
             $manifestOk = $true
         }
     }
-    catch { Act 'read the package manifest' $false $_.Exception.Message }
+    catch { Step 'read the package manifest' $false $_.Exception.Message $Extension }
 }
 else {
-    Act 'find the extension package' $false ("no .mcpb found beside the installed server or in dist\. " +
-        "Build one with scripts/build-mcpb.ps1, or pass -PackagePath.")
+    Step 'find the extension package' $false ("no .mcpb found beside the installed server or in dist\. " +
+        "Build one with scripts/build-mcpb.ps1, or pass -PackagePath.") $Extension
 }
 
 if ($manifestOk) {
@@ -274,7 +282,7 @@ if ($manifestOk) {
             $rebuilt = $true
             Act ("built the machine-resolved extension: command {0}" -f $localPkg.Manifest.server.mcp_config.command) $true $null
         }
-        catch { Act 'build the machine-resolved extension' $false $_.Exception.Message }
+        catch { Step 'build the machine-resolved extension' $false $_.Exception.Message $Extension }
     }
     if (-not $rebuilt) {
         # Fall back to the published copy. It is a valid extension; it merely
