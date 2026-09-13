@@ -95,6 +95,24 @@ Claude Code is optional. Claude Desktop does not invoke it or depend on it.
 
 ## Claude Desktop
 
+### The whole procedure
+
+1. Close **Revit** and **Claude Desktop**.
+2. Run Setup.
+3. Open Claude Desktop, open Revit, and ask for `horizun_health`.
+
+That is all of it. Setup connects Claude Desktop on its way out; there is nothing
+to install inside the app and no file to find.
+
+Step 1 is the one that decides whether it works, and it is the one people skip.
+Claude Desktop rewrites its configuration from memory when it exits, so an edit
+made underneath a running app is lost silently and the only symptom is that the
+tools never appear. Setup refuses to write while it is open rather than write
+hopefully. If it was open, nothing is broken and nothing needs reinstalling:
+close it and run the shortcut below.
+
+### Doing it by hand
+
 From the Start menu, open **Horizun → Conectar Horizun con Claude Desktop**, or
 run:
 

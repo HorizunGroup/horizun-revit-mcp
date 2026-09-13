@@ -137,8 +137,19 @@ installed `horizun-mcp.exe`:
 |---|---|---|
 | **Codex** | Registers `horizun-revit` beside existing MCP servers. | Restart Codex. |
 | **Claude Code** | Registers `horizun-revit` at user scope. | Restart Claude Code. |
-| **Claude Desktop** | Builds and stages its `.mcpb` Desktop Extension. | Install the extension once inside Claude Desktop. |
+| **Claude Desktop** | Writes its `mcpServers` entry, and stages the `.mcpb` too. | Open Claude Desktop. |
 | **ChatGPT Work** | Installs its Secure MCP Tunnel helper. | Create/start the tunnel and add it in ChatGPT Work. |
+
+**Close Revit and Claude Desktop before running Setup.** That is the whole
+procedure for Claude Desktop: close them, run Setup, open Claude Desktop. Nothing
+to install inside the app and no file to hunt for.
+
+The one that catches people is Claude Desktop. It rewrites its own configuration
+from memory when it exits, so an edit made underneath a running app is lost
+silently and the only symptom is that the tools never appear. Setup therefore
+REFUSES to write while it is open rather than write hopefully - so if it was open,
+nothing is broken and nothing needs reinstalling: close it and run **Horizun >
+Conectar Horizun con Claude Desktop** from the Start menu.
 
 The installer waits for Claude Code or Codex to close before editing their
 configuration, makes timestamped backups, preserves every other MCP entry, and
@@ -181,12 +192,15 @@ tool_timeout_sec = 600
 }
 ```
 
-**Claude Desktop does not need Claude Code.** Prepare its real `.mcpb` Desktop
-Extension and inspect every supported client from one screen:
+**Claude Desktop does not need Claude Code.** With the app closed, one command
+connects it and finishes; `-Extension` hands over the real `.mcpb` instead, asking
+where to put it:
 
 ```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1   # a real .mcpb Desktop Extension
-pwsh -File scripts/diagnose-integrations.ps1              # Codex, Claude Code, Claude Desktop and ChatGPT Work
+pwsh -File scripts/install-claude-desktop-extension.ps1              # connect it, end to end
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension   # hand over the .mcpb
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Diagnose    # what is actually in place
+pwsh -File scripts/diagnose-integrations.ps1                         # Codex, Claude Code, Claude Desktop and ChatGPT Work
 ```
 
 **ChatGPT Work does not need Codex or Claude Code.** It reaches the same installed
