@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP - original Horizun code.
 //
 // ONE declaration of what this bridge offers, shared by both halves.
@@ -493,12 +493,15 @@ namespace Horizun.Contracts
                     "Only the reopened, verified file is loaded into the guarded project, where the Family is re-read " +
                     "again. System-family types are not RFA files and belong to " +
                     "horizun_manage_system_types; general in-place-family creation is not exposed by the public Revit API. " +
-                    "Requires full_write because it creates an external file.",
+                    "Requires full_write because it creates an external file. "  +
+                    "Pass source_path instead of template_path/output_path to LOAD an .rfa that already exists, "  +
+                    "re-reading the family and its types from the project afterwards.",
                 InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""template_path"", ""output_path""],
+  ""type"": ""object"", ""required"": [""target_document""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""template_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rft path. The template determines category and hosting behavior."" },
+    ""source_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rfa to LOAD into the target project instead of authoring one. Mutually exclusive with template_path, which it replaces along with output_path. Use it for anything authoring cannot reach - the public Revit API cannot create a LABEL in an annotation family, so a usable tag family has to come from a file. The family and its requested types are re-read from the project after the commit; a load Revit declined is a refusal, and a family that arrives with no type is refused too."" },
+    ""template_path"": { ""type"": ""string"", ""description"": ""Absolute existing .rft path. The template determines category and hosting behavior. Required unless source_path is given."" },
     ""output_path"": { ""type"": ""string"", ""description"": ""Absolute .rfa destination in an existing directory."" },
     ""recipe"": { ""type"": ""object"", ""additionalProperties"": false, ""required"": [""name"", ""width"", ""depth"", ""height_parameter"", ""types""],
       ""properties"": {

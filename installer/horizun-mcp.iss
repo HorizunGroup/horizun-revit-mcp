@@ -1,4 +1,4 @@
-; ----------------------------------------------------------------------------
+﻿; ----------------------------------------------------------------------------
 ; Horizun MCP — installer.
 ;
 ; Installs the MCP server once, and the Revit add-in once PER INSTALLED REVIT
@@ -97,8 +97,11 @@ Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: i
 [Icons]
 Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
-Name: "{group}\Configurar Horizun en Codex y Claude Code"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
+; -NoExit like every other wizard here: without it this window printed its
+; report and vanished, and the last thing on screen was a bare hex fingerprint
+; that reads as an error code.
+Name: "{group}\Conectar Horizun con Codex y Claude Code (linea de comandos)"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Completar y verificar instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Both"; \
@@ -113,10 +116,17 @@ Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPower
 ; reports what it found, does the part a script may do, and names the one step
 ; that is the user's. None of them needs Claude Code or Codex CLI to be present,
 ; and none of them touches a client's configuration while that client is running.
-Name: "{group}\Instalar o reparar la extension de Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+; The plain run now writes the documented configuration entry and finishes, so
+; this shortcut CONNECTS Claude Desktop rather than preparing a file somebody
+; still has to find. The .mcpb route keeps its own shortcut for anyone who wants
+; the extension, and that one puts the file on the Desktop and opens Explorer on it.
+Name: "{group}\Conectar Horizun con Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Diagnosticar la extension de Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\Claude Desktop - instalar como extension (.mcpb)"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Extension"; \
+  WorkingDir: "{app}\server\client-tools"
+Name: "{group}\Diagnosticar Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Diagnose"; \
   WorkingDir: "{app}\server\client-tools"
 Name: "{group}\Configurar ChatGPT Work"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
@@ -165,6 +175,7 @@ Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Flags: runhidden waituntilterminated skipifdoesntexist
 
 [Code]
+
 const
   { Supported Revit years. There is no runtime column any more: the payload folder
     IS the year, because each year is compiled against its own RevitAPI. Sharing a
@@ -183,6 +194,19 @@ var
   YearDeployed: array[0..4] of Boolean;
   YearManifestWritten: array[0..4] of Boolean;
   InstallManifestWritten: Boolean;
+
+{ ONE LANGUAGE PER INSTALL, INCLUDING THE PARTS WRITTEN HERE.
+
+  Setup offers Spanish and English, and Inno translates its own wizard - but a
+  MsgBox raised from [Code] carries whatever text is compiled into it. Every one
+  of them was English, and they named Spanish shortcuts, so somebody who chose
+  Spanish was told in English to run something whose name did not match any
+  shortcut on their Start menu. L() picks the text for the language the user
+  actually chose. }
+function L(const Es, En: String): String;
+begin
+  if ActiveLanguage() = 'es' then Result := Es else Result := En;
+end;
 
 function ShouldCompleteInstall(): Boolean;
 begin
@@ -360,10 +384,14 @@ begin
   Result := True;
   if RevitIsRunning then
   begin
-    MsgBox('Revit is running.' + #13#10#13#10 +
-           'It holds the add-in files open, so they cannot be replaced and you would end up ' +
-           'still running the old build without being told.' + #13#10#13#10 +
-           'Close every Revit window and run this installer again. Nothing has been changed.',
+    MsgBox(L('Revit esta abierto.' + #13#10#13#10 +
+             'Mantiene abiertos los archivos del complemento, asi que no se pueden reemplazar y te quedarias ' +
+             'usando la version anterior sin que nadie te lo dijera.' + #13#10#13#10 +
+             'Cierra todas las ventanas de Revit y vuelve a ejecutar este instalador. No se ha cambiado nada.',
+             'Revit is running.' + #13#10#13#10 +
+             'It holds the add-in files open, so they cannot be replaced and you would end up ' +
+             'still running the old build without being told.' + #13#10#13#10 +
+             'Close every Revit window and run this installer again. Nothing has been changed.'),
            mbError, MB_OK);
     Result := False;
   end;
@@ -388,9 +416,12 @@ begin
     end;
   if Conflicts <> '' then
   begin
-    MsgBox('Another manifest with the Horizun AddInId already exists for Revit ' + Conflicts + #13#10#13#10 +
-      'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
-      'Remove or migrate the machine-wide installation first. Nothing has been changed.',
+    MsgBox(L('Ya existe otro manifiesto con el AddInId de Horizun para Revit ' + Conflicts + #13#10#13#10 +
+             'Este instalador no crea un segundo manifiesto con el mismo AddInId, aunque el otro archivo se haya renombrado. ' +
+             'Quita o migra primero la instalacion para toda la maquina. No se ha cambiado nada.',
+             'Another manifest with the Horizun AddInId already exists for Revit ' + Conflicts + #13#10#13#10 +
+             'This installer refuses to create a second manifest with the same AddInId, even if the other file was renamed. ' +
+             'Remove or migrate the machine-wide installation first. Nothing has been changed.'),
       mbError, MB_OK);
     Result := False;
   end;
@@ -401,8 +432,10 @@ begin
   Result := True;
   if RevitIsRunning or BridgeIsRunning then
   begin
-    SuppressibleMsgBox('Close every Revit window and every Codex/Claude client using Horizun before uninstalling.' + #13#10#13#10 +
-      'Those processes hold the installed files open. Nothing was removed.', mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(L('Cierra todas las ventanas de Revit y todos los clientes Codex/Claude que usen Horizun antes de desinstalar.' + #13#10#13#10 +
+                         'Esos procesos mantienen abiertos los archivos instalados. No se quito nada.',
+                         'Close every Revit window and every Codex/Claude client using Horizun before uninstalling.' + #13#10#13#10 +
+                         'Those processes hold the installed files open. Nothing was removed.'), mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;
@@ -892,24 +925,47 @@ begin
     if WizardSilent then exit;
 
     if not FoundAny then
-      MsgBox('No supported Revit installation was found (2023-2027), so the add-in was not deployed.' + #13#10 +
-             'The MCP server is installed; run this again after installing Revit.',
+      MsgBox(L('No se encontro ninguna instalacion de Revit compatible (2023-2027), asi que el complemento no se instalo.' + #13#10 +
+               'El servidor MCP si quedo instalado; vuelve a ejecutar esto despues de instalar Revit.',
+               'No supported Revit installation was found (2023-2027), so the add-in was not deployed.' + #13#10 +
+               'The MCP server is installed; run this again after installing Revit.'),
              mbInformation, MB_OK)
     else if FailedYears <> '' then
-      MsgBox('The add-in was NOT fully installed.' + #13#10#13#10 +
-             'Succeeded for: ' + InstalledYears + #13#10 +
-             'FAILED for: ' + FailedYears + #13#10#13#10 +
-             'Where a year failed, whatever was installed before it has been put back - no Revit has been left ' +
-             'without an add-in. The usual cause is Revit still running and holding the files open.' + #13#10#13#10 +
-             'Close every Revit and run this installer again.',
+      MsgBox(L('El complemento NO quedo instalado del todo.' + #13#10#13#10 +
+               'Correcto en: ' + InstalledYears + #13#10 +
+               'FALLO en: ' + FailedYears + #13#10#13#10 +
+               'Donde fallo un ano se restauro lo que hubiera antes: ningun Revit se quedo sin complemento. ' +
+               'La causa habitual es que Revit siga abierto reteniendo los archivos.' + #13#10#13#10 +
+               'Cierra todos los Revit y vuelve a ejecutar este instalador.',
+               'The add-in was NOT fully installed.' + #13#10#13#10 +
+               'Succeeded for: ' + InstalledYears + #13#10 +
+               'FAILED for: ' + FailedYears + #13#10#13#10 +
+               'Where a year failed, whatever was installed before it has been put back - no Revit has been left ' +
+               'without an add-in. The usual cause is Revit still running and holding the files open.' + #13#10#13#10 +
+               'Close every Revit and run this installer again.'),
              mbError, MB_OK)
     else
-      MsgBox('Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
-             'Restart Revit to load it.' + #13#10#13#10 +
-              'Use the Start-menu shortcut "Configurar Horizun en Codex y Claude" to register both clients safely.' + #13#10 +
-              'It keeps timestamped backups and preserves every other MCP entry.' + #13#10#13#10 +
-              'Claude CLI alternative:' + #13#10 +
-               'claude mcp add --scope user horizun-revit -- "' + ExpandConstant('{app}') + '\server\{#AppExeName}"',
+      { THE NEXT STEP DEPENDS ON WHICH CLIENT YOU USE, and the shortcut names here
+        are the names the Start menu really carries. The old text named one that
+        did not exist, so following it exactly led nowhere. }
+      MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
+               'Reinicia Revit para cargarlo.' + #13#10#13#10 +
+               'Ahora conecta tu cliente desde el menu Inicio, en la carpeta Horizun:' + #13#10#13#10 +
+               '  - App de escritorio de Claude:' + #13#10 +
+               '      "Conectar Horizun con Claude Desktop"' + #13#10 +
+               '      Cierra Claude Desktop antes: termina solo, sin archivos que buscar.' + #13#10#13#10 +
+               '  - Claude Code o Codex (linea de comandos):' + #13#10 +
+               '      "Conectar Horizun con Codex y Claude Code (linea de comandos)"' + #13#10#13#10 +
+               'Ambos conservan tus otras entradas MCP y guardan copias de seguridad fechadas.',
+               'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
+               'Restart Revit to load it.' + #13#10#13#10 +
+               'Now connect your client from the Start menu, in the Horizun folder:' + #13#10#13#10 +
+               '  - Claude Desktop app:' + #13#10 +
+               '      "Conectar Horizun con Claude Desktop"' + #13#10 +
+               '      Close Claude Desktop first: it then finishes on its own, with no file to hunt for.' + #13#10#13#10 +
+               '  - Claude Code or Codex (command line):' + #13#10 +
+               '      "Conectar Horizun con Codex y Claude Code (linea de comandos)"' + #13#10#13#10 +
+               'Both preserve your other MCP entries and keep timestamped backups.'),
              mbInformation, MB_OK);
   end;
 end;

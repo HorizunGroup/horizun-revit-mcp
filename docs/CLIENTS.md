@@ -95,34 +95,56 @@ Claude Code is optional. Claude Desktop does not invoke it or depend on it.
 
 ## Claude Desktop
 
-Claude Desktop uses a Desktop Extension rather than either CLI configuration.
-Setup ships the release `.mcpb` and a preparation helper. From the Start menu,
-open **Horizun → Instalar o reparar la extensión de Claude Desktop**, or run:
+From the Start menu, open **Horizun → Conectar Horizun con Claude Desktop**, or
+run:
 
 ```powershell
 pwsh -File scripts/install-claude-desktop-extension.ps1
 ```
 
-The wizard:
+With Claude Desktop closed, that finishes on its own. The helper:
 
 1. Detects classic and Store/MSIX installations.
-2. Proves the installed server completes `initialize` and `tools/list`.
-3. Rewrites the extension manifest with the absolute server path for this Windows user.
-4. Stages the exact file under
-   `%LOCALAPPDATA%\Horizun\integrations\claude-desktop\`.
+2. Proves the installed server completes `initialize` and `tools/list` — the one
+   check that matters, because a client that names a command which does not
+   answer MCP shows no tools and no reason.
+3. Writes `mcpServers."horizun-revit"` into `claude_desktop_config.json`, with
+   the server path **already expanded for this machine**, preserving every other
+   key and every other server, and reads the file back to confirm it.
+4. Stages and validates the `.mcpb` as well, so the extension route needs no
+   further build.
 
-Finish inside Claude Desktop:
+Then start Claude Desktop, start Revit, open a document and call
+`horizun_health`.
 
-1. Open **Settings → Extensions → Advanced settings**.
-2. Select **Install Extension…** and choose the staged `.mcpb`.
+It refuses to write while Claude Desktop is running: the app rewrites that file
+from memory when it exits, so an edit made underneath it is lost silently and
+the only symptom is that the tools never appear. Close it and run again.
+
+### The extension route
+
+The `.mcpb` is the other supported route and gives the same result. It needs one
+click that no documented command can take, so it is not the default:
+
+```powershell
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension -SaveTo D:\wherever
+```
+
+It asks where to put the validated package, offering `Documents\Horizun`, and
+opens Explorer there with the file selected — the staged copy lives under
+`%LOCALAPPDATA%`, which Explorer hides by default and a file picker cannot
+browse to. `-SaveTo` chooses the folder without being asked. Then, inside
+Claude Desktop:
+
+1. **Settings → Extensions → Advanced settings**.
+2. **Install Extension…**, and choose the `.mcpb` on your Desktop.
 3. Restart Claude Desktop.
-4. Start Revit, open a document and call `horizun_health`.
 
-This final click cannot be automated through a documented Claude Desktop command.
-The installer records `pending_user_action` and the exact package path instead of
+The helper records `pending_user_action` with the exact path rather than
 claiming the extension was installed.
 
-Manual JSON configuration remains available as recovery only:
+### Configuration by hand
 
 ```json
 {
@@ -135,14 +157,9 @@ Manual JSON configuration remains available as recovery only:
 }
 ```
 
-Use the fully expanded path. JSON requires doubled backslashes.
-
-```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1 -ConfigFallback
-```
-
-The fallback refuses to edit the file while Claude Desktop is running because
-the application can overwrite it from memory when it exits.
+Use the fully expanded path — the app does not expand `%LOCALAPPDATA%`, and a
+configuration written with it points at nothing. JSON requires doubled
+backslashes.
 
 ## ChatGPT Work
 
