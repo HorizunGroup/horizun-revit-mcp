@@ -22,10 +22,11 @@
      Settings > Extensions > Advanced settings > Install Extension. That final
      step happens in the app's own UI and there is no documented command for it,
      so this script prepares everything up to it, PUTS THE FILE WHERE A PERSON
-     CAN FIND IT - on the Desktop, with Explorer opened on it - and records
-     `pending_user_action` naming the step. It does NOT write into the app's
-     extension store: that directory carries per-extension metadata the app
-     maintains, and forging an entry there is inventing a private format.
+     CAN FIND IT - Documents\Horizun by default, or wherever -SaveTo or the
+     prompt says, with Explorer opened on it - and records `pending_user_action`
+     naming the step. It does NOT write into the app's extension store: that
+     directory carries per-extension metadata the app maintains, and forging an
+     entry there is inventing a private format.
 
   Either way the package is still staged and validated, so -Extension never has
   to build anything the default run did not already prove.
@@ -56,6 +57,10 @@ param(
     [switch]$Configure,
     # Prepare the .mcpb and hand it over instead of writing the configuration.
     [switch]$Extension,
+    # Where the handover copy goes. Defaults to Documents\Horizun, and with a
+    # console in front of it -Extension asks before writing anything, so the
+    # choice is the user's rather than a folder this script picked for them.
+    [string]$SaveTo,
     [switch]$Remove,
     [switch]$Rollback,
     # Write under a running Claude Desktop anyway. It will probably be lost.
@@ -301,24 +306,43 @@ if ($manifestOk) {
     # A FILE PICKER CANNOT BROWSE TO A FOLDER NOBODY KNOWS. %LOCALAPPDATA% is
     # hidden by default in Explorer, so the staged copy - correct, validated and
     # exactly the right bytes - was effectively unreachable for the person who
-    # has to choose it. A second copy goes on the Desktop, where a file picker
-    # opens by itself, and it is the copy this script then names.
+    # has to choose it. A named copy goes somewhere ordinary instead, Explorer is
+    # opened on it, and that is the copy this script then names.
+    #
+    # NOT the Desktop: dropping files on somebody's Desktop is not this script's
+    # call to make. The default is a folder of our own under Documents, and where
+    # there is a console to ask in, the destination is ASKED FOR - Enter takes the
+    # default, anything else goes where the user says.
     if ($Extension) {
         try {
-            $desktop = [Environment]::GetFolderPath('Desktop')
-            if ($desktop -and (Test-Path -LiteralPath $desktop)) {
-                $desktopPath = Join-Path $desktop (Split-Path -Leaf $stagedPath)
-                Copy-Item -LiteralPath $stagedPath -Destination $desktopPath -Force
-                if ((Get-FileHash -LiteralPath $desktopPath -Algorithm SHA256).Hash.ToLower() -ne $stagedSha) {
-                    Act 'put a copy on the Desktop' $false 'the Desktop copy does not match the staged file byte for byte'
-                }
-                else {
-                    $handoverPath = $desktopPath
-                    Act ("put a copy on your Desktop: " + (Split-Path -Leaf $desktopPath)) $true $null
+            $destination = $SaveTo
+            if (-not $destination) {
+                $documents = [Environment]::GetFolderPath('MyDocuments')
+                if (-not $documents) { $documents = $env:USERPROFILE }
+                $destination = Join-Path $documents 'Horizun'
+                if ([Environment]::UserInteractive -and $Host.Name -eq 'ConsoleHost') {
+                    Write-Host ""
+                    Say ("Where should the extension file go? Enter = " + $destination) 'Cyan'
+                    $typed = Read-Host '  folder'
+                    if (-not [string]::IsNullOrWhiteSpace($typed)) {
+                        $destination = $typed.Trim().Trim('"')
+                    }
                 }
             }
+            if (-not (Test-Path -LiteralPath $destination)) {
+                New-Item -ItemType Directory -Path $destination -Force | Out-Null
+            }
+            $chosenPath = Join-Path $destination (Split-Path -Leaf $stagedPath)
+            Copy-Item -LiteralPath $stagedPath -Destination $chosenPath -Force
+            if ((Get-FileHash -LiteralPath $chosenPath -Algorithm SHA256).Hash.ToLower() -ne $stagedSha) {
+                Act 'put a copy where you can reach it' $false 'the copy does not match the staged file byte for byte'
+            }
+            else {
+                $handoverPath = $chosenPath
+                Act ("put the extension file in " + $destination) $true $null
+            }
         }
-        catch { Act 'put a copy on the Desktop' $false $_.Exception.Message }
+        catch { Act 'put a copy where you can reach it' $false $_.Exception.Message }
     }
 }
 

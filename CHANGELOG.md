@@ -44,8 +44,9 @@ it placed a tag as a point rather than claiming a clearance it did not take.
 **Claude Desktop.** Setup staged a `.mcpb` under `%LOCALAPPDATA%` — a folder
 Explorer hides and a file picker cannot browse to — and asked the user to find
 it. The helper now writes the documented configuration entry and finishes on its
-own; `-Extension` keeps the package route and puts the file on the Desktop with
-Explorer opened on it. The installer's own dialogs now speak the language the
+own; `-Extension` keeps the package route and asks where to put the file,
+offering `Documents\Horizun`, then opens Explorer there. It does not write to
+the Desktop: where somebody's files land is their choice, not the installer's. The installer's own dialogs now speak the language the
 user chose and name the shortcuts that really exist: the success dialog was
 English in a Spanish install and pointed at a shortcut name that was not on the
 Start menu. The command-line shortcut no longer closes its own window on an

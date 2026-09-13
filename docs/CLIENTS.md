@@ -128,11 +128,14 @@ click that no documented command can take, so it is not the default:
 
 ```powershell
 pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension -SaveTo D:\wherever
 ```
 
-That copies the validated package **to your Desktop** and opens Explorer with it
-selected — the staged copy lives under `%LOCALAPPDATA%`, which Explorer hides by
-default and a file picker cannot browse to. Then, inside Claude Desktop:
+It asks where to put the validated package, offering `Documents\Horizun`, and
+opens Explorer there with the file selected — the staged copy lives under
+`%LOCALAPPDATA%`, which Explorer hides by default and a file picker cannot
+browse to. `-SaveTo` chooses the folder without being asked. Then, inside
+Claude Desktop:
 
 1. **Settings → Extensions → Advanced settings**.
 2. **Install Extension…**, and choose the `.mcpb` on your Desktop.
