@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - compact, typed authoring surface for common BIM elements.
 // -----------------------------------------------------------------------------
 using System;
@@ -1359,7 +1359,24 @@ namespace Horizun.Revit.Commands
                     for (int v = 0; v < p.ProfilePoints.Count; v++)
                         profile.Add(Line.CreateBound(p.ProfilePoints[v],
                                                      p.ProfilePoints[(v + 1) % p.ProfilePoints.Count]));
+                    // BeamSystem.Create REFUSES a level with no plan view, with a message
+                    // that names a parameter rather than the fixable fact; and MEASURED on
+                    // an Autodesk MEP sample in Revit 2023, asking for that model's lowest
+                    // level silently returns a system bound to the NEXT level up, at a
+                    // different elevation, while its other three levels bind correctly.
+                    // A system on a level nobody asked for is not the requested structure,
+                    // so both cases are named here instead of being discovered downstream.
+                    if (!new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>()
+                            .Any(v => !v.IsTemplate && v.GenLevel != null && v.GenLevel.Id == p.Level.Id))
+                        throw new InvalidOperationException(
+                            "A beam system needs a plan view on its level, and level '" + p.Level.Name +
+                            "' has none. Create a plan view on that level, or use a level that has one.");
                     BeamSystem system = BeamSystem.Create(doc, profile, p.Level, p.BeamDirection, false);
+                    if (system.Level != null && system.Level.Id != p.Level.Id)
+                        throw new InvalidOperationException(
+                            "Revit bound this beam system to level '" + system.Level.Name + "' (" + Rid.Value(system.Level.Id) +
+                            ") instead of the requested '" + p.Level.Name + "' (" + Rid.Value(p.Level.Id) +
+                            "), which places it at a different elevation. Nothing was kept. Use a level Revit accepts for a beam system in this model.");
                     if (p.BeamType != null)
                     {
                         if (!p.BeamType.IsActive) { p.BeamType.Activate(); doc.Regenerate(); }

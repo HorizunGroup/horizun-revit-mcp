@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Own one complete release-gate run against one installed Revit generation.
 
@@ -149,6 +149,13 @@ if ($disposable -ne 'yes-this-model-is-disposable') {
 $oldCandidate = [string]$yearConfig.old_file
 if ([string]::IsNullOrWhiteSpace($oldCandidate)) { $oldCandidate = Require-Text $common 'old_file' 'common' }
 $oldFile = Require-File $oldCandidate 'old_file'
+# Optional, and named when it is absent: without a labelled tag family the tag
+# probes cannot prove the committed path, because the Revit API cannot author
+# a label. One .rfa saved in the oldest supported year serves every year.
+$labelledTagFamily = [string]$common.labelled_tag_family
+if (-not [string]::IsNullOrWhiteSpace($labelledTagFamily)) {
+    $labelledTagFamily = Require-File $labelledTagFamily 'labelled_tag_family'
+}
 
 if ($releaseModel -eq $inactiveModel) { throw 'release_model and inactive_model must be different files.' }
 if ($releaseTitle -eq $inactiveTitle) { throw 'release_title and inactive_title must be different document titles.' }
@@ -289,6 +296,7 @@ try {
         '-ClosedWorksetDocument', $activeReleaseTitle,
         '-ClosedWorksetName', $closedWorkset,
         '-LinkSourceFile', $linkSource,
+        '-LabelledTagFamily', $labelledTagFamily,
         '-WriteDocument', $activeReleaseTitle,
         '-WriteDocumentDisposable', $disposable,
         '-ExpectedCommit', [string]$manifestDoc.Commit,

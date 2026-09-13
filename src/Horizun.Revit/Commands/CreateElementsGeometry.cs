@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.DB;
@@ -101,14 +101,107 @@ namespace Horizun.Revit.Commands
             var parameter = element.get_Parameter(name);
             if (parameter == null || parameter.IsReadOnly || !parameter.Set(value)) throw new InvalidOperationException(name + " could not be applied.");
         }
+        // THE ELEVATION A LEVEL-BASED INSTANCE OBEYS IS ITS BASE OFFSET, NOT ITS POINT.
+        // MEASURED on Revit 2023 and 2026, on a level at 5 ft: a structural column
+        // created at Z = level + 2 ft commits with base offset 0 - Revit drops the Z
+        // of the creation point - and translating it by that 2 ft changes NOTHING:
+        // base offset stays 0 and the solid stays at 5 ft. Its LocationPoint.Z reads
+        // 0 throughout, so it is not a place either. The offset parameter IS the
+        // elevation, and setting it moves the real geometry (bbox base 5 -> 7 ft).
+        // So the translation is confined to XY and the elevation goes through the
+        // parameter that governs it; an instance with no such parameter keeps the
+        // whole-vector move it always had.
         private static void PositionInstance(Document doc, Plan p, FamilyInstance instance)
         {
             doc.Regenerate();
             if (!(instance.Location is LocationPoint point)) throw new InvalidOperationException("Family has no point placement to verify.");
+            Parameter offset = instance.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            Level baseLevel = BaseLevelOf(doc, instance);
+            bool governed = baseLevel != null && offset != null && !offset.IsReadOnly;
             XYZ delta = p.Start - point.Point;
+            if (governed) delta = new XYZ(delta.X, delta.Y, 0);
             if (delta.GetLength() > GeometryInput.Tolerance) ElementTransformUtils.MoveElement(doc, instance.Id, delta);
+            if (governed)
+            {
+                double want = p.Start.Z - baseLevel.ProjectElevation;
+                if (Math.Abs(offset.AsDouble() - want) > GeometryInput.Tolerance && !offset.Set(want))
+                    throw new InvalidOperationException(
+                        "The base offset that governs this instance's elevation could not be applied, so the requested Z could not be reached.");
+            }
             if (p.Input["rotation_degrees"] != null)
                 ElementTransformUtils.RotateElement(doc, instance.Id, Line.CreateBound(p.Start, p.Start + XYZ.BasisZ), p.Rotation - point.Rotation);
+        }
+
+        // The lowest and highest Z of the element's real solids, in project feet, or
+        // null when it publishes no solid geometry. Reported as evidence beside the
+        // governed elevation, never asserted: a wall attached to a floor legitimately
+        // differs from its base constraint, and calling that a failure would refuse
+        // correct models.
+        private static double[] SolidElevationSpan(Element e)
+        {
+            try
+            {
+                var options = new Options { ComputeReferences = false, DetailLevel = ViewDetailLevel.Fine };
+                double low = double.MaxValue, high = double.MinValue;
+                void Walk(GeometryElement geometry, Transform transform)
+                {
+                    if (geometry == null) return;
+                    foreach (GeometryObject item in geometry)
+                    {
+                        if (item is Solid solid && solid.Volume > 1e-9)
+                        {
+                            BoundingBoxXYZ box = solid.GetBoundingBox();
+                            Transform total = transform.Multiply(box.Transform);
+                            foreach (XYZ corner in new[] { box.Min, box.Max })
+                            {
+                                double z = total.OfPoint(corner).Z;
+                                if (z < low) low = z;
+                                if (z > high) high = z;
+                            }
+                        }
+                        else if (item is GeometryInstance instance)
+                            Walk(instance.GetInstanceGeometry(), transform);
+                    }
+                }
+                Walk(e.get_Geometry(options), Transform.Identity);
+                return low == double.MaxValue ? null : new[] { low, high };
+            }
+            catch { return null; }
+        }
+
+        // The level a point-placed instance measures its base offset from, or null
+        // when the instance is not governed that way (a beam, a hosted symbol).
+        private static Level BaseLevelOf(Document doc, Element e)
+        {
+            if (!(e is FamilyInstance instance) || !(instance.Location is LocationPoint)) return null;
+            Parameter level = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+            return level == null ? null : doc.GetElement(level.AsElementId()) as Level;
+        }
+
+        // WHAT THE CALLER ASKED FOR IS A PLANE IN THE MODEL, NOT A LOCATION OBJECT.
+        // A wall's LocationCurve and a level-based instance's LocationPoint both sit
+        // on the level's reference plane rather than on the physical base: MEASURED
+        // on Revit 2023 and 2026, a wall based at Z = 0 on a level at 5 ft reports
+        // LocationCurve.Z = 5 with WALL_BASE_OFFSET = -5, while its solid starts at
+        // 0 - exactly where it was asked to. Verifying the request against the
+        // location compares it with the wrong plane and refuses correct geometry;
+        // verifying it against the element's OWN base constraint compares it with
+        // the plane Revit builds from, and still fails when Revit moves the base or
+        // rebinds the constraint to another level.
+        private static double? GovernedBaseZ(Document doc, Element e)
+        {
+            if (e is Wall)
+            {
+                Parameter constraint = e.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT);
+                Parameter offset = e.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (constraint != null && offset != null && doc.GetElement(constraint.AsElementId()) is Level level)
+                    return level.ProjectElevation + offset.AsDouble();
+                return null;
+            }
+            Level baseLevel = BaseLevelOf(doc, e);
+            Parameter instanceOffset = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            if (baseLevel != null && instanceOffset != null) return baseLevel.ProjectElevation + instanceOffset.AsDouble();
+            return null;
         }
 
         private static CommandResult ApplyPlans(Document doc, JObject request, List<Plan> plans, int requested, bool rehearsal = false)
@@ -280,8 +373,18 @@ namespace Horizun.Revit.Commands
             if (p.Type != null) Exact("type_id", Rid.Value(p.Type.Id), () => Rid.Value(e.GetTypeId()));
             if (p.Level != null)
             {
-                Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(e is MEPCurve mep ? mep.ReferenceLevel.Id : e is BeamSystem beamSystem ? beamSystem.Level.Id : e.LevelId));
-                Numeric("level_elevation", p.Level.ProjectElevation, () => ((Level)doc.GetElement(p.Level.Id)).ProjectElevation);
+                // level_elevation used to re-read the level that was REQUESTED, which
+                // can only ever agree with itself. It now re-reads the level the
+                // committed element actually carries, so a host that rebinds the
+                // element to a different level - MEASURED: BeamSystem.Create silently
+                // binds another level in some models - fails the postcondition on the
+                // elevation too, instead of passing a check about a level the element
+                // is not on.
+                Func<ElementId> actualLevel = () => e is MEPCurve mep ? mep.ReferenceLevel.Id
+                    : e is BeamSystem beamSystem ? beamSystem.Level.Id : e.LevelId;
+                Exact("level_id", Rid.Value(p.Level.Id), () => Rid.Value(actualLevel()));
+                Numeric("level_elevation", p.Level.ProjectElevation,
+                    () => doc.GetElement(actualLevel()) is Level carried ? carried.ProjectElevation : double.NaN);
             }
             if (p.WantName != null) Exact("name", p.WantName, () => IdentityOf(e, p.Kind, false));
             if (p.Kind == "wall_profile")
@@ -313,13 +416,13 @@ namespace Horizun.Revit.Commands
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
                 XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
                 for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
-                { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => PointNow()[a]); }
+                { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
             }
             if (p.End != null && p.Kind != "wall_opening")
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
                 for (int axis = 0; axis < 3; axis++)
-                { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
+                { int a = axis; Numeric((elbow == null ? "end_" : "end_junction_") + "xyz"[a], p.End[a], () => a == 2 && elbow == null && GovernedBaseZ(doc, e) is double governed ? governed : elbow != null ? ReadElbowJunction(doc, made, elbow, 1)[a] : (e is Grid grid ? grid.Curve : ((LocationCurve)e.Location).Curve).GetEndPoint(1)[a]); }
             }
             if (p.Kind == "wall")
             {
@@ -385,8 +488,25 @@ namespace Horizun.Revit.Commands
             };
             if (e?.Location is LocationPoint point && p.Level != null)
             {
-                row["coordinate_reference"] = "internal_origin"; row["absolute_z_feet"] = point.Point.Z;
-                row["level_elevation_feet"] = p.Level.ProjectElevation; row["offset_feet"] = point.Point.Z - p.Level.ProjectElevation;
+                row["coordinate_reference"] = "internal_origin";
+                // absolute_z_feet is the elevation Revit GOVERNS - the base level it
+                // carries plus the base offset it kept - and falls back to the location
+                // point only for an instance no base offset governs. Reporting the raw
+                // LocationPoint.Z here would publish 0 for a column that stands at 7 ft.
+                double governedZ = GovernedBaseZ(doc, e) ?? point.Point.Z;
+                row["absolute_z_feet"] = governedZ;
+                row["location_point_z_feet"] = point.Point.Z;
+                row["level_elevation_feet"] = p.Level.ProjectElevation; row["offset_feet"] = governedZ - p.Level.ProjectElevation;
+            }
+            // The SOLID Revit actually built, measured independently of every parameter
+            // above, so a reader can compare the governed plane against real geometry.
+            // Deliberately not the bounding box: MEASURED on a structural column asked
+            // for 1500 mm above its level, get_BoundingBox reports a base of 0 because
+            // it spans the analytical stick, while the solid starts at 1500 mm exactly.
+            if (e != null && (p.Kind == "wall" || p.Kind == "structural_column" || p.Kind == "family_instance"))
+            {
+                double[] span = SolidElevationSpan(e);
+                if (span != null) { row["geometry_base_z_feet"] = span[0]; row["geometry_top_z_feet"] = span[1]; }
             }
             if (e is MEPCurve physicalRun && physicalRun.Location is LocationCurve physicalCurve)
             {

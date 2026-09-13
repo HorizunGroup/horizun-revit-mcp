@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - text, tags and dimensions with explicit references.
 //
 // THE DIMENSION OPERATIONS ARE PRODUCTION WRITES, and this file holds them to
@@ -1962,11 +1962,29 @@ namespace Horizun.Revit.Commands
                     AnnotationSurvey survey = AnnotationLayout.Survey(tag.Document, p.View, tag.Id, p.LayoutAccepted);
                     p.TagCoverage = survey.Coverage;
                     if (!survey.Complete) { reason = AnnotationVisibility.RefusalMessage(survey.Coverage); return false; }
-                    if (!DeliveryLayoutRules.Clear(AnnotationLayout.OwnBox(tag,p.View), survey.Obstacles,
-                            (p.Input.Value<double?>("layout_clearance")??10)*p.Scale, survey.Bounds))
-                    { reason = "the committed tag overlaps a measured annotation or leaves the view limit (" +
-                               survey.Coverage["bounds"].Value<string>("source") + "); " +
-                               survey.Obstacles.Count + " obstacle(s) were measured"; return false; }
+                    // A LABEL-ONLY tag family publishes no extent - every stock Autodesk
+                    // tag is one - so there is no box to test against the obstacles. The
+                    // overlap is then neither asserted nor quietly passed: the coverage
+                    // says it was not measured, and the row carries that with it.
+                    PlanBox own; bool extentMeasured = true;
+                    try { own = AnnotationLayout.OwnBox(tag, p.View); }
+                    catch (Exception ex)
+                    {
+                        extentMeasured = false; own = default(PlanBox);
+                        p.TagCoverage["tag_extent_measured"] = false;
+                        p.TagCoverage["tag_extent_unavailable_reason"] = ex.Message;
+                        p.TagCoverage["layout_claim"] = "avoid_collisions could not measure this tag's own extent, so no " +
+                            "clearance is claimed for it; the obstacles around it were measured.";
+                    }
+                    if (extentMeasured)
+                    {
+                        p.TagCoverage["tag_extent_measured"] = true;
+                        if (!DeliveryLayoutRules.Clear(own, survey.Obstacles,
+                                (p.Input.Value<double?>("layout_clearance")??10)*p.Scale, survey.Bounds))
+                        { reason = "the committed tag overlaps a measured annotation or leaves the view limit (" +
+                                   survey.Coverage["bounds"].Value<string>("source") + "); " +
+                                   survey.Obstacles.Count + " obstacle(s) were measured"; return false; }
+                    }
                 }
                 return true;
                 }

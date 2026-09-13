@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit half of annotation layout. AnnotationVisibility.cs holds the
@@ -382,6 +382,14 @@ namespace Horizun.Revit.Core
         /// a family created from the empty Metric Multi-Category Tag template), so the
         /// refusal names the family instead of an element id.
         /// </summary>
+        private static BoundingBoxXYZ PointBox(XYZ at)
+        {
+            var box = new BoundingBoxXYZ();
+            box.Transform = Transform.Identity;
+            box.Min = at; box.Max = at;
+            return box;
+        }
+
         internal static PlanBox OwnBox(IndependentTag tag, View view)
         {
             BoundingBoxXYZ b;
@@ -451,11 +459,32 @@ namespace Horizun.Revit.Core
             doc.Regenerate();
             // The bounding box includes the native leader when present: conservative
             // collision rejection, not a claim of exact glyph/leader intersection.
-            PlanBox initial = OwnBox(tag, view);
+            // A LABEL-ONLY family publishes no box at all - that is every stock Autodesk
+            // tag - and refusing to lay those out would refuse the ordinary case. So the
+            // tag is laid out as a POINT at its head, which still keeps the head out of
+            // other annotation, and the caller is told in coverage that the glyph's own
+            // overlap was NOT measured. Nothing here claims a clearance it did not take.
+            PlanBox initial; string extentProblem = null;
+            try { initial = OwnBox(tag, view); }
+            catch (Exception ex)
+            {
+                extentProblem = ex.Message;
+                XYZ at = tag.TagHeadPosition;
+                initial = Project(PointBox(at), view);
+            }
             AnnotationSurvey survey = Survey(doc, view, tag.Id, accepted);
             if (!survey.Complete) throw new AnnotationCoverageException(survey.Coverage);
             if (coverageOut != null)
+            {
                 foreach (JProperty p in survey.Coverage.Properties()) coverageOut[p.Name] = p.Value.DeepClone();
+                coverageOut["tag_extent_measured"] = extentProblem == null;
+                if (extentProblem != null)
+                {
+                    coverageOut["tag_extent_unavailable_reason"] = extentProblem;
+                    coverageOut["layout_claim"] = "The head was placed clear of every measured obstacle, but this tag " +
+                        "publishes no extent, so its own glyph was NOT measured against them and no clearance is claimed for it.";
+                }
+            }
             List<PlanBox> obstacles = survey.Obstacles;
             PlanBox? bounds = survey.Bounds;
             double step = Math.Max(gap, Math.Max(initial.Width, initial.Height) * .25);
@@ -471,6 +500,7 @@ namespace Horizun.Revit.Core
                         if (!DeliveryLayoutRules.Clear(DeliveryLayoutRules.Shift(initial, dx, dy), obstacles, gap, bounds)) continue;
                         XYZ chosen = seed.Add(view.RightDirection.Multiply(dx)).Add(view.UpDirection.Multiply(dy));
                         tag.TagHeadPosition = chosen; doc.Regenerate();
+                        if (extentProblem != null) return chosen;
                         if (DeliveryLayoutRules.Clear(Box(tag, view), obstacles, gap, bounds)) return chosen;
                     }
             }
@@ -482,16 +512,40 @@ namespace Horizun.Revit.Core
                 "make room in the view.");
         }
 
+        // EVIDENCE IS NOT LAYOUT. Placing a tag somewhere specific is verified by the
+        // view it owns, the element it points at, its head, orientation, leader, orphan
+        // state and the text it renders - all measured here. An EXTENT is needed only to
+        // keep a tag from overlapping something, and MEASURED on Revit 2023 and 2026 a
+        // LABEL-ONLY family has none in the API even with its text resolved and its
+        // category shown - which is every stock Autodesk tag. Throwing here refused all
+        // of them for a fact that changes nothing about whether the tag is correct, so
+        // the missing extent is now REPORTED, with the reason Revit gave, and only the
+        // callers that actually lay a tag out still refuse.
         internal static JObject Evidence(IndependentTag tag, View view)
         {
-            XYZ p = tag.TagHeadPosition; PlanBox box = OwnBox(tag, view);
-            return new JObject
+            XYZ p = tag.TagHeadPosition;
+            PlanBox box; string extentProblem = null;
+            try { box = OwnBox(tag, view); }
+            catch (Exception ex) { box = default(PlanBox); extentProblem = ex.Message; }
+            var evidence = new JObject
             {
                 ["view_id"] = Rid.Value(tag.OwnerViewId), ["type_id"] = Rid.Value(tag.GetTypeId()),
                 ["head"] = new JArray(Math.Round(p.X, 8), Math.Round(p.Y, 8), Math.Round(p.Z, 8)),
                 ["orientation"] = tag.TagOrientation.ToString(), ["has_leader"] = tag.HasLeader, ["orphaned"] = tag.IsOrphaned,
-                ["text"] = tag.TagText, ["extent"] = PlanimetryGeometry.Signature(box), ["view_scale"] = view.Scale
+                ["text"] = tag.TagText,
+                ["extent"] = extentProblem == null ? PlanimetryGeometry.Signature(box) : null,
+                ["view_scale"] = view.Scale
             };
+            if (extentProblem != null)
+            {
+                evidence["extent_measured"] = false;
+                evidence["extent_unavailable_reason"] = extentProblem;
+                evidence["layout_note"] = "This tag was placed and verified where it was asked for, but it publishes no " +
+                    "extent, so nothing here claims it avoids overlapping other annotation. Automatic layout and " +
+                    "avoid_collisions still refuse such a tag by name rather than guess.";
+            }
+            else evidence["extent_measured"] = true;
+            return evidence;
         }
     }
 }

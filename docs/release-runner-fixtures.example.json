@@ -4,14 +4,18 @@
     "Every model must be a disposable, non-client fixture made for release verification.",
     "release_model is opened with closed_workset closed, becomes the active document, receives write probes, and is never saved.",
     "inactive_model stays open but inactive so the active-document refusal is measured against a real second document.",
-    "For each year, old_file must have been saved by a DIFFERENT Revit generation. It may override common.old_file."
+    "For each year, old_file must have been saved by a DIFFERENT Revit generation. It may override common.old_file.",
+    "labelled_tag_family is a multi-category tag .rfa whose label is bound to a parameter the probes fill (Mark).",
+    "The Revit API cannot create a label in an annotation family, so this one file is the only way to prove the tag path.",
+    "Save it in the OLDEST supported year and every newer Revit upgrades it on load."
   ],
   "common": {
     "spf_path": "C:\\path\\to\\release-shared-parameters.txt",
     "spf_param": "RELEASE_PROBE",
     "quantity_category": "OST_DuctCurves",
     "old_file": "C:\\path\\to\\model-saved-by-another-year.rvt",
-    "write_document_disposable": "yes-this-model-is-disposable"
+    "write_document_disposable": "yes-this-model-is-disposable",
+    "labelled_tag_family": "C:\\path\\to\\multi-category-tag-with-a-label.rfa"
   },
   "years": {
     "2023": {

@@ -136,6 +136,12 @@ param(
     # refuses to link an open document's file. Staging needs execute_python to be
     # advertised; without either, the probe stays NOT COVERED and names why.
     [string]$LinkSourceFile,
+    # A multi-category tag family that CARRIES A LABEL. The public Revit API
+    # cannot author one - there is no way to create a Label in an annotation
+    # family - so a family authored from the empty template renders no text and
+    # the tag probes cannot prove the committed path. One .rfa saved in the
+    # OLDEST supported year loads into all five.
+    [string]$LabelledTagFamily,
 
     # The six above, read from outside the repository. See the header.
     [string]$Fixtures = (Join-Path $env:USERPROFILE '.horizun\live-fixtures.json'),
@@ -2697,6 +2703,27 @@ else {
         if (@($dimPipes).Count -ne 3) {
             $dimPipeGap = ('only {0} of the 3 parallel probe pipes were created and verified' -f @($dimPipes).Count)
         }
+        else {
+            # A tag renders its family's LABEL, and the labelled fixture's label reads
+            # Mark. A pipe staged with an empty Mark therefore tags to empty text, which
+            # the bridge refuses by name - correctly, and for a reason that has nothing
+            # to do with tagging. So the three pipes the tag cases use are given explicit
+            # Marks through the verified writer, and a write that is not confirmed is a
+            # NAMED gap rather than a silent empty tag downstream.
+            $markWrites = @()
+            for ($mi = 0; $mi -lt 3; $mi++) {
+                $markWrites += @{ target_id = [long]@($dimPipes)[$mi]
+                                  parameter = 'Mark'
+                                  value = ('HZTAG{0}_{1}' -f ($mi + 1), $dimTag) }
+            }
+            $dimMarks = Invoke-WriteApply 'horizun_write_params_verified' @{
+                target_document = $wDoc; writes = $markWrites } 'dim-pipe-marks'
+            if ($dimMarks.stage -ne 'apply' -or $dimMarks.answer.isError -or
+                [int]$dimMarks.answer.data.writes_confirmed -ne 3) {
+                $dimPipeGap = 'the probe pipes could not be given the Mark their tag label reads: ' +
+                              (Get-DimShortText $dimMarks.answer.text)
+            }
+        }
 
         # Two grids crossing at exactly 45 degrees at (dimX+1500, 10000).
         $grDim = Invoke-WriteApply 'horizun_create_elements' @{
@@ -5036,7 +5063,20 @@ __output__ = {'status': 'self_reported_verified' if ok else 'failed',
             # ---- F5: a multi-category tag type, then the tags and texts -----------
             $planTagTypeId = First-Type 'OST_MultiCategoryTags' $null
             if ($planTagTypeId) { $planTagTypeHow = 'found in the model' }
-            else {
+            elseif ($LabelledTagFamily -and (Test-Path -LiteralPath $LabelledTagFamily)) {
+                # The typed loader, not authoring: this family exists precisely because
+                # authoring cannot produce a label.
+                $tagLoad = Invoke-WriteApply 'horizun_create_family' @{
+                    target_document = $wDoc; source_path = $LabelledTagFamily
+                } 'plm-tag-fixture'
+                if ($tagLoad.stage -eq 'apply' -and -not $tagLoad.answer.isError -and
+                    $tagLoad.answer.data.loaded_family -and @($tagLoad.answer.data.loaded_family.symbol_ids).Count -gt 0) {
+                    $planTagTypeId = @($tagLoad.answer.data.loaded_family.symbol_ids)[0]
+                    $planTagTypeHow = 'loaded from the labelled fixture ' + (Split-Path -Leaf $LabelledTagFamily)
+                }
+                else { $planTagTypeHow = 'loading the labelled fixture failed: ' + (Get-DimShortText $tagLoad.answer.text) }
+            }
+            if (-not $planTagTypeId) {
                 $tagTpl = Find-D2dTemplate $d2dTemplateRoot 'Metric Multi-Category Tag.rft' '(?i)multi-?category tag|varias categor'
                 if ($tagTpl) {
                     $tagRfaDir = Join-Path $scratchDir 'planimetry-families'
@@ -9211,13 +9251,37 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
                 }
             }
         }
-        $bsArgs10 = @{ target_document=$wDoc; units='mm'
-                       elements=@(@{ kind='beam_system'; level_id=[long]$levelId
-                                     profile=@(@($w12X,33000), @(($w12X+4000),33000), @(($w12X+4000),36000), @($w12X,36000))
-                                     direction=@(1,0); spacing=800 }) }
-        if ($beamType10) { $bsArgs10.elements[0]['beam_type_id'] = [long]$beamType10 }
-        $bs10 = Invoke-WriteApply 'horizun_create_elements' $bsArgs10 'w12-beamsys'
-        $bsOk10 = $bs10.stage -eq 'apply' -and -not $bs10.answer.isError -and [int]$bs10.answer.data.created_verified -eq 1
+        # MEASURED on an Autodesk MEP sample in Revit 2023: BeamSystem.Create returns a
+        # system bound to the NEXT level up when it is asked for that model's lowest
+        # level, and binds correctly on the other three. The bridge refuses the swap by
+        # name rather than commit a system nobody asked for, so the probe does what a
+        # caller would: it tries the levels this model actually offers and records which
+        # one Revit accepted. Every level being refused stays a FAILURE - the guarantee
+        # is a committed system with real members, not an excuse.
+        $bsLevels10 = @([long]$levelId)
+        $lvAll10 = Invoke-Write 'horizun_list_elements' @{ category='OST_Levels'; max_rows=12; include_links=$false }
+        if ($lvAll10.data) {
+            foreach ($lvRow10 in @($lvAll10.data.rows)) {
+                $candidate10 = [long]$lvRow10.element_id
+                if ($bsLevels10 -notcontains $candidate10) { $bsLevels10 += $candidate10 }
+            }
+        }
+        $bs10 = $null; $bsOk10 = $false; $bsLevelUsed10 = $null; $bsRefusals10 = @()
+        $bsIndex10 = 0
+        foreach ($bsLevel10 in $bsLevels10) {
+            if ($bsOk10) { continue }
+            $bsArgs10 = @{ target_document=$wDoc; units='mm'
+                           elements=@(@{ kind='beam_system'; level_id=[long]$bsLevel10
+                                         profile=@(@($w12X,(33000 + 4000*$bsIndex10)), @(($w12X+4000),(33000 + 4000*$bsIndex10)),
+                                                   @(($w12X+4000),(36000 + 4000*$bsIndex10)), @($w12X,(36000 + 4000*$bsIndex10)))
+                                         direction=@(1,0); spacing=800 }) }
+            if ($beamType10) { $bsArgs10.elements[0]['beam_type_id'] = [long]$beamType10 }
+            $bs10 = Invoke-WriteApply 'horizun_create_elements' $bsArgs10 ("w12-beamsys-" + $bsLevel10)
+            $bsOk10 = $bs10.stage -eq 'apply' -and -not $bs10.answer.isError -and [int]$bs10.answer.data.created_verified -eq 1
+            if ($bsOk10) { $bsLevelUsed10 = $bsLevel10 }
+            else { $bsRefusals10 += ("level {0}: {1}" -f $bsLevel10, (Get-DimShortText $bs10.answer.text)) }
+            $bsIndex10++
+        }
         $bsShort = Invoke-Write 'horizun_create_elements' @{
             target_document=$wDoc; units='mm'
             elements=@(@{ kind='beam_system'; level_id=[long]$levelId
@@ -9250,10 +9314,14 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
         if ($bsOk10 -and $shortRefused10 -and ($wfState -eq 'committed' -or $wfState -eq 'not_staged')) {
             $wfNote = if ($wfState -eq 'committed') { 'and the wall footing committed under the W11 wall' }
                       else { 'and the wall footing stayed a NAMED gap (no WallFoundationType in the fixture)' }
-            Complete-W12Case 10 $t0 'pass' ('the beam system committed with real members verified non-empty, the 100 mm edge refused naming 150 mm, ' + $wfNote) `
-                -Evidence @{ beam_system=$bsOk10; wall_foundation=$wfState }
+            Complete-W12Case 10 $t0 'pass' ('the beam system committed with real members verified non-empty on level ' + $bsLevelUsed10 +
+                                            ', the 100 mm edge refused naming 150 mm, ' + $wfNote) `
+                -Evidence @{ beam_system=$bsOk10; wall_foundation=$wfState; beam_system_level=$bsLevelUsed10
+                             levels_tried=$bsLevels10; level_refusals=$bsRefusals10 }
         } else {
-            Complete-W12Case 10 $t0 'fail' ("beam_system=$bsOk10 short_refused=$shortRefused10 wall_foundation=$wfState")
+            Complete-W12Case 10 $t0 'fail' ("beam_system=$bsOk10 short_refused=$shortRefused10 wall_foundation=$wfState; " +
+                                            "levels tried: " + ($bsRefusals10 -join ' | ')) `
+                -Evidence @{ levels_tried=$bsLevels10; level_refusals=$bsRefusals10 }
         }
 
         # ---- case 11: rows place instances, and the edited file goes stale
@@ -11432,6 +11500,7 @@ $report = [pscustomobject]@{
         ClosedWorksetDocument = -not [string]::IsNullOrWhiteSpace($ClosedWorksetDocument)
         ClosedWorksetName = -not [string]::IsNullOrWhiteSpace($ClosedWorksetName)
         LinkSourceFile   = -not [string]::IsNullOrWhiteSpace($LinkSourceFile)
+        LabelledTagFamily = -not [string]::IsNullOrWhiteSpace($LabelledTagFamily)
     }
     write_tier        = @{
         requested  = [bool]$WriteProbes

@@ -35,6 +35,19 @@ namespace Horizun.Revit.Commands
             if (project.IsFamilyDocument)
                 return CommandResult.Fail("horizun_create_family starts from a project document and creates a separate loadable RFA. For an already-open RFA use horizun_family_apply.");
 
+            // ---- LOADING AN RFA THAT ALREADY EXISTS ------------------------------
+            // Authoring cannot reach everything a family can hold: the public Revit API
+            // offers NO way to create a LABEL in an annotation family - MEASURED, there
+            // is no NewLabel on FamilyItemFactory in any supported year - so a tag
+            // authored from its own template renders empty text and is rightly refused
+            // downstream. A family somebody already drew is then the only route, and
+            // "not supported" would be the wrong answer to "load this .rfa".
+            if (request["source_path"] != null)
+            {
+                if (request["template_path"] != null)
+                    return CommandResult.Fail("Use source_path to load an existing RFA, or template_path to author a new one - not both.");
+                return LoadExistingFamily(app, request, gate, project);
+            }
             string template = FullPath(request.Value<string>("template_path"), ".rft", "template_path", true, out string pathError);
             if (pathError != null) return CommandResult.Fail(pathError);
             string output = FullPath(request.Value<string>("output_path"), ".rfa", "output_path", false, out pathError);
@@ -535,6 +548,129 @@ namespace Horizun.Revit.Commands
                 ["flex"] = flexBlock,
                 ["thumbnail"] = thumbnailBlock
             });
+        }
+
+        // Load an existing .rfa into the project and PROVE it arrived: the family and
+        // every one of its requested types are re-read from the project after the
+        // commit, so a load Revit silently declined is a refusal, never a reported
+        // success. A family that lands carrying no type is refused too - nothing
+        // could be placed from it.
+        private CommandResult LoadExistingFamily(UIApplication app, JObject request, GateResult gate, Document project)
+        {
+            string source = FullPath(request.Value<string>("source_path"), ".rfa", "source_path", true, out string sourceError);
+            if (sourceError != null) return CommandResult.Fail(sourceError);
+            if (!File.Exists(source)) return CommandResult.Fail("source_path does not exist: " + source);
+            string expectedName = Path.GetFileNameWithoutExtension(source);
+            var wantedTypes = (request["types"] as JArray ?? new JArray()).OfType<JObject>()
+                .Select(x => x.Value<string>("name")).Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+            bool overwriteValues = request.Value<bool?>("overwrite_parameter_values") == true;
+            bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
+            string planHash = DocumentGate.PlanHash(request, "source_path", "types", "overwrite_parameter_values");
+            var resolvedPlan = new ResolvedPlan
+            {
+                Command = Name,
+                DocumentKey = gate.Fingerprint,
+                RevitVersion = app?.Application?.VersionNumber,
+                DocumentFingerprint = gate.Identity?.FingerprintDigest(),
+                ContextFingerprint = "source=" + SafeFileHash(source)
+            };
+            resolvedPlan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "family:" + Path.GetFileName(source),
+                Category = "loadable_rfa",
+                Action = PlannedAction.Create,
+                BeforeValues = new Dictionary<string, string>
+                { { "already_loaded", ExistingFamily(project, expectedName) == null ? "0" : "1" } }
+            });
+            if (dryRun)
+            {
+                var rehearsal = new JObject
+                {
+                    ["dry_run"] = true,
+                    ["operation"] = "load_existing_rfa",
+                    ["source_path"] = source,
+                    ["source_sha256"] = SafeFileHash(source),
+                    ["expected_family_name"] = expectedName,
+                    ["already_loaded"] = ExistingFamily(project, expectedName) != null,
+                    ["requested_type_names"] = new JArray(wantedTypes),
+                    ["note"] = "Nothing was loaded. The token binds this file BY CONTENT, so a file swapped between " +
+                               "rehearsal and apply is refused rather than loaded under the approved words."
+                };
+                DocumentGate.RecordResolvedPlan(resolvedPlan);
+                DocumentGate.StampConfirmation(rehearsal, gate, Name, planHash, true,
+                    "the token binds source BY CONTENT (its SHA-256, not its path) and the target document.");
+                return CommandResult.Ok(rehearsal);
+            }
+            CommandResult refused = DocumentGate.RequireConfirmation(app, gate, request, Name, planHash, resolvedPlan, null);
+            if (refused != null) return refused;
+            refused = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
+            if (refused != null) return refused;
+            Family loaded = null;
+            // A rollback is a CLAIM about the model, so it is only made when Revit's own
+            // status confirms one; anything else keeps its uncertainty rather than being
+            // asserted away.
+            bool rollbackAttempted = false;
+            string rollbackStatus = PlanFailure.NotAttempted;
+            try
+            {
+                using (var transaction = new Transaction(project, "Horizun: load family " + expectedName))
+                {
+                    transaction.Start();
+                    try
+                    {
+                        if (!project.LoadFamily(source, new FamilyLoadOptions(overwriteValues), out loaded) || loaded == null)
+                            throw new InvalidOperationException("Revit's LoadFamily returned no loaded Family");
+                        Guard.Commit(transaction, "load family into project");
+                    }
+                    catch
+                    {
+                        if (transaction.GetStatus() == TransactionStatus.Started)
+                        {
+                            rollbackAttempted = true;
+                            rollbackStatus = Guard.RollBack(transaction).StatusName;
+                        }
+                        throw;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return CommandResult.Fail("Loading " + source + " into the project failed: " + ex.Message + " " +
+                    PlanFailure.SingleTransactionOutcome(rollbackAttempted, rollbackStatus,
+                        "the project holds nothing from this load"));
+            }
+            if (!(project.GetElement(loaded.Id) is Family fresh))
+                return CommandResult.Fail("Revit reported a load, but the Family could not be re-read from the project. File: " + source);
+            List<FamilySymbol> symbols = fresh.GetFamilySymbolIds().Select(id => project.GetElement(id) as FamilySymbol)
+                .Where(x => x != null).ToList();
+            var names = new HashSet<string>(symbols.Select(x => x.Name), StringComparer.Ordinal);
+            List<string> missing = wantedTypes.Where(x => !names.Contains(x)).ToList();
+            if (missing.Count > 0)
+                return CommandResult.Fail("The family loaded, but requested types were not re-read in the project: " + string.Join(", ", missing));
+            if (symbols.Count == 0)
+                return CommandResult.Fail("The family loaded but carries no type in this project, so nothing could be placed from it.");
+            return CommandResult.Ok(new JObject
+            {
+                ["operation"] = "load_existing_rfa",
+                ["source_path"] = source,
+                ["source_sha256"] = SafeFileHash(source),
+                ["verified_by_reread"] = true,
+                ["loaded_family"] = new JObject
+                {
+                    ["family_id"] = Rid.Value(fresh.Id),
+                    ["family_name"] = fresh.Name,
+                    ["category"] = fresh.FamilyCategory == null ? null : fresh.FamilyCategory.Name,
+                    ["symbol_ids"] = new JArray(symbols.Select(x => Rid.Value(x.Id))),
+                    ["type_names"] = new JArray(symbols.Select(x => x.Name)),
+                    ["requested_type_names_verified"] = missing.Count == 0
+                }
+            });
+        }
+
+        private static Family ExistingFamily(Document project, string name)
+        {
+            return new FilteredElementCollector(project).OfClass(typeof(Family)).Cast<Family>()
+                .FirstOrDefault(x => string.Equals(x.Name, name, StringComparison.Ordinal));
         }
 
         private static FamilyPlan BuildPlan(JObject request, double scale)
