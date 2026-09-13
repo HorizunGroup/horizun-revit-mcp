@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Register Horizun in Codex and Claude, IN PARALLEL WITH WHAT IS ALREADY THERE.
 
@@ -71,7 +71,23 @@ if ($Client -eq 'Both' -and $SkipMissingClients) {
     $hasClaude = Test-Path $claudeConfig
     $hasCodex = Test-Path $codexConfig
     if (-not $hasClaude -and -not $hasCodex) {
-        Write-Host 'Neither Claude nor Codex has an existing configuration file. Start the client once, close it, and run this helper again.' -ForegroundColor Red
+        # THIS IS NOT A FAILURE ON MOST MACHINES. Claude Code and Codex are
+        # command-line tools; Claude DESKTOP is a different product with its own
+        # configuration, and somebody who installed only the desktop app lands
+        # here and reads a red line about clients they never installed. Name the
+        # shortcut that does apply to them instead.
+        Write-Host ''
+        Write-Host 'Neither Claude Code nor Codex CLI is set up on this machine.' -ForegroundColor Yellow
+        Write-Host '  Those are the two COMMAND-LINE clients, and this helper only configures those.'
+        Write-Host '  Checked:'
+        Write-Host "    $claudeConfig"
+        Write-Host "    $codexConfig"
+        Write-Host ''
+        Write-Host '  If what you use is the Claude DESKTOP app, this is the wrong helper:' -ForegroundColor Cyan
+        Write-Host '  run "Conectar Horizun con Claude Desktop" from the Start menu instead.' -ForegroundColor Cyan
+        Write-Host '  If you do use Claude Code or Codex, start it once so it writes its'
+        Write-Host '  configuration file, close it, and run this again.'
+        Write-Host ''
         exit 2
     }
     if ($hasClaude -and -not $hasCodex) { $Client = 'Claude' }
@@ -230,8 +246,11 @@ if ($Rollback) {
 if (-not $Remove) {
     Write-Host ""
     Write-Host "Registering '$Name' beside what is already configured" -ForegroundColor Cyan
-    Write-Host "  server: $ServerPath"
-    Write-Host ("  sha256: " + (Get-FileHash $ServerPath -Algorithm SHA256).Hash.ToLower())
+    Write-Host "  server:      $ServerPath"
+    # Labelled, because an unexplained 64-character hex line looks like an error
+    # code to the person watching this window.
+    Write-Host ("  fingerprint: sha256 " + (Get-FileHash $ServerPath -Algorithm SHA256).Hash.ToLower())
+    Write-Host "               (identifies the exact build being registered; nothing is wrong)" -ForegroundColor DarkGray
     Write-Host ""
 }
 

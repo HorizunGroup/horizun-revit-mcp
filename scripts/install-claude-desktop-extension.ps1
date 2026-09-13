@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Install, repair, diagnose or remove the Horizun integration in Claude Desktop.
 
@@ -6,22 +6,29 @@
   ~/.claude.json. Claude Desktop and Claude Code are different products with
   different configuration; this script only ever deals with the desktop app.
 
-  TWO ROUTES, and the honest difference between them:
+  TWO ROUTES, and which one this takes BY DEFAULT:
 
-  1. THE EXTENSION (.mcpb). Claude Desktop installs one from
+  1. THE CONFIGURATION ENTRY - what runs unless you ask otherwise. Writing
+     mcpServers."horizun-revit" into claude_desktop_config.json is documented,
+     scriptable, verified by reading the file back, and gives exactly the same
+     result as the extension. It finishes on its own, which is why it leads:
+     asking somebody to find a .mcpb inside %LOCALAPPDATA% and hand it to a file
+     picker is a step most people never complete, and an integration nobody
+     finishes is an integration that does not exist. The path is written ALREADY
+     EXPANDED for this machine, because the app does not expand %LOCALAPPDATA%
+     and a configuration written with it points nowhere.
+
+  2. THE EXTENSION (.mcpb), with -Extension. Claude Desktop installs one from
      Settings > Extensions > Advanced settings > Install Extension. That final
      step happens in the app's own UI and there is no documented command for it,
-     so this script prepares everything up to it, hands over the exact file, and
-     records `pending_user_action` naming the step. It does NOT write into the
-     app's extension store: that directory carries per-extension metadata the app
+     so this script prepares everything up to it, PUTS THE FILE WHERE A PERSON
+     CAN FIND IT - on the Desktop, with Explorer opened on it - and records
+     `pending_user_action` naming the step. It does NOT write into the app's
+     extension store: that directory carries per-extension metadata the app
      maintains, and forging an entry there is inventing a private format.
 
-  2. THE CONFIGURATION FALLBACK (-ConfigFallback). Writing
-     mcpServers."horizun-revit" into claude_desktop_config.json is documented,
-     scriptable, and gives exactly the same result. It is off by default because
-     the extension is the supported route; when it is used, the path is written
-     ALREADY EXPANDED for this machine, because the app does not expand
-     %LOCALAPPDATA% and a configuration written with it points nowhere.
+  Either way the package is still staged and validated, so -Extension never has
+  to build anything the default run did not already prove.
 
   WHAT IT REFUSES. Claude Desktop rewrites its configuration from memory while it
   runs, so an edit made underneath it is lost silently and the symptom is "the
@@ -32,9 +39,9 @@
   claude_desktop_config.json is preserved and checked after the write; if any went
   missing the backup is restored and the operation reports failure.
 
-    scripts/install-claude-desktop-extension.ps1              # prepare + report
+    scripts/install-claude-desktop-extension.ps1              # connect it, end to end
+    scripts/install-claude-desktop-extension.ps1 -Extension   # hand over the .mcpb instead
     scripts/install-claude-desktop-extension.ps1 -Diagnose
-    scripts/install-claude-desktop-extension.ps1 -ConfigFallback
     scripts/install-claude-desktop-extension.ps1 -Remove
     scripts/install-claude-desktop-extension.ps1 -Rollback
 
@@ -43,7 +50,12 @@
 [CmdletBinding()]
 param(
     [switch]$Diagnose,
-    [switch]$ConfigFallback,
+    # Kept so anything that already calls it keeps working; the configuration
+    # entry is what a plain run does now.
+    [Alias('ConfigFallback')]
+    [switch]$Configure,
+    # Prepare the .mcpb and hand it over instead of writing the configuration.
+    [switch]$Extension,
     [switch]$Remove,
     [switch]$Rollback,
     # Write under a running Claude Desktop anyway. It will probably be lost.
@@ -73,6 +85,7 @@ function Act($what, $ok, $detail) {
 }
 
 $stageRoot = Join-Path $env:LOCALAPPDATA 'Horizun\integrations\claude-desktop'
+$handoverPath = $null
 if (-not $ServerPath) { $ServerPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 
 Write-Host ""
@@ -153,8 +166,8 @@ if ($Diagnose) {
 
     if (-not $ext -and -not $cd.horizun_in_config) {
         Write-Host ""
-        Say "Neither route is in place. Run this script with no arguments to prepare the extension," 'Yellow'
-        Say "or with -ConfigFallback to write the documented configuration entry instead." 'Yellow'
+        Say "Neither route is in place. Run this script with no arguments and it will connect Claude Desktop," 'Yellow'
+        Say "or with -Extension if you would rather install the .mcpb by hand." 'Yellow'
     }
     elseif ($cd.running) {
         Write-Host ""
@@ -276,11 +289,39 @@ if ($manifestOk) {
     }
     $stagedSha = (Get-FileHash -LiteralPath $stagedPath -Algorithm SHA256).Hash.ToLower()
     Act ("staged {0} ({1} bytes, sha {2}...)" -f (Split-Path -Leaf $stagedPath), (Get-Item $stagedPath).Length, $stagedSha.Substring(0, 12)) $true $null
+
+    # A FILE PICKER CANNOT BROWSE TO A FOLDER NOBODY KNOWS. %LOCALAPPDATA% is
+    # hidden by default in Explorer, so the staged copy - correct, validated and
+    # exactly the right bytes - was effectively unreachable for the person who
+    # has to choose it. A second copy goes on the Desktop, where a file picker
+    # opens by itself, and it is the copy this script then names.
+    if ($Extension) {
+        try {
+            $desktop = [Environment]::GetFolderPath('Desktop')
+            if ($desktop -and (Test-Path -LiteralPath $desktop)) {
+                $desktopPath = Join-Path $desktop (Split-Path -Leaf $stagedPath)
+                Copy-Item -LiteralPath $stagedPath -Destination $desktopPath -Force
+                if ((Get-FileHash -LiteralPath $desktopPath -Algorithm SHA256).Hash.ToLower() -ne $stagedSha) {
+                    Act 'put a copy on the Desktop' $false 'the Desktop copy does not match the staged file byte for byte'
+                }
+                else {
+                    $handoverPath = $desktopPath
+                    Act ("put a copy on your Desktop: " + (Split-Path -Leaf $desktopPath)) $true $null
+                }
+            }
+        }
+        catch { Act 'put a copy on the Desktop' $false $_.Exception.Message }
+    }
 }
 
 # --- the configuration fallback --------------------------------------------------
 $configWritten = $false
-if ($ConfigFallback) {
+# THE DEFAULT IS THE ROUTE THAT FINISHES. -Extension opts out of it; so does an
+# entry that is already there, and a Claude Desktop that is running (it rewrites
+# this file from memory, so an edit underneath it is lost silently).
+$writeConfig = -not $Extension -and -not $cd.horizun_in_config -and -not $cd.horizun_extension
+if ($Configure) { $writeConfig = -not $cd.horizun_in_config }
+if ($writeConfig -or $Configure) {
     Write-Host ""
     Write-Host "Writing the documented configuration entry" -ForegroundColor Cyan
     if (-not $serverPresent) {
@@ -390,8 +431,15 @@ elseif ($cd.horizun_extension) {
 else {
     $state = 'pending_user_action'
     $detail = "Everything up to the install step is done: the package is staged and validated, and the server it names answers MCP."
+    $choose = if ($handoverPath) { $handoverPath } else { $stagedPath }
     $pending = ("In Claude Desktop: Settings > Extensions > Advanced settings > Install Extension, and choose " +
-                "$stagedPath - then restart Claude Desktop. There is no documented command for that step, so no script takes it.")
+                "$choose - then restart Claude Desktop. There is no documented command for that step, so no script takes it.")
+    # Open Explorer ON the file, selected, so the next click is the file picker
+    # rather than a hunt through a hidden folder.
+    if ($handoverPath) {
+        try { Start-Process explorer.exe -ArgumentList ('/select,"' + $handoverPath + '"') | Out-Null }
+        catch { }
+    }
 }
 
 Set-HorizunIntegrationState -Client $CLIENT -State $state -Detail $detail -PendingUserAction $pending `
