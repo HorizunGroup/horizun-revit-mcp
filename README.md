@@ -1,8 +1,12 @@
 # Horizun Revit MCP — an MCP server for Autodesk Revit
 
+**English** · **[Español](README.es.md)**
+
 **[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** — public Windows installer with the server runtime and Revit add-ins included. **No Git, Visual Studio or .NET SDK required.** Requires Windows x64 and Revit 2023–2027; close Revit before installation. [Download and installation FAQ / Descargar e instalar](docs/INSTALL.md). Public releases are unsigned; see [verification and first-start instructions](#install).
 
 [![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+**Built in Colombia 🇨🇴 — engineering out of Latin America, for AEC teams anywhere.**
 
 Point Claude — or Codex, Cursor, Cline, Windsurf, any MCP client — at a running
 Autodesk Revit and let it read and write the model, under one contract:
