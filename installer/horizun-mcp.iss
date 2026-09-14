@@ -247,9 +247,10 @@ var
   Shell, Args: String;
   Code: Integer;
 begin
-  { {sys} from a 32-bit Setup is redirected to SysWOW64 when it is USED, so it
-    would start the 32-bit PowerShell - and these helpers reach for tools that
-    exist only in the native System32. {sysnative} is the real one. }
+  // The plain system constant, from a 32-bit Setup, is redirected to SysWOW64
+  // when it is USED, so it would start the 32-bit PowerShell - and these helpers
+  // reach for tools that exist only in the native System32. The sysnative
+  // constant is the real one, and it falls back for a 32-bit Windows.
   Shell := ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe');
   if not FileExists(Shell) then Shell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   if ShouldCompleteInstall() then
