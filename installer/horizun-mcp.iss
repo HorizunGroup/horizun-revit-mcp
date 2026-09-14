@@ -178,20 +178,12 @@ Name: "openhub"; Description: "Ver Horizun Hub - las herramientas y flujos const
 [Run]
 Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
   Flags: shellexec nowait postinstall skipifsilent; Tasks: openhub
-; Complete the client side automatically. If Codex or Claude is open, the helper
-; records the pending work and waits outside Setup; it never writes under a live
-; client. It also verifies the installed manifest and finishes horizun_health
-; after the first Revit start. The process is hidden because every durable result
-; is written to %LOCALAPPDATA%\Horizun\install-status.json.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Both} {param:HORIZUNNOLIVE|}"; \
-  Flags: runhidden nowait; Check: ShouldCompleteInstall
-; Claude Desktop needs its .mcpb package even on a machine with neither CLI.
-; Preparation is non-destructive and safe while the app is open; the documented
-; Install Extension click remains explicit and is recorded as pending_user_action.
-Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
-  Flags: runhidden nowait; Check: DesktopHelperPresent
+; The client-side helpers are NOT started from here. A [Run] entry without the
+; postinstall flag executes during "Finishing installation", which Inno performs
+; BEFORE CurStepChanged(ssPostInstall) - and ssPostInstall is where this installer
+; swaps server.installing into place. Starting them here raced that swap and
+; failed against a folder that did not exist yet. They are launched from
+; StartClientHelpers, after the server is really on disk.
 
 [UninstallRun]
 ; A pending first-start verification must not survive removal with a command that
@@ -245,6 +237,31 @@ end;
 function DesktopHelperPresent(): Boolean;
 begin
   Result := FileExists(ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1'));
+end;
+
+{ Started once the server folder is really in place. Hidden and not waited on:
+  every durable result is written to %LOCALAPPDATA%\Horizun\install-status.json,
+  and neither helper ever writes underneath a live client. }
+procedure StartClientHelpers;
+var
+  Shell, Args: String;
+  Code: Integer;
+begin
+  Shell := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  if ShouldCompleteInstall() then
+  begin
+    Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+            ExpandConstant('{app}\server\client-tools\complete-install.ps1') + '"' +
+            ' -Client ' + ExpandConstant('{param:HORIZUNCLIENT|Both}') + ' ' +
+            ExpandConstant('{param:HORIZUNNOLIVE|}');
+    Exec(Shell, Args, '', SW_HIDE, ewNoWait, Code);
+  end;
+  if DesktopHelperPresent() then
+  begin
+    Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+            ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1') + '"';
+    Exec(Shell, Args, '', SW_HIDE, ewNoWait, Code);
+  end;
 end;
 
 function McpbPath(): String;
@@ -880,6 +897,9 @@ begin
         end
         else FailedYears := FailedYears + Years[I] + ' (server deployment failed; add-in left unchanged), ';
       end;
+
+    { The server is on disk now - not a moment earlier. }
+    if ServerInstalled then StartClientHelpers;
 
     if ServerInstalled and ((not FoundAny) or (FailedYears = '')) then
     begin
