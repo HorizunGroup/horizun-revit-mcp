@@ -259,13 +259,13 @@ begin
             ExpandConstant('{app}\server\client-tools\complete-install.ps1') + '"' +
             ' -Client ' + ExpandConstant('{param:HORIZUNCLIENT|Both}') + ' ' +
             ExpandConstant('{param:HORIZUNNOLIVE|}');
-    Exec(Shell, Args, '', SW_HIDE, ewNoWait, Code);
+    Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
   end;
   if DesktopHelperPresent() then
   begin
     Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
             ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1') + '"';
-    Exec(Shell, Args, '', SW_HIDE, ewNoWait, Code);
+    Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
   end;
 end;
 

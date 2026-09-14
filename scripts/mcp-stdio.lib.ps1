@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Speak MCP to a stdio server and come back with what it actually said.
 
@@ -75,7 +75,18 @@ function Invoke-HorizunMcpProbe {
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    # NOT inheriting this process's current directory. When Setup launches the
+    # helpers, that directory is Setup's own temp folder, which Windows deletes
+    # as Setup exits - and CreateProcess then refuses the whole start with 'The
+    # directory name is invalid', naming a directory nobody chose. The command's
+    # own folder always exists for as long as the command does.
     if ($WorkingDirectory) { $psi.WorkingDirectory = $WorkingDirectory }
+    else {
+        $commandDir = Split-Path -Parent $Command
+        if ($commandDir -and (Test-Path -LiteralPath $commandDir -PathType Container)) {
+            $psi.WorkingDirectory = $commandDir
+        }
+    }
     if ($Environment) {
         # A SECRET PASSED THIS WAY IS NOT ON A COMMAND LINE. Anything in
         # ArgumentList is visible to every process on the machine through the
