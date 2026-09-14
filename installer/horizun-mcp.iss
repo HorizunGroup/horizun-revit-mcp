@@ -98,6 +98,10 @@ es.IcoAllClients=Estado de todos los clientes MCP
 en.IcoAllClients=Status of every MCP client
 es.IcoCleanup=Limpieza avanzada antes de desinstalar
 en.IcoCleanup=Advanced cleanup before uninstalling
+es.TaskOpenHub=Ver Horizun Hub - las herramientas y flujos construidos sobre este puente
+en.TaskOpenHub=Visit Horizun Hub - the tools and workflows built on this bridge
+es.RunOpenHub=Abrir Horizun Hub
+en.RunOpenHub=Open Horizun Hub
 
 [Files]
 ; Extract into Setup's private temporary payload. The post-install code swaps this
@@ -172,11 +176,11 @@ Name: "{group}\{cm:IcoCleanup}"; Filename: "{sys}\WindowsPowerShell\v1.0\powersh
 ; OPT-IN, and unchecked by default. An installer that opens a browser nobody
 ; asked for is the kind of thing people warn each other about, and this one is
 ; going to be installed by people who were told it is safe.
-Name: "openhub"; Description: "Ver Horizun Hub - las herramientas y flujos construidos sobre este puente"; \
+Name: "openhub"; Description: "{cm:TaskOpenHub}"; \
   Flags: unchecked
 
 [Run]
-Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
+Filename: "{#AppHubUrl}"; Description: "{cm:RunOpenHub}"; \
   Flags: shellexec nowait postinstall skipifsilent; Tasks: openhub
 ; The client-side helpers are NOT started from here. A [Run] entry without the
 ; postinstall flag executes during "Finishing installation", which Inno performs
