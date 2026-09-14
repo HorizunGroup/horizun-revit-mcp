@@ -82,6 +82,7 @@ $CLIENT = 'claude-desktop'
 $NAME = 'horizun-revit'
 $actions = New-Object System.Collections.Generic.List[object]
 $problems = New-Object System.Collections.Generic.List[string]
+$blockedByRunningApp = $false
 
 function Say($m, $c = 'Gray') { Write-Host "  $m" -ForegroundColor $c }
 function Act($what, $ok, $detail) {
@@ -360,6 +361,11 @@ if ($writeConfig -or $Configure) {
         Act 'write mcpServers.horizun-revit' $false 'the server is not installed; the entry would point at a file that does not exist'
     }
     elseif ($cd.running -and -not $Force) {
+        # WAITING FOR A PERSON IS NOT FAILING. Nothing is broken and nothing needs
+        # reinstalling: the app is open, so the write is refused rather than lost.
+        # Recorded as such below, because a status that reads 'failed' sends people
+        # to reinstall a product that installed perfectly.
+        $script:blockedByRunningApp = $true
         Act 'write mcpServers.horizun-revit' $false `
             'Claude Desktop is RUNNING. It rewrites claude_desktop_config.json from memory, so this edit would be lost silently and the tools would simply never appear. Close every Claude Desktop window and re-run (or pass -Force to write anyway).'
     }
@@ -441,7 +447,13 @@ $evidence = [ordered]@{
     config_entry_present   = [bool]($cd.horizun_in_config -or $configWritten)
 }
 
-if ($problems.Count -gt 0) {
+if ($problems.Count -eq 1 -and $blockedByRunningApp) {
+    # The only thing in the way is a window that is open.
+    $state = 'pending_user_action'
+    $detail = 'Claude Desktop is open, so nothing was written to its configuration - the app rewrites that file from memory when it exits and the edit would have been lost. The installation itself is fine.'
+    $pending = 'Close every Claude Desktop window, then run "Conectar Horizun con Claude Desktop" from the Start menu, in the Horizun folder. It finishes on its own.'
+}
+elseif ($problems.Count -gt 0) {
     $state = 'failed'
     $detail = 'Preparation did not complete: ' + ($problems -join ' | ')
 }

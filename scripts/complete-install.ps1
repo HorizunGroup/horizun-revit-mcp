@@ -55,12 +55,21 @@ $verify = Join-Path $PSScriptRoot 'verify-install.ps1'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $runNamePrefix = 'HorizunMCPCompleteInstall-'
 $runName = $runNamePrefix + $Generation
-$powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# WHICH System32. A 32-bit process does not get the real one: Windows redirects
+# System32 to SysWOW64 underneath it, and conhost.exe DOES NOT EXIST there. Setup
+# is a 32-bit program, so when it launched this script the redirected lookup came
+# back empty and Start-Process reported 'The system cannot find the file
+# specified' - which named the symptom and hid the cause. Sysnative is the only
+# way a 32-bit process reaches the native directory, and it exists ONLY for a
+# 32-bit process, so the branch is both ways round.
+$nativeSystemDir = if ([Environment]::Is64BitProcess) { Join-Path $env:SystemRoot 'System32' }
+                   else { Join-Path $env:SystemRoot 'Sysnative' }
+$powerShellExe = Join-Path $nativeSystemDir 'WindowsPowerShell\v1.0\powershell.exe'
 # -WindowStyle Hidden stops hiding anything once Windows Terminal is the
 # default console host (Windows 11): every hidden relaunch shows a terminal
 # window, and the awaiting_revit worker shows it for up to 24 hours. conhost
 # --headless forces the windowless legacy host regardless of that setting.
-$conhostExe = Join-Path $env:SystemRoot 'System32\conhost.exe'
+$conhostExe = Join-Path $nativeSystemDir 'conhost.exe'
 $currentGenerationPath = "$StatusPath.current"
 $generationStatusPath = "$StatusPath.generation-$Generation.json"
 $verificationPath = "$generationStatusPath.verification.json"

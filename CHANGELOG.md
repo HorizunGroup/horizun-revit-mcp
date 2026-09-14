@@ -3,6 +3,46 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.3.2 — 2026-09-14
+
+**The installer's post-install steps never ran.** A screen recording of an
+ordinary install showed `CreateProcess failed; code 267`, then a success page.
+Nothing had been configured: no client registered, no Claude Desktop connection,
+no `.mcpb` offered. Three separate faults, each hidden behind the next, and all
+of them present in every release before this one.
+
+- **The helpers ran before the server existed.** Inno executes a `[Run]` entry
+  without the `postinstall` flag during *Finishing installation*, which is before
+  `CurStepChanged(ssPostInstall)` — and that is where this installer swaps
+  `server.installing` into place. The working directory could not be entered:
+  267, `ERROR_DIRECTORY`. They now start from `ssPostInstall`.
+- **They ran under 32-bit PowerShell, where System32 is a lie.** Setup is a
+  32-bit program, so the system directory was redirected to SysWOW64 — where
+  `conhost.exe` does not exist. Measured: from a 32-bit PowerShell,
+  `Test-Path C:\WINDOWS\System32\conhost.exe` is False while the file plainly
+  exists. Setup now uses the native path, and `complete-install.ps1` resolves
+  System32 or Sysnative by its own bitness instead of assuming.
+- **Every child inherited a working directory that was deleted.** The chain led
+  back to Setup's temp folder, which Windows removes as Setup exits, so starting
+  the MCP server failed with *The directory name is invalid*. Setup passes the
+  install directory; the stdio helper starts a command in the command's own
+  folder.
+
+**One language at a time.** Prose picked a language while shortcut names, the
+wizard's task text and the Hub action were Spanish literals, so an English Setup
+told people to click shortcuts that existed only in Spanish. All of it now comes
+from one set of `CustomMessages`, used both by the Start-menu entry and by the
+text that names it. Verified by installing in each language and reading the
+result off the screen.
+
+**The final dialog states the `.mcpb` path.** The extension route is the one
+where a human has to find a file, and a route that ends in "go and look for it"
+is not a route.
+
+**An open Claude Desktop is a pending step, not a failed install.** It was
+recorded as `failed`, which sends people to reinstall a product that installed
+correctly. It now records `pending_user_action` and names the one click left.
+
 ## v1.3.1 — 2026-09-13
 
 The 1.3 release. Everything described under v1.3.0 below ships here; that tag
