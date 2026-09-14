@@ -73,6 +73,32 @@ UninstallDisplayName={#AppName} {#AppVersion}
 Name: "es"; MessagesFile: "compiler:Languages\Spanish.isl"
 Name: "en"; MessagesFile: "compiler:Default.isl"
 
+[CustomMessages]
+es.IcoFolder=Horizun Revit MCP (carpeta)
+en.IcoFolder=Horizun Revit MCP (folder)
+es.IcoConnectCli=Conectar Horizun con Codex y Claude Code (linea de comandos)
+en.IcoConnectCli=Connect Horizun to Codex and Claude Code (command line)
+es.IcoComplete=Completar y verificar instalacion de Horizun
+en.IcoComplete=Complete and verify the Horizun installation
+es.IcoStatus=Estado de instalacion de Horizun
+en.IcoStatus=Horizun installation status
+es.IcoVerifyClients=Verificar clientes MCP de Horizun
+en.IcoVerifyClients=Verify Horizun MCP clients
+es.IcoConnectDesktop=Conectar Horizun con Claude Desktop
+en.IcoConnectDesktop=Connect Horizun to Claude Desktop
+es.IcoMcpb=Claude Desktop - instalar como extension (.mcpb)
+en.IcoMcpb=Claude Desktop - install as an extension (.mcpb)
+es.IcoDiagDesktop=Diagnosticar Claude Desktop
+en.IcoDiagDesktop=Diagnose Claude Desktop
+es.IcoChatgpt=Configurar ChatGPT Work
+en.IcoChatgpt=Set up ChatGPT Work
+es.IcoChatgptStop=Detener conexion con ChatGPT Work
+en.IcoChatgptStop=Stop the ChatGPT Work connection
+es.IcoAllClients=Estado de todos los clientes MCP
+en.IcoAllClients=Status of every MCP client
+es.IcoCleanup=Limpieza avanzada antes de desinstalar
+en.IcoCleanup=Advanced cleanup before uninstalling
+
 [Files]
 ; Extract into Setup's private temporary payload. The post-install code swaps this
 ; exact directory into place transactionally. Copying directly over {app}\server
@@ -95,21 +121,21 @@ Source: "..\dist\stage\manifest.json"; DestDir: "{tmp}\HorizunPayload"; Flags: i
 Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: ignoreversion deleteafterinstall
 
 [Icons]
-Name: "{group}\Horizun Revit MCP (carpeta)"; Filename: "{app}"
+Name: "{group}\{cm:IcoFolder}"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
 ; -NoExit like every other wizard here: without it this window printed its
 ; report and vanished, and the last thing on screen was a bare hex fingerprint
 ; that reads as an error code.
-Name: "{group}\Conectar Horizun con Codex y Claude Code (linea de comandos)"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoConnectCli}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Completar y verificar instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoComplete}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Both"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Estado de instalación de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoStatus}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -StatusOnly"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoVerifyClients}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
 ; --- The per-client integrations. Each shortcut is a WIZARD, not a switch: it
@@ -120,25 +146,25 @@ Name: "{group}\Verificar clientes MCP de Horizun"; Filename: "{sys}\WindowsPower
 ; this shortcut CONNECTS Claude Desktop rather than preparing a file somebody
 ; still has to find. The .mcpb route keeps its own shortcut for anyone who wants
 ; the extension, and that one puts the file on the Desktop and opens Explorer on it.
-Name: "{group}\Conectar Horizun con Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoConnectDesktop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Claude Desktop - instalar como extension (.mcpb)"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoMcpb}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Extension"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Diagnosticar Claude Desktop"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoDiagDesktop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Diagnose"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Configurar ChatGPT Work"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoChatgpt}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Status"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Detener conexion con ChatGPT Work"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoChatgptStop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Stop"; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Estado de todos los clientes MCP"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoAllClients}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\diagnose-integrations.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
-Name: "{group}\Limpieza avanzada antes de desinstalar"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+Name: "{group}\{cm:IcoCleanup}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\uninstall-cleanup.ps1"""; \
   WorkingDir: "{app}\server\client-tools"
 
@@ -159,13 +185,13 @@ Filename: "{#AppHubUrl}"; Description: "Abrir Horizun Hub"; \
 ; is written to %LOCALAPPDATA%\Horizun\install-status.json.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client {param:HORIZUNCLIENT|Both} {param:HORIZUNNOLIVE|}"; \
-  WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait; Check: ShouldCompleteInstall
+  Flags: runhidden nowait; Check: ShouldCompleteInstall
 ; Claude Desktop needs its .mcpb package even on a machine with neither CLI.
 ; Preparation is non-destructive and safe while the app is open; the documented
 ; Install Extension click remains explicit and is recorded as pending_user_action.
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
   Parameters: "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
-  WorkingDir: "{app}\server\client-tools"; Flags: runhidden nowait
+  Flags: runhidden nowait; Check: DesktopHelperPresent
 
 [UninstallRun]
 ; A pending first-start verification must not survive removal with a command that
@@ -210,7 +236,20 @@ end;
 
 function ShouldCompleteInstall(): Boolean;
 begin
-  Result := CompareText(ExpandConstant('{param:HORIZUNCLIENT|Both}'), 'None') <> 0;
+  { Asked for AND actually present. A helper that did not land is a packaging
+    fault, and Setup saying so beats Windows raising CreateProcess at the user. }
+  Result := (CompareText(ExpandConstant('{param:HORIZUNCLIENT|Both}'), 'None') <> 0) and
+            FileExists(ExpandConstant('{app}\server\client-tools\complete-install.ps1'));
+end;
+
+function DesktopHelperPresent(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1'));
+end;
+
+function McpbPath(): String;
+begin
+  Result := ExpandConstant('{app}') + '\server\integrations\claude-desktop\horizun-revit-{#AppVersion}.mcpb';
 end;
 
 procedure InitYears;
@@ -948,23 +987,32 @@ begin
       { THE NEXT STEP DEPENDS ON WHICH CLIENT YOU USE, and the shortcut names here
         are the names the Start menu really carries. The old text named one that
         did not exist, so following it exactly led nowhere. }
+      { The shortcut names come from the SAME custom messages the Start menu
+        uses, so the text can no longer name a shortcut that is not there in
+        that language. The .mcpb path is stated outright: the extension route
+        is the one where somebody has to find a file, and a route that ends in
+        "go and look for it" is not a route. }
       MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
                'Reinicia Revit para cargarlo.' + #13#10#13#10 +
                'Ahora conecta tu cliente desde el menu Inicio, en la carpeta Horizun:' + #13#10#13#10 +
                '  - App de escritorio de Claude:' + #13#10 +
-               '      "Conectar Horizun con Claude Desktop"' + #13#10 +
+               '      "' + ExpandConstant('{cm:IcoConnectDesktop}') + '"' + #13#10 +
                '      Cierra Claude Desktop antes: termina solo, sin archivos que buscar.' + #13#10#13#10 +
                '  - Claude Code o Codex (linea de comandos):' + #13#10 +
-               '      "Conectar Horizun con Codex y Claude Code (linea de comandos)"' + #13#10#13#10 +
+               '      "' + ExpandConstant('{cm:IcoConnectCli}') + '"' + #13#10#13#10 +
+               'Si prefieres cargarlo a mano como extension, el archivo .mcpb esta aqui:' + #13#10 +
+               '      ' + McpbPath() + #13#10#13#10 +
                'Ambos conservan tus otras entradas MCP y guardan copias de seguridad fechadas.',
                'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
                'Restart Revit to load it.' + #13#10#13#10 +
                'Now connect your client from the Start menu, in the Horizun folder:' + #13#10#13#10 +
                '  - Claude Desktop app:' + #13#10 +
-               '      "Conectar Horizun con Claude Desktop"' + #13#10 +
+               '      "' + ExpandConstant('{cm:IcoConnectDesktop}') + '"' + #13#10 +
                '      Close Claude Desktop first: it then finishes on its own, with no file to hunt for.' + #13#10#13#10 +
                '  - Claude Code or Codex (command line):' + #13#10 +
-               '      "Conectar Horizun con Codex y Claude Code (linea de comandos)"' + #13#10#13#10 +
+               '      "' + ExpandConstant('{cm:IcoConnectCli}') + '"' + #13#10#13#10 +
+               'If you would rather load it by hand as an extension, the .mcpb file is here:' + #13#10 +
+               '      ' + McpbPath() + #13#10#13#10 +
                'Both preserve your other MCP entries and keep timestamped backups.'),
              mbInformation, MB_OK);
   end;
