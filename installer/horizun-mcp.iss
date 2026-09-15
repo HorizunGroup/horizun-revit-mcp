@@ -208,9 +208,12 @@ begin
   if FileExists(Sheet) then
     FileCopy(Sheet, Folder + '\Instalar en Claude Desktop.pdf', False);
 
-  { Selected, not merely listed: the next thing the user does is drag it. }
-  Exec(ExpandConstant('{sys}\..\explorer.exe'), '/select,"' + Folder + '\horizun-revit-{#AppVersion}.mcpb"',
-       '', SW_SHOWNORMAL, ewNoWait, Code);
+  { Selected, not merely listed: the next thing the user does is drag it.
+    Only when somebody is watching - a silent install still gets the files,
+    because they are part of installing, but it does not get a window. }
+  if not WizardSilent then
+    Exec(ExpandConstant('{sys}\..\explorer.exe'), '/select,"' + Folder + '\horizun-revit-{#AppVersion}.mcpb"',
+         '', SW_SHOWNORMAL, ewNoWait, Code);
   Result := True;
 end;
 
@@ -853,6 +856,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   I: Integer;
   HandoverFolder: String;
+  HandedOver: Boolean;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -956,6 +960,10 @@ begin
 
       In silent mode the result file above IS the report, and it is written
       before this point precisely so that skipping the dialogs loses nothing. }
+    { Before the silent-mode exit: handing the file over is installing, not
+      reporting. A quiet install that skipped it would leave the one manual
+      step with nothing to do it from. }
+    HandedOver := HandOverDesktopPackage(HandoverFolder);
     if WizardSilent then exit;
 
     if not FoundAny then
@@ -986,7 +994,7 @@ begin
         installed from inside the app and there is no documented command for it.
         So the file and the sheet that explains it are put in a folder of the
         user's own and Explorer is already open on them when this is read. }
-      if HandOverDesktopPackage(HandoverFolder) then
+      if HandedOver then
         MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
                  'Reinicia Revit para cargarlo.' + #13#10#13#10 +
                  'Claude Code, Codex y ChatGPT Work quedaron configurados solos. No tienes que ejecutar nada.' + #13#10#13#10 +
