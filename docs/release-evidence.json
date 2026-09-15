@@ -1,0 +1,72 @@
+{
+  "release": "v1.3.3",
+  "source_commit": "cc4ea04e9ecfe547ad349f22e0864019ce1ead1f",
+  "scope": "Published maintainer release-gate reports; one test suite executed across five Revit years, not 1230 different features.",
+  "reports": [
+    {
+      "revit_year": 2023,
+      "summary": {
+        "asserting": 246,
+        "failed": 0,
+        "probes": 246,
+        "passed": 246,
+        "not_covered": 0,
+        "unverified": 0
+      },
+      "sha256": "cef4d678e8389a2349c99bba1e90140374f4359ada54ae1508adf7b2ad029eb2",
+      "url": "https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2023.json"
+    },
+    {
+      "revit_year": 2024,
+      "summary": {
+        "passed": 246,
+        "asserting": 246,
+        "failed": 0,
+        "unverified": 0,
+        "probes": 246,
+        "not_covered": 0
+      },
+      "sha256": "d23234df6fd9c2b8390febc3fd9315233f01d20ace275fa22c2f236ad7fab75a",
+      "url": "https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2024.json"
+    },
+    {
+      "revit_year": 2025,
+      "summary": {
+        "asserting": 246,
+        "passed": 246,
+        "probes": 246,
+        "failed": 0,
+        "unverified": 0,
+        "not_covered": 0
+      },
+      "sha256": "4796247529545b3d012e11846d8a6bf4f6a4c5c1c8170bae4896354f673f686e",
+      "url": "https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2025.json"
+    },
+    {
+      "revit_year": 2026,
+      "summary": {
+        "unverified": 0,
+        "not_covered": 0,
+        "probes": 246,
+        "failed": 0,
+        "passed": 246,
+        "asserting": 246
+      },
+      "sha256": "e7e1e6b6ac04861f148aef761e4fb00f229cc1ef03893bd4fbe990e6988ae3ea",
+      "url": "https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2026.json"
+    },
+    {
+      "revit_year": 2027,
+      "summary": {
+        "probes": 246,
+        "not_covered": 0,
+        "passed": 246,
+        "failed": 0,
+        "asserting": 246,
+        "unverified": 0
+      },
+      "sha256": "7e49f06168cd1a87063076e18dad362ec6d0acd644b79340026fdee32a87fe5e",
+      "url": "https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2027.json"
+    }
+  ]
+}

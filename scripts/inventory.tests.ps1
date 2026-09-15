@@ -98,7 +98,8 @@ Check 'every inventory-marked number in the docs matches the generated inventory
     $offenders = @()
     $marked = 0
     foreach ($doc in (Get-ChildItem -Path (Join-Path $repo 'docs') -Filter *.md -File) +
-                     @(Get-Item (Join-Path $repo 'README.md') -ErrorAction SilentlyContinue)) {
+                     @(Get-Item (Join-Path $repo 'README.md') -ErrorAction SilentlyContinue) +
+                     @(Get-Item (Join-Path $repo 'README.es.md') -ErrorAction SilentlyContinue)) {
         if (-not $doc) { continue }
         $text = Get-Content $doc.FullName -Raw
         foreach ($m in [regex]::Matches($text, '\*\*([\d,]+)[^*]*\*\*\s*<!--inventory:([a-z_]+)-->')) {
@@ -113,6 +114,58 @@ Check 'every inventory-marked number in the docs matches the generated inventory
     if ($marked -eq 0) { return 'no document carries an inventory marker - the generated numbers reach nobody' }
     if ($offenders.Count) { return ($offenders -join '; ') }
     Write-Host "        ($marked marked number(s) checked)" -ForegroundColor DarkGray
+    $null
+}
+
+Check 'suboperation counts deduplicate repeated schema paths' {
+    $inv = Get-Content $inventoryPath -Raw | ConvertFrom-Json
+    $total = 0
+    foreach ($tool in $inv.tools_detail) {
+        $unique = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($selector in $tool.operation_detail) {
+            foreach ($value in $selector.values) { $null = $unique.Add($selector.property + ':' + $value) }
+        }
+        if ($tool.operations -ne $unique.Count) { return "$($tool.tool) double-counts a selector value or omits one" }
+        $total += $unique.Count
+    }
+    if ($inv.counts.operations -ne $total) { return 'the headline suboperation count differs from the distinct per-tool choices' }
+    $null
+}
+
+Check 'both READMEs list every tool and suboperation exactly once in their catalog blocks' {
+    $inv = Get-Content $inventoryPath -Raw | ConvertFrom-Json
+    $catalog = Get-Content (Join-Path $repo 'docs/readme-catalog.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $catalogNames = @($catalog.groups | ForEach-Object { $_.tools | ForEach-Object { $_[0] } })
+    $expectedNames = @($inv.tools_detail.tool | Sort-Object)
+    if ($catalogNames.Count -ne $expectedNames.Count -or
+        (($catalogNames | Sort-Object) -join '|') -cne ($expectedNames -join '|')) { return 'the bilingual source catalog differs from tools/list' }
+    $expectedOps = @{}
+    foreach ($tool in $inv.tools_detail) {
+        foreach ($selector in $tool.operation_detail) {
+            foreach ($value in $selector.values) { $expectedOps[$tool.tool + '|' + $selector.property + '|' + $value] = $true }
+        }
+    }
+    foreach ($name in @('README.md','README.es.md')) {
+        $text = Get-Content (Join-Path $repo $name) -Raw -Encoding UTF8
+        $block = [regex]::Match($text, '(?s)<!-- BEGIN TOOL CATALOG -->(.*?)<!-- END TOOL CATALOG -->')
+        $actualNames = @([regex]::Matches($block.Groups[1].Value, '(?m)^\| `([^`]+)` \|') | ForEach-Object { $_.Groups[1].Value } | Sort-Object)
+        if (($actualNames -join '|') -cne ($expectedNames -join '|')) { return "$name omits, duplicates or invents a tool" }
+        $opsBlock = [regex]::Match($text, '(?s)<!-- BEGIN SUBOPERATIONS -->(.*?)<!-- END SUBOPERATIONS -->')
+        $actualOps = @{}
+        foreach ($row in [regex]::Matches($opsBlock.Groups[1].Value, '(?m)^\| `([^`]+)` \| `([^`]+)` \| ([^\r\n]+) \|\r?$')) {
+            foreach ($value in [regex]::Matches($row.Groups[3].Value, '`([^`]+)`')) {
+                $key = $row.Groups[1].Value + '|' + $row.Groups[2].Value + '|' + $value.Groups[1].Value
+                if ($actualOps.ContainsKey($key)) { return "$name repeats suboperation $key" }
+                $actualOps[$key] = $true
+            }
+        }
+        if ((($actualOps.Keys | Sort-Object) -join '|') -cne (($expectedOps.Keys | Sort-Object) -join '|')) { return "$name suboperations differ from the server inventory" }
+    }
+    $null
+}
+
+Check 'rendered bilingual descriptions match their maintained catalog' {
+    & (Join-Path $PSScriptRoot 'update-readme-catalog.ps1') -Check
     $null
 }
 
@@ -152,4 +205,5 @@ Check 'the inventory publishes no personal path' {
     $null
 }
 
+if ($failures -gt 0) { Write-Host "inventory tests: $failures FAILED" -ForegroundColor Red; exit 1 }
 Write-Host 'inventory tests: ALL PASS' -ForegroundColor Green

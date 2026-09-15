@@ -44,3 +44,20 @@ pwsh scripts/verify-live.ps1 -Year 2026 -OldFile 'C:\fixtures\model-from-another
 
 Read [AGENTS.md](../AGENTS.md) for model-write rules and
 [CONTRIBUTING.md](../CONTRIBUTING.md) for contribution checks.
+
+## Keep the public capability catalog complete
+
+After changing the tool contract, rebuild the server, regenerate the inventory,
+and add or update both descriptions in [readme-catalog.json](readme-catalog.json).
+Then render the tool and suboperation blocks into both READMEs:
+
+```powershell
+pwsh scripts/generate-inventory.ps1
+pwsh scripts/update-readme-catalog.ps1
+pwsh scripts/inventory.tests.ps1
+```
+
+CI checks every tool name, every distinct dispatch choice, the bilingual
+descriptions and the marked headline counts. Published release evidence remains
+version-scoped in [release-evidence.json](release-evidence.json); changing the
+catalog does not create new live-test results.

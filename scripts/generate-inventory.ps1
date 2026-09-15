@@ -182,14 +182,18 @@ foreach ($t in $tools) {
     foreach ($e in $enums) { $variants += @($e.values).Count }
     $dispatch = @($enums | Where-Object { $DispatchSelectors -contains $_.property })
     $ops = 0
+    # A selector repeated inside oneOf is still the same operation. Count each
+    # tool/property/value once; preserve every schema path below for inspection.
+    $operationKeys = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $opDetail = @()
     foreach ($e in $dispatch) {
         $verified = Test-DispatchRead $e.property
         if (-not $verified) { $unverifiedSelectors += ("{0}.{1}" -f $t.name, $e.property) }
-        $ops += @($e.values).Count
+        foreach ($value in $e.values) { $null = $operationKeys.Add($e.property + ':' + [string]$value) }
         $opDetail += [pscustomobject]@{ property = $e.property; path = $e.path
                                         values = @($e.values); source_read_confirmed = $verified }
     }
+    $ops = $operationKeys.Count
     $readOnly = $false
     $destructive = $false
     $openWorld = $false
@@ -329,8 +333,8 @@ $inventory = [ordered]@{
     definitions = [ordered]@{
         tools = 'MCP tool names the built server lists.'
         reads = 'tools annotated readOnlyHint - they cannot change the model.'
-        operations = ('distinct values of the enum properties a command DISPATCHES on (' +
-                      ($DispatchSelectors -join ', ') + '), each cross-checked against the command source.')
+        operations = ('distinct (tool, selector property, enum value) choices a command DISPATCHES on (' +
+                      ($DispatchSelectors -join ', ') + '), with repeated schema paths counted once. Includes suboperations and dispatch modes, not independent MCP tool names or a live-test count.')
         enumerated_variants = 'every (tool, property, enum value) triple in every schema. An argument, NOT a proven behaviour.'
         not_measured_here = 'whether any of it works. Verified behaviour is counted by the live harness artifact only.'
     }

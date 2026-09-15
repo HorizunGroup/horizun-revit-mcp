@@ -13,6 +13,11 @@ assumed. Dates are the day the work landed.
   existing extension as an additional release asset with verified metadata and
   an explicit prerequisite: install the Windows product first.
 - Generate readable release notes and check publication documentation in CI.
+- Publish the complete bilingual tool catalog, named suboperations, the PDF-to-Revit
+  video and versioned live-test evidence directly in the README. Explain the
+  measured 70/79/80-tool permission profiles and the core-only subset.
+- Deduplicate repeated schema branches in the suboperation counter: 208 distinct
+  tool/selector/value choices replace 213 schema occurrences, with no tool removed.
 
 ## v1.3.3 — 2026-09-14
 
