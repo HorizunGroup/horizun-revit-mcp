@@ -57,6 +57,21 @@ in **Documents\Horizun-Revit-MCP**. Install the `.mcpb` inside Claude Desktop
 and restart it. En Claude Desktop debes instalar el `.mcpb` dentro de la app y
 reiniciarla; el archivo queda en **Documentos\Horizun-Revit-MCP**.
 
+## First Revit start / Primer arranque de Revit
+
+Revit may show an add-in security prompt on first launch. After verifying the
+package and accepting the unsigned-release policy, choose **Always Load** to
+allow the add-in. Check the other monitors if Revit appears to be waiting with
+no visible dialog. With a document open, the **Horizun Hub** ribbon tab and its
+**Estado del puente** button show the local bridge state; verify the client
+connection separately with `horizun_health`.
+
+En el primer arranque Revit puede mostrar un aviso de seguridad del add-in.
+Después de verificar el paquete y aceptar la política de firma, elige
+**Always Load**. Revisa los demás monitores si Revit parece detenido. Con un
+documento abierto, **Horizun Hub → Estado del puente** muestra el estado local;
+comprueba también la conexión desde el cliente con `horizun_health`.
+
 ## Update / Actualizar
 
 Close Revit, run the new release's Setup and complete the
