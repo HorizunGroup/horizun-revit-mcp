@@ -88,6 +88,11 @@ delivers a .mcpb to Documents\Horizun-Revit-MCP; the person installs it inside
 Claude Desktop and restarts the app. The extension requires the Windows Setup first. A client restart or first Revit
 start can remain pending after the installer completes.
 
+Claude Desktop Free installation tutorial (Spanish, Horizun Hub):
+https://www.youtube.com/watch?v=3kp-we7MIvk
+The published guide covers installing and connecting Horizun Revit MCP with the
+free Claude Desktop plan. Written Setup and .mcpb steps: docs/CLIENTS.md#claude-desktop.
+
 Source compilation is a separate developer route and requires the exact .NET
 SDK in global.json. Do not describe that SDK as a requirement for the public
 installer. Do not recommend cloning and compiling for an ordinary install.

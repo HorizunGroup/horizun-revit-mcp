@@ -15,6 +15,11 @@ same installed `horizun-mcp.exe`; the extension does not bundle the server.
 
 ## Claude Desktop
 
+**Video guide — Claude Desktop Free:** [install and connect Horizun Revit MCP](https://www.youtube.com/watch?v=3kp-we7MIvk).
+This Spanish-language tutorial from Horizun Hub covers setup with the free
+Claude Desktop plan. **Tutorial en español:** instalación y conexión con
+Claude Desktop gratuito. Follow the written steps below for the current package.
+
 1. Run Setup with Revit closed.
 2. Open **Documents → Horizun-Revit-MCP**, the folder Setup opens at completion.
    Use the `.mcpb` and the included English or Spanish illustrated instructions.
@@ -22,6 +27,9 @@ same installed `horizun-mcp.exe`; the extension does not bundle the server.
    page, or choose **Advanced settings → Install extension** and select it.
 4. Review the access prompt, enable the extension and restart Claude Desktop.
 5. Start Revit, open a model and call `horizun_health` from Claude Desktop.
+
+The in-app extension steps are also documented in
+[Anthropic's local MCP installation guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop).
 
 Setup does not perform step 3. A successful Setup is not proof that the extension
 has been installed or that the client is connected. Claude Code is not required.

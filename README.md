@@ -1,5 +1,7 @@
 # Horizun Revit MCP — model, document, coordinate and deliver in Revit
 
+**Made in Colombia 🇨🇴 by Horizun Group.**
+
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
 **Autodesk Revit 2023–2027**. Its complete catalog contains **80 tools** <!--inventory:tools-->
 with **208 named suboperations and dispatch modes** <!--inventory:operations-->
@@ -18,6 +20,7 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 **[Download](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Watch the demo](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
+[Install with Claude Desktop Free](#installation-video-claude-desktop-free) ·
 [All tools](#complete-tool-catalog) · [Suboperations](#suboperations-and-modes) ·
 [Release evidence](#tested-in-revit-published-release-evidence) · [Install](#install)
 
@@ -151,6 +154,15 @@ the package and illustrated instructions in the Documents folder above. Drag
 the package onto the Extensions page or use **Advanced settings → Install extension**.
 The extension connects to the installed server; it does not replace Setup.
 See [client instructions and recovery](docs/CLIENTS.md).
+
+### Installation video: Claude Desktop Free
+
+[![Install Horizun Revit MCP with Claude Desktop Free](https://i.ytimg.com/vi/3kp-we7MIvk/hqdefault.jpg)](https://www.youtube.com/watch?v=3kp-we7MIvk)
+
+**[Connect Revit to Claude Desktop Free — watch the installation tutorial](https://www.youtube.com/watch?v=3kp-we7MIvk)**
+is a Spanish-language guide published by Horizun Hub to installing and connecting
+Horizun Revit MCP with the free Claude Desktop plan. Follow the Setup and `.mcpb`
+steps above; the [client guide](docs/CLIENTS.md#claude-desktop) provides the written instructions.
 
 ### Optional PowerShell bootstrap
 
