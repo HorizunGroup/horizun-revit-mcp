@@ -1,0 +1,92 @@
+<!-- Source for the printed instruction sheet that ships beside the .mcpb.
+     Rendered to PDF at pack time (scripts/build-instructions.ps1) so nothing has
+     to be generated on the user's machine. Keep it to ONE page: it is read
+     standing in front of a computer, not studied. -->
+<meta charset="utf-8">
+<title>Horizun Revit MCP in Claude Desktop</title>
+<style>
+  @page { size: A4; margin: 16mm 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 10.5pt/1.45 "Segoe UI", system-ui, sans-serif;
+    color: #15202B; -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  header { border-bottom: 2.5pt solid #0696D7; padding-bottom: 7pt; margin-bottom: 13pt; }
+  h1 { margin: 0 0 2pt; font-size: 17pt; letter-spacing: -.2pt; }
+  .sub { margin: 0; color: #556B7D; font-size: 10pt; }
+  .file {
+    margin: 0 0 13pt; padding: 8pt 11pt; background: #F1F8FC;
+    border: .8pt solid #BFE2F4; border-radius: 4pt;
+  }
+  .file b { color: #05678F; }
+  .file code { font: 9.5pt ui-monospace, Consolas, monospace; word-break: break-all; }
+  ol { margin: 0; padding-left: 15pt; }
+  li { margin-bottom: 9pt; }
+  li > b:first-child { display: block; margin-bottom: 1pt; }
+  .or {
+    margin-top: 5pt; padding: 6pt 9pt; background: #F7F9FA;
+    border-left: 2.5pt solid #C3D0DA; font-size: 9.7pt; color: #3C4C5A;
+  }
+  .note { font-size: 9.5pt; color: #556B7D; }
+  kbd {
+    font: 9.5pt "Segoe UI", sans-serif; background: #E9EFF3;
+    border: .7pt solid #C3D0DA; border-radius: 3pt; padding: .5pt 4pt;
+  }
+  footer {
+    margin-top: 14pt; padding-top: 7pt; border-top: .8pt solid #D8E2E9;
+    font-size: 8.8pt; color: #6B7C8A; display: flex; justify-content: space-between;
+  }
+</style>
+
+<header>
+  <h1>Connect Horizun Revit MCP to Claude Desktop</h1>
+  <p class="sub">Three minutes. Every other client &mdash; Claude Code, Codex and ChatGPT Work &mdash; was already configured for you.</p>
+</header>
+
+<div class="file">
+  <b>The file you need is in this same folder:</b><br>
+  <code>horizun-revit-__VERSION__.mcpb</code>
+</div>
+
+<ol>
+  <li>
+    <b>Open Claude Desktop and go to Settings.</b>
+    Click your name at the bottom left and choose <b>Settings</b>, or press <kbd>Ctrl</kbd> + <kbd>,</kbd>.
+  </li>
+
+  <li>
+    <b>In the left column, under <i>Desktop app</i>, open <i>Extensions</i>.</b>
+    The first time, it will say <i>No extensions installed</i>.
+  </li>
+
+  <li>
+    <b>Drag the <code>.mcpb</code> file from this folder onto that window.</b>
+    The page says so itself: <i>Drag .MCPB or .DXT files here to install</i>. It is the shortest way and nothing has to be hunted for.
+    <div class="or">
+      <b>Would rather not drag?</b> Click <b>Advanced settings</b>, then <b>Install extension</b>.
+      A file picker opens on Downloads: in its left column go to <b>Documents</b>, then
+      <b>Horizun-Revit-MCP</b>, and choose the <code>.mcpb</code>.
+      That button sits under a red developer-tools warning; that is normal and does not mean anything is wrong.
+    </div>
+  </li>
+
+  <li>
+    <b>Claude will warn you the extension gets access to your computer. Accept it and leave it <i>Enabled</i>.</b>
+    <span class="note">That warning appears for any MCP extension: it is the permission the bridge needs to talk to the Revit you have open. Everything happens on your machine; no server is involved.</span>
+  </li>
+
+  <li>
+    <b>Close Claude Desktop and open it again.</b>
+    The tools do not appear until the app restarts.
+  </li>
+
+  <li>
+    <b>Open Revit with a model and ask Claude: <i>“use horizun_health”</i>.</b>
+    If it answers with the Revit version and the open document, it is working.
+  </li>
+</ol>
+
+<footer>
+  <span>Horizun Revit MCP __VERSION__ &mdash; Revit 2023&ndash;2027</span>
+  <span>horizunhub.com</span>
+</footer>

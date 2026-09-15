@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
   Build everything a machine needs, stage it, and produce the installer.
 
@@ -198,6 +198,15 @@ $mcpbPath = Join-Path $mcpbDir ("horizun-revit-{0}.mcpb" -f $stageVersion)
 & (Join-Path $repo 'scripts\build-mcpb.ps1') -Output $mcpbPath -ServerPath (Join-Path $stage 'server\horizun-mcp.exe') | Out-Null
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $mcpbPath)) { throw 'the Claude Desktop extension did not build' }
 Step ('  built the Claude Desktop extension: {0} ({1:N0} bytes)' -f (Split-Path -Leaf $mcpbPath), (Get-Item $mcpbPath).Length)
+
+# The printed sheet that travels WITH the package. Claude Desktop is installed by
+# hand - the app's own UI is the only place that step exists - so the file and the
+# instructions for it have to arrive together, in a folder a person can open.
+# Rendered here, once, rather than on a machine that has no renderer.
+& (Join-Path $repo 'scriptsuild-instructions.ps1') -Version $stageVersion -OutputDir $mcpbDir | Out-Null
+$sheets = @(Get-ChildItem -LiteralPath $mcpbDir -Filter '*.pdf' -File)
+if ($sheets.Count -ne 2) { throw "expected both instruction sheets beside the .mcpb; found $($sheets.Count)" }
+Step ('  rendered the Claude Desktop instructions: {0}' -f (($sheets | ForEach-Object { $_.Name }) -join ', '))
 
 # --- The plugin, ONE ARTIFACT PER YEAR. --------------------------------------
 #

@@ -76,28 +76,8 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 [CustomMessages]
 es.IcoFolder=Horizun Revit MCP (carpeta)
 en.IcoFolder=Horizun Revit MCP (folder)
-es.IcoConnectCli=Conectar Horizun con Codex y Claude Code (linea de comandos)
-en.IcoConnectCli=Connect Horizun to Codex and Claude Code (command line)
-es.IcoComplete=Completar y verificar instalacion de Horizun
-en.IcoComplete=Complete and verify the Horizun installation
-es.IcoStatus=Estado de instalacion de Horizun
-en.IcoStatus=Horizun installation status
-es.IcoVerifyClients=Verificar clientes MCP de Horizun
-en.IcoVerifyClients=Verify Horizun MCP clients
-es.IcoConnectDesktop=Conectar Horizun con Claude Desktop
-en.IcoConnectDesktop=Connect Horizun to Claude Desktop
-es.IcoMcpb=Claude Desktop - instalar como extension (.mcpb)
-en.IcoMcpb=Claude Desktop - install as an extension (.mcpb)
-es.IcoDiagDesktop=Diagnosticar Claude Desktop
-en.IcoDiagDesktop=Diagnose Claude Desktop
-es.IcoChatgpt=Configurar ChatGPT Work
-en.IcoChatgpt=Set up ChatGPT Work
-es.IcoChatgptStop=Detener conexion con ChatGPT Work
-en.IcoChatgptStop=Stop the ChatGPT Work connection
-es.IcoAllClients=Estado de todos los clientes MCP
-en.IcoAllClients=Status of every MCP client
-es.IcoCleanup=Limpieza avanzada antes de desinstalar
-en.IcoCleanup=Advanced cleanup before uninstalling
+es.FolderName=Horizun-Revit-MCP
+en.FolderName=Horizun-Revit-MCP
 es.TaskOpenHub=Ver Horizun Hub - las herramientas y flujos construidos sobre este puente
 en.TaskOpenHub=Visit Horizun Hub - the tools and workflows built on this bridge
 es.RunOpenHub=Abrir Horizun Hub
@@ -127,50 +107,6 @@ Source: "..\dist\stage\Horizun.addin"; DestDir: "{tmp}\HorizunPayload"; Flags: i
 [Icons]
 Name: "{group}\{cm:IcoFolder}"; Filename: "{app}"
 Name: "{group}\Horizun Hub"; Filename: "{#AppHubUrl}"
-; -NoExit like every other wizard here: without it this window printed its
-; report and vanished, and the last thing on screen was a bare hex fingerprint
-; that reads as an error code.
-Name: "{group}\{cm:IcoConnectCli}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\register-client.ps1"" -Client Both -SkipMissingClients"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoComplete}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -Client Both"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoStatus}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\complete-install.ps1"" -StatusOnly"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoVerifyClients}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\verify-clients.ps1"""; \
-  WorkingDir: "{app}\server\client-tools"
-; --- The per-client integrations. Each shortcut is a WIZARD, not a switch: it
-; reports what it found, does the part a script may do, and names the one step
-; that is the user's. None of them needs Claude Code or Codex CLI to be present,
-; and none of them touches a client's configuration while that client is running.
-; The plain run now writes the documented configuration entry and finishes, so
-; this shortcut CONNECTS Claude Desktop rather than preparing a file somebody
-; still has to find. The .mcpb route keeps its own shortcut for anyone who wants
-; the extension, and that one puts the file on the Desktop and opens Explorer on it.
-Name: "{group}\{cm:IcoConnectDesktop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"""; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoMcpb}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Extension"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoDiagDesktop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\install-claude-desktop-extension.ps1"" -Diagnose"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoChatgpt}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Status"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoChatgptStop}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\chatgpt-tunnel.ps1"" -Stop"; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoAllClients}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -NoExit -File ""{app}\server\client-tools\diagnose-integrations.ps1"""; \
-  WorkingDir: "{app}\server\client-tools"
-Name: "{group}\{cm:IcoCleanup}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\server\client-tools\uninstall-cleanup.ps1"""; \
-  WorkingDir: "{app}\server\client-tools"
 
 [Tasks]
 ; OPT-IN, and unchecked by default. An installer that opens a browser nobody
@@ -246,6 +182,38 @@ end;
 { Started once the server folder is really in place. Hidden and not waited on:
   every durable result is written to %LOCALAPPDATA%\Horizun\install-status.json,
   and neither helper ever writes underneath a live client. }
+function DesktopFolder(): String;
+begin
+  Result := ExpandConstant('{userdocs}') + '\\' + ExpandConstant('{cm:FolderName}');
+end;
+
+{ Put the extension and its printed instructions where a person can reach them,
+  and OPEN that folder. The package used to sit under AppData\\Local\\Programs,
+  which Explorer hides and Claude Desktop's file picker opens nowhere near - so
+  the one step left to the user began with hunting for a file. }
+function HandOverDesktopPackage(var Folder: String): Boolean;
+var
+  Source, Sheet, Language: String;
+  Code: Integer;
+begin
+  Result := False;
+  Folder := DesktopFolder();
+  Source := ExpandConstant('{app}\\server\\integrations\\claude-desktop\\horizun-revit-{#AppVersion}.mcpb');
+  if not FileExists(Source) then exit;
+  if not ForceDirectories(Folder) then exit;
+  if not FileCopy(Source, Folder + '\\horizun-revit-{#AppVersion}.mcpb', False) then exit;
+
+  if ActiveLanguage() = 'es' then Language := 'es' else Language := 'en';
+  Sheet := ExpandConstant('{app}\\server\\integrations\\claude-desktop\\Instalar en Claude Desktop.') + Language + '.pdf';
+  if FileExists(Sheet) then
+    FileCopy(Sheet, Folder + '\\Instalar en Claude Desktop.pdf', False);
+
+  { Selected, not merely listed: the next thing the user does is drag it. }
+  Exec(ExpandConstant('{sys}\\..\\explorer.exe'), '/select,"' + Folder + '\\horizun-revit-{#AppVersion}.mcpb"',
+       '', SW_SHOWNORMAL, ewNoWait, Code);
+  Result := True;
+end;
+
 procedure StartClientHelpers;
 var
   Shell, Args: String;
@@ -265,12 +233,9 @@ begin
             ExpandConstant('{param:HORIZUNNOLIVE|}');
     Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
   end;
-  if DesktopHelperPresent() then
-  begin
-    Args := '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
-            ExpandConstant('{app}\server\client-tools\install-claude-desktop-extension.ps1') + '"';
-    Exec(Shell, Args, ExpandConstant('{app}'), SW_HIDE, ewNoWait, Code);
-  end;
+  // Claude Desktop is NOT configured from here any more. Its extension is
+  // installed from inside the app, by the person using it, and Setup's job is to
+  // put the file and its instructions somewhere they can be found.
 end;
 
 function McpbPath(): String;
@@ -887,6 +852,7 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   I: Integer;
+  HandoverFolder: String;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -1016,34 +982,40 @@ begin
       { THE NEXT STEP DEPENDS ON WHICH CLIENT YOU USE, and the shortcut names here
         are the names the Start menu really carries. The old text named one that
         did not exist, so following it exactly led nowhere. }
-      { The shortcut names come from the SAME custom messages the Start menu
-        uses, so the text can no longer name a shortcut that is not there in
-        that language. The .mcpb path is stated outright: the extension route
-        is the one where somebody has to find a file, and a route that ends in
-        "go and look for it" is not a route. }
-      MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
-               'Reinicia Revit para cargarlo.' + #13#10#13#10 +
-               'Ahora conecta tu cliente desde el menu Inicio, en la carpeta Horizun:' + #13#10#13#10 +
-               '  - App de escritorio de Claude:' + #13#10 +
-               '      "' + ExpandConstant('{cm:IcoConnectDesktop}') + '"' + #13#10 +
-               '      Cierra Claude Desktop antes: termina solo, sin archivos que buscar.' + #13#10#13#10 +
-               '  - Claude Code o Codex (linea de comandos):' + #13#10 +
-               '      "' + ExpandConstant('{cm:IcoConnectCli}') + '"' + #13#10#13#10 +
-               'Si prefieres cargarlo a mano como extension, el archivo .mcpb esta aqui:' + #13#10 +
-               '      ' + McpbPath() + #13#10#13#10 +
-               'Ambos conservan tus otras entradas MCP y guardan copias de seguridad fechadas.',
-               'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
-               'Restart Revit to load it.' + #13#10#13#10 +
-               'Now connect your client from the Start menu, in the Horizun folder:' + #13#10#13#10 +
-               '  - Claude Desktop app:' + #13#10 +
-               '      "' + ExpandConstant('{cm:IcoConnectDesktop}') + '"' + #13#10 +
-               '      Close Claude Desktop first: it then finishes on its own, with no file to hunt for.' + #13#10#13#10 +
-               '  - Claude Code or Codex (command line):' + #13#10 +
-               '      "' + ExpandConstant('{cm:IcoConnectCli}') + '"' + #13#10#13#10 +
-               'If you would rather load it by hand as an extension, the .mcpb file is here:' + #13#10 +
-               '      ' + McpbPath() + #13#10#13#10 +
-               'Both preserve your other MCP entries and keep timestamped backups.'),
-             mbInformation, MB_OK);
+      { The one manual step left is Claude Desktop, because its extension is
+        installed from inside the app and there is no documented command for it.
+        So the file and the sheet that explains it are put in a folder of the
+        user's own and Explorer is already open on them when this is read. }
+      if HandOverDesktopPackage(HandoverFolder) then
+        MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
+                 'Reinicia Revit para cargarlo.' + #13#10#13#10 +
+                 'Claude Code, Codex y ChatGPT Work quedaron configurados solos. No tienes que ejecutar nada.' + #13#10#13#10 +
+                 'Falta un paso, y es solo para Claude Desktop: su extension se instala desde dentro de la propia app.' + #13#10#13#10 +
+                 'Acabo de abrirte esta carpeta con el archivo y las instrucciones en PDF:' + #13#10 +
+                 '      ' + HandoverFolder + #13#10#13#10 +
+                 'Abre el PDF y sigue los seis pasos. Son tres minutos.',
+                 'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
+                 'Restart Revit to load it.' + #13#10#13#10 +
+                 'Claude Code, Codex and ChatGPT Work were configured for you. There is nothing to run.' + #13#10#13#10 +
+                 'One step is left, and only for Claude Desktop: its extension is installed from inside the app itself.' + #13#10#13#10 +
+                 'This folder is now open, with the file and the instructions as a PDF:' + #13#10 +
+                 '      ' + HandoverFolder + #13#10#13#10 +
+                 'Open the PDF and follow the six steps. It takes three minutes.'),
+               mbInformation, MB_OK)
+      else
+        MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
+                 'Reinicia Revit para cargarlo.' + #13#10#13#10 +
+                 'Claude Code, Codex y ChatGPT Work quedaron configurados solos.' + #13#10#13#10 +
+                 'NO pude dejarte la extension de Claude Desktop en Documentos. La tienes aqui:' + #13#10 +
+                 '      ' + ExpandConstant('{app}\\server\\integrations\\claude-desktop') + #13#10#13#10 +
+                 'Esa carpeta esta oculta para el Explorador: copiala a Documentos antes de instalarla en Claude Desktop.',
+                 'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
+                 'Restart Revit to load it.' + #13#10#13#10 +
+                 'Claude Code, Codex and ChatGPT Work were configured for you.' + #13#10#13#10 +
+                 'The Claude Desktop extension could NOT be placed in Documents. It is here:' + #13#10 +
+                 '      ' + ExpandConstant('{app}\\server\\integrations\\claude-desktop') + #13#10#13#10 +
+                 'Explorer hides that folder: copy the file out to Documents before installing it in Claude Desktop.'),
+               mbError, MB_OK);
   end;
 end;
 
