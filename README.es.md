@@ -19,6 +19,7 @@ el runtime del servidor y los add-ins.
 
 **[Descargar](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
 **[Ver demostración](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
+[Instalar con Claude Desktop Free](#video-de-instalación-claude-desktop-free) ·
 [Todas las herramientas](#catálogo-completo-de-herramientas) ·
 [Suboperaciones](#suboperaciones-y-modos) · [Pruebas](#probado-en-revit-evidencia-publicada) · [Instalar](#instalar)
 
@@ -158,6 +159,16 @@ entrega el paquete y las instrucciones ilustradas en la carpeta de Documentos.
 Arrastra el archivo a Extensions o usa **Advanced settings → Install extension**.
 La extensión conecta con el servidor instalado; no sustituye a Setup.
 Consulta las [instrucciones por cliente y recuperación](docs/CLIENTS.md).
+
+### Video de instalación: Claude Desktop Free
+
+[![Instalar Horizun Revit MCP con Claude Desktop Free](https://i.ytimg.com/vi/3kp-we7MIvk/hqdefault.jpg)](https://www.youtube.com/watch?v=3kp-we7MIvk)
+
+**[Conectar Revit con Claude Desktop Free — ver tutorial de instalación](https://www.youtube.com/watch?v=3kp-we7MIvk)**
+es una guía en español publicada por Horizun Hub para instalar y conectar
+Horizun Revit MCP con el plan gratuito de Claude Desktop. Sigue los pasos de
+Setup y del `.mcpb` indicados arriba; la [guía del cliente](docs/CLIENTS.md#claude-desktop)
+incluye las instrucciones escritas.
 
 ### Bootstrap opcional de PowerShell
 

@@ -57,6 +57,10 @@ in **Documents\Horizun-Revit-MCP**. Install the `.mcpb` inside Claude Desktop
 and restart it. En Claude Desktop debes instalar el `.mcpb` dentro de la app y
 reiniciarla; el archivo queda en **Documentos\Horizun-Revit-MCP**.
 
+**Video — Claude Desktop Free:** [installation tutorial / tutorial de instalación](https://www.youtube.com/watch?v=3kp-we7MIvk)
+by Horizun Hub, in Spanish, using the free Claude Desktop plan. Guía en español
+con el plan gratuito; [pasos completos / complete steps](CLIENTS.md#claude-desktop).
+
 ## First Revit start / Primer arranque de Revit
 
 Revit may show an add-in security prompt on first launch. After verifying the
