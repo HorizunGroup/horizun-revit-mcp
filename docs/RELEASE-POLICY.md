@@ -1,6 +1,6 @@
-# Release policy — channels, versioning, and what "production ready" will mean
+# Release policy — channels, versions and required evidence
 
-Written because v0.6.1 shipped a fix with **no installer** while v0.6.0 remained the
+**Historical context:** v0.6.1 shipped a fix with **no installer** while v0.6.0 remained the
 installable release. That was deliberate and correct, and it was also confusing:
 `install-release.ps1` follows `latest` and downloads its assets, so a code-only tag
 marked `latest` would break every script that installs the product. The behaviour
@@ -86,10 +86,10 @@ there is no such thing as a server version and an add-in version.
   published verification report is not supported, whatever the code compiles against.
 - **Horizun**: the current MINOR, plus the previous one for security fixes. Older
   versions get the upgrade path, not a backport.
-- **MCP protocol**: the versions in `SupportedMcpProtocols`. A revision still marked
-  RC upstream is not adopted until the protocol layer is isolated behind an adapter
-  (backlog 5.8) — the point of the adapter is that adopting one does not touch a
-  single Revit command.
+- **MCP protocol**: the versions in `ProtocolNegotiation.Supported`. The current
+  implementation supports 2025-11-25 and the earlier revisions listed there.
+  Support for 2026-07-28 is pending and must be implemented and tested before
+  it is advertised.
 
 ## Configuration migration
 
@@ -99,38 +99,47 @@ meaning gets a new name; the old one keeps working for two MINOR releases and th
 installer says so once. `enable-execute-python.ps1` writes exactly its two keys and
 leaves the rest alone, which is the pattern every future setting follows.
 
-## What "production ready" will mean — the 1.0 checklist
+## Release evidence and remaining work
 
-1.0 is not a date and not a feature count. Every line below has to be true, and each
-one is currently checkable rather than a matter of opinion:
+Release approval is evaluated for each tag. Consult its published assets and
+workflow, rather than treating a permanent Markdown checkbox as a live status.
 
-- [x] Every typed write binds its confirmation to the **resolved element set**, not
-      to the request; orchestrated children are re-rehearsed inside their group.
-      *(backlog 5.1: source and focused live proof complete; release matrix still applies)*
-- [ ] Every typed write whose verification fails **rolls back**, or documents in its
-      own description exactly what it leaves behind. *(rule adopted in 0.6.0)*
-- [ ] The live matrix passes for every supported Revit year, with the report
-      published per release. *(5.5)*
-- [ ] Operation **receipts**, with retention and redaction the operator controls.
-      *(5.2)*
-- [ ] The write tier of `verify-live.ps1` is green with **no NOT COVERED probes** on
-      the release machine.
-- [ ] MCP negotiation and standard primitives are implemented through 2025-11-25;
-      official Inspector/SDK conformance and the client matrix remain. *(5.8)*
-- [ ] No hardcoded classification anywhere: annotations and effects derived from the
-      contract. *(5.3 — done)*
-- [ ] Schemas frozen under the compatibility rules above, with the deprecation
-      window written into the CHANGELOG.
-- [x] Two maintainers with release rights. *(verified on the public repository on
-      2026-08-20)*
-- [x] GitHub secret scanning and push protection enabled on the public repository.
-      *(verified on 2026-08-20)*
-- [x] The permanent unsigned trust boundary is explicit in the bootstrap,
-      package record and README; unexpected/invalid/self-signed public artifacts
-      fail closed. See [production readiness](production-readiness.md).
-- [x] Stable tags publish hashes, manifest, SBOM, attestations and the complete
-      live matrix, then verify the exact installed unsigned bytes end to end.
+| Requirement | Evidence to inspect for that release |
+|---|---|
+| One version and source identity | Directory.Build.props, tag, binary stamps and manifest |
+| Installed payload integrity | SHA-256, package-hashes.json and installed-byte verification |
+| Revit compatibility | Complete live reports for each supported year, with failed/unverified/not-covered counts |
+| Dependency inventory and trust | SBOM, attestations and the explicit unsigned policy |
+| Client installation | Client-specific steps and recorded connection state; a live model test alone does not prove a clean client installation |
+| Registry publication | Generated metadata matching the tag; any package entry must identify a real artifact with its measured hash and prerequisites |
+| Release notes | Installation changes, remaining client actions, known limits and evidence links |
 
-Version 1.0 is promoted only from the tagged pipeline after every applicable box
-and the live matrix are green. Unsigned is a disclosed trust boundary, not a
-claim of Windows publisher authentication.
+### Maintaining distribution metadata
+
+When changing `Directory.Build.props`, regenerate the tracked source identity:
+
+```powershell
+pwsh scripts/generate-mcp-manifest.ps1 -OutFile .mcp/server.json
+```
+
+That file identifies the source version; it cannot promise a downloadable package
+before one has been built. CI checks it for drift. During packaging,
+`scripts/prepare-release-metadata.ps1` exports the exact staged `.mcpb`, writes
+`dist/server.json` with its measured SHA-256 and tagged asset URL, and generates
+release notes from that version's CHANGELOG section. The extension is an
+installed-server connector: the Windows installer remains a prerequisite.
+
+Stable and preview releases publish the extension and release metadata alongside
+Setup. Only stable publication updates the official registry, using the same
+immutable package artifact. These pipeline changes take effect on the next
+release; editing the source metadata does not alter an already published entry.
+The package format follows the [official registry MCPB documentation](https://modelcontextprotocol.io/registry/package-types#mcpb-packages).
+
+The pre-1.0 checklist is retained in Git history. It is not the current state of
+every later release. Historical development checkpoints remain labelled in
+[production-readiness.md](production-readiness.md).
+
+Work still requiring separate evidence includes MCP 2026-07-28 support, a
+clean-machine client-installation matrix and common-fixture comparisons against
+other products. Public Authenticode identity is not claimed under the permanent
+unsigned policy. None of these facts should be hidden by a design-rubric score.

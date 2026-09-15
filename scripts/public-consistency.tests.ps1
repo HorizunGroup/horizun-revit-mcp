@@ -19,9 +19,11 @@ if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.-]+)?$') { Fail "invalid c
 try { & (Join-Path $repo 'scripts/version-consistency.tests.ps1') }
 catch { Fail "effective product version check failed: $($_.Exception.Message)" }
 
-# The registry file is generated rather than checked in so its version cannot
-# drift. Exercise the generator here: a syntactically valid script that writes
-# stale or misnamed metadata is still a broken release path.
+# The checked-in identity and the release metadata are generated from one version.
+# Check the tracked copy too: regenerating only in CI concealed stale source
+# metadata. A syntactically valid generator can still write the wrong identity.
+try { & (Join-Path $repo 'scripts/generate-mcp-manifest.ps1') -OutFile (Join-Path $repo '.mcp/server.json') -Check }
+catch { Fail "checked-in registry identity is stale: $($_.Exception.Message)" }
 $registryTemp = Join-Path ([IO.Path]::GetTempPath()) ("horizun-mcp-registry-{0}.json" -f [guid]::NewGuid().ToString('N'))
 try {
     & (Join-Path $repo 'scripts/generate-mcp-manifest.ps1') -OutFile $registryTemp

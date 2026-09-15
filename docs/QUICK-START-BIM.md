@@ -6,7 +6,8 @@ read-only result. It changes neither the model nor files outside it.
 For release evidence, use [RELEASE-VALIDATION.md](RELEASE-VALIDATION.md). The
 live Revit check belongs at the end, after code and installation work are complete.
 
-1. Install Horizun Revit MCP and start Revit with the intended model open. In
+1. Follow the [installation guide](INSTALL.md), including the
+   [final client connection step](CLIENTS.md), then start Revit with the intended model open. In
    Revit, use **Horizun Hub > Estado de conexión** (Connection status); it must say that the bridge is
    active.
 2. In the MCP client, call `horizun_health`. Confirm its active document is the

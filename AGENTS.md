@@ -131,10 +131,12 @@ tool_timeout_sec = 600
 
 **Claude Desktop has its own route and does not need Claude Code.** The Windows
 Setup is the universal installation path: it registers Codex and Claude Code
-when their configuration exists, and stages the Claude Desktop extension:
+when their configuration exists, and delivers the Claude Desktop extension to
+Documents\Horizun-Revit-MCP. The commands below are for a source checkout;
+installed recovery paths are in docs/CLIENTS.md:
 
 ```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1   # the .mcpb extension
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension   # the .mcpb extension
 pwsh -File scripts/diagnose-integrations.ps1              # all supported clients, one screen
 ```
 
@@ -258,9 +260,8 @@ contract hash and are updated **together**; there is no partial deployment.
 ### Uninstall
 
 Close Revit and the MCP client, then uninstall **Horizun Revit MCP** from Windows
-Installed apps. Before uninstalling, the Start-menu shortcut **Advanced cleanup
-before uninstall** can remove only the named `horizun-revit` entries from Claude
-and Codex. State in `%USERPROFILE%\.horizun\` and signing trust are preserved by
+Installed apps. Before uninstalling, the installed `server/client-tools/uninstall-cleanup.ps1`
+helper can remove only the named `horizun-revit` entries from Claude and Codex. State in `%USERPROFILE%\.horizun\` and signing trust are preserved by
 default; the helper purges either only when the user explicitly selects it.
 
 ---
@@ -372,10 +373,12 @@ tool_timeout_sec = 600
 
 **Claude Desktop tiene su propia ruta y no necesita Claude Code.** El Setup de
 Windows es la instalación universal: registra Codex y Claude Code cuando existe
-su configuración, y prepara la extensión de Claude Desktop:
+su configuración, y entrega la extensión de Claude Desktop en
+Documentos\Horizun-Revit-MCP. Estos comandos son para un checkout del código;
+las rutas de recuperación instaladas están en docs/CLIENTS.md:
 
 ```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1   # la extension .mcpb
+pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension   # la extension .mcpb
 pwsh -File scripts/diagnose-integrations.ps1              # todos los clientes soportados
 ```
 
@@ -503,8 +506,7 @@ un hash de contrato y se actualizan **juntos**; no hay despliegue parcial.
 ### Desinstalar
 
 Cierra Revit y el cliente MCP, y desinstala **Horizun Revit MCP** desde
-Aplicaciones instaladas de Windows. Antes, el acceso **Limpieza avanzada antes de
-desinstalar** del menú Inicio puede quitar únicamente las entradas
-`horizun-revit` de Claude y Codex. El estado en `%USERPROFILE%\.horizun\` y la
+Aplicaciones instaladas de Windows. Antes, el asistente instalado `server/client-tools/uninstall-cleanup.ps1`
+puede quitar únicamente las entradas `horizun-revit` de Claude y Codex. El estado en `%USERPROFILE%\.horizun\` y la
 confianza de firma se conservan por defecto; el helper solo purga cada uno si el
 usuario lo selecciona explícitamente.

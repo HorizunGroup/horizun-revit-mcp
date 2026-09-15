@@ -1,6 +1,13 @@
-# Revit MCP benchmark
+# Revit MCP benchmark method and historical design assessment
 
-Updated: 2026-08-25. This benchmark measures useful outcomes, not the number of
+**Scope:** the design assessment below was last updated on 2026-08-25. It is not
+a current-release certification or an independently executed market ranking.
+For the installed product, identify its version and use the reports attached to
+that [release](https://github.com/HorizunGroup/horizun-revit-mcp/releases).
+Rows with live evidence pending remain pending here; historical/private reports
+are not substituted for publicly reproducible evidence.
+
+Historical assessment: 2026-08-25. This benchmark measures useful outcomes, not the number of
 tool names. One broad, composable and verified operation can be more valuable
 than twenty thin wrappers.
 
@@ -62,7 +69,7 @@ credit for driving the modal editor through screen coordinates. Loaded RFAs and
 project-resident system types are measured separately because they are different
 Revit concepts.
 
-## Horizun source-candidate result
+## Historical source-candidate design assessment
 
 | Case | Score | Evidence now | Implementation |
 | --- | ---: | --- | --- |
@@ -90,8 +97,9 @@ Revit concepts.
 | P7 | 5 | L/B | The whole planimetry surface — query, audit, fix and production — ran against real Revit 2023, 2024, 2025, 2026 and 2027 on 2026-08-25 at candidate `32baa87`: 165 probes per year, 825 total, 0 failed / 0 unverified / 0 not covered. The durable evidence separately names 22 query/audit, 23 correction and 5 production cases per year. Instabilities encountered on the way remain published in production-readiness rather than omitted. |
 | P8 | 5 | L/T/B/S | `horizun_pack_sheets`, collision-aware auto-tag planning plus verified explicit-type annotation, semantic intent dimensioning, atomic revision/sheet/cloud production and direct sheet capture without PDF are live-verified on Revit 2023–2027 at `32baa87`: 5/5 production cases per year, 25/25 total. Packing measures real provisional viewport+label/schedule extents with confirmed rollback and preserves insertion-point offset; the visual-review prompt requires exhaustive model facts plus actual sheet PNGs and returns UNKNOWN on missing evidence. |
 
-Twenty-three cases, so the ceiling is **115**. Current source-candidate total:
-**115/115** under the permanent unsigned-release policy. D1 measures deployable,
+Twenty-three cases, so the ceiling is **115**. Historical design-rubric total:
+**115/115**, with the evidence grades and pending live work listed above. This
+is not a count of executed passing cases, a success rate, or a comparative rank. D1 measures deployable,
 verified distribution; it does not claim Windows publisher authentication.
 
 P8 reached 5 only after packing, auto-tagging, intent dimensioning, revision
@@ -136,7 +144,7 @@ Repository statements are discovery evidence, not automatically proof of a
 postcondition. A level 4–5 mutation still requires the same fixture, model/file/API
 re-read and lost-response replay for every product, including Horizun.
 
-### Where Horizun leads, ties and does not lead yet
+### Historical comparison hypotheses — 2026-08-20
 
 | Axis | Strongest market evidence | Horizun position on 2026-08-20 | What remains |
 | --- | --- | --- | --- |
