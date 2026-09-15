@@ -203,7 +203,7 @@ Step ('  built the Claude Desktop extension: {0} ({1:N0} bytes)' -f (Split-Path 
 # hand - the app's own UI is the only place that step exists - so the file and the
 # instructions for it have to arrive together, in a folder a person can open.
 # Rendered here, once, rather than on a machine that has no renderer.
-& (Join-Path $repo 'scriptsuild-instructions.ps1') -Version $stageVersion -OutputDir $mcpbDir | Out-Null
+& (Join-Path $repo 'scripts/build-instructions.ps1') -Version $stageVersion -OutputDir $mcpbDir | Out-Null
 $sheets = @(Get-ChildItem -LiteralPath $mcpbDir -Filter '*.pdf' -File)
 if ($sheets.Count -ne 2) { throw "expected both instruction sheets beside the .mcpb; found $($sheets.Count)" }
 Step ('  rendered the Claude Desktop instructions: {0}' -f (($sheets | ForEach-Object { $_.Name }) -join ', '))
