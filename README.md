@@ -1,455 +1,119 @@
-# Horizun Revit MCP — an MCP server for Autodesk Revit
+# Horizun Revit MCP — Autodesk Revit automation
 
 **English** · **[Español](README.es.md)**
 
-**[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** — public Windows installer with the server runtime and Revit add-ins included. **No Git, Visual Studio or .NET SDK required.** Requires Windows x64 and Revit 2023–2027; close Revit before installation. [Download and installation FAQ / Descargar e instalar](docs/INSTALL.md). Public releases are unsigned; see [verification and first-start instructions](#install).
+Connect an MCP client to Autodesk Revit to inspect models, make verified BIM
+edits, create families and prepare drawings, quantities and exports.
+Free and open source under Apache-2.0. Built in Colombia 🇨🇴, part of
+[Horizun Hub](https://horizunhub.com).
 
 [![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Built in Colombia 🇨🇴 — engineering out of Latin America, for AEC teams anywhere.**
-
-Point Claude — or Codex, Cursor, Cline, Windsurf, any MCP client — at a running
-Autodesk Revit and let it read and write the model, under one contract:
-
-> **A command never reports work it did not verify.**
-
-Every typed write is re-read from the model after the commit, so a silent
-rollback becomes an error instead of a false success, and counts come from
-reading the model again rather than from calls that did not throw. **Free and
-open source, Apache-2.0.** Part of the [Horizun Hub](https://horizunhub.com)
-ecosystem.
-
-**What this is.** The bridge: transport, safety guards and a generic tool
-surface over the Revit API, for Revit 2023 through 2027. Organisation-neutral by
-design — no company's standards, catalogues or naming rules are compiled in;
-where a command needs one, it is an input supplied at call time.
-
-**What this is not.** A methodology. The standards, audit criteria and reporting
-that turn these commands into delivery workflows live in
-[Horizun Hub](https://horizunhub.com). This repository is the socket; the Hub is
-what plugs into it.
-
-For a concise product explanation for BIM teams and decision makers, see
-**[Horizun Revit MCP — Product overview](docs/PRODUCT-OVERVIEW.md)**.
-
-## BIM Production Mode
-
-Horizun Revit MCP is also a practical BIM-production surface: an auditable way
-to inspect, prepare and change a real Revit model. Start with a workflow rather
-than a tool name. Each workflow states its scope, whether it writes, the
-permission rung it needs and the evidence it returns.
-
-- **[Start in five steps](docs/QUICK-START-BIM.md)** — connect a model and run a
-  first read-only audit.
-- **[What can Horizun do today?](docs/WHAT-CAN-HORIZUN-DO.md)** — capabilities,
-  permissions and evidence by BIM task.
-- **[Production workflows](docs/WORKFLOWS.md)** — copy-ready prompts for model,
-  sheets, families, rooms, quantities and DWG-to-BIM work.
-- **[BIM Standards Pack](standards/README.md)** — optional, generic and editable
-  baseline profiles. They are data, not rules embedded in the add-in.
-- **[Open Source and Horizun Hub](docs/HORIZUN-HUB.md)** — what is public,
-  generic bridge capability and what belongs to governed delivery workflows.
-
-The bridge remains organisation-neutral: a supplied pack is a starting point,
-not a claim that every project should use the same naming, limits or parameters.
-Project and company rules must be reviewed, versioned and supplied explicitly.
-
-![BIM Production workflow: identify the model, audit, rehearse, apply a verified typed change, and retain evidence](docs/assets/bim-production-workflow.svg)
-
-## What you can ask it
-
-Ordinary language on the left; what the bridge actually does on the right. None
-of it is scripted in advance — the client picks the tools.
-
-| You ask | What happens |
-| --- | --- |
-| *"Which Revit are you talking to, and which document is open?"* | `horizun_health` answers with the Revit year and build, the add-in version and commit, and the active document — or an explicit "none is active", never a blank title. |
-| *"How many walls on Level 2, with type and area, including the linked models?"* | `horizun_query_model` walks the host and every loaded link, projects the parameters you named, and reports coverage plus which link each row came from. Unloaded links are listed, not silently skipped. |
-| *"Set the keynote of these 40 types to D021-A2-A14."* | `horizun_set_keynote` first reports the blast radius — how many instances that type change touches — then writes, then re-reads every one. |
-| *"Add Level 3 at 7.20 m, a floor plan for it, and put it on a new sheet."* | `horizun_create_elements` and `horizun_manage_views` compose in one ordered transaction group; a failure anywhere rolls the whole graph back. |
-| *"Split these multilayer walls into one wall per material layer."* | `horizun_split_multilayer_walls` re-hosts doors and windows on the structural layer — and **refuses curved walls instead of straightening them**. |
-| *"Export the floor plans to PDF and the model to IFC."* | `horizun_export` runs a dry run first and afterwards attributes only the changed, non-empty files that match what you asked for. |
-| *"Build me a parametric RFA from this profile."* | `horizun_create_family` compiles a loadable family from an RFT — parameters, formulas, types, reference planes, dimensions, solids and voids — then verifies both the file and the loaded project family. |
-| *"Do X — and there is no tool for X."* | The failed typed call returns `fallback.allowed: true` only when nothing was written. The client then writes minimal Revit Python for `horizun_execute_python`, whose results are labelled **self-reported, never host-verified**. |
-
-Ninety per cent of the design is in the "no". A slab whose hosted families
-cannot be put back rolls back alone; a clash count of zero is a zero you can
-trust; an ambiguous request is refused with a reason instead of resolved by
-guessing.
-
-```jsonc
-// horizun_health, abbreviated
-{
-  "status": "healthy",
-  "horizun_version": "1.0.0",
-  "horizun_commit": "ced1aa1",
-  "built_from_clean_tree": true,
-  "revit_version": "2026",
-  "revit_build": "20250406_1515(x64)",
-  "no_active_document": false,
-  "active_document": { "title": "TORRE-A-EST.rvt", "is_workshared": true },
-  "open_document_count": 3
-}
-```
-
 ## Install
 
-Windows, at least one Revit 2023–2027, and **Revit closed**. Everything else the
-installer checks for you, and it changes nothing when it refuses.
+**[Download the Windows installer](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)**
 
-### 1 · Get the installer and verify it
+- Requires **Windows x64, Revit 2023–2027 and an MCP client**.
+- Setup includes the server runtime and matching Revit add-ins.
+  **No Git, Visual Studio or .NET SDK is needed.**
+- Close Revit before running Setup.
+- Public releases are intentionally **unsigned**. SHA-256 checks verify the
+  downloaded bytes; they do not authenticate a Windows publisher. Windows and
+  Revit may show a publisher warning. See the [unsigned release policy](CODE-SIGNING-POLICY.md).
 
-Download `horizun-mcp-<version>-setup.exe` and `SHA256SUMS.txt` from the
-[latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
-then check the hash before running anything:
+1. Open the release above and download `horizun-mcp-<version>-setup.exe` and
+   `SHA256SUMS.txt` from **Assets**. The source ZIP is for development.
+2. Verify the hash using the [installation guide](docs/INSTALL.md), then run Setup.
+3. Complete your client's connection step:
 
-```powershell
-Get-FileHash .\horizun-mcp-<version>-setup.exe -Algorithm SHA256
-Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe'
-```
+| Client | Final connection step |
+|---|---|
+| **Codex / Claude Code** | Let Setup's helper register after the client closes, then reopen it. |
+| **Claude Desktop** | Install the `.mcpb` delivered to **Documents\Horizun-Revit-MCP** from **Settings → Extensions**, then restart Claude Desktop. |
+| **ChatGPT Work** | Complete the Secure MCP Tunnel setup for the installed server. |
+| **Other stdio clients** | Register the installed executable using its full path. |
 
-Every installable release carries a payload `manifest.json`,
-`package-hashes.json` and an [SBOM](https://cyclonedx.org/). Stable releases also
-carry one live verification report per supported Revit year.
+4. Start Revit, open a document and ask your client to call `horizun_health`.
+   Confirm the active document and loaded version.
 
-> **Read this before you run it.** Horizun Windows releases are intentionally
-> **unsigned**. SHA-256, the payload manifest, SBOM and build-provenance
-> attestation verify the released bytes; they do not authenticate a Windows
-> publisher. The bootstrap therefore requires the explicit `-AllowUnsigned`
-> acknowledgement shown below, and Windows/Revit may show an unknown-publisher
-> warning. Invalid or self-signed public artifacts are refused. See the
-> [unsigned release policy](CODE-SIGNING-POLICY.md).
+**Claude Desktop needs the extension installation inside the app.** Setup puts
+the package and illustrated instructions in the Documents folder above. Drag
+the package onto the Extensions page or use **Advanced settings → Install extension**.
+The extension connects to the installed server; it does not replace Setup.
+See [client instructions and recovery](docs/CLIENTS.md).
 
-If you would rather have the script do the same checks, one paste verifies the
-complete SHA-256 against that same GitHub release, installs quietly and finishes
-client registration:
+### Optional PowerShell bootstrap
+
+This downloads the release installer, checks its hash and runs Setup quietly.
+`-AllowUnsigned` acknowledges the publisher status described above. The same
+client-specific final steps still apply; use `-Interactive` for the wizard.
 
 ```powershell
 $s = irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1; & ([scriptblock]::Create($s)) -AllowUnsigned
 ```
 
-Download it first and pass `-Version <tag>` to pin a release, or `-Interactive`
-for the Setup wizard. Quiet, latest and automatic client completion are the
-defaults.
+The script is fetched from `main`; its checksum check applies to the downloaded
+Setup. You can download and inspect the script first. See [installation options](docs/INSTALL.md).
 
-### 2 · Let it configure your MCP client
+## Version and compatibility
 
-The same Setup serves every supported client and every client runs the same
-installed `horizun-mcp.exe`:
+| Question | Authoritative source |
+|---|---|
+| Latest stable download | [GitHub latest release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest), including its publication date and assets |
+| Version of this source checkout | [Directory.Build.props](Directory.Build.props) |
+| Version actually loaded | `horizun_health`: version, commit, Revit year and active document |
+| MCP protocol implemented | **2025-11-25**, with earlier revisions listed in [ProtocolNegotiation.cs](src/Horizun.Server/ProtocolNegotiation.cs) |
+| Published registry metadata | [Official registry entry](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.HorizunGroup%2Fhorizun-revit-mcp/versions/latest) |
 
-| Client | Setup result | Last step |
-|---|---|---|
-| **Codex** | Registers `horizun-revit` beside existing MCP servers. | Restart Codex. |
-| **Claude Code** | Registers `horizun-revit` at user scope. | Restart Claude Code. |
-| **Claude Desktop** | Writes its `mcpServers` entry, and stages the `.mcpb` too. | Open Claude Desktop. |
-| **ChatGPT Work** | Installs its Secure MCP Tunnel helper. | Create/start the tunnel and add it in ChatGPT Work. |
+MCP 2026-07-28 support is pending. A recent product release does not imply support
+for that protocol revision. Registry snapshots and search extracts may lag;
+check the release before choosing a version. Upgrade release installations by
+running the new Setup with Revit closed.
 
-**Close Revit and Claude Desktop before running Setup.** That is the whole
-procedure for Claude Desktop: close them, run Setup, open Claude Desktop. Nothing
-to install inside the app and no file to hunt for.
+## What you can do
 
-The one that catches people is Claude Desktop. It rewrites its own configuration
-from memory when it exits, so an edit made underneath a running app is lost
-silently and the only symptom is that the tools never appear. Setup therefore
-REFUSES to write while it is open rather than write hopefully - so if it was open,
-nothing is broken and nothing needs reinstalling: close it and run **Horizun >
-Conectar Horizun con Claude Desktop** from the Start menu.
+| Task | Examples and reference |
+|---|---|
+| Inspect and audit models | Host/link queries, quantities, clashes, schedules and model diagnostics. [First read-only audit](docs/QUICK-START-BIM.md) |
+| Create and edit BIM elements | Levels, grids, architectural and structural elements, MEP, parameters and ordered plans. [Tool reference](docs/TOOLS.md) |
+| Produce drawings | Views, sheets, tags, dimensions, detail elements and layout checks. [Drawing workflows](docs/PLANIMETRY-PRODUCTION.md) |
+| Author families | Parameters, formulas, types, solids/voids and connectors. [Family authoring](docs/FAMILY-AUTHORING.md) |
+| Convert DWG to BIM | Inspect, plan and apply a caller-supplied requirement set. [DWG workflow](docs/DWG-TO-BIM.md) |
+| Quantify and deliver | Quantities by budget code, Excel, PDF/DWG/IFC/NWC/FBX exports and Power BI ingestion. [Quantities](docs/QUANTITIES-AND-BUDGET.md), [Power BI](docs/POWER-BI.md) |
 
-The installer waits for Claude Code or Codex to close before editing their
-configuration, makes timestamped backups, preserves every other MCP entry, and
-verifies what it wrote. Durable status lives in
-`%LOCALAPPDATA%\Horizun\install-status.json`. See the exact per-client procedure
-in **[docs/CLIENTS.md](docs/CLIENTS.md)**.
+[Workflow prompts](docs/WORKFLOWS.md) describe scope, permissions and expected
+evidence. [Tool packs](docs/WHAT-CAN-HORIZUN-DO.md) and local permissions affect
+which tools a client sees. A hidden tool is not proof that the product lacks it.
 
-<details>
-<summary>Manual registration, if you ever need it</summary>
+## Verification and evidence
 
-Use the **exact path the installer printed**. It is already expanded for your
-machine, which matters: `%LOCALAPPDATA%` is expanded by `cmd.exe` and **not** by
-PowerShell, so a config written with the variable silently points nowhere.
+**Typed writes are re-read after commit.** Read the per-tool result for rollback,
+partial outcomes and limits. Arbitrary Python is **disabled by default**. The
+owner's Python ON/OFF grant persists until revoked; its results are
+**self-reported**, with `host_verified: false`.
 
-```powershell
-# after closing Claude Code — user scope makes it available across projects
-claude mcp add --scope user horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+Stable release assets include checksums, a payload manifest, SBOM and live Revit reports
+for the supported years. These are publisher evidence for that release.
+They do not establish a comparative result against other MCP servers or a
+clean-machine client-installation success rate.
 
-# after closing Codex
-codex mcp add horizun-revit -- "C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
-```
+- [Benchmark method and historical results](docs/BENCHMARK.md)
+- [Release policy](docs/RELEASE-POLICY.md) and [evidence status](docs/production-readiness.md)
+- [Security model](docs/security-model.md), [privacy](docs/PRIVACY.md) and [vulnerability reporting](SECURITY.md)
 
-```toml
-# Codex timeouts — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun-revit]
-command = 'C:\Users\<YOU>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
-args = []
-startup_timeout_sec = 120
-tool_timeout_sec = 600
-```
+Known limits include cancellation only before Revit begins a command, unavailable
+coverage for unloaded links, and per-operation API/exporter constraints. Review
+the [tool reference](docs/TOOLS.md) for the applicable limits.
 
-```json
-// Cursor, Cline, Windsurf and other MCP clients
-{
-  "mcpServers": {
-    "horizun-revit": {
-      "command": "C:\\Users\\<YOU>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
-    }
-  }
-}
-```
+## Development and ecosystem
 
-**Claude Desktop does not need Claude Code.** With the app closed, one command
-connects it and finishes; `-Extension` hands over the real `.mcpb` instead, asking
-where to put it:
+[Build from source](docs/BUILDING.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[Contribute](CONTRIBUTING.md) · [Agent instructions](AGENTS.md) · [LLM summary](llms.txt)
 
-```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1              # connect it, end to end
-pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension   # hand over the .mcpb
-pwsh -File scripts/install-claude-desktop-extension.ps1 -Diagnose    # what is actually in place
-pwsh -File scripts/diagnose-integrations.ps1                         # Codex, Claude Code, Claude Desktop and ChatGPT Work
-```
+The bridge is organisation-neutral. Project standards and catalogues are supplied
+as inputs. [Horizun Hub](docs/HORIZUN-HUB.md) provides the wider ecosystem;
+the optional [standards pack](standards/README.md) supplies editable examples.
 
-**ChatGPT Work does not need Codex or Claude Code.** It reaches the same installed
-server through OpenAI's Secure MCP Tunnel. Run
-`scripts/chatgpt-tunnel.ps1 -Status` or use **Configurar ChatGPT Work** in the
-Start menu. This was verified in the desktop Work interface with a free account
-on 2026-09-04; account and workspace controls can vary.
-
-TOML literal strings (single quotes) take Windows paths as they are; JSON needs
-every backslash doubled. **Raise your client's tool timeout** if it has one: a
-model scan or a batch open holds Revit's UI thread for minutes, and a 60-second
-default gives up on work that is still running — the bridge then looks broken
-while it is merely busy.
-
-</details>
-
-### 3 · Start Revit and check
-
-Two things to expect on the first start, neither of them a fault:
-
-- Revit can show a **Security** dialog when the publisher is not already trusted
-  — after verifying the build, choose **Always Load**. It can open **on a monitor
-  you are not looking at**: a Revit that seems stuck on startup with the CPU idle
-  is often this dialog hiding.
-- With a document open, a **Horizun Hub** tab appears in the ribbon. Its *Estado
-  del puente* button answers "is this working, and which version?" without
-  leaving Revit.
-
-From your MCP client, `horizun_health` answers the same with the commit
-included. A *contract hash mismatch* means one half is on an older build: close
-Revit and install again.
-
-### Build from source instead
-
-Nothing prebuilt is downloaded or run: everything is compiled on your machine
-against the Revit already installed. You need the
-[.NET SDK 10.0.400](https://dotnet.microsoft.com/download), fixed by
-`global.json` so release bytes do not depend on the latest installed patch. The
-produced add-ins still target the runtime hosted by each Revit year: .NET
-Framework 4.8 for 2023–2024, .NET 8 for 2025–2026 and .NET 10 for 2027.
-
-```powershell
-git clone https://github.com/HorizunGroup/horizun-revit-mcp
-cd horizun-revit-mcp
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-It finds every Revit by its own `RevitAPI.dll`, builds the add-in for each of
-those years and the MCP server, installs both, and reads every installed binary
-back to prove it landed — stamped commit plus SHA-256 against what was staged. A
-build failure changes nothing; a failure after that rolls back through its undo
-ledger and tells you the exact state you are in. To update: `git pull`, close
-Revit, run it again.
-
-For an ordinary installation through an agent, use the published installer.
-Source compilation above is for development. Paste this into your agent:
-
-```
-Install the latest stable Windows release of Horizun Revit MCP from
-https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest. Read
-https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/INSTALL.md first.
-Use the published installer, verify its hash and explain its unsigned publisher
-status. Do not clone or compile the source or install a development SDK.
-Preserve other MCP entries and report pending client connection/restart steps.
-```
-
-Both pick up [AGENTS.md](AGENTS.md) automatically once they are inside the
-repository. It carries the prerequisites, the failure modes and the two
-surprises worth knowing before the first Revit start.
-
-## Architecture
-
-![Horizun Revit MCP architecture: an MCP client speaks stdio to the Horizun server, which forwards over a token-authenticated named pipe to the Revit add-in, which dispatches onto Revit's UI thread](docs/assets/architecture.svg)
-
-- **`Horizun.Revit`** — the add-in. `App` (IExternalApplication) starts a
-  named-pipe server and publishes a discovery file; `Dispatcher` crosses each
-  request onto Revit's UI thread via `ExternalEvent`; `Guard` and `Reconcile` are
-  the "cannot lie" commit contract; commands live under `Commands/`.
-- **`Horizun.Server`** — the MCP server. The wire format is hand-rolled from the
-  open MCP spec, with no third-party SDK: it discovers the pipe, speaks MCP over
-  stdio and forwards to the plugin. Schemas and behavioural effects live in one
-  shared contract, so `tools/list` answers with Revit closed without drifting
-  from the add-in. It negotiates MCP through 2025-11-25; exposes standard Tools,
-  Resources, Prompts, Completions, opt-in Logging and durable Tasks; and returns both
-  backward-compatible text and `structuredContent`. Five tools are
-  **host-resident** — they answer inside the server and never touch Revit.
-- **One command at a time.** Concurrent calls wait in a bounded 16-slot FIFO
-  queue; a full queue applies explicit backpressure instead of dropping work.
-  Every reply carries what Revit raised while the command ran — warnings, errors
-  and modal dialogs — on success and on failure.
-
-## Capabilities
-
-Grouped by what you would actually be doing. The complete reference — every
-tool, and what each one refuses — is in **[docs/TOOLS.md](docs/TOOLS.md)**.
-
-| Group | What it covers |
-| --- | --- |
-| **Session** | Health and target selection across two open Revit versions, document open/save/relinquish, session inspection, view capture as an image. |
-| **Query** | Composable queries and paginated inventory across host and loaded links, model census, quantities, clash, native schedule read. |
-| **Write** | Parameter writes, keynotes, deletion with the cascade counted, transforms, atomic creation of levels, grids, walls, floors, roofs, rooms, MEP runs and structural framing. |
-| **Views & sheets** | Dependency-aware plans, sections, elevations, 3D and drafting views, templates, sheets, viewports, schedules and annotation. |
-| **2D detail** | Semantic resource discovery per view (line styles, region types with real `IsMasking`, placeable symbols — always by id, never by name), and atomic, rehearsed, totally-rolled-back drafting: lines, arcs, polylines, filled/masking regions with pure-validated loops, detail components and symbols, line-style edits. |
-| **Dimensions** | Semantic reference discovery (faces, centerlines, grids, levels, edges — with fingerprints and structured ambiguity instead of guesses), rehearsed-by-creation linear/angular/radial/diameter/arc-length/spot dimensioning with total rollback and `stale_plan` drift refusal, complete dimension reads, and verified edits. The full workflow with examples is in **[docs/DIMENSIONS.md](docs/DIMENSIONS.md)**. |
-| **Planimetry** | End-to-end documentation directly in Revit, without a PDF control loop: query and audit sheets/views/placements/annotations; correct cited findings; pack ordered views and schedules automatically around fixed obstacles; plan collision-aware tags and semantic dimension chains; apply them through the rehearsed annotation writer; create verified revisions, sheet assignments and clouds; then capture and visually review every real sheet through the `planimetry-review` MCP prompt. Unreadable, truncated, ambiguous or uncaptured work is unknown/refused, never clean. See **[docs/PLANIMETRY-AUDIT.md](docs/PLANIMETRY-AUDIT.md)** and **[docs/PLANIMETRY-PRODUCTION.md](docs/PLANIMETRY-PRODUCTION.md)**. |
-| **Families** | RFT → RFA compilation with parameters, formulas, types, dimensions, nested instances, solid/void forms and MEP connectors; system-type duplication with complete compound structures. |
-| **Interoperability** | PDF, DWG, configurable IFC, Navisworks NWC, multi-view FBX, images, schedules, `.xlsx` written over the OPC package, and direct Power BI push ingestion. |
-| **Quantities → budget** | A takeoff of the quantities YOU name (parameter, geometry volume/area, length, count) per element and per budget code, across loaded links with provenance, where a zero is a measurement and absent / empty / unreadable / invalid are four different answers; then a comparison against a budget baseline read from Excel - added / removed / modified / unchanged / not_comparable per code, with quantity, classification and price deltas kept apart, no unit converted and no price invented - written to Excel and Power BI with each destination reported on its own. See **[docs/QUANTITIES-AND-BUDGET.md](docs/QUANTITIES-AND-BUDGET.md)**. |
-| **DWG → BIM** | Convert a linked drawing into a model through a VERSIONED requirement set that is yours rather than compiled in: link and reload typed, read the geometry with an explicit coverage block naming what cannot be read, plan, rehearse, apply, and stamp every created element with the CAD entity it came from. Walls straight and curved, floors with holes, rooms placed by a point genuinely inside them, doors and windows hosted in the wall the drawing implies, columns, grids, and load-bearing walls and slabs verified by re-reading Revit's own parameter. Then AUDIT the result against the drawing, and plan a second revision against the first with what changed named from a closed vocabulary - unchanged, added, removed, moved, reshaped, retyped, relayered, resized, rehosted, manually diverged, ambiguous, conflict. Nothing is ever deleted automatically and a judgement is never taken silently. The workflow, the requirement-set schema and what a drawing cannot tell you are in **[docs/DWG-TO-BIM.md](docs/DWG-TO-BIM.md)**; **[docs/ADR-001-direct-dwg-reader.md](docs/ADR-001-direct-dwg-reader.md)** records what it deliberately does not read, and why. |
-| **Model surgery** | Layer splitting, floor-loop splitting, ungroup/regroup by parameter, slab elevation copying, toposolid embedding and grading, wall rectangularisation. |
-| **Orchestration** | Up to 100 typed writes in one ordered plan with `${key.path}` references, plus durable background jobs polled without touching Revit. |
-
-<details>
-<summary>Direct Power BI connection</summary>
-
-`horizun_power_bi_push` uses Microsoft's push semantic-model REST endpoint; it
-does not automate Power BI Desktop. Credentials are configured in the
-environment of the MCP server, never in a tool call:
-
-```powershell
-# Option A: short-lived OAuth access token
-$env:HORIZUN_POWER_BI_ACCESS_TOKEN = '<token with Dataset.ReadWrite.All>'
-
-# Option B: Entra service principal; Horizun obtains the access token
-$env:HORIZUN_POWER_BI_TENANT_ID = '<tenant-guid>'
-$env:HORIZUN_POWER_BI_CLIENT_ID = '<application-guid>'
-$env:HORIZUN_POWER_BI_CLIENT_SECRET = '<secret>'
-```
-
-The destination is fixed to `api.powerbi.com`; dataset and workspace ids must be
-GUIDs; values are primitive JSON only; the union is limited to 75 columns,
-strings to 4,000 characters and each call to 10,000 rows, following Microsoft's
-[push semantic-model limitations](https://learn.microsoft.com/power-bi/developer/embedded/push-datasets-limitations).
-Run with the default `dry_run: true`, then apply with a new `idempotency_key`. An
-identical retry replays the stored answer; a connection loss after upload is
-reported `in_doubt` and is never sent again automatically.
-
-</details>
-
-## Status and evidence
-
-Working and in production use. Stable promotion is governed by published,
-release-scoped evidence rather than by a local success claim.
-
-- **Revit-free suites are enforced in CI**, and only those. A hosted runner has
-  no `RevitAPI.dll`, so building the add-in there would be a lie; the
-  Revit-bound half is verified live with `scripts/verify-live.ps1` and published
-  per release. A skipped job that says why is worth more than a green tick that
-  covered less than it appeared to.
-- **Built for five Revit years** — 2023 through 2027, each compiled against its
-  own API. The server and the add-in hash one shared contract and ship together;
-  there is no partial deployment.
-- **Live evidence is release-scoped.** Stable promotion requires a published
-  report for every supported year. If an artifact is absent, local experience or
-  a compiled DLL is not substituted for it. See the
-  [release policy](docs/RELEASE-POLICY.md).
-- **Known limits, stated**: `excel_write_rows` appends below an Excel Table
-  without expanding the table's range (reported per call); a catalog that is
-  neither UTF-8 nor Latin-1 is decoded as Latin-1 and says so; cancelling a
-  request prevents it only while it is still queued — once Revit starts the
-  command, cancellation stops *you waiting* but cannot interrupt the Revit API on
-  its UI thread. General creation of in-place families is not available in the
-  public Revit API, so Horizun creates loadable RFA families and
-  project-resident system types instead of driving the modal family editor by UI
-  automation.
-
-The public comparison is task-based rather than tool-count based: a feature
-scores only when its schema is typed, invalid input is refused before mutation,
-and the claimed result is measured after the operation. Cases, scoring rules and
-current results are in [docs/BENCHMARK.md](docs/BENCHMARK.md).
-
-```bash
-dotnet build src/Horizun.Revit -c Release -p:RevitYear=2026   # one year at a time
-dotnet build src/Horizun.Server -c Release                    # the MCP server (Revit-free)
-dotnet test tests/Horizun.Core.Tests
-dotnet test tests/Horizun.Server.Tests
-pwsh scripts/verify-live.ps1 -Year 2026 -OldFile <a model saved in another Revit>
-```
-
-## Security
-
-`horizun_execute_python` runs arbitrary Python inside Revit with the rights of
-the signed-in user, and it is **disabled by default**. A fresh install reads as
-`permission_profile: "safe_write"`: verified typed edits inside the active model
-are available, while arbitrary code, document-session changes and external
-writes require an explicit owner decision.
-
-An **explicit** choice in `%USERPROFILE%\.horizun\settings.json` is always
-respected — `read_only`, `safe_write`, `full_write` or
-`enable_execute_python: false` keep arbitrary code off, `allowed_tools` and
-`denied_tools` narrow any profile, and a settings file that exists but cannot be
-parsed falls **closed** (`read_only`, Python off) so a corrupted restriction
-never reads as consent. A client may call `horizun_request_python_access` to put
-the question visibly in Revit, but it cannot answer it. The machine owner can use
-the **Python ON/OFF** button to grant persistent access until that same user
-revokes it; pressing it again revokes the permission immediately.
-`scripts/enable-execute-python.ps1` remains the explicit administrative path and
-reverts with `-Disable`. The server emits `notifications/tools/list_changed` when
-the effective permission changes, so compatible clients update automatically;
-clients that ignore the notification need one restart.
-
-There is **no inbound network listener**: named pipes are not reachable across a
-network, and the server speaks stdio to whatever launched it. The optional
-`horizun_power_bi_push` makes bounded outbound HTTPS calls only to fixed
-Microsoft Entra and `api.powerbi.com` endpoints, and accepts no URL or
-credential in tool arguments. There is no telemetry and no maintainer-operated
-data collection.
-
-The full threat model — what is defended, and what deliberately is not — is in
-[docs/security-model.md](docs/security-model.md), and it is written to be argued
-with. Local state and user-requested network operations are described in the
-[privacy policy](docs/PRIVACY.md). To report a vulnerability, see
-[SECURITY.md](SECURITY.md). The exact line between source-candidate evidence and
-external certification is maintained in
-[production readiness](docs/production-readiness.md).
-
-## Horizun Hub
-
-[Horizun Hub](https://horizunhub.com) is the product ecosystem this bridge
-belongs to: PowerBIM Exporter for Revit and Civil 3D, PowerBIM Online,
-BuildMotion, CopyToExcel and Family Browser; PowerBIM + AI training; 4D/5D
-quantification templates; Power BI dashboards and `.pbit` templates; agents and
-MCP workflows for standardising families and auditing models; and APS
-extraction into Power BI.
-
-The MCP stays organisation-neutral: company standards, catalogues and audit
-rules are supplied by those workflows or by the caller, never compiled into the
-bridge. [docs/HORIZUN-HUB.md](docs/HORIZUN-HUB.md) draws the full line between
-the open-source gateway and the Hub.
-
-## Contributing
-
-Issues and pull requests are welcome — bug reports, Revit-year compatibility
-findings and capability proposals each have a form. Start with
-[CONTRIBUTING.md](CONTRIBUTING.md) and the
-[code of conduct](CODE_OF_CONDUCT.md); [AGENTS.md](AGENTS.md) is the
-machine-readable version of the same rules, and [llms.txt](llms.txt) is the
-discovery summary for indexers and AI systems.
-
-## License
-
-**Apache License 2.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
-Third-party components remain under their own licenses, listed with versions in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-
-The Autodesk Revit API is referenced at build time and never redistributed.
-Revit, Autodesk and Autodesk Docs are trademarks of Autodesk, Inc. This project
-is not affiliated with, endorsed by, or sponsored by Autodesk, Inc.
+**Apache-2.0:** [LICENSE](LICENSE), [NOTICE](NOTICE), [third-party notices](THIRD-PARTY-NOTICES.md).
+The Revit API is not redistributed. Autodesk and Revit are trademarks of Autodesk;
+this project is not affiliated with, endorsed by or sponsored by Autodesk.

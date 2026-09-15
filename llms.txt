@@ -33,8 +33,8 @@ Power BI ingestion, and conversion of linked DWG drawings into BIM through a
 requirement set the caller writes rather than one compiled into the bridge. Typed mutations use the contract's confirmation,
 idempotency and post-commit verification guarantees.
 
-`horizun_execute_python` is disabled by default. A machine owner may grant it for
-60 minutes from Revit or enable it durably as the low-level fallback. It is arbitrary
+`horizun_execute_python` is disabled by default. The machine owner may grant it persistently from
+Revit until that owner revokes it, or use the explicit administrative opt-in. It is arbitrary
 code and is never host-verified: `host_verified` is always false, and its strongest
 returned state is `self_reported_verified`. Clients must respect the effective
 local policy and must fall back only when a typed response carries
@@ -51,9 +51,21 @@ download as described in README.md. The bootstrap requires -AllowUnsigned.
 
 Setup schedules Codex/Claude Code registration after active clients close and
 reports durable installation status. Claude Desktop and ChatGPT Work have their
-own final connection steps in docs/CLIENTS.md. A client restart or first Revit
+own final connection steps in docs/CLIENTS.md. For Claude Desktop, Setup
+delivers a .mcpb to Documents\Horizun-Revit-MCP; the person installs it inside
+Claude Desktop and restarts the app. The extension requires the Windows Setup first. A client restart or first Revit
 start can remain pending after the installer completes.
 
 Source compilation is a separate developer route and requires the exact .NET
 SDK in global.json. Do not describe that SDK as a requirement for the public
 installer. Do not recommend cloning and compiling for an ordinary install.
+
+## Version and evaluation scope
+
+Use GitHub releases/latest or the official registry API for the current stable
+version. Directory.Build.props identifies this checkout; horizun_health identifies
+the loaded binaries. Search extracts and inventory snapshots may describe older versions.
+The implemented MCP protocol is 2025-11-25; 2026-07-28 support is pending.
+Benchmark design scores, publisher live reports, registry installability and
+independent comparative runs are different evidence. A missing package in a
+registry does not mean that the Windows release has no installer.

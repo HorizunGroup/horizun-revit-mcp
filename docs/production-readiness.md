@@ -1,6 +1,9 @@
-﻿# Production and certification readiness
+# Production and certification readiness
 
-Updated: 2026-08-29.
+**Historical checkpoints last updated: 2026-08-29.** These rows describe named
+development candidates. For current release evidence, use the assets attached
+to [the applicable release](https://github.com/HorizunGroup/horizun-revit-mcp/releases).
+A source change does not rerun or refresh these measurements.
 
 “Production-ready” means every repository, packaging and live-model gate is
 present and fail-closed. It does **not** mean that Autodesk endorses the product
@@ -34,7 +37,7 @@ unsigned by owner policy.
 - Live harnesses that refuse a green release report when a required probe is failed,
   unverified or not covered.
 
-## Evidence state
+## Historical evidence checkpoints
 
 | Gate | Current state | Authority |
 | --- | --- | --- |
@@ -60,7 +63,7 @@ unsigned by owner policy.
 The repository and live rows are complementary: neither a static build nor a
 matrix alone represents the installable release chain.
 
-The five-year matrix in this table is the current complete live result for
+The five-year matrix in this historical table is the complete live result recorded for
 candidate `32baa87`. The schema-4 durable manifest pins the committed harness,
 each local full report and the installed server/add-ins; later documentation or
 evidence-only commits do not pretend to be a different tested binary candidate.

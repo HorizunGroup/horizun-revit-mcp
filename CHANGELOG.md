@@ -3,6 +3,17 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — documentation and distribution metadata
+
+- Correct Claude Desktop's required in-app extension step and installed recovery
+  paths; align English, Spanish and agent instructions with Setup.
+- Separate stable, source and installed versions, historical benchmark scores and
+  release evidence. Document current protocol support without changing it.
+- Keep checked-in registry identity aligned with the product version. Publish the
+  existing extension as an additional release asset with verified metadata and
+  an explicit prerequisite: install the Windows product first.
+- Generate readable release notes and check publication documentation in CI.
+
 ## v1.3.3 — 2026-09-14
 
 **Claude Desktop is installed by the person using it, and Setup now hands the

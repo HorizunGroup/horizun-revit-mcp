@@ -208,8 +208,10 @@ function Test-HorizunMcpbCommand {
     $p = New-Object System.Collections.Generic.List[string]
     if (-not $Command) { return $p.ToArray() }
 
-    $expanded = $Command.Replace('${HOME}', $env:USERPROFILE.Replace('\', '/'))
-    $isRooted = $expanded -match '^[A-Za-z]:[\\/]' -or $expanded -match '^[\\/][\\/]'
+    # Published metadata is also checked by the Linux registry job. Validate
+    # the Windows path syntax without depending on that runner's USERPROFILE.
+    $isRooted = $Command -match '^[A-Za-z]:[\\/]' -or $Command -match '^[\\/][\\/]' -or
+        ($Distribution -eq 'Published' -and $Command -match '^\$\{HOME\}[\\/]')
     if (-not $isRooted) {
         $p.Add("server.mcp_config.command '$Command' is not an absolute path; the extension must name the installed server, not a name resolved against an unknown working directory") | Out-Null
     }
