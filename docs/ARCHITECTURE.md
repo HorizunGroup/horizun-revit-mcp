@@ -13,8 +13,10 @@
   shared contract, so `tools/list` answers with Revit closed without drifting
   from the add-in. It negotiates MCP through 2025-11-25; exposes standard Tools,
   Resources, Prompts, Completions, opt-in Logging and durable Tasks; and returns both
-  backward-compatible text and `structuredContent`. Five tools are
-  **host-resident** — they answer inside the server and never touch Revit.
+  backward-compatible text and `structuredContent`. Seven tools have
+  **host-resident handlers** in `Tools.cs`: jobs, catalogs, Excel read/write,
+  Power BI, budget comparison and Revit targeting. Some workflows, including
+  budget comparison, can coordinate further Revit requests from that handler.
 - **One command at a time.** Concurrent calls wait in a bounded 16-slot FIFO
   queue; a full queue applies explicit backpressure instead of dropping work.
   Every reply carries what Revit raised while the command ran — warnings, errors

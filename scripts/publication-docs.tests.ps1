@@ -44,4 +44,25 @@ foreach ($helper in $helpers) {
 Assert-Doc ((Read-Source 'llms.txt') -match 'persistently[\s\S]*until that owner revokes') 'The LLM summary must describe the current durable Python grant.'
 Assert-Doc ((Read-Source 'docs/BENCHMARK.md') -match '(?i)historical' -and (Read-Source 'docs/BENCHMARK.md') -match '(?is)not\s+a current-release certification or an independently') 'Historical design scores must retain their evidence scope.'
 Assert-Doc ((Read-Source 'docs/production-readiness.md') -match '(?i)historical') 'Development checkpoints need their historical scope.'
+
+# The README is also the capability-discovery surface used by people and
+# catalogs. Installation guidance alone must not replace the actual product.
+foreach ($path in @('README.md', 'README.es.md')) {
+    $doc = Read-Source $path
+    Assert-Doc ($doc.Contains('https://www.youtube.com/watch?v=tlFs5p3EM4M')) "$path omits the published workflow demonstration."
+    Assert-Doc ($doc.Contains('docs/readme-catalog.json') -and $doc.Contains('<!-- BEGIN SUBOPERATIONS -->')) "$path omits the complete capability breakdown."
+    Assert-Doc ($doc.Contains('docs/release-evidence.json') -and $doc.Contains('/stargazers')) "$path omits traceable release evidence or the live community metric."
+    Assert-Doc ($doc.Contains('safe_write') -and $doc.Contains('full_write') -and $doc.Contains('unsafe_code')) "$path must distinguish session visibility from the complete catalog."
+}
+$evidence = Read-Source 'docs/release-evidence.json' | ConvertFrom-Json
+Assert-Doc (@($evidence.reports).Count -eq 5) 'The release evidence index must identify all five reported Revit years.'
+foreach ($report in $evidence.reports) {
+    Assert-Doc ($report.sha256 -match '^[a-f0-9]{64}$' -and $report.url.EndsWith("/$($evidence.release)/live-$($report.revit_year).json")) 'Release evidence needs an exact versioned source URL and measured hash.'
+    $s = $report.summary
+    Assert-Doc ($s.probes -eq $s.passed + $s.failed + $s.unverified + $s.not_covered) 'Release evidence summary counts do not reconcile.'
+    $row = "| $($report.revit_year) | $($s.passed) | $($s.failed) | $($s.unverified) | $($s.not_covered) | [JSON]($($report.url)) |"
+    foreach ($path in @('README.md', 'README.es.md')) {
+        Assert-Doc ((Read-Source $path).Contains($row)) "$path does not reproduce the indexed release evidence for $($report.revit_year)."
+    }
+}
 Write-Host "publication documentation: PASS ($checks checks)"

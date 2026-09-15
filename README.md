@@ -1,13 +1,123 @@
-# Horizun Revit MCP — Autodesk Revit automation
+# Horizun Revit MCP — model, document, coordinate and deliver in Revit
+
+Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
+**Autodesk Revit 2023–2027**. Its complete catalog contains **80 tools** <!--inventory:tools-->
+with **208 named suboperations and dispatch modes** <!--inventory:operations-->
+for architectural and structural modeling, MEP, parametric families, drawings,
+CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
+
+Use natural-language objectives in your MCP client to create new BIM content,
+inspect existing models and carry out multi-step production workflows. Typed
+changes include rehearsal, explicit targets and post-commit verification;
+owner-enabled Python extends the bridge to task-specific Revit API automation.
+The downloadable Windows installer includes the server runtime and Revit add-ins.
 
 **English** · **[Español](README.es.md)**
 
-Connect an MCP client to Autodesk Revit to inspect models, make verified BIM
-edits, create families and prepare drawings, quantities and exports.
-Free and open source under Apache-2.0. Built in Colombia 🇨🇴, part of
-[Horizun Hub](https://horizunhub.com).
+[![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/HorizunGroup/horizun-revit-mcp?label=GitHub%20stars)](https://github.com/HorizunGroup/horizun-revit-mcp/stargazers)
 
-[![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#install) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+**[Download](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
+**[Watch the demo](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
+[All tools](#complete-tool-catalog) · [Suboperations](#suboperations-and-modes) ·
+[Release evidence](#tested-in-revit-published-release-evidence) · [Install](#install)
+
+## Product at a glance
+
+| Surface | What is available | Inspect it |
+|---|---|---|
+| MCP entry points | **80 tools** <!--inventory:tools-->, including **32 read-only** <!--inventory:reads--> and **48 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| Internal actions | **208 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
+| New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
+| Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
+| Export targets | PDF, DWG, IFC, NWC, FBX, images and schedule CSV | `horizun_export` |
+| Verified release example | 1,230 passed probe executions across five Revit years in **v1.3.3** | [Published reports](#tested-in-revit-published-release-evidence) |
+| Installation | Windows Setup with runtime included; no Git, Visual Studio or .NET SDK for end users | [Client-specific final steps](docs/CLIENTS.md) |
+
+Counts describe the complete product surface. The active permission profile and
+tool packs determine which tools a particular session exposes; the measured
+70/79/80-tool profiles are explained below.
+
+## Watch a real workflow: PDF plans to a Revit model
+
+[![Watch the Horizun demo: PDF plans to a Revit model with AI](https://i.ytimg.com/vi/tlFs5p3EM4M/hqdefault.jpg)](https://www.youtube.com/watch?v=tlFs5p3EM4M)
+
+**[PDF plans → Revit model with AI — watch on YouTube](https://www.youtube.com/watch?v=tlFs5p3EM4M)**
+is a published Spanish-language demonstration from the Horizun Hub channel.
+It presents a PDF-to-Revit workflow driven by an AI client. PDF interpretation
+belongs to the client/model; Horizun supplies the operations executed in Revit.
+The separate typed DWG workflow below reads CAD geometry and versioned rules.
+
+## What you can build and deliver
+
+### Architectural, structural and MEP modeling
+
+`horizun_create_elements` accepts dependency-aware batches of levels, grids,
+walls, floors, ceilings, roofs, rooms, family instances, structural beams and
+columns, beam systems, wall foundations, ducts, pipes, conduit, cable trays,
+fittings, inline accessories, MEP systems, openings, shafts, room separators,
+profile walls, displacement sets and supported stairs.
+
+The suboperation table lists all 26 creation kinds and five fitting choices.
+`horizun_transform_elements` handles moves, copies, rotations, wall joins,
+type/curve changes and tag placement. `horizun_manage_system_types` supports
+compound material-layer structures and MEP junction preferences.
+Structural and MEP planners produce requests that use these same creation tools.
+
+### New parametric families, including MEP connectors
+
+`horizun_create_family` creates a new `.rfa` from an installed `.rft`: parameters,
+formulas, named types, solid/void extrusions, blends, revolutions, sweeps and
+swept blends; reference planes and labeled dimensions; supported nested families;
+and pipe, duct, electrical, conduit or cable-tray connectors. Save and optional
+project load are verified. `horizun_family_apply` edits existing family data with
+a geometry invariant. [RFA examples and template scope](docs/FAMILY-AUTHORING.md).
+
+### Drawings, automated annotation and sheet production
+
+Build floor/ceiling/structural/area plans, sections, elevations, callouts, drafting
+and 3D views. Manage templates, phases, crops, view ranges and scope boxes; create,
+duplicate and populate sheets; place schedules and align viewports. Annotation
+tools support text, tags, linear/angular/radial/diameter/arc-length dimensions
+and spot elevation/coordinate/slope labels.
+
+Plan dimensions and tags from explicit criteria, inspect geometric references,
+create 2D details, audit planimetry, apply cited corrections and pack sheet zones.
+`horizun_plan_views` and the `deliverable-production` prompt coordinate delivery
+stages and approval state. [Drawing workflows](docs/PLANIMETRY-PRODUCTION.md).
+
+### DWG to BIM, with traceable revision updates
+
+Inspect DWG instances, layers and curves. Supply a versioned requirement set to
+map drawing content into an ordered BIM plan. Rehearse and apply the plan through
+typed tools, with source fingerprints and provenance attached to created elements.
+Audit the model against the drawing; plan and apply later DWG revisions while
+identifying manual model edits that need review.
+These are seven dedicated CAD tools, listed individually below.
+[DWG-to-BIM examples](docs/DWG-TO-BIM.md).
+
+### Audits, coordination, quantities and data exchange
+
+Query the host and loaded links using category, family/type, level, parameter and
+spatial filters. Scan model health, audit supplied requirements and make verified
+parameter corrections. Coordinate clashes with persistent findings, assignment,
+decisions and model-measured resolution. Plan reinforcement, apply supported
+reinforcement requests and audit their results.
+
+Produce material takeoffs, compare them against an Excel budget baseline, read
+or append XLSX rows without Excel/COM, push approved data to Power BI and export
+verified deliverables. [Quantities](docs/QUANTITIES-AND-BUDGET.md),
+[Power BI](docs/POWER-BI.md), [audit starter](docs/QUICK-START-BIM.md).
+
+### Specialized model transformations and terrain
+
+Separate wall or slab layers, split floors by loops, rectangularize supported
+wall geometry, ungroup with origin tracking and regroup by a parameter. Transfer
+slab elevations, embed floors in toposolids and grade terrain with breaklines and
+specified slopes. Wall-layer decomposition preserves the core wall's identity
+and hosted elements. Bundled recipe tools use shipped Python for geometry under
+host-controlled rehearsal, transactions and their declared readback checks;
+arbitrary client-generated Python has a separate permission/evidence contract.
 
 ## Install
 
@@ -55,6 +165,263 @@ $s = irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/i
 The script is fetched from `main`; its checksum check applies to the downloaded
 Setup. You can download and inspect the script first. See [installation options](docs/INSTALL.md).
 
+## Complete tool catalog
+
+Every named MCP tool is listed here, grouped by the work it performs. These groups
+are a reading aid; session **tool packs** are the configurable sets implemented
+in [ToolPacks.cs](src/Horizun.Revit/Core/ToolPacks.cs). Descriptions are maintained
+in [the bilingual catalog](docs/readme-catalog.json); counts and membership are
+checked against the server-generated [inventory](docs/inventory.json).
+The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations.
+
+<!-- BEGIN TOOL CATALOG -->
+### Connection, documents and background jobs
+
+| Tool | Capability |
+|---|---|
+| `horizun_health` | Report bridge health, active document, Revit year, loaded version and commit. |
+| `horizun_target` | Select the Revit instance to control when multiple sessions or years are open. |
+| `get_document_info` | Inspect the open document's identity and element counts. |
+| `horizun_document_session` | Inspect, open, save, save-as and close documents through explicit session operations. |
+| `horizun_open_document` | Open a model with checks for version upgrades and workshared central files. |
+| `horizun_save_document` | Save and inspect the resulting file's timestamp and size. |
+| `horizun_relinquish_all` | Release owned worksharing elements and report remaining ownership. |
+| `horizun_file_info` | Read RVT/RFA headers, version and worksharing metadata without opening or upgrading them. |
+| `horizun_submit_job` | Submit long-running Revit operations with a persistent job identifier. |
+| `horizun_job_status` | Read progress and recovery state while Revit is busy or after a process restart. |
+
+### Model queries, audits and correction
+
+| Tool | Capability |
+|---|---|
+| `horizun_list_elements` | List and paginate elements across the host and loaded Revit links with model identity. |
+| `horizun_query_model` | Filter by category, type, level, parameters and spatial bounds; project fields and return grouped or compact summaries. |
+| `horizun_navigate` | Select elements, clear selection, zoom and open views. |
+| `horizun_capture_view` | Export the active or named view as an image for visual review by the client. |
+| `horizun_model_scan` | Measure model health, warnings, worksets, links, families, views and cleanup candidates. |
+| `horizun_audit_model` | Evaluate supplied model requirements with findings, coverage and prevention-gate evidence. |
+| `horizun_apply_corrections` | Rehearse and apply supported audit corrections with per-result verification. |
+| `horizun_delete_verified` | Delete explicit IDs or purge unused content; preview cascades and verify removals. |
+
+### Model creation, parameters and families
+
+| Tool | Capability |
+|---|---|
+| `horizun_create_elements` | Create levels, grids, walls, slabs, roofs, rooms, family instances, structural members, MEP runs, openings and stairs in typed batches. |
+| `horizun_transform_elements` | Move, copy, rotate, pin, change types or curves and adjust tag heads/leaders over explicit targets. |
+| `horizun_manage_system_types` | Duplicate system types; edit parameters, wall/slab/roof/ceiling layer structures and MEP junction preferences. |
+| `horizun_write_params_verified` | Write parameter values in batches and re-read each requested value. |
+| `horizun_bind_shared_param` | Bind shared parameters to categories and inspect group-variation behavior. |
+| `horizun_set_keynote` | Assign keynote values with the affected instance/type scope made explicit. |
+| `horizun_create_family` | Create new parametric RFA files: solid/void forms, parameters, formulas, types, nested families and MEP connectors; optionally load them. |
+| `horizun_family_apply` | Apply family edits in a transaction with a geometry invariant and rollback on drift. |
+
+### Drawings, dimensions, sheets and schedules
+
+| Tool | Capability |
+|---|---|
+| `horizun_manage_views` | Create and configure plans, sections, elevations, callouts, 3D views, sheets, viewports and schedule placements. |
+| `horizun_plan_views` | Plan room views and deliverable sets; track delivery status, approvals and invalidation. |
+| `horizun_query_planimetry` | Inspect sheets, views, placements, annotations and drawing references with geometry and coverage. |
+| `horizun_audit_planimetry` | Audit drawing requirements and return cited findings for correction. |
+| `horizun_fix_planimetry` | Correct cited view, sheet, title-block, viewport, schedule and crop findings. |
+| `horizun_pack_sheets` | Place views and schedules within supplied sheet zones and check resulting placements. |
+| `horizun_plan_annotations` | Plan automatic tags and dimensions for grids, levels, curtain walls and openings using explicit criteria. |
+| `horizun_annotate` | Create text, tags, linear/angular/radial/diameter/arc-length dimensions and spot elevations, coordinates or slopes. |
+| `horizun_get_dimension_references` | Discover geometric references that can be used in dimension requests. |
+| `horizun_query_dimensions` | Inspect existing dimensions, segments, references and measured values. |
+| `horizun_edit_dimensions` | Apply supported dimension edits and verify the resulting dimension state. |
+| `horizun_query_detail_2d` | Read a view's detail geometry, line styles, region types and placeable symbols. |
+| `horizun_detail_2d` | Create detail lines/arcs/polylines, filled/masking regions and components in verified atomic batches. |
+| `horizun_manage_revisions` | Create and update drawing revision records. |
+| `horizun_create_schedule` | Create a native schedule with selected fields, sorting and optional linked elements. |
+| `horizun_manage_schedules` | Create, duplicate and configure schedules, material takeoffs, sheet/view lists, revision schedules and keynote legends. |
+| `horizun_list_schedules` | List schedules and inspect fields, linked-file settings and displayed dimensions. |
+| `horizun_get_schedule_data` | Read displayed schedule cells with explicit row/column bounds and truncation information. |
+
+### CAD / DWG to BIM and revision updates
+
+| Tool | Capability |
+|---|---|
+| `horizun_query_cad` | Inspect DWG instances, layers, curve geometry, profiles and readable coverage. |
+| `horizun_manage_cad_links` | List, add, reload and repoint CAD links with measured state. |
+| `horizun_plan_from_cad` | Interpret a DWG using supplied versioned rules and return a dependency-ordered BIM plan with omissions and provenance. |
+| `horizun_apply_cad_plan` | Build the plan through typed commands; verify source hashes and stamp created elements with CAD provenance. |
+| `horizun_audit_cad_model` | Compare the drawing against the model using provenance, geometry and measured differences. |
+| `horizun_plan_cad_update` | Plan changes between DWG revisions while identifying manual model edits that need review. |
+| `horizun_apply_cad_update` | Apply supported revision changes and preserve provenance for the next update. |
+
+### Structure, reinforcement, MEP and coordination
+
+| Tool | Capability |
+|---|---|
+| `horizun_plan_structure` | Plan columns at grid intersections and beams along consecutive grid crossings. |
+| `horizun_query_structure` | Inspect members, hosts, cover, rebar, reinforcement systems, connections and quantities. |
+| `horizun_plan_reinforcement` | Plan reinforcement from supplied host and reinforcement requirements. |
+| `horizun_apply_reinforcement` | Apply supported reinforcement plans with typed checks and verification. |
+| `horizun_audit_reinforcement` | Audit reinforcement against supplied requirements and report coverage. |
+| `horizun_plan_mep` | Plan pipe/duct routes and fittings; inspect networks through actual connector connectivity. |
+| `horizun_clash` | Detect scoped clashes, plan supported penetrations and record coordination findings. |
+| `horizun_coordination` | Track coordination findings, assignments, decisions, evidence and model-detected resolution or regression. |
+| `horizun_manage_links` | Add and manage Revit links/instances, paths, load state and pinning. |
+| `horizun_acc_upload_status` | Read Desktop Connector log evidence of ACC folder assignment for local files. |
+
+### Layers, groups and terrain
+
+| Tool | Capability |
+|---|---|
+| `horizun_split_floor_loops` | Split a floor by sketch loops while carrying height offsets. |
+| `horizun_split_multilayer_walls` | Separate wall layers while retaining the original core wall identity and its hosted elements. |
+| `horizun_split_multilayer_slabs` | Separate floor/ceiling material layers with profile preservation and per-slab rollback. |
+| `horizun_rectangularize_walls` | Decompose supported orthogonal wall geometry into rectangular fragments. |
+| `horizun_ungroup_and_mark` | Ungroup model groups while recording each member's source group. |
+| `horizun_regroup_by_param` | Rebuild model groups from a supplied grouping parameter. |
+| `horizun_copy_slab_elevations` | Transfer a shaped floor surface onto explicit destination floors. |
+| `horizun_embed_floors_in_toposolid` | Embed floor outlines and elevations into a toposolid. |
+| `horizun_grade_toposolid_around_floors` | Grade terrain around floors with offsets, breaklines and specified side slopes. |
+
+### Quantities, Excel, Power BI and deliverables
+
+| Tool | Capability |
+|---|---|
+| `horizun_quantities` | Measure volumes and material takeoffs with units, grouping and model provenance. |
+| `horizun_budget_compare` | Compare model quantities against an Excel baseline; optionally write approved Excel/Power BI outputs. |
+| `horizun_catalog_lookup` | Resolve items from a supplied catalog with leaf-status and file-hash provenance. |
+| `horizun_excel_read_rows` | Read XLSX rows, types and cached formula values without Excel or COM. |
+| `horizun_excel_write_rows` | Append XLSX rows, create a backup and re-read written cells without Excel or COM. |
+| `horizun_power_bi_push` | Send rows to a Power BI push semantic-model table with durable replay protection and destination receipts. |
+| `horizun_export` | Export PDF, DWG, IFC, NWC, FBX, images and schedule CSV with output-file verification. |
+
+### Composable workflows and custom API automation
+
+| Tool | Capability |
+|---|---|
+| `horizun_execute_plan` | Compose up to 100 typed actions with dependencies, prior-result references and TransactionGroup rollback. |
+| `horizun_request_python_access` | Show an owner-approval request in Revit for custom Python execution. |
+| `horizun_execute_python` | Run client-generated Python against the Revit API, including preflight and script-supplied evidence; owner opt-in required. |
+
+<!-- END TOOL CATALOG -->
+
+## Suboperations and modes
+
+A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
+and a stair are choices under `horizun_create_elements`; creating a section and
+placing a schedule are different actions under `horizun_manage_views`.
+
+The table contains **208 named suboperations and dispatch modes** <!--inventory:operations-->
+across 26 multi-operation tools. A choice is counted once per tool, selector
+property and value, including nested selectors. Repeated `oneOf` schema paths
+are deduplicated. Some selectors refine another action: these numbers describe
+the exposed operation vocabulary, not 208 additional top-level tools.
+
+<!-- BEGIN SUBOPERATIONS -->
+| Tool | Selector | Named suboperations and modes |
+|---|---|---|
+| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect` |
+| `horizun_navigate` | `operation` | `select`, `clear_selection`, `zoom`, `select_and_zoom`, `open_view` |
+| `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
+| `horizun_delete_verified` | `mode` | `ids`, `purge_unused` |
+| `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `wall_profile`, `displacement`, `stairs` |
+| `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff` |
+| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `pin`, `unpin`, `change_type`, `set_curve`, `move_tag_head`, `set_tag_leader` |
+| `horizun_create_family` | `kind` | `extrusion`, `blend`, `revolution`, `sweep`, `swept_blend`, `pipe`, `duct`, `electrical`, `conduit`, `cable_tray`, `symbolic`, `model` |
+| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports` |
+| `horizun_manage_views` | `mode` | `center`, `center_x`, `center_y`, `left`, `right`, `top`, `bottom` |
+| `horizun_plan_views` | `operation` | `room_views`, `deliverable_set`, `delivery_open`, `delivery_status`, `delivery_record`, `delivery_approve`, `delivery_invalidate` |
+| `horizun_query_planimetry` | `mode` | `inventory`, `sheets`, `views`, `placements`, `annotations`, `references` |
+| `horizun_fix_planimetry` | `operation` | `set_view_template`, `set_view_scale`, `rename_view`, `rename_sheet`, `place_title_block`, `move_viewport`, `move_schedule`, `clear_element_override`, `set_crop` |
+| `horizun_plan_annotations` | `operation` | `auto_tags`, `intent_dimension`, `dimension_set`, `auto_dimension_grids`, `auto_dimension_levels`, `auto_dimension_curtain_walls`, `auto_dimension_openings` |
+| `horizun_annotate` | `operation` | `text`, `tag`, `dimension`, `angular_dimension`, `radial_dimension`, `diameter_dimension`, `arc_length_dimension`, `spot_elevation`, `spot_coordinate`, `spot_slope` |
+| `horizun_query_detail_2d` | `mode` | `resources`, `elements` |
+| `horizun_detail_2d` | `operation` | `create_detail_line`, `create_detail_arc`, `create_detail_polyline`, `create_filled_region`, `create_masking_region`, `place_detail_component`, `place_symbol`, `set_line_style` |
+| `horizun_manage_revisions` | `operation` | `create_revision`, `update_revision` |
+| `horizun_manage_schedules` | `operation` | `create`, `duplicate`, `rename`, `add_fields`, `remove_fields`, `set_field`, `set_filters`, `set_sorting`, `set_options` |
+| `horizun_manage_schedules` | `kind` | `material_takeoff`, `sheet_list`, `view_list`, `revision_schedule`, `keynote_legend` |
+| `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile` |
+| `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
+| `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
+| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
+| `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
+| `horizun_plan_mep` | `kind` | `pipe`, `duct` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `evidence` |
+| `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
+| `horizun_quantities` | `mode` | `volume`, `takeoff` |
+| `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
+<!-- END SUBOPERATIONS -->
+
+Other typed options include the seven `horizun_export.format` values:
+`pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
+also records **1091 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+across all properties and paths; that figure includes configuration choices and
+repeated paths, so it is not used as a tool count.
+
+## Extensibility, permissions and tool discovery
+
+**Compose new workflows:** `horizun_execute_plan` connects up to 100 typed actions
+using prior results and named dependencies, with TransactionGroup rollback.
+Task-specific project standards, catalogs and CAD interpretation rules are inputs.
+**Extend to custom Revit API work:** an owner may enable `horizun_execute_python`
+for client-generated Python, including the standard library, preflight and
+structured script evidence. The Python ON/OFF grant persists until revoked.
+Python results remain self-reported with `host_verified: false`.
+
+The following profiles were measured against the same **1.3.3** server binary
+in isolated settings directories using actual MCP `tools/list` calls:
+
+| Profile and packs | Tools announced | Why |
+|---|---:|---|
+| `safe_write`, all packs, Python off | 70 | Default in-model work; external-effect tools are filtered |
+| `full_write`, all packs, Python off | 79 | Adds file/export/document and other external-effect operations |
+| `unsafe_code`, all packs, Python enabled | 80 | Complete catalog, including custom Python |
+| `safe_write`, `core` only | 4 | Deliberately minimal connection and job-management set |
+
+A session exposing fewer tools can be correctly configured for a narrow task.
+Inspect `horizun_health` and the `horizun://security/current-profile` resource
+before comparing a session with the complete catalog. Owners control permissions;
+an evaluator does not need to enable arbitrary code just to read the catalog.
+
+For clients that support them, the server also offers standard MCP Resources,
+Prompts, Completions, logging and durable Tasks. Resources expose the compiled
+tool contract, build identity, effective profile and BIM workflow guidance.
+Named prompts cover family recipes, room documentation, audits and delivery.
+These protocol features and workflow prompts are additional to the tool count.
+
+Tool packs, compact/summary queries, selected-field projections and durable jobs
+help manage context and long-running work. Calls use a bounded 16-slot FIFO
+queue; queued work can be cancelled before execution. Long operations expose a
+persistent job ID and readable status. [Architecture](docs/ARCHITECTURE.md).
+
+## Tested in Revit: published release evidence
+
+**v1.3.3**, published on **2026-09-15**, includes live release-gate reports for
+the installed server and all five supported Revit years. The reports total
+**1,230 passed probe executions**: 246 in each year, with zero failed, unverified
+or not-covered probes in that suite. Each report identifies the release commit,
+binary hashes and harness. [Release assets](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v1.3.3).
+
+| Revit | Passed | Failed | Unverified | Not covered in this suite | Report |
+|---|---:|---:|---:|---:|---|
+| 2023 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2023.json) |
+| 2024 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2024.json) |
+| 2025 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2025.json) |
+| 2026 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2026.json) |
+| 2027 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2027.json) |
+
+This is one release suite executed across five Revit versions. It is maintainer
+evidence for those cases, not 1,230 different features or a comparison against
+another product. The [machine-readable evidence index](docs/release-evidence.json)
+records the source URLs and hashes. Ongoing GitHub CI checks core/server behavior,
+Windows deployment, inventory/documentation consistency and CodeQL.
+
+Public release history starts with
+[v0.5.0 on 2026-08-02](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v0.5.0),
+includes [v1.0.0 on 2026-08-26](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v1.0.0),
+and contains **16 published non-prerelease releases as of 2026-09-15**.
+The GitHub stars badge above shows the current community count; the public
+[release history](https://github.com/HorizunGroup/horizun-revit-mcp/releases)
+and [commit history](https://github.com/HorizunGroup/horizun-revit-mcp/commits/main/)
+show maintenance directly.
+
 ## Version and compatibility
 
 | Question | Authoritative source |
@@ -70,49 +437,23 @@ for that protocol revision. Registry snapshots and search extracts may lag;
 check the release before choosing a version. Upgrade release installations by
 running the new Setup with Revit closed.
 
-## What you can do
+## Scope and further reference
 
-| Task | Examples and reference |
-|---|---|
-| Inspect and audit models | Host/link queries, quantities, clashes, schedules and model diagnostics. [First read-only audit](docs/QUICK-START-BIM.md) |
-| Create and edit BIM elements | Levels, grids, architectural and structural elements, MEP, parameters and ordered plans. [Tool reference](docs/TOOLS.md) |
-| Produce drawings | Views, sheets, tags, dimensions, detail elements and layout checks. [Drawing workflows](docs/PLANIMETRY-PRODUCTION.md) |
-| Author families | Parameters, formulas, types, solids/voids and connectors. [Family authoring](docs/FAMILY-AUTHORING.md) |
-| Convert DWG to BIM | Inspect, plan and apply a caller-supplied requirement set. [DWG workflow](docs/DWG-TO-BIM.md) |
-| Quantify and deliver | Quantities by budget code, Excel, PDF/DWG/IFC/NWC/FBX exports and Power BI ingestion. [Quantities](docs/QUANTITIES-AND-BUDGET.md), [Power BI](docs/POWER-BI.md) |
+Typed results identify verification, partial outcomes and coverage. Unloaded
+links and unsupported API/template/exporter cases are reported explicitly.
+Use [TOOLS.md](docs/TOOLS.md) and [family scope](docs/FAMILY-AUTHORING.md) for
+operation-specific boundaries. [Benchmark methodology](docs/BENCHMARK.md)
+distinguishes historical design scoring from live execution evidence.
 
-[Workflow prompts](docs/WORKFLOWS.md) describe scope, permissions and expected
-evidence. [Tool packs](docs/WHAT-CAN-HORIZUN-DO.md) and local permissions affect
-which tools a client sees. A hidden tool is not proof that the product lacks it.
+[Build from source](docs/BUILDING.md) · [Contribute](CONTRIBUTING.md) ·
+[Agent instructions](AGENTS.md) · [LLM summary](llms.txt) ·
+[Security](docs/security-model.md) · [Privacy](docs/PRIVACY.md) ·
+[Release policy](docs/RELEASE-POLICY.md)
 
-## Verification and evidence
-
-**Typed writes are re-read after commit.** Read the per-tool result for rollback,
-partial outcomes and limits. Arbitrary Python is **disabled by default**. The
-owner's Python ON/OFF grant persists until revoked; its results are
-**self-reported**, with `host_verified: false`.
-
-Stable release assets include checksums, a payload manifest, SBOM and live Revit reports
-for the supported years. These are publisher evidence for that release.
-They do not establish a comparative result against other MCP servers or a
-clean-machine client-installation success rate.
-
-- [Benchmark method and historical results](docs/BENCHMARK.md)
-- [Release policy](docs/RELEASE-POLICY.md) and [evidence status](docs/production-readiness.md)
-- [Security model](docs/security-model.md), [privacy](docs/PRIVACY.md) and [vulnerability reporting](SECURITY.md)
-
-Known limits include cancellation only before Revit begins a command, unavailable
-coverage for unloaded links, and per-operation API/exporter constraints. Review
-the [tool reference](docs/TOOLS.md) for the applicable limits.
-
-## Development and ecosystem
-
-[Build from source](docs/BUILDING.md) · [Architecture](docs/ARCHITECTURE.md) ·
-[Contribute](CONTRIBUTING.md) · [Agent instructions](AGENTS.md) · [LLM summary](llms.txt)
-
-The bridge is organisation-neutral. Project standards and catalogues are supplied
-as inputs. [Horizun Hub](docs/HORIZUN-HUB.md) provides the wider ecosystem;
-the optional [standards pack](standards/README.md) supplies editable examples.
+Built in Colombia 🇨🇴 and maintained by Horizun Group as part of
+[Horizun Hub](https://horizunhub.com). The bridge is organisation-neutral;
+project standards and catalogs are supplied as inputs. The optional
+[standards pack](standards/README.md) provides editable examples.
 
 **Apache-2.0:** [LICENSE](LICENSE), [NOTICE](NOTICE), [third-party notices](THIRD-PARTY-NOTICES.md).
 The Revit API is not redistributed. Autodesk and Revit are trademarks of Autodesk;
