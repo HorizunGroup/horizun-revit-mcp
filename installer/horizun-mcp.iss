@@ -184,11 +184,11 @@ end;
   and neither helper ever writes underneath a live client. }
 function DesktopFolder(): String;
 begin
-  Result := ExpandConstant('{userdocs}') + '\\' + ExpandConstant('{cm:FolderName}');
+  Result := ExpandConstant('{userdocs}') + '\' + ExpandConstant('{cm:FolderName}');
 end;
 
 { Put the extension and its printed instructions where a person can reach them,
-  and OPEN that folder. The package used to sit under AppData\\Local\\Programs,
+  and OPEN that folder. The package used to sit under AppData\Local\Programs,
   which Explorer hides and Claude Desktop's file picker opens nowhere near - so
   the one step left to the user began with hunting for a file. }
 function HandOverDesktopPackage(var Folder: String): Boolean;
@@ -198,18 +198,18 @@ var
 begin
   Result := False;
   Folder := DesktopFolder();
-  Source := ExpandConstant('{app}\\server\\integrations\\claude-desktop\\horizun-revit-{#AppVersion}.mcpb');
+  Source := ExpandConstant('{app}\server\integrations\claude-desktop\horizun-revit-{#AppVersion}.mcpb');
   if not FileExists(Source) then exit;
   if not ForceDirectories(Folder) then exit;
-  if not FileCopy(Source, Folder + '\\horizun-revit-{#AppVersion}.mcpb', False) then exit;
+  if not FileCopy(Source, Folder + '\horizun-revit-{#AppVersion}.mcpb', False) then exit;
 
   if ActiveLanguage() = 'es' then Language := 'es' else Language := 'en';
-  Sheet := ExpandConstant('{app}\\server\\integrations\\claude-desktop\\Instalar en Claude Desktop.') + Language + '.pdf';
+  Sheet := ExpandConstant('{app}\server\integrations\claude-desktop\Instalar en Claude Desktop.') + Language + '.pdf';
   if FileExists(Sheet) then
-    FileCopy(Sheet, Folder + '\\Instalar en Claude Desktop.pdf', False);
+    FileCopy(Sheet, Folder + '\Instalar en Claude Desktop.pdf', False);
 
   { Selected, not merely listed: the next thing the user does is drag it. }
-  Exec(ExpandConstant('{sys}\\..\\explorer.exe'), '/select,"' + Folder + '\\horizun-revit-{#AppVersion}.mcpb"',
+  Exec(ExpandConstant('{sys}\..\explorer.exe'), '/select,"' + Folder + '\horizun-revit-{#AppVersion}.mcpb"',
        '', SW_SHOWNORMAL, ewNoWait, Code);
   Result := True;
 end;
@@ -1007,13 +1007,13 @@ begin
                  'Reinicia Revit para cargarlo.' + #13#10#13#10 +
                  'Claude Code, Codex y ChatGPT Work quedaron configurados solos.' + #13#10#13#10 +
                  'NO pude dejarte la extension de Claude Desktop en Documentos. La tienes aqui:' + #13#10 +
-                 '      ' + ExpandConstant('{app}\\server\\integrations\\claude-desktop') + #13#10#13#10 +
+                 '      ' + ExpandConstant('{app}\server\integrations\claude-desktop') + #13#10#13#10 +
                  'Esa carpeta esta oculta para el Explorador: copiala a Documentos antes de instalarla en Claude Desktop.',
                  'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
                  'Restart Revit to load it.' + #13#10#13#10 +
                  'Claude Code, Codex and ChatGPT Work were configured for you.' + #13#10#13#10 +
                  'The Claude Desktop extension could NOT be placed in Documents. It is here:' + #13#10 +
-                 '      ' + ExpandConstant('{app}\\server\\integrations\\claude-desktop') + #13#10#13#10 +
+                 '      ' + ExpandConstant('{app}\server\integrations\claude-desktop') + #13#10#13#10 +
                  'Explorer hides that folder: copy the file out to Documents before installing it in Claude Desktop.'),
                mbError, MB_OK);
   end;

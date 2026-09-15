@@ -5,28 +5,30 @@
 <meta charset="utf-8">
 <title>Horizun Revit MCP in Claude Desktop</title>
 <style>
-  @page { size: A4; margin: 16mm 16mm 14mm; }
+  @page { size: A4; margin: 13mm 14mm 11mm; }
   * { box-sizing: border-box; }
   body {
-    margin: 0; font: 10.5pt/1.45 "Segoe UI", system-ui, sans-serif;
+    margin: 0; font: 9.8pt/1.38 "Segoe UI", system-ui, sans-serif;
     color: #15202B; -webkit-print-color-adjust: exact; print-color-adjust: exact;
   }
-  header { border-bottom: 2.5pt solid #0696D7; padding-bottom: 7pt; margin-bottom: 13pt; }
+  header { border-bottom: 2.5pt solid #0696D7; padding-bottom: 6pt; margin-bottom: 10pt; }
   h1 { margin: 0 0 2pt; font-size: 17pt; letter-spacing: -.2pt; }
   .sub { margin: 0; color: #556B7D; font-size: 10pt; }
   .file {
-    margin: 0 0 13pt; padding: 8pt 11pt; background: #F1F8FC;
+    margin: 0 0 10pt; padding: 7pt 10pt; background: #F1F8FC;
     border: .8pt solid #BFE2F4; border-radius: 4pt;
   }
   .file b { color: #05678F; }
   .file code { font: 9.5pt ui-monospace, Consolas, monospace; word-break: break-all; }
   ol { margin: 0; padding-left: 15pt; }
-  li { margin-bottom: 9pt; }
+  li { margin-bottom: 7pt; }
   li > b:first-child { display: block; margin-bottom: 1pt; }
   .or {
     margin-top: 5pt; padding: 6pt 9pt; background: #F7F9FA;
     border-left: 2.5pt solid #C3D0DA; font-size: 9.7pt; color: #3C4C5A;
   }
+  figure { margin: 5pt 0 0; }
+  figure img { width: 72%; border: .7pt solid #C3D0DA; border-radius: 3pt; display: block; }
   .note { font-size: 9.5pt; color: #556B7D; }
   kbd {
     font: 9.5pt "Segoe UI", sans-serif; background: #E9EFF3;
@@ -68,11 +70,13 @@
       <b>Horizun-Revit-MCP</b>, and choose the <code>.mcpb</code>.
       That button sits under a red developer-tools warning; that is normal and does not mean anything is wrong.
     </div>
+    <figure><img src="img/extensions.png" alt="The Claude Desktop Extensions page, with the Advanced settings button and the text Drag .MCPB or .DXT files here to install"></figure>
   </li>
 
   <li>
     <b>Claude will warn you the extension gets access to your computer. Accept it and leave it <i>Enabled</i>.</b>
     <span class="note">That warning appears for any MCP extension: it is the permission the bridge needs to talk to the Revit you have open. Everything happens on your machine; no server is involved.</span>
+    <figure><img src="img/enabled.png" alt="The Horizun Revit MCP extension installed, with the red access warning and the Enabled switch on"></figure>
   </li>
 
   <li>
