@@ -3,6 +3,35 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v1.3.3 — 2026-09-14
+
+**Claude Desktop is installed by the person using it, and Setup now hands the
+file over properly.** Its extension is installed from inside the app - that step
+exists nowhere else - so Setup no longer tries to write the app's configuration
+underneath it. Instead it copies the `.mcpb` and a printed instruction sheet to
+**Documents\Horizun-Revit-MCP** and opens that folder with the file selected.
+The package used to sit under `AppData\Local\Programs`, which Explorer hides and
+the app's own file picker opens nowhere near: the one manual step began by
+hunting for a file.
+
+**The instruction sheet ships as a PDF, with screenshots**, in Spanish and
+English, rendered at build time so nothing has to be produced on a machine that
+has no renderer. It describes the UI as it actually is - drag the `.mcpb` onto
+the Extensions page, or Advanced settings > Install extension - rather than the
+path the documentation used to claim.
+
+**No Start-menu shortcut asks anybody to run a script any more.** Claude Code,
+Codex and ChatGPT Work are configured by Setup itself; Claude Desktop is the one
+manual step and it now arrives with its file and its instructions. What is left
+in the Start menu is the product folder and the Hub link.
+
+**Two faults found by installing rather than reading.** The configuration writer
+refused with *"it would have removed"* and named nothing, on a config with no
+other MCP entries - a false positive in the guard that protects other servers.
+And the whole final section of Setup sat behind `if WizardSilent then exit`, so
+a quiet install skipped the handover entirely; copying the files is installing,
+not reporting, and now happens either way.
+
 ## v1.3.2 — 2026-09-14
 
 **The installer's post-install steps never ran.** A screen recording of an
