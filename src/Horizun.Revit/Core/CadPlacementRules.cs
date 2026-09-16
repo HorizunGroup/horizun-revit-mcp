@@ -272,6 +272,7 @@ namespace Horizun.Revit.Core
 
         public const string RestampMigrated = "migrated_from_v1";
         public const string RestampPlacementMoved = "placement_moved_accepted";
+        public const string RestampCarried = "carried_to_this_revision";
 
         // ------------------------------------------------------------ identity
 

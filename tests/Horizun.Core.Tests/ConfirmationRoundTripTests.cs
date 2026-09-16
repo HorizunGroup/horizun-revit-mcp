@@ -107,7 +107,8 @@ namespace Horizun.Core.Tests
                 // the next member declaration. A return found after one would be in another
                 // method, which is exactly the mistake the bound exists to prevent. The
                 // 20000 cap is only a runaway guard on the regex.
-                if (!RehearsalStops(text, flag)) broken.Add(name + " ('" + decl.Groups[1].Value + "')");
+                if (!RehearsalStops(text, flag) && !RehearsalIsDelegated(text, flag))
+                    broken.Add(name + " ('" + decl.Groups[1].Value + "')");
             }
 
             Assert.True(broken.Count == 0,
@@ -116,6 +117,56 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>The detection above, aimed at one source text. `flag` arrives escaped.</summary>
+        /// <summary>
+        /// THE OTHER SHAPE THAT IS SAFE, and it needs proving rather than assuming.
+        ///
+        /// A command that writes NOTHING ITSELF and delegates to typed commands that
+        /// do - horizun_cad_connect joins through horizun_connect_mep and builds
+        /// fittings through horizun_create_elements - has no write of its own to
+        /// guard, so it has no rehearsal branch to return from. Forwarding is how it
+        /// honours the flag, and the first version of this guard reported it as a
+        /// rehearsal falling through into a write that does not exist.
+        ///
+        /// Two things are required together, and neither alone is enough:
+        ///
+        ///   the file opens no transaction of its own - a forwarding command that
+        ///   also writes is exactly the defect this guard exists for;
+        ///
+        ///   and every request it hands to a child command sets dry_run FROM THIS
+        ///   FLAG, so a rehearsal cannot reach a child as an apply.
+        ///
+        /// A command that dispatches to a child without passing the flag fails here,
+        /// which is the case worth catching: the child's own default would decide,
+        /// and horizun_create_elements defaults dry_run to true while a caller who
+        /// sent dry_run=false is owed an apply.
+        /// </summary>
+        private static bool RehearsalIsDelegated(string text, string flag)
+        {
+            bool writesItself = Regex.IsMatch(text, @"\bnew\s+Transaction\s*\(") ||
+                                Regex.IsMatch(text, @"\bnew\s+TransactionGroup\s*\(");
+            if (writesItself) return false;
+
+            int dispatches = Regex.Matches(text, @"\.Execute\s*\(\s*app\b").Count;
+            if (dispatches == 0) return false;
+
+            int forwards = Regex.Matches(text, @"\[""dry_run""\]\s*=\s*" + flag + @"\b").Count;
+
+            // A DISPATCH THAT IS ALWAYS A REHEARSAL IS ALSO SAFE, and it is the
+            // shape a command needs when its delegate demands a confirmation
+            // token: rehearse the child to earn the token, then send the apply
+            // guarded by the flag. horizun_cad_connect has to do exactly that -
+            // horizun_create_elements refuses a fitting without a token issued by
+            // its own dry run - and counting one forwarded flag per dispatch
+            // reported that as a rehearsal falling through into a write.
+            //
+            // So a dispatch is accounted for by a forwarded flag OR by a negative
+            // branch on the flag, which is what stops an apply being reached during
+            // a rehearsal. A command that dispatches with neither still fails,
+            // which is the case this guard exists for.
+            int guardedApplies = Regex.Matches(text, @"if\s*\(\s*!" + flag + @"\b").Count;
+            return forwards + guardedApplies >= dispatches;
+        }
+
         private static bool RehearsalStops(string text, string flag)
         {
             return Regex.IsMatch(

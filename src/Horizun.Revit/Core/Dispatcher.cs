@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The UI-thread bridge and command registry.
@@ -591,10 +591,20 @@ namespace Horizun.Revit.Core
                 {
                     try
                     {
+                        // WHO KNOWS THE CALLER LEFT. Only the gate does, and only for the
+                        // request executing right now. A long READ can ask, between units,
+                        // whether it is still producing an answer for somebody - see
+                        // Core/CooperativeRead.cs. A loop that never asks is unaffected,
+                        // and a write is never allowed to ask at all.
+                        CooperativeRead.Abandoned = () => req.Abandoned;
                         req.Result = cmd.Execute(app, req.ParamsJson);
                     }
                     finally
                     {
+                        // Cleared on EVERY path. A stale delegate would let the next
+                        // command read the previous request's abandonment and stop for a
+                        // caller who is still waiting.
+                        CooperativeRead.Abandoned = null;
                         object said = watch.Report();
                         if (said != null)
                         {

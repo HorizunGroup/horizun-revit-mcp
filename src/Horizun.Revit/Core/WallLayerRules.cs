@@ -528,7 +528,7 @@ namespace Horizun.Revit.Core
             List<string> items = (values ?? Enumerable.Empty<string>()).Select(v => v ?? "").ToList();
             if (!ordered) items.Sort(StringComparer.Ordinal);
             Add(name + ".count", items.Count);
-            return Store(name, "l:" + string.Join("", items));
+            return Store(name, "l:" + string.Join("\u001f", items));
         }
 
         public FactBook AddList(string name, IEnumerable<long> values, bool ordered)
@@ -542,11 +542,11 @@ namespace Horizun.Revit.Core
         public FactBook AddMap(string name, IEnumerable<KeyValuePair<string, string>> entries)
         {
             var items = (entries ?? Enumerable.Empty<KeyValuePair<string, string>>())
-                .Select(e => (e.Key ?? "") + "" + (e.Value ?? ""))
+                .Select(e => (e.Key ?? "") + "\u001e" + (e.Value ?? ""))
                 .OrderBy(e => e, StringComparer.Ordinal)
                 .ToList();
             Add(name + ".count", items.Count);
-            return Store(name, "m:" + string.Join("", items));
+            return Store(name, "m:" + string.Join("\u001f", items));
         }
 
         /// <summary>A nested digest, so a compound fact is one fact here.</summary>

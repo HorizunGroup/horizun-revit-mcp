@@ -325,7 +325,7 @@ namespace Horizun.Core.Tests
             // the version check first, so removing the length guard left them still
             // refusing - for a different reason - and the mutation did not bite.
             // This one carries the current version and only three fields.
-            string raw = SectionCursor.Version + "" + "d" + "" + "s";
+            string raw = SectionCursor.Version + "\u001f" + "d" + "\u001f" + "s";
             string cur = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(raw))
                 .TrimEnd('=').Replace('+', '-').Replace('/', '_');
 

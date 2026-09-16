@@ -112,8 +112,30 @@ namespace Horizun.Revit.Commands
                     "read - and everything past the bound would be planned as an orphan. Raise max_primitives. " +
                     "Nothing was read.");
 
+            JObject blocksReadForReply = null;
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
                 harvest.Segments, set, sourceHash, harvest.Arcs);
+
+            // THE SAME READING THE PLAN AND THE AUDIT MAKE, INCLUDING SYMBOLS.
+            //
+            // An update route that cannot see the drawing's named symbols reports
+            // every device built from one as deleted, and then proposes to delete
+            // it. Revit's import cannot see a block name, so the file is read - by
+            // the same shared reader both other commands use.
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.Source == CadGeometrySource.Blocks))
+            {
+                JObject blocksRead = CadBlockSource.Read(element, facts, set, harvest, sourceHash, interpretation,
+                                                        request.Value<string>("dwg_path"),
+                                                        Math.Max(30, Math.Min(3600,
+                                                            request.Value<int?>("dwg_read_timeout_seconds") ?? 900)));
+                if (blocksRead?["refused"] != null)
+                    return CommandResult.Fail(
+                        "symbols_unreadable: this requirement set has blocks rules and the drawing's symbols " +
+                        "could not be read (" + blocksRead["refused"] + "). An update computed without them " +
+                        "would propose deleting every device built from a symbol. Nothing was planned. " +
+                        blocksRead.ToString(Newtonsoft.Json.Formatting.None));
+                blocksReadForReply = blocksRead;
+            }
 
             var problems = new List<string>();
             List<CadAuditSubject> subjects = Stamped(doc, problems, WantedParameters(set));
@@ -286,11 +308,12 @@ namespace Horizun.Revit.Commands
                 {
                     if (hosted == null || string.IsNullOrEmpty(hosted.SemanticId)) continue;
                     if (hosted.Geometry == null || hosted.Geometry.Count == 0) continue;
-                    if (!NeedsWallHost(hosted.ProposedKind)) continue;
+                    if (!NeedsWallHost(hosted.ProposedKind) &&
+                        !string.Equals(hosted.HostedOn, "wall", StringComparison.OrdinalIgnoreCase)) continue;
                     if (walls == null) walls = CadHostResolver.Walls(doc);
                     CadPoint at = hosted.Geometry[0];
                     CadHostMatch match = CadHostResolver.Nearest(
-                        walls, CadHostResolver.PointFromMm(at.X, at.Y, at.Z), set.PointToleranceMm);
+                        walls, CadHostResolver.PointFromMm(at.X, at.Y, at.Z), set.HostSearchMm);
                     if (match.Wall != null) hostByCandidate[hosted.SemanticId] = Rid.Value(match.Wall.Id);
                 }
             }
@@ -302,7 +325,10 @@ namespace Horizun.Revit.Commands
 
             // ---------------------------------------------------------- actions
             string levelError;
-            JArray actions = Actions(doc, update, set, request, title, out levelError);
+            JArray createIndex, withdrawnRows, resolvedNames;
+            JArray actions = Actions(doc, update, interpretation, set, request, title, harvest.Segments,
+                                     sourceFingerprint, out levelError, out createIndex, out withdrawnRows,
+                                     out resolvedNames);
             if (levelError != null) return CommandResult.Fail(levelError);
 
             // WHAT THE APPLY MUST RE-STAMP without touching geometry: a v1 record
@@ -310,8 +336,9 @@ namespace Horizun.Revit.Commands
             // an accepted move every element left in place is stamped with the
             // transform it now sits under - or the next plan reports the move
             // again, forever.
-            JArray restamp = Restamp(update, scope, move != null && acceptMove);
+            JArray restamp = Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256);
             JArray candidateIndex = CandidateIndex(update, actions);
+            foreach (JToken row in createIndex) candidateIndex.Add(row);
             foreach (JToken row in restamp) candidateIndex.Add(row);
 
             var placementJson = new JObject
@@ -394,7 +421,12 @@ namespace Horizun.Revit.Commands
                     "vocabulary is closed and every name is reported with its count, including the zeros: a " +
                     "key that simply disappeared would read as 'not measured' rather than 'none found'.",
                 ["actions"] = actions,
-                ["automatic"] = update.Actions.Count(a => a.Automatic && a.Kind != "leave"),
+                ["rows_in_actions"] = actions.OfType<JObject>().Sum(a =>
+                    ((a["arguments"] as JObject)?["elements"] as JArray)?.Count ??
+                    ((a["arguments"] as JObject)?["operations"] as JArray)?.Count ?? 0),
+                ["withdrawn"] = withdrawnRows,
+                ["resolved"] = resolvedNames,
+                ["automatic"] = update.Actions.Count(a => a.Automatic && a.Kind != "leave" && a.Kind != "paired_away"),
                 ["needs_a_person"] = update.Actions.Count(a => !a.Automatic),
                 ["plan"] = new JArray(update.Actions.Select(a => a.ToJson())),
                 ["kinds_mean"] = new JObject
@@ -402,6 +434,9 @@ namespace Horizun.Revit.Commands
                     ["create"] = "in revision B, nothing in the model remembers being built from it",
                     ["set_curve"] = "the DRAWING moved and nobody has touched the element since: update it, and " +
                                     "it keeps its id, its parameters and everything hosted on it",
+                    ["move"] = "a point element a caller accepted as moved: it is moved along its own wall to where " +
+                               "revision B draws it, and keeps its id, its parameters and its host",
+                    ["paired_away"] = "the element a move or set_curve in this plan stands for",
                     ["review"] = "a person moved it, or both moved, or nothing recorded where it started. NOT " +
                                  "in the actions: applying any of these could destroy work nobody asked to lose",
                     ["leave"] = "unchanged in both",
@@ -480,6 +515,7 @@ namespace Horizun.Revit.Commands
                     "build the same elements; only one of them stamps what it built, and an unstamped element " +
                     "is one the next update builds a second time.")
             };
+            if (blocksReadForReply != null) result["blocks"] = blocksReadForReply;
             return CommandResult.Ok(result);
         }
 
@@ -488,68 +524,145 @@ namespace Horizun.Revit.Commands
         /// through horizun_transform_elements set_curve. Everything a person must
         /// decide is deliberately absent.
         /// </summary>
-        private static JArray Actions(Document doc, CadUpdate update, CadRequirementSet set,
-                                      JObject request, string target, out string levelError)
+        private static JArray Actions(Document doc, CadUpdate update, CadInterpretation interpretation,
+                                      CadRequirementSet set, JObject request, string target,
+                                      IList<CadSegment> drawn, string sourceFingerprint,
+                                      out string levelError, out JArray createIndex, out JArray withdrawn,
+                                      out JArray resolved)
         {
             levelError = null;
+            createIndex = new JArray();
+            withdrawn = new JArray();
+            resolved = new JArray();
             var actions = new JArray();
 
-            List<CadUpdateAction> creates = update.Of("create").Where(a => a.Automatic).ToList();
+            // THE CREATES, BUILT AS THE PLAN ROUTE BUILDS THEM. The candidates are
+            // the drawing's own, looked up by id; the conversion rules turn them
+            // into rows of their real kind, and the plan route's resolution gives
+            // them levels, types, hosts and faces - or withdraws them, by name.
+            List<CadUpdateAction> creates = update.Of("create").Where(a => a.Automatic && !a.Blocked).ToList();
             if (creates.Count > 0)
             {
-                string levelName = request.Value<string>("level_name");
-                long? levelId = request.Value<long?>("level_id");
-                List<Level> levels = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().ToList();
-                Level level = null;
-                if (levelName != null)
-                    level = levels.FirstOrDefault(l => string.Equals(SafeName(l), levelName, StringComparison.Ordinal))
-                         ?? levels.FirstOrDefault(l => string.Equals(SafeName(l), levelName, StringComparison.OrdinalIgnoreCase));
-                else if (levelId.HasValue)
-                    level = doc.GetElement(Rid.Make(levelId.Value)) as Level;
-
-                if (level == null)
-                {
-                    levelError = "level_unresolved: revision B adds " + creates.Count + " element(s), and a 2D " +
-                                 "drawing does not carry a storey. Pass level_name (or level_id) - the same one " +
-                                 "the first conversion used, or the update will build the new walls on a " +
-                                 "different floor from the old ones. The levels in '" + target + "' are: " +
-                                 string.Join(", ", levels.Take(24).Select(l => "'" + SafeName(l) + "'")) + ".";
-                    return actions;
-                }
-
-                var elements = new JArray();
+                var byId = new Dictionary<string, CadCandidate>(StringComparer.Ordinal);
+                foreach (CadCandidate c in interpretation.Candidates)
+                    if (c?.Id != null && !byId.ContainsKey(c.Id)) byId[c.Id] = c;
+                var subset = new CadInterpretation();
                 foreach (CadUpdateAction a in creates)
                 {
-                    if (a.Geometry.Count < 2) continue;
-                    elements.Add(new JObject
-                    {
-                        ["kind"] = "wall",
-                        ["start"] = Pt(a.Geometry[0]),
-                        ["end"] = Pt(a.Geometry[a.Geometry.Count - 1]),
-                        ["height"] = set.Rules.Select(r => r.HeightMm).FirstOrDefault(h => h.HasValue) ?? 3000.0,
-                        ["level_id"] = Rid.Value(level.Id)
-                    });
+                    CadCandidate c;
+                    if (a.CandidateId != null && byId.TryGetValue(a.CandidateId, out c)) subset.Candidates.Add(c);
                 }
-                if (elements.Count > 0)
+
+                CadConversionPlan plan = CadConversionPlanRules.Plan(subset, set, sourceFingerprint, false);
+                List<JObject> requests = CadConversionPlanRules.AsCreateRequests(plan, target, 100);
+                string refusal = PlanFromCadCommand.ResolveRows(doc, requests, request, resolved, set, drawn, withdrawn);
+                if (refusal != null)
+                {
+                    levelError = refusal;
+                    return actions;
+                }
+                requests = requests.Where(r => ((JArray)r["elements"]).Count > 0).ToList();
+
+                var actionByRow = new Dictionary<int, CadPlannedAction>();
+                foreach (CadPlannedAction pa in plan.Actions)
+                    if (pa.SourceRow > 0) actionByRow[pa.SourceRow] = pa;
+
+                // WHAT RESOLUTION WITHDREW IS NOT AUTOMATIC, and the plan says why.
+                var emitted = new HashSet<string>(StringComparer.Ordinal);
+                foreach (JObject r in requests)
+                {
+                    string key = "cad-update-create-" + (int)r["stage"] + "-" + (int)r["batch_of_stage"];
+                    var elements = (JArray)r["elements"];
+                    for (int k = 0; k < elements.Count; k++)
+                    {
+                        int? sourceRow = (elements[k] as JObject)?.Value<int?>("source_row");
+                        CadPlannedAction pa;
+                        if (sourceRow == null || !actionByRow.TryGetValue(sourceRow.Value, out pa)) continue;
+                        emitted.Add(pa.CandidateId);
+                        createIndex.Add(new JObject
+                        {
+                            ["key"] = key,
+                            ["element_index"] = k,
+                            ["candidate_id"] = pa.CandidateId,
+                            ["semantic_id"] = pa.SemanticId,
+                            ["geometry_id"] = pa.GeometryId,
+                            ["rule_id"] = pa.RuleId,
+                            ["layer"] = pa.Layer,
+                            ["confidence"] = Math.Round(pa.Confidence, 4),
+                            ["source_entities"] = new JArray(pa.SourceEntities)
+                        });
+                    }
                     actions.Add(new JObject
                     {
-                        ["key"] = "cad-update-create",
+                        ["key"] = key,
                         ["tool"] = "horizun_create_elements",
-                        ["arguments"] = new JObject
-                        {
-                            ["target_document"] = target,
-                            ["units"] = "mm",
-                            ["elements"] = elements
-                        }
+                        ["arguments"] = r
                     });
+                }
+                foreach (CadUpdateAction a in creates)
+                {
+                    if (a.CandidateId != null && emitted.Contains(a.CandidateId)) continue;
+                    a.Automatic = false;
+                    JObject why = withdrawn.OfType<JObject>().FirstOrDefault(w =>
+                    {
+                        int? row = w.Value<int?>("source_row");
+                        CadPlannedAction pa;
+                        return row.HasValue && actionByRow.TryGetValue(row.Value, out pa) && pa.CandidateId == a.CandidateId;
+                    });
+                    a.Evidence["withdrawn"] = why == null ? (JToken)"the conversion produced no row for it" : why;
+                    a.Says += " NOT in the actions: " + (why == null
+                        ? "the conversion rules produced no row for this candidate."
+                        : "resolution withdrew it (" + why.Value<string>("reason") + ").");
+                }
             }
 
             // ONE OPERATION PER ELEMENT: a location line belongs to one element,
             // and the command refuses a shared one for exactly that reason.
             int n = 0;
+            List<Wall> standing = null;
             foreach (CadUpdateAction a in update.Of("set_curve").Where(x => x.Automatic))
             {
                 if (!a.ElementId.HasValue || a.Geometry.Count < 2) continue;
+
+                // A RESHAPED WALL IS NOT MOVED INTO A WALL THAT STANDS. MEASURED: a
+                // pairing offered after the reading changed would lengthen one piece
+                // over its neighbour, and removing the neighbour is never automatic -
+                // so the two would share the space. The reshape waits for a person.
+                if (standing == null) standing = CadHostResolver.Walls(doc);
+                var self = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+                if (self != null)
+                {
+                    var occupants = new JArray();
+                    foreach (Wall w in standing)
+                    {
+                        if (Rid.Value(w.Id) == a.ElementId.Value || w.LevelId != self.LevelId) continue;
+                        Line line = (w.Location as LocationCurve)?.Curve as Line;
+                        if (line == null) continue;
+                        XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
+                        double across, along;
+                        if (!CadWallReadings.SolidsIntersect(a.Geometry[0], a.Geometry[a.Geometry.Count - 1],
+                                self.Width * 304.8,
+                                new CadPoint(p0.X * 304.8, p0.Y * 304.8), new CadPoint(p1.X * 304.8, p1.Y * 304.8),
+                                w.Width * 304.8, set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm,
+                                out across, out along))
+                            continue;
+                        occupants.Add(new JObject
+                        {
+                            ["element_id"] = Rid.Value(w.Id),
+                            ["across_overlap_mm"] = Math.Round(across, 1),
+                            ["along_overlap_mm"] = Math.Round(along, 1)
+                        });
+                    }
+                    if (occupants.Count > 0)
+                    {
+                        a.Automatic = false;
+                        a.Evidence["occupied_by"] = occupants;
+                        a.Says += " HELD: the new line would put this wall in the space of " +
+                                  string.Join(", ", occupants.Select(o => "element " + (long)o["element_id"])) +
+                                  ", which still stands; removing it is not this update's decision.";
+                        continue;
+                    }
+                }
                 actions.Add(new JObject
                 {
                     ["key"] = "cad-update-move-" + (n++),
@@ -564,6 +677,29 @@ namespace Horizun.Revit.Commands
                             ["element_ids"] = new JArray(a.ElementId.Value),
                             ["start"] = Pt(a.Geometry[0]),
                             ["end"] = Pt(a.Geometry[a.Geometry.Count - 1])
+                        })
+                    }
+                });
+            }
+
+            // A POINT MOVES BY A VECTOR, along its own wall.
+            int m = 0;
+            foreach (CadUpdateAction a in update.Of("move").Where(x => x.Automatic))
+            {
+                if (!a.ElementId.HasValue || !a.Vector.HasValue) continue;
+                actions.Add(new JObject
+                {
+                    ["key"] = "cad-update-shift-" + (m++),
+                    ["tool"] = "horizun_transform_elements",
+                    ["arguments"] = new JObject
+                    {
+                        ["target_document"] = target,
+                        ["units"] = "mm",
+                        ["operations"] = new JArray(new JObject
+                        {
+                            ["operation"] = "move",
+                            ["element_ids"] = new JArray(a.ElementId.Value),
+                            ["vector"] = Pt(a.Vector.Value)
                         })
                     }
                 });
@@ -618,14 +754,15 @@ namespace Horizun.Revit.Commands
             foreach (JObject action in actions.OfType<JObject>())
             {
                 string key = action.Value<string>("key") ?? "";
-                if (key == "cad-update-create")
+                // Creates are indexed where they are built, row by row, from the
+                // conversion that built them.
+                if (key.StartsWith("cad-update-create", StringComparison.Ordinal)) continue;
+                if (key.StartsWith("cad-update-shift-", StringComparison.Ordinal))
                 {
-                    int i = 0;
-                    foreach (CadUpdateAction a in update.Of("create").Where(x => x.Automatic))
-                    {
-                        if (a.Geometry.Count < 2) continue;
-                        index.Add(Row(key, a, i++));
-                    }
+                    int s;
+                    if (!int.TryParse(key.Substring("cad-update-shift-".Length), out s)) continue;
+                    CadUpdateAction shift = update.Of("move").Where(x => x.Automatic).Skip(s).FirstOrDefault();
+                    if (shift != null) index.Add(Row(key, shift, null));
                     continue;
                 }
                 if (!key.StartsWith("cad-update-move-", StringComparison.Ordinal)) continue;
@@ -644,8 +781,12 @@ namespace Horizun.Revit.Commands
         /// under). Orphans are not here: a record on an element the drawing no
         /// longer says is left exactly as it was.
         /// </summary>
-        private static JArray Restamp(CadUpdate update, CadUpdateScope scope, bool moveAccepted)
+        private static JArray Restamp(CadUpdate update, CadUpdateScope scope, bool moveAccepted,
+                                      IList<CadAuditSubject> subjects, string thisFileSha256)
         {
+            var bySubject = new Dictionary<long, CadAuditSubject>();
+            foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
+                if (s != null && !bySubject.ContainsKey(s.ElementId)) bySubject[s.ElementId] = s;
             var rows = new JArray();
             var seen = new HashSet<long>();
             foreach (CadUpdateAction a in update.Actions)
@@ -656,6 +797,15 @@ namespace Horizun.Revit.Commands
                 string reason = null;
                 if (scope.MigratedFromV1.Contains(id)) reason = CadPlacementRules.RestampMigrated;
                 else if (moveAccepted && a.Kind == "leave") reason = CadPlacementRules.RestampPlacementMoved;
+                else if (a.CandidateId != null && a.Classification != CadChange.Relayered &&
+                         !string.IsNullOrEmpty(thisFileSha256))
+                {
+                    // THE SAME ENTITY, NOW CITED FROM THIS REVISION.
+                    CadAuditSubject s;
+                    if (bySubject.TryGetValue(id, out s) && s.Provenance != null &&
+                        !string.Equals(s.Provenance.SourceFileSha256, thisFileSha256, StringComparison.Ordinal))
+                        reason = CadPlacementRules.RestampCarried;
+                }
                 if (reason == null || !seen.Add(id)) continue;
                 rows.Add(new JObject
                 {

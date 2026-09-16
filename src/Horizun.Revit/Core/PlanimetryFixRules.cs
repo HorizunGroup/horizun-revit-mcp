@@ -621,7 +621,7 @@ namespace Horizun.Revit.Core
         public static string ClaimFinalValueError(HashSet<string> claimed, string kind, string value)
         {
             if (value == null) return null;
-            if (claimed.Add(kind + "" + value)) return null;
+            if (claimed.Add(kind + "\u001f" + value)) return null;
             return "two actions in this batch both end at " + kind + " '" + value + "'. The second would " +
                    "collide with the first inside the same transaction.";
         }

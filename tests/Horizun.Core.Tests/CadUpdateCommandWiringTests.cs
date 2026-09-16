@@ -191,8 +191,13 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"migrated_from_v1\"] = migrated", apply);
 
             string plan = Plan();
-            Assert.Contains("Restamp(update, scope, move != null && acceptMove)", plan);
+            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256)", plan);
             Assert.Contains("[\"key\"] = \"cad-update-restamp\"", plan);
+            // What the update verified is carried to the new revision; a relayered
+            // match is not, or the change the review is about would disappear.
+            Assert.Contains("reason = CadPlacementRules.RestampCarried", plan);
+            Assert.Contains("a.Classification != CadChange.Relayered", plan);
+            Assert.Contains("if (reason == CadPlacementRules.RestampCarried)", apply);
         }
 
         // ------------------------------------------------------- retries

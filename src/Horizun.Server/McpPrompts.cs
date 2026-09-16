@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — standard MCP Prompts.
 //
 // Prompts contain product operating policy, never an organisation's standards.
@@ -76,7 +76,33 @@ namespace Horizun.Server
                         Arg("evidence_source", "The completed audit reply or durable receipt that supplies the measured findings; required to prevent invented report rows.", true)),
                     Prompt("planimetry-review", "Review planimetry directly from Revit",
                         "Audit sheets and documentation from the model, capture the actual sheets and judge visual quality without exporting a PDF.",
-                        Arg("scope", "Optional sheet numbers, sheet ids or discipline; omit for every non-placeholder sheet.", false))
+                        Arg("scope", "Optional sheet numbers, sheet ids or discipline; omit for every non-placeholder sheet.", false)),
+                    // The three procedures added with the 2026-09-15 catalogue. A
+                    // procedure whose `prompt` names nothing is a catalogue entry a
+                    // client cannot act on, so the two lists move together.
+                    Prompt("mep-network-completion", "Complete an MEP network",
+                        "Join MEP segments that merely touch into a connected network, with every precondition measured and every connection re-read.",
+                        Arg("scope", "The systems, levels or element ids whose open connectors are in scope; required because 'connect everything' is not a scope.", true),
+                        Arg("tolerance_mm", "How far apart two connectors may be and still be joined. Default 1 mm; geometry is never moved to close a gap.", false)),
+                    Prompt("graphic-review-pack", "Build a coloured review view",
+                        "Duplicate a view and colour it by one parameter's values, with a returned legend and a capture.",
+                        Arg("source_view_id", "The view to duplicate. The original is never modified.", true),
+                        Arg("parameter", "The parameter whose distinct values become colours; it must be filterable for the chosen categories.", true),
+                        Arg("categories", "The BuiltInCategory names the colouring applies to.", true)),
+                    // The two DWG procedures the catalogue carried with no prompt behind them.
+                    Prompt("dwg-mep-unit-conversion", "Convert DWG MEP units to a connected model",
+                        "Plan, build, connect and audit MEP runs from a unit drawing, with repeated unit layouts recognised and every unjoined junction reported.",
+                        Arg("requirement_set", "Approved requirement set: what each layer means, with system, bore and elevation; required because layer meaning is never guessed.", true),
+                        Arg("unit_regions", "The unit boundaries as regions in drawing millimetres; required because a whole-floor reading is not a unit.", true),
+                        Arg("outfall", "Where a draining network leaves, with its invert. Omit only for networks that do not drain; without it every run is built level.", false)),
+                    Prompt("dwg-electrical-symbols", "Place DWG symbols as family instances",
+                        "Group the marks on the named symbol layers into types and place each type as the family a person named, with every rejected group reported.",
+                        Arg("symbol_layers", "The symbol layers, as globs; required because grouping over the whole drawing buries the symbols in the wiring.", true),
+                        Arg("max_footprint_mm", "How large connected line work may be and still be one symbol; required because a receptacle is 40 mm on one drawing and 400 mm on another.", true),
+                        Arg("family_types", "The family type for each symbol type, as decided by a person; required because this route never names a symbol type itself.", true)),
+                    Prompt("material-standardisation", "Bring materials to a declared standard",
+                        "Create, duplicate and edit materials to match an approved standard, re-reading every value and touching nothing else.",
+                        Arg("material_standard", "The approved standard - names, classes, colours, patterns. Required because Horizun carries no organisation's catalogue.", true))
                 }
             };
         }
@@ -242,6 +268,81 @@ namespace Horizun.Server
                         " Run horizun_clash only with explicit, reviewable source/target categories. Report host/link coverage, " +
                         "unloaded links, phases, design options, clash tolerances and unknowns separately. Do not move, resize, " +
                         "create or delete elements; proposed corrections require a separate approved dry run.";
+                    break;
+                case "mep-network-completion":
+                    string networkScope = Argument(args, "scope", true);
+                    string networkTolerance = Argument(args, "tolerance_mm", false);
+                    description = "Connect an MEP network with measured preconditions and verified connections.";
+                    body =
+                        "Call horizun_health first. Work only inside this scope: " + networkScope + ". Read the open " +
+                        "connectors with horizun_plan_mep network_census and horizun_query_model; name every pair you " +
+                        "intend to join by element id AND connector id. Where the run needs a fitting, build it with " +
+                        "horizun_create_elements; where two things simply meet, join them with horizun_connect_mep" +
+                        (string.IsNullOrWhiteSpace(networkTolerance) ? "" : " at a tolerance of " + networkTolerance + " mm") +
+                        ". Run every call as a dry run first and read the rehearsal. NEVER move geometry to close a gap: " +
+                        "a refusal that reports the measured distance is the answer, not an obstacle. Report the " +
+                        "connectors still open afterwards - a network can be correctly connected and still incomplete, " +
+                        "and only the person who asked can tell which.";
+                    break;
+                case "graphic-review-pack":
+                    string sourceViewId = Argument(args, "source_view_id", true);
+                    string colourParameter = Argument(args, "parameter", true);
+                    string colourCategories = Argument(args, "categories", true);
+                    description = "Duplicate a view and colour it by a parameter, with a legend and a capture.";
+                    body =
+                        "Call horizun_health first. With horizun_manage_views, DUPLICATE view " + sourceViewId +
+                        " - never colour the original - and on the duplicate run color_by_value over categories " +
+                        colourCategories + " using parameter " + colourParameter + ". If the duplicate carries a view " +
+                        "template that governs V/G the command will refuse and name it; duplicate without the template " +
+                        "rather than editing somebody's template. Read the returned legend: when palette_wrapped is " +
+                        "true, two different values share a colour and the legend is the only way to tell them apart. " +
+                        "Finish with horizun_capture_view and report the legend beside the image.";
+                    break;
+                case "dwg-mep-unit-conversion":
+                    string mepSet = Argument(args, "requirement_set", true);
+                    string unitRegions = Argument(args, "unit_regions", true);
+                    string outfall = Argument(args, "outfall", false);
+                    description = "Convert DWG MEP units into a connected, audited model.";
+                    body =
+                        "Call horizun_health first, then horizun_cad_extract and read what the reader is blind to before " +
+                        "anything depends on it. Use this approved requirement set: " + mepSet + ", and only inside these " +
+                        "unit regions: " + unitRegions + ". Read the networks with horizun_cad_networks and the repeated " +
+                        "layouts with horizun_cad_unit_instances. Plan with horizun_plan_from_cad" +
+                        (string.IsNullOrWhiteSpace(outfall)
+                            ? "; no outfall was given, so every run will be built LEVEL - say so in the report, and do " +
+                              "not build a draining system that way"
+                            : " with this outfall and invert: " + outfall) +
+                        ". Rehearse horizun_apply_cad_plan with dry_run=true, then apply; join with horizun_cad_connect " +
+                        "the same way; finish with horizun_audit_cad_model and horizun_cad_review. Never join a crossing " +
+                        "that shares no endpoint, never treat a riser as an elbow, and list every junction, crossing and " +
+                        "gap that was NOT joined with its reason.";
+                    break;
+                case "dwg-electrical-symbols":
+                    string symbolLayers = Argument(args, "symbol_layers", true);
+                    string footprint = Argument(args, "max_footprint_mm", true);
+                    string familyTypes = Argument(args, "family_types", true);
+                    description = "Place DWG symbols as the family types a person named.";
+                    body =
+                        "Call horizun_health first, then horizun_cad_extract, and settle the chord tolerance before " +
+                        "grouping. Group the marks with horizun_cad_symbols on these layers only: " + symbolLayers +
+                        ", with a footprint of " + footprint + " mm. Place each symbol type as the family type this " +
+                        "person named: " + familyTypes + " - never name a type yourself, and leave any type they did not " +
+                        "name unplaced and listed. Rehearse horizun_create_elements with dry_run=true before applying, " +
+                        "and re-read the result with horizun_query_model. Report every rejected group with its reason; " +
+                        "do not raise the footprint until something passes, and report mirrored occurrences instead of " +
+                        "placing them rotated.";
+                    break;
+                case "material-standardisation":
+                    string materialStandard = Argument(args, "material_standard", true);
+                    description = "Bring materials to an approved standard, verified value by value.";
+                    body =
+                        "Call horizun_health first. Use this approved standard: " + materialStandard +
+                        ". Read the existing materials with horizun_query_model before proposing anything. Use " +
+                        "horizun_manage_materials as a dry run first, and read its shared_appearance_warning: an " +
+                        "appearance asset shared by several materials means a later edit changes all of them, which " +
+                        "is why assigning one duplicates it unless sharing is asked for. Do not edit elements that " +
+                        "reference these materials, and do not invent a name, class or colour the standard does not " +
+                        "state - report what the standard does not cover instead.";
                     break;
                 case "mep-coordination-review":
                     string mepScope = Argument(args, "scope", false);

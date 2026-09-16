@@ -37,6 +37,15 @@ namespace Horizun.Revit.Commands
         /// </summary>
         public static CadAuditSubject Measure(Element e) => Measure(e, null);
 
+        /// <summary>A direction's plan component, normalised; null when it points straight up or down.</summary>
+        private static CadVector? PlanUnit(XYZ v)
+        {
+            if (v == null) return null;
+            double len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
+            if (len < 1e-6) return null;
+            return new CadVector(v.X / len, v.Y / len);
+        }
+
         /// <summary>
         /// <paramref name="wantedParameters"/> is the set of parameter names some
         /// rule actually asked about. Only those are read: sweeping every
@@ -99,9 +108,29 @@ namespace Horizun.Revit.Commands
             try
             {
                 Element host = (e as FamilyInstance)?.Host;
-                if (host != null) s.HostElementId = Rid.Value(host.Id);
+                if (host != null)
+                {
+                    s.HostElementId = Rid.Value(host.Id);
+                    var hostCurve = (host.Location as LocationCurve)?.Curve;
+                    if (hostCurve != null)
+                    {
+                        s.HostLine.Add(Mm(hostCurve.GetEndPoint(0)));
+                        s.HostLine.Add(Mm(hostCurve.GetEndPoint(1)));
+                    }
+                    var hostWall = host as Wall;
+                    if (hostWall != null) s.HostWidthMm = CadUnits.FeetToMm(hostWall.Width);
+                }
             }
             catch { }
+
+            // WHICH WAY ROUND. Read, never assumed: null is "Revit would not say".
+            var fi = e as FamilyInstance;
+            if (fi != null)
+            {
+                try { s.HandPlan = PlanUnit(fi.HandOrientation); } catch { }
+                try { s.FacingPlan = PlanUnit(fi.FacingOrientation); } catch { }
+                try { s.IsMirrored = fi.Mirrored; } catch { }
+            }
             return s;
         }
 

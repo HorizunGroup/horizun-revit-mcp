@@ -149,9 +149,21 @@ namespace Horizun.Revit.Commands
             int unreadableTotal = 0;
             long collectionStartMs = timer.ElapsedMilliseconds;
 
+            // OPT-IN cooperative reading, parsed ONCE. Absent means today's behaviour, byte
+            // for byte: no scope is opened and no field is added to the reply. See
+            // Core/CooperativeReadOptions.cs for why a published reader may not change
+            // underneath its callers.
+            string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, host);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null)
+                return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            // ONE budget for the whole read, host and links together.
+            CooperativeRead.Scope coopScope = cooperative.Begin("query_model", 0);
+
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
                     predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
+                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
+                    coopScope, cooperative);
 
             if (includeLinks)
             {
@@ -181,9 +193,11 @@ namespace Horizun.Revit.Commands
                         });
                         continue;
                     }
+                    if (coopScope != null && !coopScope.Complete) break;
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
+                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
+                            coopScope, cooperative);
                 }
             }
 
@@ -253,7 +267,12 @@ namespace Horizun.Revit.Commands
             string nextCursor = nextOffset < matched.Count ? MakeCursor(nextOffset, queryHash, setHash) : null;
 
             JObject coverage = FederatedVisibility.Measure(host, includeLinks);
-            bool coverageComplete = coverage.Value<bool>("coverage_complete") && unreadableTotal == 0;
+            // AND THE READ ITSELF HAS TO HAVE FINISHED. This result is CACHED when coverage
+            // is complete; a read that stopped early and still claimed complete coverage
+            // would be stored and handed to later callers as a full answer, outliving the
+            // request that produced it.
+            bool coverageComplete = coverage.Value<bool>("coverage_complete") && unreadableTotal == 0
+                                    && (coopScope == null || coopScope.Complete);
             var queryResult = new JObject
             {
                 ["document"] = host.Title,
@@ -275,6 +294,13 @@ namespace Horizun.Revit.Commands
                 ["summary"] = Summary(matched),
                 ["rows"] = new JArray(page.Select(r => r.Json))
             };
+            // Present ONLY when the caller asked. Null is dropped rather than written, so a
+            // reply to an ordinary request is byte-identical to what it was.
+            JObject coopReport = cooperative.Report(
+                coopScope, offset + page.Count, coopFingerprint,
+                nextCursor != null || (coopScope != null && !coopScope.Complete),
+                ownCursorField: "next_cursor");
+            if (coopReport != null) queryResult["cooperative"] = coopReport;
             if (includeMep)
             {
                 // Aggregated over every MATCHED row (not only the page), because "how
@@ -327,7 +353,9 @@ namespace Horizun.Revit.Commands
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
                                     double coordinateScale, bool includeTypes, bool includeMep, HashSet<string> fields,
                                     bool compactParameters, List<Row> rows, JArray unreadable,
-                                    ref int unreadableTotal, QuerySummaryAccumulator summary = null)
+                                    ref int unreadableTotal, QuerySummaryAccumulator summary = null,
+                                    CooperativeRead.Scope coopScope = null,
+                                    CooperativeOptions cooperative = null)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
             FilteredElementCollector collector = viewId == null
@@ -384,10 +412,22 @@ namespace Horizun.Revit.Commands
                     .GroupBy(e => Rid.Value(e.Id)).Select(g => g.First());
             }
 
+            // The caller's cooperative scope, when there is one. Parsed ONCE in Execute and
+            // shared across the host pass and every link pass: one budget for the whole read,
+            // because parsing it here would hand a fresh twenty seconds to each of six links.
+            //
+            // NO SKIPPING HERE. This command has its own cursor over the MATCHED set, and a
+            // second position over the EXAMINED elements would be a different number with the
+            // same name - and this method runs once per document, so resuming a federated
+            // read would skip the same count again inside every link.
             var typeCache = new Dictionary<long, Element>();
             var levelCache = new Dictionary<long, string>();
             foreach (Element element in candidates)
             {
+                // Between elements. A query that stopped early says so; one that stopped
+                // mid-element would return a row nobody could tell was incomplete.
+                if (coopScope != null && !coopScope.Continue()) break;
+                if (coopScope != null && cooperative != null && cooperative.UnitsExhausted(coopScope.Done)) break;
                 long id = Rid.Value(element.Id);
                 try
                 {

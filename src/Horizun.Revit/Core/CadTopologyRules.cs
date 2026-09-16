@@ -214,6 +214,17 @@ namespace Horizun.Revit.Core
         public double OverlapLengthMm { get; }
         /// <summary>Overlap as a fraction of the SHORTER line: 1.0 means the shorter line is fully paired.</summary>
         public double OverlapFraction { get; }
+
+        /// <summary>
+        /// Overlap as a fraction of the LONGER line: 1.0 means the two lines
+        /// start and stop together, which is the shape of a wall's two faces.
+        ///
+        /// The difference from OverlapFraction is the whole point: a short stub
+        /// lying against a long wall is fully overlapped (1.0 there) and shares
+        /// almost none of its extent (0.27 here). One of those is a wall and the
+        /// other is a wall meeting it.
+        /// </summary>
+        public double MutualOverlapFraction { get; }
         /// <summary>The measured angle between the two lines, in degrees. Zero is exactly parallel.</summary>
         public double AngleDeviationDegrees { get; }
         public int SegmentIndexA { get; }
@@ -221,10 +232,12 @@ namespace Horizun.Revit.Core
 
         public CadDoubleLine(CadPoint start, CadPoint end, double thicknessMm, string layer,
                              double overlapLengthMm, double overlapFraction,
-                             double angleDeviationDegrees, int indexA, int indexB)
+                             double angleDeviationDegrees, int indexA, int indexB,
+                             double longerLengthMm = 0)
         {
             Start = start; End = end; ThicknessMm = thicknessMm; Layer = layer;
             OverlapLengthMm = overlapLengthMm; OverlapFraction = overlapFraction;
+            MutualOverlapFraction = longerLengthMm <= 0 ? 0 : overlapLengthMm / longerLengthMm;
             AngleDeviationDegrees = angleDeviationDegrees;
             SegmentIndexA = indexA; SegmentIndexB = indexB;
         }
@@ -641,7 +654,8 @@ namespace Horizun.Revit.Core
                     var start = new CadPoint((aAtLo.X + bAtLo.X) / 2, (aAtLo.Y + bAtLo.Y) / 2, (aAtLo.Z + bAtLo.Z) / 2);
                     var end = new CadPoint((aAtHi.X + bAtHi.X) / 2, (aAtHi.Y + bAtHi.Y) / 2, (aAtHi.Z + bAtHi.Z) / 2);
 
-                    found.Add(new CadDoubleLine(start, end, separation, a.Layer, overlap, fraction, angle, i, j));
+                    found.Add(new CadDoubleLine(start, end, separation, a.Layer, overlap, fraction, angle, i, j,
+                                                Math.Max(a.PlanLength, b.PlanLength)));
                 }
             }
             return found;

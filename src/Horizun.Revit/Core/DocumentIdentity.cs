@@ -100,7 +100,7 @@ namespace Horizun.Revit.Core
         ///
         /// The raw one joins its parts with a control character, which is right for
         /// comparison and wrong for a payload - it arrived in a real response as
-        /// "rvt:2026guid:...path:...", escape sequences and all. The parts it
+        /// "rvt:2026\u001fguid:...\u001fpath:...", escape sequences and all. The parts it
         /// encodes (title, path, guid) are already published as their own fields, so the
         /// digest costs the reader nothing and stays comparable between two replies.
         /// </summary>

@@ -869,14 +869,20 @@ namespace Horizun.Revit.Commands
                         // refuse as stale instead of putting the fitting somewhere else.
                         string subtype = (item.Value<string>("fitting") ?? "").ToLowerInvariant();
                         if (subtype != "elbow" && subtype != "union" && subtype != "transition" && subtype != "tee" &&
-                            subtype != "takeoff")
-                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff");
+                            subtype != "takeoff" && subtype != "cross")
+                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff, cross");
                         p.FittingSubtype = subtype;
-                        int need = subtype == "tee" ? 3 : 2;
+                        // A CROSS TAKES FOUR. Revit has had NewCrossFitting in every
+                        // year this bridge supports, and offering only up to a tee meant
+                        // a four-way junction had to be refused or built as two tees -
+                        // which is a different piece of pipework, with an extra fitting
+                        // and a length of main that does not exist.
+                        int need = subtype == "cross" ? 4 : subtype == "tee" ? 3 : 2;
                         var membersToken = item["elements"] as JArray;
                         if (membersToken == null || membersToken.Count != need)
                             throw new ArgumentException("elements must contain exactly " + need + " entries for a " + subtype +
                                 (subtype == "tee" ? " (the two through-run elements, then the branch)" :
+                                 subtype == "cross" ? " (the first through pair, then the second through pair - Revit's own argument order)" :
                                  subtype == "takeoff" ? " (the branch whose open connector taps in, then the main curve)" : ""));
                         var members = new List<FittingMember>();
                         var sides = new List<List<ConnectorFact>>();
@@ -990,13 +996,20 @@ namespace Horizun.Revit.Commands
                                 throw new ArgumentException("the chosen connectors turn " +
                                     turn.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) +
                                     " degrees; a " + subtype + " joins collinear runs - use fitting 'elbow'.");
-                            if (subtype == "tee")
+                            // The same generalisation as at create time: a tee has one
+                            // member past the through pair and a cross has two. Handling
+                            // only the tee left a cross's members unresolved at plan
+                            // time, so the REHEARSAL could not refuse a cross whose
+                            // fourth connector was already taken - it was discovered
+                            // inside the transaction instead.
+                            for (int extra = 2; extra < members.Count; extra++)
                             {
-                                ConnectorFact branch, unusedCorner; string branchCode, branchReason;
-                                if (!MepRules.SelectPair(sides[2], new List<ConnectorFact> { chosenA }, named[2], null,
-                                                         out branch, out unusedCorner, out branchCode, out branchReason))
-                                    throw new ArgumentException(branchCode + " (branch): " + branchReason);
-                                members[2].ConnectorId = branch.Id; members[2].Fact = branch;
+                                ConnectorFact extraFact, unusedCorner; string extraCode, extraReason;
+                                if (!MepRules.SelectPair(sides[extra], new List<ConnectorFact> { chosenA },
+                                                         named[extra], null,
+                                                         out extraFact, out unusedCorner, out extraCode, out extraReason))
+                                    throw new ArgumentException(extraCode + " (member " + extra + "): " + extraReason);
+                                members[extra].ConnectorId = extraFact.Id; members[extra].Fact = extraFact;
                             }
                         }
                         p.FittingMembers = members;
@@ -1117,6 +1130,20 @@ namespace Horizun.Revit.Commands
                             throw new InvalidOperationException("top_level_id was not accepted");
                         SetDouble(wall, BuiltInParameter.WALL_TOP_OFFSET, p.TopOffset);
                     }
+
+                    // THE JOIN RULE, APPLIED. It has been in the requirement-set
+                    // schema since the schema existed, described as "passed
+                    // through, applied by the writer", and applied by nobody. A
+                    // set saying join_rule: none got joins anyway - which trims a
+                    // wall's ends back to whatever it meets, moves the centreline
+                    // the drawing gave, and then fails the postcondition that
+                    // checks it. MEASURED: 1.6 mm, item 14 of 16, batch rolled back.
+                    if (string.Equals(p.Input.Value<string>("join_rule"), "none", StringComparison.Ordinal))
+                    {
+                        WallUtils.DisallowWallJoinAtEnd(wall, 0);
+                        WallUtils.DisallowWallJoinAtEnd(wall, 1);
+                        doc.Regenerate();
+                    }
                     return wall;
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
@@ -1174,11 +1201,152 @@ namespace Horizun.Revit.Commands
                 {
                     FamilySymbol symbol = (FamilySymbol)p.Type;
                     if (!symbol.IsActive) { symbol.Activate(); doc.Regenerate(); }
-                    FamilyInstance placed = p.Host != null
-                        ? p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType) : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType)
-                        : p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
-                        : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
-                    PositionInstance(doc, p, placed);
+
+                    // WHICH ROUTE THIS FAMILY NEEDS, read from the family itself.
+                    //
+                    // MEASURED: every device family in Revit's own electrical
+                    // template is WorkPlaneBased, and the wall-host overload
+                    // ACCEPTS one and returns an instance with Host == null,
+                    // raising nothing. A route chosen by category, or by which
+                    // overload happens to compile, builds that silently.
+                    string placementType;
+                    CadPlacementRoute route = CreateElementsPlacement.RouteFor(symbol, out placementType);
+                    FamilyInstance placed;
+
+                    if (route == CadPlacementRoute.Unsupported)
+                        throw new InvalidOperationException(
+                            "this family is " + placementType + ", which this command does not place. The " +
+                            "routes it has are a level, a host element and a face. Nothing was built for this " +
+                            "row rather than placing it by a route that fits a different family.");
+
+                    if (route == CadPlacementRoute.Face)
+                    {
+                        if (p.Host == null)
+                            throw new InvalidOperationException(
+                                "this family is work-plane based: Revit places it on a FACE, and no host was " +
+                                "named for this row. Name the host (hosted_on in a requirement set, host_id " +
+                                "here) or use a family that stands on a level.");
+
+                        CadFaceChoice face = CreateElementsPlacement.ChooseFace(
+                            doc, p.Host, p.Start, p.Input.Value<double?>("rotation_degrees") * Math.PI / 180.0,
+                            p.Input.Value<double?>("face_allowance_mm") ?? 300.0,
+                            p.Input.Value<double?>("facing_degrees") * Math.PI / 180.0,
+                            p.Input.Value<double?>("side_dead_band_mm"));
+                        if (face.Refusal != null) throw new InvalidOperationException(face.Refusal);
+
+                        placed = doc.Create.NewFamilyInstance(face.Face, face.Point, face.ReferenceDirection, symbol);
+                        p.FacePlacement = face;
+
+                        // THE POINT MOVED, ON PURPOSE, AND BY A MEASURED AMOUNT.
+                        //
+                        // A symbol is drawn beside the wall it belongs to, not on
+                        // its face - 134 mm out, on the drawing this was built
+                        // from. The device is placed ON the face and the
+                        // postcondition checks THAT point, because it is what was
+                        // asked of Revit; the row reports the drawn point, the
+                        // placed point and the distance between them, so nobody
+                        // has to take the projection on trust.
+                        face.Evidence["drawn_at_mm"] = new JArray(Math.Round(p.Start.X * 304.8, 1),
+                                                                  Math.Round(p.Start.Y * 304.8, 1),
+                                                                  Math.Round(p.Start.Z * 304.8, 1));
+                        p.Start = face.Point;
+
+                        // THE LEVEL FOLLOWS THE HOST, and the row is told so.
+                        //
+                        // A face-hosted instance has no level of its own: Revit
+                        // answers -1 and no elevation. Checking the row's level_id
+                        // against that refuses a placement that is correct, and
+                        // dropping it silently would be a key accepted and ignored.
+                        // So it is dropped LOUDLY: named here, with the level its
+                        // host stands on.
+                        if (p.Level != null)
+                        {
+                            face.Evidence["level_asked_for"] = SafePlanName(p.Level);
+                            face.Evidence["level_means"] =
+                                "a work-plane based family is hosted by a FACE and carries no level of its own. " +
+                                "This row's level was used to resolve the plan and is NOT a property of the " +
+                                "created instance; the level it stands on is its host's.";
+                            p.Level = null;
+                        }
+                        doc.Regenerate();
+                    }
+                    else if (route == CadPlacementRoute.HostedOnElement)
+                    {
+                        if (p.Host == null)
+                            throw new InvalidOperationException(
+                                "this family is hosted: Revit will not place it without a host element, and no " +
+                                "host was named for this row.");
+                        placed = p.Level == null
+                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
+                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
+                        PositionInstance(doc, p, placed);
+                    }
+                    else
+                    {
+                        if (p.Host != null)
+                            throw new InvalidOperationException(
+                                "this family stands on a LEVEL (" + placementType + ") and a host was named for " +
+                                "it. Revit would ignore the host and the row would report a hosting that does " +
+                                "not exist.");
+                        placed = p.Level == null
+                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
+                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
+                        PositionInstance(doc, p, placed);
+                    }
+
+                    // THE MIRROR, BY WHICHEVER OPERATION THIS FAMILY SUPPORTS.
+                    //
+                    // A symbol the drawing shows reflected is not the same symbol
+                    // turned: no angle reproduces a reflection, and on a handed
+                    // device that is exactly what the symbol was drawn to say.
+                    //
+                    // MEASURED on the family that first refused: CanFlipHand and
+                    // CanFlipFacing are both false, and CanMirrorElement is TRUE -
+                    // the reflected copy keeps its host AND its host face, reverses
+                    // the hand, and stays where it was to the millimetre. So
+                    // "cannot be mirrored" was one API answering a narrower
+                    // question, and the row it refused was buildable all along.
+                    if (p.Input.Value<bool?>("flip") == true)
+                    {
+                        if (placed.CanFlipHand)
+                        {
+                            placed.flipHand();
+                            doc.Regenerate();
+                            p.MirrorMethod = "flip_hand";
+                        }
+                        else if (ElementTransformUtils.CanMirrorElement(doc, placed.Id))
+                        {
+                            // A true reflection about the plane through the
+                            // instance, perpendicular to its hand. MirrorElements
+                            // COPIES: the reflected copy is what was asked for and
+                            // the original is removed in this same transaction, so
+                            // the row reports one element and the model holds one.
+                            XYZ hand = placed.HandOrientation;
+                            XYZ origin = (placed.Location as LocationPoint)?.Point ?? p.Start;
+                            var one = new List<ElementId> { placed.Id };
+                            ICollection<ElementId> copies = ElementTransformUtils.MirrorElements(
+                                doc, one, Plane.CreateByNormalAndOrigin(hand, origin), true);
+                            doc.Regenerate();
+
+                            ElementId copyId = copies?.FirstOrDefault() ?? ElementId.InvalidElementId;
+                            var reflected = doc.GetElement(copyId) as FamilyInstance;
+                            if (reflected == null)
+                                throw new InvalidOperationException(
+                                    "the reflection produced no instance to keep. Nothing was built for this row.");
+
+                            doc.Delete(placed.Id);
+                            doc.Regenerate();
+                            placed = reflected;
+                            p.MirrorMethod = "reflected_copy";
+                        }
+                        else
+                            throw new InvalidOperationException(
+                                "the drawing shows this symbol mirrored and this family supports no reflection: " +
+                                "CanFlipHand, CanFlipFacing and CanMirrorElement are all false. Nothing was " +
+                                "built for this row rather than building it the wrong way round. A requirement " +
+                                "set can say what the mirror means with mirror: symmetric (checked against the " +
+                                "block's own geometry) or mirror: variant.");
+                    }
                     return placed;
                 }
                 case "duct": return Duct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
@@ -1539,14 +1707,20 @@ namespace Horizun.Revit.Commands
                                 " (deferred batch selection; the whole batch rolls back)");
                         p.FittingMembers[0].ConnectorId = chosenA.Id; p.FittingMembers[0].Fact = chosenA;
                         p.FittingMembers[1].ConnectorId = chosenB.Id; p.FittingMembers[1].Fact = chosenB;
-                        if (p.FittingMembers.Count > 2)
+                        // EVERY MEMBER PAST THE FIRST PAIR, not only the third. A tee
+                        // has one; a cross has two, and the version that handled exactly
+                        // one left the cross's fourth member with no connector chosen -
+                        // which surfaces as a null-reference inside Revit's factory
+                        // rather than as a refusal anybody can read.
+                        for (int extra = 2; extra < p.FittingMembers.Count; extra++)
                         {
-                            ConnectorFact branchFact, unusedCorner; string branchCode, branchReason;
-                            if (!MepRules.SelectPair(factSides[2], new List<ConnectorFact> { chosenA },
-                                                     p.FittingMembers[2].NamedConnector, null,
-                                                     out branchFact, out unusedCorner, out branchCode, out branchReason))
-                                throw new InvalidOperationException(branchCode + " (branch): " + branchReason);
-                            p.FittingMembers[2].ConnectorId = branchFact.Id; p.FittingMembers[2].Fact = branchFact;
+                            ConnectorFact extraFact, unusedCorner; string extraCode, extraReason;
+                            if (!MepRules.SelectPair(factSides[extra], new List<ConnectorFact> { chosenA },
+                                                     p.FittingMembers[extra].NamedConnector, null,
+                                                     out extraFact, out unusedCorner, out extraCode, out extraReason))
+                                throw new InvalidOperationException(extraCode + " (member " + extra + "): " + extraReason);
+                            p.FittingMembers[extra].ConnectorId = extraFact.Id;
+                            p.FittingMembers[extra].Fact = extraFact;
                         }
                     }
                     if (p.FittingSubtype == "takeoff")
@@ -1603,6 +1777,7 @@ namespace Horizun.Revit.Commands
                         case "union": return doc.Create.NewUnionFitting(live[0], live[1]);
                         case "transition": return doc.Create.NewTransitionFitting(live[0], live[1]);
                         case "tee": return doc.Create.NewTeeFitting(live[0], live[1], live[2]);
+                        case "cross": return doc.Create.NewCrossFitting(live[0], live[1], live[2], live[3]);
                         default: throw new InvalidOperationException("unsupported fitting '" + p.FittingSubtype + "'");
                     }
                 }
@@ -2248,6 +2423,16 @@ namespace Horizun.Revit.Commands
             public string FittingSubtype; public List<FittingMember> FittingMembers;
             public Element TakeoffMain; public int? TakeoffMainBatchIndex;
             public Wall OpeningHost; public Element InstanceHost;
+
+            /// <summary>
+            /// The face this row was placed on, when the family is work-plane
+            /// based. Kept so the postcondition can re-read the SAME reference
+            /// rather than asking whether some host exists.
+            /// </summary>
+            public CadFaceChoice FacePlacement;
+
+            /// <summary>How a requested reflection was achieved: flip_hand or reflected_copy.</summary>
+            public string MirrorMethod;
             public Element SlabHost; public string SlabShape; public XYZ SlabCenter;
             public double SlabWidth, SlabHeight, RotationRadians;
             public List<XYZ> ProfilePoints; public XYZ BeamDirection;

@@ -147,8 +147,14 @@ namespace Horizun.Server.Tests
         /// The four that were retired must STAY retired, with their history intact. A
         /// probe silently revived would start reporting a permanent gap again.
         /// </summary>
+        /// <remarks>
+        /// horizun_connect_mep is NOT on this list any more, and its absence is the
+        /// point: it came back to the surface in this branch, so the registry entry
+        /// that called it gone was removed rather than kept passing. What replaced
+        /// it is an entry in $UncoveredTools - published, not probed - which is a
+        /// gap this harness reports instead of one it hides.
+        /// </remarks>
         [Theory]
-        [InlineData("horizun_connect_mep")]
         [InlineData("horizun_terminate_riser")]
         [InlineData("horizun_place_sprinklers")]
         [InlineData("horizun_family_mirror_void")]
@@ -172,8 +178,13 @@ namespace Horizun.Server.Tests
         {
             string retired = RetiredBlock();
 
+            // THREE, not four: horizun_connect_mep came back to the surface in this
+            // branch and its entry was removed rather than left claiming the tool was
+            // gone. The floor is a guard against the registry being emptied, so it
+            // follows the real count - and every other check below is untouched,
+            // because what each remaining entry must SAY has not changed.
             int tools = Regex.Matches(retired, @"Tool\s*=").Count;
-            Assert.True(tools >= 4, "expected at least the four known retirements, found " + tools);
+            Assert.True(tools >= 3, "the retired registry has been emptied below the known retirements: " + tools);
 
             foreach (string field in new[] { "Probes", "Retired", "Covered", "Replacement" })
                 Assert.Equal(tools, Regex.Matches(retired, field + @"\s*=").Count);

@@ -322,6 +322,19 @@ namespace Horizun.Revit.Commands
                     bool wasV1 = existing.IsV1;
                     CadProvenance p = existing.Clone();
                     p.SchemaVersion = CadProvenanceStore.CurrentVersion;
+                    if (reason == CadPlacementRules.RestampCarried)
+                    {
+                        // The entity it stands for, as revision B names it. The
+                        // as-built geometry is kept: it is still where it was built,
+                        // and every later comparison measures from there.
+                        p.CandidateId = rowJson.Value<string>("candidate_id") ?? p.CandidateId;
+                        p.SemanticId = rowJson.Value<string>("semantic_id") ?? p.SemanticId;
+                        p.GeometryId = rowJson.Value<string>("geometry_id") ?? p.GeometryId;
+                        p.SourceFileSha256 = provenanceTemplate.Value<string>("source_file_sha256") ?? p.SourceFileSha256;
+                        p.SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint") ?? p.SourceFingerprint;
+                        p.PlanFingerprint = provenanceTemplate.Value<string>("plan_fingerprint") ?? p.PlanFingerprint;
+                        p.SourcePath = provenanceTemplate.Value<string>("source_path") ?? p.SourcePath;
+                    }
                     if (string.IsNullOrEmpty(p.GeometryId)) p.GeometryId = rowJson.Value<string>("geometry_id");
                     if (string.IsNullOrEmpty(p.SourcePath)) p.SourcePath = provenanceTemplate.Value<string>("source_path");
                     p.WrittenUtc = DateTime.UtcNow.ToString("o");
@@ -340,11 +353,53 @@ namespace Horizun.Revit.Commands
                         ["element_id"] = id, ["reason"] = reason, ["written"] = ok,
                         ["was_version"] = wasV1 ? "v1" : "v2",
                         ["means"] = ok
-                            ? (wasV1 ? "migrated from v1: this element now names the placement that built it"
-                                     : "re-stamped with the placement's current transform")
+                            ? (reason == CadPlacementRules.RestampCarried
+                                   ? "carried to this revision: the update matched this element to the same entity " +
+                                     "in the new drawing, so it now cites that drawing; its as-built geometry is kept"
+                                   : wasV1 ? "migrated from v1: this element now names the placement that built it"
+                                           : "re-stamped with the placement's current transform")
                             : "the rewrite did not land and the element keeps the record it had. Revit said: " +
                               (why ?? "(nothing)")
                     });
+                }
+                // WHAT MOVED BECAUSE ITS HOST MOVED. A wall this update re-shaped
+                // carries its hosted devices with it; their as-built record still
+                // names the old position, so the next update would call each of
+                // them "moved by a person". They were moved by THIS run, so their
+                // record is brought to where they now stand - and said so.
+                var reshapedHosts = new HashSet<long>(touched.Where(x => !x.RowIndex.HasValue).Select(x => x.ElementId));
+                if (reshapedHosts.Count > 0)
+                {
+                    foreach (FamilyInstance fi in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
+                                                                                  .Cast<FamilyInstance>())
+                    {
+                        long hostId;
+                        try { hostId = fi.Host == null ? -1 : Rid.Value(fi.Host.Id); } catch { continue; }
+                        if (!reshapedHosts.Contains(hostId)) continue;
+                        long id = Rid.Value(fi.Id);
+                        if (touched.Any(x => x.ElementId == id)) continue;
+                        string problem;
+                        CadProvenance existing = CadProvenanceStore.Read(fi, out problem);
+                        if (existing == null) continue;
+                        CadProvenance p = existing.Clone();
+                        string was = p.BuiltGeometry;
+                        p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(fi));
+                        if (string.Equals(was, p.BuiltGeometry, StringComparison.Ordinal)) continue;
+                        p.WrittenUtc = DateTime.UtcNow.ToString("o");
+                        string why;
+                        bool ok = CadProvenanceStore.Write(fi, p, out why);
+                        if (ok) restamped++; else restampFailed++;
+                        restamps.Add(new JObject
+                        {
+                            ["element_id"] = id, ["reason"] = "host_reshaped_by_this_update", ["written"] = ok,
+                            ["host_id"] = hostId, ["was_built_at_mm"] = was, ["now_at_mm"] = p.BuiltGeometry,
+                            ["means"] = ok
+                                ? "this element moved because this update re-shaped the wall it is hosted in; its " +
+                                  "as-built record now names where it stands, so the next update does not read the " +
+                                  "move as somebody's edit"
+                                : "the rewrite did not land. Revit said: " + (why ?? "(nothing)")
+                        });
+                    }
                 }
                 t.Commit();
             }
@@ -438,7 +493,9 @@ namespace Horizun.Revit.Commands
             if (ops == null) yield break;
             foreach (JObject op in ops.OfType<JObject>())
             {
-                if (!string.Equals(op.Value<string>("operation"), "set_curve", StringComparison.Ordinal)) continue;
+                string operation = op.Value<string>("operation");
+                if (!string.Equals(operation, "set_curve", StringComparison.Ordinal) &&
+                    !string.Equals(operation, "move", StringComparison.Ordinal)) continue;
                 foreach (JToken id in op["element_ids"] as JArray ?? new JArray())
                 {
                     long value;

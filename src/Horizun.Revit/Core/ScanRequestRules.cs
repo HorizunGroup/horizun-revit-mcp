@@ -70,6 +70,14 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly string[] KnownKeys =
         {
+            // THE COMMAND READS THIS AND THE VALIDATOR REFUSED IT.
+            //
+            // horizun_model_scan's schema declares `cooperative` and the command
+            // implements it - CooperativeOptions.Read is the first thing it does -
+            // but this list, which decides what the command ACCEPTS, did not carry
+            // it. A caller following the published schema got "unknown key", which
+            // is the contract accusing its own tool.
+            "cooperative",
             "target_document_title",
             "response_mode",
             "top",

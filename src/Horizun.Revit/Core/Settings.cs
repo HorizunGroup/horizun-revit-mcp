@@ -244,6 +244,25 @@ namespace Horizun.Revit.Core
         }
 
         public static bool IsToolAllowed(CommandContract contract, out string reason)
+            => IsToolAllowed(contract, out reason, ignoreToolPacks: false);
+
+        /// <summary>
+        /// The same admission decision with the tool-pack restriction lifted, and ONLY
+        /// that one. Everything else - denied_tools, the allowlist, the pause, the
+        /// permission profile, the Python grant - still applies.
+        ///
+        /// It exists for one purpose: measuring what the pack selection costs and saves
+        /// (Protocol/DiscoveryCost.cs). A baseline that also lifted the permission
+        /// profile would credit the packs with a saving the owner's read_only setting
+        /// made, which is how a measured percentage becomes a flattering one.
+        ///
+        /// NOTHING DISPATCHES THROUGH THIS. It answers a question about the
+        /// configuration; it never decides whether a call may run.
+        /// </summary>
+        public static bool IsToolAllowedIgnoringPacks(CommandContract contract, out string reason)
+            => IsToolAllowed(contract, out reason, ignoreToolPacks: true);
+
+        private static bool IsToolAllowed(CommandContract contract, out string reason, bool ignoreToolPacks)
         {
             reason = null;
             if (contract == null) { reason = "Unknown tool contract."; return false; }
@@ -266,9 +285,12 @@ namespace Horizun.Revit.Core
             // consult, so hidden means unreachable on every path - sync, async, submit
             // and execute_plan's children alike. Core tools never fall to this check;
             // ActivePackResolution welds them on even over a malformed selection.
-            ToolPacks.Resolution packs = ActivePackResolution(settings);
-            if (packs.Restricting && !packs.Tools().Contains(contract.Name))
-            { reason = ToolPacks.HiddenReason(contract.Name, packs); return false; }
+            if (!ignoreToolPacks)
+            {
+                ToolPacks.Resolution packs = ActivePackResolution(settings);
+                if (packs.Restricting && !packs.Tools().Contains(contract.Name))
+                { reason = ToolPacks.HiddenReason(contract.Name, packs); return false; }
+            }
 
             string profile = PermissionProfile;
             JToken persistentUiToken = settings?["execute_python_ui_granted"];

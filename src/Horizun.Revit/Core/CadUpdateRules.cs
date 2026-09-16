@@ -69,12 +69,14 @@ namespace Horizun.Revit.Core
         public const string Ambiguous = "ambiguous";
         /// <summary>The drawing changed AND a person changed the element. Nobody here can reconcile that.</summary>
         public const string Conflict = "conflict";
+        /// <summary>Same place, and the element no longer faces the way the drawing's symbol points.</summary>
+        public const string Reoriented = "reoriented";
 
         /// <summary>Every classification this bridge will ever emit, so a reader can switch exhaustively.</summary>
         public static readonly string[] All =
         {
             Unchanged, Added, Removed, Moved, Reshaped, Retyped, Relayered, Resized, Rehosted,
-            ManuallyDiverged, Ambiguous, Conflict
+            ManuallyDiverged, Ambiguous, Conflict, Reoriented
         };
     }
 
@@ -112,6 +114,33 @@ namespace Horizun.Revit.Core
         /// <summary>orphan: where it was built, kept so a pairing can be judged on geometry.</summary>
         public List<CadPoint> AsBuiltGeometry;
 
+        /// <summary>orphan: where the element is NOW, and the line of the wall that holds it, when it has one.</summary>
+        public List<CadPoint> CurrentGeometry;
+        public List<CadPoint> HostLine;
+
+        /// <summary>move: the displacement, in mm, that takes the element to where revision B puts it.</summary>
+        public CadPoint? Vector;
+
+        /// <summary>The bore this run is to be built at, when the rule declares one.</summary>
+        public double? DiameterMm;
+
+        /// <summary>The slope the rule declares for it, when it declares one.</summary>
+        public double? SlopePercent;
+
+        /// <summary>
+        /// WHY THIS ACTION MAY NOT BE SENT YET, or null when it may.
+        ///
+        /// Same barrier as the conversion plan, for the same reason and in the same
+        /// words: a drawing is flat, a declared slope says how steep and not which
+        /// way, and a run built at the rule's elevation is a level drain. A blocked
+        /// action emits NO geometry_mm, so the caller has no coordinates to send to
+        /// horizun_create_elements - which is the only thing that actually stops a
+        /// write.
+        /// </summary>
+        public string BlockedUntil;
+
+        public bool Blocked { get { return BlockedUntil != null; } }
+
         public JObject ToJson()
         {
             var o = new JObject
@@ -127,7 +156,18 @@ namespace Horizun.Revit.Core
             if (SemanticId != null) o["semantic_id"] = SemanticId;
             if (GeometryId != null) o["geometry_id"] = GeometryId;
             if (ElementId.HasValue) o["element_id"] = ElementId.Value;
-            if (Geometry.Count > 0)
+            if (Vector.HasValue)
+                o["vector_mm"] = new JArray(Math.Round(Vector.Value.X, 3), Math.Round(Vector.Value.Y, 3),
+                                            Math.Round(Vector.Value.Z, 3));
+            if (Blocked)
+            {
+                o["blocked_until"] = BlockedUntil;
+                o["geometry_mm_withheld"] =
+                    "this action carries no coordinates while it is blocked. Publishing them would let a " +
+                    "caller send them to horizun_create_elements, which is exactly the write the block " +
+                    "exists to prevent.";
+            }
+            if (!Blocked && Geometry.Count > 0)
                 o["geometry_mm"] = new JArray(Geometry.Select(p => new JArray(
                     Math.Round(p.X, 4, MidpointRounding.AwayFromZero),
                     Math.Round(p.Y, 4, MidpointRounding.AwayFromZero),
@@ -229,7 +269,10 @@ namespace Horizun.Revit.Core
             update.CandidatesRead = candidates.Count;
             update.SubjectsExamined = subjects.Count;
 
-            double tolerance = Math.Max(set != null ? set.PointToleranceMm : 1.0, 0.001);
+            // "IS IT STILL WHERE IT WAS BUILT" is the revision comparison, and it has
+            // its own number; point_mm is how close two endpoints must be to merge.
+            double tolerance = Math.Max(set != null && set.RevisionCompareMm > 0 ? set.RevisionCompareMm
+                                        : set != null ? set.PointToleranceMm : 1.0, 0.001);
 
             // THE PLACEMENT MOVED, AND THE CALLER SAID SO. Every semantic id is
             // derived from model coordinates, so after a placement move none of
@@ -382,7 +425,29 @@ namespace Horizun.Revit.Core
                         {
                             ["rule_id"] = c.RuleId,
                             ["layer"] = c.Layer,
-                            ["confidence"] = Math.Round(c.Confidence, 4)
+                            ["confidence"] = Math.Round(c.Confidence, 4),
+                            ["family_type"] = c.FamilyType,
+
+                            // WHAT THE DRAWING DID NOT CARRY, at the point where
+                            // something would be built from it.
+                            //
+                            // The geometry below is what the caller sends to
+                            // horizun_create_elements, and it is FLAT. Where the
+                            // rule declares a slope, this route cannot orient it -
+                            // that needs an outfall and a network walk, which
+                            // horizun_plan_from_cad has and this one does not - so
+                            // a run re-created by a revision would sit level beside
+                            // neighbours that carry the fall. A step in a drain is
+                            // worse than a drain laid level all the way, and the
+                            // one thing that must not happen is that it arrives
+                            // unannounced.
+                            ["unresolved_facts"] = new JArray(c.UnresolvedFacts),
+                            ["geometry_is"] = c.UnresolvedFacts.Count == 0
+                                ? "the drawn geometry at the height the rule declares."
+                                : "the drawn geometry at the height the rule declares - FLAT. Read " +
+                                  "unresolved_facts before sending it to horizun_create_elements: what " +
+                                  "the drawing did not carry is not supplied here, and a declared slope " +
+                                  "is not applied by this route."
                         }
                     });
                     continue;
@@ -569,6 +634,34 @@ namespace Horizun.Revit.Core
                         continue;
                     }
 
+                    // THE SAME PLACE, FACING ANOTHER WAY. A symbol's identity is its
+                    // position, so a rotated symbol matches the element built from
+                    // it and every comparison above agrees. The hand direction is
+                    // what the rotation decided; if it no longer agrees, the drawing
+                    // turned the symbol round.
+                    JObject turned;
+                    double? off = CadAuditRules.HandOffDegrees(c, held, set != null ? set.AngleToleranceDegrees : 1.0,
+                                                              out turned);
+                    if (off.HasValue && off.Value > (set != null ? set.AngleToleranceDegrees : 1.0))
+                    {
+                        var reoriented = new CadUpdateAction
+                        {
+                            Kind = "review",
+                            Classification = CadChange.Reoriented,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
+                            Geometry = new List<CadPoint>(c.Geometry),
+                            Automatic = false,
+                            Says = "the element is where the drawing puts it and faces " +
+                                   off.Value.ToString("0.#", CultureInfo.InvariantCulture) + " degrees from the way " +
+                                   "the drawing's symbol now points. Turning a wall-hosted device round is a new " +
+                                   "placement on its face, not a transform, so nothing was changed.",
+                            Evidence = Where(c, held, p)
+                        };
+                        foreach (JProperty prop in turned.Properties()) reoriented.Evidence[prop.Name] = prop.Value;
+                        update.Actions.Add(reoriented);
+                        continue;
+                    }
+
                     update.Actions.Add(new CadUpdateAction
                     {
                         Kind = "leave",
@@ -622,7 +715,9 @@ namespace Horizun.Revit.Core
                 // reconciling them means knowing which of the two people was
                 // right - which is not a fact about the drawing.
                 List<CadPoint> orphanAsBuilt = AsBuilt(p);
-                bool alsoMovedByHand = orphanAsBuilt != null && s.Geometry != null && s.Geometry.Count >= 2 &&
+                // A POINT IS ONE POINT. This asked for two, so a device moved by hand
+                // and dropped by the drawing came back as a plain removal.
+                bool alsoMovedByHand = orphanAsBuilt != null && s.Geometry != null && s.Geometry.Count >= 1 &&
                                        !SamePlace(orphanAsBuilt, s.Geometry, tolerance);
 
                 update.Actions.Add(new CadUpdateAction
@@ -639,10 +734,13 @@ namespace Horizun.Revit.Core
                            "element. Deleting is never automatic here: the two cases look identical from the " +
                            "outside and only one of them is a deletion.",
                     AsBuiltGeometry = AsBuilt(p),
+                    CurrentGeometry = s.Geometry == null ? null : new List<CadPoint>(s.Geometry),
+                    HostLine = s.HostLine == null || s.HostLine.Count < 2 ? null : new List<CadPoint>(s.HostLine),
                     Evidence = new JObject
                     {
                         ["was_layer"] = p.Layer,
                         ["was_rule"] = p.RuleId,
+                        ["was_type"] = s.TypeName,
                         ["built_from_revision"] = p.CandidateId,
                         ["as_built_mm"] = p.BuiltGeometry,
                         ["also_moved_by_hand"] = alsoMovedByHand
@@ -658,6 +756,7 @@ namespace Horizun.Revit.Core
             ProposePairings(update, set, tolerance,
                             new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
             ApplyAccepted(update, accepted);
+            CarryHeightFacts(update, candidates);
             return update;
         }
 
@@ -759,8 +858,12 @@ namespace Horizun.Revit.Core
                         Automatic = true,
                         Says = "the PLACEMENT moved and nobody has touched this element since it was built: it is " +
                                "still on the line the drawing used to be on. Re-shaped to follow the drawing, and it " +
-                               "keeps its id, its parameters and everything hosted on it.",
-                        Evidence = where
+                               "keeps its id, its parameters and everything hosted on it. THE GEOMETRY BELOW IS " +
+                               "FLAT: if this run was built to a fall, re-shaping it onto the drawing's line " +
+                               "DESTROYS that fall while its neighbours keep theirs - a step in the middle of a " +
+                               "drain, on an element that keeps its id and its parameters and therefore looks " +
+                               "surgically updated. Read unresolved_facts before sending this one.",
+                        Evidence = Flat(where, c)
                     });
                     continue;
                 }
@@ -854,6 +957,11 @@ namespace Horizun.Revit.Core
             foreach (CadUpdateAction orphan in orphans)
             {
                 List<CadPoint> was = orphan.AsBuiltGeometry;
+                if (was != null && was.Count == 1)
+                {
+                    ProposePointPairing(orphan, creates, rejected);
+                    continue;
+                }
                 if (was == null || was.Count < 2) continue;
 
                 CadUpdateAction best = null;
@@ -972,6 +1080,77 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
+        /// THE SAME DEVICE, MOVED. A symbol that moved has a new identity, so it
+        /// arrives as a create and its element as an orphan - exactly as a wall
+        /// does, and with the same danger: applying the create builds a second
+        /// device. The resemblance is layer, rule and family type, within two
+        /// metres of where the element was built; it is offered, never taken, and
+        /// every candidate that could be this element is held.
+        /// </summary>
+        private static void ProposePointPairing(CadUpdateAction orphan, List<CadUpdateAction> creates,
+                                                HashSet<string> rejected)
+        {
+            CadPoint was = orphan.AsBuiltGeometry[0];
+            CadUpdateAction best = null;
+            double bestDistance = double.MaxValue;
+            var plausible = new List<CadUpdateAction>();
+            foreach (CadUpdateAction create in creates)
+            {
+                if (create.Geometry.Count != 1) continue;
+                if (!string.Equals(create.Evidence.Value<string>("layer"), orphan.Evidence.Value<string>("was_layer"),
+                                   StringComparison.Ordinal)) continue;
+                if (!string.Equals(create.Evidence.Value<string>("rule_id"), orphan.Evidence.Value<string>("was_rule"),
+                                   StringComparison.Ordinal)) continue;
+                string wasType = orphan.Evidence.Value<string>("was_type");
+                string nowType = create.Evidence.Value<string>("family_type");
+                if (!string.IsNullOrWhiteSpace(wasType) && !string.IsNullOrWhiteSpace(nowType) && !SameType(nowType, wasType))
+                    continue;
+                double distance = was.PlanDistanceTo(create.Geometry[0]);
+                if (distance > 2000) continue;
+                plausible.Add(create);
+                if (distance < bestDistance) { bestDistance = distance; best = create; }
+            }
+            if (best == null) return;
+
+            string why = "same layer, rule and type, " + bestDistance.ToString("0", CultureInfo.InvariantCulture) +
+                         " mm from where the element was built";
+            double score = Math.Round(1 - Math.Min(1, bestDistance / 2000.0), 4);
+            string implied = plausible.Count == 1 ? CadChange.Moved : CadChange.Ambiguous;
+            if (orphan.Classification == CadChange.Conflict) implied = CadChange.Conflict;
+            orphan.Classification = implied;
+            best.Classification = implied;
+            orphan.PairedWith = best.CandidateId;
+            orphan.PairConfidence = score;
+            orphan.Evidence["may_be_the_same_as"] = best.CandidateId;
+            orphan.Evidence["paired_on"] = why;
+            orphan.Evidence["pair_confidence"] = score;
+            orphan.Says += " A candidate in this same plan looks like it (" + why + "). Nothing in a DWG says " +
+                           "whether it IS, so this is offered, not taken: accept the pairing and the element is " +
+                           "moved along its own wall and keeps its id, instead of a second device being built.";
+            best.Evidence["may_be_element"] = orphan.ElementId;
+            best.Evidence["paired_on"] = why;
+
+            foreach (CadUpdateAction maybe in plausible)
+            {
+                if (rejected.Contains(maybe.CandidateId))
+                {
+                    maybe.Evidence["pairing_rejected"] = true;
+                    maybe.Says += " A caller rejected the pairing with element " + orphan.ElementId +
+                                  ", so this is built as new.";
+                    continue;
+                }
+                maybe.Automatic = false;
+                maybe.Evidence["may_be_element"] = orphan.ElementId;
+                maybe.Says += ReferenceEquals(maybe, best)
+                    ? " HELD: it may instead be element " + orphan.ElementId + " moved (" + why + "). Building it " +
+                      "now would put a second device beside that one."
+                    : " HELD: element " + orphan.ElementId + " could be this rather than the candidate it was " +
+                      "paired with.";
+                if (!ReferenceEquals(maybe, best)) maybe.Classification = CadChange.Ambiguous;
+            }
+        }
+
+        /// <summary>
         /// Pairings a PERSON accepted become set_curve: the element keeps its id,
         /// its parameters and everything hosted on it, and the create that would
         /// have duplicated it disappears from the plan.
@@ -992,6 +1171,12 @@ namespace Horizun.Revit.Core
                                         "element happens to carry that id now. Nothing was paired.");
                     continue;
                 }
+                if (orphan.AsBuiltGeometry != null && orphan.AsBuiltGeometry.Count == 1 && create.Geometry.Count == 1)
+                {
+                    AcceptPointPairing(update, orphan, create);
+                    continue;
+                }
+
                 // ACCEPTING RESOLVES IT. A pairing offered as ambiguous and then
                 // accepted by a person is no longer ambiguous - it is the change
                 // the shape said it was, now with somebody's name on it. Leaving
@@ -1013,6 +1198,95 @@ namespace Horizun.Revit.Core
                               "re-shaped in place, so it keeps its id, its parameters and everything hosted on it.";
                 create.Evidence["accepted_pairing"] = true;
             }
+        }
+
+        /// <summary>
+        /// An accepted point pairing: the element is MOVED, keeping its id.
+        ///
+        /// A wall-hosted device moves ALONG its wall: the displacement is the part
+        /// of (where revision B draws it - where the element is now) that runs
+        /// along the host's line, so the device stays on the face it is on. A
+        /// symbol that crossed to the other side of its wall is not a move - it is
+        /// a new placement on another face - and stays a review. A device with no
+        /// host moves to the drawn point.
+        /// </summary>
+        private static void AcceptPointPairing(CadUpdate update, CadUpdateAction orphan, CadUpdateAction create)
+        {
+            CadPoint target = create.Geometry[0];
+            CadPoint now = orphan.CurrentGeometry != null && orphan.CurrentGeometry.Count == 1
+                ? orphan.CurrentGeometry[0] : orphan.AsBuiltGeometry[0];
+            CadPoint vector;
+            if (orphan.HostLine != null && orphan.HostLine.Count >= 2)
+            {
+                CadPoint a = orphan.HostLine[0], b = orphan.HostLine[orphan.HostLine.Count - 1];
+                double dx = b.X - a.X, dy = b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+                if (len <= 1e-9)
+                {
+                    update.Rejected.Add("element " + orphan.ElementId + ": its host line has no length, so no move " +
+                                        "along it can be computed. Nothing was paired.");
+                    return;
+                }
+                double ux = dx / len, uy = dy / len;
+                double sideNow = (now.X - a.X) * -uy + (now.Y - a.Y) * ux;
+                double sideThen = (target.X - a.X) * -uy + (target.Y - a.Y) * ux;
+                if (Math.Sign(sideNow) != Math.Sign(sideThen) && Math.Abs(sideThen) > 1.0 && Math.Abs(sideNow) > 1.0)
+                {
+                    update.Rejected.Add("element " + orphan.ElementId + " is on one side of its wall and revision B " +
+                                        "draws '" + create.CandidateId + "' on the other. That is a new placement on " +
+                                        "another face, not a move. Nothing was paired.");
+                    return;
+                }
+                double along = (target.X - now.X) * ux + (target.Y - now.Y) * uy;
+                vector = new CadPoint(along * ux, along * uy, 0);
+            }
+            else
+            {
+                vector = new CadPoint(target.X - now.X, target.Y - now.Y, 0);
+            }
+
+            orphan.Kind = "paired_away";
+            orphan.Automatic = true;
+            orphan.Classification = orphan.Classification == CadChange.Conflict ? CadChange.Conflict : CadChange.Moved;
+            orphan.Says = "paired with '" + create.CandidateId + "' by the caller: this element is being moved to " +
+                          "where revision B draws it rather than left behind and duplicated.";
+            create.Kind = "move";
+            create.ElementId = orphan.ElementId;
+            create.Automatic = true;
+            create.Vector = vector;
+            create.Classification = orphan.Classification;
+            create.Says = "a caller accepted that this is element " + orphan.ElementId + " moved. It is moved " +
+                          Math.Sqrt(vector.X * vector.X + vector.Y * vector.Y).ToString("0.#", CultureInfo.InvariantCulture) +
+                          " mm" + (orphan.HostLine != null ? " along its own wall" : "") + " and keeps its id, its " +
+                          "parameters and its host." +
+                          (orphan.Classification == CadChange.Conflict
+                              ? " It had ALSO been moved by hand; accepting the pairing replaces that edit with " +
+                                "the drawing's position, which is the caller's decision."
+                              : "");
+            create.Evidence["accepted_pairing"] = true;
+            create.Evidence["moved_from_mm"] = new JArray(Math.Round(now.X, 3), Math.Round(now.Y, 3));
+        }
+
+        /// <summary>
+        /// The evidence an action carries, plus WHAT THE DRAWING DID NOT SAY.
+        ///
+        /// The geometry on an update action is what the caller sends to
+        /// horizun_create_elements or horizun_transform_elements, and it is flat:
+        /// this route reads one line at a time and a fall is a property of the
+        /// whole network, which only an outfall and a walk can supply. Publishing
+        /// the candidate's own unresolved facts here is the difference between a
+        /// stated limitation and a trap.
+        /// </summary>
+        private static JObject Flat(JObject evidence, CadCandidate c)
+        {
+            JObject o = evidence == null ? new JObject() : (JObject)evidence.DeepClone();
+            o["unresolved_facts"] = new JArray(c.UnresolvedFacts);
+            o["geometry_is"] = c.UnresolvedFacts.Count == 0
+                ? "the drawn geometry at the height the rule declares."
+                : "the drawn geometry at the height the rule declares - FLAT. What the drawing did not " +
+                  "carry is listed above and is NOT supplied here; a declared slope in particular is not " +
+                  "applied by this route, because orienting a fall needs an outfall and a walk of the whole " +
+                  "network.";
+            return o;
         }
 
         private static double UndirectedAngle(List<CadPoint> a, List<CadPoint> b)
@@ -1064,6 +1338,9 @@ namespace Horizun.Revit.Core
             double nowLength = now[0].PlanDistanceTo(now[now.Count - 1]);
             return Math.Abs(wasLength - nowLength) <= Math.Max(tolerance, 1.0);
         }
+
+        /// <summary>The as-built geometry a provenance record carries, or null.</summary>
+        public static List<CadPoint> AsBuiltOf(CadProvenance p) => AsBuilt(p);
 
         private static List<CadPoint> AsBuilt(CadProvenance p)
         {
@@ -1139,6 +1416,177 @@ namespace Horizun.Revit.Core
         }
 
         private static string Quoted(string s) { return s == null ? "(nothing)" : "'" + s + "'"; }
+
+        /// <summary>
+        /// Put the heights a fall walk computed onto the update's actions.
+        ///
+        /// The same three rules as the conversion plan, because they are the same
+        /// three facts: WHICH END IS WHICH is decided by position and never by
+        /// order; an INVERT IS NOT A CENTRELINE, so a run with no declared bore
+        /// takes no height at all; and a walk that refused, or one whose own
+        /// conflicts say a node is at two inverts, applies to nothing.
+        ///
+        /// Returns the actions it could not give a height to, each with its reason.
+        /// They stay blocked, and a blocked action publishes no coordinates.
+        /// </summary>
+        public static List<JObject> ApplyFall(CadUpdate update, CadNetwork network, CadFall fall,
+                                              double planToleranceMm, out string refusal)
+        {
+            refusal = null;
+            var notGiven = new List<JObject>();
+            if (update == null || network == null || fall == null)
+            {
+                refusal = "nothing_to_apply: an update, the network it was read from and a computed fall are " +
+                          "all required.";
+                return notGiven;
+            }
+            if (!fall.Ok)
+            {
+                refusal = "fall_refused: " + fall.Refusal + " No action was given a height.";
+                return notGiven;
+            }
+            if (fall.Conflicts.Count > 0)
+            {
+                refusal = "fall_conflicts: the walk found " + fall.Conflicts.Count + " node(s) the outfall " +
+                          "reaches two ways at different inverts. NOTHING was applied - an update that " +
+                          "half-carries a contradiction is worse than one that carries none.";
+                return notGiven;
+            }
+
+            var runOf = new Dictionary<string, CadRun>(StringComparer.Ordinal);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            foreach (CadRun run in network.Runs)
+            {
+                if (run == null || run.SemanticId == null) continue;
+                if (runOf.ContainsKey(run.SemanticId)) ambiguous.Add(run.SemanticId);
+                else runOf[run.SemanticId] = run;
+            }
+            var fallOf = new Dictionary<string, CadRunFall>(StringComparer.Ordinal);
+            foreach (CadRunFall f in fall.Runs)
+                if (f != null && f.RunId != null) fallOf[f.RunId] = f;
+
+            double tolerance = planToleranceMm > 0 ? planToleranceMm : 1.0;
+
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                if (a == null || !a.Blocked) continue;
+                if (a.Geometry.Count < 2) { Skip(notGiven, a, "this action has no two ends to put a height on."); continue; }
+
+                if (a.SemanticId == null || ambiguous.Contains(a.SemanticId))
+                { Skip(notGiven, a, "no single run of the network carries this semantic id."); continue; }
+
+                CadRun matched;
+                if (!runOf.TryGetValue(a.SemanticId, out matched))
+                { Skip(notGiven, a, "no run of the network carries this semantic id. Both readings must use " +
+                                    "the same point tolerance or their ids do not agree."); continue; }
+
+                CadRunFall heights;
+                if (!fallOf.TryGetValue(matched.Id, out heights))
+                { Skip(notGiven, a, "the fall walk never reached this run - its own blocked and unreachable " +
+                                    "lists say why."); continue; }
+
+                CadPoint first = a.Geometry[0], last = a.Geometry[a.Geometry.Count - 1];
+                var planFirst = new CadPoint(first.X, first.Y, 0);
+                var planLast = new CadPoint(last.X, last.Y, 0);
+                var runStart = new CadPoint(matched.Start.X, matched.Start.Y, 0);
+                var runEnd = new CadPoint(matched.End.X, matched.End.Y, 0);
+
+                bool straight = planFirst.PlanDistanceTo(runStart) <= tolerance &&
+                                planLast.PlanDistanceTo(runEnd) <= tolerance;
+                bool swapped = planFirst.PlanDistanceTo(runEnd) <= tolerance &&
+                               planLast.PlanDistanceTo(runStart) <= tolerance;
+
+                if (straight && swapped)
+                { Skip(notGiven, a, "both ends sit within tolerance of both ends of the matching run, so " +
+                                    "position cannot say which end is downstream. A fall applied backwards " +
+                                    "is a pipe running uphill in a model that looks finished."); continue; }
+                if (!straight && !swapped)
+                { Skip(notGiven, a, "the ends of this action are not where the matching network run's ends " +
+                                    "are. The id matched and the geometry did not."); continue; }
+
+                if (!a.DiameterMm.HasValue || a.DiameterMm.Value <= 0)
+                { Skip(notGiven, a, "this run declares no bore, so the computed invert cannot be turned into " +
+                                    "the centreline an element is placed on. Half a diameter is 75 mm on a " +
+                                    "150 mm drain - it is not a rounding."); continue; }
+
+                double half = a.DiameterMm.Value / 2.0;
+                double zFirst = (straight ? heights.StartZMm : heights.EndZMm) + half;
+                double zLast = (straight ? heights.EndZMm : heights.StartZMm) + half;
+
+                a.Geometry[0] = new CadPoint(first.X, first.Y, zFirst);
+                a.Geometry[a.Geometry.Count - 1] = new CadPoint(last.X, last.Y, zLast);
+                a.BlockedUntil = null;
+                a.Says += " Its two ends carry the heights this drawing's declared slope implies, " +
+                          Math.Abs(zFirst - zLast).ToString("0.#", CultureInfo.InvariantCulture) +
+                          " mm apart, as CENTRELINES - the computed invert plus half the " +
+                          a.DiameterMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm bore.";
+            }
+            return notGiven;
+        }
+
+        private static void Skip(List<JObject> into, CadUpdateAction a, string why)
+        {
+            into.Add(new JObject
+            {
+                ["candidate_id"] = a.CandidateId,
+                ["semantic_id"] = a.SemanticId,
+                ["kind"] = a.Kind,
+                ["why"] = why,
+                ["stays"] = "blocked, and it publishes no coordinates."
+            });
+        }
+
+        /// <summary>
+        /// Every action that would put geometry in the model learns the two facts a
+        /// HEIGHT needs - the bore and the declared slope - and is BLOCKED where the
+        /// slope says a height is missing rather than zero.
+        ///
+        /// It runs as one pass over the finished actions rather than at each of the
+        /// ten places an action is built: a rule applied in ten places is a rule
+        /// that will be applied in nine the next time somebody adds an eleventh.
+        ///
+        /// set_curve is blocked for a stronger reason than create. A create adds a
+        /// flat run beside neighbours that fall; a RE-SHAPE takes an element that
+        /// already exists - possibly built to a fall, with fittings at both ends -
+        /// and flattens it, destroying height that was there, on an element that
+        /// keeps its id and its parameters and therefore looks surgically updated.
+        /// </summary>
+        private static void CarryHeightFacts(CadUpdate update, IList<CadCandidate> candidates)
+        {
+            if (update == null || candidates == null) return;
+            var byId = new Dictionary<string, CadCandidate>(StringComparer.Ordinal);
+            foreach (CadCandidate c in candidates)
+                if (c != null && c.Id != null) byId[c.Id] = c;
+
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                if (a == null || a.CandidateId == null) continue;
+                CadCandidate candidate;
+                if (!byId.TryGetValue(a.CandidateId, out candidate)) continue;
+
+                a.DiameterMm = candidate.DiameterMm;
+                a.SlopePercent = candidate.SlopePercent;
+
+                bool putsGeometry = a.Kind == "create" || a.Kind == "set_curve";
+                if (!putsGeometry) continue;
+                if (!candidate.SlopePercent.HasValue ||
+                    Math.Abs(candidate.SlopePercent.Value) <= 1e-9) continue;
+
+                a.Automatic = false;
+                a.BlockedUntil =
+                    "a fall: this run's rule declares a slope of " +
+                    candidate.SlopePercent.Value.ToString("0.###", CultureInfo.InvariantCulture) +
+                    "% and this reading is flat. " +
+                    (a.Kind == "set_curve"
+                        ? "RE-SHAPING it onto the drawing's line would DESTROY the height it already has " +
+                          "while its neighbours keep theirs - a step in the middle of a drain, on an element " +
+                          "that keeps its id and its parameters and so looks surgically updated."
+                        : "Building it at the rule's elevation gives a level run beside neighbours that " +
+                          "fall.") +
+                    " Name the OUTFALL and the heights are written; until then this action carries no " +
+                    "coordinates.";
+            }
+        }
 
         private static bool SamePlace(List<CadPoint> a, List<CadPoint> b, double tolerance)
         {

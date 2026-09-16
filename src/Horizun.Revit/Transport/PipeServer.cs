@@ -47,6 +47,17 @@ namespace Horizun.Revit.Transport
         private Thread _thread;
         private volatile bool _running;
 
+        /// <summary>
+        /// Whether a pipe server in this process is accepting connections.
+        ///
+        /// STATIC BECAUSE THERE IS ONE PER PROCESS, and because the thing that needs to ask
+        /// - the operations pane - has no route to the instance. It exists so a panel can
+        /// tell a bridge that stopped answering from one that is idle: the pane reads files,
+        /// and files outlive the process that wrote them, so without this a dead bridge and
+        /// a quiet one look identical and the history underneath looks current.
+        /// </summary>
+        public static bool IsListening { get; private set; }
+
         public string PipeName => _pipeName;
 
         public PipeServer(Dispatcher dispatcher, string token, int commandTimeoutMs = 600000)
@@ -60,6 +71,7 @@ namespace Horizun.Revit.Transport
         public void Start()
         {
             _running = true;
+            IsListening = true;
             _thread = new Thread(AcceptLoop) { IsBackground = true, Name = "Horizun.PipeServer" };
             _thread.Start();
         }
@@ -67,6 +79,7 @@ namespace Horizun.Revit.Transport
         public void Stop()
         {
             _running = false;
+            IsListening = false;
             // A dummy connect unblocks WaitForConnection so the loop can exit.
             try
             {

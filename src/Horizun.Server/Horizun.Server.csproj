@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun MCP server. A stdio JSON-RPC process that speaks MCP to the client
@@ -88,6 +88,19 @@
          status strings it emits are pinned to CodeStatus by a Core test rather than
          by linking the readiness chain that CodeStatus lives beside. -->
     <Compile Include="..\Horizun.Revit\Core\BudgetComparisonRules.cs" />
+    <!-- The repair memory. Revit-free by design: the normalisation, the matching and
+         the quarantine rules are arithmetic over strings, and the tool that works them
+         answers in this process because the moment somebody most wants to ask "has this
+         failure been seen before?" is the moment Revit is busy or gone. -->
+    <Compile Include="..\Horizun.Revit\Core\RepairMemory.cs" />
+    <!-- The promotion registry. Revit-free for the same reason: states, transitions and
+         an atomic pointer are arithmetic over files, and the tool that works them must
+         answer whether or not a Revit is running. -->
+    <!-- ScriptPromotion calls into both of these and the project carried only
+         one of the two files, so the whole server failed to compile - which
+         reads, from outside, exactly like a server with nothing wrong. -->
+    <Compile Include="..\Horizun.Revit\Core\ScriptInvocation.cs" />
+    <Compile Include="..\Horizun.Revit\Core\ScriptPromotion.cs" />
   </ItemGroup>
 
   <ItemGroup>

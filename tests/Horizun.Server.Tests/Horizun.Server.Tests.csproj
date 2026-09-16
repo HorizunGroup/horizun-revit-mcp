@@ -28,8 +28,30 @@
     <!-- The negotiation rule: which MCP version to answer. Golden-tested because a bad
          answer breaks every client at the first message, silently from this side. -->
     <Compile Include="..\..\src\Horizun.Server\ProtocolNegotiation.cs" Link="ProtocolNegotiation.cs" />
+    <!-- The 2026-07-28 adapter. It is the layer that decides which ERA a request is in,
+         and the one property that matters most about it - that a legacy result is byte
+         for byte what it was before the adapter existed - can only be asserted against
+         the shipped source, never a copy. Linked whole: the revision table, the request
+         envelope, the result envelope, the caching hints, server/discover, the extension
+         registry, the subscription stream, the modern tasks spelling, the provenance
+         stamp and the discovery-cost measurement are one unit and drift as one. -->
+    <Compile Include="..\..\src\Horizun.Server\Protocol\McpRevision.cs" Link="Protocol\McpRevision.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\McpErrorCodes.cs" Link="Protocol\McpErrorCodes.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\RequestEnvelope.cs" Link="Protocol\RequestEnvelope.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ResultEnvelope.cs" Link="Protocol\ResultEnvelope.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\CacheHints.cs" Link="Protocol\CacheHints.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\DiscoverHandler.cs" Link="Protocol\DiscoverHandler.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ExtensionRegistry.cs" Link="Protocol\ExtensionRegistry.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\SubscriptionStream.cs" Link="Protocol\SubscriptionStream.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ModernTasks.cs" Link="Protocol\ModernTasks.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ProvenanceStamp.cs" Link="Protocol\ProvenanceStamp.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\DiscoveryCost.cs" Link="Protocol\DiscoveryCost.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpSession.cs" Link="McpSession.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpResources.cs" Link="McpResources.cs" />
+    <!-- The MCP App the clash tool declares. Linked with McpResources because the
+         property that matters - that the app and the text render the same payload from
+         the same fields - is only assertable against the shipped source. -->
+    <Compile Include="..\..\src\Horizun.Server\McpAppResources.cs" Link="McpAppResources.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpWorkflowCatalog.cs" Link="McpWorkflowCatalog.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
@@ -44,6 +66,14 @@
          proved against a disposable workbook and the Power BI one in dry_run only. -->
     <Compile Include="..\..\src\Horizun.Server\BudgetCompare.cs" Link="BudgetCompare.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" Link="BudgetComparisonRules.cs" />
+    <!-- The repair memory and the tool that works it. The property worth proving here is
+         the privacy one: that nothing specific survives normalisation, and that a message
+         the redactor could not clean is never written at all. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\RepairMemory.cs" Link="RepairMemory.cs" />
+    <Compile Include="..\..\src\Horizun.Server\RepairMemoryTool.cs" Link="RepairMemoryTool.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptPromotion.cs" Link="ScriptPromotion.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ScriptPromotionTool.cs" Link="ScriptPromotionTool.cs" />
+    <Compile Include="..\..\src\Horizun.Server\PowerBiSelection.cs" Link="PowerBiSelection.cs" />
     <!-- The concurrency plumbing: one writer, one reply per id, one in-flight
          registry. Linked for the same reason - it needs neither Revit nor a
          running server, only a StringWriter. -->
@@ -122,6 +152,11 @@
          client sees at startup, and "Python is advertised on a fresh install" is a
          property of that pair - provable only by building the same list the server
          answers with, from the same Settings the add-in reads. -->
+    <!-- Tools.cs dispatches to ProcedureRun and ScriptPromotionTool calls
+         ScriptInvocation: without these two the project did not compile, so
+         every test in it was silent rather than passing. -->
+    <Compile Include="..\..\src\Horizun.Server\ProcedureRun.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />

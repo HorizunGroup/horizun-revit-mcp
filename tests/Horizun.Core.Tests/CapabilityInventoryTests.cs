@@ -72,6 +72,77 @@ namespace Horizun.Core.Tests
                       "transaction opens." },
 
             new Entry {
+                File = "PlanFromIfcCommand.cs", Fragment = "public static ClassVerdict Unsupported(string reason)",
+                Classification = Kind.Argument,
+                Why = "The FACTORY that makes a class-table verdict. It builds the statement the table below " +
+                      "is written in; it refuses nothing by itself, and it is recorded here because the " +
+                      "scanner reads lines and a method named after an outcome looks like one." },
+
+            new Entry {
+                File = "PlanFromIfcCommand.cs", Fragment = "ClassVerdict.Unsupported(",
+                Classification = Kind.Argument,
+                Why = "The IFC class table: classes this route does not convert, DECLARED up front rather than " +
+                      "discovered at run time. The call succeeds and the plan reports the verdict per class, so " +
+                      "nothing is refused and nothing is written - the caller's recourse is to ask for what this " +
+                      "route does convert, or to bring that geometry in another way. Deliberately NOT " +
+                      "StructuralGranted: this command grants no Python fallback and should not, because the " +
+                      "answer is a statement about coverage rather than a failure to act." },
+
+            new Entry {
+                File = "PlanFromIfcCommand.cs", Fragment = "The apply half reports every field as updated",
+                Classification = Kind.Argument,
+                Why = "PROSE, not a decision: the tool's own description listing the four words its reply uses. " +
+                      "It matches the scanner because it contains one of them. Recorded rather than excluded by " +
+                      "shape, because from one line's distance a refusal message looks exactly like this and a " +
+                      "shape rule would hide real ones." },
+
+            new Entry {
+                File = "PlanFromIfcCommand.cs", Fragment = "unchanged, unsupported or refused.",
+                Classification = Kind.Argument,
+                Why = "The second half of the same sentence of prose, matched for the same reason and " +
+                      "recorded rather than hidden by a shape rule." },
+
+            new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "int updated = 0, unchanged = 0, refused = 0",
+                Classification = Kind.Argument,
+                Why = "A TALLY, not a decision: the counters this command reports its per-field outcome with. " +
+                      "Counting how many fields could not be updated refuses nothing; the reply says what " +
+                      "happened and the caller decides. It is recorded here because the scanner reads lines and " +
+                      "a variable named after an outcome looks like one." },
+
+            new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "outcomes.Count(o => o.State == IfcUpdate.Unsupported)",
+                Classification = Kind.Argument,
+                Why = "The same tally, read back so the reply can say how many fields this apply could " +
+                      "not update. Reading a counter is not a decision about anything." },
+
+            new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "else unsupported++",
+                Classification = Kind.Argument,
+                Why = "The same tally, incremented when one field could not be updated. The decision " +
+                      "was made earlier, by whatever set that field's state." },
+
+            new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "[\"partially_updated\"] = unsupported",
+                Classification = Kind.Argument,
+                Why = "The same tally, written into the reply under the name a reader will look for." },
+
+            new Entry {
+                File = "ApplyIfcPlanCommand.cs", Fragment = "refused == 0 && unsupported == 0",
+                Classification = Kind.Argument,
+                Why = "The same tally, asked whether it is empty - which is how this command decides " +
+                      "whether to call its own coverage complete." },
+
+            new Entry {
+                File = "CreateElementsCommand.cs", Fragment = "route == CadPlacementRoute.Unsupported",
+                Classification = Kind.PostWrite,
+                Why = "A family whose FamilyPlacementType this command has no route for - measured from the " +
+                      "family itself, inside Create(), because only Revit can say what a family needs. It runs " +
+                      "INSIDE the transaction, so earlier rows in the batch may already exist and it must " +
+                      "never grant a fallback: the batch is rolled back atomically instead. The three routes " +
+                      "it does have are a level, a host element and a face." },
+
+            new Entry {
                 File = "CreateElementsCommand.cs", Fragment = "InvalidOperationException(\"unsupported kind '\" + p.Kind",
                 Classification = Kind.PostWrite,
                 Why = "The mirror switch inside Create(), which runs INSIDE the transaction. Defensive and " +

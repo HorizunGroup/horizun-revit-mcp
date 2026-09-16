@@ -66,6 +66,23 @@ namespace Horizun.Revit
 
         // Buttons -----------------------------------------------------------------
         internal static string StatusLabel(bool es) => T(es, "Estado de\nconexión", "Connection\nstatus");
+
+        internal static string OperationsLabel(bool es) => T(es, "Operaciones", "Operations");
+
+        internal static string OperationsTooltip(bool es) => T(es,
+            "Abre el panel de operaciones: la cola, lo aplicado y lo que cambió.",
+            "Open the operations pane: the queue, what was applied, and what changed.");
+
+        internal static string OperationsDescription(bool es) => T(es,
+            "Lee los RECIBOS que el puente ya escribió y los muestra tal cual: qué herramienta, sobre qué "
+            + "documento, cuándo y con qué resultado. No recalcula nada — un panel que resume por su cuenta "
+            + "acaba contando una historia distinta de la del registro que leyó. Cancela lo que aún no ha "
+            + "empezado, y dice en la misma fila que lo ya iniciado no lo interrumpe nadie, tampoco Revit.",
+            "Reads the RECEIPTS the bridge already wrote and shows them as they are: which tool, on which "
+            + "document, when, and with what outcome. It recalculates nothing — a pane that summarises on its "
+            + "own ends up telling a different story from the ledger it read. It cancels what has not started, "
+            + "and says in the same row that work already running cannot be interrupted by anyone, Revit "
+            + "included.");
         internal static string StatusTooltip(bool es) => T(es,
             "¿El asistente está conectado a este Revit?",
             "Is the assistant connected to this Revit?");

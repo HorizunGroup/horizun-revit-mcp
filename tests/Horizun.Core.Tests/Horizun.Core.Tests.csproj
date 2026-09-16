@@ -44,6 +44,28 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\PixelCalibration.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RuntimeWarmup.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CommandResult.cs" />
+    <!-- The IFC reconstruction arithmetic. Revit-free on purpose: these numbers
+         decide where somebody's building lands, and they have to be provable
+         without a building open. IfcProvenanceStore is NOT here - it is
+         Extensible Storage, which only exists inside Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcStepReader.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcPlacement.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcProfile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcSubset.cs" />
+    <!-- The IDS evaluation. Revit-free by construction: XML over a published grammar
+         and STEP over another, so the cardinality rules and the anchored-pattern
+         semantics are provable without a building open. IdsRevitPrecheck is NOT here -
+         it reads Documents. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsRestriction.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsDocument.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsFindings.cs" />
+    <!-- IdsIfcEvaluator calls IdsExpress and the project compiled one without the
+         other, so this project did not build AT ALL. A test project that cannot
+         build reports nothing, which reads exactly like a project with no
+         failures. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsExpress.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsIfcEvaluator.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsRun.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\LinkStatusTally.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PenetrationRules.cs" />
@@ -219,6 +241,39 @@
          created, verified and audited clean, because the model and the drawing
          agree with each other and neither agrees with the building. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceRole.cs" />
+    <!-- THE INTERMEDIATE REPRESENTATION and its reader capability. The whole point
+         of this file is a distinction that must survive refactoring: a zero on an
+         axis the reader is BLIND to is not a finding about the drawing, and a
+         zero on an axis it can see is. Both readings compile to the same empty
+         list, so only a test keeps them apart. Revit-free by construction - it
+         carries the contract both a Revit-backed reader and a file-parsing one
+         would fill in. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadIr.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgExtract.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockPlacement.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgScript.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgReader.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgCache.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockSymmetry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadWallReadings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDeviceSide.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadHostPlausibility.cs" />
+    <!-- MEP networks and repeated units: the two readings that turn a drawing into
+         something a model can be built from. Both are arithmetic over geometry
+         plus declared tolerances, which is exactly the kind of reasoning that
+         belongs at a desk rather than in front of an open Revit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadUnitRules.cs" />
+    <!-- Symbols are the unit recogniser at a thousandth of the scale, and the
+         grouping that feeds it is where the scale actually matters: connectivity
+         over a drawing with no bound walks the whole circuit. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadSymbolRules.cs" />
+    <!-- WHICH WAY IS DOWNHILL. A slope declared per layer says how steep and not
+         which way; the direction is a fact about the NETWORK, and getting it from
+         drawing order gives a drain that falls whichever way the draughtsman
+         happened to click - identical in plan, backwards in the building. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadFallRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadRequirementSet.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />

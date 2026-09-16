@@ -611,7 +611,7 @@ namespace Horizun.Revit.Core
                 string key = string.CompareOrdinal(ka, kb) <= 0 ? ka + "=>" + kb : kb + "=>" + ka;
                 // The layer is part of identity: the same line on two layers is
                 // two statements about the building, not one drawn twice.
-                key = (s.Layer ?? "") + "" + key;
+                key = (s.Layer ?? "") + "\u001f" + key;
                 List<CadSegment> bucket;
                 if (!groups.TryGetValue(key, out bucket))
                 {

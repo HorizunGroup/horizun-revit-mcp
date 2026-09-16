@@ -183,8 +183,24 @@ namespace Horizun.Server
         /// </summary>
         public bool TryReply(object id, JToken result) => Write(Envelope(id, "result", result));
 
-        public bool TryError(object id, int code, string message) =>
-            Write(Envelope(id, "error", new JObject { ["code"] = code, ["message"] = message }));
+        public bool TryError(object id, int code, string message) => TryError(id, code, message, null);
+
+        /// <summary>
+        /// The same refusal, carrying JSON-RPC's optional `data`.
+        ///
+        /// Three of the codes this server can now emit are useless without it:
+        /// UnsupportedProtocolVersion carries the list of versions to retry with, and
+        /// MissingRequiredClientCapability carries the capability to declare. A client
+        /// that has to parse English to recover has not been told, it has been hinted at.
+        /// `data` is omitted entirely when there is none, so every existing refusal is
+        /// byte for byte what it was.
+        /// </summary>
+        public bool TryError(object id, int code, string message, JObject data)
+        {
+            var error = new JObject { ["code"] = code, ["message"] = message };
+            if (data != null) error["data"] = data;
+            return Write(Envelope(id, "error", error));
+        }
 
         /// <summary>A notification carries no id and is never an answer to anything.</summary>
         public void Notify(string method, JObject parameters)
@@ -301,9 +317,16 @@ namespace Horizun.Server
         public bool TryReply(JToken result) =>
             Claim() && _writer.Write(OutboundWriter.Envelope(_id, "result", result));
 
-        public bool TryError(int code, string message) =>
-            Claim() && _writer.Write(OutboundWriter.Envelope(
-                _id, "error", new JObject { ["code"] = code, ["message"] = message }));
+        public bool TryError(int code, string message) => TryError(code, message, null);
+
+        /// <summary>The one-shot refusal, with JSON-RPC's optional `data`. See OutboundWriter.</summary>
+        public bool TryError(int code, string message, JObject data)
+        {
+            if (!Claim()) return false;
+            var error = new JObject { ["code"] = code, ["message"] = message };
+            if (data != null) error["data"] = data;
+            return _writer.Write(OutboundWriter.Envelope(_id, "error", error));
+        }
 
         private bool Claim() => Interlocked.CompareExchange(ref _claimed, 1, 0) == 0;
     }

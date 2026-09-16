@@ -27,7 +27,11 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class CoordinationCommand : ICommand
+    // PARTIAL: the BCF IMPORT half lives in CoordinationImport.cs. Reading somebody
+    // else's coordination file back is a different problem from writing one - it is
+    // mostly about what a returned topic may and may not assert about a finding this
+    // model measured - and it is long enough to deserve its own file.
+    public sealed partial class CoordinationCommand : ICommand
     {
         public string Name => "horizun_coordination";
         public string Description =>
@@ -53,9 +57,10 @@ namespace Horizun.Revit.Commands
                 case "list": return List(doc, request, ledgerPath);
                 case "update": return Update(doc, request, ledgerPath);
                 case "export": return Export(doc, request, ledgerPath);
+                case "import": return Import(doc, request, ledgerPath);
                 default:
-                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, evidence) is not one this command understands. " +
-                        "Known: list, update, export. (Detection and folding live in horizun_clash record_findings.)");
+                    return CommandResult.Fail("operation '" + operation + "' (known: list, update, export, import, evidence) is not one this command understands. " +
+                        "(Detection and folding live in horizun_clash record_findings.)");
             }
         }
 
@@ -252,12 +257,29 @@ namespace Horizun.Revit.Commands
             {
                 WriteZipEntry(zip, "bcf.version", CoordinationRules.BcfVersionXml());
                 foreach (CoordinationFinding f in ordered)
-                    WriteZipEntry(zip, CoordinationRules.BcfTopicGuid(f.Id) + "/markup.bcf",
-                                  CoordinationRules.BcfMarkupXml(f, doc.Title));
+                {
+                    // WHAT BCF CAN ACTUALLY IDENTIFY. A component is an IFC GlobalId; a Revit
+                    // element has one only after an export that wrote one, and an element in a
+                    // LINK has no host-document GUID at all. The ids travel as AuthoringToolId
+                    // in that case and the topic says so - writing a made-up IfcGuid would
+                    // produce a file that opens, selects nothing, and reads as a stale issue.
+                    var components = new List<BcfComponent>();
+                    foreach (string side in new[] { f.SideA, f.SideB })
+                        if (!string.IsNullOrWhiteSpace(side))
+                            components.Add(new BcfComponent { AuthoringToolId = side });
+
+                    string note = BcfViewpoint.IdentityNote(components);
+                    string topic = CoordinationRules.BcfTopicGuid(f.Id);
+                    WriteZipEntry(zip, topic + "/markup.bcf",
+                                  CoordinationRules.BcfMarkupXml(f, doc.Title, note));
+                    WriteZipEntry(zip, topic + "/" + CoordinationRules.BcfViewpointFile,
+                                  BcfViewpoint.Xml(f.PointMm, components));
+                }
             }
 
             // Verify by RE-READING the zip: every entry re-parsed as XML, topics counted.
             int topics = 0;
+            int viewpoints = 0;
             using (FileStream stream = File.OpenRead(path))
             using (var zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read))
             {
@@ -273,6 +295,30 @@ namespace Horizun.Revit.Commands
                         xml.DocumentElement.SelectSingleNode("Topic") == null)
                         return CommandResult.Fail("Entry '" + entry.FullName + "' re-read as XML but is not a " +
                             "BCF Markup with a Topic. Success is not claimed.");
+
+                    // AND THE VIEWPOINT IT CLAIMS. A markup that names a .bcfv the archive does
+                    // not hold is the failure a topic count cannot see: it opens, and every
+                    // viewpoint in it is a dead link.
+                    System.Xml.XmlNode declared =
+                        xml.DocumentElement.SelectSingleNode("Viewpoints/Viewpoint");
+                    if (declared == null)
+                        return CommandResult.Fail("Entry '" + entry.FullName + "' declares no Viewpoint. A " +
+                            "topic with no viewpoint is a topic nobody can navigate to, which is most of " +
+                            "what BCF is for. Success is not claimed.");
+                    string folder = entry.FullName.Substring(0, entry.FullName.Length - "markup.bcf".Length);
+                    System.IO.Compression.ZipArchiveEntry viewpoint =
+                        zip.GetEntry(folder + declared.InnerText);
+                    if (viewpoint == null)
+                        return CommandResult.Fail("Entry '" + entry.FullName + "' references viewpoint '" +
+                            declared.InnerText + "' and the archive does not contain it. Success is not " +
+                            "claimed.");
+                    var viewpointXml = new System.Xml.XmlDocument();
+                    using (Stream viewpointStream = viewpoint.Open()) viewpointXml.Load(viewpointStream);
+                    if (viewpointXml.DocumentElement?.Name != "VisualizationInfo" ||
+                        viewpointXml.DocumentElement.SelectSingleNode("PerspectiveCamera") == null)
+                        return CommandResult.Fail("The viewpoint beside '" + entry.FullName + "' re-read as " +
+                            "XML and carries no PerspectiveCamera. Success is not claimed.");
+                    viewpoints++;
                     topics++;
                 }
             }
@@ -292,10 +338,22 @@ namespace Horizun.Revit.Commands
                 ["findings_exported"] = ordered.Count,
                 ["bytes"] = written.Length,
                 ["sha256"] = sha,
+                ["viewpoints_exported"] = viewpoints,
+                ["bcf_version"] = BcfViewpoint.Version,
                 ["verified_by_reread"] = true,
-                ["verification_scope"] = "STRUCTURAL: the zip was re-read, every markup.bcf re-parsed as XML and " +
-                    "counted against the ledger. No consumer's round-trip is proven - a tool that rejects this " +
-                    "file is a finding to bring back, not one this export can rule out."
+                ["verification_scope"] = "STRUCTURAL: the zip was re-read, every markup.bcf re-parsed as XML, " +
+                    "every topic checked to DECLARE a viewpoint, every declared viewpoint checked to EXIST in " +
+                    "the archive and to carry a PerspectiveCamera, and the topics counted against the ledger. " +
+                    "That last set of checks is the one a topic count cannot make: a markup naming a .bcfv the " +
+                    "archive does not hold opens fine and every viewpoint in it is a dead link. No consumer's " +
+                    "round-trip is proven - a tool that rejects this file is a finding to bring back, not one " +
+                    "this export can rule out.",
+                ["component_identity"] =
+                    "BCF identifies a component by IFC GlobalId, and a Revit element has one only after an " +
+                    "export that wrote one. Where this ledger has no GUID the Revit element id travels as " +
+                    "AuthoringToolId - which identifies the element only inside this model - and the topic's " +
+                    "own description says so, because the person opening the BCF is not the person reading " +
+                    "this reply."
             });
         }
 

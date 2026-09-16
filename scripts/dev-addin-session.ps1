@@ -1,7 +1,7 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet(2023,2024,2025,2026,2027)][int]$Year,
+    [Parameter(Mandatory)][ValidateSet(2022,2023,2024,2025,2026,2027)][int]$Year,
     [switch]$Enable,
     [switch]$Restore,
     [string]$DevRoot = (Join-Path $env:USERPROFILE '.horizun\geometry-dev')

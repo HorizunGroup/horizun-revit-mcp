@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // horizun_model_scan — one native pass that replaces two IronPython audit engines
@@ -51,6 +51,22 @@ namespace Horizun.Revit.Commands
     {
         public string Name => "horizun_model_scan";
 
+        /// <summary>The cooperative block, with the sentence that keeps it from claiming too much.</summary>
+        private static JObject Cooperative(CooperativeOptions options, CooperativeRead.Scope scope,
+                                           string fingerprint)
+        {
+            JObject report = options.Report(scope, 0, fingerprint,
+                                            scope != null && !scope.Complete,
+                                            ownCursorField: "cursor");
+            if (report != null)
+                report["interruption_reach"] =
+                    "The two element-census loops ask whether to carry on; the other section emitters " +
+                    "run to completion regardless. A scan that stops is therefore bounded to within " +
+                    "ONE emitter, not to the millisecond. The sections already have their own budgets " +
+                    "and cursors, and those are unchanged.";
+            return report;
+        }
+
         public string Description =>
             "One deep native pass over the active model: cleanliness (CAD imported vs linked, IMPORT-* patterns, " +
             "unused templates/filters/group types/types, stray lines, in-place families), naming inputs (RAW view/" +
@@ -86,6 +102,32 @@ namespace Horizun.Revit.Commands
             try { request = string.IsNullOrWhiteSpace(paramsJson) ? new JObject() : JObject.Parse(paramsJson); }
             catch (JsonException ex) { return CommandResult.Fail("Parameters must be a JSON object: " + ex.Message); }
 
+            // OPT-IN cooperative reading. Absent means today's behaviour exactly: no scope is
+            // installed and AmbientContinue() answers true everywhere.
+            string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, doc);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null)
+                return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            CooperativeRead.Scope coopScope = cooperative.Begin("model_scan", 0);
+            using (coopScope == null ? null : CooperativeRead.Install(coopScope))
+            {
+                return Scan(app, doc, request, cooperative, coopScope, coopFingerprint);
+            }
+        }
+
+        /// <summary>
+        /// The scan itself, inside the ambient scope's lifetime.
+        ///
+        /// Split out so the scope's removal is a `using` around ONE call rather than a
+        /// try/finally wrapped round six hundred lines with returns in it. A scope left
+        /// installed belongs to a request that has finished, and the next command would stop
+        /// early on somebody else's budget - a bug that appears at random and never
+        /// reproduces.
+        /// </summary>
+        private CommandResult Scan(UIApplication app, Document doc, JObject request,
+                                   CooperativeOptions cooperative, CooperativeRead.Scope coopScope,
+                                   string coopFingerprint)
+        {
             // THE SHAPE OF THE REQUEST, before any of it is acted on. This tool
             // already refuses an unknown SECTION name and says why: a name that
             // silently does nothing is how a caller thinks it checked something it
@@ -290,6 +332,12 @@ namespace Horizun.Revit.Commands
                 // budget accepted at the door and ignored by the emitters is the
                 // defect this reporting exists to make visible.
                 ["budget"] = budget.ToJson(),
+                // Present only when the caller asked for it, and scoped honestly: the two
+                // census loops ask whether to carry on, and every other emitter runs to
+                // completion regardless. So a scan that stops is bounded to within one
+                // emitter, not to the millisecond - and claiming otherwise would be the
+                // overstatement this reporting exists to prevent.
+                ["cooperative"] = coopScope == null ? null : Cooperative(cooperative, coopScope, coopFingerprint),
                 ["paged"] = paging.Paged,
                 ["cursor_problems"] = paging.CursorProblems,
                 ["cursor_used"] = paging.CursorUsed,
@@ -854,6 +902,9 @@ namespace Horizun.Revit.Commands
                 var list = new List<NamedThing>();
                 foreach (Element e in els)
                 {
+                    // Between elements, never inside one. A half-read name in the census is a
+                    // different and worse failure than a shorter census.
+                    if (!CooperativeRead.AmbientContinue()) break;
                     bool bad;
                     string nm = SafeName(e, out bad);
                     list.Add(new NamedThing { Id = e.Id.ToString(), Name = nm, Readable = !bad });
@@ -1907,6 +1958,7 @@ namespace Horizun.Revit.Commands
 
                 foreach (Element e in collector)
                 {
+                    if (!CooperativeRead.AmbientContinue()) break;
                     string cat;
                     try { cat = e.Category == null ? null : e.Category.Name; } catch { continue; }
                     if (!string.Equals(cat, category, StringComparison.OrdinalIgnoreCase)) continue;
@@ -3857,7 +3909,7 @@ namespace Horizun.Revit.Commands
                 if (string.IsNullOrEmpty(famName)) famName = "(unnamed system family)";
                 try { catName = et.Category == null ? null : et.Category.Name; } catch { catName = null; }
 
-                string key = (catName ?? "(no category)") + "" + famName;
+                string key = (catName ?? "(no category)") + "\u001e" + famName;
                 FamilyFact f;
                 if (!systemGroups.TryGetValue(key, out f))
                 {

@@ -51,6 +51,39 @@ namespace Horizun.Revit.Core
         public JObject Arguments;           // the element entry, ready to send
         public List<string> ExpectedVerification = new List<string>();
         public double Confidence;
+
+        /// <summary>
+        /// The drawing entities this row was read from - every line of a wall,
+        /// the handle of a block - so a merged reading still names all of them.
+        /// </summary>
+        public List<string> SourceEntities = new List<string>();
+
+        /// <summary>
+        /// WHY THIS ACTION MAY NOT BE BUILT YET, or null when it may.
+        ///
+        /// A run whose rule declares a slope has no height until a fall walk gives
+        /// it one: the drawing is flat, the rule says how steep and not which way,
+        /// and building it at the rule's elevation produces a level drain that is
+        /// connected, passes every check this bridge has, and drains nowhere.
+        ///
+        /// It is not a warning. AsCreateRequests LEAVES A BLOCKED ACTION OUT, so
+        /// the row never reaches horizun_create_elements - from this process, from
+        /// a persisted plan, or from a caller who assembled the JSON by hand.
+        /// </summary>
+        public string BlockedUntil;
+
+        public bool Blocked { get { return BlockedUntil != null; } }
+
+        /// <summary>
+        /// THE STABLE NAME OF THIS ROW, 1-based, assigned when the plan is
+        /// emitted and written onto the row as `source_row`.
+        ///
+        /// It is what lets a row be withdrawn without moving anybody else's
+        /// provenance: the index that pairs candidates with created elements is
+        /// built by reading this number back off the rows that remain, never by
+        /// counting positions.
+        /// </summary>
+        public int SourceRow;
     }
 
     /// <summary>A candidate that will NOT be built, and exactly why.</summary>
@@ -365,6 +398,22 @@ namespace Horizun.Revit.Core
                     continue;
                 }
 
+                // A MIRROR NOBODY HAS RESOLVED IS NOT A ROW.
+                //
+                // The set's policy and the block's own measured geometry decide
+                // what a reflected insertion means; when they leave it open, the
+                // candidate is DEFERRED with that reason rather than built
+                // unmirrored. Nine of twenty-one symbols in one apartment are
+                // reflected, so this is the difference between a converted unit
+                // and a unit with nine devices facing the wrong way.
+                if (c.MirrorResolution != null && c.MirrorResolution.StartsWith("pending", StringComparison.Ordinal))
+                {
+                    plan.Deferred.Add(Defer(c, "this symbol is drawn MIRRORED and the mirror is unresolved (" +
+                        c.MirrorResolution + "). " +
+                        (c.MirrorEvidence?["means"]?.ToString() ?? "")));
+                    continue;
+                }
+
                 JObject args = BuildArguments(c, createKind, set);
                 if (args == null)
                 {
@@ -387,7 +436,18 @@ namespace Horizun.Revit.Core
                     Layer = c.Layer,
                     Arguments = args,
                     ExpectedVerification = c.ExpectedVerification.ToList(),
-                    Confidence = c.Confidence
+                    Confidence = c.Confidence,
+                    SourceEntities = c.SourceSurrogates.Where(s => !string.Equals(s, c.Id, StringComparison.Ordinal)).ToList(),
+
+                    // A DECLARED SLOPE WITHOUT A FALL IS NOT A FLAT RUN, it is a
+                    // run whose height nobody has worked out yet.
+                    BlockedUntil = NeedsFall(c, createKind)
+                        ? "a fall: this run's rule declares a slope of " +
+                          c.SlopePercent.Value.ToString("0.###", CultureInfo.InvariantCulture) +
+                          "% and this reading is flat. Name the OUTFALL on this call and the run is " +
+                          "planned at the heights the slope implies; until then it is NOT built, because a " +
+                          "drain laid level is connected, passes every other check here, and drains nowhere."
+                        : null
                 });
                 Bump(plan.CountsByKind, c.ProposedKind);
                 if (!string.IsNullOrEmpty(c.Discipline)) Bump(plan.CountsByDiscipline, c.Discipline);
@@ -415,6 +475,22 @@ namespace Horizun.Revit.Core
 
             plan.PlanFingerprint = Fingerprint(plan, set, sourceFingerprint, includeIneligible);
             return plan;
+        }
+
+        /// <summary>
+        /// A run that cannot be built until something gives it a height.
+        ///
+        /// Only where a slope is DECLARED and non-zero: a rule that declares no
+        /// slope is saying the run is level, which is a decision, and a declared
+        /// zero is a decision too. This is for the third case - a number that says
+        /// how steep with nothing yet saying which way.
+        /// </summary>
+        private static bool NeedsFall(CadCandidate c, string createKind)
+        {
+            return c != null
+                && FallKinds.Contains(createKind ?? "")
+                && c.SlopePercent.HasValue
+                && Math.Abs(c.SlopePercent.Value) > 1e-9;
         }
 
         private static CadDeferred Defer(CadCandidate c, string extraReason)
@@ -631,7 +707,57 @@ namespace Horizun.Revit.Core
                     // wall - it has no ids - so the plan says WHAT KIND of host
                     // the element needs, and the command that has the document
                     // open resolves it and records which wall it chose.
-                    if (NeedsWallHost.Contains(c.ProposedKind)) o["hosted_on"] = "wall";
+                    // A door or a window is hosted by what it IS; anything else is
+                    // hosted because the RULE said so - and the rule wins, because a
+                    // set that says hosted_on has made a decision this cannot improve on.
+                    if (!string.IsNullOrWhiteSpace(c.HostedOn)) o["hosted_on"] = c.HostedOn;
+                    if (!string.IsNullOrWhiteSpace(c.HostedOn)) o["face_allowance_mm"] = set.FaceProjectionMm;
+                    // WHICH FACE, when the symbol is drawn over the wall: the
+                    // declared facing if there is one, the centreline side beyond
+                    // the dead band otherwise - never the rotation (CadDeviceSide).
+                    if (c.HostedOn == "wall" && (string)o["kind"] == "family_instance")
+                    {
+                        o["side_dead_band_mm"] = set.PointToleranceMm;
+                        if (c.Facing.HasValue)
+                            o["facing_degrees"] = Math.Round(Math.Atan2(c.Facing.Value.Y, c.Facing.Value.X) * 180.0 / Math.PI, 6);
+                    }
+                    CadRule hostRule = set.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                    if (hostRule != null && hostRule.HostLayers.Count > 0 && c.HostedOn == "wall")
+                        o["host_layers"] = new JArray(hostRule.HostLayers);
+                    else if (NeedsWallHost.Contains(c.ProposedKind)) o["hosted_on"] = "wall";
+
+                    // ORIENTATION, WHERE THE DRAWING GAVE ONE.
+                    //
+                    // A symbol read from a block instance knows how it was placed,
+                    // and a receptacle rotated 90 degrees in the drawing that goes
+                    // in at zero is on the wrong wall. The drawing's rotation is in
+                    // radians; create_elements takes degrees.
+                    if (c.RotationRadians.HasValue)
+                        o["rotation_degrees"] = Round(c.RotationRadians.Value * 180.0 / Math.PI);
+
+                    // A MIRRORED SYMBOL IS NOT A ROTATED ONE. No angle reproduces a
+                    // reflection, and a mirrored fixture placed unmirrored is the
+                    // handing reversed - which on a door or a vanity is the whole
+                    // point of the symbol.
+                    // THE ROW ASKS FOR A REFLECTION ONLY WHEN ONE IS MEANT.
+                    //
+                    // A symbol whose own geometry is its mirror image gains
+                    // nothing from being flipped, and asking for an operation the
+                    // family does not support would refuse a row that is already
+                    // correct. The resolution decides; "preserve_requested" is
+                    // the only one that asks.
+                    //
+                    // THE DEFAULT IS TO ASK. A caller that never measured the
+                    // symbol's symmetry has not decided that the mirror is
+                    // meaningless - it has decided nothing - and dropping the
+                    // reflection there would be the silent failure this whole
+                    // policy exists to prevent. So the row asks for it unless
+                    // something MEASURED says it would do nothing, or unless the
+                    // set named a different type for the mirrored product.
+                    bool mirrorIsANoOp = c.MirrorResolution == "symmetric_by_measurement" ||
+                                         c.MirrorResolution == "mirror_has_no_effect" ||
+                                         c.MirrorResolution == "variant_type";
+                    if (c.Mirrored && !mirrorIsANoOp) o["flip"] = true;
                     break;
 
                 default:
@@ -688,8 +814,19 @@ namespace Horizun.Revit.Core
                 o["system_type_name"] = c.SystemType;
             if (c.DiameterMm.HasValue && MepKinds.Contains(createKind))
                 o["diameter"] = c.DiameterMm.Value;
+            // THE JOIN RULE, finally travelling. It has been parsed since this
+            // schema existed and read by nothing: a set could say join_rule none
+            // and Revit joined anyway, which moved the wall's ends and then failed
+            // the postcondition that checked them.
+            if (!string.IsNullOrWhiteSpace(c.JoinRule) && createKind == "wall") o["join_rule"] = c.JoinRule;
             if (!string.IsNullOrWhiteSpace(c.Level)) o["level_name"] = c.Level;
-            if (!string.IsNullOrWhiteSpace(c.Category)) o["category"] = c.Category;
+
+            // THE CATEGORY IS NOT WRITTEN ON THE ROW. It used to be, and it was
+            // read by nothing: the plan command resolves names and never looks at
+            // it, horizun_create_elements refuses it as not applicable, and the
+            // type id already decides the category. MEASURED: it refused every
+            // row of a real conversion. The candidate still carries it - that is
+            // where a reviewer reads what the rule meant.
             return o;
         }
 
@@ -697,6 +834,298 @@ namespace Horizun.Revit.Core
             Math.Round(p.X, 4, MidpointRounding.AwayFromZero),
             Math.Round(p.Y, 4, MidpointRounding.AwayFromZero),
             Math.Round(p.Z, 4, MidpointRounding.AwayFromZero));
+
+        // ====================================================================
+        //  THE FALL
+        // ====================================================================
+
+        /// <summary>What applying a computed fall to a plan did, and what it would not do.</summary>
+        public sealed class CadFallApplication
+        {
+            /// <summary>Set when NOTHING was applied. The plan is untouched.</summary>
+            public string Refusal;
+
+            public int ActionsGivenFall;
+
+            /// <summary>One entry per run that could have taken a fall and did not, with the reason.</summary>
+            public List<JObject> NotGivenFall = new List<JObject>();
+
+            /// <summary>
+            /// True once any action changed: the plan fingerprint was cleared and
+            /// must be computed again before the plan is applied.
+            /// </summary>
+            public bool NeedsRefingerprinting;
+
+            public bool Ok => Refusal == null;
+
+            public JObject ToJson() => new JObject
+            {
+                ["applied"] = Ok,
+                ["refused"] = Refusal,
+                ["actions_given_fall"] = ActionsGivenFall,
+                // THE DENOMINATOR, because "3 runs took a fall" reads as success
+                // and is the same sentence whether there were 3 or 300.
+                ["runs_that_could_have_taken_one"] = ActionsGivenFall + NotGivenFall.Count,
+                ["not_given_fall"] = new JArray(NotGivenFall.Take(200).Select(x => (JToken)x)),
+                ["not_given_fall_truncated"] = NotGivenFall.Count > 200,
+                ["heights_are"] = "CENTRELINES. The fall walk computes INVERTS - inside bottom, which is " +
+                                  "what a drainage drawing puts on its nodes - and create_elements places a " +
+                                  "run on its centreline, so each end is the invert plus half the declared " +
+                                  "bore. A run with no declared bore takes no fall, because there is no way " +
+                                  "to make that conversion and half a diameter is 75 mm on a 150 mm drain.",
+                ["datum_is"] = "the requirement set's. The outfall invert declared on the call is read in the " +
+                               "same reference the set's own elevations use, and every height written here " +
+                               "is in that one - nothing converts between datums, because nothing here can " +
+                               "tell two datums apart. An outfall invert given in a different reference " +
+                               "moves the whole network by the difference, consistently, and every check " +
+                               "downstream agrees with it.",
+                ["means"] = Ok
+                    ? "the planned runs now carry the heights the drawing's slopes imply, oriented by the " +
+                      "NETWORK. Runs listed in not_given_fall keep the flat elevation their rule declared."
+                    : "NOTHING was changed. The plan still builds every run at the flat elevation its rule " +
+                      "declared, which is what it did before this call."
+            };
+        }
+
+        /// <summary>The kinds a fall can be applied to: the ones create_elements gives two end points and a bore.</summary>
+        private static readonly HashSet<string> FallKinds =
+            new HashSet<string>(StringComparer.Ordinal) { "pipe", "duct" };
+
+        /// <summary>
+        /// Put the inverts a fall walk computed onto the ends of the planned runs.
+        ///
+        /// The plan and the network must have been read from the SAME geometry with
+        /// the SAME point tolerance - that is what makes a run's semantic id the same
+        /// string on both sides, and the semantic id is what this matches by. When the
+        /// tolerances differ the ids differ, nothing matches, and every run comes back
+        /// in not_given_fall rather than quietly keeping a flat elevation.
+        /// </summary>
+        public static CadFallApplication ApplyFall(CadConversionPlan plan, CadNetwork network,
+                                                   CadFall fall, double planToleranceMm)
+        {
+            var result = new CadFallApplication();
+            if (plan == null || network == null || fall == null)
+            {
+                result.Refusal = "nothing_to_apply: a plan, the network it was read from and a computed fall " +
+                                 "are all required.";
+                return result;
+            }
+            if (!fall.Ok)
+            {
+                result.Refusal = "fall_refused: " + fall.Refusal + " No run was given a height.";
+                return result;
+            }
+
+            // A NODE AT TWO HEIGHTS APPLIES TO NOTHING.
+            //
+            // The walk reports a conflict rather than resolving it: the outfall
+            // reaches the node two ways and the two paths disagree. Building from it
+            // would put one of the two numbers into the model and there is nothing
+            // here that can say which - and the result would look finished.
+            if (fall.Conflicts.Count > 0)
+            {
+                result.Refusal = "fall_conflicts: the walk found " + fall.Conflicts.Count + " node(s) that " +
+                                 "the outfall reaches two ways at different inverts. A drain cannot be at two " +
+                                 "heights, and nothing here can choose. NOTHING was applied - resolve the " +
+                                 "loop or the slopes and compute the fall again.";
+                return result;
+            }
+
+            // Runs by semantic id, and the ids that name more than one run by that
+            // name at all - an ambiguous id is not a match, it is two matches.
+            var runOf = new Dictionary<string, CadRun>(StringComparer.Ordinal);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            foreach (CadRun run in network.Runs)
+            {
+                if (run == null || run.SemanticId == null) continue;
+                if (runOf.ContainsKey(run.SemanticId)) ambiguous.Add(run.SemanticId);
+                else runOf[run.SemanticId] = run;
+            }
+
+            var fallOf = new Dictionary<string, CadRunFall>(StringComparer.Ordinal);
+            foreach (CadRunFall f in fall.Runs)
+                if (f != null && f.RunId != null) fallOf[f.RunId] = f;
+
+            // WHICH RUNS THE WALK STOPPED AT, AND WHY IT STOPPED.
+            //
+            // A run whose layer declares no slope and a run the walk could not
+            // reach through the network are both "no height", and they are fixed in
+            // opposite places: one is a line in the requirement set, the other is a
+            // piece of pipework not connected to what it drains into.
+            var blockedLayerOf = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (JObject b in fall.Blocked)
+            {
+                string id = b == null ? null : b.Value<string>("run_id");
+                if (id != null && b.Value<string>("reason") == "no_declared_slope")
+                    blockedLayerOf[id] = b.Value<string>("layer");
+            }
+
+            double tolerance = planToleranceMm > 0 ? planToleranceMm : 1.0;
+
+            foreach (CadPlannedAction a in plan.Actions)
+            {
+                if (a == null || a.Arguments == null) continue;
+                if (!FallKinds.Contains(a.Kind ?? "")) continue;
+
+                var start = a.Arguments["start"] as JArray;
+                var end = a.Arguments["end"] as JArray;
+                if (start == null || end == null || start.Count < 3 || end.Count < 3)
+                {
+                    Skipped(result, a, "this action has no two end points to put a height on.");
+                    continue;
+                }
+
+                if (a.SemanticId == null || ambiguous.Contains(a.SemanticId))
+                {
+                    Skipped(result, a, a.SemanticId == null
+                        ? "this action carries no semantic id, so it cannot be matched to a run of the network."
+                        : "more than one run of the network carries this semantic id, so the match is two " +
+                          "matches and not one.");
+                    continue;
+                }
+
+                CadRun matched;
+                if (!runOf.TryGetValue(a.SemanticId, out matched))
+                {
+                    Skipped(result, a, "no run of the network carries this semantic id. The reading that " +
+                                       "built the network and the reading that built this plan must use the " +
+                                       "same point tolerance, or their ids do not agree.");
+                    continue;
+                }
+
+                CadRunFall heights;
+                if (!fallOf.TryGetValue(matched.Id, out heights))
+                {
+                    string blockedLayer;
+                    Skipped(result, a, blockedLayerOf.TryGetValue(matched.Id, out blockedLayer)
+                        ? "the requirement set declares no slope for layer '" +
+                          (blockedLayer ?? matched.Layer ?? "(unnamed)") + "', so the fall through this run " +
+                          "is unknown and so is every invert beyond it. The walk stopped here rather than " +
+                          "assuming the run is level. This one is fixed in the requirement set."
+                        : "the fall walk never reached this run through the network. Nothing connects it to " +
+                          "the outfall, which is a fact about the drawing rather than about the rules - the " +
+                          "walk's own unreachable list names it.");
+                    continue;
+                }
+
+                // WHICH END IS WHICH, BY POSITION.
+                var planStart = new CadPoint(start[0].Value<double>(), start[1].Value<double>(), 0);
+                var planEnd = new CadPoint(end[0].Value<double>(), end[1].Value<double>(), 0);
+                CadPoint runStart = new CadPoint(matched.Start.X, matched.Start.Y, 0);
+                CadPoint runEnd = new CadPoint(matched.End.X, matched.End.Y, 0);
+
+                bool straight = planStart.PlanDistanceTo(runStart) <= tolerance &&
+                                planEnd.PlanDistanceTo(runEnd) <= tolerance;
+                bool swapped = planStart.PlanDistanceTo(runEnd) <= tolerance &&
+                               planEnd.PlanDistanceTo(runStart) <= tolerance;
+
+                if (straight && swapped)
+                {
+                    Skipped(result, a, "both ends of this run are within tolerance of both ends of the " +
+                                       "matching network run, so position cannot say which end is " +
+                                       "downstream. A fall applied backwards is a pipe running uphill in a " +
+                                       "model that looks finished.");
+                    continue;
+                }
+                if (!straight && !swapped)
+                {
+                    Skipped(result, a, "the ends of this run are not where the matching network run's ends " +
+                                       "are, within " + tolerance.ToString("0.###", CultureInfo.InvariantCulture) +
+                                       " mm. The id matched and the geometry did not, which is worth looking at.");
+                    continue;
+                }
+
+                // AN INVERT IS NOT A CENTRELINE.
+                double? bore = a.Arguments.Value<double?>("diameter");
+                if (!bore.HasValue || bore.Value <= 0)
+                {
+                    Skipped(result, a, "this run declares no bore, so the invert the walk computed cannot be " +
+                                       "turned into the centreline create_elements places a run on. Half a " +
+                                       "diameter is 75 mm on a 150 mm drain - it is not a rounding.");
+                    continue;
+                }
+
+                // A run that already has two different end heights was given a fall by
+                // something else. Two sources of truth for one number, and the later
+                // one silently winning, is exactly what this codebase refuses.
+                double zA = start[2].Value<double>(), zB = end[2].Value<double>();
+                if (Math.Abs(zA - zB) > 1e-6)
+                {
+                    Skipped(result, a, "this run already has two different end heights, so something has " +
+                                       "already given it a fall. It is left as it is rather than overwritten.");
+                    continue;
+                }
+
+                // THE EXPECTATION WRITTEN FOR A FLAT RUN NO LONGER HOLDS.
+                //
+                // "its endpoints match the drawn line" is true of a run built at
+                // the rule's elevation and false of one carrying a fall - in plan
+                // it still holds, in Z it does not, and that is the point of this
+                // call. Two statements about one element, one of them wrong, is
+                // how a verification list stops being read.
+                for (int i = 0; i < a.ExpectedVerification.Count; i++)
+                    if (a.ExpectedVerification[i] != null &&
+                        a.ExpectedVerification[i].StartsWith("its endpoints match the drawn line",
+                                                             StringComparison.Ordinal))
+                        a.ExpectedVerification[i] =
+                            "its endpoints match the drawn line IN PLAN within the point tolerance. In Z they " +
+                            "do NOT match the drawing, which is flat: they carry the fall described below.";
+
+                double half = bore.Value / 2.0;
+                double centreAtStart = (straight ? heights.StartZMm : heights.EndZMm) + half;
+                double centreAtEnd = (straight ? heights.EndZMm : heights.StartZMm) + half;
+
+                start[2] = Round(centreAtStart);
+                end[2] = Round(centreAtEnd);
+
+                // THE BLOCK IS LIFTED HERE AND NOWHERE ELSE, because here is the
+                // only place the two heights were actually written.
+                a.BlockedUntil = null;
+
+                double drop = Math.Abs(centreAtStart - centreAtEnd);
+                a.ExpectedVerification.Add(
+                    "its two ends differ by " + Round(drop).ToString("0.#", CultureInfo.InvariantCulture) +
+                    " mm: the fall the drawing's slopes imply, at " +
+                    heights.SlopePercent.ToString("0.###", CultureInfo.InvariantCulture) + "%, with the " +
+                    (straight ? (heights.Upstream == "start" ? "first" : "second")
+                              : (heights.Upstream == "start" ? "second" : "first")) +
+                    " point upstream. The heights are CENTRELINES: the computed invert plus half the " +
+                    bore.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm bore.");
+
+                result.ActionsGivenFall++;
+            }
+
+            if (result.ActionsGivenFall > 0)
+            {
+                // THE FINGERPRINT NO LONGER DESCRIBES THIS PLAN.
+                //
+                // It exists so an apply can tell that the plan it was handed is the
+                // plan that was reviewed. Leaving the old one on a plan whose runs
+                // now build at different heights would defeat exactly that.
+                plan.PlanFingerprint = null;
+                result.NeedsRefingerprinting = true;
+            }
+
+            if (result.NotGivenFall.Count > 0)
+                plan.Warnings.Add(result.NotGivenFall.Count + " run(s) that could have taken a fall did not " +
+                                  "and will be built at the flat elevation their rule declares. The fall " +
+                                  "application block says why, one by one.");
+
+            return result;
+        }
+
+        private static void Skipped(CadFallApplication result, CadPlannedAction a, string why)
+        {
+            result.NotGivenFall.Add(new JObject
+            {
+                ["candidate_id"] = a.CandidateId,
+                ["semantic_id"] = a.SemanticId,
+                ["kind"] = a.Kind,
+                ["layer"] = a.Layer,
+                ["why"] = why,
+                ["keeps"] = "the flat elevation its rule declared."
+            });
+        }
 
         /// <summary>
         /// What this plan is bound to. Everything that could make the same
@@ -828,16 +1257,34 @@ namespace Horizun.Revit.Core
             }
         }
 
-        /// <summary>The plan as one create_elements request per stage, ready to send.</summary>
+        /// <summary>
+        /// The plan as one create_elements request per stage, ready to send.
+        ///
+        /// A BLOCKED ACTION IS NOT IN IT. That is the barrier: the row never
+        /// reaches the command that would build it, so the block survives being
+        /// persisted, re-read, or pasted into a caller's own request - none of
+        /// which carries the reasoning, all of which carry the rows.
+        /// </summary>
         public static List<JObject> AsCreateRequests(CadConversionPlan plan, string targetDocument, int maxPerBatch = 200)
         {
             var requests = new List<JObject>();
-            foreach (var stage in plan.Actions.GroupBy(a => a.Stage).OrderBy(g => g.Key))
+            int emitted = 0;
+            foreach (var stage in plan.Actions.Where(a => !a.Blocked).GroupBy(a => a.Stage).OrderBy(g => g.Key))
             {
                 List<CadPlannedAction> actions = stage.ToList();
                 for (int i = 0; i < actions.Count; i += maxPerBatch)
                 {
                     List<CadPlannedAction> batch = actions.Skip(i).Take(maxPerBatch).ToList();
+
+                    // EVERY ROW CARRIES ITS OWN NAME. source_row is part of what
+                    // horizun_create_elements already accepts, and it is what the
+                    // candidate index is rebuilt from after any exclusion.
+                    foreach (CadPlannedAction a in batch)
+                    {
+                        a.SourceRow = ++emitted;
+                        a.Arguments["source_row"] = a.SourceRow;
+                    }
+
                     requests.Add(new JObject
                     {
                         ["target_document"] = targetDocument,
@@ -879,6 +1326,22 @@ namespace Horizun.Revit.Core
                                 "over a low coverage means the rules matched a corner of the drawing well."
                 },
                 ["warnings"] = new JArray(plan.Warnings),
+                ["blocked"] = plan.Actions.Count(a => a.Blocked),
+                ["blocked_detail"] = new JArray(plan.Actions.Where(a => a.Blocked).Take(200)
+                    .Select(a => (JToken)new JObject
+                    {
+                        ["candidate_id"] = a.CandidateId,
+                        ["semantic_id"] = a.SemanticId,
+                        ["kind"] = a.Kind,
+                        ["layer"] = a.Layer,
+                        ["waiting_for"] = a.BlockedUntil
+                    })),
+                ["blocked_means"] = plan.Actions.Any(a => a.Blocked)
+                    ? "these actions are PLANNED and are NOT in execute_plan_request: the emitted create " +
+                      "requests leave them out, so nothing can build them until what they are waiting for " +
+                      "arrives. They are not warnings and they are not deferrals - the reading is settled, " +
+                      "the height is not."
+                    : "nothing in this plan is waiting on a fact it does not have.",
                 ["actions_by_stage"] = new JArray(plan.Actions.GroupBy(a => a.Stage).OrderBy(g => g.Key)
                     .Select(g => new JObject
                     {

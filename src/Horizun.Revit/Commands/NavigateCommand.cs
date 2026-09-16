@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - visible handoff from an agent result to the Revit user.
 // -----------------------------------------------------------------------------
 using System;
@@ -41,6 +41,19 @@ namespace Horizun.Revit.Commands
             }
             if (operation != "select" && operation != "zoom" && operation != "select_and_zoom")
                 return CommandResult.Fail("operation must be select, clear_selection, zoom, select_and_zoom or open_view.");
+
+            // THE COMPOSITE PATH, when the caller has an element that may live in a link.
+            //
+            // Separate from element_ids rather than merged with it: two ways of saying what to
+            // select, disagreeing quietly, is worse than either. Sending both is refused.
+            JArray selectionsToken = request["selections"] as JArray;
+            if (selectionsToken != null && request["element_ids"] != null)
+                return CommandResult.Fail(
+                    "send element_ids OR selections, not both. element_ids means host-document ids; " +
+                    "selections means (element_id, link_instance_id) pairs. Two lists of what to " +
+                    "select can disagree, and nothing here would know which one you meant.");
+            if (selectionsToken != null)
+                return SelectComposite(uidoc, doc, request, operation, selectionsToken);
 
             JArray idsToken = request["element_ids"] as JArray;
             if (idsToken == null || idsToken.Count == 0)
@@ -120,5 +133,61 @@ namespace Horizun.Revit.Commands
                 ["active_view_verified"] = true
             });
         }
+
+        /// <summary>
+        /// select / zoom over (element_id, link_instance_id) pairs.
+        ///
+        /// WHY THIS EXISTS. The clash viewer used to take side A's id, call Number() on it and
+        /// send it as a host id. For a clash between the host model and a link, that selects
+        /// whichever HOST element happens to carry the same number - not nothing, not an
+        /// error: a different element, highlighted confidently. An element id means nothing
+        /// without the document it belongs to, and this is the path that carries both.
+        /// </summary>
+        private static CommandResult SelectComposite(UIDocument uidoc, Document doc, JObject request,
+                                                     string operation, JArray selectionsToken)
+        {
+            string refusal;
+            List<NavigationTarget> targets = NavigateLinked.Read(selectionsToken, out refusal);
+            if (targets == null) return CommandResult.Fail(refusal + " Nothing in the UI was changed.");
+
+            JArray problems;
+            List<Reference> references = NavigateLinked.Resolve(doc, targets, out problems);
+            if (problems.Count > 0)
+                // ALL OR NOTHING. A partial selection of a clash pair lights up one side and
+                // reads as though the other side is fine.
+                return CommandResult.FailWithDetail(
+                    problems.Count + " of " + targets.Count + " selection(s) could not be resolved, so " +
+                    "NOTHING was selected: a half-selected clash shows one side lit up and reads as " +
+                    "though the other side is fine. " + problems.ToString(Formatting.None),
+                    new JObject { ["operation"] = operation, ["problems"] = problems });
+
+            JObject verification = null;
+            if (operation == "select" || operation == "select_and_zoom")
+                verification = NavigateLinked.SelectAndVerify(uidoc, targets, references);
+
+            bool framed = false;
+            string framingProblem = null;
+            if (operation == "zoom" || operation == "select_and_zoom")
+            {
+                try { uidoc.ShowElements(references.Select(r => r.ElementId).ToList()); framed = true; }
+                catch (Exception ex) { framingProblem = ex.Message; }
+            }
+
+            var payload = new JObject
+            {
+                ["operation"] = operation,
+                ["targets"] = targets.Count,
+                ["in_links"] = targets.Count(t => t.InLink),
+                ["framed"] = framed,
+                ["framing_problem"] = framingProblem,
+                ["framing_note"] =
+                    "ShowElements frames by HOST id, so a linked target frames its LINK INSTANCE " +
+                    "rather than the element inside it. The selection is precise; the camera is as " +
+                    "precise as Revit lets it be, and the difference is said rather than glossed."
+            };
+            if (verification != null) foreach (JProperty p in verification.Properties()) payload[p.Name] = p.Value;
+            return CommandResult.Ok(payload);
+        }
+
     }
 }

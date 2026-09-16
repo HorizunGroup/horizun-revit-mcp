@@ -39,9 +39,19 @@ namespace Horizun.Revit.Commands
             int maxRows = Math.Max(1, Math.Min(1000, request.Value<int?>("max_rows") ?? 200));
             int offset = Math.Max(0, request.Value<int?>("offset") ?? 0);
 
+            // OPT-IN, and absent means exactly what it always meant. See
+            // Core/CooperativeReadOptions.cs: a published reader that quietly started
+            // stopping early would turn every existing integration's complete answer into a
+            // partial one that still looks complete.
+            string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, doc);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null)
+                return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            CooperativeRead.Scope coopScope = cooperative.Begin("list_elements " + categoryText, 0);
+
             var all = new List<Row>();
             var unavailable = new JArray();
-            Collect(doc, hostCategory.Id, "host", doc.Title, null, all, unavailable);
+            Collect(doc, hostCategory.Id, "host", doc.Title, null, all, unavailable, coopScope, cooperative);
 
             int loadedLinks = 0;
             int unloadedLinks = 0;
@@ -71,7 +81,9 @@ namespace Horizun.Revit.Commands
                         unavailable.Add(new JObject { ["link_instance_id"] = Rid.Value(link.Id), ["name"] = link.Name, ["reason"] = "category not present in linked document" });
                         continue;
                     }
-                    Collect(linked, linkedCategory.Id, "link", linked.Title, Rid.Value(link.Id), all, unavailable);
+                    if (coopScope != null && !coopScope.Complete) break;
+                    Collect(linked, linkedCategory.Id, "link", linked.Title, Rid.Value(link.Id), all,
+                            unavailable, coopScope, cooperative);
                 }
             }
 
@@ -95,17 +107,29 @@ namespace Horizun.Revit.Commands
                 ["coverage_complete"] = unavailable.Count == 0 && federatedCoverage.Value<bool>("coverage_complete"),
                 ["federated_coverage"] = federatedCoverage,
                 ["unavailable"] = unavailable,
-                ["rows"] = new JArray(page.Select(ToJson))
+                ["rows"] = new JArray(page.Select(ToJson)),
+                // Present ONLY when the caller asked for it. A reply that grew a new block
+                // for everybody would be the behaviour change this design exists to avoid.
+                ["cooperative"] = cooperative.Report(
+                    coopScope, offset + page.Count, coopFingerprint,
+                    offset + page.Count < all.Count || (coopScope != null && !coopScope.Complete),
+                    ownCursorField: "offset")
             });
         }
 
         private static void Collect(Document source, ElementId categoryId, string sourceKind, string sourceName,
-                                    long? linkInstanceId, List<Row> rows, JArray unavailable)
+                                    long? linkInstanceId, List<Row> rows, JArray unavailable,
+                                    CooperativeRead.Scope scope = null, CooperativeOptions options = null)
         {
             try
             {
                 foreach (Element element in new FilteredElementCollector(source).OfCategoryId(categoryId).WhereElementIsNotElementType())
                 {
+                    // BETWEEN elements, never inside one: stopping mid-element would leave a
+                    // half-read row in the results, which is a different and worse failure
+                    // than reading fewer of them.
+                    if (scope != null && !scope.Continue()) break;
+                    if (options != null && scope != null && options.UnitsExhausted(scope.Done)) break;
                     try
                     {
                         Element type = source.GetElement(element.GetTypeId());

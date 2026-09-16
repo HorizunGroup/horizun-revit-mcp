@@ -98,6 +98,66 @@ namespace Horizun.Server
             return Describe(record);
         }
 
+        /// <summary>
+        /// The task state, plus the final tool result or error WHEN - and only when - the
+        /// task has reached a terminal status.
+        ///
+        /// 2026-07-28 moved tasks into an extension whose tasks/get carries the outcome,
+        /// and removed the blocking tasks/result that used to carry it. Polling that
+        /// still needed a second, blocking call to learn the answer would be polling in
+        /// name only. This is the same durable snapshot tasks/result returns, read rather
+        /// than recomputed: the snapshot is frozen before the terminal state is
+        /// published, so a task that says "completed" always has its result already.
+        /// </summary>
+        internal static JObject GetWithOutcome(string taskId)
+        {
+            JObject record = ReadRequired(taskId);
+            EnsureNotExpired(record);
+            JObject task = Describe(record);
+
+            string status = (string)task["status"];
+            if (status != "completed" && status != "failed" && status != "cancelled") return task;
+
+            // Re-read: Describe may have just written the terminal state and its snapshot.
+            JObject outcome = Result(ReadRequired(taskId), taskId);
+            task["result"] = outcome;
+            return task;
+        }
+
+        /// <summary>
+        /// Record a cooperative cancellation request against a task.
+        ///
+        /// IT DOES NOT STOP ANYTHING, and says so. Revit offers no way to interrupt a
+        /// command already running on its UI thread; work still WAITING in the bridge
+        /// queue can be removed, and that removal happens where the queue lives, not
+        /// here. What this does is make the intent durable and visible in the task's
+        /// status message, so a later poll shows that someone asked - rather than the
+        /// request evaporating and the user concluding cancellation is unimplemented.
+        /// </summary>
+        internal static void RequestCancellation(string taskId)
+        {
+            using (AcquireTaskMutex(taskId, CancellationToken.None))
+            {
+                JObject record = ReadRequired(taskId);
+                EnsureNotExpired(record);
+                string status = (string)record["status"];
+                if (IsTerminal(status)) return;     // terminal is terminal; nothing to ask for
+
+                record["cancellation_requested_at"] = DateTimeOffset.UtcNow.ToString("O");
+                record["status_message"] =
+                    "Cancellation was requested. This is cooperative: work still waiting in the bridge queue is " +
+                    "removed before it starts, but a command already running on Revit's UI thread cannot be " +
+                    "interrupted and will finish. The status will reach a terminal state either way.";
+                record["last_updated_at"] = DateTimeOffset.UtcNow.ToString("O");
+                Write(record);
+            }
+        }
+
+        /// <summary>Has someone asked for this task to stop? Read by the modern tasks/get.</summary>
+        internal static bool CancellationRequested(JObject record)
+            => record != null && record["cancellation_requested_at"] != null &&
+               record["cancellation_requested_at"].Type != JTokenType.Null;
+
         public static JObject List(JObject prms)
         {
             int offset = DecodeCursor(prms?["cursor"]);

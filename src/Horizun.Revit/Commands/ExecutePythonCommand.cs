@@ -684,6 +684,26 @@ namespace Horizun.Revit.Commands
             scope.SetVariable("doc", (object)doc);
             scope.SetVariable("__output__", (object)null);
 
+            // ARGUMENTS, as ONE variable holding JSON TEXT.
+            //
+            // A promoted script is a script somebody calls WITH something, and until this
+            // existed there was no way to pass it: the only inputs were the source itself
+            // and the active document. Callers worked around that by generating a new
+            // script per call, which defeats the hash that makes a promoted generation
+            // attributable in the first place.
+            //
+            // ONE NAME, so a caller whose argument is called `doc` cannot shadow the name
+            // every Revit script expects. TEXT, so there is no JSON-to-Python conversion
+            // with opinions about integers, nulls and nested objects - every one of those
+            // opinions is a place where what the caller sent is not what the script reads.
+            // The script calls json.loads itself, in its own runtime, with its own rules.
+            //
+            // ALWAYS BOUND, even when empty: a script that reads it must not have to ask
+            // whether it exists, and `{}` is the honest value for "no arguments".
+            JObject scriptArguments = request["arguments"] as JObject;
+            scope.SetVariable("HORIZUN_ARGS_JSON",
+                (scriptArguments ?? new JObject()).ToString(Newtonsoft.Json.Formatting.None));
+
             // A record of the run that survives the run. Long scripts are exactly where
             // the caller cannot ask "how far along?" - the pipe is busy being this call -
             // and exactly where a Revit crash costs the most.

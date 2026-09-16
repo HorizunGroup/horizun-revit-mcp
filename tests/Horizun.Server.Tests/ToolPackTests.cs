@@ -252,6 +252,8 @@ namespace Horizun.Server.Tests
                 AssertProfile(new[] { "read" }, new[]
                 {
                     "get_document_info", "horizun_audit_cad_model", "horizun_audit_reinforcement",
+                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_review",
+                    "horizun_cad_symbols", "horizun_cad_unit_instances",
                     "horizun_file_info",
                     "horizun_get_dimension_references", "horizun_get_schedule_data", "horizun_health",
                     "horizun_job_status", "horizun_list_elements", "horizun_list_schedules",
@@ -264,6 +266,8 @@ namespace Horizun.Server.Tests
                 AssertProfile(new[] { "schedules" }, new[]
                 {
                     "get_document_info", "horizun_audit_cad_model", "horizun_audit_reinforcement",
+                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_review",
+                    "horizun_cad_symbols", "horizun_cad_unit_instances",
                     "horizun_create_schedule",
                     "horizun_file_info", "horizun_get_dimension_references", "horizun_get_schedule_data",
                     "horizun_health", "horizun_job_status", "horizun_list_elements",

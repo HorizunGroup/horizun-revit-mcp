@@ -115,6 +115,30 @@ namespace Horizun.Revit.Commands
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
                 harvest.Segments, set, sourceHash, harvest.Arcs);
 
+            // THE SAME READING THE PLAN MADE, INCLUDING THE SYMBOLS.
+            //
+            // This command promises to read the drawing exactly as
+            // horizun_plan_from_cad does, and for a set with blocks rules it did
+            // not: Revit's import cannot see a block name, so the audit found no
+            // symbols at all and reported eight devices - every one of them built
+            // from this drawing minutes earlier - as "built_not_in_drawing". An
+            // audit that cannot see what the plan saw is not evidence about the
+            // model; it is evidence about the reader.
+            JObject blocksRead = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.Source == CadGeometrySource.Blocks))
+            {
+                blocksRead = CadBlockSource.Read(element, facts, set, harvest, sourceHash, interpretation,
+                                                 request.Value<string>("dwg_path"),
+                                                 Math.Max(30, Math.Min(3600,
+                                                     request.Value<int?>("dwg_read_timeout_seconds") ?? 900)));
+                if (blocksRead?["refused"] != null)
+                    return CommandResult.Fail(
+                        "symbols_unreadable: this requirement set has blocks rules and the drawing's symbols " +
+                        "could not be read (" + blocksRead["refused"] + "). An audit that cannot see them would " +
+                        "report every device built from them as deleted from the drawing. Nothing was examined. " +
+                        blocksRead.ToString(Newtonsoft.Json.Formatting.None));
+            }
+
             // ------------------------------------------------------- read the model
             var problems = new List<string>();
             List<CadAuditSubject> subjects = Subjects(doc, set, interpretation, problems,
@@ -180,6 +204,28 @@ namespace Horizun.Revit.Commands
                                        "standing there - the audit counts it as built, and an incremental update " +
                                        "will NOT recognise it."
                 },
+                ["matches"] = new JArray(audit.Matches.Take(maxFindings).Select(m => m.ToJson())),
+                ["match_states"] = new JObject
+                {
+                    ["agrees"] = audit.Matches.Count(m => m.State == "agrees"),
+                    ["differs"] = audit.Matches.Count(m => m.State == "differs"),
+                    ["means"] = "a match says WHICH element is the drawing's entity; its state says whether that " +
+                                "element still agrees with the drawing in everything this audit measures - " +
+                                "position, hosting, side, hand, reflection, type, size, parameters. A match that " +
+                                "differs is built and not correct."
+                },
+                ["candidate_coverage"] = new JObject
+                {
+                    ["read"] = audit.CandidatesRead,
+                    ["eligible"] = interpretation.Candidates.Count(c => c.EligibleForAutomaticApply),
+                    ["needing_review"] = interpretation.NeedingReview.Count(),
+                    ["matched"] = audit.Matches.Select(m => m.CandidateId).Distinct().Count(),
+                    ["not_built"] = audit.Count(CadFindingCode.DrawingNotBuilt),
+                    ["not_built_eligible"] = audit.Findings.Count(f => f.Code == CadFindingCode.DrawingNotBuilt &&
+                        (f.Evidence?.Value<bool?>("eligible_for_automatic_apply") ?? false)),
+                    ["means"] = "every candidate the drawing yields under this set is audited, including the ones a " +
+                                "plan would not build; not_built_eligible are the ones a plan WOULD build."
+                },
                 ["findings"] = new JArray(shown.Select(f => f.ToJson())),
                 ["findings_total"] = audit.Findings.Count,
                 ["findings_truncated"] = audit.Findings.Count > shown.Count,
@@ -202,8 +248,9 @@ namespace Horizun.Revit.Commands
                                    "Informational findings do not make it false - they record HOW the two agree.",
                 ["provenance_problems"] = new JArray(problems.Take(50)),
                 ["not_measured"] = new JArray(
-                    "text, blocks and hatches: this bridge cannot read them from imported CAD, so nothing in " +
-                    "them is audited and their absence from the findings is not evidence of agreement",
+                    "text and hatches: this bridge cannot read them from imported CAD, so nothing in them is " +
+                    "audited and their absence from the findings is not evidence of agreement. Blocks ARE read, " +
+                    "through the same reader the plan uses, whenever a rule converts them",
                     "elements built from this drawing and then DELETED: nothing remains to carry provenance, so " +
                     "a deleted element and one that was never built are the same finding here")
             };
@@ -217,7 +264,13 @@ namespace Horizun.Revit.Commands
         /// produces, so a hand-built wall standing on the drawing's line is seen
         /// rather than reported as missing.
         /// </summary>
-        private static List<CadAuditSubject> Subjects(Document doc, CadRequirementSet set,
+        /// <summary>
+        /// Every element in this document that remembers a CAD origin.
+        ///
+        /// Shared with the plan, which has to know what it already built before it
+        /// offers to build it again.
+        /// </summary>
+        internal static List<CadAuditSubject> Subjects(Document doc, CadRequirementSet set,
                                                       CadInterpretation interpretation,
                                                       List<string> problems, bool includeAnonymous)
         {

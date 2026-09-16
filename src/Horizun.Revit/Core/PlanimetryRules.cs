@@ -786,8 +786,8 @@ namespace Horizun.Revit.Core
             var groups = tags
                 .Where(t => t.Readable && t.TargetsReadable != false && t.IsOrphaned != true &&
                             t.OwnerViewId.HasValue && t.TypeId.HasValue && t.TaggedElementIds.Count > 0)
-                .GroupBy(t => t.OwnerViewId.Value.ToString(CultureInfo.InvariantCulture) + "" +
-                              t.TypeId.Value.ToString(CultureInfo.InvariantCulture) + "" +
+                .GroupBy(t => t.OwnerViewId.Value.ToString(CultureInfo.InvariantCulture) + "\u001f" +
+                              t.TypeId.Value.ToString(CultureInfo.InvariantCulture) + "\u001f" +
                               string.Join(",", t.TaggedElementIds.OrderBy(i => i)), StringComparer.Ordinal)
                 .Where(g => g.Count() > 1)
                 .OrderBy(g => g.Key, StringComparer.Ordinal);

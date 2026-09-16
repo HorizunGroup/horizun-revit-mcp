@@ -248,7 +248,23 @@ namespace Horizun.Revit.Core
 
         /// <summary>One topic's markup.bcf. Status maps to the BCF vocabulary; the
         /// finding's history becomes BCF comments in order.</summary>
+        /// <summary>The viewpoint file every topic now carries, named the same way everywhere.</summary>
+        public const string BcfViewpointFile = "visualization.bcfv";
+
         public static string BcfMarkupXml(CoordinationFinding f, string documentTitle)
+        {
+            return BcfMarkupXml(f, documentTitle, null);
+        }
+
+        /// <summary>
+        /// The markup, with a Viewpoints element and an identity note when there is one.
+        ///
+        /// THE NOTE GOES IN THE FILE, not only in the export's reply: the person who opens
+        /// the BCF in a coordination tool is not the person who read the JSON, and "selecting
+        /// this component selects nothing because the model has no IFC GUIDs" is exactly what
+        /// they need and exactly what they will otherwise diagnose as a stale issue.
+        /// </summary>
+        public static string BcfMarkupXml(CoordinationFinding f, string documentTitle, string identityNote)
         {
             string guid = BcfTopicGuid(f.Id);
             string topicStatus =
@@ -268,9 +284,15 @@ namespace Horizun.Revit.Core
                 "Horizun coordination finding " + f.Id + " in '" + documentTitle + "'. " +
                 (f.PointMm == null ? "" : "Point (mm): " + string.Join(", ", System.Array.ConvertAll(f.PointMm,
                     v => v.ToString("0.0", CultureInfo.InvariantCulture))) + ". ") +
-                "Status: " + f.Status + (f.Regression ? " (REGRESSION)" : "") + "."))
+                "Status: " + f.Status + (f.Regression ? " (REGRESSION)" : "") + "." +
+                (identityNote == null ? "" : " COMPONENT IDENTITY: " + identityNote)))
               .Append("</Description>\n");
             sb.Append("  </Topic>\n");
+            // THE VIEWPOINT, declared so a reader knows the .bcfv beside this file is part of
+            // the topic. Without it the file is there and nothing looks for it.
+            sb.Append("  <Viewpoints Guid=\"").Append(ViewpointGuid(f.Id)).Append("\">\n");
+            sb.Append("    <Viewpoint>").Append(BcfViewpointFile).Append("</Viewpoint>\n");
+            sb.Append("  </Viewpoints>\n");
             int commentIndex = 0;
             foreach (CoordinationEvent entry in f.History ?? new List<CoordinationEvent>())
             {
@@ -287,6 +309,9 @@ namespace Horizun.Revit.Core
             sb.Append("</Markup>\n");
             return sb.ToString();
         }
+
+        /// <summary>A deterministic viewpoint guid, so re-exporting the same ledger is the same file.</summary>
+        private static string ViewpointGuid(string findingId) => CommentGuid(findingId, 9001);
 
         private static string CommentGuid(string findingId, int index)
         {

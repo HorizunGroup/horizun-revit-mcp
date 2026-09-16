@@ -99,8 +99,45 @@ namespace Horizun.Server
 
         /// <summary>Refuse messages that do not belong to the current MCP lifecycle phase.</summary>
         public bool Allows(string method, bool isNotification, out string error)
+            => Allows(method, isNotification, Protocol.McpEra.Legacy, out error);
+
+        /// <summary>
+        /// The lifecycle gate, now era-aware.
+        ///
+        /// 2026-07-28 REMOVED THE LIFECYCLE THIS CLASS ENFORCES. There is no initialize,
+        /// no notifications/initialized, and no phase: every request carries what the
+        /// server needs and is processed independently. So a modern request is not
+        /// "allowed early" - it is outside this machine entirely, and the only thing
+        /// still worth refusing is a modern request asking for a legacy handshake method.
+        ///
+        /// A LEGACY REQUEST IS GATED EXACTLY AS BEFORE. That is the property: adding an
+        /// era must not loosen the rule for the clients that still rely on it, all of
+        /// which are legacy today.
+        ///
+        /// server/discover is the one method admitted in any phase and any era. It is
+        /// the backward-compatibility probe - a dual-era client sends it before it knows
+        /// what this server is - and a probe refused for arriving "too early" tells the
+        /// client nothing it can act on.
+        /// </summary>
+        public bool Allows(string method, bool isNotification, Protocol.McpEra era, out string error)
         {
             error = null;
+
+            if (method == "server/discover") return true;
+
+            if (era == Protocol.McpEra.Modern)
+            {
+                if (method == "initialize" || method == "notifications/initialized")
+                {
+                    error = "'" + method + "' does not exist in protocol " + Protocol.McpRevision.Latest +
+                            ": that revision removed the initialization handshake, and this request declared it. " +
+                            "Send the request you actually want; it carries its own protocol version and " +
+                            "capabilities. Nothing was done.";
+                    return false;
+                }
+                return true;
+            }
+
             switch (_phase)
             {
                 case McpSessionPhase.AwaitingInitialize:

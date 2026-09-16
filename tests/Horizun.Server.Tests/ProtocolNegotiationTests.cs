@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Server tests - original Horizun code.
 //
 // Golden tests for the negotiation rule. A bad answer here breaks every client at
@@ -28,15 +28,24 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
-        /// The revision that is still RC upstream. Adopting it is a deliberate act behind
-        /// the full adapter, never a string added here in passing - this test turns that
-        /// sentence from a comment into a failure.
+        /// 2026-07-28 IS supported by this server - statelessly, through Protocol/ - and
+        /// must never be reachable from HERE.
+        ///
+        /// This file answers initialize, and that revision removed initialize. Handing it
+        /// back to a client that opened with a handshake would name a dialect in which
+        /// that client's own first message does not exist, and the client would then
+        /// speak a protocol it had already proved it does not implement. The assertion
+        /// did not change when the revision was adopted; only its reason did.
         /// </summary>
         [Fact]
-        public void The_rc_revision_is_not_supported_yet()
+        public void The_handshake_never_answers_a_revision_that_removed_the_handshake()
         {
             Assert.DoesNotContain("2026-07-28", ProtocolNegotiation.Supported);
             Assert.Equal(ProtocolNegotiation.Latest, ProtocolNegotiation.Answer("2026-07-28"));
+
+            // ... and the modern table does carry it, so this is a deliberate exclusion
+            // rather than a revision nobody implemented.
+            Assert.Contains("2026-07-28", Horizun.Server.Protocol.McpRevision.All);
         }
 
         [Fact]

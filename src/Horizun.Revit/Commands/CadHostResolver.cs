@@ -34,6 +34,12 @@ namespace Horizun.Revit.Commands
         public double? DistanceMm;
         /// <summary>How far this set is willing to look, in mm.</summary>
         public double AllowanceMm;
+
+        /// <summary>Walls that were nearer and could not carry the point on any bounded face.</summary>
+        public int WallsPassedOver;
+
+        /// <summary>True when walls exist, one was nearest, and none of them carries this point.</summary>
+        public bool NoFaceCarriesThePoint;
         /// <summary>True when the document contains no wall at all - a different answer from "too far".</summary>
         public bool NoWallsAtAll;
     }
@@ -80,19 +86,47 @@ namespace Horizun.Revit.Commands
                 return match;
             }
 
-            Wall best = null;
-            double bestFeet = double.MaxValue;
+            // NEAREST FIRST, BUT IT HAS TO CARRY THE POINT.
+            //
+            // A wall whose centreline is nearest can still be the wrong wall: the
+            // symbol may lie past its end, where it projects onto the PLANE of a
+            // face and onto no face at all. The writer tests exactly that when it
+            // places, so the search tests it here - otherwise a plan is clean and
+            // its apply is not, which is the split this whole binding exists to
+            // prevent.
+            var byDistance = new List<KeyValuePair<double, Wall>>();
             foreach (Wall w in walls)
             {
                 Curve curve = (w.Location as LocationCurve)?.Curve;
                 if (curve == null) continue;
                 double d;
                 try { d = curve.Distance(point); } catch { continue; }
-                if (d >= bestFeet) continue;
-                bestFeet = d; best = w;
+                byDistance.Add(new KeyValuePair<double, Wall>(d, w));
             }
+            byDistance.Sort((x, y) => x.Key.CompareTo(y.Key));
 
-            if (best == null) { match.NoWallsAtAll = true; return match; }
+            Wall best = null;
+            double bestFeet = double.MaxValue;
+            int passedOver = 0;
+            foreach (KeyValuePair<double, Wall> candidate in byDistance)
+            {
+                if (!CarriesPoint(candidate.Value, point)) { passedOver++; continue; }
+                best = candidate.Value;
+                bestFeet = candidate.Key;
+                break;
+            }
+            match.WallsPassedOver = passedOver;
+
+            if (best == null)
+            {
+                // Nothing carries it. Report the nearest one anyway, so the refusal
+                // can say how far the nearest wall was rather than only that none
+                // qualified.
+                if (byDistance.Count == 0) { match.NoWallsAtAll = true; return match; }
+                match.DistanceMm = CadUnits.FeetToMm(byDistance[0].Key);
+                match.NoFaceCarriesThePoint = true;
+                return match;
+            }
 
             double widthMm = 0;
             try { widthMm = CadUnits.FeetToMm(best.Width); } catch { }
@@ -100,6 +134,36 @@ namespace Horizun.Revit.Commands
             match.DistanceMm = CadUnits.FeetToMm(bestFeet);
             if (match.DistanceMm.Value <= match.AllowanceMm) match.Wall = best;
             return match;
+        }
+
+        /// <summary>
+        /// Does this wall have a bounded face the point lands on?
+        ///
+        /// The same test the placement makes, so the plan and the apply cannot
+        /// disagree about which wall a symbol belongs to. A wall whose faces
+        /// cannot be read answers NO: an unreadable face is not a face this
+        /// bridge can place on.
+        /// </summary>
+        private static bool CarriesPoint(Wall wall, XYZ point)
+        {
+            try
+            {
+                foreach (ShellLayerType shell in new[] { ShellLayerType.Exterior, ShellLayerType.Interior })
+                {
+                    IList<Reference> refs = HostObjectUtils.GetSideFaces(wall, shell);
+                    if (refs == null) continue;
+                    foreach (Reference r in refs)
+                    {
+                        var face = wall.Document.GetElement(r)?.GetGeometryObjectFromReference(r) as Face;
+                        if (face == null) continue;
+                        IntersectionResult projection = face.Project(point);
+                        if (projection == null) continue;
+                        if (face.IsInside(projection.UVPoint)) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>Every floor, roof and ceiling, read once for a whole pass.</summary>

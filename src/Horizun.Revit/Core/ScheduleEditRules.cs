@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - original Horizun code.
 //
 // THE RULES BEHIND horizun_manage_schedules, without a Revit in the room.
@@ -47,6 +47,107 @@ namespace Horizun.Revit.Core
     public static class ScheduleEditRules
     {
         // ---- operations, closed ---------------------------------------------------
+
+        /// <summary>
+        /// Why a calculated value cannot be CREATED from here, said once.
+        ///
+        /// This is not a gap in the bridge. The Revit API exposes ScheduleField
+        /// .IsCalculatedField for READING one and offers no creator for it: there is no
+        /// AddCalculatedField, no AddCalculatedValue, and no way to set a formula on a
+        /// schedule field. Checked against the metadata of the installed RevitAPI.dll
+        /// rather than remembered - the names simply are not in it.
+        ///
+        /// Saying so exactly matters because the alternative failure is a caller
+        /// retrying the same argument in three spellings and concluding the bridge is
+        /// broken. horizun_execute_python buys nothing here: it reaches the same API.
+        /// </summary>
+        public const string CalculatedFieldRefusal =
+            "CREATING a calculated value is not available through the Revit API: ScheduleField exposes " +
+            "IsCalculatedField for reading one, and no method anywhere in the API adds a calculated field or " +
+            "sets a formula on a schedule field. Nothing was written, and this is not an argument you can " +
+            "fix - falling back to horizun_execute_python reaches the same API and fails the same way. " +
+            "\n\nBUT TWO ROUTES DO WORK, and they cover most of what people want:\n" +
+            "  (1) USE ONE THAT ALREADY EXISTS. A calculated field defined in this schedule appears among " +
+            "its schedulable fields, so add_fields with its name adds it like any other field. " +
+            "list_fields marks which fields are calculated, so you can see what is there.\n" +
+            "  (2) DUPLICATE A SCHEDULE THAT HAS ONE. A duplicate keeps its calculated fields, with their " +
+            "formulas and formatting.\n\n" +
+            "Create the calculated value once by hand in Revit (Schedule Properties > Fields > Calculated) " +
+            "in a schedule you keep as a template; from then on everything about that column - adding it, " +
+            "its heading, totals, width, alignment and number format - is available from here.";
+
+        /// <summary>
+        /// The canonical alignment name, or null when it is not one. Returns a STRING
+        /// rather than Revit's enum on purpose: this file compiles without Revit so the
+        /// rules can be proved without one.
+        /// </summary>
+        public static string CanonicalAlignment(string requested)
+        {
+            switch ((requested ?? "").Trim().ToLowerInvariant())
+            {
+                case "left": return "left";
+                case "center":
+                case "centre": return "center";
+                case "right": return "right";
+                default: return null;
+            }
+        }
+
+        /// <summary>
+        /// The shape of a column's number format, checked before any transaction opens.
+        ///
+        /// ACCURACY IS THE ONE THAT BITES. Revit reads it as a step, so 0 means "no
+        /// rounding step" and a negative value is meaningless; both are accepted by the
+        /// property and produce a column whose numbers are not what anybody asked for.
+        /// </summary>
+        public static string ValidateFieldFormat(Newtonsoft.Json.Linq.JObject format)
+        {
+            if (format == null) return null;
+
+            var known = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "unit_type_id", "accuracy", "suppress_trailing_zeros", "rounding"
+            };
+            foreach (Newtonsoft.Json.Linq.JProperty property in format.Properties())
+                if (!known.Contains(property.Name))
+                    return "format does not take '" + property.Name + "'. It takes: " +
+                           string.Join(", ", known) + ".";
+
+            Newtonsoft.Json.Linq.JToken accuracy = format["accuracy"];
+            if (accuracy != null)
+            {
+                double value;
+                if (!double.TryParse(accuracy.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+                    return "format.accuracy must be a number.";
+                if (!(value > 0))
+                    return "format.accuracy must be greater than zero: Revit reads it as a rounding STEP, and " +
+                           "zero or a negative step is accepted by the property while producing a column of " +
+                           "numbers nobody asked for.";
+            }
+
+            Newtonsoft.Json.Linq.JToken unit = format["unit_type_id"];
+            if (unit != null)
+            {
+                string text = unit.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)unit : null;
+                if (string.IsNullOrWhiteSpace(text))
+                    return "format.unit_type_id must be a non-empty string, e.g. autodesk.unit.unit:millimeters.";
+                if (text.IndexOf("autodesk.unit", StringComparison.OrdinalIgnoreCase) < 0)
+                    return "format.unit_type_id must be a Forge unit identifier such as " +
+                           "autodesk.unit.unit:millimeters; '" + text + "' is not one.";
+            }
+
+            Newtonsoft.Json.Linq.JToken rounding = format["rounding"];
+            if (rounding != null)
+            {
+                string text = rounding.Type == Newtonsoft.Json.Linq.JTokenType.String ? (string)rounding : null;
+                var allowed = new[] { "Nearest", "Up", "Down" };
+                if (text == null || Array.FindIndex(allowed,
+                        candidate => string.Equals(candidate, text, StringComparison.OrdinalIgnoreCase)) < 0)
+                    return "format.rounding must be one of: " + string.Join(", ", allowed) + ".";
+            }
+
+            return null;
+        }
 
         public const string OpCreate = "create";
         public const string OpDuplicate = "duplicate";

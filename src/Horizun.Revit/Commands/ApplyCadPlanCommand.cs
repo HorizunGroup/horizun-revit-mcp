@@ -298,6 +298,18 @@ namespace Horizun.Revit.Commands
 
                 callArgs["target_document"] = target;
                 callArgs["dry_run"] = dryRun;
+
+                // A REHEARSAL THAT ONLY READS ARGUMENTS IS NOT A REHEARSAL.
+                //
+                // MEASURED twice in one session: a batch of twenty-one rows
+                // rehearsed clean and failed on the apply - first because a family
+                // could not be mirrored, then because a work-plane based family had
+                // been sent through the wrong overload. Neither is an argument
+                // error; both are what Revit does when the row is actually built.
+                // horizun_create_elements can build provisionally, verify and roll
+                // the whole group back, and a conversion is exactly the case worth
+                // the extra transaction.
+                if (dryRun) callArgs["validation_mode"] = "revit_rollback";
                 if (!dryRun)
                 {
                     string token = action.Value<string>("confirmation_token") ?? request.Value<string>("confirmation_token");

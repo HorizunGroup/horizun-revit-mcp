@@ -82,11 +82,25 @@ namespace Horizun.Revit
                 LongDescription = RibbonText.PythonDescription(es)
             };
 
+            // THE PANE HAD NO WAY IN. App.cs registered it and OperationsPane.cs defined the
+            // command to show it, and nothing called that command - so the pane existed and was
+            // reachable only from Revit's own interface menu, where a user has to already know
+            // it is there. A panel nobody can find shows nothing.
+            var operations = new PushButtonData(
+                "HorizunOperationsPane", RibbonText.OperationsLabel(es), asm,
+                typeof(Horizun.Revit.Ui.ShowOperationsPaneCommand).FullName)
+            {
+                ToolTip = RibbonText.OperationsTooltip(es),
+                LongDescription = RibbonText.OperationsDescription(es)
+            };
+
             AddImages(status, "status");
             AddImages(hub, "hub");
             AddImages(python, "status");
+            AddImages(operations, "status");
 
             panel.AddItem(status);
+            panel.AddItem(operations);
             panel.AddItem(python);
             panel.AddItem(hub);
 
