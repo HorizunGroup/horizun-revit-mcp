@@ -74,6 +74,12 @@ namespace Horizun.Revit.Core
 
         /// <summary>The reading that produced the entity this element stands for (CadInterpretationRules.InterpretationVersion).</summary>
         public string InterpretationVersion;
+
+        /// <summary>
+        /// v4: the identity of the drawing SET this element was read from - the host and its
+        /// references (CadDwgCache.SourceSetSha256). Null when the reading did not record them.
+        /// </summary>
+        public string SourceSetSha256;
         /// <summary>The drawing entities that reading used, ";"-joined: two elements from one entity, or one from several, are visible.</summary>
         public string SourceEntities;
 
@@ -95,6 +101,7 @@ namespace Horizun.Revit.Core
             },
             ["source_fingerprint"] = SourceFingerprint,
             ["source_file_sha256"] = SourceFileSha256,
+            ["source_set_sha256"] = SourceSetSha256,
             ["layer"] = Layer,
             ["plan_fingerprint"] = PlanFingerprint,
             ["built_geometry_mm"] = BuiltGeometry,
@@ -103,7 +110,7 @@ namespace Horizun.Revit.Core
             // v1 or v2 as a WORD, beside the number: a reader deciding whether
             // this element can be told apart from another placement's needs the
             // answer, not the arithmetic.
-            ["provenance_version"] = IsV1 ? "v1" : SchemaVersion >= 3 ? "v3" : "v2",
+            ["provenance_version"] = IsV1 ? "v1" : SchemaVersion >= 4 ? "v4" : SchemaVersion >= 3 ? "v3" : "v2",
             ["interpretation_version"] = InterpretationVersion,
             ["source_entities"] = SourceEntities,
             ["placement"] = IsV1

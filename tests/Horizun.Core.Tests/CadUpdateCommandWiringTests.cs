@@ -181,23 +181,27 @@ namespace Horizun.Core.Tests
             Assert.Contains("SchemaGuidV1 = new Guid(\"7b2f4c18-5d3a-4e6b-9a71-3c0f8e2d15a4\")", src);
             Assert.Contains("SchemaGuidV2 = new Guid(\"c4a7e9d2-6b18-4f3c-8e5a-2d91f07b6c43\")", src);
             Assert.Contains("SchemaGuidV3 = new Guid(\"5e0d3b7a-91c4-4f26-b8e3-7a2c6d19f40e\")", src);
-            Assert.Contains("public const int CurrentVersion = 3;", src);
-            Assert.Contains("new SchemaBuilder(SchemaGuidV3)", src);
+            Assert.Contains("SchemaGuidV4 = new Guid(\"ff45f28f-b5b8-4ebd-bdc0-1bec2bd373f5\")", src);
+            Assert.Contains("public const int CurrentVersion = 4;", src);
+            Assert.Contains("new SchemaBuilder(SchemaGuidV4)", src);
+            Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV3)", src);
             Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV2)", src);
             Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV1)", src);
-            Assert.Contains("AllSchemaGuids = { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 }", src);
-            // Read: v3, then v2, then v1; placement fields from v2 on, the reading from v3 only.
-            int v3 = src.IndexOf("Schema schema = Schema.Lookup(SchemaGuidV3);", StringComparison.Ordinal);
+            Assert.Contains("AllSchemaGuids = { SchemaGuidV4, SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 }", src);
+            // Read: v4, v3, v2, then v1; placement fields from v2 on, the reading from v3, the set from v4.
+            int v4 = src.IndexOf("Schema schema = Schema.Lookup(SchemaGuidV4);", StringComparison.Ordinal);
+            int v3 = src.IndexOf("(schema = Schema.Lookup(SchemaGuidV3)) != null", StringComparison.Ordinal);
             int v2 = src.IndexOf("(schema = Schema.Lookup(SchemaGuidV2)) != null", StringComparison.Ordinal);
             int v1 = src.IndexOf("schema = Schema.Lookup(SchemaGuidV1);", StringComparison.Ordinal);
-            Assert.True(v3 > 0 && v2 > v3 && v1 > v2, "Read must look for v3, then v2, then v1");
+            Assert.True(v4 > 0 && v3 > v4 && v2 > v3 && v1 > v2, "Read must look for v4, then v3, v2, v1");
+            Assert.Contains("if (v4)\n                    p.SourceSetSha256", src);
             Assert.Contains("if (v2)\n                {\n                    p.PlacementId", src);
             Assert.Contains("if (v3)\n                {\n                    p.InterpretationVersion", src);
             // Write: the older entities are removed AFTER the v3 write landed.
             Assert.Contains("element.SetEntity(entity);", src);
             Assert.True(src.IndexOf("RemoveOlder(element);", StringComparison.Ordinal) >
                         src.IndexOf("element.SetEntity(entity);", StringComparison.Ordinal));
-            Assert.Contains("foreach (Guid guid in new[] { SchemaGuidV2, SchemaGuidV1 })", src);
+            Assert.Contains("foreach (Guid guid in new[] { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 })", src);
         }
 
         [Fact]
@@ -234,7 +238,12 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"migrated_from_v1\"] = migrated", apply);
 
             string plan = Plan();
-            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256)", plan);
+            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet)", plan);
+            // the drawing is read WITH its references: the set's identity travels beside the host's
+            Assert.Contains("string sourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);", plan);
+            Assert.Contains("SourceFileSha256 = facts.FileSha256,", first);
+            Assert.Contains("SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),", first);
+            Assert.DoesNotContain("?? facts.FileSha256", plan);
             Assert.Contains("[\"key\"] = \"cad-update-restamp\"", plan);
             // What the update verified is carried to the new revision; a relayered
             // match is not, or the change the review is about would disappear.

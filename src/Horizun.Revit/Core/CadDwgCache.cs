@@ -148,11 +148,26 @@ namespace Horizun.Revit.Core
             // them, so a changed reference is a changed reading even though the
             // host file's own bytes never moved. This is the invalidation that a
             // content hash of one file cannot give.
+            // RESOLVED FROM THIS DRAWING'S FOLDER, not from where the reading was made.
+            // MEASURED: a revised COPY of a drawing set has a host file byte-identical to
+            // the original and a changed reference beside it; checking the paths the
+            // original reading resolved compared the ORIGINAL reference and served the
+            // stale reading for the copy.
+            string here = null;
+            try { here = Path.GetDirectoryName(dwgPath); } catch { }
             var changed = new JArray();
             foreach (JObject dep in (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>())
             {
                 string path = (string)dep["path"];
                 string was = (string)dep["sha256"];
+                if (dep["name"] != null || dep["declared"] != null)
+                {
+                    string again = ResolveReference(here, new CadIrExternalReference
+                    {
+                        Name = (string)dep["name"], Path = (string)dep["declared"]
+                    });
+                    if (again != null) path = again;
+                }
                 if (string.IsNullOrWhiteSpace(path)) continue;
                 string now = File.Exists(path) ? Sha256(path) : null;
                 if (!string.Equals(was, now, StringComparison.OrdinalIgnoreCase))
@@ -235,6 +250,7 @@ namespace Horizun.Revit.Core
                 {
                     ["key"] = entry.Key,
                     ["drawing"] = dwgPath,
+                    ["drawing_sha256"] = Sha256(dwgPath),
                     ["read_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     ["seconds"] = Math.Round(seconds, 1),
                     ["entities"] = reading?.Entities?.Count ?? 0,
@@ -257,6 +273,41 @@ namespace Horizun.Revit.Core
                     ["means"] = "the reading is still correct; only the cache write failed."
                 };
             }
+        }
+
+        /// <summary>
+        /// THE IDENTITY OF WHAT WAS READ, when the drawing references others: the host's
+        /// bytes and every reference it is read with, resolved from the host's folder now.
+        /// Null when no reading of these host bytes on this machine recorded its references
+        /// - the caller then has the host's hash only, and says so. Prefixed "set:" so it is
+        /// never compared as if it were a single file's hash.
+        /// </summary>
+        public static string SourceSetSha256(string dwgPath, string hostSha)
+        {
+            if (string.IsNullOrWhiteSpace(dwgPath) || string.IsNullOrWhiteSpace(hostSha) || !Directory.Exists(Root))
+                return null;
+            string here = null;
+            try { here = Path.GetDirectoryName(dwgPath); } catch { }
+            foreach (string sidecar in Directory.GetFiles(Root, "*.json").OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                JObject side;
+                try { side = JObject.Parse(File.ReadAllText(sidecar)); } catch { continue; }
+                if (!string.Equals((string)side["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
+                var parts = new List<string>();
+                foreach (JObject dep in (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>())
+                {
+                    string path = ResolveReference(here, new CadIrExternalReference
+                    {
+                        Name = (string)dep["name"], Path = (string)dep["declared"]
+                    });
+                    parts.Add(((string)dep["name"] ?? "").ToLowerInvariant() + "=" +
+                              (path == null ? "(absent)" : Sha256(path) ?? "(unreadable)"));
+                }
+                if (parts.Count == 0) return null;
+                parts.Sort(StringComparer.Ordinal);
+                return "set:" + Hash(hostSha.ToLowerInvariant() + "|" + string.Join("|", parts));
+            }
+            return null;
         }
 
         private static void Publish(string target, Action<string> write)

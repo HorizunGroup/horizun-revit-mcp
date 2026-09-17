@@ -94,6 +94,11 @@ namespace Horizun.Server
                         Arg("walls_set", "The walls requirement set, bounded to the unit.", true),
                         Arg("devices_set", "The devices requirement set, bounded to the same unit.", true),
                         Arg("dwg_path", "The drawing the link shows, readable on this machine.", true)),
+                    Prompt("dwg-to-bim-update", "Bring a converted unit to a new drawing revision",
+                        "Apply what an update decides alone, then ask one grouped decision per set for what it holds, and audit against the new revision.",
+                        Arg("walls_set", "The walls requirement set of the unit.", true),
+                        Arg("devices_set", "The devices requirement set of the unit.", true),
+                        Arg("dwg_path", "The NEW revision of the drawing, readable on this machine.", true)),
                     // The two DWG procedures the catalogue carried with no prompt behind them.
                     Prompt("dwg-mep-unit-conversion", "Convert DWG MEP units to a connected model",
                         "Plan, build, connect and audit MEP runs from a unit drawing, with repeated unit layouts recognised and every unjoined junction reported.",
@@ -302,6 +307,20 @@ namespace Horizun.Server
                         "rather than editing somebody's template. Read the returned legend: when palette_wrapped is " +
                         "true, two different values share a colour and the legend is the only way to tell them apart. " +
                         "Finish with horizun_capture_view and report the legend beside the image.";
+                    break;
+                case "dwg-to-bim-update":
+                    string updWalls = Argument(args, "walls_set", true);
+                    string updDevices = Argument(args, "devices_set", true);
+                    string updDrawing = Argument(args, "dwg_path", true);
+                    description = "Bring a converted unit to a new revision of its drawing.";
+                    body =
+                        "Call horizun_health first. Repoint the CAD link to " + updDrawing + " with horizun_manage_cad_links " +
+                        "(rehearse, then apply). Start horizun_run_procedure with procedure dwg-to-bim-update and inputs: " +
+                        "walls set " + updWalls + ", devices set " + updDevices + ", drawing " + updDrawing + ", the hash of " +
+                        "the revision it supersedes, the document, the CAD link id and the level. Advance it. When it waits " +
+                        "for a decision, show the person the held rows with their classification and origin, and record " +
+                        "their answer with operation decide - never decide for them. A change whose origin is unknown is " +
+                        "said to be unknown.";
                     break;
                 case "dwg-to-bim-unit":
                     string unitWalls = Argument(args, "walls_set", true);

@@ -937,6 +937,7 @@ namespace Horizun.Revit.Commands
                         RequirementSetSha256 = set.Sha256,
                         SourceFingerprint = CadFacts.SourceFingerprint(facts),
                         SourceFileSha256 = facts.FileSha256,
+                        SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                         PlanFingerprint = planFingerprint,
                         WrittenUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                         // PROVENANCE v2: the placement kept APART from the file, so

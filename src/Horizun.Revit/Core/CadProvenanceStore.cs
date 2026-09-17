@@ -59,19 +59,28 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static readonly Guid SchemaGuidV2 = new Guid("c4a7e9d2-6b18-4f3c-8e5a-2d91f07b6c43");
 
-        /// <summary>The v3 GUID - what this build WRITES and looks for first. Fixed forever from here.</summary>
+        /// <summary>The v3 GUID: the reading and its entities. Fixed forever.</summary>
         public static readonly Guid SchemaGuidV3 = new Guid("5e0d3b7a-91c4-4f26-b8e3-7a2c6d19f40e");
 
+        /// <summary>
+        /// The v4 GUID - what this build WRITES and looks for first. v4 adds the identity of
+        /// the drawing SET (host and references). MEASURED: a revised copy of a drawing set
+        /// kept its host byte-identical and changed a reference, so a record naming the host
+        /// alone called every change a person's.
+        /// </summary>
+        public static readonly Guid SchemaGuidV4 = new Guid("ff45f28f-b5b8-4ebd-bdc0-1bec2bd373f5");
+
         /// <summary>The current writer's GUID. Anything that wants EVERY stamped element uses <see cref="Holders"/>.</summary>
-        public static Guid SchemaGuid => SchemaGuidV3;
+        public static Guid SchemaGuid => SchemaGuidV4;
 
         /// <summary>Every GUID a stamped element may carry, newest first.</summary>
-        public static readonly Guid[] AllSchemaGuids = { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 };
+        public static readonly Guid[] AllSchemaGuids = { SchemaGuidV4, SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 };
 
         public const string SchemaName = "HorizunCadProvenance";
         public const string SchemaNameV2 = "HorizunCadProvenanceV2";
         public const string SchemaNameV3 = "HorizunCadProvenanceV3";
-        public const int CurrentVersion = 3;
+        public const string SchemaNameV4 = "HorizunCadProvenanceV4";
+        public const int CurrentVersion = 4;
 
         /// <summary>
         /// EXACTLY the VendorId in Horizun.addin. Revit will not let an add-in
@@ -104,6 +113,8 @@ namespace Horizun.Revit.Core
         // v3 only
         private const string FieldInterpretation = "InterpretationVersion";
         private const string FieldSourceEntities = "SourceEntities";
+        // v4 only
+        private const string FieldSourceSet = "SourceSetSha256";
         /// <summary>Longest entity list kept; a longer one ends with an ellipsis and says it was cut.</summary>
         public const int SourceEntitiesMaxChars = 4000;
 
@@ -117,11 +128,11 @@ namespace Horizun.Revit.Core
         public static Schema GetOrCreate()
         {
             if (_cached != null && _cached.IsValidObject) return _cached;
-            Schema existing = Schema.Lookup(SchemaGuidV3);
+            Schema existing = Schema.Lookup(SchemaGuidV4);
             if (existing != null) { _cached = existing; return _cached; }
 
-            var builder = new SchemaBuilder(SchemaGuidV3);
-            builder.SetSchemaName(SchemaNameV3);
+            var builder = new SchemaBuilder(SchemaGuidV4);
+            builder.SetSchemaName(SchemaNameV4);
             // Vendor-only write, public read: another add-in may READ where an
             // element came from - that is useful and harmless - but only this one
             // may claim to have put it there.
@@ -144,14 +155,14 @@ namespace Horizun.Revit.Core
             // ADDING A FIELD TO A SCHEMA THAT IS ALREADY IN A DOCUMENT makes that
             // document unreadable, which is why the v1 schema is never touched
             // and the placement fields live under a NEW GUID. This list is
-            // therefore frozen too: the next field takes SchemaGuidV4.
+            // therefore frozen too: the next field takes SchemaGuidV5.
             foreach (string name in new[] { FieldCandidate, FieldGeometryId, FieldSemanticId, FieldRule,
                                             FieldSetId, FieldSetVersion, FieldSetSha,
                                             FieldSourceFp, FieldSourceSha, FieldLayer, FieldPlanFp,
                                             FieldBuiltGeometry, FieldWritten,
                                             FieldPlacementId, FieldPlacementTransform, FieldPlacementOrigin,
                                             FieldPlacementBasis, FieldSourcePath,
-                                            FieldInterpretation, FieldSourceEntities })
+                                            FieldInterpretation, FieldSourceEntities, FieldSourceSet })
                 builder.AddSimpleField(name, typeof(string));
             // A FLOATING-POINT FIELD MUST DECLARE ITS UNITS, or Revit refuses the
             // ENTITY - not the field, the whole entity.
@@ -201,6 +212,7 @@ namespace Horizun.Revit.Core
                 entity.Set(FieldSourcePath, p.SourcePath ?? "");
                 entity.Set(FieldInterpretation, p.InterpretationVersion ?? "");
                 entity.Set(FieldSourceEntities, Capped(p.SourceEntities));
+                entity.Set(FieldSourceSet, p.SourceSetSha256 ?? "");
                 // A spec'd field is SET and GET with its unit, always. The
                 // unit-less overload throws "The unit unitTypeId is not
                 // compatible with the field description", which reads like the
@@ -243,9 +255,14 @@ namespace Horizun.Revit.Core
                 // knows it is looking at a record that cannot name its placement,
                 // which is a different fact from "placed nowhere".
                 Entity entity = null;
-                bool v2 = false, v3 = false;
-                Schema schema = Schema.Lookup(SchemaGuidV3);
+                bool v2 = false, v3 = false, v4 = false;
+                Schema schema = Schema.Lookup(SchemaGuidV4);
                 if (schema != null)
+                {
+                    Entity e4 = element.GetEntity(schema);
+                    if (e4 != null && e4.IsValid()) { entity = e4; v2 = true; v3 = true; v4 = true; }
+                }
+                if (entity == null && (schema = Schema.Lookup(SchemaGuidV3)) != null)
                 {
                     Entity e3 = element.GetEntity(schema);
                     if (e3 != null && e3.IsValid()) { entity = e3; v2 = true; v3 = true; }
@@ -276,7 +293,8 @@ namespace Horizun.Revit.Core
 
                 var p = new CadProvenance
                 {
-                    SchemaVersion = v3 ? Math.Max(version, 3) : v2 ? Math.Min(Math.Max(version, 2), 2) : Math.Min(version, 1),
+                    SchemaVersion = v4 ? Math.Max(version, 4) : v3 ? Math.Min(Math.Max(version, 3), 3)
+                                  : v2 ? Math.Min(Math.Max(version, 2), 2) : Math.Min(version, 1),
                     CandidateId = entity.Get<string>(FieldCandidate),
                     GeometryId = entity.Get<string>(FieldGeometryId),
                     SemanticId = entity.Get<string>(FieldSemanticId),
@@ -305,6 +323,8 @@ namespace Horizun.Revit.Core
                     p.InterpretationVersion = Blank(entity.Get<string>(FieldInterpretation));
                     p.SourceEntities = Blank(entity.Get<string>(FieldSourceEntities));
                 }
+                if (v4)
+                    p.SourceSetSha256 = Blank(entity.Get<string>(FieldSourceSet));
                 return p;
             }
             catch (Exception ex)
@@ -317,7 +337,7 @@ namespace Horizun.Revit.Core
         /// <summary>Drop any v1 or v2 entity an element still carries. Inside a transaction.</summary>
         private static void RemoveOlder(Element element)
         {
-            foreach (Guid guid in new[] { SchemaGuidV2, SchemaGuidV1 })
+            foreach (Guid guid in new[] { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 })
             {
                 try
                 {

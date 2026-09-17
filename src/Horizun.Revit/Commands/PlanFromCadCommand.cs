@@ -400,6 +400,7 @@ namespace Horizun.Revit.Commands
             {
                 ["fingerprint"] = sourceFingerprint,
                 ["file_sha256"] = facts.FileSha256,
+                ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                 ["external_path"] = facts.ExternalPath,
                 ["linked_file_status"] = facts.LinkedFileStatus,
                 ["declared_units"] = declared,

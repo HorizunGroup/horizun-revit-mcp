@@ -916,7 +916,8 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static JObject AttributeOrigins(CadUpdate update, IList<CadAuditSubject> subjects,
                                                CadRequirementSet set, string sourceFileSha256,
-                                               string interpretationVersion, bool placementMoved = false)
+                                               string interpretationVersion, bool placementMoved = false,
+                                               string sourceSetSha256 = null)
         {
             var byId = new Dictionary<long, CadAuditSubject>();
             foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
@@ -939,8 +940,12 @@ namespace Horizun.Revit.Core
                     origin = "rules";
                 else
                 {
-                    bool sameBytes = !string.IsNullOrEmpty(sourceFileSha256) &&
-                                     string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal);
+                    // A RECORD MADE WITH THE HOST'S HASH ALONE cannot be compared with a reading of
+                    // a drawing that has references: neither says whether a reference changed.
+                    bool comparable = (sourceSetSha256 == null) == (p.SourceSetSha256 == null);
+                    bool sameBytes = comparable && !string.IsNullOrEmpty(sourceFileSha256) &&
+                                     string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal) &&
+                                     string.Equals(p.SourceSetSha256, sourceSetSha256, StringComparison.Ordinal);
                     bool readingKnown = !string.IsNullOrEmpty(p.InterpretationVersion) &&
                                         !string.IsNullOrEmpty(interpretationVersion);
                     bool sameReading = readingKnown &&
@@ -951,7 +956,15 @@ namespace Horizun.Revit.Core
                     // at the moment of building. MEASURED: a wall moved by the drawing and
                     // re-shaped by the update came back "resized" and was blamed on a person.
                     bool sizeOrType = a.Classification == CadChange.Resized || a.Classification == CadChange.Retyped;
-                    if (sameBytes && placementMoved) origin = "placement";
+                    if (!comparable)
+                    {
+                        origin = "unknown";
+                        a.Evidence["origin_not_comparable"] =
+                            "the record names " + (p.SourceSetSha256 != null ? "the drawing with its references" : "the host file only") +
+                            " and this reading " + (sourceSetSha256 != null ? "the drawing with its references" : "the host file only") +
+                            ", so whether a reference changed cannot be shown.";
+                    }
+                    else if (sameBytes && placementMoved) origin = "placement";
                     else if (sameBytes && sameReading && sizeOrType) origin = "unknown";
                     else if (sameBytes && sameReading) origin = "person";
                     else if (sameBytes) origin = "reading";

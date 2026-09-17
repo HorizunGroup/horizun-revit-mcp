@@ -103,13 +103,20 @@ namespace Horizun.Core.Tests
 
             int v2Only = store.IndexOf("// v2 only", StringComparison.Ordinal);
             int v3Only = store.IndexOf("// v3 only", StringComparison.Ordinal);
+            int v4Only = store.IndexOf("// v4 only", StringComparison.Ordinal);
             Assert.True(v2Only > 0, "CadProvenanceStore must still mark where the v2-only fields begin");
             Assert.True(v3Only > v2Only, "CadProvenanceStore must mark where the v3-only fields begin, after v2's");
+            Assert.True(v4Only > v3Only, "CadProvenanceStore must mark where the v4-only fields begin, after v3's");
             var v2Names = Regex.Matches(store.Substring(v2Only, v3Only - v2Only),
                                         @"private const string Field\w+ = ""(?<name>[A-Za-z0-9_]+)"";")
                                .Cast<Match>().Select(m => m.Groups["name"].Value).ToList();
-            var v3Names = Regex.Matches(store.Substring(v3Only), @"private const string Field\w+ = ""(?<name>[A-Za-z0-9_]+)"";")
+            var v3Names = Regex.Matches(store.Substring(v3Only, v4Only - v3Only),
+                                        @"private const string Field\w+ = ""(?<name>[A-Za-z0-9_]+)"";")
                                .Cast<Match>().Select(m => m.Groups["name"].Value).ToList();
+            var v4Names = Regex.Matches(store.Substring(v4Only), @"private const string Field\w+ = ""(?<name>[A-Za-z0-9_]+)"";")
+                               .Cast<Match>().Select(m => m.Groups["name"].Value).ToList();
+            // v4 adds exactly the identity of the drawing set.
+            Assert.Equal(new[] { "SourceSetSha256" }, v4Names.ToArray());
 
             Assert.Equal(CadProvenanceV1Shape.FieldsAddedByV2.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
                          v2Names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
@@ -117,7 +124,7 @@ namespace Horizun.Core.Tests
             Assert.Equal(new[] { "InterpretationVersion", "SourceEntities" },
                          v3Names.OrderBy(x => x, StringComparer.Ordinal).ToArray());
 
-            var v1Names = declared.Where(n => !v2Names.Contains(n) && !v3Names.Contains(n))
+            var v1Names = declared.Where(n => !v2Names.Contains(n) && !v3Names.Contains(n) && !v4Names.Contains(n))
                                   .OrderBy(x => x, StringComparer.Ordinal).ToArray();
             Assert.Equal(v1Names,
                          CadProvenanceV1Shape.Fields.Select(f => f.Name).OrderBy(x => x, StringComparer.Ordinal).ToArray());

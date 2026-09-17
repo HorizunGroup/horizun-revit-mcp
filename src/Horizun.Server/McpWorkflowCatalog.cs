@@ -1524,6 +1524,241 @@ namespace Horizun.Server
 
             new Procedure
             {
+                Id = "dwg-to-bim-update",
+                Title = "DWG to BIM, a unit brought to a new revision of its drawing",
+                Version = 1,
+                Permission = "read_only_to_safe_write",
+                Outcome = "A unit built by dwg-to-bim-unit brought to a new revision: what the update can decide " +
+                          "alone is applied, what it holds waits for ONE grouped decision per set, and nothing is " +
+                          "asked twice.",
+                Tools = new[] { "horizun_plan_cad_update", "horizun_apply_cad_update", "horizun_audit_cad_model" },
+                Inputs = new[] { "the document, the CAD link id (already pointing at the new revision), the level",
+                                 "the new drawing path and the hash of the revision it supersedes",
+                                 "the walls set and the devices set of the unit" },
+                Scope = "The unit's elements with provenance from this link.",
+                Output = "The automatic changes applied, the decided ones applied, two audits.",
+                Errors = new[]
+                {
+                    "a held change is never applied without the decision naming it",
+                    "an apply whose reply never arrived holds the run; it is never sent twice",
+                    "a decision that cannot stand refuses the plan that carries it; nothing is skipped"
+                },
+                DependsOn = new[] { "dwg-to-bim-unit" },
+                Acceptance = "Both final plans have nothing automatic left, every held change was decided or is " +
+                             "listed, and both audits read the model against the new drawing.",
+                Steps = new[]
+                {
+                    new Step
+                    {
+                        N = 1, Tool = "horizun_health", ArgumentsJson = @"{}",
+                        Purpose = "establish which document and which build every step below acts on.",
+                        Needs = "nothing", Preconditions = "the unit's model is in front.",
+                        OnError = "stop.", ReadsBack = "the document and the bridge build."
+                    },
+                    new Step
+                    {
+                        N = 2, Tool = "horizun_plan_cad_update",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800,
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" }
+}",
+                        Purpose = "what the new revision changes in the walls.", Needs = "step 1.",
+                        Preconditions = "the link points at the new revision.",
+                        OnError = "a refusal names what is missing; nothing was written.",
+                        ReadsBack = "the automatic actions, the held rows, the origins and the pairings offered."
+                    },
+                    new Step
+                    {
+                        N = 3, Tool = "horizun_apply_cad_update",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""actions"": { ""$ref"": { ""step"": 2, ""path"": ""actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 2, ""path"": ""candidate_index"" } },
+  ""provenance"": { ""$ref"": { ""step"": 2, ""path"": ""provenance"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "apply what the walls update decided alone (nothing_to_apply when it decided nothing).",
+                        Needs = "step 2, unchanged.", Preconditions = "nothing else changed the model.",
+                        OnError = "the reply names what landed per action; the run holds rather than resending.",
+                        ReadsBack = "each applied action, re-read, and the provenance re-stamped."
+                    },
+                    new Step
+                    {
+                        N = 4, Tool = "horizun_plan_cad_update",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800,
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" }
+}",
+                        Purpose = "what the new revision changes in the devices, after the walls moved.",
+                        Needs = "step 3.", Preconditions = "the walls update is applied.",
+                        OnError = "a refusal names what is missing; nothing was written.",
+                        ReadsBack = "the automatic actions, the held rows, the origins and the pairings offered."
+                    },
+                    new Step
+                    {
+                        N = 5, Tool = "horizun_apply_cad_update",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""actions"": { ""$ref"": { ""step"": 4, ""path"": ""actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 4, ""path"": ""candidate_index"" } },
+  ""provenance"": { ""$ref"": { ""step"": 4, ""path"": ""provenance"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "apply what the devices update decided alone.",
+                        Needs = "step 4, unchanged.", Preconditions = "nothing else changed the model.",
+                        OnError = "the reply names what landed per action; the run holds rather than resending.",
+                        ReadsBack = "each applied action, re-read, and the provenance re-stamped."
+                    },
+                    new Step
+                    {
+                        N = 6, Tool = "horizun_plan_cad_update", RequiresDecision = true,
+                        DecisionNeeded = "for the WALLS, one grouped decision from the held rows of step 2: " +
+                                         "accept_pairings [{element_id, candidate_id}], reject_pairings [candidate_id], " +
+                                         "resolve [{element_id, decision}] - each an array, empty when there is nothing " +
+                                         "to say. A held row left out stays held and is listed again.",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800,
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
+  ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
+  ""resolve"": { ""$decision"": ""resolve"" }
+}",
+                        Purpose = "the walls update again, with a person's decisions on what it held.",
+                        Needs = "steps 2-5 and the decision.", Preconditions = "the decision names rows step 2 listed.",
+                        OnError = "a decision that cannot stand refuses the plan; nothing is skipped.",
+                        ReadsBack = "the decided actions and what is still held."
+                    },
+                    new Step
+                    {
+                        N = 7, Tool = "horizun_apply_cad_update",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
+  ""provenance"": { ""$ref"": { ""step"": 6, ""path"": ""provenance"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "apply the decided walls changes.", Needs = "step 6.",
+                        Preconditions = "nothing else changed the model.",
+                        OnError = "the reply names what landed per action; the run holds rather than resending.",
+                        ReadsBack = "each applied action, re-read."
+                    },
+                    new Step
+                    {
+                        N = 8, Tool = "horizun_plan_cad_update", RequiresDecision = true,
+                        DecisionNeeded = "for the DEVICES, one grouped decision from the held rows of step 4, in " +
+                                         "the same shape as step 6.",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800,
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
+  ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
+  ""resolve"": { ""$decision"": ""resolve"" }
+}",
+                        Purpose = "the devices update again, with a person's decisions on what it held.",
+                        Needs = "step 7 and the decision.", Preconditions = "the decision names rows step 4 listed.",
+                        OnError = "a decision that cannot stand refuses the plan; nothing is skipped.",
+                        ReadsBack = "the decided actions and what is still held."
+                    },
+                    new Step
+                    {
+                        N = 9, Tool = "horizun_apply_cad_update",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""actions"": { ""$ref"": { ""step"": 8, ""path"": ""actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 8, ""path"": ""candidate_index"" } },
+  ""provenance"": { ""$ref"": { ""step"": 8, ""path"": ""provenance"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "apply the decided devices changes.", Needs = "step 8.",
+                        Preconditions = "nothing else changed the model.",
+                        OnError = "the reply names what landed per action; the run holds rather than resending.",
+                        ReadsBack = "each applied action, re-read."
+                    },
+                    new Step
+                    {
+                        N = 10, Tool = "horizun_audit_cad_model",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" }
+}",
+                        Purpose = "the walls, against the new drawing.", Needs = "step 7.",
+                        Preconditions = "the walls committed.", OnError = "a finding is read, not retried.",
+                        ReadsBack = "matched, differing and not-built walls, by code."
+                    },
+                    new Step
+                    {
+                        N = 11, Tool = "horizun_audit_cad_model",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" }
+}",
+                        Purpose = "the devices, against the new drawing.", Needs = "step 9.",
+                        Preconditions = "the devices committed.", OnError = "a finding is read, not retried.",
+                        ReadsBack = "matched, differing and not-built devices, by code."
+                    }
+                },
+                InputSchemaJson = @"{
+  ""type"": ""object"",
+  ""required"": [""document"", ""instance_id"", ""level_name"", ""dwg_path"", ""supersedes_sha256"", ""walls_set"", ""devices_set""],
+  ""properties"": {
+    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
+    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD link placement, already repointed to the new revision."" },
+    ""level_name"": { ""type"": ""string"", ""description"": ""The storey the unit is on."" },
+    ""dwg_path"": { ""type"": ""string"", ""description"": ""The NEW revision of the drawing, readable on this machine."" },
+    ""supersedes_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""The revision(s) this one replaces."" },
+    ""walls_set"": { ""type"": ""object"", ""description"": ""The walls requirement set of the unit."" },
+    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set of the unit."" }
+  },
+  ""additionalProperties"": false
+}",
+                Checks = new[]
+                {
+                    new AcceptanceCheck
+                    {
+                        Step = 3, Path = "stages_failed", Expect = "zero",
+                        Why = "part of the automatic walls update did not land."
+                    },
+                    new AcceptanceCheck
+                    {
+                        Step = 9, Path = "stages_failed", Expect = "zero",
+                        Why = "part of the decided devices update did not land."
+                    }
+                },
+                Example = "health; walls: plan, apply; devices: plan, apply; walls decided: plan, apply; devices " +
+                          "decided: plan, apply; two audits.",
+                Limits = new[]
+                {
+                    "A decision is the person's: this route asks once per set and never supplies one itself.",
+                    "apply_cad_update is atomic per action, not per route; a partial reply names what landed."
+                }
+            },
+new Procedure
+            {
                 Id = "dwg-to-bim-unit",
                 Title = "DWG to BIM, one unit, end to end",
                 Version = 1,

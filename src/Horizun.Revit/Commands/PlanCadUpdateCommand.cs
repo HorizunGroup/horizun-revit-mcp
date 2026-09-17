@@ -344,9 +344,12 @@ namespace Horizun.Revit.Commands
                                                    accepted, rejectedPairings, hostByCandidate,
                                                    acceptMove ? move : null);
             // WHERE EACH CHANGE CAME FROM: the drawing, the reading, the rules, or a person.
+            // THE SET WAS READ, NOT ONLY THE FILE: a drawing is read with its references, so
+            // "the same bytes" means the same host AND the same references.
+            string sourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);
             JObject origins = CadUpdateRules.AttributeOrigins(update, subjects, set, facts.FileSha256,
                                                               CadInterpretationRules.InterpretationVersion,
-                                                              move != null && acceptMove);
+                                                              move != null && acceptMove, sourceSet);
             // WHAT A PERSON DECIDED about the changes held for them.
             List<string> decisionErrors = CadDecisions.Apply(update, decisions);
             if (decisionErrors.Count > 0)
@@ -367,7 +370,7 @@ namespace Horizun.Revit.Commands
             // an accepted move every element left in place is stamped with the
             // transform it now sits under - or the next plan reports the move
             // again, forever.
-            JArray restamp = Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256);
+            JArray restamp = Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet);
             JArray candidateIndex = CandidateIndex(update, actions);
             foreach (JToken row in createIndex) candidateIndex.Add(row);
             foreach (JToken row in restamp) candidateIndex.Add(row);
@@ -392,6 +395,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["fingerprint"] = sourceFingerprint,
                     ["file_sha256"] = facts.FileSha256,
+                    ["source_set_sha256"] = sourceSet,
                     ["external_path"] = facts.ExternalPath,
                     ["identity"] = identity.ToJson()
                 },
@@ -504,6 +508,7 @@ namespace Horizun.Revit.Commands
                     ["requirement_set_sha256"] = set.Sha256,
                     ["source_fingerprint"] = sourceFingerprint,
                     ["source_file_sha256"] = facts.FileSha256,
+                    ["source_set_sha256"] = sourceSet,
                     ["source_path"] = placement.ExternalPath,
                     ["placement"] = placementJson,
                     ["placement_move_accepted"] = move != null && acceptMove,
@@ -526,6 +531,7 @@ namespace Horizun.Revit.Commands
                 ["lineage"] = new JObject
                 {
                     ["this_file_sha256"] = facts.FileSha256,
+                    ["this_source_set_sha256"] = sourceSet,
                     ["this_placement_id"] = placement.PlacementId,
                     ["supersedes"] = new JArray(lineage),
                     ["supersedes_placement_ids"] = new JArray(lineagePlacements),
@@ -1053,7 +1059,8 @@ namespace Horizun.Revit.Commands
         /// longer says is left exactly as it was.
         /// </summary>
         private static JArray Restamp(CadUpdate update, CadUpdateScope scope, bool moveAccepted,
-                                      IList<CadAuditSubject> subjects, string thisFileSha256)
+                                      IList<CadAuditSubject> subjects, string thisFileSha256,
+                                      string thisSetSha256 = null)
         {
             var bySubject = new Dictionary<long, CadAuditSubject>();
             foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
@@ -1080,8 +1087,11 @@ namespace Horizun.Revit.Commands
                     // blamed the turn on a person. A held change keeps citing the
                     // revision it was built from until someone decides it.
                     CadAuditSubject s;
+                    // a new revision is new HOST bytes, or the same host read with changed references
                     if (bySubject.TryGetValue(id, out s) && s.Provenance != null &&
-                        !string.Equals(s.Provenance.SourceFileSha256, thisFileSha256, StringComparison.Ordinal))
+                        (!string.Equals(s.Provenance.SourceFileSha256, thisFileSha256, StringComparison.Ordinal) ||
+                         (thisSetSha256 != null &&
+                          !string.Equals(s.Provenance.SourceSetSha256, thisSetSha256, StringComparison.Ordinal))))
                         reason = CadPlacementRules.RestampCarried;
                 }
                 if (reason == null || !seen.Add(id)) continue;

@@ -76,8 +76,14 @@ namespace Horizun.Core.Tests
                                        new Dictionary<long, string> { { 1001L, candidate } }, lineage);
         }
 
-        private static CadAuditSubject Subject(CadRequirementSet set, string sha, string reading) =>
-            Built(Wall(set, 0, sha)[0], set, sha, reading);
+        private static CadAuditSubject Subject(CadRequirementSet set, string sha, string reading,
+                                               string sourceSet = null)
+        {
+            CadAuditSubject s = Built(Wall(set, 0, sha)[0], set, sha, reading);
+            s.Provenance.SourceSetSha256 = sourceSet;
+            if (sourceSet != null) s.Provenance.SchemaVersion = 4;
+            return s;
+        }
 
         [Fact]
         public void Unchanged_is_no_change_whatever_the_reading()
@@ -131,6 +137,41 @@ namespace Horizun.Core.Tests
                                                 Says = "held." });
             CadUpdateRules.AttributeOrigins(u, new[] { Subject(set, RevA, ReadingNew) }, set, RevA, ReadingNew);
             Assert.Equal("unknown", (string)u.Actions.Single().Evidence["change_origin"]);
+        }
+
+        [Fact]
+        public void A_record_of_the_host_alone_is_not_compared_with_a_record_of_the_set()
+        {
+            // MEASURED (revision C): the host drawing is byte-identical and its reference
+            // changed; a host-only record would call every moved wall a person's doing.
+            CadRequirementSet set = Set();
+            var u = new CadUpdate();
+            u.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "set_curve", Classification = CadChange.Moved,
+                                                Says = "moved." });
+            CadUpdateRules.AttributeOrigins(u, new[] { Subject(set, RevA, ReadingNew) }, set, RevA, ReadingNew,
+                                            sourceSetSha256: "set:abc");
+            Assert.Equal("unknown", (string)u.Actions.Single().Evidence["change_origin"]);
+            Assert.NotNull(u.Actions.Single().Evidence["origin_not_comparable"]);
+        }
+
+        [Fact]
+        public void Two_records_of_the_set_are_compared_as_bytes()
+        {
+            CadRequirementSet set = Set();
+            var moved = new CadUpdate();
+            moved.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "set_curve", Classification = CadChange.Moved,
+                                                    Says = "moved." });
+            // the host is byte-identical; the references are not
+            CadUpdateRules.AttributeOrigins(moved, new[] { Subject(set, RevA, ReadingNew, "set:one") }, set, RevA, ReadingNew,
+                                            sourceSetSha256: "set:two");
+            Assert.Equal("drawing", (string)moved.Actions.Single().Evidence["change_origin"]);
+
+            var same = new CadUpdate();
+            same.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "review", Classification = CadChange.Moved,
+                                                   Says = "moved." });
+            CadUpdateRules.AttributeOrigins(same, new[] { Subject(set, RevA, ReadingNew, "set:one") }, set, RevA, ReadingNew,
+                                            sourceSetSha256: "set:one");
+            Assert.Equal("person", (string)same.Actions.Single().Evidence["change_origin"]);
         }
 
         [Fact]

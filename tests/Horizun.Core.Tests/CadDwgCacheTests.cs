@@ -145,6 +145,38 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_copy_of_the_set_with_a_changed_reference_is_not_served_the_originals_reading()
+        {
+            // MEASURED (revision C): the copied host is byte-identical to the original;
+            // only the reference beside it changed.
+            string origDir = Path.Combine(_root, "orig");
+            string copyDir = Path.Combine(_root, "copy");
+            Directory.CreateDirectory(origDir);
+            Directory.CreateDirectory(copyDir);
+            File.WriteAllText(Path.Combine(origDir, "unit.dwg"), "host");
+            File.WriteAllText(Path.Combine(origDir, "background.dwg"), "version one");
+            File.WriteAllText(Path.Combine(copyDir, "unit.dwg"), "host");
+            File.WriteAllText(Path.Combine(copyDir, "background.dwg"), "version two");
+            string orig = Path.Combine(origDir, "unit.dwg"), copy = Path.Combine(copyDir, "unit.dwg");
+            string sha = CadDwgCache.Sha256(orig);
+            Assert.Equal(sha, CadDwgCache.Sha256(copy));
+            string tsv = File_("r.tsv", "H\tdone\t1\n");
+
+            CadDwgCache.Store(CadDwgCache.Lookup(orig, sha, "e", "o"), tsv,
+                              ReadingWith("background", "C:/elsewhere/background.dwg"), orig, 1.0);
+            Assert.True(CadDwgCache.Lookup(orig, sha, "e", "o").Hit);
+            CadDwgCacheEntry forCopy = CadDwgCache.Lookup(copy, sha, "e", "o");
+            Assert.False(forCopy.Hit);
+            Assert.Equal("dependency_changed", forCopy.Miss);
+
+            string setOrig = CadDwgCache.SourceSetSha256(orig, sha);
+            string setCopy = CadDwgCache.SourceSetSha256(copy, sha);
+            Assert.StartsWith("set:", setOrig);
+            Assert.NotEqual(setOrig, setCopy);
+            Assert.Null(CadDwgCache.SourceSetSha256(orig, "other-host"));
+        }
+
+        [Fact]
         public void A_reference_that_has_gone_missing_invalidates_it_too()
         {
             string dwg = File_("unit.dwg", "host");

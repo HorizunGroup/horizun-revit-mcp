@@ -73,11 +73,21 @@ namespace Horizun.Revit.Commands
             // A plan may carry NOTHING to build and still have work: v1 records to
             // migrate, or elements to re-stamp under a moved placement. That is a
             // write with a visible count, not "nothing automatic".
+            // NOTHING AUTOMATIC IS AN ANSWER, NOT A SUCCESS: said as such, with nothing written,
+            // so a procedure can move on to the decisions a person owes instead of stopping.
             if (actions.Count == 0 && restampRows.Count == 0)
-                return CommandResult.Fail(
-                    "actions is required and must carry at least one entry. An update plan with nothing " +
-                    "automatic in it is a plan that is waiting for a person, and running it would write nothing " +
-                    "while reporting success.");
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = request.Value<string>("target_document"),
+                    ["dry_run"] = request["dry_run"] == null || request.Value<bool>("dry_run"),
+                    ["state"] = "nothing_to_apply",
+                    ["applied"] = new JArray(),
+                    ["stages_failed"] = 0,
+                    ["written"] = 0,
+                    ["means"] = "the update plan carried no automatic action and nothing to re-stamp: what it " +
+                                "found is waiting for a person (see its held rows), or nothing changed. Nothing " +
+                                "was written, and this reply claims nothing was."
+                });
 
             JObject provenanceTemplate = request["provenance"] as JObject;
             if (provenanceTemplate == null)
@@ -277,6 +287,7 @@ namespace Horizun.Revit.Commands
                         RequirementSetSha256 = provenanceTemplate.Value<string>("requirement_set_sha256"),
                         SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint"),
                         SourceFileSha256 = provenanceTemplate.Value<string>("source_file_sha256"),
+                        SourceSetSha256 = provenanceTemplate.Value<string>("source_set_sha256"),
                         PlanFingerprint = provenanceTemplate.Value<string>("plan_fingerprint"),
                         SourcePath = provenanceTemplate.Value<string>("source_path"),
                         Confidence = entry.Value<double?>("confidence") ?? 0,
@@ -331,7 +342,7 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     bool wasV1 = existing.IsV1;
-                    string wasVersion = wasV1 ? "v1" : existing.SchemaVersion >= 3 ? "v3" : "v2";
+                    string wasVersion = wasV1 ? "v1" : existing.SchemaVersion >= 4 ? "v4" : existing.SchemaVersion >= 3 ? "v3" : "v2";
                     CadProvenance p = existing.Clone();
                     p.SchemaVersion = CadProvenanceStore.CurrentVersion;
                     // KEPT BY A PERSON is a decision taken against THIS revision, so it
@@ -347,6 +358,7 @@ namespace Horizun.Revit.Commands
                         p.SemanticId = rowJson.Value<string>("semantic_id") ?? p.SemanticId;
                         p.GeometryId = rowJson.Value<string>("geometry_id") ?? p.GeometryId;
                         p.SourceFileSha256 = provenanceTemplate.Value<string>("source_file_sha256") ?? p.SourceFileSha256;
+                        p.SourceSetSha256 = provenanceTemplate.Value<string>("source_set_sha256");
                         p.SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint") ?? p.SourceFingerprint;
                         p.PlanFingerprint = provenanceTemplate.Value<string>("plan_fingerprint") ?? p.PlanFingerprint;
                         p.SourcePath = provenanceTemplate.Value<string>("source_path") ?? p.SourcePath;
