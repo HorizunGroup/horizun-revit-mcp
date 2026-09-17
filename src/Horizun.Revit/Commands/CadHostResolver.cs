@@ -100,7 +100,9 @@ namespace Horizun.Revit.Commands
                 Curve curve = (w.Location as LocationCurve)?.Curve;
                 if (curve == null) continue;
                 double d;
-                try { d = curve.Distance(point); } catch { continue; }
+                // IN PLAN. MEASURED (campaign 4): a receptacle asked at 457 mm above its level
+                // was 480 mm from a wall line it stood 150 mm from, and was withdrawn.
+                try { d = curve.Distance(new XYZ(point.X, point.Y, curve.GetEndPoint(0).Z)); } catch { continue; }
                 byDistance.Add(new KeyValuePair<double, Wall>(d, w));
             }
             byDistance.Sort((x, y) => x.Key.CompareTo(y.Key));
