@@ -5016,9 +5016,9 @@ namespace Horizun.Contracts
   ""properties"": {
     ""operation"": {
       ""type"": ""string"",
-      ""enum"": [""start"", ""advance"", ""decide"", ""record"", ""status"", ""abandon""],
+      ""enum"": [""start"", ""advance"", ""decide"", ""record"", ""reconcile"", ""status"", ""abandon""],
       ""default"": ""start"",
-      ""description"": ""start: open a run. advance: RUN the next step (only for a procedure horizun_workflows marks `executable`) - it dispatches through the same entry point tools/call uses, so a step that writes carries its own dry_run and confirmation because it IS that call. decide: supply what a step is waiting for; a step that needs a choice HOLDS the run rather than choosing. record: report what a step produced when you ran it yourself - the only route for a procedure whose steps have no argument templates. status: where a run is. abandon: stop it, with a reason.""
+      ""description"": ""start: open a run. advance: RUN the next step (only for a procedure horizun_workflows marks `executable`) - it dispatches through the same entry point tools/call uses, so a step that writes carries its own dry_run and confirmation because it IS that call. decide: supply what a step is waiting for; a step that needs a choice HOLDS the run rather than choosing. record: report what a step produced when you ran it yourself - the only route for a procedure whose steps have no argument templates. reconcile: a step dispatched whose reply never arrived is asked of the tool itself - a read again, or a write again with the SAME idempotency key (the bridge replays what landed and never runs it twice); a write sent without a key is refused. status: where a run is. abandon: stop it, with a reason.""
     },
     ""procedure"": { ""type"": ""string"", ""description"": ""start: the procedure id from horizun_workflows. One whose `detail` is tool_list_only has no route and is refused."" },
     ""run_id"": { ""type"": ""string"", ""description"": ""record/status/abandon: the id start returned."" },
@@ -5029,6 +5029,7 @@ namespace Horizun.Contracts
     ""reason"": { ""type"": ""string"", ""description"": ""abandon: REQUIRED. Without it nobody can tell an unfinished procedure from one deliberately stopped."" },
     ""values"": { ""type"": ""object"", ""description"": ""decide: what the step asked for, by the names its decision_needed states. Recorded against THAT step; a later step reuses it only if its own template asks for it by name, so a decision is never silently applied twice."" },
     ""decided_by"": { ""type"": ""string"", ""description"": ""decide: who decided. Kept with the run."" },
+    ""decision_version"": { ""type"": ""string"", ""description"": ""decide: REQUIRED - the identity of this decision (for example the proposal version it answers). Recorded with the run; a key the step does not read is refused."" },
     ""inputs"": { ""type"": ""object"", ""description"": ""start: what the procedure needs. The catalogue lists its inputs in prose; what can be matched is checked and what cannot is reported as not supplied rather than assumed."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""start: the document this run is about. It is carried into every step's next-call so a run cannot drift onto another document because a window changed."" }
   },

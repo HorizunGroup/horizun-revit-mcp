@@ -111,12 +111,13 @@ namespace Horizun.Server
                 case "advance": return Serialised(request, () => Advance(request, cancellationToken));
                 case "decide": return Serialised(request, () => Decide(request));
                 case "record": return Serialised(request, () => Record(request));
+                case "reconcile": return Serialised(request, () => Reconcile(request, cancellationToken));
                 case "status": return Status(request);
                 case "abandon": return Serialised(request, () => Abandon(request));
                 default:
                     throw new ToolRefusal(
-                        "operation must be start, advance, decide, record, status or abandon; '" + operation +
-                        "' is not one.");
+                        "operation must be start, advance, decide, record, reconcile, status or abandon; '" +
+                        operation + "' is not one.");
             }
         }
 
@@ -234,6 +235,7 @@ namespace Horizun.Server
                     ["executable"] = s["executable"],
                     ["requires_decision"] = s["requires_decision"],
                     ["decision_needed"] = s["decision_needed"],
+                    ["decision_unless"] = s["decision_unless"],
                     ["arguments_template"] = s["arguments_template"],
                     ["evidence"] = JValue.CreateNull(),
                     ["dispatched"] = false,
@@ -325,7 +327,8 @@ namespace Horizun.Server
                     ["dispatched_utc"] = step["dispatched_utc"],
                     ["arguments_sent"] = step["arguments_sent"],
                     ["how"] =
-                        "Look at the model, or at the tool's own record of the call, and then send " +
+                        "operation=reconcile asks the tool itself when the step can be asked safely (a read, or " +
+                        "a write sent with an idempotency key). Otherwise look at the model and send " +
                         "operation=record with run_id, step=" + number + ", outcome and result - or " +
                         "operation=abandon with a reason. It is NOT advanced automatically.",
                     ["means"] =
@@ -337,6 +340,10 @@ namespace Horizun.Server
 
             // A DECISION STOPS THE RUN. Not a warning, not a default: the run does not
             // advance until somebody supplies it.
+            // A DECISION NOBODY HAS TO MAKE is recorded as such, with the fact that made it
+            // unnecessary - never as a choice. The step it guards decided nothing to hold.
+            if ((bool?)step["requires_decision"] == true && !HasDecision(record, step))
+                AutomaticDecision(record, step);
             if ((bool?)step["requires_decision"] == true && !HasDecision(record, step))
                 return new JObject
                 {
@@ -489,6 +496,49 @@ namespace Horizun.Server
             };
         }
 
+        /// <summary>
+        /// The decision a step does not need: its `decision_unless` names an earlier result
+        /// ({step, path, equals}) and the values that stand for "nothing to decide".
+        /// </summary>
+        private static void AutomaticDecision(JObject record, JObject step)
+        {
+            var unless = step["decision_unless"] as JObject;
+            if (unless == null) return;
+            JObject earlier = StepOf(record, unless.Value<int?>("step") ?? -1);
+            if (earlier == null || (string)earlier["state"] == Pending) return;
+            JToken observed = Dig(earlier["evidence"], unless.Value<string>("path"));
+            if (observed == null || !JToken.DeepEquals(observed, unless["equals"])) return;
+            var decisions = record["decisions"] as JObject ?? new JObject();
+            decisions[((int)step["step"]).ToString(CultureInfo.InvariantCulture)] = new JObject
+            {
+                ["values"] = (unless["values"] as JObject ?? new JObject()).DeepClone(),
+                ["decided_utc"] = DateTime.UtcNow.ToString("o"),
+                ["decided_by"] = "automatic",
+                ["decision_version"] = "automatic",
+                ["because"] = "step " + (int)earlier["step"] + " reported " + unless.Value<string>("path") + " = " +
+                              observed.ToString(Newtonsoft.Json.Formatting.None) + ": there was nothing to decide"
+            };
+            record["decisions"] = decisions;
+            Save(record);
+        }
+
+        /// <summary>The decision keys a step's template reads.</summary>
+        private static List<string> DecisionKeys(JToken template)
+        {
+            var keys = new List<string>();
+            void Walk(JToken t)
+            {
+                if (t is JObject o)
+                {
+                    if (o["$decision"] != null && o["from_step"] == null) keys.Add((string)o["$decision"]);
+                    foreach (JProperty p in o.Properties()) Walk(p.Value);
+                }
+                else if (t is JArray a) foreach (JToken x in a) Walk(x);
+            }
+            Walk(template);
+            return keys;
+        }
+
         /// <summary>Supply what a step was waiting for.</summary>
         private static JObject Decide(JObject request)
         {
@@ -498,15 +548,31 @@ namespace Horizun.Server
             if (step == null) throw new ToolRefusal("this run has no step " + number + ".");
             if ((bool?)step["requires_decision"] != true)
                 throw new ToolRefusal("step " + number + " needs no decision.");
+            // A DECISION TAKEN AFTER THE STEP WENT OUT would describe work already sent.
+            if ((bool?)step["dispatched"] == true || (string)step["state"] != Pending)
+                throw new ToolRefusal("step " + number + " has already been dispatched; a decision now would not " +
+                                      "be the one it was sent with.");
 
             var values = request["values"] as JObject;
             if (values == null || !values.Properties().Any())
                 throw new ToolRefusal(
                     "values is required and must carry what the step asked for: " +
                     (string)step["decision_needed"]);
+            // THE DECISION NAMES ITS OWN VERSION, so a record read later says which one was used.
+            string version = request.Value<string>("decision_version");
+            if (string.IsNullOrWhiteSpace(version))
+                throw new ToolRefusal("decision_version is required: the identity of this decision (for example " +
+                                      "the version of the proposal it answers), so the run records which one it used.");
+            List<string> allowed = DecisionKeys(step["arguments_template"]);
+            var unknown = values.Properties().Select(p => p.Name).Where(n => !allowed.Contains(n)).ToList();
+            if (allowed.Count > 0 && unknown.Count > 0)
+                throw new ToolRefusal("values carries " + string.Join(", ", unknown) + ", which step " + number +
+                                      " does not read (it reads " + string.Join(", ", allowed) + "). Nothing was " +
+                                      "recorded: a key nobody reads would look decided.");
 
             var decisions = record["decisions"] as JObject ?? new JObject();
-            var forStep = new JObject { ["values"] = values, ["decided_utc"] = DateTime.UtcNow.ToString("o") };
+            var forStep = new JObject { ["values"] = values, ["decided_utc"] = DateTime.UtcNow.ToString("o"),
+                                        ["decision_version"] = version };
             if (request["decided_by"] != null) forStep["decided_by"] = request["decided_by"];
             decisions[number.ToString(CultureInfo.InvariantCulture)] = forStep;
             record["decisions"] = decisions;
@@ -700,6 +766,69 @@ namespace Horizun.Server
             var body = result as JObject;
             if (body == null) return null;
             return body["structuredContent"] as JObject ?? body;
+        }
+
+        /// <summary>
+        /// A step whose reply never arrived, asked of the TOOL rather than guessed.
+        ///
+        /// Only two kinds are asked again: a step that does not write (asking again changes
+        /// nothing), and a write that went out with an idempotency key (the bridge answers
+        /// the same key with the recorded result if the first call landed, and runs it once
+        /// if it never started). A write without a key is refused: only a look at the model
+        /// can say what it did. The answer is recorded as the step's evidence, saying so.
+        /// </summary>
+        private static JObject Reconcile(JObject request, System.Threading.CancellationToken cancellationToken)
+        {
+            JObject record = Load(request.Value<string>("run_id"));
+            JObject step = ((JArray)record["steps"]).OfType<JObject>()
+                .FirstOrDefault(x => (string)x["state"] == Pending && (bool?)x["dispatched"] == true);
+            if (step == null)
+                throw new ToolRefusal("no step of this run is dispatched and unrecorded; there is nothing to reconcile.");
+            int number = (int)step["step"];
+            string tool = (string)step["tool"];
+            var sent = step["arguments_sent"] as JObject;
+            bool writes = (bool?)step["identified_as_a_write"] ?? Writes(tool);
+            string key = sent?.Value<string>("idempotency_key");
+            if (sent == null || (writes && string.IsNullOrWhiteSpace(key)))
+                throw new ToolRefusal("step " + number + " (" + tool + ") " +
+                    (sent == null ? "has no recorded arguments" : "is a write sent without an idempotency key") +
+                    ": nothing can ask the tool what it did without risking a second write. Look at the model " +
+                    "and use operation=record, or operation=abandon.");
+            if (Invoker == null)
+                throw new ToolRefusal("this server has no dispatcher wired, so nothing can be asked.");
+
+            JToken result = Invoker(new JObject { ["name"] = tool, ["arguments"] = sent.DeepClone() }, cancellationToken);
+            JObject structured = Structured(result);
+            JObject idem = structured?["idempotency"] as JObject;
+            if (writes && idem == null)
+                throw new ToolRefusal("the tool answered without an idempotency record, so whether this was the " +
+                                      "first execution cannot be told. Nothing was recorded.");
+            step["evidence"] = structured ?? result ?? JValue.CreateNull();
+            step["recorded_utc"] = DateTime.UtcNow.ToString("o");
+            step["reconciled"] = new JObject
+            {
+                ["how"] = writes ? "the same call sent again with the same idempotency key" : "a read-only step asked again",
+                ["idempotency"] = idem?.DeepClone(),
+                ["reconciled_utc"] = DateTime.UtcNow.ToString("o")
+            };
+            string judged, why;
+            Judge(Ok, structured ?? result, out judged, out why);
+            step["state"] = judged;
+            step["evaluation"] = "reconciled: " + why;
+            step["assessment"] = Assess(tool, structured ?? result);
+            AdvanceState(record);
+            Save(record);
+            return new JObject
+            {
+                ["run_id"] = record["run_id"],
+                ["step"] = number,
+                ["tool"] = tool,
+                ["state"] = judged,
+                ["reconciled"] = step["reconciled"],
+                ["run_state"] = record["state"],
+                ["next"] = NextCall(record),
+                ["summary"] = Summary(record)
+            };
         }
 
         private static JObject Record(JObject request)

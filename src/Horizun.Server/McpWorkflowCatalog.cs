@@ -1565,7 +1565,8 @@ namespace Horizun.Server
   ""level_name"": { ""$input"": ""level_name"" },
   ""dwg_path"": { ""$input"": ""dwg_path"" },
   ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" }
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_walls_set_sha256"", ""when_missing"": ""omit"" }
 }",
                         Purpose = "what the new revision changes in the walls.", Needs = "step 1.",
                         Preconditions = "the link points at the new revision.",
@@ -1597,7 +1598,8 @@ namespace Horizun.Server
   ""level_name"": { ""$input"": ""level_name"" },
   ""dwg_path"": { ""$input"": ""dwg_path"" },
   ""dwg_read_timeout_seconds"": 1800,
-  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" }
+  ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_devices_set_sha256"", ""when_missing"": ""omit"" }
 }",
                         Purpose = "what the new revision changes in the devices, after the walls moved.",
                         Needs = "step 3.", Preconditions = "the walls update is applied.",
@@ -1622,6 +1624,7 @@ namespace Horizun.Server
                     new Step
                     {
                         N = 6, Tool = "horizun_plan_cad_update", RequiresDecision = true,
+                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""needs_a_person"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
                         DecisionNeeded = "for the WALLS, one grouped decision from the held rows of step 2: " +
                                          "accept_pairings [{element_id, candidate_id}], reject_pairings [candidate_id], " +
                                          "resolve [{element_id, decision}] - each an array, empty when there is nothing " +
@@ -1634,6 +1637,7 @@ namespace Horizun.Server
   ""dwg_path"": { ""$input"": ""dwg_path"" },
   ""dwg_read_timeout_seconds"": 1800,
   ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_walls_set_sha256"", ""when_missing"": ""omit"" },
   ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
   ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
   ""resolve"": { ""$decision"": ""resolve"" }
@@ -1661,6 +1665,7 @@ namespace Horizun.Server
                     new Step
                     {
                         N = 8, Tool = "horizun_plan_cad_update", RequiresDecision = true,
+                        DecisionUnlessJson = @"{ ""step"": 4, ""path"": ""needs_a_person"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
                         DecisionNeeded = "for the DEVICES, one grouped decision from the held rows of step 4, in " +
                                          "the same shape as step 6.",
                         ArgumentsJson = @"{
@@ -1671,6 +1676,7 @@ namespace Horizun.Server
   ""dwg_path"": { ""$input"": ""dwg_path"" },
   ""dwg_read_timeout_seconds"": 1800,
   ""supersedes_sha256"": { ""$input"": ""supersedes_sha256"" },
+  ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_devices_set_sha256"", ""when_missing"": ""omit"" },
   ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
   ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
   ""resolve"": { ""$decision"": ""resolve"" }
@@ -1732,7 +1738,9 @@ namespace Horizun.Server
     ""dwg_path"": { ""type"": ""string"", ""description"": ""The NEW revision of the drawing, readable on this machine."" },
     ""supersedes_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""The revision(s) this one replaces."" },
     ""walls_set"": { ""type"": ""object"", ""description"": ""The walls requirement set of the unit."" },
-    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set of the unit."" }
+    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set of the unit."" },
+    ""supersedes_walls_set_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional: earlier versions of the walls set the model was built under (a rules change)."" },
+    ""supersedes_devices_set_sha256"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Optional: earlier versions of the devices set the model was built under (a rules change)."" }
   },
   ""additionalProperties"": false
 }",
@@ -1740,12 +1748,22 @@ namespace Horizun.Server
                 {
                     new AcceptanceCheck
                     {
-                        Step = 3, Path = "stages_failed", Expect = "zero",
+                        Step = 3, Path = "actions_failed", Expect = "zero",
                         Why = "part of the automatic walls update did not land."
                     },
                     new AcceptanceCheck
                     {
-                        Step = 9, Path = "stages_failed", Expect = "zero",
+                        Step = 5, Path = "actions_failed", Expect = "zero",
+                        Why = "part of the automatic devices update did not land."
+                    },
+                    new AcceptanceCheck
+                    {
+                        Step = 7, Path = "actions_failed", Expect = "zero",
+                        Why = "part of the decided walls update did not land."
+                    },
+                    new AcceptanceCheck
+                    {
+                        Step = 9, Path = "actions_failed", Expect = "zero",
                         Why = "part of the decided devices update did not land."
                     }
                 },
@@ -3638,6 +3656,12 @@ new Procedure
             /// <summary>What the person has to supply or approve. Required when RequiresDecision.</summary>
             public string DecisionNeeded;
 
+            /// <summary>
+            /// When the decision is not needed: {"step", "path", "equals", "values"} - an earlier
+            /// result that says there is nothing to decide, and the values recorded for it.
+            /// </summary>
+            public string DecisionUnlessJson;
+
             public JObject Arguments() =>
                 string.IsNullOrWhiteSpace(ArgumentsJson) ? null : JObject.Parse(ArgumentsJson);
 
@@ -3656,6 +3680,7 @@ new Procedure
                     ["requires_decision"] = RequiresDecision,
                     ["decision_needed"] = DecisionNeeded == null ? (JToken)JValue.CreateNull() : DecisionNeeded
                 };
+                if (DecisionUnlessJson != null) json["decision_unless"] = JObject.Parse(DecisionUnlessJson);
                 if (ArgumentsJson != null) json["arguments_template"] = Arguments();
 
                 // DOES THIS TEMPLATE AGREE WITH THE TOOL IT NAMES?

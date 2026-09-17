@@ -83,6 +83,8 @@ namespace Horizun.Revit.Commands
                     ["state"] = "nothing_to_apply",
                     ["applied"] = new JArray(),
                     ["stages_failed"] = 0,
+                    ["actions_attempted"] = 0,
+                    ["actions_failed"] = 0,
                     ["written"] = 0,
                     ["means"] = "the update plan carried no automatic action and nothing to re-stamp: what it " +
                                 "found is waiting for a person (see its held rows), or nothing changed. Nothing " +
