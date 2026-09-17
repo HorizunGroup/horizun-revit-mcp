@@ -334,7 +334,11 @@ namespace Horizun.Revit.Commands
                     string wasVersion = wasV1 ? "v1" : existing.SchemaVersion >= 3 ? "v3" : "v2";
                     CadProvenance p = existing.Clone();
                     p.SchemaVersion = CadProvenanceStore.CurrentVersion;
-                    if (reason == CadPlacementRules.RestampCarried)
+                    // KEPT BY A PERSON is a decision taken against THIS revision, so it
+                    // cites this revision too. MEASURED: once held changes stopped being
+                    // carried, a kept device still named revision A and the audit called
+                    // it "built from another drawing".
+                    if (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted)
                     {
                         // The entity it stands for, as revision B names it. The
                         // as-built geometry is kept: it is still where it was built,
@@ -353,9 +357,6 @@ namespace Horizun.Revit.Commands
                     {
                         // KEPT BY A PERSON: where it stands is now where it was built.
                         p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e));
-                        p.CandidateId = rowJson.Value<string>("candidate_id") ?? p.CandidateId;
-                        p.SemanticId = rowJson.Value<string>("semantic_id") ?? p.SemanticId;
-                        p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
                     }
                     if (string.IsNullOrEmpty(p.GeometryId)) p.GeometryId = rowJson.Value<string>("geometry_id");
                     if (string.IsNullOrEmpty(p.SourcePath)) p.SourcePath = provenanceTemplate.Value<string>("source_path");
@@ -378,6 +379,9 @@ namespace Horizun.Revit.Commands
                             ? (reason == CadPlacementRules.RestampCarried
                                    ? "carried to this revision: the update matched this element to the same entity " +
                                      "in the new drawing, so it now cites that drawing; its as-built geometry is kept"
+                                   : reason == CadPlacementRules.RestampAccepted
+                                   ? "kept as it stands by a decision: it now cites this drawing, and where it stands " +
+                                     "is recorded as where it was built"
                                    : wasV1 ? "migrated from v1: this element now names the placement that built it"
                                            : "re-stamped with the placement's current transform")
                             : "the rewrite did not land and the element keeps the record it had. Revit said: " +
