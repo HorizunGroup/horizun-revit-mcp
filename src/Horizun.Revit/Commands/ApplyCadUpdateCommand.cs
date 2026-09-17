@@ -353,9 +353,12 @@ namespace Horizun.Revit.Commands
                         SemanticId = entry.Value<string>("semantic_id"),
                         RuleId = entry.Value<string>("rule_id"),
                         Layer = entry.Value<string>("layer"),
-                        RequirementSetId = provenanceTemplate.Value<string>("requirement_set_id"),
-                        RequirementSetVersion = provenanceTemplate.Value<string>("requirement_set_version"),
-                        RequirementSetSha256 = provenanceTemplate.Value<string>("requirement_set_sha256"),
+                        RequirementSetId = entry.Value<string>("requirement_set_id") ??
+                                           provenanceTemplate.Value<string>("requirement_set_id"),
+                        RequirementSetVersion = entry.Value<string>("requirement_set_version") ??
+                                                provenanceTemplate.Value<string>("requirement_set_version"),
+                        RequirementSetSha256 = entry.Value<string>("requirement_set_sha256") ??
+                                               provenanceTemplate.Value<string>("requirement_set_sha256"),
                         SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint"),
                         SourceFileSha256 = provenanceTemplate.Value<string>("source_file_sha256"),
                         SourceSetSha256 = provenanceTemplate.Value<string>("source_set_sha256"),

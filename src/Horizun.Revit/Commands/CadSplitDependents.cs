@@ -181,6 +181,10 @@ namespace Horizun.Revit.Commands
                 ["confidence"] = p?.Confidence ?? 0,
                 ["source_entities"] = new JArray(),
                 ["replaces_element_id"] = Rid.Value(fi.Id),
+                // THE RULES IT WAS BUILT UNDER, not the rules of the plan that moved it
+                ["requirement_set_id"] = p?.RequirementSetId,
+                ["requirement_set_version"] = p?.RequirementSetVersion,
+                ["requirement_set_sha256"] = p?.RequirementSetSha256,
                 ["carried_parameters"] = new JArray((carried ?? new JObject()).Properties().Select(x => x.Name)),
                 ["carried_identity"] = p != null
             };
