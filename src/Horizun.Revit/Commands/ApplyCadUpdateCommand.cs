@@ -474,6 +474,8 @@ namespace Horizun.Revit.Commands
                 ["dry_run"] = false,
                 ["actions_attempted"] = applied.Count,
                 ["actions_failed"] = failures,
+                // the same count under the name every CAD apply uses, so a reader need not know which apply it was
+                ["stages_failed"] = failures,
                 ["actions"] = applied,
                 ["elements_touched"] = touched.Count,
                 ["provenance_written"] = written,
