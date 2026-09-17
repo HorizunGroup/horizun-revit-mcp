@@ -708,6 +708,15 @@ namespace Horizun.Revit.Core
                 case "structural_column":
                     o["coordinate_mode"] = "absolute";
                     o["point"] = Pt(c.Geometry[0]);
+                    // A MOUNTING HEIGHT IS A HEIGHT ABOVE THE LEVEL, declared by the rule and
+                    // never read from the plan: the row carries it as a level offset, and the
+                    // command verifies the instance's origin at that height.
+                    if (createKind == "family_instance" && c.OffsetMm.HasValue)
+                    {
+                        o["coordinate_mode"] = "level_offset";
+                        o["point"] = new JArray(Math.Round(c.Geometry[0].X, 3), Math.Round(c.Geometry[0].Y, 3),
+                                                Math.Round(c.OffsetMm.Value, 3));
+                    }
 
                     // A DOOR IS NOT A THING THAT STANDS IN A ROOM.
                     //

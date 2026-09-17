@@ -253,6 +253,9 @@ namespace Horizun.Revit.Core
                     MirrorPolicy = rule.Mirror ?? "preserve",
                     MirrorEvidenceVariant = rule.MirrorVariantType,
                     Level = rule.Level,
+                    // THE HEIGHT THE SET DECLARED. MEASURED (campaign 4): it was validated and
+                    // never copied, so every device was built at its level with no warning.
+                    OffsetMm = rule.OffsetMm,
                     RotationRadians = e.RotationRadians,
                     Mirrored = (e.ScaleX.HasValue && e.ScaleX.Value < 0) ^ (e.ScaleY.HasValue && e.ScaleY.Value < 0),
                     SourceBlockName = e.BlockName

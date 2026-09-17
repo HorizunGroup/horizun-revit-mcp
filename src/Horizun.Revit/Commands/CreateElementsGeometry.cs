@@ -115,7 +115,7 @@ namespace Horizun.Revit.Commands
         {
             doc.Regenerate();
             if (!(instance.Location is LocationPoint point)) throw new InvalidOperationException("Family has no point placement to verify.");
-            Parameter offset = instance.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            Parameter offset = ElevationParameter(instance);
             Level baseLevel = BaseLevelOf(doc, instance);
             bool governed = baseLevel != null && offset != null && !offset.IsReadOnly;
             XYZ delta = p.Start - point.Point;
@@ -175,7 +175,20 @@ namespace Horizun.Revit.Commands
         {
             if (!(e is FamilyInstance instance) || !(instance.Location is LocationPoint)) return null;
             Parameter level = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+            if (level == null && e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM) == null)
+                level = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
             return level == null ? null : doc.GetElement(level.AsElementId()) as Level;
+        }
+
+        // THE PARAMETER THAT GOVERNS A POINT-PLACED INSTANCE'S HEIGHT. A column carries a
+        // base offset; a level-based or wall-based device carries "Elevation from Level".
+        // The second is used only where the first does not exist.
+        private static Parameter ElevationParameter(Element e)
+        {
+            Parameter offset = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            if (offset != null) return offset;
+            if (e is FamilyInstance fi && fi.HostFace != null) return null;
+            return e.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
         }
 
         // WHAT THE CALLER ASKED FOR IS A PLANE IN THE MODEL, NOT A LOCATION OBJECT.
@@ -229,7 +242,7 @@ namespace Horizun.Revit.Commands
                 return null;
             }
             Level baseLevel = BaseLevelOf(doc, e);
-            Parameter instanceOffset = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            Parameter instanceOffset = ElevationParameter(e);
             if (baseLevel != null && instanceOffset != null) return baseLevel.ProjectElevation + instanceOffset.AsDouble();
             return null;
         }

@@ -169,6 +169,7 @@ namespace Horizun.Revit.Commands
             Reference insideReference = null;
             int carriesThePoint = 0;
             var behind = new List<Tuple<string, IntersectionResult, Reference, double>>();
+            var behindNormals = new List<XYZ>();
 
             foreach (Tuple<string, Reference> candidate in candidates)
             {
@@ -222,6 +223,7 @@ namespace Horizun.Revit.Commands
                             ? normal.DotProduct(new XYZ(Math.Cos(pointsAt.Value), Math.Sin(pointsAt.Value), 0))
                             : 0.0;
                         behind.Add(Tuple.Create(candidate.Item1, projection, candidate.Item2, agreement));
+                        behindNormals.Add(normal);
                         if (agreement > bestAgreement)
                         {
                             bestAgreement = agreement;
@@ -258,6 +260,18 @@ namespace Horizun.Revit.Commands
                 var byDistance = behind.OrderBy(b => b.Item2.Distance).ToList();
                 double nearMm = byDistance[0].Item2.Distance * 304.8;
                 double farMm = byDistance.Count > 1 ? byDistance[1].Item2.Distance * 304.8 : double.MaxValue;
+                // A HORIZONTAL HOST WITH NO THICKNESS answers the same face as its top and its
+                // bottom (MEASURED: a Basic Ceiling). A device under it cannot be told apart
+                // from one on top of it, and no dead band is the reason.
+                if (behindNormals.Count >= 2 && behindNormals.All(v => Math.Abs(v.Z) > 0.9) &&
+                    behindNormals.All(v => v.DotProduct(behindNormals[0]) > 0.99) && farMm - nearMm < 1.0)
+                {
+                    evidence["faces_considered"] = rows;
+                    choice.Refusal = "host_has_no_thickness: " + Describe(host) + " reports its top and its bottom as " +
+                                     "one face, facing the same way, so a device asked below it cannot be placed on its " +
+                                     "underside. Use a host with a thickness (a compound ceiling or a floor).";
+                    return choice;
+                }
                 if (sideRule && (farMm - nearMm) / 2.0 <= sideDeadBandMm.Value)
                 {
                     evidence["faces_considered"] = rows;

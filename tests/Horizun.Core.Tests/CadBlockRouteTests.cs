@@ -69,6 +69,46 @@ namespace Horizun.Core.Tests
             'geometry': { 'from': 'blocks', 'blocks': ['OUT2', 'OUT*'] } }
         ]".Replace('\'', '"');
 
+        // ---- mounting height ---------------------------------------------------
+
+        [Fact]
+        public void A_declared_mounting_height_reaches_the_row_as_a_level_offset()
+        {
+            // MEASURED (campaign 4): offset_mm on a blocks rule was validated and never copied
+            // to the candidate, so a whole unit was built at its level without a word.
+            string rules = @"[
+              { 'id': 'receptacles', 'precedence': 20, 'layers': ['E-*'], 'produces': 'electrical_fixture',
+                'category': 'OST_ElectricalFixtures', 'family_type': 'Duplex Receptacle: Standard',
+                'level': 'Level 1', 'offset_mm': 457.2,
+                'geometry': { 'from': 'blocks', 'blocks': ['OUT2'] } },
+              { 'id': 'others', 'precedence': 21, 'layers': ['E-*'], 'produces': 'electrical_fixture',
+                'category': 'OST_ElectricalFixtures', 'family_type': 'Duplex Receptacle: GFCI',
+                'level': 'Level 1',
+                'geometry': { 'from': 'blocks', 'blocks': ['OUT'] } }
+            ]".Replace('\'', '"');
+            CadBlockReading r = CadBlockRules.Interpret(new List<CadIrEntity>
+            {
+                Insert("OUT2", 1000, 1000), Insert("OUT", 3000, 1000)
+            }, Set(rules), Hash);
+            CadCandidate mounted = r.Candidates.Single(c => c.RuleId == "receptacles");
+            CadCandidate silent = r.Candidates.Single(c => c.RuleId == "others");
+            Assert.Equal(457.2, mounted.OffsetMm.Value, 6);
+            Assert.DoesNotContain(mounted.UnresolvedFacts, f => f.StartsWith("height:"));
+            Assert.Null(silent.OffsetMm);
+            Assert.Contains(silent.UnresolvedFacts, f => f.StartsWith("height:"));
+
+            var interp = new CadInterpretation();
+            interp.Candidates.AddRange(r.Candidates);
+            CadConversionPlan plan = CadConversionPlanRules.Plan(interp, Set(rules), "src", false);
+            List<JObject> rows = CadConversionPlanRules.AsCreateRequests(plan, "T")
+                .SelectMany(q => ((JArray)q["elements"]).OfType<JObject>()).ToList();
+            JObject up = rows.Single(x => (double)x["point"][0] == 1000);
+            JObject down = rows.Single(x => (double)x["point"][0] == 3000);
+            Assert.Equal("level_offset", (string)up["coordinate_mode"]);
+            Assert.Equal(457.2, (double)up["point"][2], 6);
+            Assert.Equal("absolute", (string)down["coordinate_mode"]);
+        }
+
         // ---- identity ----------------------------------------------------------
 
         [Fact]

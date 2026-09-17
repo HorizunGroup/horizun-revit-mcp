@@ -1399,6 +1399,17 @@ namespace Horizun.Revit.Commands
                             ElementTransformUtils.MoveElement(doc, placed.Id,
                                 new XYZ(p.Start.X - ((LocationPoint)placed.Location).Point.X,
                                         p.Start.Y - ((LocationPoint)placed.Location).Point.Y, 0));
+                            // THE HEIGHT ON THE WALL is the instance's elevation from its level.
+                            Parameter elevation = placed.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                            if (p.Level != null && elevation != null && !elevation.IsReadOnly)
+                            {
+                                double wantZ = p.Start.Z - p.Level.ProjectElevation;
+                                if (Math.Abs(elevation.AsDouble() - wantZ) > 1e-6 && !elevation.Set(wantZ))
+                                    throw new InvalidOperationException(
+                                        "the elevation of this wall-based device could not be set. Nothing was built for this row.");
+                                doc.Regenerate();
+                                p.HostedEvidence["elevation_from_level_mm"] = Math.Round(wantZ * 304.8, 1);
+                            }
                         }
                         else
                         {
