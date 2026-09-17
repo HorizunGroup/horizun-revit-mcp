@@ -519,6 +519,33 @@ namespace Horizun.Revit.Core
                 result[Key(x.Name, x.Path)] = resolved;
                 if (x.Name != null && !byName.ContainsKey(x.Name)) byName[x.Name] = resolved;
             }
+
+            // A NESTED REFERENCE DOES NOT SAY WHOSE IT IS. MEASURED (campaign 4, live fixture): a
+            // drawing referenced through another one is reported under its own bare name with the
+            // path its PARENT recorded - "HZ-NEST.dwg", relative to the folder the parent lives in.
+            // Resolved from the top drawing's folder that is nothing, so the reference went
+            // untracked and a change to it was served from cache. So what is still unresolved is
+            // looked for beside the references that DID resolve, and only where exactly one of
+            // those folders holds it: two candidates is not a measurement.
+            var folders = result.Values.Where(v => v != null)
+                .Select(v => { try { return Path.GetDirectoryName(v); } catch { return null; } })
+                .Where(v => v != null).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (CadIrExternalReference x in (refs ?? new List<CadIrExternalReference>()).Where(r => r != null))
+            {
+                string key = Key(x.Name, x.Path);
+                string had;
+                if (result.TryGetValue(key, out had) && had != null) continue;
+                string leaf = null;
+                try { leaf = Path.GetFileName(x.Path ?? x.Name); } catch { }
+                if (string.IsNullOrWhiteSpace(leaf)) continue;
+                var found = folders.Select(f => Path.Combine(f, leaf))
+                                   .Where(p => { try { return File.Exists(p); } catch { return false; } })
+                                   .Select(Path.GetFullPath)
+                                   .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                if (found.Count != 1) continue;
+                result[key] = found[0];
+                if (x.Name != null) byName[x.Name] = found[0];
+            }
             return result;
         }
 

@@ -14,6 +14,7 @@
 // somebody iterate on.
 // -----------------------------------------------------------------------------
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using Horizun.Revit.Core;
@@ -142,6 +143,39 @@ namespace Horizun.Core.Tests
             Assert.False(after.Hit);
             Assert.Equal("dependency_changed", after.Miss);
             Assert.Contains("background.dwg", after.Detail.ToString());
+        }
+
+        [Fact]
+        public void A_nested_reference_reported_under_its_bare_name_is_found_beside_its_parent()
+        {
+            // MEASURED live (campaign 4): AutoCAD reports a drawing referenced through another one
+            // under its OWN name, with the path its parent recorded - nothing says who the parent is.
+            // Resolved only from the top drawing's folder it went untracked, and a change to it was
+            // served from cache.
+            string top = Path.Combine(_root, "deep");
+            string arch = Path.Combine(top, "ARCH-XREF");
+            string unit = Set(top, "unit.dwg", "host");
+            Set(arch, "A-109.dwg", "parent");
+            Set(arch, "nested.dwg", "child");
+            var refs = new List<CadIrExternalReference>
+            {
+                new CadIrExternalReference { Name = "A-109", Path = @".\ARCH-XREF\A-109.dwg" },
+                // relative to ITS parent's folder, which this list does not say
+                new CadIrExternalReference { Name = "nested", Path = "nested.dwg" }
+            };
+
+            Dictionary<string, string> all = CadDwgCache.ResolveAll(Path.GetDirectoryName(unit), refs);
+
+            Assert.Equal(Path.Combine(arch, "A-109.dwg"), all.Values.First());
+            Assert.Equal(Path.Combine(arch, "nested.dwg"), all.Values.Last());
+
+            // TWO candidates is not a measurement: a leaf of that name beside a second resolved
+            // reference leaves it unresolved rather than guessed.
+            string other = Path.Combine(top, "OTHER");
+            Set(other, "B-200.dwg", "another parent");
+            Set(other, "nested.dwg", "a different child");
+            refs.Insert(1, new CadIrExternalReference { Name = "B-200", Path = @".\OTHER\B-200.dwg" });
+            Assert.Null(CadDwgCache.ResolveAll(Path.GetDirectoryName(unit), refs).Values.Last());
         }
 
         [Fact]
