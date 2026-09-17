@@ -145,6 +145,37 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Alternating_between_two_reference_sets_reads_each_once()
+        {
+            // MEASURED (campaign 4): original and revised copy share the host bytes; each switch
+            // re-read the set cold. The replaced reading is kept as a variant of the key.
+            string origDir = Path.Combine(_root, "alt-o"), copyDir = Path.Combine(_root, "alt-c");
+            string o = Set(origDir, "unit.dwg", "host"); Set(origDir, "background.dwg", "version one");
+            string c = Set(copyDir, "unit.dwg", "host"); Set(copyDir, "background.dwg", "version two");
+            string sha = CadDwgCache.Sha256(o);
+            string tsvO = File_("o.tsv", "H\tdone\t1\n"), tsvC = File_("c.tsv", "H\tdone\t2\n");
+
+            CadDwgCache.Store(CadDwgCache.Lookup(o, sha, "e", "o"), tsvO, ReadingWithAll("background", "background.dwg"), o, 1.0);
+            CadDwgCacheEntry forCopy = CadDwgCache.Lookup(c, sha, "e", "o");
+            Assert.False(forCopy.Hit);
+            JObject stored = CadDwgCache.Store(forCopy, tsvC, ReadingWithAll("background", "background.dwg"), c, 1.0);
+            Assert.NotNull(stored["earlier_reading_kept_as"]);
+
+            CadDwgCacheEntry backToOriginal = CadDwgCache.Lookup(o, sha, "e", "o");
+            Assert.True(backToOriginal.Hit);
+            Assert.Equal("H\tdone\t1\n", File.ReadAllText(backToOriginal.TsvPath));
+            Assert.NotNull(backToOriginal.Detail["variant_of"]);
+            CadDwgCacheEntry copyAgain = CadDwgCache.Lookup(c, sha, "e", "o");
+            Assert.True(copyAgain.Hit);
+            Assert.Equal("H\tdone\t2\n", File.ReadAllText(copyAgain.TsvPath));
+
+            // a THIRD set is served by neither
+            string third = Path.Combine(_root, "alt-t");
+            string t = Set(third, "unit.dwg", "host"); Set(third, "background.dwg", "version three");
+            Assert.False(CadDwgCache.Lookup(t, sha, "e", "o").Hit);
+        }
+
+        [Fact]
         public void A_copy_of_the_set_with_a_changed_reference_is_not_served_the_originals_reading()
         {
             // MEASURED (revision C): the copied host is byte-identical to the original;

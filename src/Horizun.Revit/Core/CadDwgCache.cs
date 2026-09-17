@@ -155,6 +155,56 @@ namespace Horizun.Revit.Core
             // stale reading for the copy.
             string here = null;
             try { here = Path.GetDirectoryName(dwgPath); } catch { }
+            JArray changed = ChangedDependencies(side, here);
+            if (changed.Count > 0)
+            {
+                // ANOTHER READING OF THE SAME BYTES, WITH OTHER REFERENCES. MEASURED (campaign 4): a
+                // revised copy whose host file is byte-identical to the original evicted the original's
+                // reading, and alternating between the two re-read the set cold each time (356-372 s).
+                // Each reference set keeps its own variant; one whose references all still hash as
+                // recorded is a hit.
+                foreach (string variant in VariantSidecars(key))
+                {
+                    JObject vs;
+                    try { vs = JObject.Parse(File.ReadAllText(variant)); } catch { continue; }
+                    string vtsv = Path.ChangeExtension(variant, ".tsv");
+                    if (!File.Exists(vtsv) || ChangedDependencies(vs, here).Count > 0) continue;
+                    entry.Hit = true;
+                    entry.TsvPath = vtsv;
+                    entry.Detail = HitDetail(Path.GetFileNameWithoutExtension(variant), vs);
+                    entry.Detail["variant_of"] = key;
+                    return entry;
+                }
+                entry.Miss = "dependency_changed";
+                entry.Detail = new JObject { ["changed"] = changed };
+                return entry;
+            }
+
+            entry.Hit = true;
+            entry.Detail = HitDetail(key, side);
+            return entry;
+        }
+
+        private static IEnumerable<string> VariantSidecars(string key)
+        {
+            try { return Directory.GetFiles(Root, key + "-v-*.json").OrderByDescending(File.GetLastWriteTimeUtc).ToList(); }
+            catch { return new List<string>(); }
+        }
+
+        private static JObject HitDetail(string key, JObject side) => new JObject
+        {
+            ["key"] = key,
+            ["read_utc"] = side["read_utc"],
+            ["seconds_when_first_read"] = side["seconds"],
+            ["dependencies_checked"] = (side["dependencies"] as JArray ?? new JArray()).Count,
+            ["means"] = "the same file, read by the same extractor through the same engine with the same " +
+                        "options, and every external reference still hashes to what it did then. The RULES " +
+                        "are not part of this key: interpretation runs from scratch every time."
+        };
+
+        /// <summary>Every recorded reference that no longer hashes as recorded, resolved from here.</summary>
+        private static JArray ChangedDependencies(JObject side, string here)
+        {
             var changed = new JArray();
             var recorded = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>().ToList();
             Dictionary<string, string> resolvedHere = ResolveAll(here, recorded.Select(d => new CadIrExternalReference
@@ -197,25 +247,7 @@ namespace Horizun.Revit.Core
                             : "the reference this drawing was read with has changed"
                     });
             }
-            if (changed.Count > 0)
-            {
-                entry.Miss = "dependency_changed";
-                entry.Detail = new JObject { ["changed"] = changed };
-                return entry;
-            }
-
-            entry.Hit = true;
-            entry.Detail = new JObject
-            {
-                ["key"] = key,
-                ["read_utc"] = side["read_utc"],
-                ["seconds_when_first_read"] = side["seconds"],
-                ["dependencies_checked"] = (side["dependencies"] as JArray ?? new JArray()).Count,
-                ["means"] = "the same file, read by the same extractor through the same engine with the same " +
-                            "options, and every external reference still hashes to what it did then. The RULES " +
-                            "are not part of this key: interpretation runs from scratch every time."
-            };
-            return entry;
+            return changed;
         }
 
         /// <summary>
@@ -242,6 +274,8 @@ namespace Horizun.Revit.Core
             try
             {
                 Directory.CreateDirectory(Root);
+                // THE READING BEING REPLACED IS KEPT, under a variant named by its references.
+                string kept = KeepAsVariant(entry);
                 // PUBLISHED WHOLE: written beside the target and moved into place, so a
                 // reader never finds half a report under a key.
                 Publish(entry.TsvPath, tmp => File.Copy(tsvSource, tmp, true));
@@ -276,12 +310,14 @@ namespace Horizun.Revit.Core
                     ["dependencies"] = deps
                 };
                 Publish(entry.SidecarPath, tmp => File.WriteAllText(tmp, side.ToString(Formatting.Indented)));
-                return new JObject
+                var stored = new JObject
                 {
                     ["stored"] = true,
                     ["key"] = entry.Key,
                     ["dependencies_recorded"] = deps.Count
                 };
+                if (kept != null) stored["earlier_reading_kept_as"] = kept;
+                return stored;
             }
             catch (Exception ex)
             {
@@ -292,6 +328,31 @@ namespace Horizun.Revit.Core
                     ["means"] = "the reading is still correct; only the cache write failed."
                 };
             }
+        }
+
+        /// <summary>
+        /// Copies the primary reading of a key to "key-v-(digest of its references)" before it is
+        /// replaced. Null when there was nothing to keep or it records no reference.
+        /// </summary>
+        private static string KeepAsVariant(CadDwgCacheEntry entry)
+        {
+            try
+            {
+                if (!File.Exists(entry.SidecarPath) || !File.Exists(entry.TsvPath)) return null;
+                JObject side = JObject.Parse(File.ReadAllText(entry.SidecarPath));
+                var deps = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>()
+                    .Select(d => ((string)d["name"] ?? "").ToLowerInvariant() + "=" + (string)d["sha256"])
+                    .OrderBy(x => x, StringComparer.Ordinal).ToList();
+                if (deps.Count == 0) return null;
+                string variant = entry.Key + "-v-" + Hash(string.Join("|", deps)).Substring(0, 12);
+                string vtsv = Path.Combine(Root, variant + ".tsv"), vside = Path.Combine(Root, variant + ".json");
+                string src = entry.TsvPath;
+                Publish(vtsv, tmp => File.Copy(src, tmp, true));
+                side["key"] = variant;
+                Publish(vside, tmp => File.WriteAllText(tmp, side.ToString(Formatting.Indented)));
+                return variant;
+            }
+            catch { return null; }
         }
 
         /// <summary>
