@@ -99,6 +99,15 @@ namespace Horizun.Revit.Commands
                     "re-shapes elements to follow the drawing. Send accept_placement_move=true here as well - " +
                     "the plan was read-only, this is the write. Nothing was written.");
 
+            string plannedReading = provenanceTemplate.Value<string>("interpretation_version");
+            if (!string.IsNullOrWhiteSpace(plannedReading) &&
+                !string.Equals(plannedReading, CadInterpretationRules.InterpretationVersion, StringComparison.Ordinal))
+                return CommandResult.Fail(
+                    "stale_plan: the reading moved between the plan and this apply - the plan was made by a build " +
+                    "that reads '" + plannedReading + "' and this build reads '" +
+                    CadInterpretationRules.InterpretationVersion + "'. The same drawing may now mean other " +
+                    "elements. Nothing was written; re-run horizun_plan_cad_update.");
+
             bool dryRun = request.Value<bool?>("dry_run") ?? true;
             string idempotencyKey = request.Value<string>("idempotency_key");
             string actionsFingerprint = CadConversionPlanRules.ActionsFingerprint(actions) + ":" +
@@ -272,7 +281,9 @@ namespace Horizun.Revit.Commands
                         SourcePath = provenanceTemplate.Value<string>("source_path"),
                         Confidence = entry.Value<double?>("confidence") ?? 0,
                         WrittenUtc = DateTime.UtcNow.ToString("o"),
-                        BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e))
+                        BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e)),
+                        InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                        SourceEntities = ApplyCadPlanCommand.Entities(entry["source_entities"] as JArray)
                     };
                     StampPlacement(p, placementTemplate);
 
@@ -334,6 +345,16 @@ namespace Horizun.Revit.Commands
                         p.SourceFingerprint = provenanceTemplate.Value<string>("source_fingerprint") ?? p.SourceFingerprint;
                         p.PlanFingerprint = provenanceTemplate.Value<string>("plan_fingerprint") ?? p.PlanFingerprint;
                         p.SourcePath = provenanceTemplate.Value<string>("source_path") ?? p.SourcePath;
+                        // recognised by THIS reading as that entity
+                        p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
+                    }
+                    if (reason == CadPlacementRules.RestampAccepted)
+                    {
+                        // KEPT BY A PERSON: where it stands is now where it was built.
+                        p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e));
+                        p.CandidateId = rowJson.Value<string>("candidate_id") ?? p.CandidateId;
+                        p.SemanticId = rowJson.Value<string>("semantic_id") ?? p.SemanticId;
+                        p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
                     }
                     if (string.IsNullOrEmpty(p.GeometryId)) p.GeometryId = rowJson.Value<string>("geometry_id");
                     if (string.IsNullOrEmpty(p.SourcePath)) p.SourcePath = provenanceTemplate.Value<string>("source_path");

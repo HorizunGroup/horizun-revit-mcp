@@ -65,6 +65,18 @@ namespace Horizun.Revit.Core
         /// <summary>The external path when the link had one. Null for an embedded import and on a v1 record.</summary>
         public string SourcePath;
 
+        // ---- provenance v3: WHICH READING built it -----------------------------
+        //
+        // The same bytes read by a different reader, or under different reading
+        // rules, can give a different wall. Without this, an update run against
+        // an unchanged file after a reader change reports "the drawing moved" and
+        // proposes to move elements nobody asked to move. Null on v1/v2 records.
+
+        /// <summary>The reading that produced the entity this element stands for (CadInterpretationRules.InterpretationVersion).</summary>
+        public string InterpretationVersion;
+        /// <summary>The drawing entities that reading used, ";"-joined: two elements from one entity, or one from several, are visible.</summary>
+        public string SourceEntities;
+
         /// <summary>Written before placement identity existed: no placement id, no transform, no path.</summary>
         public bool IsV1 => SchemaVersion < 2 || string.IsNullOrEmpty(PlacementId);
 
@@ -91,7 +103,9 @@ namespace Horizun.Revit.Core
             // v1 or v2 as a WORD, beside the number: a reader deciding whether
             // this element can be told apart from another placement's needs the
             // answer, not the arithmetic.
-            ["provenance_version"] = IsV1 ? "v1" : "v2",
+            ["provenance_version"] = IsV1 ? "v1" : SchemaVersion >= 3 ? "v3" : "v2",
+            ["interpretation_version"] = InterpretationVersion,
+            ["source_entities"] = SourceEntities,
             ["placement"] = IsV1
                 ? (JToken)JValue.CreateNull()
                 : new JObject

@@ -183,8 +183,26 @@ namespace Horizun.Revit.Commands
             // building part of it. Gathered here, where the document is open, so
             // the collision is a refusal in the plan rather than a rollback
             // halfway through the apply.
+            // THE WALL HATCH, WHEN A WALL RULE ASKS FOR IT - read before the
+            // interpretation, because it decides which pairs of faces are walls.
+            CadSolidHatch solidHatch = null;
+            JObject solidRead = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.SolidHatchLayers.Count > 0))
+            {
+                solidRead = new JObject();
+                solidHatch = CadBlockSource.ReadSolid(element, facts, set, harvest, request.Value<string>("dwg_path"),
+                                                      Math.Max(30, Math.Min(3600,
+                                                          request.Value<int?>("dwg_read_timeout_seconds") ?? 900)),
+                                                      solidRead);
+                if (solidHatch == null)
+                    return CommandResult.Fail(
+                        "solid_evidence_unread: " + ((string)solidRead["refused"] ?? "unknown") + ". " +
+                        ((string)solidRead["means"] ?? (string)solidRead["detail"] ?? "") +
+                        " A wall rule of this set declares solid_hatch_layers, and its walls are not read " +
+                        "without them. Nothing was examined.");
+            }
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
-                harvest.Segments, set, sourceHash, harvest.Arcs, ExistingNames(doc, set));
+                harvest.Segments, set, sourceHash, harvest.Arcs, ExistingNames(doc, set), solidHatch);
 
             // A NAMING THAT COULD NOT BE SETTLED STOPS THE PLAN.
             //
@@ -471,7 +489,16 @@ namespace Horizun.Revit.Commands
             // guess. Choosing a storey for somebody's building is exactly the kind
             // of decision this bridge does not make on its own.
             var resolved = new JArray();
-            string unresolved = ResolveNames(doc, creates, request, resolved);
+            var wallTypesChosen = new JArray();
+            string unresolved = ResolveWallTypes(doc, creates, resolved, withdrawn, wallTypesChosen);
+            if (unresolved != null) return CommandResult.Fail(unresolved);
+            if (wallTypesChosen.Count > 0) report["wall_types_chosen"] = wallTypesChosen;
+            if (solidRead != null)
+            {
+                solidRead["pairs_without_hatched_material"] = interpretation.SolidVetoes;
+                report["solid_evidence"] = solidRead;
+            }
+            unresolved = ResolveNames(doc, creates, request, resolved);
             if (unresolved != null) return CommandResult.Fail(unresolved);
 
             // THE TWO LEVELS A SHAFT RUNS BETWEEN, and the view a room separator
@@ -651,6 +678,7 @@ namespace Horizun.Revit.Commands
                 ["actions_fingerprint"] = CadConversionPlanRules.ActionsFingerprint(emittedActions),
                 ["source_fingerprint"] = sourceFingerprint,
                 ["requirement_set_sha256"] = set.Sha256,
+                ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
                 ["target_document"] = target,
                 ["revit_version"] = SafeVersion(app),
                 ["means"] = "horizun_apply_cad_plan re-measures every one of these before writing and refuses " +
@@ -681,7 +709,9 @@ namespace Horizun.Revit.Commands
         internal static string ResolveRows(Document doc, List<JObject> creates, JObject request, JArray resolved,
                                            CadRequirementSet set, IList<CadSegment> drawn, JArray withdrawn)
         {
-            string e = ResolveNames(doc, creates, request, resolved);
+            string e = ResolveWallTypes(doc, creates, resolved, withdrawn, null);
+            if (e != null) return e;
+            e = ResolveNames(doc, creates, request, resolved);
             if (e != null) return e;
             e = ResolveShaftsAndViews(doc, creates, resolved);
             if (e != null) return e;
@@ -689,6 +719,123 @@ namespace Horizun.Revit.Commands
             if (e != null) return e;
             WithdrawHostless(doc, creates, withdrawn);
             WithdrawOccupied(doc, creates, set, withdrawn);
+            return null;
+        }
+
+        /// <summary>
+        /// THE WALL TYPE, BY THE THICKNESS THE DRAWING GIVES.
+        ///
+        /// MEASURED on two apartments: a set naming one wall type built 52 walls at
+        /// 152.4 mm whose drawn thicknesses ran from 125 to 322 mm, and the audit let
+        /// 18 of them pass because it compared widths with the revision tolerance.
+        /// A rule that lists wall_types gets, per wall, the listed type whose width -
+        /// read from THIS model, not declared - is nearest the drawn thickness within
+        /// the rule's tolerance. None fits: the wall is withdrawn with the nearest
+        /// type named (or built as family_type when the rule says so). Two fit
+        /// equally: withdrawn, because choosing between them is not a measurement.
+        /// </summary>
+        private static string ResolveWallTypes(Document doc, List<JObject> creates, JArray resolved,
+                                               JArray withdrawn, JArray chosen)
+        {
+            var byName = new Dictionary<string, WallType>(StringComparer.Ordinal);
+            var seen = new HashSet<long>();
+            foreach (JObject c in creates)
+                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
+                {
+                    var choices = row["wall_type_choices"] as JArray;
+                    if (choices == null) continue;
+                    double tolerance = row.Value<double?>("wall_type_tolerance_mm") ?? 3.2;
+                    string otherwise = row.Value<string>("wall_type_otherwise") ?? "withdraw";
+                    double thickness = row.Value<double?>("interpreted_thickness_mm") ?? double.NaN;
+                    foreach (string k in new[] { "wall_type_choices", "wall_type_tolerance_mm",
+                                                 "wall_type_otherwise", "interpreted_thickness_mm" })
+                        row.Remove(k);
+
+                    var options = new List<Tuple<string, WallType, double>>();
+                    foreach (string name in choices.Select(x => (string)x))
+                    {
+                        WallType w;
+                        if (!byName.TryGetValue(name, out w))
+                        {
+                            w = FindType(doc, name) as WallType;
+                            if (w == null)
+                                return "wall_type_not_found: the set lists '" + name + "' among the wall types to " +
+                                       "choose by thickness, and " + Quote(SafeTitle(doc)) + " has no wall type of that " +
+                                       "name. NOTHING was planned.";
+                            byName[name] = w;
+                        }
+                        double width;
+                        try { width = w.Width * 304.8; } catch { continue; }
+                        options.Add(Tuple.Create(name, w, width));
+                    }
+                    var ranked = options.OrderBy(o => Math.Abs(o.Item3 - thickness)).ThenBy(o => o.Item1, StringComparer.Ordinal).ToList();
+                    var fitting = ranked.Where(o => Math.Abs(o.Item3 - thickness) <= tolerance + 1e-6).ToList();
+                    Tuple<string, WallType, double> nearest = ranked.FirstOrDefault();
+
+                    JObject Where() => new JObject
+                    {
+                        ["source_row"] = row["source_row"],
+                        ["kind"] = "wall",
+                        ["from_mm"] = row["start"],
+                        ["to_mm"] = row["end"],
+                        ["thickness_mm"] = Math.Round(thickness, 1),
+                        ["tolerance_mm"] = tolerance,
+                        ["nearest_type"] = nearest == null ? null : nearest.Item1,
+                        ["nearest_width_mm"] = nearest == null ? (JToken)JValue.CreateNull() : Math.Round(nearest.Item3, 1),
+                        ["candidates"] = new JArray(ranked.Take(4).Select(o => new JObject
+                        {
+                            ["type"] = o.Item1, ["width_mm"] = Math.Round(o.Item3, 1),
+                            ["off_by_mm"] = Math.Round(o.Item3 - thickness, 1)
+                        }))
+                    };
+
+                    if (fitting.Count == 0)
+                    {
+                        if (otherwise == "family_type")
+                        {
+                            JObject note = Where();
+                            note["chosen"] = row.Value<string>("type_name");
+                            note["because"] = "no listed type is within the tolerance; the rule says to build the " +
+                                              "wall as its family_type, and the audit will report the width";
+                            if (chosen != null) chosen.Add(note);
+                            continue;
+                        }
+                        JObject w = Where();
+                        w["reason"] = "no_wall_type_for_this_thickness";
+                        w["means"] = "the drawing gives this wall a thickness no listed wall type has, within the " +
+                                     "tolerance. It is NOT planned: building it at another width misstates every " +
+                                     "quantity and every face a device is placed on. Add a type of this width, or " +
+                                     "list one.";
+                        withdrawn.Add(w);
+                        ((JArray)c["elements"]).Remove(row);
+                        continue;
+                    }
+                    if (fitting.Count > 1 &&
+                        Math.Abs(Math.Abs(fitting[0].Item3 - thickness) - Math.Abs(fitting[1].Item3 - thickness)) < 0.05 &&
+                        Rid.Value(fitting[0].Item2.Id) != Rid.Value(fitting[1].Item2.Id))
+                    {
+                        JObject w = Where();
+                        w["reason"] = "wall_types_fit_equally";
+                        w["means"] = "two listed wall types are equally near this thickness, so which one it is " +
+                                     "is not a measurement. It is NOT planned.";
+                        withdrawn.Add(w);
+                        ((JArray)c["elements"]).Remove(row);
+                        continue;
+                    }
+
+                    Tuple<string, WallType, double> pick = fitting[0];
+                    row["type_name"] = pick.Item1;
+                    if (seen.Add(Rid.Value(pick.Item2.Id)))
+                        resolved.Add(Resolved("wall_type", pick.Item2, pick.Item1, TypeLabel(pick.Item2)));
+                    if (chosen != null)
+                    {
+                        JObject note = Where();
+                        note["chosen"] = pick.Item1;
+                        note["chosen_width_mm"] = Math.Round(pick.Item3, 1);
+                        note["off_by_mm"] = Math.Round(pick.Item3 - thickness, 1);
+                        chosen.Add(note);
+                    }
+                }
             return null;
         }
 

@@ -219,6 +219,21 @@ namespace Horizun.Revit.Commands
                                 "guaranteed to mean the same thing across builds."
                 });
 
+            // THE READING. The same drawing read by another build can mean other walls;
+            // a plan carries the reading it was made with, and a binding from before
+            // readings were versioned carries none and is not held to it.
+            string expectedReading = binding.Value<string>("interpretation_version");
+            if (!string.IsNullOrWhiteSpace(expectedReading) &&
+                !string.Equals(expectedReading, CadInterpretationRules.InterpretationVersion, StringComparison.Ordinal))
+                drift.Add(new JObject
+                {
+                    ["what"] = "the reading",
+                    ["planned_against"] = expectedReading,
+                    ["now"] = CadInterpretationRules.InterpretationVersion,
+                    ["means"] = "this build reads drawings differently from the build that made the plan; the " +
+                                "same bytes may now mean other elements."
+                });
+
             if (drift.Count > 0)
                 return CommandResult.Fail(
                     "stale_plan: " + string.Join(" and ", drift.Select(d => (string)d["what"])) +
@@ -907,7 +922,10 @@ namespace Horizun.Revit.Commands
                         PlacementOrigin = CadPlacementRules.EncodeOrigin(facts.TransformOrigin),
                         PlacementBasis = CadPlacementRules.EncodeBasis(facts.TransformBasisX, facts.TransformBasisY,
                                                                        facts.TransformScale ?? 1.0),
-                        SourcePath = string.IsNullOrWhiteSpace(facts.ExternalPath) ? null : facts.ExternalPath
+                        SourcePath = string.IsNullOrWhiteSpace(facts.ExternalPath) ? null : facts.ExternalPath,
+                        // PROVENANCE v3: which reading, and which entities it used.
+                        InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                        SourceEntities = Entities(c?["source_entities"] as JArray)
                     };
                     // An element with no candidate is an element nothing can trace.
                     // Writing an EMPTY provenance record would be worse than
@@ -1002,6 +1020,13 @@ namespace Horizun.Revit.Commands
 
         private static CadPoint Mm(XYZ p) =>
             new CadPoint(CadUnits.FeetToMm(p.X), CadUnits.FeetToMm(p.Y), CadUnits.FeetToMm(p.Z));
+
+        /// <summary>The drawing entities a candidate was read from, as provenance keeps them.</summary>
+        internal static string Entities(JArray entities)
+        {
+            if (entities == null || entities.Count == 0) return null;
+            return string.Join(";", entities.Select(t => t?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }
         private static string SafeVersion(UIApplication a)

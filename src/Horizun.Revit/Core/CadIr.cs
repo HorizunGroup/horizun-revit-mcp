@@ -436,6 +436,17 @@ namespace Horizun.Revit.Core
         /// </summary>
         public string UnmodelledType;
 
+        /// <summary>
+        /// For a HATCH: its pattern name and its boundary loops, in millimetres of
+        /// the frame it is drawn in (its block's, when it is inside one). Evidence
+        /// of where the drafter drew solid material; the fill is not modelled, so
+        /// the entity still counts as unmodelled.
+        /// </summary>
+        public string HatchPattern;
+        public List<List<CadPoint>> HatchLoops;
+        /// <summary>True when an edge this reading does not decode (ellipse, spline) cut a loop short.</summary>
+        public bool HatchLoopsPartial;
+
         public JObject ToJson()
         {
             var o = new JObject { ["id"] = Id, ["kind"] = Kind };

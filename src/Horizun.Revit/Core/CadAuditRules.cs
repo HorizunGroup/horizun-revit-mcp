@@ -592,7 +592,8 @@ namespace Horizun.Revit.Core
         /// type, and an element whose width cannot be read is not the wrong
         /// width - it is unmeasured, which is a different sentence.
         /// </summary>
-        private static void AuditSubstance(CadAudit audit, CadCandidate c, CadAuditSubject hit, double tolerance)
+        private static void AuditSubstance(CadAudit audit, CadCandidate c, CadAuditSubject hit, double tolerance,
+                                           CadRequirementSet set)
         {
             // UNHOSTED. A door that is in the right place and hosted in nothing
             // schedules, tags and renders exactly like one that is not - and cuts
@@ -617,8 +618,13 @@ namespace Horizun.Revit.Core
             // THE WRONG TYPE. Only when the rule named one: substituting silently
             // is what this whole path exists to prevent, and so is complaining
             // about a substitution nobody asked for.
+            // A rule that chooses walls BY THICKNESS asks for any of its listed
+            // types; whether the one chosen is the right width is the size check's.
+            CadRule typeRule = set == null ? null : set.Rules.FirstOrDefault(r => r.Id == c.RuleId);
+            bool listed = typeRule != null && typeRule.WallTypes != null && hit.TypeName != null &&
+                          typeRule.WallTypes.Any(t => SameTypeName(t, hit.TypeName));
             if (!string.IsNullOrWhiteSpace(c.FamilyType) && !string.IsNullOrWhiteSpace(hit.TypeName) &&
-                !SameTypeName(c.FamilyType, hit.TypeName))
+                !SameTypeName(c.FamilyType, hit.TypeName) && !listed)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "type_differs",
@@ -745,8 +751,9 @@ namespace Horizun.Revit.Core
             // THE WRONG SIZE. Null width is unmeasured, never zero: an element
             // nobody can measure is not an element of the wrong thickness.
             double? asked = c.ThicknessMm ?? c.DiameterMm;
+            double sizeTolerance = set != null ? set.ThicknessToleranceMm : Math.Max(tolerance, 1.0);
             if (asked.HasValue && hit.WidthMm.HasValue &&
-                Math.Abs(asked.Value - hit.WidthMm.Value) > Math.Max(tolerance, 1.0))
+                Math.Abs(asked.Value - hit.WidthMm.Value) > sizeTolerance)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "size_differs",
@@ -762,7 +769,7 @@ namespace Horizun.Revit.Core
                     {
                         ["drawing_says_mm"] = Math.Round(asked.Value, 3),
                         ["element_measures_mm"] = Math.Round(hit.WidthMm.Value, 3),
-                        ["tolerance_mm"] = tolerance
+                        ["tolerance_mm"] = sizeTolerance
                     }
                 });
         }
@@ -1098,7 +1105,7 @@ namespace Horizun.Revit.Core
             //
             // Each is reported only where the rule actually SAID something. A set
             // that names no type is not disagreeing about the type.
-            AuditSubstance(audit, c, hit, tolerance);
+            AuditSubstance(audit, c, hit, tolerance, set);
 
             // A difference ALONG the line is a different thing, and usually not a
             // fault at all: Revit joins walls that meet and pulls each location

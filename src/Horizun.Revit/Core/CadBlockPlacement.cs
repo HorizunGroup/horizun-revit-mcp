@@ -40,6 +40,21 @@ namespace Horizun.Revit.Core
         public CadPoint At;                     // where it is in the drawing
         public double RotationRadians;
         public bool Mirrored;
+        /// <summary>The magnitude of the scale this placement accumulated through its parents.</summary>
+        public double Scale = 1.0;
+
+        /// <summary>
+        /// A point of this block's DEFINITION, where this placement puts it - the
+        /// same composition the nested placements below use: scale, the
+        /// reflection about the block's own Y axis, then the turn.
+        /// </summary>
+        public CadPoint Place(CadPoint local)
+        {
+            double lx = local.X * Scale, ly = local.Y * Scale;
+            if (Mirrored) lx = -lx;
+            double cos = Math.Cos(RotationRadians), sin = Math.Sin(RotationRadians);
+            return new CadPoint(At.X + lx * cos - ly * sin, At.Y + lx * sin + ly * cos, At.Z + local.Z * Scale);
+        }
 
         /// <summary>Outermost first: the blocks this symbol was nested inside, if any.</summary>
         public List<string> Path = new List<string>();
@@ -62,6 +77,17 @@ namespace Horizun.Revit.Core
         /// every copy of a repeated unit would collapse onto one element.
         /// </summary>
         public string ThroughHandle;
+
+        /// <summary>
+        /// The handles of every insertion this placement came through, outermost
+        /// first, ending with its own. Names are not enough: a block placed twice
+        /// inside one parent puts the same child at two places under the same
+        /// names, and only the handles tell the two placements apart.
+        /// </summary>
+        public List<string> HandleChain = new List<string>();
+
+        /// <summary>A key unique to this placement in this reading, stable across readings of the same file.</summary>
+        public string Key => string.Join("/", HandleChain.Select(h => string.IsNullOrEmpty(h) ? "?" : h));
 
         public string BlockName { get { return Source == null ? null : Source.BlockName; } }
         public string Layer { get { return Source == null ? null : Source.Layer; } }
@@ -157,18 +183,21 @@ namespace Horizun.Revit.Core
 
             foreach (CadIrEntity root in atModelLevel)
             {
+                double rootRotation = NormalisedRotation(root);
                 reading.Placed.Add(new CadPlacedBlock
                 {
                     Source = root,
                     At = root.Points[0],
-                    RotationRadians = root.RotationRadians ?? 0,
+                    RotationRadians = rootRotation,
                     Mirrored = IsMirrored(root),
+                    Scale = ScaleOf(root),
                     ThroughHandle = root.Handle,
-                    Space = root.Space
+                    Space = root.Space,
+                    HandleChain = new List<string> { root.Handle ?? root.Id }
                 });
-                Expand(reading, inside, root, root.Points[0], root.RotationRadians ?? 0, IsMirrored(root),
+                Expand(reading, inside, root, root.Points[0], rootRotation, IsMirrored(root),
                        ScaleOf(root), new List<string> { root.BlockName ?? "" }, root.Handle, 1, maxDepth,
-                       root.Space);
+                       root.Space, new List<string> { root.Handle ?? root.Id });
             }
 
             return reading;
@@ -179,6 +208,22 @@ namespace Horizun.Revit.Core
             bool x = e.ScaleX.HasValue && e.ScaleX.Value < 0;
             bool y = e.ScaleY.HasValue && e.ScaleY.Value < 0;
             return x ^ y;   // both negative is a 180 degree turn, not a reflection
+        }
+
+        /// <summary>
+        /// The rotation of an insertion written as "turn, then at most a reflection
+        /// about the block's own Y axis" - the one form everything downstream
+        /// assumes. A negative Y scale is that reflection plus half a turn, and two
+        /// negative scales are half a turn and no reflection at all; reading the
+        /// raw angle for either points the symbol the wrong way round.
+        /// </summary>
+        public static double NormalisedRotation(CadIrEntity e)
+        {
+            double r = e.RotationRadians ?? 0;
+            if (e.ScaleY.HasValue && e.ScaleY.Value < 0) r += Math.PI;
+            r = r % (2 * Math.PI);
+            if (r < 0) r += 2 * Math.PI;
+            return r;
         }
 
         private static double ScaleOf(CadIrEntity e)
@@ -192,7 +237,7 @@ namespace Horizun.Revit.Core
                                    CadIrEntity parent, CadPoint parentAt, double parentRotation,
                                    bool parentMirrored, double parentScale,
                                    List<string> path, string throughHandle, int depth, int maxDepth,
-                                   string space)
+                                   string space, List<string> handles)
         {
             if (depth > reading.MaxDepthSeen) reading.MaxDepthSeen = depth;
             if (depth > maxDepth) { reading.DepthLimitHit = true; return; }
@@ -221,8 +266,9 @@ namespace Horizun.Revit.Core
                                       parentAt.Y + lx * sin + ly * cos,
                                       parentAt.Z + local.Z * parentScale);
 
-                double rotation = (child.RotationRadians ?? 0) + parentRotation;
-                if (parentMirrored) rotation = parentRotation - (child.RotationRadians ?? 0);
+                double childRotation = NormalisedRotation(child);
+                double rotation = childRotation + parentRotation;
+                if (parentMirrored) rotation = parentRotation - childRotation;
 
                 // KEPT IN ONE TURN. Composing four levels of nesting produced 675
                 // degrees on a real drawing - the same orientation as 315, and a
@@ -239,13 +285,16 @@ namespace Horizun.Revit.Core
                     At = at,
                     RotationRadians = rotation,
                     Mirrored = mirrored,
+                    Scale = parentScale * ScaleOf(child),
                     Path = new List<string>(path),
                     ThroughHandle = throughHandle,
-                    Space = space
+                    Space = space,
+                    HandleChain = new List<string>(handles) { child.Handle ?? child.Id }
                 });
 
                 Expand(reading, inside, child, at, rotation, mirrored,
-                       parentScale * ScaleOf(child), next, throughHandle, depth + 1, maxDepth, space);
+                       parentScale * ScaleOf(child), next, throughHandle, depth + 1, maxDepth, space,
+                       new List<string>(handles) { child.Handle ?? child.Id });
             }
         }
 
@@ -260,6 +309,14 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static List<CadPlacedBlock> Distinct(IList<CadPlacedBlock> placed, double toleranceMm,
                                                     out List<JObject> duplicates)
+        {
+            return Distinct(placed, toleranceMm, out duplicates, null);
+        }
+
+        /// <summary>As above, and <paramref name="dropped"/> receives each collapsed placement with the one kept for it.</summary>
+        public static List<CadPlacedBlock> Distinct(IList<CadPlacedBlock> placed, double toleranceMm,
+                                                    out List<JObject> duplicates,
+                                                    IDictionary<CadPlacedBlock, CadPlacedBlock> dropped)
         {
             var kept = new List<CadPlacedBlock>();
             var groups = new Dictionary<string, List<CadPlacedBlock>>(StringComparer.Ordinal);
@@ -278,7 +335,11 @@ namespace Horizun.Revit.Core
                     groups[key] = new List<CadPlacedBlock> { p };
                     kept.Add(p);
                 }
-                else bucket.Add(p);
+                else
+                {
+                    bucket.Add(p);
+                    if (dropped != null) dropped[p] = bucket[0];
+                }
             }
 
             foreach (var g in groups.Where(g => g.Value.Count > 1))

@@ -71,12 +71,14 @@ namespace Horizun.Revit.Core
         public const string Conflict = "conflict";
         /// <summary>Same place, and the element no longer faces the way the drawing's symbol points.</summary>
         public const string Reoriented = "reoriented";
+        /// <summary>The drawing's bytes did not change; the READING of them did (another build, or reading rules).</summary>
+        public const string Reinterpreted = "reinterpreted";
 
         /// <summary>Every classification this bridge will ever emit, so a reader can switch exhaustively.</summary>
         public static readonly string[] All =
         {
             Unchanged, Added, Removed, Moved, Reshaped, Retyped, Relayered, Resized, Rehosted,
-            ManuallyDiverged, Ambiguous, Conflict, Reoriented
+            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted
         };
     }
 
@@ -212,6 +214,103 @@ namespace Horizun.Revit.Core
                 o[a.Classification] = (int)o[a.Classification] + 1;
             }
             return o;
+        }
+    }
+
+    /// <summary>A person's decision on one held change.</summary>
+    public sealed class CadDecision
+    {
+        public long ElementId;
+        public string Decision;
+    }
+
+    /// <summary>
+    /// WHAT A PERSON MAY DECIDE ABOUT A HELD CHANGE, and what each decision becomes.
+    ///
+    /// A held change used to have one way out: re-plan after editing the drawing or
+    /// the model by hand. The decisions here are the ones a typed command can carry
+    /// out and verify - measured on a face-hosted device: a turn in its own face and
+    /// a type change keep the element; a move to the other face cannot be done in
+    /// place at all (Revit refuses the turn, and a mirror keeps it on the old face),
+    /// so "replace" is a MIGRATION PLAN, never an automatic action.
+    /// </summary>
+    public static class CadDecisions
+    {
+        public const string Retype = "retype";
+        public const string RotateInFace = "rotate_in_face";
+        public const string Keep = "keep";
+        public const string Replace = "replace";
+
+        public static readonly Dictionary<string, string[]> AllowedFor = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            [Retype] = new[] { CadChange.Resized, CadChange.Retyped },
+            [RotateInFace] = new[] { CadChange.Reoriented },
+            [Keep] = new[] { CadChange.ManuallyDiverged, CadChange.Resized, CadChange.Retyped, CadChange.Reoriented,
+                             CadChange.Rehosted, CadChange.Reinterpreted, CadChange.Relayered, CadChange.Conflict,
+                             CadChange.Removed },
+            [Replace] = new[] { CadChange.Rehosted, CadChange.Reoriented, CadChange.Conflict, CadChange.Reinterpreted }
+        };
+
+        /// <summary>
+        /// Mark each decided action, or say why a decision cannot stand. A decision
+        /// on an element this plan does not hold for a person, or one its change does
+        /// not admit, is refused by name - a skipped decision reads as taken.
+        /// </summary>
+        public static List<string> Apply(CadUpdate update, IList<CadDecision> decisions)
+        {
+            var errors = new List<string>();
+            var seen = new HashSet<long>();
+            foreach (CadDecision d in decisions ?? new List<CadDecision>())
+            {
+                if (!seen.Add(d.ElementId))
+                {
+                    errors.Add("resolve names element " + d.ElementId + " twice");
+                    continue;
+                }
+                string[] allowed;
+                if (d.Decision == null || !AllowedFor.TryGetValue(d.Decision, out allowed))
+                {
+                    errors.Add("resolve: '" + d.Decision + "' is not a decision (retype, rotate_in_face, keep, replace)");
+                    continue;
+                }
+                CadUpdateAction held = update.Actions.FirstOrDefault(a => a.ElementId == d.ElementId &&
+                                                                          (a.Kind == "review" || a.Kind == "orphan"));
+                if (held == null)
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is not held for a person in this plan");
+                    continue;
+                }
+                if (!allowed.Contains(held.Classification))
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is " + held.Classification + ", and '" +
+                               d.Decision + "' applies to " + string.Join(", ", allowed) + " only");
+                    continue;
+                }
+                held.Evidence["decision"] = d.Decision;
+                held.Evidence["decided_by"] = "a person, through resolve";
+                switch (d.Decision)
+                {
+                    case Retype:
+                    case RotateInFace:
+                        held.Kind = d.Decision;
+                        held.Automatic = true;
+                        break;
+                    case Keep:
+                        held.Kind = "leave";
+                        held.Automatic = true;
+                        held.Says += " KEPT: a person decided the element stays as it is; its record is re-stamped " +
+                                     "with where it stands now, so the next plan does not ask again.";
+                        break;
+                    case Replace:
+                        held.Kind = "replace";
+                        held.Automatic = false;
+                        held.Says += " REPLACE: a person decided this element must be placed again. It is NOT an " +
+                                     "automatic action: the migration plan beside it lists what the new element " +
+                                     "would lose.";
+                        break;
+                }
+            }
+            return errors;
         }
     }
 
@@ -758,6 +857,106 @@ namespace Horizun.Revit.Core
             ApplyAccepted(update, accepted);
             CarryHeightFacts(update, candidates);
             return update;
+        }
+
+        /// <summary>The origins a change can have; every action carries one in evidence.change_origin.</summary>
+        public static readonly string[] Origins =
+        {
+            "none", "drawing", "reading", "drawing_and_reading", "placement", "rules", "person",
+            "drawing_and_person", "unknown"
+        };
+
+        /// <summary>
+        /// WHERE EACH CHANGE CAME FROM.
+        ///
+        /// MEASURED on this campaign: a build that read two collinear wall pieces as
+        /// one wall, run against the SAME drawing bytes, produced "reshaped",
+        /// "removed" and "added" rows - read as a revision of the drawing, when the
+        /// drawing had not changed at all. The element's provenance says which
+        /// bytes and which reading built it, so the question has an answer:
+        ///
+        ///   same bytes, other reading      reading   (held: reinterpreted)
+        ///   same bytes, reading unrecorded reading   (held: nothing else can move a line)
+        ///   other bytes, other reading     drawing_and_reading (held: the two cannot be separated)
+        ///   other bytes, same reading      drawing
+        ///   built under other rules        rules
+        ///   a person edited it             person, or drawing_and_person for a conflict
+        ///
+        /// A held change is not lost: it stays in the plan as review, with its
+        /// origin, for a person to accept.
+        /// </summary>
+        public static JObject AttributeOrigins(CadUpdate update, IList<CadAuditSubject> subjects,
+                                               CadRequirementSet set, string sourceFileSha256,
+                                               string interpretationVersion, bool placementMoved = false)
+        {
+            var byId = new Dictionary<long, CadAuditSubject>();
+            foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
+                if (s != null && !byId.ContainsKey(s.ElementId)) byId[s.ElementId] = s;
+            var counts = Origins.ToDictionary(o => o, o => 0, StringComparer.Ordinal);
+            int held = 0;
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                string origin;
+                CadAuditSubject s = null;
+                if (a.ElementId.HasValue) byId.TryGetValue(a.ElementId.Value, out s);
+                CadProvenance p = s?.Provenance;
+                bool changed = a.Kind != "leave" && a.Kind != "paired_away";
+                if (!changed) origin = "none";
+                else if (a.Classification == CadChange.ManuallyDiverged) origin = "person";
+                else if (a.Classification == CadChange.Conflict) origin = "drawing_and_person";
+                else if (p == null) origin = "unknown";
+                else if (set != null && !string.IsNullOrEmpty(p.RequirementSetSha256) &&
+                         !string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal))
+                    origin = "rules";
+                else
+                {
+                    bool sameBytes = !string.IsNullOrEmpty(sourceFileSha256) &&
+                                     string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal);
+                    bool readingKnown = !string.IsNullOrEmpty(p.InterpretationVersion) &&
+                                        !string.IsNullOrEmpty(interpretationVersion);
+                    bool sameReading = readingKnown &&
+                                       string.Equals(p.InterpretationVersion, interpretationVersion, StringComparison.Ordinal);
+                    if (sameBytes && placementMoved) origin = "placement";
+                    else if (sameBytes) origin = "reading";
+                    else if (readingKnown && !sameReading) origin = "drawing_and_reading";
+                    else if (readingKnown) origin = "drawing";
+                    else origin = string.IsNullOrEmpty(sourceFileSha256) ? "unknown" : "drawing";
+                    if (origin == "reading" || origin == "drawing_and_reading")
+                    {
+                        a.Evidence["reading_built_with"] = p.InterpretationVersion;
+                        a.Evidence["reading_now"] = interpretationVersion;
+                        if (a.Kind == "set_curve" || a.Kind == "move" || a.Kind == "orphan")
+                        {
+                            if (a.Automatic) held++;
+                            a.Automatic = false;
+                            if (origin == "reading")
+                            {
+                                a.Classification = CadChange.Reinterpreted;
+                                a.Kind = "review";
+                            }
+                            a.Says += origin == "reading"
+                                ? " HELD: the drawing's bytes are the ones this element was built from, so this " +
+                                  "difference comes from how the drawing is READ now, not from the drawing."
+                                : " HELD: the drawing changed AND the reading changed since this element was " +
+                                  "built, and this plan cannot say how much of the difference is which.";
+                        }
+                    }
+                }
+                a.Evidence["change_origin"] = origin;
+                counts[origin]++;
+            }
+            var result = new JObject
+            {
+                ["reading_now"] = interpretationVersion,
+                ["source_file_sha256_now"] = sourceFileSha256,
+                ["held_because_of_the_reading"] = held,
+                ["means"] = "each action says in evidence.change_origin where its change came from. 'reading' " +
+                            "is a difference produced by reading the SAME bytes differently; such rows are held " +
+                            "for review. 'unknown' is an element whose provenance cannot say (a create has no " +
+                            "element, and records written before readings were versioned carry no reading)."
+            };
+            foreach (var kv in counts) result[kv.Key] = kv.Value;
+            return result;
         }
 
         /// <summary>

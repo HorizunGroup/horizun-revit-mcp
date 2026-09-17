@@ -242,6 +242,15 @@ namespace Horizun.Revit.Core
     public sealed class CadInterpretation
     {
         public List<CadCandidate> Candidates = new List<CadCandidate>();
+
+        /// <summary>
+        /// The drawing's wall hatches, when a rule declared solid_hatch_layers and
+        /// the caller read them. Null for a rule that declared them means the
+        /// reading was not made, and such a rule plans nothing.
+        /// </summary>
+        public CadSolidHatch SolidEvidence;
+        /// <summary>Pairs of faces the hatch showed to enclose no material.</summary>
+        public JArray SolidVetoes = new JArray();
         public List<CadUnclaimed> Unclaimed = new List<CadUnclaimed>();
         /// <summary>layer -> the rules that claimed it. The map a reviewer reads first.</summary>
         public Dictionary<string, List<string>> LayerMap =
@@ -308,6 +317,33 @@ namespace Horizun.Revit.Core
     public static class CadInterpretationRules
     {
         /// <summary>
+        /// WHICH READING THIS BUILD MAKES. Bumped by hand whenever what a drawing
+        /// reads AS changes - a wall paired differently, a symbol placed
+        /// differently - and combined with the embedded extractor's own text, which
+        /// changes the reading by itself. Stamped on every element (provenance v3)
+        /// and in every plan's binding, so an update can tell a new reading of the
+        /// same bytes from a new drawing.
+        /// </summary>
+        public const string ReadingRulesRevision = "2026.09.16-solid-hatch-interior";
+
+        private static string _interpretationVersion;
+
+        public static string InterpretationVersion
+        {
+            get
+            {
+                if (_interpretationVersion != null) return _interpretationVersion;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(string.Join("\n", CadDwgScript.Forms));
+                    string hex = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                    _interpretationVersion = "cadread:" + ReadingRulesRevision + ":" + hex.Substring(0, 12);
+                }
+                return _interpretationVersion;
+            }
+        }
+
+        /// <summary>
         /// Read the segments through the requirement set.
         ///
         /// <paramref name="sourceHash"/> is the drawing's identity and rides into
@@ -342,8 +378,19 @@ namespace Horizun.Revit.Core
         public static CadInterpretation Interpret(IList<CadSegment> segments, CadRequirementSet set,
                                                   string sourceHash, IList<CadArcFact> arcs,
                                                   IEnumerable<string> existingNames)
+            => Interpret(segments, set, sourceHash, arcs, existingNames, null);
+
+        /// <summary>
+        /// <paramref name="solid"/> is the drawing's wall hatch, read by the caller
+        /// from the DWG because Revit's import does not carry it. Every command
+        /// that interprets a set with solid_hatch_layers passes the same reading,
+        /// so a plan, its audit and its update agree on what is a wall.
+        /// </summary>
+        public static CadInterpretation Interpret(IList<CadSegment> segments, CadRequirementSet set,
+                                                  string sourceHash, IList<CadArcFact> arcs,
+                                                  IEnumerable<string> existingNames, CadSolidHatch solid)
         {
-            var result = new CadInterpretation();
+            var result = new CadInterpretation { SolidEvidence = solid };
             if (set == null) throw new ArgumentNullException(nameof(set));
             segments = segments ?? new List<CadSegment>();
 
@@ -1296,6 +1343,31 @@ namespace Horizun.Revit.Core
                     why["outcome"] = "skipped_line_already_used";
                     why["not_a_continuation"] = refusedContinuation;
                     continue;
+                }
+
+                // THE HATCH SAYS WHICH STRIPS ARE MATERIAL. Asked before the length
+                // bounds and before the pair takes its lines, so the faces of a
+                // chase stay free for the walls on either side of it.
+                if (g.SolidHatchLayers.Count > 0)
+                {
+                    if (result.SolidEvidence == null)
+                    {
+                        why["outcome"] = "skipped_no_solid_evidence";
+                        continue;
+                    }
+                    CadSolidVerdict solid = result.SolidEvidence.Judge(pair, g.SolidHatchLayers, set.CaseSensitiveLayers);
+                    why["solid"] = solid.ToJson();
+                    if (solid.Void)
+                    {
+                        why["outcome"] = "skipped_no_hatched_material_between_faces";
+                        result.SolidVetoes.Add(new JObject
+                        {
+                            ["rule"] = rule.Id,
+                            ["pair"] = PairJson(pair),
+                            ["solid"] = solid.ToJson()
+                        });
+                        continue;
+                    }
                 }
                 if (g.MinLengthMm != null && pair.LengthMm < g.MinLengthMm.Value)
                 { why["outcome"] = "skipped_too_short"; continue; }

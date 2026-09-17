@@ -533,6 +533,11 @@ namespace Horizun.Revit.Commands
                         }
                     }
                     if (includeBox) json["bounding_box"] = BoxJson(elementBox, coordinateScale);
+                    if (request.Value<bool?>("include_orientation") == true)
+                    {
+                        JObject placement = Placement(element, transform, coordinateScale);
+                        if (placement != null) json["placement"] = placement;
+                    }
                     if (includeMep)
                     {
                         // Connector facts, opt-in: domain, shape/size, open or connected,
@@ -881,6 +886,84 @@ namespace Horizun.Revit.Commands
             if (units == "m") { scale = 0.3048; return true; }
             if (units == "mm") { scale = 304.8; return true; }
             scale = 0; return false;
+        }
+
+        /// <summary>
+        /// WHERE AN INSTANCE STANDS AND WHICH WAY IT FACES, as Revit stores it - for
+        /// a check that must not borrow the placing code's reasoning. A family
+        /// instance gives its point, facing, hand, reflection flags and the stable
+        /// reference of the face it is hosted on; a wall its location line, width
+        /// and exterior normal. Nothing here is derived.
+        /// </summary>
+        private static JObject Placement(Element element, Transform transform, double scale)
+        {
+            Func<XYZ, JArray> P = p =>
+            {
+                XYZ q = transform == null ? p : transform.OfPoint(p);
+                return new JArray(Math.Round(q.X * scale, 3), Math.Round(q.Y * scale, 3), Math.Round(q.Z * scale, 3));
+            };
+            Func<XYZ, JArray> V = v =>
+            {
+                XYZ q = transform == null ? v : transform.OfVector(v);
+                return new JArray(Math.Round(q.X, 6), Math.Round(q.Y, 6), Math.Round(q.Z, 6));
+            };
+            try
+            {
+                var fi = element as FamilyInstance;
+                if (fi != null)
+                {
+                    var o = new JObject { ["kind"] = "family_instance" };
+                    var lp = fi.Location as LocationPoint;
+                    if (lp != null)
+                    {
+                        o["point"] = P(lp.Point);
+                        try { o["rotation_degrees"] = Math.Round(lp.Rotation * 180.0 / Math.PI, 4); } catch { }
+                    }
+                    try { o["facing"] = V(fi.FacingOrientation); } catch { }
+                    try { o["hand"] = V(fi.HandOrientation); } catch { }
+                    try
+                    {
+                        // A face-based family's facing lies in its host face; the way it
+                        // looks out of that face is its transform's Z axis.
+                        Transform t = fi.GetTotalTransform();
+                        o["transform"] = new JObject
+                        {
+                            ["origin"] = P(t.Origin),
+                            ["basis_x"] = V(t.BasisX),
+                            ["basis_y"] = V(t.BasisY),
+                            ["basis_z"] = V(t.BasisZ)
+                        };
+                    }
+                    catch { }
+                    try { o["mirrored"] = fi.Mirrored; } catch { }
+                    try { o["hand_flipped"] = fi.HandFlipped; } catch { }
+                    try { o["facing_flipped"] = fi.FacingFlipped; } catch { }
+                    try
+                    {
+                        Reference face = fi.HostFace;
+                        if (face != null) o["host_face"] = face.ConvertToStableRepresentation(element.Document);
+                    }
+                    catch { }
+                    return o;
+                }
+                var wall = element as Wall;
+                if (wall != null)
+                {
+                    var o = new JObject { ["kind"] = "wall" };
+                    var line = (wall.Location as LocationCurve)?.Curve;
+                    if (line != null)
+                    {
+                        o["start"] = P(line.GetEndPoint(0));
+                        o["end"] = P(line.GetEndPoint(1));
+                    }
+                    try { o["width"] = Math.Round(wall.Width * scale, 3); } catch { }
+                    try { o["exterior_normal"] = V(wall.Orientation); } catch { }
+                    try { o["flipped"] = wall.Flipped; } catch { }
+                    return o;
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static JToken BoxJson(Box b, double scale)

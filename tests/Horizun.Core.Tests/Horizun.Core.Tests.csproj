@@ -252,6 +252,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgExtract.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockPlacement.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockInventory.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadSolidHatch.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgScript.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgReader.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgCache.cs" />

@@ -44,6 +44,11 @@ namespace Horizun.Core.Tests
                 Assert.DoesNotContain("\n", form);
                 Assert.DoesNotContain("\r", form);
                 Assert.StartsWith("(", form);
+                // MEASURED: a 2,051-character form never completed - accoreconsole
+                // wrote no output and sat waiting for the rest of the line. The
+                // longest form that has run is 1,569 characters; the bound stays near it.
+                Assert.True(form.Length <= 1600, "a script form is " + form.Length + " characters: " +
+                                                 form.Substring(0, Math.Min(40, form.Length)));
             }
         }
 
@@ -80,7 +85,25 @@ namespace Horizun.Core.Tests
                 return;
             }
 
-            string[] fromFile = TopLevelForms(File.ReadAllText(lsp));
+            // A TAB CHARACTER INSIDE A STRING IS COLLAPSED TO A SPACE by the one-line
+            // collapse - MEASURED: the hatch fields arrived space-separated and not
+            // one boundary was decoded. A separator is written "\t", never typed.
+            string text = File.ReadAllText(lsp);
+            bool inside = false;
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (inside)
+                {
+                    if (c == '\\') { i++; continue; }
+                    if (c == '"') inside = false;
+                    Assert.False(c == '\t', "a literal tab inside a string at offset " + i + " of hz_dwg_extract.lsp");
+                }
+                else if (c == '"') inside = true;
+                else if (c == ';') { while (i < text.Length && text[i] != '\n') i++; }
+            }
+
+            string[] fromFile = TopLevelForms(text);
             Assert.Equal(CadDwgScript.Forms.Length, fromFile.Length);
             for (int i = 0; i < fromFile.Length; i++)
                 Assert.Equal(fromFile[i], CadDwgScript.Forms[i]);

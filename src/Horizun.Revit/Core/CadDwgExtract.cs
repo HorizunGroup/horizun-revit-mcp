@@ -56,6 +56,9 @@ namespace Horizun.Revit.Core
         /// <summary>Lines the parser did not understand, with their line numbers. Never silently dropped.</summary>
         public List<string> Unparsed = new List<string>();
 
+        /// <summary>Top-level rows whose handle had already been read - a space walk running on through the drawing.</summary>
+        public int RepeatedTopLevelRows;
+
         /// <summary>Entity kinds seen, with counts - including the ones this reading does not model.</summary>
         public Dictionary<string, int> RawTypeCounts = new Dictionary<string, int>(StringComparer.Ordinal);
     }
@@ -224,6 +227,7 @@ namespace Horizun.Revit.Core
             }
 
             int n = 0;
+            var topLevelHandles = new HashSet<string>(StringComparer.Ordinal);
             foreach (string[] f in raw)
             {
                 if (f[0] == "H")
@@ -235,6 +239,16 @@ namespace Horizun.Revit.Core
                 if (f.Length < 5) { r.Unparsed.Add("entity with too few fields: " + string.Join("|", f)); continue; }
 
                 string owner = f[1], handle = f[2], type = f[3], layer = Unescape(f[4]);
+                bool topLevel = owner.StartsWith("*Model_Space", StringComparison.OrdinalIgnoreCase) ||
+                                owner.StartsWith("*Paper_Space", StringComparison.OrdinalIgnoreCase);
+                // ONE ROW PER ENTITY. Each space walk can run on through the whole
+                // drawing, so the same top-level handle may arrive more than once;
+                // the first row carries its own space, read from the entity.
+                if (topLevel && !string.IsNullOrWhiteSpace(handle) && !topLevelHandles.Add(handle))
+                {
+                    r.RepeatedTopLevelRows++;
+                    continue;
+                }
                 Bump(r.RawTypeCounts, type);
 
                 var e = new CadIrEntity
@@ -362,6 +376,19 @@ namespace Horizun.Revit.Core
                     case "SEQEND":
                     case "ENDBLK":
                         continue;   // structural markers, not drawn things
+
+                    case "HATCH":
+                    {
+                        // Still unmodelled - the fill is not geometry anything builds -
+                        // but its boundary is kept as evidence of solid material.
+                        e.Kind = CadEntityKind.Unclassified;
+                        e.UnmodelledType = type;
+                        e.HatchPattern = Unescape(Field(f, 5));
+                        bool partial;
+                        e.HatchLoops = CadHatchLoops.Parse(Field(f, 8), mm, out partial);
+                        e.HatchLoopsPartial = partial;
+                        break;
+                    }
 
                     default:
                         // NAMED, NOT DROPPED. A hatch, a spline, a wipeout, a proxy:

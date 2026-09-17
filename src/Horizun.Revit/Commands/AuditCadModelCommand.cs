@@ -112,8 +112,26 @@ namespace Horizun.Revit.Commands
                     "never read - and every entity past the bound would be reported as deleted from the DWG. " +
                     "Raise max_primitives, or audit in layer-filtered passes. Nothing was examined.");
 
+            // THE WALL HATCH, WHEN A WALL RULE ASKS FOR IT - read before the
+            // interpretation, because it decides which pairs of faces are walls.
+            CadSolidHatch solidHatch = null;
+            JObject solidRead = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.SolidHatchLayers.Count > 0))
+            {
+                solidRead = new JObject();
+                solidHatch = CadBlockSource.ReadSolid(element, facts, set, harvest, request.Value<string>("dwg_path"),
+                                                      Math.Max(30, Math.Min(3600,
+                                                          request.Value<int?>("dwg_read_timeout_seconds") ?? 900)),
+                                                      solidRead);
+                if (solidHatch == null)
+                    return CommandResult.Fail(
+                        "solid_evidence_unread: " + ((string)solidRead["refused"] ?? "unknown") + ". " +
+                        ((string)solidRead["means"] ?? (string)solidRead["detail"] ?? "") +
+                        " A wall rule of this set declares solid_hatch_layers, and its walls are not read " +
+                        "without them. Nothing was examined.");
+            }
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
-                harvest.Segments, set, sourceHash, harvest.Arcs);
+                harvest.Segments, set, sourceHash, harvest.Arcs, null, solidHatch);
 
             // THE SAME READING THE PLAN MADE, INCLUDING THE SYMBOLS.
             //

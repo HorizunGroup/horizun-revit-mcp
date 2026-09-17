@@ -157,6 +157,18 @@ namespace Horizun.Revit.Commands
                 try
                 {
                     foreach (Plan p in plans) Apply(doc, p);
+                    // A HOSTED ELEMENT STAYS ON ITS HOST, OR NOTHING IS WRITTEN.
+                    // MEASURED on a face-hosted receptacle: moved 300 mm along its wall
+                    // it left the face, Revit kept it with NO host, and the point
+                    // check verified the move; moved 200 mm across the wall it kept
+                    // its host and stood 38 mm out of the far face. A device that must
+                    // change host or face is re-placed, not moved, so the whole
+                    // transform is rolled back.
+                    if (plans.Any(p => p.HostBefore.Count > 0))
+                    {
+                        doc.Regenerate();
+                        foreach (Plan p in plans) GuardHosts(doc, p);
+                    }
                     Guard.Commit(tx, txName);
                 }
                 catch (Exception ex)
@@ -198,15 +210,16 @@ namespace Horizun.Revit.Commands
             try
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
-                if (op != "move" && op != "copy" && op != "rotate" && op != "pin" && op != "unpin" &&
+                if (op != "move" && op != "copy" && op != "rotate" && op != "mirror" && op != "pin" && op != "unpin" &&
                     op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, pin, unpin, change_type, set_curve, move_tag_head and set_tag_leader only. Nothing was written.",
+                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head and set_tag_leader only. Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
                 var allowed = new HashSet<string>(new[] { "operation", "element_ids" });
                 if(op=="move" || op=="copy") allowed.Add("vector");
                 if(op=="rotate") allowed.UnionWith(new[] { "axis_start", "axis_end", "angle_degrees" });
+                if(op=="mirror") allowed.UnionWith(new[] { "plane_origin", "plane_normal" });
                 if(op=="change_type") allowed.Add("type_id");
                 if(op=="wall_join") allowed.UnionWith(new[] { "join_end", "allow" });
                 if(op=="set_curve") allowed.UnionWith(new[] { "start", "end" });
@@ -253,11 +266,18 @@ namespace Horizun.Revit.Commands
                             p.TagRefs[raw] = refs[0];
                         }
                     }
-                    if (op == "move" || op == "rotate" || op == "copy")
+                    if (op == "move" || op == "rotate" || op == "copy" || op == "mirror")
                     {
                         List<XYZ> sample = Samples(element);
                         if (sample.Count == 0) throw new ArgumentException("ElementId " + raw + " has no LocationPoint/LocationCurve sample, so " + op + " cannot be verified");
                         p.Samples[raw] = sample;
+                        // A TURN ABOUT AN AXIS THROUGH THE ELEMENT'S OWN POINT MOVES NO
+                        // POINT. Measured on a face-hosted device: the point samples
+                        // alone would verify a rotation that turned nothing, so an
+                        // instance's axes are sampled too and must turn as asked.
+                        if (op == "rotate" || op == "mirror") p.Axes[raw] = Axes(element);
+                        long? host = HostOf(element);
+                        if (host.HasValue) p.HostBefore[raw] = host.Value;
                     }
                     if (op == "set_curve")
                     {
@@ -301,6 +321,17 @@ namespace Horizun.Revit.Commands
                     if (o["angle_degrees"] == null) throw new ArgumentException("angle_degrees is required for rotate");
                     p.Angle = o.Value<double>("angle_degrees") * Math.PI / 180.0;
                     p.Rotation = Transform.CreateRotationAtPoint((b - a).Normalize(), p.Angle, a);
+                }
+                if (op == "mirror")
+                {
+                    // IN PLACE, not a mirrored copy: the element keeps its id, its
+                    // parameters and whatever is hosted on it.
+                    XYZ origin = Point(o["plane_origin"], scale, "plane_origin");
+                    XYZ normal = Point(o["plane_normal"], 1.0, "plane_normal");
+                    if (normal.GetLength() < 1e-9) throw new ArgumentException("plane_normal must not be zero");
+                    normal = normal.Normalize();
+                    p.MirrorPlane = Plane.CreateByNormalAndOrigin(normal, origin);
+                    p.Rotation = Transform.CreateReflection(p.MirrorPlane);
                 }
                 if (op == "set_curve")
                 {
@@ -393,6 +424,7 @@ namespace Horizun.Revit.Commands
                 case "move": ElementTransformUtils.MoveElements(doc, p.Ids, p.Vector); break;
                 case "copy": p.Created = ElementTransformUtils.CopyElements(doc, p.Ids, p.Vector).ToList(); break;
                 case "rotate": ElementTransformUtils.RotateElements(doc, p.Ids, p.Axis, p.Angle); break;
+                case "mirror": ElementTransformUtils.MirrorElements(doc, p.Ids, p.MirrorPlane, false); break;
                 case "pin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = true; break;
                 case "unpin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = false; break;
                 case "move_tag_head":
@@ -538,7 +570,7 @@ namespace Horizun.Revit.Commands
                     if (off0 <= onTheLine && off1 <= onTheLine) good++;
                 }
                 else if(p.Operation=="wall_join" && WallUtils.IsWallJoinAllowedAtEnd((Wall)e,p.JoinEnd)==p.JoinAllowed) good++;
-                else if (p.Operation == "move" || p.Operation == "rotate")
+                else if (p.Operation == "move" || p.Operation == "rotate" || p.Operation == "mirror")
                 {
                     List<XYZ> after = Samples(e), before = p.Samples[Rid.Value(id)];
                     if (after.Count != before.Count) continue;
@@ -546,6 +578,49 @@ namespace Horizun.Revit.Commands
                     // Revit may normalize a LocationCurve by reversing its endpoint
                     // order. That is the same committed geometry, not a failed move.
                     if (!same && before.Count == 2) same = MatchesSamples(before, after, p, true);
+                    XYZ[] axesBefore;
+                    if (p.Operation == "mirror" && p.Axes.TryGetValue(Rid.Value(id), out axesBefore) && axesBefore != null)
+                    {
+                        // Reported, not judged: how Revit writes a reflected instance's
+                        // axes is what the first measurement is for.
+                        XYZ[] mirrored = Axes(e);
+                        var seen = detail["mirror_axes"] as JArray ?? new JArray();
+                        seen.Add(new JObject
+                        {
+                            ["element_id"] = Rid.Value(id),
+                            ["reflected_basis_x"] = Arr(p.Rotation.OfVector(axesBefore[0])),
+                            ["reflected_basis_z"] = Arr(p.Rotation.OfVector(axesBefore[1])),
+                            ["basis_x"] = mirrored == null ? null : Arr(mirrored[0]),
+                            ["basis_z"] = mirrored == null ? null : Arr(mirrored[1]),
+                            ["mirrored_flag"] = (e as FamilyInstance)?.Mirrored
+                        });
+                        detail["mirror_axes"] = seen;
+                    }
+                    if (same && p.Operation == "rotate" && p.Axes.TryGetValue(Rid.Value(id), out axesBefore) &&
+                        axesBefore != null)
+                    {
+                        XYZ[] axesAfter = Axes(e);
+                        bool turned = axesAfter != null &&
+                                      p.Rotation.OfVector(axesBefore[0]).IsAlmostEqualTo(axesAfter[0], 1e-6) &&
+                                      p.Rotation.OfVector(axesBefore[1]).IsAlmostEqualTo(axesAfter[1], 1e-6);
+                        if (!turned)
+                        {
+                            same = false;
+                            var why = detail["orientation_not_turned"] as JArray ?? new JArray();
+                            why.Add(new JObject
+                            {
+                                ["element_id"] = Rid.Value(id),
+                                ["expected_basis_x"] = Arr(p.Rotation.OfVector(axesBefore[0])),
+                                ["expected_basis_z"] = Arr(p.Rotation.OfVector(axesBefore[1])),
+                                ["basis_x"] = axesAfter == null ? null : Arr(axesAfter[0]),
+                                ["basis_z"] = axesAfter == null ? null : Arr(axesAfter[1]),
+                                ["means"] = "the element's point is where the turn puts it, and its axes are not: " +
+                                            "Revit did not turn it as asked (a hosted instance keeps the " +
+                                            "orientation its host allows)."
+                            });
+                            detail["orientation_not_turned"] = why;
+                        }
+                    }
                     if (same) good++;
                 }
             }
@@ -568,6 +643,78 @@ namespace Horizun.Revit.Commands
                 if (expected.DistanceTo(after[actualIndex]) > 1e-6) return false;
             }
             return true;
+        }
+
+        /// <summary>How far a face-hosted element's point is from the plane-bounded face it is hosted on.</summary>
+        private const double FaceToleranceMm = 0.5;
+
+        private static double? OffItsFaceMm(Element e)
+        {
+            try
+            {
+                var fi = e as FamilyInstance;
+                Reference faceRef = fi?.HostFace;
+                var point = (fi?.Location as LocationPoint)?.Point;
+                if (faceRef == null || point == null) return null;
+                var face = e.Document.GetElement(faceRef)?.GetGeometryObjectFromReference(faceRef) as Face;
+                if (face == null) return null;
+                IntersectionResult projection = face.Project(point);
+                if (projection == null) return double.MaxValue;   // it projects onto no part of the face
+                return projection.Distance * 304.8;
+            }
+            catch { return null; }
+        }
+
+        private static long? HostOf(Element e)
+        {
+            try
+            {
+                Element host = (e as FamilyInstance)?.Host;
+                return host == null ? (long?)null : Rid.Value(host.Id);
+            }
+            catch { return null; }
+        }
+
+        private static void GuardHosts(Document doc, Plan p)
+        {
+            foreach (KeyValuePair<long, long> kv in p.HostBefore)
+            {
+                Element element = doc.GetElement(Rid.Make(kv.Key));
+                long? now = HostOf(element);
+                if (now == kv.Value)
+                {
+                    // ON ITS FACE, NOT MERELY OWNED BY ITS WALL. MEASURED: a face-hosted
+                    // receptacle moved 200 mm across its wall kept the same host and
+                    // ended up 38 mm out of the far face, and the point check verified it.
+                    double? off = OffItsFaceMm(element);
+                    if (off.HasValue && off.Value > FaceToleranceMm)
+                        throw new InvalidOperationException(
+                            "host_changed: " + p.Operation + " would leave element " + kv.Key + " " +
+                            off.Value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) +
+                            " mm off the face of its host (element " + kv.Value + "). A face-hosted element moves " +
+                            "along its face; one that belongs on another face is placed again there, which this " +
+                            "command does not do");
+                    continue;
+                }
+                throw new InvalidOperationException(
+                    "host_changed: " + p.Operation + " would take element " + kv.Key + " off its host (element " +
+                    kv.Value + ")" + (now.HasValue ? " onto element " + now.Value : ", leaving it with no host") +
+                    ". A hosted element moves or turns only where its host carries it; one that must change host " +
+                    "is placed again on the new one, which this command does not do");
+            }
+        }
+
+        /// <summary>An instance's X and Z axes as Revit stores them; null for anything that has none.</summary>
+        private static XYZ[] Axes(Element e)
+        {
+            var fi = e as FamilyInstance;
+            if (fi == null) return null;
+            try
+            {
+                Transform t = fi.GetTotalTransform();
+                return new[] { t.BasisX, t.BasisZ };
+            }
+            catch { return null; }
         }
 
         private static List<XYZ> Samples(Element e)
@@ -655,9 +802,15 @@ namespace Horizun.Revit.Commands
             public int JoinEnd; public bool JoinAllowed;
             public int Index; public string Operation; public List<ElementId> Ids, Created; public XYZ Vector;
             public Line Axis; public double Angle; public Transform Rotation; public ElementId TypeId;
+            /// <summary>mirror: the plane reflected about. Rotation then holds the reflection, for verification.</summary>
+            public Plane MirrorPlane;
             /// <summary>set_curve: the line this element's LocationCurve is being set to.</summary>
             public Line Curve;
             public Dictionary<long, List<XYZ>> Samples; public JObject Summary;
+            /// <summary>rotate: each instance's X and Z axes before the turn.</summary>
+            public readonly Dictionary<long, XYZ[]> Axes = new Dictionary<long, XYZ[]>();
+            /// <summary>move/rotate: the host each hosted instance had before, which it must keep.</summary>
+            public readonly Dictionary<long, long> HostBefore = new Dictionary<long, long>();
             // move_tag_head / set_tag_leader
             public XYZ HeadPoint;
             public readonly Dictionary<long, XYZ> HeadBefore = new Dictionary<long, XYZ>();

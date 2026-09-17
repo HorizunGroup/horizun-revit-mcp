@@ -66,6 +66,33 @@
   (setq v (cdr (assoc code ed)))
   (if v (hz-num v) ""))
 
+;;; A light polyline's vertices, "x,y;x,y;...". Its own form for the same
+;;; reason as hz-hatch: hz-entity has to stay short enough to be one script line.
+(defun hz-lwpts (ed / pts)
+  (setq pts "")
+  (foreach item ed
+    (if (= (car item) 10)
+      (setq pts (strcat pts (if (= pts "") "" ";")
+                        (hz-num (cadr item)) "," (hz-num (caddr item))))))
+  pts)
+
+;;; A HATCH's boundary travels as its own group codes, in order, from the first
+;;; loop (92) to the seed points (98): decoding edge types in AutoLISP is where a
+;;; reader goes wrong quietly, and the other side can be tested. Its own form,
+;;; because a script feeds each form as ONE line and a longer hz-entity never
+;;; completed (measured: 2,051 characters, no output, accoreconsole waiting).
+(defun hz-hatch (ed / pts seen)
+  (setq pts "" seen nil)
+  (foreach item ed
+    (if (= (car item) 92) (setq seen T))
+    (if (= (car item) 98) (setq seen nil))
+    (if (and seen (member (car item) '(92 93 72 73 10 11 40 42 50 51 97)))
+      (setq pts (strcat pts (if (= pts "") "" ";") (itoa (car item)) ":"
+                        (if (listp (cdr item))
+                          (strcat (hz-num (cadr item)) "," (hz-num (caddr item)))
+                          (hz-num (cdr item)))))))
+  pts)
+
 ;;; One entity, with the fields that matter for its type. Anything not named
 ;;; here still gets a line: an unrecognised type is a FACT about the drawing,
 ;;; and a reader that silently drops what it does not model is how a conversion
@@ -100,13 +127,9 @@
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed) "\t"
                          (hz-n 50 ed) "\t" (hz-n 51 ed)) f))
     ((= typ "LWPOLYLINE")
-     (progn
-       (setq pts "" )
-       (foreach item ed
-         (if (= (car item) 10)
-           (setq pts (strcat pts (if (= pts "") "" ";")
-                             (hz-num (cadr item)) "," (hz-num (caddr item))))))
-       (write-line (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" pts) f)))
+     (write-line (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed)) f))
+    ((= typ "HATCH")
+     (write-line (strcat base (hz-str 2 ed) "\t" (hz-n 70 ed) "\t" (hz-n 91 ed) "\t" (hz-hatch ed)) f))
     ((= typ "VERTEX")
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed)))) f))
     ((= typ "ATTRIB")
@@ -137,6 +160,31 @@
     (if (= (cdr (assoc 0 ed)) "ATTRIB")
       (hz-entity f lastins ed)
       (hz-entity f name ed))
+    (setq e (entnext e))))
+
+;;; A SPACE IS READ OFF THE ENTITY, NOT OFF THE WALK.
+;;;
+;;; Measured on a real permit set: (entnext) from the record of *Model_Space and
+;;; from the record of *Paper_Space both run on through the drawing's whole
+;;; entity list, so 2,515 model-space placements came back a second time labelled
+;;; as paper, and the sheet's own entities came back labelled as model. Group 67
+;;; is 1 for an entity in paper space, and group 410 names its layout; that is
+;;; what each row now says. The reader keeps the first row of each handle.
+(defun hz-space (f name / e ed lastins bt sp lay)
+  (setq bt (tblobjname "BLOCK" name))
+  (setq e (if bt (entnext bt) nil))
+  (setq lastins name)
+  (while e
+    (setq ed (entget e))
+    (setq lay (cdr (assoc 410 ed)))
+    (setq sp (if (= (cdr (assoc 67 ed)) 1)
+               (strcat "*Paper_Space|" (hz-esc (if lay lay "")))
+               "*Model_Space"))
+    (if (= (cdr (assoc 0 ed)) "INSERT")
+      (setq lastins (cdr (assoc 5 ed))))
+    (if (= (cdr (assoc 0 ed)) "ATTRIB")
+      (hz-entity f lastins ed)
+      (hz-entity f sp ed))
     (setq e (entnext e))))
 
 (defun hz-dump (path / f blk lay lst)
@@ -180,7 +228,7 @@
                     "*Paper_Space2" "*Paper_Space3" "*Paper_Space4" "*Paper_Space5"
                     "*Paper_Space6" "*Paper_Space7" "*Paper_Space8" "*Paper_Space9")
     (if (tblobjname "BLOCK" sp)
-      (progn (write-line (strcat "K\t" sp "\t0\t") f) (hz-block f sp))))
+      (progn (write-line (strcat "K\t" sp "\t0\t") f) (hz-space f sp))))
 
   (write-line "H\tdone\t1" f)
   (close f)

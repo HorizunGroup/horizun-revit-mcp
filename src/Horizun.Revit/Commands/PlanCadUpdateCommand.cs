@@ -113,8 +113,26 @@ namespace Horizun.Revit.Commands
                     "Nothing was read.");
 
             JObject blocksReadForReply = null;
+            // THE WALL HATCH, WHEN A WALL RULE ASKS FOR IT - read before the
+            // interpretation, because it decides which pairs of faces are walls.
+            CadSolidHatch solidHatch = null;
+            JObject solidRead = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.SolidHatchLayers.Count > 0))
+            {
+                solidRead = new JObject();
+                solidHatch = CadBlockSource.ReadSolid(element, facts, set, harvest, request.Value<string>("dwg_path"),
+                                                      Math.Max(30, Math.Min(3600,
+                                                          request.Value<int?>("dwg_read_timeout_seconds") ?? 900)),
+                                                      solidRead);
+                if (solidHatch == null)
+                    return CommandResult.Fail(
+                        "solid_evidence_unread: " + ((string)solidRead["refused"] ?? "unknown") + ". " +
+                        ((string)solidRead["means"] ?? (string)solidRead["detail"] ?? "") +
+                        " A wall rule of this set declares solid_hatch_layers, and its walls are not read " +
+                        "without them. Nothing was examined.");
+            }
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
-                harvest.Segments, set, sourceHash, harvest.Arcs);
+                harvest.Segments, set, sourceHash, harvest.Arcs, null, solidHatch);
 
             // THE SAME READING THE PLAN AND THE AUDIT MAKE, INCLUDING SYMBOLS.
             //
@@ -148,6 +166,9 @@ namespace Horizun.Revit.Commands
             Dictionary<long, string> accepted;
             string pairingError = Pairings(request, out accepted);
             if (pairingError != null) return CommandResult.Fail(pairingError);
+            List<CadDecision> decisions;
+            string decisionError = Decisions(request, out decisions);
+            if (decisionError != null) return CommandResult.Fail(decisionError);
 
             // WHICH CONVERSION THIS DRAWING SUPERSEDES.
             //
@@ -322,6 +343,16 @@ namespace Horizun.Revit.Commands
             CadUpdate update = CadUpdateRules.Plan(interpretation.Candidates, subjects, set, scope,
                                                    accepted, rejectedPairings, hostByCandidate,
                                                    acceptMove ? move : null);
+            // WHERE EACH CHANGE CAME FROM: the drawing, the reading, the rules, or a person.
+            JObject origins = CadUpdateRules.AttributeOrigins(update, subjects, set, facts.FileSha256,
+                                                              CadInterpretationRules.InterpretationVersion,
+                                                              move != null && acceptMove);
+            // WHAT A PERSON DECIDED about the changes held for them.
+            List<string> decisionErrors = CadDecisions.Apply(update, decisions);
+            if (decisionErrors.Count > 0)
+                return CommandResult.Fail("resolve_refused: " + string.Join("; ", decisionErrors) +
+                                          ". Nothing was planned: a decision that cannot stand is not skipped.");
+            JArray migrations = MigrationPlans(doc, update);
 
             // ---------------------------------------------------------- actions
             string levelError;
@@ -411,6 +442,15 @@ namespace Horizun.Revit.Commands
                                          "review rather than as an update, and they are elements this bridge " +
                                          "created before it recorded that."
                 },
+                ["change_origins"] = origins,
+                ["decisions"] = new JObject
+                {
+                    ["applied"] = decisions.Count,
+                    ["migration_plans"] = migrations,
+                    ["means"] = "retype and rotate_in_face became typed actions that keep the element; keep " +
+                                "re-stamps the element as it stands; replace is a migration plan only. A decision " +
+                                "whose typed action could not be derived stays held, with the reason in its evidence."
+                },
                 ["counts_by_kind"] = update.CountsByKind(),
                 ["counts_by_classification"] = update.CountsByClassification(),
                 ["classification_vocabulary"] = new JArray(CadChange.All),
@@ -449,6 +489,7 @@ namespace Horizun.Revit.Commands
                     ["actions_fingerprint"] = CadConversionPlanRules.ActionsFingerprint(actions),
                     ["source_fingerprint"] = sourceFingerprint,
                     ["requirement_set_sha256"] = set.Sha256,
+                    ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
                     ["target_document"] = title,
                     ["revit_version"] = SafeVersion(uiApp),
                     ["means"] = "the actions above are ready calls to commands that rehearse, confirm and re-read " +
@@ -465,6 +506,7 @@ namespace Horizun.Revit.Commands
                     ["source_path"] = placement.ExternalPath,
                     ["placement"] = placementJson,
                     ["placement_move_accepted"] = move != null && acceptMove,
+                    ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
                     ["plan_fingerprint"] = "cadupd:" + CadConversionPlanRules.ActionsFingerprint(actions).Substring(8),
                     ["means"] = "copy this into horizun_apply_cad_update. Without it the elements this update " +
                                 "creates remember nothing, and the NEXT update builds them again. The placement " +
@@ -682,6 +724,36 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            // WHAT A PERSON DECIDED: a type change, or a turn in the element's own face.
+            int d = 0;
+            foreach (CadUpdateAction a in update.Actions.Where(x => x.Automatic &&
+                                                                    (x.Kind == CadDecisions.Retype || x.Kind == CadDecisions.RotateInFace)).ToList())
+            {
+                string why;
+                JObject op = a.Kind == CadDecisions.Retype
+                    ? RetypeOperation(doc, a, interpretation, set, out why)
+                    : TurnOperation(doc, a, out why);
+                if (op == null)
+                {
+                    a.Automatic = false;
+                    a.Evidence["decision_not_carried_out"] = why;
+                    a.Says += " HELD: the decision could not become a typed action (" + why + ").";
+                    continue;
+                }
+                actions.Add(new JObject
+                {
+                    ["key"] = "cad-update-resolve-" + (d++),
+                    ["tool"] = "horizun_transform_elements",
+                    ["arguments"] = new JObject
+                    {
+                        ["target_document"] = target,
+                        ["units"] = "mm",
+                        ["operations"] = new JArray(op)
+                    }
+                });
+                a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
+            }
+
             // A POINT MOVES BY A VECTOR, along its own wall.
             int m = 0;
             foreach (CadUpdateAction a in update.Of("move").Where(x => x.Automatic))
@@ -705,6 +777,177 @@ namespace Horizun.Revit.Commands
                 });
             }
             return actions;
+        }
+
+        /// <summary>The decisions a person sent, read strictly: a malformed one is a refusal.</summary>
+        private static string Decisions(JObject request, out List<CadDecision> decisions)
+        {
+            decisions = new List<CadDecision>();
+            JArray raw = request["resolve"] as JArray;
+            if (raw == null) return request["resolve"] == null ? null : "resolve must be an array";
+            if (raw.Count > 500) return "resolve carries " + raw.Count + " entries; 500 is the bound.";
+            foreach (JToken t in raw)
+            {
+                var o = t as JObject;
+                long? id = o?.Value<long?>("element_id");
+                string decision = o?.Value<string>("decision");
+                if (id == null || string.IsNullOrWhiteSpace(decision))
+                    return "resolve entries must each be { element_id, decision }, both present.";
+                decisions.Add(new CadDecision { ElementId = id.Value, Decision = decision.Trim() });
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// change_type to the type the drawing now asks for: by thickness from the
+        /// rule's wall_types for a wall, or the rule's family type otherwise.
+        /// </summary>
+        private static JObject RetypeOperation(Document doc, CadUpdateAction a, CadInterpretation interpretation,
+                                               CadRequirementSet set, out string why)
+        {
+            why = null;
+            Element e = a.ElementId.HasValue ? doc.GetElement(Rid.Make(a.ElementId.Value)) : null;
+            if (e == null) { why = "the element is gone"; return null; }
+            CadCandidate c = interpretation.Candidates.FirstOrDefault(x => x.Id == a.CandidateId);
+            CadRule rule = c == null ? null : set.Rules.FirstOrDefault(r => r.Id == c.RuleId);
+            if (c == null || rule == null) { why = "the candidate or its rule is not in this reading"; return null; }
+            ElementId typeId = null;
+            if (e is Wall && rule.WallTypes != null && rule.WallTypes.Count > 0 && c.ThicknessMm.HasValue)
+            {
+                double best = double.MaxValue;
+                foreach (WallType wt in new FilteredElementCollector(doc).OfClass(typeof(WallType)).Cast<WallType>())
+                {
+                    string name = wt.FamilyName + ": " + wt.Name;
+                    if (!rule.WallTypes.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase))) continue;
+                    double off = Math.Abs(wt.Width * 304.8 - c.ThicknessMm.Value);
+                    if (off <= (rule.WallTypeToleranceMm ?? set.ThicknessToleranceMm) && off < best)
+                    {
+                        best = off;
+                        typeId = wt.Id;
+                    }
+                }
+                if (typeId == null) { why = "no listed wall type is " + c.ThicknessMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm"; return null; }
+            }
+            else if (!string.IsNullOrWhiteSpace(c.FamilyType))
+            {
+                string wanted = c.FamilyType.Replace(" : ", ": ");
+                foreach (ElementType t in new FilteredElementCollector(doc).WhereElementIsElementType().Cast<ElementType>())
+                {
+                    if (!string.Equals(t.FamilyName + ": " + t.Name, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!e.IsValidType(t.Id)) continue;
+                    typeId = t.Id;
+                    break;
+                }
+                if (typeId == null) { why = "no type '" + wanted + "' valid for this element"; return null; }
+            }
+            else { why = "the rule names no type"; return null; }
+            if (typeId == e.GetTypeId()) { why = "the element already has that type"; return null; }
+            a.Evidence["retype_to"] = Rid.Value(typeId);
+            return new JObject
+            {
+                ["operation"] = "change_type",
+                ["element_ids"] = new JArray(a.ElementId.Value),
+                ["type_id"] = Rid.Value(typeId)
+            };
+        }
+
+        /// <summary>A turn about the element's own face normal, from its hand to the hand the drawing implies.</summary>
+        private static JObject TurnOperation(Document doc, CadUpdateAction a, out string why)
+        {
+            why = null;
+            var fi = a.ElementId.HasValue ? doc.GetElement(Rid.Make(a.ElementId.Value)) as FamilyInstance : null;
+            var point = (fi?.Location as LocationPoint)?.Point;
+            JArray expected = a.Evidence["expected_hand"] as JArray;
+            if (fi == null || point == null || expected == null || expected.Count < 2)
+            {
+                why = "the element, its point or the hand the drawing implies could not be read";
+                return null;
+            }
+            if (fi.HostFace == null) { why = "the element is not hosted on a face"; return null; }
+            Transform t = fi.GetTotalTransform();
+            XYZ normal = t.BasisZ;
+            var want = new XYZ(expected[0].Value<double>(), expected[1].Value<double>(), 0);
+            XYZ have = t.BasisX;
+            if (Math.Abs(normal.DotProduct(XYZ.BasisZ)) > 1e-6 || want.GetLength() < 1e-9 ||
+                Math.Abs(want.Normalize().DotProduct(normal)) > 1e-6)
+            {
+                why = "the hand the drawing implies does not lie in the element's face";
+                return null;
+            }
+            want = want.Normalize();
+            double angle = Math.Atan2(have.CrossProduct(want).DotProduct(normal), have.DotProduct(want)) * 180.0 / Math.PI;
+            a.Evidence["turn_degrees"] = Math.Round(angle, 3);
+            var p = new JArray(point.X * 304.8, point.Y * 304.8, point.Z * 304.8);
+            var q = new JArray((point.X + normal.X) * 304.8, (point.Y + normal.Y) * 304.8, (point.Z + normal.Z) * 304.8);
+            return new JObject
+            {
+                ["operation"] = "rotate",
+                ["element_ids"] = new JArray(a.ElementId.Value),
+                ["axis_start"] = p,
+                ["axis_end"] = q,
+                ["angle_degrees"] = Math.Round(angle, 6)
+            };
+        }
+
+        /// <summary>
+        /// WHAT PLACING AN ELEMENT AGAIN WOULD COST, for every element a person marked
+        /// replace: its id goes, so anything hosted on it and every value set on it
+        /// must be carried or lost. Listed, never done here.
+        /// </summary>
+        private static JArray MigrationPlans(Document doc, CadUpdate update)
+        {
+            var plans = new JArray();
+            foreach (CadUpdateAction a in update.Of("replace"))
+            {
+                Element e = a.ElementId.HasValue ? doc.GetElement(Rid.Make(a.ElementId.Value)) : null;
+                var hosted = new JArray();
+                var values = new JArray();
+                if (e != null)
+                {
+                    try
+                    {
+                        foreach (FamilyInstance fi in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
+                                                                                         .Cast<FamilyInstance>())
+                        {
+                            Element h = null;
+                            try { h = fi.Host; } catch { }
+                            if (h != null && h.Id == e.Id) hosted.Add(Rid.Value(fi.Id));
+                            if (hosted.Count >= 200) break;
+                        }
+                    }
+                    catch { }
+                    foreach (Parameter prm in e.Parameters)
+                    {
+                        try
+                        {
+                            if (prm.IsReadOnly || !prm.HasValue) continue;
+                            string shown = prm.AsValueString() ?? prm.AsString();
+                            if (string.IsNullOrEmpty(shown)) continue;
+                            values.Add(new JObject { ["name"] = prm.Definition?.Name, ["value"] = shown });
+                            if (values.Count >= 50) break;
+                        }
+                        catch { }
+                    }
+                }
+                plans.Add(new JObject
+                {
+                    ["element_id"] = a.ElementId,
+                    ["classification"] = a.Classification,
+                    ["candidate_id"] = a.CandidateId,
+                    ["exists"] = e != null,
+                    ["hosted_elements"] = hosted,
+                    ["values_to_carry"] = values,
+                    ["consequences"] = new JArray(
+                        "the element gets a NEW id: schedules, tags, views and references that name the old one lose it",
+                        hosted.Count > 0 ? "the " + hosted.Count + " element(s) hosted on it must be placed again or deleted with it"
+                                         : "nothing is hosted on it",
+                        "the values listed are not carried by a create and must be written again",
+                        "the provenance record moves to the new element; the map old -> new is the apply's to record"),
+                    ["how"] = "create the candidate through this plan's create path, write the values, then delete " +
+                              "the old element with horizun_delete_verified - in that order, and only after the create verified."
+                });
+            }
+            return plans;
         }
 
         /// <summary>
@@ -765,6 +1008,13 @@ namespace Horizun.Revit.Commands
                     if (shift != null) index.Add(Row(key, shift, null));
                     continue;
                 }
+                if (key.StartsWith("cad-update-resolve-", StringComparison.Ordinal))
+                {
+                    CadUpdateAction decided = update.Actions.FirstOrDefault(x =>
+                        string.Equals((string)x.Evidence["resolve_key"], key, StringComparison.Ordinal));
+                    if (decided != null) index.Add(Row(key, decided, null));
+                    continue;
+                }
                 if (!key.StartsWith("cad-update-move-", StringComparison.Ordinal)) continue;
                 int n;
                 if (!int.TryParse(key.Substring("cad-update-move-".Length), out n)) continue;
@@ -795,7 +1045,9 @@ namespace Horizun.Revit.Commands
                 if (a.Kind != "leave" && a.Kind != "review") continue;
                 long id = a.ElementId.Value;
                 string reason = null;
-                if (scope.MigratedFromV1.Contains(id)) reason = CadPlacementRules.RestampMigrated;
+                if (a.Kind == "leave" && (string)a.Evidence["decision"] == CadDecisions.Keep)
+                    reason = CadPlacementRules.RestampAccepted;
+                else if (scope.MigratedFromV1.Contains(id)) reason = CadPlacementRules.RestampMigrated;
                 else if (moveAccepted && a.Kind == "leave") reason = CadPlacementRules.RestampPlacementMoved;
                 else if (a.CandidateId != null && a.Classification != CadChange.Relayered &&
                          !string.IsNullOrEmpty(thisFileSha256))

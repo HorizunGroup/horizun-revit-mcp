@@ -256,6 +256,14 @@ namespace Horizun.Revit.Core
         /// drawn on, or not at all.
         /// </summary>
         public List<KeyValuePair<string, CadVector>> BlockFacing = new List<KeyValuePair<string, CadVector>>();
+
+        /// <summary>
+        /// For from:"double_lines" - the layers the drawing HATCHES wall material
+        /// on, as globs. When declared, a pair of faces with no such hatch between
+        /// them at any station is not a wall (a chase, a joint, a gap between two
+        /// masses), and the plan reads the DWG to know. Empty: lines alone decide.
+        /// </summary>
+        public List<string> SolidHatchLayers = new List<string>();
         public bool SameLayerOnly = true;
 
         /// <summary>
@@ -397,6 +405,19 @@ namespace Horizun.Revit.Core
         /// the model does not have.
         /// </summary>
         public List<string> HostLayers = new List<string>();
+
+        /// <summary>
+        /// For a wall rule: the wall types a reading may be built as, BY THICKNESS.
+        /// The plan reads each type's width from the model and builds each wall
+        /// with the one whose width is nearest the drawn thickness, within
+        /// <see cref="WallTypeToleranceMm"/>. Null means the rule's single
+        /// family_type, whatever the drawing says - the behaviour that built every
+        /// wall 152.4 mm thick.
+        /// </summary>
+        public List<string> WallTypes;
+        public double? WallTypeToleranceMm;
+        /// <summary>"withdraw" (default): a wall no listed type fits is not built. "family_type": it is built as family_type and the audit says so.</summary>
+        public string WallTypeOtherwise = "withdraw";
 
         /// <summary>
         /// WHAT A MIRRORED INSERTION MEANS FOR THIS RULE'S SYMBOLS:
@@ -626,6 +647,14 @@ namespace Horizun.Revit.Core
         /// </summary>
         public double WallOverlapMm = 1.0;
 
+        /// <summary>
+        /// How far a built element's width may differ from the thickness the
+        /// drawing gives it - for choosing a wall type and for auditing. Its own
+        /// number: the 25 mm a set allows for comparing revisions let a 146 mm
+        /// wall pass as a 152.4 mm one.
+        /// </summary>
+        public double ThicknessToleranceMm = 3.2;
+
         /// <summary>The closed vocabulary of things a rule may produce. A typo here is a refusal.</summary>
         public static readonly string[] KnownProduces =
         {
@@ -651,7 +680,7 @@ namespace Horizun.Revit.Core
         private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal)
         {
             "id", "precedence", "discipline", "layers", "exclude_layers", "produces", "category", "hosted_on",
-            "host_layers",
+            "host_layers", "wall_types",
             "mirror", "mirror_variant_type",
             "family_type", "system_type", "level", "base_level", "top_level", "phase",
             "design_option", "geometry",
@@ -666,7 +695,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing"
+            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers"
         };
 
         /// <summary>
@@ -815,6 +844,10 @@ namespace Horizun.Revit.Core
             set.FaceProjectionMm = tol.Value<double?>("face_projection_mm") ?? 300.0;
             set.RevisionCompareMm = tol.Value<double?>("revision_compare_mm") ?? set.PointToleranceMm;
             set.WallOverlapMm = tol.Value<double?>("wall_overlap_mm") ?? 1.0;
+            set.ThicknessToleranceMm = tol.Value<double?>("thickness_mm") ?? 3.2;
+            if (set.ThicknessToleranceMm <= 0)
+                throw new CadRequirementSetException(
+                    "tolerances.thickness_mm must be positive: it is how far a built width may be from the drawn one.");
             if (set.WallOverlapMm < 0)
                 throw new CadRequirementSetException(
                     "tolerances.wall_overlap_mm cannot be negative: it is how far two walls may overlap and still be two.");
@@ -1008,6 +1041,37 @@ namespace Horizun.Revit.Core
                         "rule '" + rule.Id + "' declares host_layers and is not hosted_on 'wall'. The layers " +
                         "would be read by nothing.");
                 rule.HostLayers = list.Select(x => ((string)x).Trim()).ToList();
+            }
+            JToken wallTypes = r["wall_types"];
+            if (wallTypes != null)
+            {
+                var wt = wallTypes as JObject;
+                var names = wt?["types"] as JArray;
+                if (wt == null || names == null || names.Count == 0 ||
+                    names.Any(x => x.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)x)))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares wall_types, which must be an object with a non-empty 'types' " +
+                        "array of wall type names (\"Family: Type\"). The widths are read from the model, not declared.");
+                foreach (JProperty p in wt.Properties())
+                    if (p.Name != "types" && p.Name != "tolerance_mm" && p.Name != "otherwise")
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': wall_types has no key '" + p.Name + "' (types, tolerance_mm, otherwise).");
+                if (!string.Equals(r.Value<string>("produces"), "wall", StringComparison.Ordinal))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares wall_types and does not produce walls; nothing would read them.");
+                rule.WallTypes = names.Select(x => ((string)x).Trim()).ToList();
+                rule.WallTypeToleranceMm = wt.Value<double?>("tolerance_mm");
+                if (rule.WallTypeToleranceMm.HasValue && rule.WallTypeToleranceMm.Value <= 0)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.tolerance_mm must be positive.");
+                string otherwise = wt.Value<string>("otherwise") ?? "withdraw";
+                if (otherwise != "withdraw" && otherwise != "family_type")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.otherwise must be 'withdraw' or 'family_type'.");
+                if (otherwise == "family_type" && string.IsNullOrWhiteSpace(r.Value<string>("family_type")))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.otherwise is 'family_type' and the rule names none.");
+                rule.WallTypeOtherwise = otherwise;
             }
             rule.Level = r.Value<string>("level");
             rule.Phase = r.Value<string>("phase");
@@ -1472,6 +1536,22 @@ namespace Horizun.Revit.Core
                 throw new CadRequirementSetException(
                     "rule '" + rule.Id + "': geometry.blocks only means something with from:\"blocks\". A rule " +
                     "that names blocks and reads line work would silently ignore the names.");
+
+            JToken solidToken = g["solid_hatch_layers"];
+            if (solidToken != null)
+            {
+                var solidArray = solidToken as JArray;
+                if (solidArray == null || solidArray.Count == 0 ||
+                    solidArray.Any(t => t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t)))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.solid_hatch_layers must be a non-empty array of layer " +
+                        "patterns - the layers the drawing hatches wall material on.");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.solid_hatch_layers only means something with " +
+                        "from:\"double_lines\" - it decides which pairs of faces enclose material.");
+                foreach (JToken t in solidArray) c.SolidHatchLayers.Add(((string)t).Trim());
+            }
 
             c.MinThicknessMm = g.Value<double?>("min_thickness_mm");
             c.MaxThicknessMm = g.Value<double?>("max_thickness_mm");

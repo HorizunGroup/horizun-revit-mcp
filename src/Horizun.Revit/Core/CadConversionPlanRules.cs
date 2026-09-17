@@ -530,6 +530,16 @@ namespace Horizun.Revit.Core
                     o["end"] = Pt(c.Geometry[c.Geometry.Count - 1]);
                     if (c.HeightMm.HasValue) o["height"] = c.HeightMm.Value;
                     if (c.OffsetMm.HasValue) o["offset"] = c.OffsetMm.Value;
+                    // THE TYPE BY THICKNESS, chosen where the model's widths can be
+                    // read (PlanFromCadCommand.ResolveWallTypes), from these.
+                    CadRule wallRule = set?.Rules.FirstOrDefault(x => x.Id == c.RuleId);
+                    if (wallRule?.WallTypes != null && c.ThicknessMm.HasValue)
+                    {
+                        o["wall_type_choices"] = new JArray(wallRule.WallTypes);
+                        o["wall_type_tolerance_mm"] = wallRule.WallTypeToleranceMm ?? set.ThicknessToleranceMm;
+                        o["wall_type_otherwise"] = wallRule.WallTypeOtherwise;
+                        o["interpreted_thickness_mm"] = Math.Round(c.ThicknessMm.Value, 3);
+                    }
                     break;
 
                 case "grid":

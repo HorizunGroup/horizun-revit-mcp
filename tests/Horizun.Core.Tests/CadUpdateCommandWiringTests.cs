@@ -53,6 +53,29 @@ namespace Horizun.Core.Tests
             Assert.Contains("instance.GetTotalTransform()", src);
         }
 
+        [Fact]
+        public void A_hosted_instance_keeps_its_host_or_the_transform_is_rolled_back_and_a_turn_turns_it()
+        {
+            // MEASURED on a face-hosted receptacle: a 300 mm move along its wall left
+            // the face, Revit kept the device with NO host, and the point check
+            // verified the move. And a turn about an axis through the element's own
+            // point moves no point, so the point check alone verifies any turn.
+            string src = Source("src", "Horizun.Revit", "Commands", "TransformElementsCommand.cs");
+            int apply = src.IndexOf("foreach (Plan p in plans) Apply(doc, p);", StringComparison.Ordinal);
+            int guard = src.IndexOf("foreach (Plan p in plans) GuardHosts(doc, p);", StringComparison.Ordinal);
+            int commit = src.IndexOf("Guard.Commit(tx, txName);", StringComparison.Ordinal);
+            Assert.True(apply > 0 && guard > apply && commit > guard, "the host guard runs after the change and before the commit");
+            Assert.Contains("\"host_changed: \" + p.Operation", src);
+            Assert.Contains("double? off = OffItsFaceMm(element);", src);
+            Assert.Contains("private const double FaceToleranceMm = 0.5;", src);
+            Assert.Contains("if (host.HasValue) p.HostBefore[raw] = host.Value;", src);
+            Assert.Contains("if (op == \"rotate\" || op == \"mirror\") p.Axes[raw] = Axes(element);", src);
+            Assert.Contains("case \"mirror\": ElementTransformUtils.MirrorElements(doc, p.Ids, p.MirrorPlane, false); break;", src);
+            Assert.Contains("p.Rotation.OfVector(axesBefore[1]).IsAlmostEqualTo(axesAfter[1], 1e-6)", src);
+            Assert.Contains("detail[\"orientation_not_turned\"] = why;", src);
+            Assert.Contains("rolled back whole with host_changed", Contract());
+        }
+
         // ------------------------------------------------------- geometry_id
 
         [Fact]
@@ -138,23 +161,29 @@ namespace Horizun.Core.Tests
         // ------------------------------------------------------- migration
 
         [Fact]
-        public void The_store_keeps_the_v1_guid_reads_it_second_and_writes_only_v2()
+        public void The_store_keeps_every_older_guid_reads_newest_first_and_writes_only_v3()
         {
             string src = Store();
             Assert.Contains("SchemaGuidV1 = new Guid(\"7b2f4c18-5d3a-4e6b-9a71-3c0f8e2d15a4\")", src);
             Assert.Contains("SchemaGuidV2 = new Guid(\"c4a7e9d2-6b18-4f3c-8e5a-2d91f07b6c43\")", src);
-            Assert.Contains("public const int CurrentVersion = 2;", src);
-            Assert.Contains("new SchemaBuilder(SchemaGuidV2)", src);
+            Assert.Contains("SchemaGuidV3 = new Guid(\"5e0d3b7a-91c4-4f26-b8e3-7a2c6d19f40e\")", src);
+            Assert.Contains("public const int CurrentVersion = 3;", src);
+            Assert.Contains("new SchemaBuilder(SchemaGuidV3)", src);
+            Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV2)", src);
             Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV1)", src);
-            // Read: v2 first, v1 as the fallback, placement fields only from v2.
-            int v2 = src.IndexOf("Schema.Lookup(SchemaGuidV2);\n                if (schema != null)", StringComparison.Ordinal);
+            Assert.Contains("AllSchemaGuids = { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 }", src);
+            // Read: v3, then v2, then v1; placement fields from v2 on, the reading from v3 only.
+            int v3 = src.IndexOf("Schema schema = Schema.Lookup(SchemaGuidV3);", StringComparison.Ordinal);
+            int v2 = src.IndexOf("(schema = Schema.Lookup(SchemaGuidV2)) != null", StringComparison.Ordinal);
             int v1 = src.IndexOf("schema = Schema.Lookup(SchemaGuidV1);", StringComparison.Ordinal);
-            Assert.True(v2 > 0 && v1 > v2, "Read must look for v2 before falling back to v1");
+            Assert.True(v3 > 0 && v2 > v3 && v1 > v2, "Read must look for v3, then v2, then v1");
             Assert.Contains("if (v2)\n                {\n                    p.PlacementId", src);
-            // Write: the v1 entity is removed AFTER the v2 write landed.
+            Assert.Contains("if (v3)\n                {\n                    p.InterpretationVersion", src);
+            // Write: the older entities are removed AFTER the v3 write landed.
             Assert.Contains("element.SetEntity(entity);", src);
-            Assert.True(src.IndexOf("RemoveV1(element);", StringComparison.Ordinal) >
+            Assert.True(src.IndexOf("RemoveOlder(element);", StringComparison.Ordinal) >
                         src.IndexOf("element.SetEntity(entity);", StringComparison.Ordinal));
+            Assert.Contains("foreach (Guid guid in new[] { SchemaGuidV2, SchemaGuidV1 })", src);
         }
 
         [Fact]

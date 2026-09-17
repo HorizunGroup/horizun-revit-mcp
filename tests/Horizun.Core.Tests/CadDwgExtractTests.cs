@@ -34,6 +34,44 @@ namespace Horizun.Core.Tests
         };
 
         [Fact]
+        public void An_entity_two_space_walks_both_return_is_one_entity_in_its_own_space()
+        {
+            // MEASURED: both space walks ran on through the whole drawing, so 2,515
+            // model-space placements arrived again labelled as paper, and the sheet's
+            // own entities arrived labelled as model. Each row now carries the space
+            // read off the entity, and a handle is read once.
+            string[] lines =
+            {
+                T("H", "dwg", "SAMPLE.dwg"), T("H", "insunits", "4"),
+                T("K", "*Model_Space", "0", ""),
+                T("E", "*Model_Space", "1A", "INSERT", "E-P", "10", "20", "0", "0", "1", "1", "1", "OUT2"),
+                T("E", "*Paper_Space|Layout1", "2B", "INSERT", "E-TB", "0", "0", "0", "0", "1", "1", "1", "TITLE"),
+                T("K", "*Paper_Space", "0", ""),
+                T("E", "*Model_Space", "1A", "INSERT", "E-P", "10", "20", "0", "0", "1", "1", "1", "OUT2"),
+                T("E", "*Paper_Space|Layout1", "2B", "INSERT", "E-TB", "0", "0", "0", "0", "1", "1", "1", "TITLE"),
+                T("E", "UNIT", "1A", "INSERT", "E-P", "1", "2", "0", "0", "1", "1", "1", "OUT2"),
+                T("H", "done", "1")
+            };
+            CadDwgReading r = CadDwgExtract.Parse(lines);
+            var inserts = r.Entities.Where(e => e.Kind == CadEntityKind.BlockInstance).ToList();
+            Assert.Equal(3, inserts.Count);
+            Assert.Equal("model", inserts.Single(e => e.BlockName == "OUT2" && e.BlockPath.Count == 0).Space);
+            Assert.Equal("paper", inserts.Single(e => e.BlockName == "TITLE").Space);
+            // A handle inside a block definition is that definition's, and is kept.
+            Assert.Single(inserts, e => e.BlockPath.Count == 1 && e.BlockPath[0] == "UNIT");
+            Assert.Equal(2, r.RepeatedTopLevelRows);
+        }
+
+        [Fact]
+        public void The_extractor_reads_the_space_off_each_entity()
+        {
+            string lisp = string.Join(" ", CadDwgScript.Forms);
+            Assert.Contains("(defun hz-space", lisp);
+            Assert.Contains("(assoc 67 ed)", lisp);
+            Assert.Contains("(hz-space f sp)", lisp);
+        }
+
+        [Fact]
         public void A_report_without_its_end_marker_is_incomplete()
         {
             CadDwgReading whole = CadDwgExtract.Parse(Minimal);

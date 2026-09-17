@@ -85,6 +85,10 @@ namespace Horizun.Revit.Core
         public int InstancesConsidered;
         public int InstancesClaimed;
 
+        /// <summary>What became of each instance handed in, by the instance itself.</summary>
+        public readonly Dictionary<CadIrEntity, CadBlockOutcome> Outcomes =
+            new Dictionary<CadIrEntity, CadBlockOutcome>();
+
         /// <summary>How much of the drawing's symbol population a mapping covers, 0..1.</summary>
         public double Coverage => InstancesConsidered == 0 ? 0 : (double)InstancesClaimed / InstancesConsidered;
 
@@ -100,6 +104,15 @@ namespace Horizun.Revit.Core
                         "below are the drawing's own vocabulary with counts - they are what a mapping is " +
                         "written against, and the ones with the highest counts are worth the most."
         };
+    }
+
+    /// <summary>One instance's fate in a reading: claimed by a rule, unclaimed, or tied.</summary>
+    public sealed class CadBlockOutcome
+    {
+        public string Outcome;
+        public string RuleId;
+        public CadCandidate Candidate;
+        public List<string> TieRules;
     }
 
     public static class CadBlockRules
@@ -186,6 +199,7 @@ namespace Horizun.Revit.Core
                 if (claiming.Count == 0)
                 {
                     Note(unclaimed, e);
+                    reading.Outcomes[e] = new CadBlockOutcome { Outcome = CadInventoryOutcome.Unclaimed };
                     continue;
                 }
 
@@ -203,6 +217,11 @@ namespace Horizun.Revit.Core
                             RuleIds = top.Select(r => r.Id).OrderBy(x => x, StringComparer.Ordinal).ToList()
                         };
                     tie.Count++;
+                    reading.Outcomes[e] = new CadBlockOutcome
+                    {
+                        Outcome = CadInventoryOutcome.Tie,
+                        TieRules = top.Select(r => r.Id).OrderBy(x => x, StringComparer.Ordinal).ToList()
+                    };
                     continue;
                 }
 
@@ -336,6 +355,10 @@ namespace Horizun.Revit.Core
 
                 reading.Candidates.Add(c);
                 reading.InstancesClaimed++;
+                reading.Outcomes[e] = new CadBlockOutcome
+                {
+                    Outcome = CadInventoryOutcome.Claimed, RuleId = rule.Id, Candidate = c
+                };
             }
 
             // ONE IDENTITY, ONE SYMBOL - or a person decides. Two instances that

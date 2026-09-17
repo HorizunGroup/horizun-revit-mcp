@@ -273,6 +273,8 @@ namespace Horizun.Revit.Core
         public const string RestampMigrated = "migrated_from_v1";
         public const string RestampPlacementMoved = "placement_moved_accepted";
         public const string RestampCarried = "carried_to_this_revision";
+        /// <summary>A person kept the element as it stands: its as-built geometry becomes where it stands now.</summary>
+        public const string RestampAccepted = "accepted_as_it_stands";
 
         // ------------------------------------------------------------ identity
 

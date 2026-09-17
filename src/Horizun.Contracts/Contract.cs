@@ -930,6 +930,11 @@ namespace Horizun.Contracts
       ""type"": ""boolean"",
       ""default"": false
     },
+    ""include_orientation"": {
+      ""type"": ""boolean"",
+      ""default"": false,
+      ""description"": ""Attach a placement block as Revit stores it: for a family instance its point, rotation, facing and hand vectors, total transform (a face-based family looks out of its face along basis_z), reflection flags and the stable reference of its host face; for a wall its location line, width, exterior normal and flip. Nothing is derived - for checks that must not borrow a placing tool's reasoning.""
+    },
     ""include_mep"": {
       ""type"": ""boolean"",
       ""default"": false,
@@ -1047,10 +1052,12 @@ namespace Horizun.Contracts
                 Name = "horizun_transform_elements",
                 Command = "horizun_transform_elements",
                 Description =
-                    "Apply an atomic batch of move, copy, rotate, pin, unpin or type-change operations to explicit " +
+                    "Apply an atomic batch of move, copy, rotate, mirror, pin, unpin or type-change operations to explicit " +
                     "host ElementIds. Dry-run resolves every target and refuses duplicate targets across operations. " +
                     "Move/rotate are accepted only for elements whose Location can be sampled and are verified from " +
-                    "fresh post-commit location points; copies, pin state and type ids are likewise re-read.",
+                    "fresh post-commit location points; copies, pin state and type ids are likewise re-read. A rotate " +
+                    "also verifies that each family instance's axes turned. A move or rotate that would take a hosted " +
+                    "instance off its host (or onto another) is rolled back whole with host_changed: re-place it instead.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""operations""],
   ""properties"": {
@@ -1058,7 +1065,7 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""operations"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""element_ids""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader""],
+        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader""],
           ""description"": ""move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure."" },
         ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
         ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move/copy: the translation. move_tag_head: the head displacement, in units."" },
@@ -1071,6 +1078,10 @@ namespace Horizun.Contracts
         ""axis_start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""axis_end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
         ""angle_degrees"": { ""type"": ""number"" }, ""type_id"": { ""type"": ""integer"" },
+        ""plane_origin"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
+          ""description"": ""mirror: a point of the plane reflected about, in units. The element is mirrored IN PLACE (keeps its id); its point is verified against the reflection, its axes are reported beside the reflected ones, and a hosted instance must keep its host and stand on a face of it or nothing is written."" },
+        ""plane_normal"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
+          ""description"": ""mirror: the plane's normal (direction only)."" },
         ""start"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
           ""description"": ""set_curve: one end of the new location line, in the units this call declares."" },
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
@@ -1613,6 +1624,12 @@ namespace Horizun.Contracts
       ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""candidate_id""], ""properties"": {
         ""element_id"": { ""type"": ""integer"" }, ""candidate_id"": { ""type"": ""string"" }
       }, ""additionalProperties"": false } },
+    ""resolve"": { ""type"": ""array"", ""maxItems"": 500,
+      ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place). A decision the change does not admit, or on an element not held, refuses the whole plan."",
+      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision""], ""properties"": {
+        ""element_id"": { ""type"": ""integer"" },
+        ""decision"": { ""type"": ""string"", ""enum"": [""retype"", ""rotate_in_face"", ""keep"", ""replace""] }
+      }, ""additionalProperties"": false } },
     ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
   },
   ""additionalProperties"": false
@@ -1721,7 +1738,7 @@ namespace Horizun.Contracts
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""mode"": { ""type"": ""string"", ""enum"": [""instances"", ""layers"", ""geometry"", ""coverage"", ""profile""], ""default"": ""instances"",
+    ""mode"": { ""type"": ""string"", ""enum"": [""instances"", ""layers"", ""geometry"", ""coverage"", ""profile"", ""blocks""], ""default"": ""instances"",
       ""description"": ""instances: what CAD is here and where it came from. layers: how the drawing is organised, with a census. geometry: the curves in millimetres, paginated. coverage: what cannot be read at all. profile: for each layer, what each geometry source WOULD find on it - measured by running the same reader the conversion runs, not estimated - plus the thickness, area and length ranges it observed, and a requirement-set skeleton with every 'produces' left null. It REFUSES to say what a layer means: no organisation's layer convention is compiled in, and one that was would convert the next organisation's drawing wrong into a model that looked plausible."" },
     ""max_layers"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200, ""default"": 40,
       ""description"": ""profile mode: how many layers to measure, busiest first. What is left out is NAMED in the reply rather than silently trimmed."" },
@@ -1734,8 +1751,16 @@ namespace Horizun.Contracts
     ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000,
       ""description"": ""A STATED bound on the geometry walk. Hitting it sets truncated=true; a partial reading is never allowed to look complete."" },
     ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 500,
-      ""description"": ""geometry mode: segments per page. A site plan is millions of vertices and no reply carries them all."" },
-    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 }
+      ""description"": ""geometry mode: segments per page. blocks mode: placements per page. A site plan is millions of vertices and no reply carries them all."" },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+    ""requirement_set"": { ""type"": ""object"",
+      ""description"": ""blocks mode, REQUIRED: the zone and the rules every placement is classified against - the same set the plan uses, so the two reconcile."" },
+    ""dwg_path"": { ""type"": ""string"",
+      ""description"": ""blocks mode: the DWG file, when the link cannot name it. A path naming a different drawing than the link is refused."" },
+    ""dwg_read_timeout_seconds"": { ""type"": ""integer"", ""minimum"": 30, ""maximum"": 3600, ""default"": 900 },
+    ""outcome"": { ""type"": ""string"", ""enum"": [""claimed"", ""unclaimed"", ""tie"", ""coincident_duplicate"", ""outside_extent"", ""paper_space"", ""space_unknown"", ""not_classified""],
+      ""description"": ""blocks mode: only placements with this outcome. The totals still describe every placement."" },
+    ""block"": { ""type"": ""string"", ""description"": ""blocks mode: a GLOB over block names, with or without their external-reference prefix."" }
   },
   ""additionalProperties"": false
 }")

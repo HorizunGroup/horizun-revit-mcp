@@ -580,5 +580,22 @@ namespace Horizun.Core.Tests
             Assert.Equal(P1, v2["placement"].Value<string>("id"));
             Assert.Equal(Identity, v2["placement"].Value<string>("basis"));
         }
+
+        [Fact]
+        public void A_v3_record_names_the_reading_and_the_entities_it_used()
+        {
+            CadRequirementSet set = Set();
+            CadCandidate c = Read(set, FileX)[0];
+            CadProvenance p = BuiltV2(c, set, FileX, 3, P1).Provenance;
+            p.SchemaVersion = 3;
+            p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
+            p.SourceEntities = "L1;L2";
+            JObject v3 = p.ToJson();
+            Assert.Equal("v3", v3.Value<string>("provenance_version"));
+            Assert.StartsWith("cadread:" + CadInterpretationRules.ReadingRulesRevision + ":",
+                              v3.Value<string>("interpretation_version"));
+            Assert.Equal("L1;L2", v3.Value<string>("source_entities"));
+            Assert.Equal(P1, v3["placement"].Value<string>("id"));
+        }
     }
 }

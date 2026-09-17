@@ -45,7 +45,7 @@ namespace Horizun.Revit.Commands
         public static JObject Read(Element element, CadInstanceFacts facts, CadRequirementSet set,
                                           CadHarvest harvest, string sourceHash,
                                           CadInterpretation interpretation, string callerPath,
-                                          int readTimeoutSeconds)
+                                          int readTimeoutSeconds, List<CadInventoryRow> inventory = null)
         {
             var report = new JObject
             {
@@ -54,86 +54,8 @@ namespace Horizun.Revit.Commands
                           "Unavailable by the import reader, with its reason. So the DWG itself is read."
             };
 
-            // THE LINK FIRST, THE CALLER ONLY IF THE LINK CANNOT SAY.
-            string path = facts != null ? facts.ExternalPath : null;
-            string pathSource = "link";
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                path = callerPath;
-                pathSource = "caller";
-            }
-            else if (!string.IsNullOrWhiteSpace(callerPath) &&
-                     !string.Equals(System.IO.Path.GetFullPath(callerPath),
-                                    System.IO.Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
-            {
-                report["refused"] = "dwg_path_disagrees_with_the_link";
-                report["link_resolves"] = path;
-                report["caller_named"] = callerPath;
-                report["means"] = "this link resolves its own file and the caller named a different one. " +
-                                  "Nothing was read: a plan built from one drawing and applied against " +
-                                  "another is the failure this whole binding exists to prevent.";
-                return report;
-            }
-            report["path_source"] = pathSource;
-
-            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
-            {
-                report["refused"] = "no_readable_dwg_file";
-                report["path"] = path ?? "(none)";
-                report["means"] = "the blocks branch has to read the DWG, and no readable path names it. " +
-                                  "MEASURED in Revit 2026: a CAD link created through the API is NOT an " +
-                                  "ExternalFileReference, so the file cannot be recovered from the link - " +
-                                  "pass dwg_path. The blocks rules planned NOTHING; every other rule was " +
-                                  "unaffected.";
-                return report;
-            }
-
-            CadDwgRunResult run;
-            try { run = CadDwgReader.Read(path, readTimeoutSeconds, set.SourceUnitsToMm); }
-            catch (Exception ex)
-            {
-                report["refused"] = "dwg_reader_threw";
-                report["detail"] = ex.Message;
-                return report;
-            }
-            report["engine"] = run.EnginePath;
-            report["engine_version"] = run.EngineVersion;
-            report["seconds"] = Math.Round(run.Seconds, 1);
-            if (!run.Ok)
-            {
-                report["refused"] = run.Refusal;
-                if (run.RefusalDetail != null) report["detail"] = run.RefusalDetail;
-                return report;
-            }
-
-            CadDwgReading reading = run.Reading;
-            report["drawing"] = reading.DrawingName;
-
-            // A PATH THE CALLER NAMED IS CHECKED AGAINST THE LINK, by the only
-            // thing both of them carry: the drawing's name. Revit calls the
-            // import symbol after the file, and the file says its own name in the
-            // reading's header. They must be the same drawing.
-            if (pathSource == "caller")
-            {
-                string linkName = facts != null ? facts.Name : null;
-                string bare = BareDrawingName(reading.DrawingName);
-                string linkBare = BareDrawingName(linkName);
-                if (linkBare != null && bare != null &&
-                    !string.Equals(bare, linkBare, StringComparison.OrdinalIgnoreCase))
-                {
-                    report["refused"] = "dwg_path_names_a_different_drawing";
-                    report["link_is_called"] = linkName;
-                    report["file_says_it_is"] = reading.DrawingName;
-                    report["means"] = "the file named by dwg_path is not the drawing this link is showing. " +
-                                      "Nothing was planned from it.";
-                    return report;
-                }
-                report["name_check"] = "the file calls itself '" + (bare ?? "(nothing)") +
-                                       "' and the link is called '" + (linkBare ?? "(nothing)") + "'";
-            }
-            report["declared_mm_per_unit"] = reading.MmPerUnit.HasValue
-                ? (JToken)reading.MmPerUnit.Value : JValue.CreateNull();
-            report["entities_read"] = reading.Entities.Count;
+            CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
+            if (reading == null) return report;
 
             CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
             report["placement"] = placement.SummaryJson();
@@ -146,11 +68,33 @@ namespace Horizun.Revit.Commands
             // 168 x 117 m against the 64 x 72 m the drawing actually occupies.
             var inModel = new List<CadPlacedBlock>();
             int onSheets = 0, spaceUnknown = 0;
+            var rowOf = new Dictionary<CadPlacedBlock, CadInventoryRow>();
             foreach (CadPlacedBlock p in placement.Placed)
             {
                 if (p.Space == "model") inModel.Add(p);
                 else if (p.Space == "paper") onSheets++;
                 else spaceUnknown++;
+                if (inventory != null)
+                {
+                    var row = new CadInventoryRow
+                    {
+                        Key = p.Key,
+                        BlockName = p.BlockName,
+                        Layer = p.Layer,
+                        Space = p.Space ?? "unknown",
+                        Path = new List<string>(p.Path),
+                        HandleChain = new List<string>(p.HandleChain),
+                        DrawingAt = p.At,
+                        RotationRadians = p.RotationRadians,
+                        Mirrored = p.Mirrored,
+                        Attributes = p.Source == null ? null : p.Source.Attributes,
+                        Outcome = p.Space == "model" ? CadInventoryOutcome.NotClassified
+                                : p.Space == "paper" ? CadInventoryOutcome.PaperSpace
+                                : CadInventoryOutcome.SpaceUnknown
+                    };
+                    rowOf[p] = row;
+                    inventory.Add(row);
+                }
             }
             report["on_sheets_not_converted"] = onSheets;
             report["space_unknown"] = spaceUnknown;
@@ -160,8 +104,9 @@ namespace Horizun.Revit.Commands
                 "whose root space this reading could not name; it is not converted either.";
 
             List<JObject> duplicates;
+            var droppedFor = new Dictionary<CadPlacedBlock, CadPlacedBlock>();
             List<CadPlacedBlock> placed = CadBlockPlacement.Distinct(inModel,
-                                                                    set.PointToleranceMm, out duplicates);
+                                                                    set.PointToleranceMm, out duplicates, droppedFor);
             report["coincident_collapsed"] = duplicates.Count;
 
             // ---- the two frames, related and then checked ---------------------
@@ -170,16 +115,35 @@ namespace Horizun.Revit.Commands
             if (import != null) { try { t = import.GetTransform(); } catch { t = Transform.Identity; } }
 
             var entities = new List<CadIrEntity>(placed.Count);
+            var rowOfEntity = new Dictionary<CadIrEntity, CadInventoryRow>();
+            Func<CadPoint, CadPoint> toModel = at =>
+            {
+                XYZ ft = t.OfPoint(new XYZ(at.X / 304.8, at.Y / 304.8, at.Z / 304.8));
+                return new CadPoint(ft.X * 304.8, ft.Y * 304.8, ft.Z * 304.8);
+            };
             foreach (CadPlacedBlock p in placed)
             {
                 CadIrEntity e = p.AsEntity();
-                CadPoint at = e.Points[0];
-                XYZ modelFt = t.OfPoint(new XYZ(at.X / 304.8, at.Y / 304.8, at.Z / 304.8));
-                e.Points[0] = new CadPoint(modelFt.X * 304.8, modelFt.Y * 304.8, modelFt.Z * 304.8);
+                e.Points[0] = toModel(e.Points[0]);
                 if (e.RotationRadians.HasValue)
                     e.RotationRadians = e.RotationRadians.Value + Math.Atan2(t.BasisX.Y, t.BasisX.X);
                 entities.Add(e);
+                CadInventoryRow row;
+                if (inventory != null && rowOf.TryGetValue(p, out row))
+                {
+                    row.ModelAt = e.Points[0];
+                    rowOfEntity[e] = row;
+                }
             }
+            if (inventory != null)
+                foreach (var kv in droppedFor)
+                {
+                    CadInventoryRow row, keptRow;
+                    if (!rowOf.TryGetValue(kv.Key, out row)) continue;
+                    row.ModelAt = toModel(kv.Key.At);
+                    row.Outcome = CadInventoryOutcome.Duplicate;
+                    if (rowOf.TryGetValue(kv.Value, out keptRow)) row.DuplicateOf = keptRow.Key;
+                }
 
             JObject frame = FrameAgreement(entities, harvest);
             report["frame_check"] = frame;
@@ -201,7 +165,12 @@ namespace Horizun.Revit.Commands
                 foreach (CadIrEntity e in entities)
                 {
                     if (set.ExtentMm.Contains(e.Points[0])) kept.Add(e);
-                    else outside++;
+                    else
+                    {
+                        outside++;
+                        CadInventoryRow row;
+                        if (rowOfEntity.TryGetValue(e, out row)) row.Outcome = CadInventoryOutcome.OutsideExtent;
+                    }
                 }
                 entities = kept;
                 report["outside_extent"] = outside;
@@ -218,6 +187,15 @@ namespace Horizun.Revit.Commands
             report["symmetry_measured_for_blocks"] = symmetry.Count;
 
             CadBlockReading blocks = CadBlockRules.Interpret(entities, set, sourceHash);
+            foreach (var kv in blocks.Outcomes)
+            {
+                CadInventoryRow row;
+                if (!rowOfEntity.TryGetValue(kv.Key, out row)) continue;
+                row.Outcome = kv.Value.Outcome;
+                row.RuleId = kv.Value.RuleId;
+                row.CandidateId = kv.Value.Candidate == null ? null : kv.Value.Candidate.Id;
+                row.TieRules = kv.Value.TieRules;
+            }
 
             // ---- the policy, applied per candidate ------------------------------
             var mirrored = new JArray();
@@ -319,7 +297,10 @@ namespace Horizun.Revit.Commands
             if (blocks.Unclaimed.Count > UnclaimedListed)
                 report["unclaimed_blocks_truncated"] =
                     "the " + UnclaimedListed + " most frequent of " + blocks.Unclaimed.Count + " names are listed; " +
-                    "unclaimed_instances counts all of them";
+                    "unclaimed_instances counts all of them, and horizun_query_cad mode='blocks' with this same " +
+                    "requirement_set pages through every placement";
+            report["inventory"] = "every placement, paged and reconciled: horizun_query_cad mode='blocks' with this " +
+                                  "requirement_set";
             report["ties"] = new JArray(blocks.Ties.Select(x => x.ToJson()));
 
             // The candidates join the reading. Everything downstream - eligibility,
@@ -361,6 +342,154 @@ namespace Horizun.Revit.Commands
         /// So: the fraction is measured, the threshold is stated, and the
         /// outliers are counted rather than hidden.
         /// </summary>
+        /// <summary>
+        /// The DWG itself, resolved from the link (or the caller when the link cannot
+        /// say), read, and checked to be the drawing the link shows. Null with
+        /// report["refused"] set when any of that fails.
+        /// </summary>
+        private static CadDwgReading ReadDrawing(CadInstanceFacts facts, CadRequirementSet set,
+                                                 string callerPath, int readTimeoutSeconds, JObject report)
+        {
+            // THE LINK FIRST, THE CALLER ONLY IF THE LINK CANNOT SAY.
+            string path = facts != null ? facts.ExternalPath : null;
+            string pathSource = "link";
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                path = callerPath;
+                pathSource = "caller";
+            }
+            else if (!string.IsNullOrWhiteSpace(callerPath) &&
+                     !string.Equals(System.IO.Path.GetFullPath(callerPath),
+                                    System.IO.Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase))
+            {
+                report["refused"] = "dwg_path_disagrees_with_the_link";
+                report["link_resolves"] = path;
+                report["caller_named"] = callerPath;
+                report["means"] = "this link resolves its own file and the caller named a different one. " +
+                                  "Nothing was read: a plan built from one drawing and applied against " +
+                                  "another is the failure this whole binding exists to prevent.";
+                return null;
+            }
+            report["path_source"] = pathSource;
+
+            if (string.IsNullOrWhiteSpace(path) || !System.IO.File.Exists(path))
+            {
+                report["refused"] = "no_readable_dwg_file";
+                report["path"] = path ?? "(none)";
+                report["means"] = "the blocks branch has to read the DWG, and no readable path names it. " +
+                                  "MEASURED in Revit 2026: a CAD link created through the API is NOT an " +
+                                  "ExternalFileReference, so the file cannot be recovered from the link - " +
+                                  "pass dwg_path. The blocks rules planned NOTHING; every other rule was " +
+                                  "unaffected.";
+                return null;
+            }
+
+            CadDwgRunResult run;
+            try { run = CadDwgReader.Read(path, readTimeoutSeconds, set.SourceUnitsToMm); }
+            catch (Exception ex)
+            {
+                report["refused"] = "dwg_reader_threw";
+                report["detail"] = ex.Message;
+                return null;
+            }
+            report["engine"] = run.EnginePath;
+            report["engine_version"] = run.EngineVersion;
+            report["seconds"] = Math.Round(run.Seconds, 1);
+            if (!run.Ok)
+            {
+                report["refused"] = run.Refusal;
+                if (run.RefusalDetail != null) report["detail"] = run.RefusalDetail;
+                return null;
+            }
+
+            CadDwgReading reading = run.Reading;
+            report["drawing"] = reading.DrawingName;
+
+            // A PATH THE CALLER NAMED IS CHECKED AGAINST THE LINK, by the only
+            // thing both of them carry: the drawing's name. Revit calls the
+            // import symbol after the file, and the file says its own name in the
+            // reading's header. They must be the same drawing.
+            if (pathSource == "caller")
+            {
+                string linkName = facts != null ? facts.Name : null;
+                string bare = BareDrawingName(reading.DrawingName);
+                string linkBare = BareDrawingName(linkName);
+                if (linkBare != null && bare != null &&
+                    !string.Equals(bare, linkBare, StringComparison.OrdinalIgnoreCase))
+                {
+                    report["refused"] = "dwg_path_names_a_different_drawing";
+                    report["link_is_called"] = linkName;
+                    report["file_says_it_is"] = reading.DrawingName;
+                    report["means"] = "the file named by dwg_path is not the drawing this link is showing. " +
+                                      "Nothing was planned from it.";
+                    return null;
+                }
+                report["name_check"] = "the file calls itself '" + (bare ?? "(nothing)") +
+                                       "' and the link is called '" + (linkBare ?? "(nothing)") + "'";
+            }
+            report["declared_mm_per_unit"] = reading.MmPerUnit.HasValue
+                ? (JToken)reading.MmPerUnit.Value : JValue.CreateNull();
+            report["entities_read"] = reading.Entities.Count;
+            report["repeated_top_level_rows"] = reading.RepeatedTopLevelRows;
+            return reading;
+        }
+
+        /// <summary>
+        /// The drawing's WALL HATCHES, in model millimetres, for a set whose wall
+        /// rules declare solid_hatch_layers. The same file, the same frame and the
+        /// same checks as the symbols; null with report["refused"] set when the
+        /// drawing cannot be read or does not land where Revit shows it. Every
+        /// command that interprets such a set calls this, so the plan, the audit
+        /// and the update agree on which pairs of faces enclose material.
+        /// </summary>
+        public static CadSolidHatch ReadSolid(Element element, CadInstanceFacts facts, CadRequirementSet set,
+                                              CadHarvest harvest, string callerPath, int readTimeoutSeconds,
+                                              JObject report)
+        {
+            var layers = set.Rules.Where(r => r.Geometry != null)
+                                  .SelectMany(r => r.Geometry.SolidHatchLayers)
+                                  .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            report["why"] = "a wall rule declares solid_hatch_layers, and a hatch boundary is not reachable " +
+                            "through Revit's import. So the DWG itself is read for its wall hatches.";
+            report["layers"] = new JArray(layers.Cast<object>().ToArray());
+            CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
+            if (reading == null) return null;
+            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
+
+            Transform t = Transform.Identity;
+            var import = element as ImportInstance;
+            if (import != null) { try { t = import.GetTransform(); } catch { t = Transform.Identity; } }
+            Func<CadPoint, CadPoint> toModel = at =>
+            {
+                XYZ ft = t.OfPoint(new XYZ(at.X / 304.8, at.Y / 304.8, at.Z / 304.8));
+                return new CadPoint(ft.X * 304.8, ft.Y * 304.8, ft.Z * 304.8);
+            };
+            CadSolidHatch solid = CadSolidHatch.Build(reading.Entities, placement, layers, toModel,
+                                                      set.CaseSensitiveLayers);
+            report["hatches"] = solid.SummaryJson();
+            if (solid.PlacedHatches == 0)
+            {
+                report["refused"] = "no_hatch_on_the_declared_layers";
+                report["means"] = "the set says walls are hatched on these layers and the drawing has no such " +
+                                  "hatch in model space. Nothing was planned from the wall rules rather than " +
+                                  "treating every pair of faces as empty.";
+                return null;
+            }
+
+            // THE SAME FRAME CHECK AS THE SYMBOLS, on one corner of every placed ring.
+            var anchors = solid.Anchors().Select(p => new CadIrEntity { Points = { p } }).ToList();
+            JObject frame = FrameAgreement(anchors, harvest);
+            report["frame_check"] = frame;
+            if ((bool?)frame["agrees"] != true)
+            {
+                report["refused"] = "frame_unconfirmed";
+                report["means"] = "the hatches read from the file do not land where Revit says this drawing is. " +
+                                  "Nothing was planned from the wall rules.";
+                return null;
+            }
+            return solid;
+        }
+
         private static JObject FrameAgreement(IList<CadIrEntity> symbols, CadHarvest harvest)
         {
             var result = new JObject();
