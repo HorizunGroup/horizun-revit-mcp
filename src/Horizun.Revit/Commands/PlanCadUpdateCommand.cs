@@ -1070,10 +1070,15 @@ namespace Horizun.Revit.Commands
                     reason = CadPlacementRules.RestampAccepted;
                 else if (scope.MigratedFromV1.Contains(id)) reason = CadPlacementRules.RestampMigrated;
                 else if (moveAccepted && a.Kind == "leave") reason = CadPlacementRules.RestampPlacementMoved;
-                else if (a.CandidateId != null && a.Classification != CadChange.Relayered &&
+                else if (a.Kind == "leave" && a.CandidateId != null && a.Classification != CadChange.Relayered &&
                          !string.IsNullOrEmpty(thisFileSha256))
                 {
-                    // THE SAME ENTITY, NOW CITED FROM THIS REVISION.
+                    // THE SAME ENTITY, NOW CITED FROM THIS REVISION - only for what the
+                    // update left as it is. MEASURED: a device the revised drawing had
+                    // turned, held for review, was carried to revision B by the first
+                    // apply; the next plan saw the same bytes and the same reading and
+                    // blamed the turn on a person. A held change keeps citing the
+                    // revision it was built from until someone decides it.
                     CadAuditSubject s;
                     if (bySubject.TryGetValue(id, out s) && s.Provenance != null &&
                         !string.Equals(s.Provenance.SourceFileSha256, thisFileSha256, StringComparison.Ordinal))

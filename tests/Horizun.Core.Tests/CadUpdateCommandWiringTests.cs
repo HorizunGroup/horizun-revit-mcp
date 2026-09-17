@@ -240,6 +240,8 @@ namespace Horizun.Core.Tests
             // match is not, or the change the review is about would disappear.
             Assert.Contains("reason = CadPlacementRules.RestampCarried", plan);
             Assert.Contains("a.Classification != CadChange.Relayered", plan);
+            // ...and only what the update left as it is: a held change keeps its revision.
+            Assert.Contains("else if (a.Kind == \"leave\" && a.CandidateId != null", plan);
             Assert.Contains("if (reason == CadPlacementRules.RestampCarried)", apply);
         }
 
