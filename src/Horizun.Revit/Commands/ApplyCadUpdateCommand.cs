@@ -168,6 +168,13 @@ namespace Horizun.Revit.Commands
                 JObject args = (JObject)(action["arguments"] ?? new JObject()).DeepClone();
                 args["target_document"] = title;
                 args["dry_run"] = true;
+                string standIn = CadSplitDependents.Resolve(args, cid => null, true);
+                if (standIn != null)
+                {
+                    rehearsal.Add(new JObject { ["key"] = key, ["tool"] = tool, ["ok"] = false, ["error"] = standIn });
+                    clean = false;
+                    continue;
+                }
                 CommandResult r = child.Execute(uiApp, args.ToString(Formatting.None));
                 rehearsal.Add(new JObject
                 {
@@ -222,7 +229,17 @@ namespace Horizun.Revit.Commands
                 if (tokens[key] != null) args["confirmation_token"] = tokens[key];
                 args["idempotency_key"] = (request.Value<string>("idempotency_key") ?? "cad-update") + "-" + key;
 
-                CommandResult r = child.Execute(uiApp, args.ToString(Formatting.None));
+                // A HOST THIS APPLY CREATED, named by its candidate.
+                string unresolved = CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);
+                CommandResult r;
+                if (unresolved != null)
+                    r = CommandResult.Fail("host_not_created: " + unresolved + ". Nothing was sent for this action.");
+                // A FAULT SEAM FOR TESTS, off unless the Revit process was started with it: the named
+                // action is reported failed WITHOUT running, to measure what a failure mid-update leaves.
+                else if (FaultInjected(key))
+                    r = CommandResult.Fail("fault_injected: HORIZUN_TEST_FAIL_ACTION names '" + key + "'. Nothing was sent.");
+                else
+                    r = child.Execute(uiApp, args.ToString(Formatting.None));
                 var row = new JObject
                 {
                     ["key"] = key, ["tool"] = tool, ["ok"] = r.Success,
@@ -485,6 +502,23 @@ namespace Horizun.Revit.Commands
                 ["migrated_from_v1"] = migrated,
                 ["restamp_failed"] = restampFailed,
                 ["restamps"] = restamps,
+                ["substitutions"] = new JArray(touched.Where(x => x.RowIndex.HasValue).Select(x => new
+                    {
+                        t = x,
+                        e = index.OfType<JObject>().FirstOrDefault(i =>
+                            string.Equals(i.Value<string>("key"), x.Key, StringComparison.Ordinal) &&
+                            i.Value<int?>("element_index") == x.RowIndex.Value && i["replaces_element_id"] != null)
+                    })
+                    .Where(z => z.e != null)
+                    .Select(z => new JObject
+                    {
+                        ["old_element_id"] = z.e["replaces_element_id"],
+                        ["new_element_id"] = z.t.ElementId,
+                        ["carried_parameters"] = z.e["carried_parameters"],
+                        ["carried_cad_identity"] = z.e["carried_identity"],
+                        ["old_deleted"] = applied.OfType<JObject>().Any(a =>
+                            (string)a["key"] == z.t.Key + "-delete" && (bool?)a["ok"] == true)
+                    })),
                 ["restamp_means"] = "provenance_rewritten counts records rewritten WITHOUT touching geometry: " +
                                     "migrated_from_v1 of them were v1 records that now name their placement; the " +
                                     "rest were re-stamped under the placement's current transform.",
@@ -512,6 +546,26 @@ namespace Horizun.Revit.Commands
         }
 
         private const string RestampKey = "cad-update-restamp";
+
+        private static bool FaultInjected(string key)
+        {
+            string named = Environment.GetEnvironmentVariable("HORIZUN_TEST_FAIL_ACTION");
+            return !string.IsNullOrWhiteSpace(named) && string.Equals(named.Trim(), key, StringComparison.Ordinal);
+        }
+
+        /// <summary>The element this apply created for a candidate, through the candidate index.</summary>
+        private static long? CreatedFor(List<Touched> touched, JArray index, string candidateId)
+        {
+            foreach (Touched t in touched.Where(x => x.RowIndex.HasValue))
+            {
+                JObject entry = index.OfType<JObject>().FirstOrDefault(x =>
+                    string.Equals(x.Value<string>("key"), t.Key, StringComparison.Ordinal) &&
+                    x.Value<int?>("element_index") == t.RowIndex.Value);
+                if (entry != null && string.Equals(entry.Value<string>("candidate_id"), candidateId, StringComparison.Ordinal))
+                    return t.ElementId;
+            }
+            return null;
+        }
 
         /// <summary>The placement half of a stamp, copied from the plan's provenance block.</summary>
         private static void StampPlacement(CadProvenance p, JObject placement)

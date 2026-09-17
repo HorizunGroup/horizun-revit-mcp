@@ -282,7 +282,14 @@ namespace Horizun.Core.Tests
             // decided before its pieces are planned: width, hosted instances, occupancy
             Assert.Contains("HoldSplit(update, a, \"kept_piece_is_another_thickness\"", plan);
             Assert.Contains("double widthTolerance = keptRule?.WallTypeToleranceMm ?? set.ThicknessToleranceMm;", plan);
-            Assert.Contains("HoldSplit(update, a, \"hosted_outside_the_kept_piece\", held);", plan);
+            // another width is a retype when the set lists the type; the dependents are classified piece by piece
+            Assert.Contains("JObject retype = RetypeOperation(doc, a, interpretation, set, out noType);", plan);
+            Assert.Contains("HoldSplit(update, a, \"dependents_need_a_person\", dependentsHeld);", plan);
+            Assert.Contains("EmitSubstitution(doc, fi, host, set, target, \"cad-update-substitute-\" + sub++, actions, createIndex);", plan);
+            Assert.Contains("Rehome(doc, update, set, target, actions, createIndex);", plan);
+            string apply = Apply();
+            Assert.Contains("CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);", apply);
+            Assert.Contains("[\"substitutions\"] = new JArray(", apply);
             Assert.Contains("HoldSplit(update, a, \"kept_piece_occupied\"", plan);
             // its pieces are measured against the element's NEW line, not the one it stands on
             Assert.Contains("reshapedTo);", plan);

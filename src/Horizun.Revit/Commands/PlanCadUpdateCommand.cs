@@ -583,9 +583,11 @@ namespace Horizun.Revit.Commands
                     .Select(a => new JObject
                     {
                         ["element_id"] = a.ElementId,
-                        ["candidate_id"] = a.PairedWith,
+                        ["candidate_id"] = RecommendedKeep(doc, update, a, set) ?? a.PairedWith,
+                        ["longest_piece"] = a.Evidence["may_have_been_split_into"] != null ? a.PairedWith : null,
                         ["confidence"] = a.PairConfidence,
-                        ["paired_on"] = a.Evidence.Value<string>("paired_on")
+                        ["paired_on"] = a.Evidence.Value<string>("paired_on"),
+                        ["split_into"] = a.Evidence["may_have_been_split_into"]
                     })),
                 ["pairings_rejected"] = new JArray(update.Rejected),
                 ["splits"] = new JArray(update.Of("set_curve")
@@ -653,17 +655,25 @@ namespace Horizun.Revit.Commands
                 if (self != null && kept?.ThicknessMm != null &&
                     Math.Abs(kept.ThicknessMm.Value - self.Width * 304.8) > widthTolerance)
                 {
-                    HoldSplit(update, a, "kept_piece_is_another_thickness",
-                              "the piece that would keep the element is drawn " +
-                              kept.ThicknessMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm thick and the " +
-                              "element is " + (self.Width * 304.8).ToString("0.#", CultureInfo.InvariantCulture) +
-                              " mm; re-shaping it would keep the wrong width");
-                    continue;
+                    // ANOTHER THICKNESS IS A RETYPE, when the set lists a type of that width.
+                    string noType;
+                    JObject retype = RetypeOperation(doc, a, interpretation, set, out noType);
+                    if (retype == null)
+                    {
+                        HoldSplit(update, a, "kept_piece_is_another_thickness",
+                                  "the piece that would keep the element is drawn " +
+                                  kept.ThicknessMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm thick and the " +
+                                  "element is " + (self.Width * 304.8).ToString("0.#", CultureInfo.InvariantCulture) +
+                                  " mm, and " + noType);
+                        continue;
+                    }
+                    a.Evidence["split_retype"] = retype;
                 }
-                string held = HostedBeyond(doc, a, set);
-                if (held != null)
+                // WHAT THE ELEMENT HOSTS, piece by piece.
+                string dependentsHeld = ClassifyDependents(doc, update, a, set);
+                if (dependentsHeld != null)
                 {
-                    HoldSplit(update, a, "hosted_outside_the_kept_piece", held);
+                    HoldSplit(update, a, "dependents_need_a_person", dependentsHeld);
                     continue;
                 }
                 JArray occupants = Occupants(doc, a, set);
@@ -912,6 +922,37 @@ namespace Horizun.Revit.Commands
                     }
                 });
             }
+
+            // THE REST OF AN ACCEPTED SPLIT: the kept element's new type, then each dependent
+            // re-created on its new piece, then the one it replaces deleted.
+            int sub = 0;
+            foreach (CadUpdateAction a in update.Of("set_curve").Where(x => x.Automatic &&
+                                                                          x.Evidence["split_companions"] != null))
+            {
+                if (a.Evidence["split_retype"] is JObject retype)
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-split-retype-" + a.ElementId.Value,
+                        ["tool"] = "horizun_transform_elements",
+                        ["arguments"] = new JObject
+                        {
+                            ["target_document"] = target, ["units"] = "mm", ["operations"] = new JArray(retype)
+                        }
+                    });
+                foreach (JObject move in (a.Evidence["split_dependents"] as JArray ?? new JArray()).OfType<JObject>()
+                             .Where(d => (string)d["class"] == CadSplitRules.MovesTo))
+                {
+                    var fi = doc.GetElement(Rid.Make((long)move["element_id"])) as FamilyInstance;
+                    if (fi == null) continue;
+                    var host = new JObject
+                    {
+                        [CadSplitDependents.CreatedFor] = (string)move["target_candidate_id"],
+                        ["rehearse_with"] = a.ElementId.Value
+                    };
+                    EmitSubstitution(doc, fi, host, set, target, "cad-update-substitute-" + sub++, actions, createIndex);
+                }
+            }
+            Rehome(doc, update, set, target, actions, createIndex);
 
             // A POINT MOVES BY A VECTOR, along its own wall.
             int m = 0;
@@ -1312,6 +1353,173 @@ namespace Horizun.Revit.Commands
             return outside.Count + " element(s) hosted on it (" + string.Join(", ", outside.Take(8)) +
                    (outside.Count > 8 ? ", ..." : "") + ") would stand outside its new line; moving them to another " +
                    "wall is a decision this update does not take";
+        }
+
+        /// <summary>
+        /// Every instance the split element hosts, classified against the pieces. Returns why the
+        /// split must wait (a dependent in the removed stretch, across a boundary, or of a class this
+        /// build cannot re-create), or null; the classification is kept on the action either way.
+        /// </summary>
+        private static string ClassifyDependents(Document doc, CadUpdate update, CadUpdateAction a, CadRequirementSet set)
+        {
+            var wall = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+            XYZ o, u;
+            double len;
+            if (wall == null || !CadSplitDependents.LineOf(wall, out o, out u, out len)) return null;
+            var pieces = new List<CadSplitPiece>();
+            Func<List<CadPoint>, double[]> span = g => new[]
+            {
+                Math.Min(CadSplitDependents.AlongMm(o, u, g[0].X, g[0].Y),
+                         CadSplitDependents.AlongMm(o, u, g[g.Count - 1].X, g[g.Count - 1].Y)),
+                Math.Max(CadSplitDependents.AlongMm(o, u, g[0].X, g[0].Y),
+                         CadSplitDependents.AlongMm(o, u, g[g.Count - 1].X, g[g.Count - 1].Y))
+            };
+            double[] k = span(a.Geometry);
+            pieces.Add(new CadSplitPiece { CandidateId = a.CandidateId, Lo = k[0], Hi = k[1], KeepsTheElement = true });
+            foreach (string id in ((JArray)a.Evidence["split_companions"]).Select(x => (string)x))
+            {
+                CadUpdateAction c = update.Of("create").FirstOrDefault(x => x.CandidateId == id);
+                if (c == null || c.Geometry.Count < 2) continue;
+                double[] s = span(c.Geometry);
+                pieces.Add(new CadSplitPiece { CandidateId = id, Lo = s[0], Hi = s[1] });
+            }
+            var byId = new Dictionary<long, FamilyInstance>();
+            List<CadSplitDependent> deps = CadSplitDependents.Read(doc, wall, byId);
+            CadSplitRules.Classify(pieces, deps, Math.Max(set.PointToleranceMm, 1.0));
+            a.Evidence["split_dependents"] = new JArray(deps.Select(d => d.ToJson()));
+            var held = deps.Where(d => d.Class != CadSplitRules.Stays && d.Class != CadSplitRules.MovesTo).ToList();
+            if (held.Count == 0) return null;
+            return held.Count + " dependent(s) cannot be placed on one piece without a person (" +
+                   string.Join("; ", held.Take(6).Select(d => "element " + d.ElementId + " " + d.Class +
+                       (d.Alternatives.Count > 0 ? ": " + string.Join(" | ", d.Alternatives) : ""))) + ")";
+        }
+
+        /// <summary>For a split offered: the piece that should keep the element (most dependents, same width, longest).</summary>
+        private static string RecommendedKeep(Document doc, CadUpdate update, CadUpdateAction orphan, CadRequirementSet set)
+        {
+            var ids = orphan.Evidence["may_have_been_split_into"] as JArray;
+            if (ids == null || !orphan.ElementId.HasValue) return null;
+            var wall = doc.GetElement(Rid.Make(orphan.ElementId.Value)) as Wall;
+            XYZ o, u;
+            double len;
+            if (wall == null || !CadSplitDependents.LineOf(wall, out o, out u, out len)) return null;
+            var pieces = new List<CadSplitPiece>();
+            foreach (string id in ids.Select(x => (string)x))
+            {
+                CadUpdateAction c = update.Actions.FirstOrDefault(x => x.CandidateId == id && x.Geometry.Count >= 2);
+                if (c == null) continue;
+                double s0 = CadSplitDependents.AlongMm(o, u, c.Geometry[0].X, c.Geometry[0].Y);
+                double s1 = CadSplitDependents.AlongMm(o, u, c.Geometry[c.Geometry.Count - 1].X, c.Geometry[c.Geometry.Count - 1].Y);
+                double? t = c.Evidence.Value<double?>("thickness_mm");
+                pieces.Add(new CadSplitPiece { CandidateId = id, Lo = Math.Min(s0, s1), Hi = Math.Max(s0, s1), ThicknessMm = t });
+            }
+            if (pieces.Count == 0) return null;
+            var deps = CadSplitDependents.Read(doc, wall, new Dictionary<long, FamilyInstance>());
+            CadSplitPiece best = CadSplitRules.RecommendKeep(pieces, deps, wall.Width * 304.8, set.ThicknessToleranceMm,
+                                                             Math.Max(set.PointToleranceMm, 1.0));
+            orphan.Evidence["recommended_keep"] = best?.CandidateId;
+            return best?.CandidateId;
+        }
+
+        /// <summary>Re-create an instance on another host, then delete it: two actions and one index entry.</summary>
+        private static void EmitSubstitution(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
+                                             string target, string key, JArray actions, JArray createIndex)
+        {
+            JObject carried = CadSplitDependents.CarriedParameters(fi);
+            actions.Add(new JObject
+            {
+                ["key"] = key,
+                ["tool"] = "horizun_create_elements",
+                ["arguments"] = new JObject
+                {
+                    ["target_document"] = target, ["units"] = "mm",
+                    ["elements"] = new JArray(CadSplitDependents.SubstitutionRow(doc, fi, host, set, carried))
+                }
+            });
+            createIndex.Add(CadSplitDependents.IndexEntry(key, fi, carried));
+            actions.Add(new JObject
+            {
+                ["key"] = key + "-delete",
+                ["tool"] = "horizun_delete_verified",
+                ["arguments"] = new JObject
+                {
+                    ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray(Rid.Value(fi.Id))
+                }
+            });
+        }
+
+        /// <summary>
+        /// DEPENDENTS LEFT BEHIND by an earlier split that stopped half way: an instance standing past
+        /// its wall's ends, on the line of exactly one other wall of this update that carries it, is
+        /// re-created there - or, when its substitute already stands there, only the old one is deleted.
+        /// Anything else is listed and left alone.
+        /// </summary>
+        private static void Rehome(Document doc, CadUpdate update, CadRequirementSet set, string target,
+                                   JArray actions, JArray createIndex)
+        {
+            var walls = update.Actions.Where(x => x.ElementId.HasValue && (x.Kind == "leave" || x.Kind == "set_curve"))
+                              .Select(x => doc.GetElement(Rid.Make(x.ElementId.Value)) as Wall)
+                              .Where(w => w != null).GroupBy(w => w.Id).Select(g => g.First()).ToList();
+            if (walls.Count == 0) return;
+            double tol = Math.Max(set.PointToleranceMm, 1.0);
+            var held = new JArray();
+            int n = 0;
+            foreach (Wall w in walls)
+            {
+                if (update.Actions.Any(x => x.ElementId == Rid.Value(w.Id) && x.Kind == "set_curve")) continue;
+                XYZ o, u;
+                double len;
+                if (!CadSplitDependents.LineOf(w, out o, out u, out len)) continue;
+                var byId = new Dictionary<long, FamilyInstance>();
+                foreach (CadSplitDependent d in CadSplitDependents.Read(doc, w, byId))
+                {
+                    if (d.Lo >= -tol && d.Hi <= len + tol) continue;
+                    FamilyInstance fi = byId[d.ElementId];
+                    XYZ at = ((LocationPoint)fi.Location).Point;
+                    var carriers = walls.Where(x => x.Id != w.Id && Carries(x, at, fi, tol)).ToList();
+                    if (carriers.Count != 1 || !d.Recreatable)
+                    {
+                        held.Add(new JObject
+                        {
+                            ["element_id"] = d.ElementId, ["host"] = Rid.Value(w.Id),
+                            ["why"] = !d.Recreatable ? "a class this build does not re-create"
+                                    : carriers.Count == 0 ? "no wall of this update carries it"
+                                    : "more than one wall carries it",
+                            ["candidates"] = new JArray(carriers.Select(x => Rid.Value(x.Id)))
+                        });
+                        continue;
+                    }
+                    Wall to = carriers[0];
+                    FamilyInstance twin = CadSplitDependents.HostedOn(doc, to).FirstOrDefault(x =>
+                        x.GetTypeId() == fi.GetTypeId() && x.Location is LocationPoint lp && lp.Point.DistanceTo(at) * 304.8 <= tol);
+                    if (twin != null)
+                    {
+                        actions.Add(new JObject
+                        {
+                            ["key"] = "cad-update-rehome-delete-" + n++,
+                            ["tool"] = "horizun_delete_verified",
+                            ["arguments"] = new JObject
+                            {
+                                ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray(d.ElementId)
+                            }
+                        });
+                        continue;
+                    }
+                    EmitSubstitution(doc, fi, Rid.Value(to.Id), set, target, "cad-update-rehome-" + n++, actions, createIndex);
+                }
+            }
+            if (held.Count > 0) update.Rejected.Add("dependents left past their wall's end and not re-homed: " +
+                                                   held.ToString(Newtonsoft.Json.Formatting.None));
+        }
+
+        private static bool Carries(Wall w, XYZ at, FamilyInstance fi, double tolMm)
+        {
+            XYZ o, u;
+            double len;
+            if (!CadSplitDependents.LineOf(w, out o, out u, out len)) return false;
+            double along = CadSplitDependents.AlongMm(o, u, at.X * 304.8, at.Y * 304.8);
+            double across = Math.Abs((at.X - o.X) * -u.Y + (at.Y - o.Y) * u.X) * 304.8;
+            return along >= -tolMm && along <= len + tolMm && across <= w.Width * 304.8 / 2.0 + tolMm;
         }
 
         /// <summary>An accepted split that cannot be carried out waits whole: the element and every piece.</summary>
