@@ -264,7 +264,7 @@ namespace Horizun.Revit.Commands
                     // WHAT A RE-SHAPED WALL HOSTS STAYS WHERE IT STANDS. MEASURED (campaign 4): set_curve
                     // on a wall whose start moved carried every face-hosted device along by the same
                     // distance, silently. Their points are read before and put back after.
-                    Dictionary<long, XYZ> before = HostedPoints(doc, args);
+                    Dictionary<long, Tuple<XYZ, long>> before = HostedPoints(doc, args);
                     r = child.Execute(uiApp, args.ToString(Formatting.None));
                     if (r.Success && before.Count > 0)
                     {
@@ -448,8 +448,12 @@ namespace Horizun.Revit.Commands
                         // recognised by THIS reading as that entity
                         p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
                     }
-                    if (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted ||
-                        reason == CadPlacementRules.RestampRulesSuperseded)
+                    // THE NEWER RULES ARE NAMED ONLY WHEN THE WHOLE UPDATE LANDED. MEASURED (campaign 4): a
+                    // partial apply re-stamped the carried elements under the new rules, and the next plan
+                    // could no longer claim what the old rules had built.
+                    if (failures == 0 &&
+                        (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted ||
+                         reason == CadPlacementRules.RestampRulesSuperseded))
                     {
                         // the rules this element now stands under
                         p.RequirementSetId = provenanceTemplate.Value<string>("requirement_set_id") ?? p.RequirementSetId;
@@ -601,9 +605,9 @@ namespace Horizun.Revit.Commands
         private const string RestampKey = "cad-update-restamp";
 
         /// <summary>The points of what the walls of a set_curve action host, before it runs.</summary>
-        private static Dictionary<long, XYZ> HostedPoints(Document doc, JObject args)
+        private static Dictionary<long, Tuple<XYZ, long>> HostedPoints(Document doc, JObject args)
         {
-            var points = new Dictionary<long, XYZ>();
+            var points = new Dictionary<long, Tuple<XYZ, long>>();
             foreach (JObject op in (args["operations"] as JArray ?? new JArray()).OfType<JObject>())
             {
                 if (!string.Equals(op.Value<string>("operation"), "set_curve", StringComparison.Ordinal)) continue;
@@ -612,23 +616,30 @@ namespace Horizun.Revit.Commands
                     var wall = doc.GetElement(Rid.Make((long)id)) as Wall;
                     if (wall == null) continue;
                     foreach (FamilyInstance fi in CadSplitDependents.HostedOn(doc, wall))
-                        if (fi.Location is LocationPoint lp) points[Rid.Value(fi.Id)] = lp.Point;
+                        if (fi.Location is LocationPoint lp) points[Rid.Value(fi.Id)] = Tuple.Create(lp.Point, Rid.Value(wall.Id));
                 }
             }
             return points;
         }
 
         /// <summary>Move back every instance the action displaced, through the typed move; report each.</summary>
-        private IEnumerable<JObject> KeepInPlace(UIApplication uiApp, Document doc, Dictionary<long, XYZ> before,
+        private IEnumerable<JObject> KeepInPlace(UIApplication uiApp, Document doc, Dictionary<long, Tuple<XYZ, long>> before,
                                                  HashSet<long> except, string title, string keyStem)
         {
             ICommand move = _resolve("horizun_transform_elements");
-            foreach (KeyValuePair<long, XYZ> kv in before)
+            foreach (KeyValuePair<long, Tuple<XYZ, long>> kv in before)
             {
                 if (except.Contains(kv.Key)) continue;
                 var fi = doc.GetElement(Rid.Make(kv.Key)) as FamilyInstance;
                 if (fi == null || !(fi.Location is LocationPoint lp)) continue;
-                XYZ d = kv.Value - lp.Point;
+                // ALONG THE WALL ONLY. Across, the instance follows its face - which is where the new
+                // line puts the face - and a move off the face is refused by Revit (MEASURED).
+                var wall = doc.GetElement(Rid.Make(kv.Value.Item2)) as Wall;
+                XYZ o, u;
+                double len;
+                if (wall == null || !CadSplitDependents.LineOf(wall, out o, out u, out len)) continue;
+                XYZ raw = kv.Value.Item1 - lp.Point;
+                XYZ d = u.Multiply(raw.X * u.X + raw.Y * u.Y);
                 if (d.GetLength() * 304.8 < 0.5) continue;
                 var args = new JObject
                 {
@@ -655,7 +666,9 @@ namespace Horizun.Revit.Commands
                 {
                     ["element_id"] = kv.Key,
                     ["displaced_mm"] = Math.Round(d.GetLength() * 304.8, 1),
-                    ["restored"] = done != null && done.Success && now != null && now.DistanceTo(kv.Value) * 304.8 < 0.5,
+                    ["across_followed_the_face_mm"] = Math.Round((raw - d).GetLength() * 304.8, 1),
+                    ["restored"] = done != null && done.Success && now != null &&
+                                   Math.Abs(((kv.Value.Item1 - now).X * u.X + (kv.Value.Item1 - now).Y * u.Y)) * 304.8 < 0.5,
                     ["error"] = done == null ? (dry.Error ?? "no token") : (done.Success ? null : done.Error)
                 };
             }
