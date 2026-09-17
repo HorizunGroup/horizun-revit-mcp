@@ -1007,6 +1007,14 @@ namespace Horizun.Server
                       "assessment.";
                 return;
             }
+            // AN UPDATE PLAN: the operation succeeded when it produced one. What it holds for a
+            // decision or for information is intervention, in the assessment.
+            if (body["apply_binding"] is JObject && body["plan"] is JArray && body["needs_a_person"] != null)
+            {
+                state = Ok;
+                why = "the reply is an update plan; what it holds for a person is in the assessment.";
+                return;
+            }
             // AN AUDIT: the operation succeeded when it read the model against the drawing.
             // Whether the built elements agree is the GEOMETRIC verdict, kept apart.
             if ((bool?)body["read_only"] == true && body["match_states"] is JObject)
@@ -1070,6 +1078,18 @@ namespace Horizun.Server
                     intervention["withdrawn_by_reason"] = byReason;
                 }
                 a["intervention"] = intervention;
+            }
+            if (body["apply_binding"] is JObject && body["plan"] is JArray && body["needs_a_person"] != null)
+            {
+                a["operation"] = "ok";
+                a["intervention"] = new JObject
+                {
+                    ["automatic_actions"] = body["automatic"],
+                    ["awaiting_a_decision"] = body["awaiting_a_decision"],
+                    ["held_for_information"] = body["held_for_information"],
+                    ["pairings_offered"] = (body["pairings_offered"] as JArray)?.Count ?? 0,
+                    ["splits"] = (body["splits"] as JArray)?.Count ?? 0
+                };
             }
             if ((bool?)body["read_only"] == true && body["match_states"] is JObject states)
             {

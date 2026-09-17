@@ -1624,7 +1624,7 @@ namespace Horizun.Server
                     new Step
                     {
                         N = 6, Tool = "horizun_plan_cad_update", RequiresDecision = true,
-                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""needs_a_person"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
+                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
                         DecisionNeeded = "for the WALLS, one grouped decision from the held rows of step 2: " +
                                          "accept_pairings [{element_id, candidate_id}], reject_pairings [candidate_id], " +
                                          "resolve [{element_id, decision}] - each an array, empty when there is nothing " +
@@ -1665,7 +1665,7 @@ namespace Horizun.Server
                     new Step
                     {
                         N = 8, Tool = "horizun_plan_cad_update", RequiresDecision = true,
-                        DecisionUnlessJson = @"{ ""step"": 4, ""path"": ""needs_a_person"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
+                        DecisionUnlessJson = @"{ ""step"": 4, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
                         DecisionNeeded = "for the DEVICES, one grouped decision from the held rows of step 4, in " +
                                          "the same shape as step 6.",
                         ArgumentsJson = @"{

@@ -144,6 +144,7 @@ namespace Horizun.Server.Tests
         [InlineData("{\"reconciles\":true,\"total_rows\":2560}", "ok")]
         [InlineData("{\"reconciles\":false}", "failed")]
         [InlineData("{\"status\":\"healthy\"}", "ok")]
+        [InlineData("{\"apply_binding\":{},\"plan\":[],\"needs_a_person\":2,\"awaiting_a_decision\":0}", "ok")]
         [InlineData("{\"status\":\"degraded\"}", "not_evaluated")]
         [InlineData("{\"read_only\":true,\"agrees\":false}", "not_evaluated")]
         [InlineData("{\"mode\":\"plan\",\"blocked\":0,\"execute_plan_request\":{\"actions\":[]}}", "ok")]

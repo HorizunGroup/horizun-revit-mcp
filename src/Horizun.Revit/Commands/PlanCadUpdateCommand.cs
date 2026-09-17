@@ -500,6 +500,14 @@ namespace Horizun.Revit.Commands
                 ["resolved"] = resolvedNames,
                 ["automatic"] = update.Actions.Count(a => a.Automatic && a.Kind != "leave" && a.Kind != "paired_away"),
                 ["needs_a_person"] = update.Actions.Count(a => !a.Automatic),
+                // WHAT A DECISION IN THIS PLAN CAN RESOLVE, apart from what needs information:
+                // a held element whose change admits a typed decision, or a pairing offered.
+                ["awaiting_a_decision"] = update.Actions.Count(a => !a.Automatic &&
+                    ((a.ElementId.HasValue && CadDecisions.AllowedFor.Any(kv => kv.Value.Contains(a.Classification))) ||
+                     a.PairedWith != null || a.Evidence["may_be_element"] != null)),
+                ["held_for_information"] = update.Actions.Count(a => !a.Automatic &&
+                    !((a.ElementId.HasValue && CadDecisions.AllowedFor.Any(kv => kv.Value.Contains(a.Classification))) ||
+                      a.PairedWith != null || a.Evidence["may_be_element"] != null)),
                 ["plan"] = new JArray(update.Actions.Select(a => a.ToJson())),
                 ["kinds_mean"] = new JObject
                 {

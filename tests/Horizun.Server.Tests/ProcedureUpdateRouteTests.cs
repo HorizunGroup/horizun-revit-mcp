@@ -54,7 +54,7 @@ namespace Horizun.Server.Tests
                         {
                             ["actions"] = new JArray(), ["candidate_index"] = new JArray(),
                             ["provenance"] = new JObject { ["source_file_sha256"] = "x" },
-                            ["needs_a_person"] = held, ["automatic"] = 0
+                            ["needs_a_person"] = held, ["awaiting_a_decision"] = held, ["automatic"] = 0, ["apply_binding"] = new JObject(), ["plan"] = new JArray()
                         };
                         break;
                     case "horizun_apply_cad_update":
@@ -135,7 +135,7 @@ namespace Horizun.Server.Tests
             Assert.Equal(4, _calls.Count(c => c == "horizun_plan_cad_update"));
             // the decisions were recorded as automatic, with the fact that made them so
             Assert.Contains("\"decided_by\": \"automatic\"", text);
-            Assert.Contains("needs_a_person = 0", text);
+            Assert.Contains("awaiting_a_decision = 0", text);
         }
 
         [Fact]
