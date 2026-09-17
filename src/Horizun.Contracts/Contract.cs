@@ -784,6 +784,7 @@ namespace Horizun.Contracts
       ""maxItems"": 500,
       ""description"": ""Name EXACTLY the rows you want - the verification read for write paths. Ids resolve directly (never via category collectors); an id resolving to nothing lands in unreadable instead of silently shrinking the answer. The other filters still apply.""
     },
+    ""target_document"": { ""type"": ""string"", ""description"": ""Optional guard: the title of the document this read is about. When given and the ACTIVE document is another, the read is refused and nothing is returned."" },
     ""response_mode"": {
       ""type"": ""string"",
       ""enum"": [

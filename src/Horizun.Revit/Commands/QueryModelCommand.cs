@@ -31,6 +31,10 @@ namespace Horizun.Revit.Commands
 
             Document host = app.ActiveUIDocument?.Document;
             if (host == null) return CommandResult.Fail("No active Revit document.");
+            // A READ THAT NAMES A DOCUMENT READS THAT ONE OR NOTHING. MEASURED (campaign 4): a query
+            // naming a model just reopened answered 0 rows from another document, cleanly.
+            CommandResult wrongDocument = DocumentGate.ReadGuard(host, request, "horizun_query_model");
+            if (wrongDocument != null) return wrongDocument;
 
             bool includeLinks = request["include_links"] == null || request.Value<bool>("include_links");
             string scope = (request.Value<string>("scope") ?? "model").ToLowerInvariant();

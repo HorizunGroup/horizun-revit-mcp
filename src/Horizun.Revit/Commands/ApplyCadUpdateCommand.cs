@@ -508,6 +508,10 @@ namespace Horizun.Revit.Commands
                 // them "moved by a person". They were moved by THIS run, so their
                 // record is brought to where they now stand - and said so.
                 var reshapedHosts = new HashSet<long>(touched.Where(x => !x.RowIndex.HasValue).Select(x => x.ElementId));
+                // A DEPENDENT THE UPDATE MEANT TO RE-CREATE keeps the record of where it was built: re-stamping
+                // it where its wall carried it would hide the move from the next plan (MEASURED, campaign 4).
+                var toSubstitute = new HashSet<long>(actions.OfType<JObject>()
+                    .SelectMany(x => (x["hosted_to_substitute"] as JArray ?? new JArray()).Select(v => (long)v)));
                 if (reshapedHosts.Count > 0)
                 {
                     foreach (FamilyInstance fi in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
@@ -517,6 +521,7 @@ namespace Horizun.Revit.Commands
                         try { hostId = fi.Host == null ? -1 : Rid.Value(fi.Host.Id); } catch { continue; }
                         if (!reshapedHosts.Contains(hostId)) continue;
                         long id = Rid.Value(fi.Id);
+                        if (toSubstitute.Contains(id)) continue;
                         if (touched.Any(x => x.ElementId == id)) continue;
                         string problem;
                         CadProvenance existing = CadProvenanceStore.Read(fi, out problem);
