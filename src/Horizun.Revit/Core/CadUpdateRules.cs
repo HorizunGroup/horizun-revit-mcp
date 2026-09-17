@@ -240,6 +240,7 @@ namespace Horizun.Revit.Core
         public const string RotateInFace = "rotate_in_face";
         public const string Keep = "keep";
         public const string Replace = "replace";
+        public const string Delete = "delete";
 
         public static readonly Dictionary<string, string[]> AllowedFor = new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
@@ -248,7 +249,10 @@ namespace Horizun.Revit.Core
             [Keep] = new[] { CadChange.ManuallyDiverged, CadChange.Resized, CadChange.Retyped, CadChange.Reoriented,
                              CadChange.Rehosted, CadChange.Reinterpreted, CadChange.Relayered, CadChange.Conflict,
                              CadChange.Removed },
-            [Replace] = new[] { CadChange.Rehosted, CadChange.Reoriented, CadChange.Conflict, CadChange.Reinterpreted }
+            [Replace] = new[] { CadChange.Rehosted, CadChange.Reoriented, CadChange.Conflict, CadChange.Reinterpreted },
+            // DELETION IS A PERSON'S DECISION ON AN ORPHAN, and only on one: an element the
+            // drawing no longer says, or no longer says and a person also moved.
+            [Delete] = new[] { CadChange.Removed, CadChange.Conflict }
         };
 
         /// <summary>
@@ -270,7 +274,7 @@ namespace Horizun.Revit.Core
                 string[] allowed;
                 if (d.Decision == null || !AllowedFor.TryGetValue(d.Decision, out allowed))
                 {
-                    errors.Add("resolve: '" + d.Decision + "' is not a decision (retype, rotate_in_face, keep, replace)");
+                    errors.Add("resolve: '" + d.Decision + "' is not a decision (retype, rotate_in_face, keep, replace, delete)");
                     continue;
                 }
                 CadUpdateAction held = update.Actions.FirstOrDefault(a => a.ElementId == d.ElementId &&
@@ -278,6 +282,12 @@ namespace Horizun.Revit.Core
                 if (held == null)
                 {
                     errors.Add("resolve: element " + d.ElementId + " is not held for a person in this plan");
+                    continue;
+                }
+                if (d.Decision == Delete && held.Kind != "orphan")
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is not an orphan; delete applies to an element " +
+                               "the drawing no longer says, and to nothing else");
                     continue;
                 }
                 if (!allowed.Contains(held.Classification))
@@ -300,6 +310,12 @@ namespace Horizun.Revit.Core
                         held.Automatic = true;
                         held.Says += " KEPT: a person decided the element stays as it is; its record is re-stamped " +
                                      "with where it stands now, so the next plan does not ask again.";
+                        break;
+                    case Delete:
+                        held.Kind = Delete;
+                        held.Automatic = true;
+                        held.Says += " DELETE: a person decided the element goes with the drawing. It is deleted " +
+                                     "through horizun_delete_verified, which re-reads what died.";
                         break;
                     case Replace:
                         held.Kind = "replace";
@@ -686,8 +702,13 @@ namespace Horizun.Revit.Core
                     // it as nothing to do - and the model keeps carrying the old
                     // size into every quantity and every clash.
                     double? wantsWidth = c.ThicknessMm ?? c.DiameterMm;
+                    // A THICKNESS IS JUDGED BY THE THICKNESS TOLERANCE, not by how far a
+                    // revision may move a line: measured, 17 mm of wrong wall passed as
+                    // unchanged under the 25 mm revision tolerance.
+                    double widthTolerance = c.ThicknessMm.HasValue && set != null
+                        ? set.ThicknessToleranceMm : Math.Max(tolerance, 1.0);
                     if (wantsWidth.HasValue && held.WidthMm.HasValue &&
-                        Math.Abs(wantsWidth.Value - held.WidthMm.Value) > Math.Max(tolerance, 1.0))
+                        Math.Abs(wantsWidth.Value - held.WidthMm.Value) > widthTolerance)
                     {
                         update.Actions.Add(new CadUpdateAction
                         {
@@ -714,7 +735,13 @@ namespace Horizun.Revit.Core
                     }
 
                     string wantsType = c.FamilyType;
-                    if (!string.IsNullOrWhiteSpace(wantsType) && !SameType(wantsType, held.TypeName))
+                    // A WALL TYPED BY THICKNESS carries whichever listed type fits; the
+                    // rule's single family type is only its fallback. MEASURED: every wall
+                    // of a unit built under wall_types came back "retyped".
+                    CadRule typeRule = set?.Rules.FirstOrDefault(r => r.Id == c.RuleId);
+                    bool listed = typeRule?.WallTypes != null && typeRule.WallTypes.Count > 0 &&
+                                  typeRule.WallTypes.Any(t => SameType(t, held.TypeName));
+                    if (!string.IsNullOrWhiteSpace(wantsType) && !SameType(wantsType, held.TypeName) && !listed)
                     {
                         update.Actions.Add(new CadUpdateAction
                         {
@@ -875,6 +902,7 @@ namespace Horizun.Revit.Core
         /// drawing had not changed at all. The element's provenance says which
         /// bytes and which reading built it, so the question has an answer:
         ///
+        ///   same bytes, same reading       person    (nothing else changed)
         ///   same bytes, other reading      reading   (held: reinterpreted)
         ///   same bytes, reading unrecorded reading   (held: nothing else can move a line)
         ///   other bytes, other reading     drawing_and_reading (held: the two cannot be separated)
@@ -917,6 +945,7 @@ namespace Horizun.Revit.Core
                     bool sameReading = readingKnown &&
                                        string.Equals(p.InterpretationVersion, interpretationVersion, StringComparison.Ordinal);
                     if (sameBytes && placementMoved) origin = "placement";
+                    else if (sameBytes && sameReading) origin = "person";
                     else if (sameBytes) origin = "reading";
                     else if (readingKnown && !sameReading) origin = "drawing_and_reading";
                     else if (readingKnown) origin = "drawing";

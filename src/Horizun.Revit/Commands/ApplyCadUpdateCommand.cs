@@ -331,6 +331,7 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     bool wasV1 = existing.IsV1;
+                    string wasVersion = wasV1 ? "v1" : existing.SchemaVersion >= 3 ? "v3" : "v2";
                     CadProvenance p = existing.Clone();
                     p.SchemaVersion = CadProvenanceStore.CurrentVersion;
                     if (reason == CadPlacementRules.RestampCarried)
@@ -372,7 +373,7 @@ namespace Horizun.Revit.Commands
                     restamps.Add(new JObject
                     {
                         ["element_id"] = id, ["reason"] = reason, ["written"] = ok,
-                        ["was_version"] = wasV1 ? "v1" : "v2",
+                        ["was_version"] = wasVersion,
                         ["means"] = ok
                             ? (reason == CadPlacementRules.RestampCarried
                                    ? "carried to this revision: the update matched this element to the same entity " +

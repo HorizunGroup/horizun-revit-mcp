@@ -67,16 +67,32 @@ namespace Horizun.Core.Tests
             CadUpdate u = Held((1, CadChange.ManuallyDiverged, "review"), (2, CadChange.Unchanged, "leave"),
                                (3, CadChange.Moved, "set_curve"));
             List<string> errors = CadDecisions.Apply(u, D((1, "retype"), (2, "keep"), (3, "keep"), (4, "keep"),
-                                                          (1, "keep"), (5, "delete")));
+                                                          (1, "keep"), (5, "erase")));
             Assert.Equal(6, errors.Count);
             Assert.Contains(errors, e => e.Contains("element 1 is manually_diverged") && e.Contains("'retype'"));
             Assert.Contains(errors, e => e.Contains("element 2 is not held"));
             Assert.Contains(errors, e => e.Contains("element 3 is not held"));
             Assert.Contains(errors, e => e.Contains("element 4 is not held"));
             Assert.Contains(errors, e => e.Contains("names element 1 twice"));
-            Assert.Contains(errors, e => e.Contains("'delete' is not a decision"));
+            Assert.Contains(errors, e => e.Contains("'erase' is not a decision"));
             Assert.Equal("review", u.Actions[0].Kind);
             Assert.Null(u.Actions[0].Evidence["decision"]);
+        }
+
+        [Fact]
+        public void Delete_is_a_decision_on_an_orphan_and_on_nothing_else()
+        {
+            CadUpdate u = Held((1, CadChange.Removed, "orphan"), (2, CadChange.ManuallyDiverged, "review"),
+                               (3, CadChange.Conflict, "orphan"), (4, CadChange.Conflict, "review"));
+            List<string> errors = CadDecisions.Apply(u, D((1, "delete"), (2, "delete"), (3, "delete"), (4, "delete")));
+            Assert.Equal(2, errors.Count);
+            Assert.Contains(errors, e => e.Contains("element 2 is not an orphan"));
+            Assert.Contains(errors, e => e.Contains("element 4 is not an orphan"));
+            Assert.Equal("delete", u.Actions[0].Kind);
+            Assert.True(u.Actions[0].Automatic);
+            Assert.Contains("DELETE", u.Actions[0].Says);
+            Assert.Equal("delete", u.Actions[2].Kind);
+            Assert.Equal("review", u.Actions[1].Kind);
         }
 
         [Fact]
@@ -108,7 +124,9 @@ namespace Horizun.Core.Tests
             Assert.Contains("reason = CadPlacementRules.RestampAccepted;", plan);
             Assert.Contains("if (reason == CadPlacementRules.RestampAccepted)", apply);
             Assert.Contains("p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e));", apply);
-            Assert.Contains("\"\"enum\"\": [\"\"retype\"\", \"\"rotate_in_face\"\", \"\"keep\"\", \"\"replace\"\"]", contract);
+            Assert.Contains("\"\"enum\"\": [\"\"retype\"\", \"\"rotate_in_face\"\", \"\"keep\"\", \"\"replace\"\", \"\"delete\"\"]", contract);
+            Assert.Contains("[\"tool\"] = \"horizun_delete_verified\"", plan);
+            Assert.Contains("string wasVersion = wasV1 ? \"v1\" : existing.SchemaVersion >= 3 ? \"v3\" : \"v2\";", apply);
         }
     }
 }

@@ -447,7 +447,8 @@ namespace Horizun.Revit.Commands
                 {
                     ["applied"] = decisions.Count,
                     ["migration_plans"] = migrations,
-                    ["means"] = "retype and rotate_in_face became typed actions that keep the element; keep " +
+                    ["means"] = "retype and rotate_in_face became typed actions that keep the element; delete " +
+                                "became a verified delete of that one element; keep " +
                                 "re-stamps the element as it stands; replace is a migration plan only. A decision " +
                                 "whose typed action could not be derived stays held, with the reason in its evidence."
                 },
@@ -652,6 +653,9 @@ namespace Horizun.Revit.Commands
                         return row.HasValue && actionByRow.TryGetValue(row.Value, out pa) && pa.CandidateId == a.CandidateId;
                     });
                     a.Evidence["withdrawn"] = why == null ? (JToken)"the conversion produced no row for it" : why;
+                    a.Evidence["new_or_never_built"] = "this plan cannot tell whether the symbol is new in this " +
+                        "revision or was already withdrawn, for the same reason, when the unit was converted: nothing " +
+                        "in the model records a withdrawal";
                     a.Says += " NOT in the actions: " + (why == null
                         ? "the conversion rules produced no row for this candidate."
                         : "resolution withdrew it (" + why.Value<string>("reason") + ").");
@@ -752,6 +756,23 @@ namespace Horizun.Revit.Commands
                     }
                 });
                 a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
+            }
+
+            // WHAT A PERSON DECIDED TO DELETE: one verified delete per element.
+            int removals = 0;
+            foreach (CadUpdateAction a in update.Of(CadDecisions.Delete).Where(o => o.Automatic && o.ElementId.HasValue))
+            {
+                actions.Add(new JObject
+                {
+                    ["key"] = "cad-update-delete-" + (removals++),
+                    ["tool"] = "horizun_delete_verified",
+                    ["arguments"] = new JObject
+                    {
+                        ["target_document"] = target,
+                        ["mode"] = "ids",
+                        ["ids"] = new JArray(a.ElementId.Value)
+                    }
+                });
             }
 
             // A POINT MOVES BY A VECTOR, along its own wall.

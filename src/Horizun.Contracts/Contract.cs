@@ -1630,10 +1630,10 @@ namespace Horizun.Contracts
         ""element_id"": { ""type"": ""integer"" }, ""candidate_id"": { ""type"": ""string"" }
       }, ""additionalProperties"": false } },
     ""resolve"": { ""type"": ""array"", ""maxItems"": 500,
-      ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place). A decision the change does not admit, or on an element not held, refuses the whole plan."",
+      ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place), delete (an ORPHAN only - removed, or removed and moved by hand - deleted through horizun_delete_verified; nothing is ever deleted without this decision). A decision the change does not admit, or on an element not held, refuses the whole plan."",
       ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision""], ""properties"": {
         ""element_id"": { ""type"": ""integer"" },
-        ""decision"": { ""type"": ""string"", ""enum"": [""retype"", ""rotate_in_face"", ""keep"", ""replace""] }
+        ""decision"": { ""type"": ""string"", ""enum"": [""retype"", ""rotate_in_face"", ""keep"", ""replace"", ""delete""] }
       }, ""additionalProperties"": false } },
     ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 }
   },

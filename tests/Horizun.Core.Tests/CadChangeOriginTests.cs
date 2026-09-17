@@ -111,6 +111,18 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_same_bytes_and_the_same_reading_leave_only_a_person()
+        {
+            // A pairing a person accepted over unchanged bytes and an unchanged reading.
+            CadRequirementSet set = Set();
+            CadUpdate u = Moved(set, RevA, ReadingNew, RevA);
+            CadUpdateRules.AttributeOrigins(u, new[] { Subject(set, RevA, ReadingNew) }, set, RevA, ReadingNew);
+            CadUpdateAction curve = u.Of("set_curve").Single();
+            Assert.True(curve.Automatic);
+            Assert.Equal("person", (string)curve.Evidence["change_origin"]);
+        }
+
+        [Fact]
         public void The_same_bytes_with_no_recorded_reading_are_held_too()
         {
             // Nothing but the reading or the rules can move a line of unchanged bytes.

@@ -155,5 +155,46 @@ namespace Horizun.Core.Tests
                 Assert.NotNull(Horizun.Contracts.ToolInputRules.ValidateCreation(
                     new JObject { ["kind"] = "wall", [key] = 1 }, "wall"));
         }
+
+        private static CadAuditSubject Held(CadCandidate c, CadRequirementSet set, string type, double width) =>
+            new CadAuditSubject
+            {
+                ElementId = 11, Category = "Walls", TypeName = type, WidthMm = width,
+                Geometry = new List<CadPoint>(c.Geometry),
+                Provenance = new CadProvenance
+                {
+                    SchemaVersion = 3, CandidateId = c.Id, GeometryId = c.GeometryId, SemanticId = c.SemanticId,
+                    RuleId = c.RuleId, Layer = c.Layer, RequirementSetSha256 = set.Sha256, SourceFileSha256 = "rev-a",
+                    BuiltGeometry = CadUpdateRules.Encode(c.Geometry)
+                }
+            };
+
+        [Fact]
+        public void An_update_does_not_call_a_wall_typed_by_thickness_retyped_and_judges_thickness_by_its_tolerance()
+        {
+            // MEASURED: every wall of a unit built under wall_types came back "retyped",
+            // because the update compared it with the rule's fallback type.
+            CadRequirementSet set = Set(Types);
+            var lines = new List<CadSegment>
+            {
+                new CadSegment(new CadPoint(0, 0), new CadPoint(4000, 0), "A-WALL", CadCurveKind.Line, 0),
+                new CadSegment(new CadPoint(0, 161.9), new CadPoint(4000, 161.9), "A-WALL", CadCurveKind.Line, 0)
+            };
+            CadCandidate c = CadInterpretationRules.Interpret(lines, set, "rev-b").Candidates.Single();
+            CadUpdate typed = CadUpdateRules.Plan(new List<CadCandidate> { c },
+                new List<CadAuditSubject> { Held(c, set, "HZ-TEST 161.9", 161.9) }, set, "rev-b", lineage: new[] { "rev-a" });
+            Assert.Equal(CadChange.Unchanged, typed.Actions.Single().Classification);
+
+            // A listed type of the wrong width is resized - 17.4 mm is not "unchanged"
+            // just because a revision may move a line by 25.
+            CadUpdate thin = CadUpdateRules.Plan(new List<CadCandidate> { c },
+                new List<CadAuditSubject> { Held(c, set, "Generic - 5\"", 144.5) }, set, "rev-b", lineage: new[] { "rev-a" });
+            Assert.Equal(CadChange.Resized, thin.Actions.Single().Classification);
+
+            // A type the rule does not list is retyped.
+            CadUpdate other = CadUpdateRules.Plan(new List<CadCandidate> { c },
+                new List<CadAuditSubject> { Held(c, set, "Exterior - Brick", 161.9) }, set, "rev-b", lineage: new[] { "rev-a" });
+            Assert.Equal(CadChange.Retyped, other.Actions.Single().Classification);
+        }
     }
 }
