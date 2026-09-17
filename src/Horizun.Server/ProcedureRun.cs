@@ -825,6 +825,46 @@ namespace Horizun.Server
                 return;
             }
 
+            // THE CAD CONVERSION'S OWN FIELDS. MEASURED: a batch of three units through
+            // dwg-to-bim-unit came back "not evaluated" on all thirty steps, although each
+            // apply said how many stages failed and the inventory said whether it adds up.
+            if ((bool?)body["reconciles"] == false)
+            {
+                state = Failed;
+                why = "the reply says its totals do NOT reconcile: the reading is not an inventory.";
+                return;
+            }
+            JToken stagesFailed = body["stages_failed"];
+            if (stagesFailed != null && stagesFailed.Type == JTokenType.Integer)
+            {
+                if ((int)stagesFailed > 0)
+                {
+                    state = Failed;
+                    why = "the reply says " + (int)stagesFailed + " stage(s) failed.";
+                    return;
+                }
+                if ((bool?)body["stopped_early"] != true &&
+                    (declared == "applied" || declared == "rehearsed" || declared == "nothing_to_apply"))
+                {
+                    state = Ok;
+                    why = "the reply declares '" + declared + "' with no failed stage; each stage re-reads what " +
+                          "it built.";
+                    return;
+                }
+            }
+            if ((bool?)body["reconciles"] == true)
+            {
+                state = Ok;
+                why = "the reply says every total reconciles.";
+                return;
+            }
+            if (string.Equals((string)body["status"], "healthy", StringComparison.Ordinal))
+            {
+                state = Ok;
+                why = "the reply says the bridge is healthy.";
+                return;
+            }
+
             state = NotEvaluated;
             why = "the reply carries no field this build knows how to read as evidence - no 'verified', no " +
                   "application outcome, no coverage statement. The result is kept; the verdict is not " +

@@ -516,8 +516,12 @@ namespace Horizun.Revit.Commands
             foreach (JObject op in ops.OfType<JObject>())
             {
                 string operation = op.Value<string>("operation");
+                // Every operation an update emits changes what the element IS or where it
+                // stands, so each one is re-stamped: a resolved retype or turn included.
                 if (!string.Equals(operation, "set_curve", StringComparison.Ordinal) &&
-                    !string.Equals(operation, "move", StringComparison.Ordinal)) continue;
+                    !string.Equals(operation, "move", StringComparison.Ordinal) &&
+                    !string.Equals(operation, "rotate", StringComparison.Ordinal) &&
+                    !string.Equals(operation, "change_type", StringComparison.Ordinal)) continue;
                 foreach (JToken id in op["element_ids"] as JArray ?? new JArray())
                 {
                     long value;

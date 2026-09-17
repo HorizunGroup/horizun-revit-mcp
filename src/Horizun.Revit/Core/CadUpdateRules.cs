@@ -902,7 +902,8 @@ namespace Horizun.Revit.Core
         /// drawing had not changed at all. The element's provenance says which
         /// bytes and which reading built it, so the question has an answer:
         ///
-        ///   same bytes, same reading       person    (nothing else changed)
+        ///   same bytes, same reading       person    (nothing else changed), or unknown for a
+        ///                                  size or type the record never kept
         ///   same bytes, other reading      reading   (held: reinterpreted)
         ///   same bytes, reading unrecorded reading   (held: nothing else can move a line)
         ///   other bytes, other reading     drawing_and_reading (held: the two cannot be separated)
@@ -944,7 +945,14 @@ namespace Horizun.Revit.Core
                                         !string.IsNullOrEmpty(interpretationVersion);
                     bool sameReading = readingKnown &&
                                        string.Equals(p.InterpretationVersion, interpretationVersion, StringComparison.Ordinal);
+                    // A SIZE OR TYPE the record never kept cannot be attributed: after an
+                    // update re-stamps an element to a revision, the thickness that
+                    // revision asks for and the type the element has were never compared
+                    // at the moment of building. MEASURED: a wall moved by the drawing and
+                    // re-shaped by the update came back "resized" and was blamed on a person.
+                    bool sizeOrType = a.Classification == CadChange.Resized || a.Classification == CadChange.Retyped;
                     if (sameBytes && placementMoved) origin = "placement";
+                    else if (sameBytes && sameReading && sizeOrType) origin = "unknown";
                     else if (sameBytes && sameReading) origin = "person";
                     else if (sameBytes) origin = "reading";
                     else if (readingKnown && !sameReading) origin = "drawing_and_reading";

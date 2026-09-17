@@ -134,6 +134,25 @@ namespace Horizun.Server.Tests
                 string.Join(", ", _calls));
         }
 
+        [Theory]
+        [InlineData("{\"state\":\"applied\",\"stages_failed\":0,\"stopped_early\":false,\"created_verified\":21}", "ok")]
+        [InlineData("{\"state\":\"rehearsed\",\"stages_failed\":0,\"stopped_early\":false}", "ok")]
+        [InlineData("{\"state\":\"partial\",\"stages_failed\":1}", "not_evaluated")]
+        [InlineData("{\"state\":\"applied\",\"stages_failed\":0,\"stopped_early\":true}", "not_evaluated")]
+        [InlineData("{\"state\":\"applied_nothing\",\"stages_failed\":0}", "not_evaluated")]
+        [InlineData("{\"stages_failed\":2}", "failed")]
+        [InlineData("{\"reconciles\":true,\"total_rows\":2560}", "ok")]
+        [InlineData("{\"reconciles\":false}", "failed")]
+        [InlineData("{\"status\":\"healthy\"}", "ok")]
+        [InlineData("{\"status\":\"degraded\"}", "not_evaluated")]
+        [InlineData("{\"read_only\":true,\"agrees\":false}", "not_evaluated")]
+        public void A_step_is_judged_by_the_fields_its_own_reply_carries(string reply, string expected)
+        {
+            ProcedureRun.Judge(ProcedureRun.Ok, JObject.Parse(reply), out string state, out string why);
+            Assert.Equal(expected, state);
+            Assert.False(string.IsNullOrEmpty(why));
+        }
+
         [Fact]
         public void A_run_id_nobody_issued_is_refused_rather_than_started()
         {

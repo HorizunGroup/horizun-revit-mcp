@@ -126,6 +126,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(e));", apply);
             Assert.Contains("\"\"enum\"\": [\"\"retype\"\", \"\"rotate_in_face\"\", \"\"keep\"\", \"\"replace\"\", \"\"delete\"\"]", contract);
             Assert.Contains("[\"tool\"] = \"horizun_delete_verified\"", plan);
+            Assert.Contains("!string.Equals(operation, \"change_type\", StringComparison.Ordinal)) continue;", apply);
             Assert.Contains("string wasVersion = wasV1 ? \"v1\" : existing.SchemaVersion >= 3 ? \"v3\" : \"v2\";", apply);
         }
     }

@@ -123,6 +123,17 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_size_the_record_never_kept_is_not_blamed_on_a_person()
+        {
+            CadRequirementSet set = Set();
+            var u = new CadUpdate();
+            u.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "review", Classification = CadChange.Resized,
+                                                Says = "held." });
+            CadUpdateRules.AttributeOrigins(u, new[] { Subject(set, RevA, ReadingNew) }, set, RevA, ReadingNew);
+            Assert.Equal("unknown", (string)u.Actions.Single().Evidence["change_origin"]);
+        }
+
+        [Fact]
         public void The_same_bytes_with_no_recorded_reading_are_held_too()
         {
             // Nothing but the reading or the rules can move a line of unchanged bytes.

@@ -17,6 +17,14 @@
 //
 // "Clearly" is the tolerance: a device beside a corner is a few millimetres from
 // the other wall's face too, and that is not a different host.
+//
+// A HOST'S OWN FACE STANDS AT ITS HALF WIDTH. MEASURED (unit 915F): a receptacle
+// drawn against a 119.1 mm wall that was withdrawn for want of a type was hosted
+// on the BACK face of the 101.6 mm wall behind it, 170 mm from where it is drawn.
+// The check had counted every parallel line within half width + host search as the
+// host's own face, so the drawn face of the missing wall, 220 mm off the host's
+// centreline, passed as the host's. A face now stands within the half width plus
+// the point tolerance plus the finish a reading may leave outside the pair.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -36,6 +44,12 @@ namespace Horizun.Revit.Core
 
     public static class CadHostPlausibility
     {
+        /// <summary>
+        /// How far a drawn face may stand outside the model wall's own face: the finish
+        /// lines a reading leaves outside the pair it built (measured 8 to 17.5 mm).
+        /// </summary>
+        public const double FaceStandOffMm = 20.0;
+
         public static CadHostPlausibilityResult Check(CadPoint symbol, CadPoint hostA, CadPoint hostB,
                                                       double hostHalfWidthMm, IEnumerable<CadSegment> hostLayerLines,
                                                       double angleToleranceDegrees, double toleranceMm,
@@ -62,7 +76,8 @@ namespace Horizun.Revit.Core
                     double t0 = (s.A.X - hostA.X) * u.X + (s.A.Y - hostA.Y) * u.Y;
                     double t1 = (s.B.X - hostA.X) * u.X + (s.B.Y - hostA.Y) * u.Y;
                     double alongside = Math.Min(Math.Max(t0, t1), length) - Math.Max(Math.Min(t0, t1), 0);
-                    isHostFace = across <= hostHalfWidthMm + hostSearchMm && alongside > -toleranceMm;
+                    isHostFace = across <= hostHalfWidthMm + toleranceMm + FaceStandOffMm &&
+                                 alongside > -toleranceMm;
                 }
                 if (isHostFace) host = Math.Min(host, d);
                 else if (d < other) { other = d; otherLine = s; }
