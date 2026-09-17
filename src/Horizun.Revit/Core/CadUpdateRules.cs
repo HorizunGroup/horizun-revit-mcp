@@ -892,8 +892,8 @@ namespace Horizun.Revit.Core
         /// <summary>The origins a change can have; every action carries one in evidence.change_origin.</summary>
         public static readonly string[] Origins =
         {
-            "none", "drawing", "reading", "drawing_and_reading", "placement", "rules", "person",
-            "drawing_and_person", "unknown"
+            "none", "drawing", "reading", "drawing_and_reading", "placement", "rules", "drawing_and_rules",
+            "person", "drawing_and_person", "unknown"
         };
 
         /// <summary>
@@ -940,7 +940,17 @@ namespace Horizun.Revit.Core
                 else if (p == null) origin = "unknown";
                 else if (set != null && !string.IsNullOrEmpty(p.RequirementSetSha256) &&
                          !string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal))
-                    origin = "rules";
+                {
+                    // THE RULES CHANGED - and the drawing too, when the record can show it.
+                    bool setsComparable = (sourceSetSha256 == null) == (p.SourceSetSha256 == null);
+                    bool drawingChanged = setsComparable && !string.IsNullOrEmpty(sourceFileSha256) &&
+                        (!string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal) ||
+                         !string.Equals(p.SourceSetSha256, sourceSetSha256, StringComparison.Ordinal));
+                    origin = drawingChanged ? "drawing_and_rules" : "rules";
+                    if (!setsComparable)
+                        a.Evidence["origin_not_comparable"] =
+                            "the rules changed; whether the drawing changed too cannot be shown from this record";
+                }
                 else
                 {
                     // A RECORD MADE WITH THE HOST'S HASH ALONE cannot be compared with a reading of

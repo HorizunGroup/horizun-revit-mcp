@@ -193,6 +193,76 @@ namespace Horizun.Core.Tests
             Assert.Contains("no longer on this machine", after.Detail.ToString());
         }
 
+        private static CadDwgReading ReadingWithAll(params string[] nameAndPath)
+        {
+            var r = new CadDwgReading { DrawingName = "unit.dwg", Complete = true };
+            for (int i = 0; i + 1 < nameAndPath.Length; i += 2)
+                r.ExternalReferences.Add(new CadIrExternalReference { Name = nameAndPath[i], Path = nameAndPath[i + 1] });
+            return r;
+        }
+
+        private static string Set(string root, string sub, string content)
+        {
+            string path = Path.Combine(root, sub);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, content);
+            return path;
+        }
+
+        [Fact]
+        public void A_relative_reference_in_a_subfolder_is_read_from_the_copy_not_the_original()
+        {
+            // The declared path is relative (@".\ARCH\background.dwg"): it belongs to the folder of the
+            // drawing that declares it, whatever the process's current directory is.
+            string orig = Path.Combine(_root, "o"), copy = Path.Combine(_root, "c");
+            string o = Set(orig, "unit.dwg", "host"); Set(orig, "ARCH/background.dwg", "v1");
+            string c = Set(copy, "unit.dwg", "host"); Set(copy, "ARCH/background.dwg", "v2");
+            string sha = CadDwgCache.Sha256(o);
+            string tsv = File_("r.tsv", "H\tdone\t1\n");
+            CadDwgCache.Store(CadDwgCache.Lookup(o, sha, "e", "o"), tsv, ReadingWithAll("background", @".\ARCH\background.dwg"), o, 1.0);
+            Assert.True(CadDwgCache.Lookup(o, sha, "e", "o").Hit);
+            CadDwgCacheEntry forCopy = CadDwgCache.Lookup(c, sha, "e", "o");
+            Assert.False(forCopy.Hit);
+            Assert.Equal("dependency_changed", forCopy.Miss);
+            Assert.NotEqual(CadDwgCache.SourceSetSha256(o, sha), CadDwgCache.SourceSetSha256(c, sha));
+        }
+
+        [Fact]
+        public void A_nested_reference_is_resolved_from_its_parents_folder_and_its_change_is_seen()
+        {
+            // "background|grid": the grid is referenced BY the background, with a path relative to it.
+            string root = Path.Combine(_root, "n");
+            string host = Set(root, "unit.dwg", "host");
+            Set(root, "ARCH/background.dwg", "bg");
+            string grid = Set(root, "ARCH/GRIDS/grid.dwg", "grid v1");
+            Set(root, "GRIDS/grid.dwg", "a decoy beside the host");
+            string sha = CadDwgCache.Sha256(host);
+            string tsv = File_("n.tsv", "H\tdone\t1\n");
+            var reading = ReadingWithAll("background", @".\ARCH\background.dwg", "background|grid", @".\GRIDS\grid.dwg");
+            var resolved = CadDwgCache.ResolveAll(root, reading.ExternalReferences);
+            Assert.Contains(resolved.Values, v => v != null && v.EndsWith(Path.Combine("ARCH", "GRIDS", "grid.dwg")));
+            CadDwgCache.Store(CadDwgCache.Lookup(host, sha, "e", "o"), tsv, reading, host, 1.0);
+            Assert.True(CadDwgCache.Lookup(host, sha, "e", "o").Hit);
+            File.WriteAllText(grid, "grid v2");
+            CadDwgCacheEntry after = CadDwgCache.Lookup(host, sha, "e", "o");
+            Assert.False(after.Hit);
+            Assert.Contains("GRIDS", after.Detail.ToString());
+        }
+
+        [Fact]
+        public void A_copy_that_lacks_a_reference_is_not_compared_with_the_originals()
+        {
+            string orig = Path.Combine(_root, "o2"), copy = Path.Combine(_root, "c2");
+            string o = Set(orig, "unit.dwg", "host"); Set(orig, "background.dwg", "v1");
+            string c = Set(copy, "unit.dwg", "host");
+            string sha = CadDwgCache.Sha256(o);
+            string tsv = File_("m.tsv", "H\tdone\t1\n");
+            CadDwgCache.Store(CadDwgCache.Lookup(o, sha, "e", "o"), tsv, ReadingWithAll("background", "background.dwg"), o, 1.0);
+            CadDwgCacheEntry forCopy = CadDwgCache.Lookup(c, sha, "e", "o");
+            Assert.False(forCopy.Hit);
+            Assert.Contains("no longer on this machine", forCopy.Detail.ToString());
+        }
+
         [Fact]
         public void A_reading_with_no_end_marker_is_never_stored_as_whole()
                 {

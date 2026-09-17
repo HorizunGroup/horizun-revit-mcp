@@ -155,6 +155,25 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_rules_change_with_a_changed_reference_is_attributed_to_both()
+        {
+            CadRequirementSet set = Set();
+            var u = new CadUpdate();
+            u.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "review", Classification = CadChange.Resized,
+                                                Says = "resized." });
+            CadAuditSubject s = Subject(set, RevA, ReadingNew, "set:one");
+            s.Provenance.RequirementSetSha256 = "older-rules";
+            CadUpdateRules.AttributeOrigins(u, new[] { s }, set, RevA, ReadingNew, sourceSetSha256: "set:two");
+            Assert.Equal("drawing_and_rules", (string)u.Actions.Single().Evidence["change_origin"]);
+
+            var same = new CadUpdate();
+            same.Actions.Add(new CadUpdateAction { ElementId = 1001, Kind = "review", Classification = CadChange.Resized,
+                                                   Says = "resized." });
+            CadUpdateRules.AttributeOrigins(same, new[] { s }, set, RevA, ReadingNew, sourceSetSha256: "set:one");
+            Assert.Equal("rules", (string)same.Actions.Single().Evidence["change_origin"]);
+        }
+
+        [Fact]
         public void Two_records_of_the_set_are_compared_as_bytes()
         {
             CadRequirementSet set = Set();

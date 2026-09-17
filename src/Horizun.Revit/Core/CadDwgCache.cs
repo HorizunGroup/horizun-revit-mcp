@@ -156,19 +156,33 @@ namespace Horizun.Revit.Core
             string here = null;
             try { here = Path.GetDirectoryName(dwgPath); } catch { }
             var changed = new JArray();
-            foreach (JObject dep in (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>())
+            var recorded = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+            Dictionary<string, string> resolvedHere = ResolveAll(here, recorded.Select(d => new CadIrExternalReference
+            {
+                Name = (string)d["name"], Path = (string)d["declared"]
+            }).ToList());
+            foreach (JObject dep in recorded)
             {
                 string path = (string)dep["path"];
                 string was = (string)dep["sha256"];
                 if (dep["name"] != null || dep["declared"] != null)
                 {
-                    string again = ResolveReference(here, new CadIrExternalReference
-                    {
-                        Name = (string)dep["name"], Path = (string)dep["declared"]
-                    });
-                    if (again != null) path = again;
+                    // NOT FOUND FROM HERE IS ABSENT. MEASURED risk: falling back to the path the
+                    // ORIGINAL resolved compared the original's reference for a copy that lacks it.
+                    string again;
+                    resolvedHere.TryGetValue(Key(dep), out again);
+                    path = again;
                 }
-                if (string.IsNullOrWhiteSpace(path)) continue;
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    changed.Add(new JObject
+                    {
+                        ["path"] = (string)dep["declared"] ?? (string)dep["name"],
+                        ["was"] = was, ["now"] = "(absent)",
+                        ["means"] = "the reference this drawing was read with is no longer on this machine"
+                    });
+                    continue;
+                }
                 string now = File.Exists(path) ? Sha256(path) : null;
                 if (!string.Equals(was, now, StringComparison.OrdinalIgnoreCase))
                     changed.Add(new JObject
@@ -233,9 +247,12 @@ namespace Horizun.Revit.Core
                 var deps = new JArray();
                 string folder = null;
                 try { folder = Path.GetDirectoryName(dwgPath); } catch { }
-                foreach (CadIrExternalReference x in reading?.ExternalReferences ?? new List<CadIrExternalReference>())
+                List<CadIrExternalReference> refs = reading?.ExternalReferences ?? new List<CadIrExternalReference>();
+                Dictionary<string, string> resolvedNow = ResolveAll(folder, refs);
+                foreach (CadIrExternalReference x in refs)
                 {
-                    string resolved = ResolveReference(folder, x);
+                    string resolved;
+                    resolvedNow.TryGetValue(Key(x.Name, x.Path), out resolved);
                     if (resolved == null) continue;
                     deps.Add(new JObject
                     {
@@ -294,12 +311,15 @@ namespace Horizun.Revit.Core
                 try { side = JObject.Parse(File.ReadAllText(sidecar)); } catch { continue; }
                 if (!string.Equals((string)side["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
                 var parts = new List<string>();
-                foreach (JObject dep in (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>())
+                var recorded = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>().ToList();
+                Dictionary<string, string> resolvedHere = ResolveAll(here, recorded.Select(d => new CadIrExternalReference
                 {
-                    string path = ResolveReference(here, new CadIrExternalReference
-                    {
-                        Name = (string)dep["name"], Path = (string)dep["declared"]
-                    });
+                    Name = (string)d["name"], Path = (string)d["declared"]
+                }).ToList());
+                foreach (JObject dep in recorded)
+                {
+                    string path;
+                    resolvedHere.TryGetValue(Key(dep), out path);
                     parts.Add(((string)dep["name"] ?? "").ToLowerInvariant() + "=" +
                               (path == null ? "(absent)" : Sha256(path) ?? "(unreadable)"));
                 }
@@ -388,14 +408,46 @@ namespace Horizun.Revit.Core
             catch { return false; }
         }
 
+        private static string Key(string name, string declared) =>
+            (name ?? "").ToLowerInvariant() + "\u0001" + (declared ?? "").ToLowerInvariant();
+
+        private static string Key(JObject dep) => Key((string)dep["name"], (string)dep["declared"]);
+
+        /// <summary>
+        /// Every reference resolved from the drawing's folder, a NESTED one ("Parent|Child")
+        /// from its parent's folder - a nested reference records its path relative to the file
+        /// that references it, not to the drawing at the top.
+        /// </summary>
+        public static Dictionary<string, string> ResolveAll(string folder, IList<CadIrExternalReference> refs)
+        {
+            var byName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (CadIrExternalReference x in (refs ?? new List<CadIrExternalReference>())
+                         .Where(r => r != null).OrderBy(r => (r.Name ?? "").Count(c => c == '|')))
+            {
+                string parentFolder = null;
+                int bar = (x.Name ?? "").LastIndexOf('|');
+                if (bar > 0)
+                {
+                    string parentPath;
+                    if (byName.TryGetValue(x.Name.Substring(0, bar), out parentPath) && parentPath != null)
+                        try { parentFolder = Path.GetDirectoryName(parentPath); } catch { }
+                }
+                string resolved = ResolveReference(folder, x, parentFolder);
+                result[Key(x.Name, x.Path)] = resolved;
+                if (x.Name != null && !byName.ContainsKey(x.Name)) byName[x.Name] = resolved;
+            }
+            return result;
+        }
+
         /// <summary>
         /// Where an external reference actually is. A DWG records the path its
         /// author had; the file is usually beside the drawing.
         /// </summary>
-        private static string ResolveReference(string folder, CadIrExternalReference x)
+        private static string ResolveReference(string folder, CadIrExternalReference x, string parentFolder = null)
         {
             if (x == null) return null;
-            foreach (string candidate in Candidates(folder, x))
+            foreach (string candidate in Candidates(folder, x, parentFolder))
             {
                 if (string.IsNullOrWhiteSpace(candidate)) continue;
                 try { if (File.Exists(candidate)) return Path.GetFullPath(candidate); } catch { }
@@ -403,16 +455,25 @@ namespace Horizun.Revit.Core
             return null;
         }
 
-        private static IEnumerable<string> Candidates(string folder, CadIrExternalReference x)
+        private static IEnumerable<string> Candidates(string folder, CadIrExternalReference x, string parentFolder)
         {
             if (!string.IsNullOrWhiteSpace(x.Path))
             {
-                yield return x.Path;
-                if (folder != null)
+                bool rooted = false;
+                try { rooted = Path.IsPathRooted(x.Path) && !x.Path.StartsWith(".", StringComparison.Ordinal); } catch { }
+                // A RELATIVE PATH IS RELATIVE TO THE FILE THAT DECLARES IT - never to this process.
+                if (!rooted)
                 {
-                    string leaf = null;
-                    try { leaf = Path.GetFileName(x.Path); } catch { }
-                    if (leaf != null) yield return Path.Combine(folder, leaf);
+                    if (parentFolder != null) yield return Path.Combine(parentFolder, x.Path);
+                    if (folder != null) yield return Path.Combine(folder, x.Path);
+                }
+                else yield return x.Path;
+                string leaf = null;
+                try { leaf = Path.GetFileName(x.Path); } catch { }
+                if (leaf != null)
+                {
+                    if (parentFolder != null) yield return Path.Combine(parentFolder, leaf);
+                    if (folder != null) yield return Path.Combine(folder, leaf);
                 }
             }
             if (folder != null && !string.IsNullOrWhiteSpace(x.Name))
