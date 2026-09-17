@@ -711,7 +711,8 @@ namespace Horizun.Revit.Commands
         /// the error string.
         /// </summary>
         internal static string ResolveRows(Document doc, List<JObject> creates, JObject request, JArray resolved,
-                                           CadRequirementSet set, IList<CadSegment> drawn, JArray withdrawn)
+                                           CadRequirementSet set, IList<CadSegment> drawn, JArray withdrawn,
+                                           IDictionary<long, CadPoint[]> reshapedTo = null)
         {
             string e = ResolveWallTypes(doc, creates, resolved, withdrawn, null);
             if (e != null) return e;
@@ -722,7 +723,7 @@ namespace Horizun.Revit.Commands
             e = ResolveHosts(doc, creates, resolved, set, drawn, withdrawn);
             if (e != null) return e;
             WithdrawHostless(doc, creates, withdrawn);
-            WithdrawOccupied(doc, creates, set, withdrawn);
+            WithdrawOccupied(doc, creates, set, withdrawn, reshapedTo);
             return null;
         }
 
@@ -899,7 +900,8 @@ namespace Horizun.Revit.Commands
         /// WITHDRAWN, naming the occupant. Nothing is replaced here; comparing a
         /// built wall with a changed reading is horizun_plan_cad_update's work.
         /// </summary>
-        private static void WithdrawOccupied(Document doc, List<JObject> creates, CadRequirementSet set, JArray withdrawn)
+        private static void WithdrawOccupied(Document doc, List<JObject> creates, CadRequirementSet set, JArray withdrawn,
+                                             IDictionary<long, CadPoint[]> reshapedTo = null)
         {
             List<Wall> standing = null;
             double? defaultWidthMm = null;
@@ -937,9 +939,14 @@ namespace Horizun.Revit.Commands
                         Line line = (w.Location as LocationCurve)?.Curve as Line;
                         if (line == null) continue;
                         XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
+                        var w0 = new CadPoint(p0.X * 304.8, p0.Y * 304.8);
+                        var w1 = new CadPoint(p1.X * 304.8, p1.Y * 304.8);
+                        // A WALL THE SAME UPDATE RE-SHAPES holds the space of its NEW line.
+                        CadPoint[] next = null;
+                        if (reshapedTo != null && reshapedTo.TryGetValue(Rid.Value(w.Id), out next))
+                        { w0 = next[0]; w1 = next[1]; }
                         double across, along;
-                        if (!CadWallReadings.SolidsIntersect(a0, a1, widthMm,
-                                new CadPoint(p0.X * 304.8, p0.Y * 304.8), new CadPoint(p1.X * 304.8, p1.Y * 304.8),
+                        if (!CadWallReadings.SolidsIntersect(a0, a1, widthMm, w0, w1,
                                 w.Width * 304.8, set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm,
                                 out across, out along))
                             continue;

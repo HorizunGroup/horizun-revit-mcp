@@ -238,7 +238,7 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"migrated_from_v1\"] = migrated", apply);
 
             string plan = Plan();
-            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet)", plan);
+            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet,", plan);
             // the drawing is read WITH its references: the set's identity travels beside the host's
             Assert.Contains("string sourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);", plan);
             Assert.Contains("SourceFileSha256 = facts.FileSha256,", first);
@@ -252,6 +252,50 @@ namespace Horizun.Core.Tests
             // ...and only what the update left as it is: a held change keeps its revision.
             Assert.Contains("else if (a.Kind == \"leave\" && a.CandidateId != null", plan);
             Assert.Contains("if (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted)", apply);
+        }
+
+        [Fact]
+        public void An_earlier_version_of_the_same_rules_is_claimed_only_when_declared()
+        {
+            // MEASURED (revision C): a rules change - one test type mapped to another -
+            // refused as scope_unidentified, because every element named the old rules.
+            string plan = Plan();
+            Assert.Contains("request[\"supersedes_requirement_set_sha256\"]", plan);
+            Assert.Contains("rulesLineage.Contains(s.Provenance.RequirementSetSha256))", plan);
+            // another set's elements are refused, not claimed
+            Assert.Contains("rules_lineage_other_set:", plan);
+            Assert.Contains("!string.Equals(s.Provenance.RequirementSetId, set.Id, StringComparison.Ordinal)", plan);
+            Assert.Contains("reason = CadPlacementRules.RestampRulesSuperseded;", plan);
+            Assert.Contains("[\"claimed_under_earlier_rules\"] = underEarlierRules", plan);
+
+            string apply = Apply();
+            // newer rules are claimed only when every action applied
+            Assert.Contains("if (reason == CadPlacementRules.RestampRulesSuperseded && failures > 0)", apply);
+            Assert.Contains("p.RequirementSetSha256 = provenanceTemplate.Value<string>(\"requirement_set_sha256\")", apply);
+            Assert.Contains("supersedes_requirement_set_sha256", Source("src", "Horizun.Contracts", "Contract.cs"));
+        }
+
+        [Fact]
+        public void An_accepted_split_is_carried_out_whole_or_held_whole()
+        {
+            string plan = Plan();
+            // decided before its pieces are planned: width, hosted instances, occupancy
+            Assert.Contains("HoldSplit(update, a, \"kept_piece_is_another_thickness\"", plan);
+            Assert.Contains("HoldSplit(update, a, \"hosted_outside_the_kept_piece\", held);", plan);
+            Assert.Contains("HoldSplit(update, a, \"kept_piece_occupied\"", plan);
+            // its pieces are measured against the element's NEW line, not the one it stands on
+            Assert.Contains("reshapedTo);", plan);
+            Assert.Contains("reshapedTo.TryGetValue(Rid.Value(w.Id), out next)",
+                            Source("src", "Horizun.Revit", "Commands", "PlanFromCadCommand.cs"));
+            // a piece that cannot be built holds the element and drops its siblings
+            Assert.Contains("HoldSplit(update, a, \"a_piece_cannot_be_built\"", plan);
+            Assert.Contains("[\"reason\"] = \"split_held_with_its_element\"", plan);
+            // the element is shortened before its pieces are built
+            Assert.Contains("if (splitApplied && firstMove > 0)", plan);
+            // a shortened wall never leaves what it hosts behind
+            Assert.Contains("a.Evidence[\"hosted_outside_the_new_line\"] = beyond;", plan);
+            // old id -> the pieces
+            Assert.Contains("[\"splits\"] = new JArray(update.Of(\"set_curve\")", plan);
         }
 
         // ------------------------------------------------------- retries

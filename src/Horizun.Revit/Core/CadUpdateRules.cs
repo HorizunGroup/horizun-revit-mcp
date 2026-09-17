@@ -73,12 +73,14 @@ namespace Horizun.Revit.Core
         public const string Reoriented = "reoriented";
         /// <summary>The drawing's bytes did not change; the READING of them did (another build, or reading rules).</summary>
         public const string Reinterpreted = "reinterpreted";
+        /// <summary>One element the drawing now draws as several collinear pieces inside its old line.</summary>
+        public const string Split = "split";
 
         /// <summary>Every classification this bridge will ever emit, so a reader can switch exhaustively.</summary>
         public static readonly string[] All =
         {
             Unchanged, Added, Removed, Moved, Reshaped, Retyped, Relayered, Resized, Rehosted,
-            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted
+            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted, Split
         };
     }
 
@@ -1309,6 +1311,7 @@ namespace Horizun.Revit.Core
                 foreach (CadUpdateAction maybe in plausibleCreates)
                 {
                     maybe.Automatic = false;
+                    maybe.Evidence["may_be_element"] = orphan.ElementId;
                     if (ReferenceEquals(maybe, best))
                     {
                         maybe.Says += " HELD: it may instead be element " + orphan.ElementId + " moved (" +
@@ -1319,7 +1322,6 @@ namespace Horizun.Revit.Core
                     else
                     {
                         maybe.Classification = CadChange.Ambiguous;
-                        maybe.Evidence["may_be_element"] = orphan.ElementId;
                         maybe.Evidence["held_because"] =
                             "another candidate in this plan is a closer match for element " + orphan.ElementId +
                             ", but this one is close enough that it could be that element too";
@@ -1327,6 +1329,98 @@ namespace Horizun.Revit.Core
                                       "candidate it was paired with. Building it unattended would put a wall " +
                                       "where that element may already be. Reject the pairing to say this is new.";
                     }
+                }
+            }
+            ProposeSplits(update, set, tolerance, rejected);
+        }
+
+        /// <summary>How far a piece's line may sit from the old line and still be the same wall, split.</summary>
+        public const double SplitOffsetMm = 50.0;
+        /// <summary>How much of the old line the pieces must cover between them.</summary>
+        public const double SplitCoverage = 0.5;
+
+        /// <summary>
+        /// ONE WALL, NOW DRAWN AS SEVERAL. MEASURED (revision C): a wall with a stretch
+        /// removed came back as two pieces inside its old line, each under 80% of its
+        /// length, so no move was offered: two creates withdrawn for the space the old
+        /// wall holds, and the old wall an orphan. The same wall is offered as SPLIT -
+        /// every piece collinear with the old line, on its layer and rule, inside it,
+        /// not overlapping each other, covering at least half of it. The longest piece
+        /// would keep the element's id; the others would be built new. It is a
+        /// judgement, offered and held, never taken.
+        /// </summary>
+        private static void ProposeSplits(CadUpdate update, CadRequirementSet set, double tolerance,
+                                          HashSet<string> rejected)
+        {
+            List<CadUpdateAction> creates = update.Of("create").Where(c => c.Geometry.Count >= 2).ToList();
+            if (creates.Count < 2) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+            foreach (CadUpdateAction orphan in update.Of("orphan").ToList())
+            {
+                if (orphan.PairedWith != null) continue;
+                List<CadPoint> was = orphan.AsBuiltGeometry;
+                if (was == null || was.Count < 2) continue;
+                CadPoint a = was[0], b = was[was.Count - 1];
+                double len = a.PlanDistanceTo(b);
+                if (len <= 0) continue;
+                double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+
+                var pieces = new List<Tuple<CadUpdateAction, double, double, double>>();
+                foreach (CadUpdateAction c in creates)
+                {
+                    if (c.Evidence["may_be_element"] != null || rejected.Contains(c.CandidateId)) continue;
+                    if (!string.Equals(c.Evidence.Value<string>("layer"), orphan.Evidence.Value<string>("was_layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(c.Evidence.Value<string>("rule_id"), orphan.Evidence.Value<string>("was_rule"),
+                                       StringComparison.Ordinal)) continue;
+                    if (UndirectedAngle(was, c.Geometry) > angleLimit) continue;
+                    CadPoint p = c.Geometry[0], q = c.Geometry[c.Geometry.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Min(s0, s1), hi = Math.Max(s0, s1);
+                    if (lo < -reach || hi > len + reach || hi - lo <= reach) continue;
+                    pieces.Add(Tuple.Create(c, lo, hi, off));
+                }
+                if (pieces.Count < 2) continue;
+                pieces = pieces.OrderBy(t => t.Item2).ToList();
+                bool disjoint = true;
+                for (int i = 1; i < pieces.Count; i++)
+                    if (pieces[i].Item2 < pieces[i - 1].Item3 - reach) { disjoint = false; break; }
+                if (!disjoint) continue;
+                double covered = pieces.Sum(t => Math.Min(t.Item3, len) - Math.Max(t.Item2, 0));
+                if (covered < SplitCoverage * len) continue;
+
+                CadUpdateAction keep = pieces.OrderByDescending(t => t.Item3 - t.Item2).First().Item1;
+                double confidence = Math.Round(Math.Min(1.0, covered / len), 4);
+                string why = pieces.Count + " collinear pieces on the same layer and rule inside its as-built line " +
+                             "(at most " + pieces.Max(t => t.Item4).ToString("0.#", CultureInfo.InvariantCulture) +
+                             " mm off it), covering " + (confidence * 100).ToString("0", CultureInfo.InvariantCulture) +
+                             "% of its " + len.ToString("0", CultureInfo.InvariantCulture) + " mm";
+                if (orphan.Classification != CadChange.Conflict) orphan.Classification = CadChange.Split;
+                orphan.PairedWith = keep.CandidateId;
+                orphan.PairConfidence = confidence;
+                orphan.Evidence["may_have_been_split_into"] = new JArray(pieces.Select(t => t.Item1.CandidateId));
+                orphan.Evidence["paired_on"] = why;
+                orphan.Evidence["pair_confidence"] = confidence;
+                orphan.Says += " It may have been SPLIT: " + why + ". Nothing in a DWG says so, so this is offered, " +
+                               "not taken: accept the pairing with '" + keep.CandidateId + "' (the longest piece) and " +
+                               "this element is re-shaped to that piece, keeping its id, and the other pieces are " +
+                               "built new beside it.";
+                foreach (var t in pieces)
+                {
+                    CadUpdateAction piece = t.Item1;
+                    piece.Automatic = false;
+                    piece.Classification = orphan.Classification == CadChange.Conflict ? CadChange.Conflict : CadChange.Split;
+                    piece.Evidence["may_be_element"] = orphan.ElementId;
+                    piece.Evidence["split_of"] = orphan.ElementId;
+                    piece.Evidence["paired_on"] = why;
+                    if (ReferenceEquals(piece, keep)) piece.Evidence["split_keeps_the_element"] = true;
+                    piece.Says += " HELD: element " + orphan.ElementId + " may have been split into this and " +
+                                  (pieces.Count - 1) + " other piece(s). Building it now would put a wall inside " +
+                                  "that one, which still stands at full length.";
                 }
             }
         }
@@ -1434,8 +1528,9 @@ namespace Horizun.Revit.Core
                 // the shape said it was, now with somebody's name on it. Leaving
                 // it classified ambiguous would report the open question after it
                 // had been answered.
-                string settled = SameShape(orphan.AsBuiltGeometry, create.Geometry, 1.0)
-                    ? CadChange.Moved : CadChange.Reshaped;
+                var splitInto = orphan.Evidence["may_have_been_split_into"] as JArray;
+                string settled = splitInto != null ? CadChange.Split
+                    : SameShape(orphan.AsBuiltGeometry, create.Geometry, 1.0) ? CadChange.Moved : CadChange.Reshaped;
                 orphan.Classification = settled;
                 create.Classification = settled;
 
@@ -1449,6 +1544,27 @@ namespace Horizun.Revit.Core
                 create.Says = "a caller accepted that this is element " + orphan.ElementId + " moved. It is " +
                               "re-shaped in place, so it keeps its id, its parameters and everything hosted on it.";
                 create.Evidence["accepted_pairing"] = true;
+
+                // AN ACCEPTED SPLIT releases its other pieces, and the element names them.
+                if (splitInto != null)
+                {
+                    var companions = new JArray();
+                    foreach (string id in splitInto.Select(x => (string)x))
+                    {
+                        if (id == create.CandidateId) continue;
+                        CadUpdateAction piece = update.Of("create").FirstOrDefault(c => c.CandidateId == id);
+                        if (piece == null) continue;
+                        piece.Automatic = true;
+                        piece.Evidence["split_companion_of"] = orphan.ElementId;
+                        piece.Says = "a caller accepted that element " + orphan.ElementId + " was split: this piece " +
+                                     "is built new beside it, and the element is re-shaped to its longest piece.";
+                        companions.Add(id);
+                    }
+                    create.Evidence["split_companions"] = companions;
+                    create.Says = "a caller accepted that element " + orphan.ElementId + " was split. It is " +
+                                  "re-shaped to this, its longest piece, and keeps its id; " + companions.Count +
+                                  " other piece(s) are built new.";
+                }
             }
         }
 

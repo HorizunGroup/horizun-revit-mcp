@@ -331,7 +331,7 @@ namespace Horizun.Revit.Core
         /// and in every plan's binding, so an update can tell a new reading of the
         /// same bytes from a new drawing.
         /// </summary>
-        public const string ReadingRulesRevision = "2026.09.16-solid-hatch-interior";
+        public const string ReadingRulesRevision = "2026.09.17-composition-finish-continuity";
 
         private static string _interpretationVersion;
 
@@ -1399,6 +1399,30 @@ namespace Horizun.Revit.Core
                         foreach (int line in comp.SharedBoundaryLines) materialBoundaries.Add(line);
                 }
             }
+            // A COMPOSITE WHOSE LEAVES CANNOT BE READ IS NOT SKIPPED. MEASURED (revision C):
+            // a face moved out with only its board's hatch, leaving a 30.9 mm unhatched strip
+            // inside; the band was skipped for its leaves, no leaf pair was solid, and the
+            // wall vanished from the reading. It is read whole and held for a person.
+            var leavesUnreadable = new HashSet<CadDoubleLine>();
+            if (g.Composite == CadCompositePolicy.Leaves)
+                foreach (var kv in composition)
+                {
+                    if (!kv.Value.IsComposite) continue;
+                    bool readable = pairs.Any(q =>
+                    {
+                        if (ReferenceEquals(q, kv.Key) || q.ThicknessMm >= kv.Key.ThicknessMm) return false;
+                        CadComposition qc;
+                        if (composition.TryGetValue(q, out qc) && qc.IsComposite) return false;
+                        if (q.SegmentIndexA >= layerSegments.Count || q.SegmentIndexB >= layerSegments.Count) return false;
+                        if (!CadTopologyRules.IsInsideBandOf(layerSegments[q.SegmentIndexA], kv.Key,
+                                                             set.AngleToleranceDegrees, set.PointToleranceMm) ||
+                            !CadTopologyRules.IsInsideBandOf(layerSegments[q.SegmentIndexB], kv.Key,
+                                                             set.AngleToleranceDegrees, set.PointToleranceMm))
+                            return false;
+                        return !result.SolidEvidence.Judge(q, g.SolidHatchLayers, set.CaseSensitiveLayers).Void;
+                    });
+                    if (!readable) leavesUnreadable.Add(kv.Key);
+                }
             // ORDERED BY HOW WELL THE TWO LINES MATCH, THEN BY WIDTH.
             //
             // MEASURED: ordering by thickness first chose a pair whose lines run
@@ -1443,11 +1467,14 @@ namespace Horizun.Revit.Core
                 if (made != null && made.IsComposite)
                 {
                     why["composition"] = made.ToJson();
-                    if (g.Composite == CadCompositePolicy.Leaves)
+                    if (g.Composite == CadCompositePolicy.Leaves && !leavesUnreadable.Contains(pair))
                     {
                         why["outcome"] = "skipped_composite_read_as_leaves";
                         continue;
                     }
+                    if (leavesUnreadable.Contains(pair))
+                        why["leaves_unreadable"] = "no pair of lines inside this band is a solid leaf of its own, " +
+                                                   "so it is read whole and held for a person";
                 }
                 if (g.SolidHatchLayers.Count > 0)
                 {
@@ -1460,7 +1487,8 @@ namespace Horizun.Revit.Core
                     why["solid"] = solid.ToJson();
                     // A CAVITY INSIDE A COMPOSITION IS NOT A VOID. Under "composite" a band
                     // of two hatched leaves with a gap between them is one wall.
-                    bool cavity = made != null && made.IsComposite && g.Composite == CadCompositePolicy.Composite;
+                    bool cavity = made != null && made.IsComposite &&
+                                  (g.Composite == CadCompositePolicy.Composite || leavesUnreadable.Contains(pair));
                     if (solid.Void && !cavity)
                     {
                         why["outcome"] = "skipped_no_hatched_material_between_faces";
@@ -1728,7 +1756,13 @@ namespace Horizun.Revit.Core
                         "nested walls, put them on separate layers or narrow the rule's thickness bounds.");
 
                 CadComposition bandMade = CompositionOf(band, composition);
-                if (bandMade != null && bandMade.IsComposite)
+                if (bandMade != null && bandMade.IsComposite && g.Composite == CadCompositePolicy.Leaves)
+                    Ineligible(c, "the drawing hatches " + bandMade.Leaves.Count() + " leaves (" +
+                        string.Join(" + ", bandMade.Leaves.Select(l => l.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        (bandMade.GapCount > 0 ? ", with " + bandMade.GapCount + " unhatched gap(s)" : "") +
+                        ") and no line pair inside reads as a solid leaf, so the set's policy 'leaves' cannot be " +
+                        "applied; it is read as one wall of its outer faces and waits for a person");
+                else if (bandMade != null && bandMade.IsComposite)
                     c.Assumptions.Add("the drawing hatches " + bandMade.Leaves.Count() + " separate leaves (" +
                         string.Join(" + ", bandMade.Leaves.Select(l => l.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
                         (bandMade.GapCount > 0 ? ", with " + bandMade.GapCount + " unhatched gap(s)" : "") +

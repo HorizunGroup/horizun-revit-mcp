@@ -327,6 +327,18 @@ namespace Horizun.Revit.Commands
                 {
                     long id = rowJson.Value<long?>("element_id") ?? -1;
                     string reason = rowJson.Value<string>("reason") ?? "(unstated)";
+                    // NEWER RULES ARE CLAIMED ONLY FOR A WHOLE UPDATE. With an action
+                    // failed, the model is not what those rules ask for.
+                    if (reason == CadPlacementRules.RestampRulesSuperseded && failures > 0)
+                    {
+                        restamps.Add(new JObject
+                        {
+                            ["element_id"] = id, ["reason"] = reason, ["written"] = false,
+                            ["means"] = "not re-stamped: an action of this update failed, so the element keeps " +
+                                        "naming the rules it was built under"
+                        });
+                        continue;
+                    }
                     Element e = null;
                     try { if (Rid.CanRepresent(id)) e = doc.GetElement(Rid.Make(id)); } catch { }
                     string problem;
@@ -365,6 +377,16 @@ namespace Horizun.Revit.Commands
                         // recognised by THIS reading as that entity
                         p.InterpretationVersion = CadInterpretationRules.InterpretationVersion;
                     }
+                    if (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted ||
+                        reason == CadPlacementRules.RestampRulesSuperseded)
+                    {
+                        // the rules this element now stands under
+                        p.RequirementSetId = provenanceTemplate.Value<string>("requirement_set_id") ?? p.RequirementSetId;
+                        p.RequirementSetVersion = provenanceTemplate.Value<string>("requirement_set_version") ??
+                                                  p.RequirementSetVersion;
+                        p.RequirementSetSha256 = provenanceTemplate.Value<string>("requirement_set_sha256") ??
+                                                 p.RequirementSetSha256;
+                    }
                     if (reason == CadPlacementRules.RestampAccepted)
                     {
                         // KEPT BY A PERSON: where it stands is now where it was built.
@@ -391,6 +413,8 @@ namespace Horizun.Revit.Commands
                             ? (reason == CadPlacementRules.RestampCarried
                                    ? "carried to this revision: the update matched this element to the same entity " +
                                      "in the new drawing, so it now cites that drawing; its as-built geometry is kept"
+                                   : reason == CadPlacementRules.RestampRulesSuperseded
+                                   ? "left as it stands under the newer rules the caller declared: it now names them"
                                    : reason == CadPlacementRules.RestampAccepted
                                    ? "kept as it stands by a decision: it now cites this drawing, and where it stands " +
                                      "is recorded as where it was built"

@@ -265,8 +265,9 @@ namespace Horizun.Core.Tests
             string src = System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, "src", "Horizun.Revit",
                 "Commands", "PlanFromCadCommand.cs"));
             // The conversion's own path and ResolveRows, which the update planner uses.
-            Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(src,
-                System.Text.RegularExpressions.Regex.Escape("WithdrawOccupied(doc, creates, set, withdrawn);")).Count);
+            Assert.Contains("WithdrawOccupied(doc, creates, set, withdrawn);", src);
+            // ResolveRows passes the lines an update re-shapes, so a split's pieces are measured against them
+            Assert.Contains("WithdrawOccupied(doc, creates, set, withdrawn, reshapedTo);", src);
             Assert.Contains("CadWallReadings.SolidsIntersect(", src);
             Assert.Contains("\"space_already_occupied_by_a_built_wall\"", src);
             // And a reshape the update would make is held when it lands in a standing wall.

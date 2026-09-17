@@ -194,10 +194,36 @@ namespace Horizun.Revit.Commands
                 if (!string.IsNullOrWhiteSpace(id)) lineagePlacements.Add(id.Trim());
             }
 
+            // ...AND WHICH EARLIER VERSION OF THESE RULES. A rules change is not a new
+            // conversion, but nothing in a requirement set says it replaces another:
+            // the caller says so, and only for the same set id.
+            var rulesLineage = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (JToken token in request["supersedes_requirement_set_sha256"] as JArray ?? new JArray())
+            {
+                string sha = token?.ToString();
+                if (!string.IsNullOrWhiteSpace(sha)) rulesLineage.Add(sha.Trim());
+            }
+            rulesLineage.Remove(set.Sha256 ?? "");
+            var otherSetIds = subjects
+                .Where(s => rulesLineage.Contains(s.Provenance.RequirementSetSha256 ?? "") &&
+                            !string.Equals(s.Provenance.RequirementSetId, set.Id, StringComparison.Ordinal))
+                .Select(s => s.Provenance.RequirementSetId ?? "(unrecorded)")
+                .Distinct(StringComparer.Ordinal).ToList();
+            if (otherSetIds.Count > 0)
+                return CommandResult.Fail(
+                    "rules_lineage_other_set: supersedes_requirement_set_sha256 names rules recorded as set '" +
+                    string.Join("', '", otherSetIds) + "', and this plan is for set '" + set.Id + "'. A version " +
+                    "can supersede an earlier version of the SAME set; claiming another set's elements would " +
+                    "re-plan somebody else's conversion. Nothing was planned.");
+
             var minesUnderThisSet = subjects
                 .Where(s => set.Sha256 == null || string.IsNullOrEmpty(s.Provenance.RequirementSetSha256) ||
-                            string.Equals(s.Provenance.RequirementSetSha256, set.Sha256, StringComparison.Ordinal))
+                            string.Equals(s.Provenance.RequirementSetSha256, set.Sha256, StringComparison.Ordinal) ||
+                            rulesLineage.Contains(s.Provenance.RequirementSetSha256))
                 .ToList();
+            int underEarlierRules = minesUnderThisSet.Count(s =>
+                !string.IsNullOrEmpty(s.Provenance.RequirementSetSha256) &&
+                !string.Equals(s.Provenance.RequirementSetSha256, set.Sha256, StringComparison.Ordinal));
             var shas = minesUnderThisSet
                 .Select(s => s.Provenance.SourceFileSha256)
                 .Where(x => !string.IsNullOrEmpty(x))
@@ -370,7 +396,8 @@ namespace Horizun.Revit.Commands
             // an accepted move every element left in place is stamped with the
             // transform it now sits under - or the next plan reports the move
             // again, forever.
-            JArray restamp = Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet);
+            JArray restamp = Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet,
+                                     set.Sha256);
             JArray candidateIndex = CandidateIndex(update, actions);
             foreach (JToken row in createIndex) candidateIndex.Add(row);
             foreach (JToken row in restamp) candidateIndex.Add(row);
@@ -535,6 +562,8 @@ namespace Horizun.Revit.Commands
                     ["this_placement_id"] = placement.PlacementId,
                     ["supersedes"] = new JArray(lineage),
                     ["supersedes_placement_ids"] = new JArray(lineagePlacements),
+                    ["supersedes_requirement_set_sha256"] = new JArray(rulesLineage.OrderBy(x => x, StringComparer.Ordinal)),
+                    ["claimed_under_earlier_rules"] = underEarlierRules,
                     ["source_hashes_in_the_model"] = new JArray(shas),
                     ["means"] = "the elements this update is about are the ones built from THIS placement, or " +
                                 "from a placement or file you say it supersedes, under these rules. Another " +
@@ -551,6 +580,19 @@ namespace Horizun.Revit.Commands
                         ["paired_on"] = a.Evidence.Value<string>("paired_on")
                     })),
                 ["pairings_rejected"] = new JArray(update.Rejected),
+                ["splits"] = new JArray(update.Of("set_curve")
+                    .Where(a => a.Evidence["split_companions"] != null)
+                    .Select(a => new JObject
+                    {
+                        ["element_id"] = a.ElementId,
+                        ["keeps_its_id_as"] = a.CandidateId,
+                        ["new_pieces"] = a.Evidence["split_companions"],
+                        ["automatic"] = a.Automatic,
+                        ["held"] = a.Evidence["split_held"],
+                        ["means"] = "old element -> the pieces the drawing now shows: the element is re-shaped to " +
+                                    "one piece and keeps its id; each other piece is a new element, stamped with its " +
+                                    "own candidate id by horizun_apply_cad_update"
+                    })),
                 ["pairings_mean"] = "a wall that MOVED between revisions leaves a create and an orphan, and they " +
                                     "are the same wall. Nothing in a DWG says so - there is no handle anywhere in " +
                                     "the Revit CAD API, measured - so a resemblance is offered here and never " +
@@ -589,6 +631,41 @@ namespace Horizun.Revit.Commands
             // the drawing's own, looked up by id; the conversion rules turn them
             // into rows of their real kind, and the plan route's resolution gives
             // them levels, types, hosts and faces - or withdraws them, by name.
+            // AN ACCEPTED SPLIT IS DECIDED BEFORE ITS PIECES ARE PLANNED: if the element
+            // cannot be re-shaped, none of its pieces may be built beside it.
+            var reshapedTo = new Dictionary<long, CadPoint[]>();
+            foreach (CadUpdateAction a in update.Of("set_curve").Where(x => x.Automatic && x.ElementId.HasValue &&
+                                                                          x.Evidence["split_companions"] != null).ToList())
+            {
+                var self = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+                CadCandidate kept = interpretation.Candidates.FirstOrDefault(c => c.Id == a.CandidateId);
+                if (self != null && kept?.ThicknessMm != null &&
+                    Math.Abs(kept.ThicknessMm.Value - self.Width * 304.8) > Math.Max(set.PointToleranceMm, 1.0))
+                {
+                    HoldSplit(update, a, "kept_piece_is_another_thickness",
+                              "the piece that would keep the element is drawn " +
+                              kept.ThicknessMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm thick and the " +
+                              "element is " + (self.Width * 304.8).ToString("0.#", CultureInfo.InvariantCulture) +
+                              " mm; re-shaping it would keep the wrong width");
+                    continue;
+                }
+                string held = HostedBeyond(doc, a, set);
+                if (held != null)
+                {
+                    HoldSplit(update, a, "hosted_outside_the_kept_piece", held);
+                    continue;
+                }
+                JArray occupants = Occupants(doc, a, set);
+                if (occupants.Count > 0)
+                {
+                    HoldSplit(update, a, "kept_piece_occupied",
+                              "the kept piece would stand in the space of " +
+                              string.Join(", ", occupants.Select(o => "element " + (long)o["element_id"])));
+                    continue;
+                }
+                reshapedTo[a.ElementId.Value] = new[] { a.Geometry[0], a.Geometry[a.Geometry.Count - 1] };
+            }
+
             List<CadUpdateAction> creates = update.Of("create").Where(a => a.Automatic && !a.Blocked).ToList();
             if (creates.Count > 0)
             {
@@ -604,17 +681,60 @@ namespace Horizun.Revit.Commands
 
                 CadConversionPlan plan = CadConversionPlanRules.Plan(subset, set, sourceFingerprint, false);
                 List<JObject> requests = CadConversionPlanRules.AsCreateRequests(plan, target, 100);
-                string refusal = PlanFromCadCommand.ResolveRows(doc, requests, request, resolved, set, drawn, withdrawn);
+                string refusal = PlanFromCadCommand.ResolveRows(doc, requests, request, resolved, set, drawn, withdrawn,
+                                                                reshapedTo);
                 if (refusal != null)
                 {
                     levelError = refusal;
                     return actions;
                 }
-                requests = requests.Where(r => ((JArray)r["elements"]).Count > 0).ToList();
 
                 var actionByRow = new Dictionary<int, CadPlannedAction>();
                 foreach (CadPlannedAction pa in plan.Actions)
                     if (pa.SourceRow > 0) actionByRow[pa.SourceRow] = pa;
+
+                // A SPLIT IS BUILT WHOLE OR NOT AT ALL. A piece resolution withdrew (no type
+                // of its width, say) leaves the element's other stretch unbuilt if the rest
+                // went ahead: the element and every sibling piece wait with it.
+                var withdrawnIds = new HashSet<string>(StringComparer.Ordinal);
+                foreach (JObject w in withdrawn.OfType<JObject>())
+                {
+                    int? row = w.Value<int?>("source_row");
+                    CadPlannedAction pa;
+                    if (row.HasValue && actionByRow.TryGetValue(row.Value, out pa) && pa.CandidateId != null)
+                        withdrawnIds.Add(pa.CandidateId);
+                }
+                var droppedSiblings = new HashSet<string>(StringComparer.Ordinal);
+                foreach (CadUpdateAction a in update.Of("set_curve").Where(x => x.Automatic &&
+                                                                              x.Evidence["split_companions"] != null).ToList())
+                {
+                    var ids = ((JArray)a.Evidence["split_companions"]).Select(x => (string)x).ToList();
+                    string missing = ids.FirstOrDefault(withdrawnIds.Contains);
+                    if (missing == null) continue;
+                    HoldSplit(update, a, "a_piece_cannot_be_built",
+                              "piece '" + missing + "' was withdrawn by resolution, so re-shaping the element would " +
+                              "leave that stretch of the wall unbuilt");
+                    foreach (string id in ids) if (!withdrawnIds.Contains(id)) droppedSiblings.Add(id);
+                }
+                if (droppedSiblings.Count > 0)
+                    foreach (JObject r in requests)
+                        foreach (JObject row in ((JArray)r["elements"]).OfType<JObject>().ToList())
+                        {
+                            int? sourceRow = row.Value<int?>("source_row");
+                            CadPlannedAction pa;
+                            if (sourceRow == null || !actionByRow.TryGetValue(sourceRow.Value, out pa) ||
+                                !droppedSiblings.Contains(pa.CandidateId ?? "")) continue;
+                            withdrawn.Add(new JObject
+                            {
+                                ["source_row"] = sourceRow,
+                                ["kind"] = row.Value<string>("kind"),
+                                ["reason"] = "split_held_with_its_element",
+                                ["means"] = "a sibling piece of the same split cannot be built, so the element keeps " +
+                                            "its full length and this piece is not built inside it"
+                            });
+                            ((JArray)r["elements"]).Remove(row);
+                        }
+                requests = requests.Where(r => ((JArray)r["elements"]).Count > 0).ToList();
 
                 // WHAT RESOLUTION WITHDREW IS NOT AUTOMATIC, and the plan says why.
                 var emitted = new HashSet<string>(StringComparer.Ordinal);
@@ -670,41 +790,22 @@ namespace Horizun.Revit.Commands
 
             // ONE OPERATION PER ELEMENT: a location line belongs to one element,
             // and the command refuses a shared one for exactly that reason.
+            int firstMove = actions.Count;
+            bool splitApplied = false;
             int n = 0;
-            List<Wall> standing = null;
             foreach (CadUpdateAction a in update.Of("set_curve").Where(x => x.Automatic))
             {
                 if (!a.ElementId.HasValue || a.Geometry.Count < 2) continue;
+                bool split = a.Evidence["split_companions"] != null;
 
                 // A RESHAPED WALL IS NOT MOVED INTO A WALL THAT STANDS. MEASURED: a
                 // pairing offered after the reading changed would lengthen one piece
                 // over its neighbour, and removing the neighbour is never automatic -
                 // so the two would share the space. The reshape waits for a person.
-                if (standing == null) standing = CadHostResolver.Walls(doc);
-                var self = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
-                if (self != null)
+                // (A split was asked this before its pieces were planned.)
+                if (!split)
                 {
-                    var occupants = new JArray();
-                    foreach (Wall w in standing)
-                    {
-                        if (Rid.Value(w.Id) == a.ElementId.Value || w.LevelId != self.LevelId) continue;
-                        Line line = (w.Location as LocationCurve)?.Curve as Line;
-                        if (line == null) continue;
-                        XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
-                        double across, along;
-                        if (!CadWallReadings.SolidsIntersect(a.Geometry[0], a.Geometry[a.Geometry.Count - 1],
-                                self.Width * 304.8,
-                                new CadPoint(p0.X * 304.8, p0.Y * 304.8), new CadPoint(p1.X * 304.8, p1.Y * 304.8),
-                                w.Width * 304.8, set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm,
-                                out across, out along))
-                            continue;
-                        occupants.Add(new JObject
-                        {
-                            ["element_id"] = Rid.Value(w.Id),
-                            ["across_overlap_mm"] = Math.Round(across, 1),
-                            ["along_overlap_mm"] = Math.Round(along, 1)
-                        });
-                    }
+                    JArray occupants = Occupants(doc, a, set);
                     if (occupants.Count > 0)
                     {
                         a.Automatic = false;
@@ -714,7 +815,18 @@ namespace Horizun.Revit.Commands
                                   ", which still stands; removing it is not this update's decision.";
                         continue;
                     }
+                    // WHAT IS HOSTED STAYS ON ITS WALL. A shortened wall would leave a door
+                    // or a device standing past its end: a re-hosting nobody decided.
+                    string beyond = HostedBeyond(doc, a, set);
+                    if (beyond != null)
+                    {
+                        a.Automatic = false;
+                        a.Evidence["hosted_outside_the_new_line"] = beyond;
+                        a.Says += " HELD: " + beyond + ".";
+                        continue;
+                    }
                 }
+                splitApplied |= split;
                 actions.Add(new JObject
                 {
                     ["key"] = "cad-update-move-" + (n++),
@@ -732,6 +844,15 @@ namespace Horizun.Revit.Commands
                         })
                     }
                 });
+            }
+            // A SPLIT SHORTENS ITS ELEMENT BEFORE ITS PIECES ARE BUILT beside it, so the
+            // model never holds a wall inside another, not even between two stages.
+            if (splitApplied && firstMove > 0)
+            {
+                List<JToken> all = actions.ToList();
+                actions.Clear();
+                foreach (JToken t in all.Skip(firstMove)) actions.Add(t);
+                foreach (JToken t in all.Take(firstMove)) actions.Add(t);
             }
 
             // WHAT A PERSON DECIDED: a type change, or a turn in the element's own face.
@@ -1060,7 +1181,7 @@ namespace Horizun.Revit.Commands
         /// </summary>
         private static JArray Restamp(CadUpdate update, CadUpdateScope scope, bool moveAccepted,
                                       IList<CadAuditSubject> subjects, string thisFileSha256,
-                                      string thisSetSha256 = null)
+                                      string thisSetSha256 = null, string thisRulesSha256 = null)
         {
             var bySubject = new Dictionary<long, CadAuditSubject>();
             foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
@@ -1094,6 +1215,14 @@ namespace Horizun.Revit.Commands
                           !string.Equals(s.Provenance.SourceSetSha256, thisSetSha256, StringComparison.Ordinal))))
                         reason = CadPlacementRules.RestampCarried;
                 }
+                // LEFT AS IT STANDS UNDER THE NEWER RULES the caller declared. A held
+                // change keeps naming the rules it was built under.
+                CadAuditSubject was;
+                if (reason == null && a.Kind == "leave" && thisRulesSha256 != null &&
+                    bySubject.TryGetValue(id, out was) && was.Provenance != null &&
+                    !string.IsNullOrEmpty(was.Provenance.RequirementSetSha256) &&
+                    !string.Equals(was.Provenance.RequirementSetSha256, thisRulesSha256, StringComparison.Ordinal))
+                    reason = CadPlacementRules.RestampRulesSuperseded;
                 if (reason == null || !seen.Add(id)) continue;
                 rows.Add(new JObject
                 {
@@ -1106,6 +1235,89 @@ namespace Horizun.Revit.Commands
                 });
             }
             return rows;
+        }
+
+        /// <summary>Walls on the element's level whose solid the action's new line would share.</summary>
+        private static JArray Occupants(Document doc, CadUpdateAction a, CadRequirementSet set)
+        {
+            var occupants = new JArray();
+            var self = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+            if (self == null || a.Geometry.Count < 2) return occupants;
+            foreach (Wall w in CadHostResolver.Walls(doc))
+            {
+                if (Rid.Value(w.Id) == a.ElementId.Value || w.LevelId != self.LevelId) continue;
+                Line line = (w.Location as LocationCurve)?.Curve as Line;
+                if (line == null) continue;
+                XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
+                double across, along;
+                if (!CadWallReadings.SolidsIntersect(a.Geometry[0], a.Geometry[a.Geometry.Count - 1],
+                        self.Width * 304.8,
+                        new CadPoint(p0.X * 304.8, p0.Y * 304.8), new CadPoint(p1.X * 304.8, p1.Y * 304.8),
+                        w.Width * 304.8, set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm,
+                        out across, out along))
+                    continue;
+                occupants.Add(new JObject
+                {
+                    ["element_id"] = Rid.Value(w.Id),
+                    ["across_overlap_mm"] = Math.Round(across, 1),
+                    ["along_overlap_mm"] = Math.Round(along, 1)
+                });
+            }
+            return occupants;
+        }
+
+        /// <summary>
+        /// Instances hosted on the element that would stand outside its new line, named;
+        /// null when there are none.
+        /// </summary>
+        private static string HostedBeyond(Document doc, CadUpdateAction a, CadRequirementSet set)
+        {
+            var wall = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+            if (wall == null || a.Geometry.Count < 2) return null;
+            CadPoint s = a.Geometry[0], e = a.Geometry[a.Geometry.Count - 1];
+            double len = s.PlanDistanceTo(e);
+            if (len <= 0) return null;
+            double ux = (e.X - s.X) / len, uy = (e.Y - s.Y) / len;
+            double tol = Math.Max(set.PointToleranceMm, 1.0);
+            var outside = new List<string>();
+            foreach (FamilyInstance fi in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
+                                                                          .Cast<FamilyInstance>())
+            {
+                ElementId hostId;
+                try { hostId = fi.Host?.Id; } catch { continue; }
+                if (hostId == null || hostId != wall.Id) continue;
+                XYZ at = (fi.Location as LocationPoint)?.Point;
+                if (at == null)
+                {
+                    BoundingBoxXYZ box = fi.get_BoundingBox(null);
+                    if (box == null) continue;
+                    at = (box.Min + box.Max) / 2;
+                }
+                double along = (at.X * 304.8 - s.X) * ux + (at.Y * 304.8 - s.Y) * uy;
+                if (along >= -tol && along <= len + tol) continue;
+                outside.Add(Rid.Value(fi.Id).ToString(CultureInfo.InvariantCulture));
+            }
+            if (outside.Count == 0) return null;
+            return outside.Count + " element(s) hosted on it (" + string.Join(", ", outside.Take(8)) +
+                   (outside.Count > 8 ? ", ..." : "") + ") would stand outside its new line; moving them to another " +
+                   "wall is a decision this update does not take";
+        }
+
+        /// <summary>An accepted split that cannot be carried out waits whole: the element and every piece.</summary>
+        private static void HoldSplit(CadUpdate update, CadUpdateAction reshape, string reason, string detail)
+        {
+            reshape.Automatic = false;
+            var held = new JObject { ["reason"] = reason, ["detail"] = detail };
+            reshape.Evidence["split_held"] = held;
+            reshape.Says += " HELD: the split cannot be carried out - " + detail + ".";
+            foreach (string id in ((JArray)reshape.Evidence["split_companions"]).Select(x => (string)x))
+            {
+                CadUpdateAction piece = update.Of("create").FirstOrDefault(c => c.CandidateId == id);
+                if (piece == null) continue;
+                piece.Automatic = false;
+                piece.Evidence["split_held"] = held;
+                piece.Says += " HELD with element " + reshape.ElementId + ": " + detail + ".";
+            }
         }
 
         private static JObject Row(string key, CadUpdateAction a, int? elementIndex)

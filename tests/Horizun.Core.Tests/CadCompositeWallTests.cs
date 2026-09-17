@@ -153,6 +153,26 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_composite_whose_leaves_cannot_be_read_is_read_whole_and_held()
+        {
+            // MEASURED (revision C): a face moved out with only its board's hatch; an
+            // unhatched strip was left inside, no leaf pair was solid, and under
+            // "leaves" the wall vanished from the reading.
+            var lines = new List<CadSegment> { Line(0), Line(15.9), Line(141.3) };
+            CadSolidHatch solid = Solid(Hatch("FP_3", 0, 15.9), Hatch("FP_4", 46.8, 141.3));
+            CadInterpretation r = Read("leaves", lines, solid);
+            List<double[]> walls = Walls(r);
+            Assert.Single(walls);
+            Assert.Equal(141.3, walls[0][1], 0);
+            CadCandidate wall = r.Candidates.Single();
+            Assert.False(wall.EligibleForAutomaticApply);
+            Assert.Contains(wall.IneligibleReasons, x => x.Contains("policy 'leaves' cannot be applied"));
+            var pairs = (JArray)r.DoubleLineReasoning.Single()["pairs"];
+            Assert.Contains(pairs, p => p["leaves_unreadable"] != null && (string)p["outcome"] == "chosen");
+            Assert.DoesNotContain(pairs, p => (string)p["outcome"] == "skipped_composite_read_as_leaves");
+        }
+
+        [Fact]
         public void Two_hatch_pieces_with_no_line_between_them_are_one_leaf()
         {
             // same 170 mm band, hatched in two pieces split at 80 mm, no line drawn at 80

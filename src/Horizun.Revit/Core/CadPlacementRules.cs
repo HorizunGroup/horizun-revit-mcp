@@ -275,6 +275,8 @@ namespace Horizun.Revit.Core
         public const string RestampCarried = "carried_to_this_revision";
         /// <summary>A person kept the element as it stands: its as-built geometry becomes where it stands now.</summary>
         public const string RestampAccepted = "accepted_as_it_stands";
+        /// <summary>Left as it stands under a newer version of the same rules the caller declared.</summary>
+        public const string RestampRulesSuperseded = "rules_superseded";
 
         // ------------------------------------------------------------ identity
 
