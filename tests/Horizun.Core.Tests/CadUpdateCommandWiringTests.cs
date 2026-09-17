@@ -281,6 +281,7 @@ namespace Horizun.Core.Tests
             string plan = Plan();
             // decided before its pieces are planned: width, hosted instances, occupancy
             Assert.Contains("HoldSplit(update, a, \"kept_piece_is_another_thickness\"", plan);
+            Assert.Contains("double widthTolerance = keptRule?.WallTypeToleranceMm ?? set.ThicknessToleranceMm;", plan);
             Assert.Contains("HoldSplit(update, a, \"hosted_outside_the_kept_piece\", held);", plan);
             Assert.Contains("HoldSplit(update, a, \"kept_piece_occupied\"", plan);
             // its pieces are measured against the element's NEW line, not the one it stands on

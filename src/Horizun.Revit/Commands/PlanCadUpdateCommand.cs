@@ -639,8 +639,11 @@ namespace Horizun.Revit.Commands
             {
                 var self = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
                 CadCandidate kept = interpretation.Candidates.FirstOrDefault(c => c.Id == a.CandidateId);
+                // the width a type is chosen by, not the point tolerance
+                CadRule keptRule = kept == null ? null : set.Rules.FirstOrDefault(r => r.Id == kept.RuleId);
+                double widthTolerance = keptRule?.WallTypeToleranceMm ?? set.ThicknessToleranceMm;
                 if (self != null && kept?.ThicknessMm != null &&
-                    Math.Abs(kept.ThicknessMm.Value - self.Width * 304.8) > Math.Max(set.PointToleranceMm, 1.0))
+                    Math.Abs(kept.ThicknessMm.Value - self.Width * 304.8) > widthTolerance)
                 {
                     HoldSplit(update, a, "kept_piece_is_another_thickness",
                               "the piece that would keep the element is drawn " +
