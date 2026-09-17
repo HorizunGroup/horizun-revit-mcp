@@ -109,6 +109,22 @@ namespace Horizun.Revit.Core
         public CadPoint Start => At(From);
         public CadPoint End => At(To);
 
+        /// <summary>A stretch of this band, with its own across-extent; everything else is shared.</summary>
+        public CadWallBand Piece(double from, double to, double lo, double hi)
+        {
+            var b = new CadWallBand
+            {
+                Direction = Direction, Normal = Normal, Layer = Layer, EndEvidence = EndEvidence,
+                Lo = lo, Hi = hi, From = from, To = to,
+                FromSpreadMm = Math.Abs(from - From) < 1e-6 ? FromSpreadMm : 0,
+                ToSpreadMm = Math.Abs(to - To) < 1e-6 ? ToSpreadMm : 0
+            };
+            b.Members.AddRange(Members);
+            b.Review.AddRange(Review);
+            b.Assumptions.AddRange(Assumptions);
+            return b;
+        }
+
         private CadPoint At(double along)
         {
             double across = (Lo + Hi) / 2.0;
@@ -167,9 +183,21 @@ namespace Horizun.Revit.Core
         /// Otherwise the code of the first test it fails.
         /// </summary>
         public string RefusalToContinue(IList<CadLineUse> earlier, double toleranceMm)
+            => RefusalToContinue(earlier, toleranceMm, false);
+
+        /// <summary>
+        /// <paramref name="materialBoundary"/>: the drawing hatches different material on
+        /// the two sides of this line, so a leaf on one side and a leaf on the other
+        /// each have it as a face. Only the other-side refusal is lifted; the same
+        /// side is still bound by stretch and thickness.
+        /// </summary>
+        public string RefusalToContinue(IList<CadLineUse> earlier, double toleranceMm, bool materialBoundary)
         {
             if (earlier == null || earlier.Count == 0) return null;
             if (Side == 0) return OtherSide;
+            var sameSide = earlier.Where(e => e.Side == Side).ToList();
+            if (materialBoundary && sameSide.Count == 0) return null;
+            if (materialBoundary) earlier = sameSide;
             double closest = double.MaxValue;
             foreach (CadLineUse e in earlier)
             {
@@ -178,6 +206,229 @@ namespace Horizun.Revit.Core
                 closest = Math.Min(closest, Math.Abs(ThicknessMm - e.ThicknessMm));
             }
             return closest > toleranceMm ? OtherThickness : null;
+        }
+    }
+
+    /// <summary>
+    /// FINISH THAT IS DRAWN IN STRETCHES IS MODELLED IN STRETCHES.
+    ///
+    /// MEASURED (units 915F and 914): an unhatched finish line runs along part of a
+    /// wall - 60 % of one, 46 % of another - and a wall of one width either carried
+    /// the finish past where it stops (seven devices 15.8 mm proud of the face drawn
+    /// at them) or dropped it where it is drawn (two devices 33.3 mm behind it).
+    /// Under geometry.finish "follow", a band is cut along its length where the
+    /// finish on either side starts or stops, and each piece is widened only by the
+    /// lines that cover it whole. A break shorter than <c>minPieceMm</c> - a symbol
+    /// drawn over the line - does not cut the wall.
+    /// </summary>
+    public static class CadFinishSegments
+    {
+        public sealed class Result
+        {
+            public List<CadWallBand> Pieces = new List<CadWallBand>();
+            public Dictionary<CadWallBand, List<int>> LinesOf = new Dictionary<CadWallBand, List<int>>();
+        }
+
+        private sealed class Candidate { public int Line; public double Depth, Offset, From, To; }
+
+        /// <summary>A line group at one offset covering this share of the band is a face of its core.</summary>
+        public const double CoreCoverage = 0.9;
+
+        public static Result Split(CadWallBand band, IList<CadSegment> lines, double maxFinishMm, double minPieceMm,
+                                   double angleToleranceDegrees)
+        {
+            var result = new Result();
+            var parallel = Parallel(band, lines, angleToleranceDegrees, band.Lo - maxFinishMm - 0.5,
+                                    band.Hi + maxFinishMm + 0.5);
+            double? coreLo = CoreFace(band, parallel, +1, maxFinishMm);
+            double? coreHi = CoreFace(band, parallel, -1, maxFinishMm);
+            if (coreLo == null || coreHi == null || coreHi.Value - coreLo.Value <= 1)
+            {
+                result.Pieces.Add(band);
+                return result;
+            }
+            var lo = new List<Candidate>();
+            var hi = new List<Candidate>();
+            foreach (Candidate c in parallel)
+            {
+                if (c.Offset < coreLo.Value - 0.5 && c.Offset >= coreLo.Value - maxFinishMm)
+                    lo.Add(new Candidate { Line = c.Line, Offset = c.Offset, From = c.From, To = c.To, Depth = coreLo.Value - c.Offset });
+                else if (c.Offset > coreHi.Value + 0.5 && c.Offset <= coreHi.Value + maxFinishMm)
+                    hi.Add(new Candidate { Line = c.Line, Offset = c.Offset, From = c.From, To = c.To, Depth = c.Offset - coreHi.Value });
+            }
+            List<double[]> loProfile = Profile(band, lo, minPieceMm);
+            List<double[]> hiProfile = Profile(band, hi, minPieceMm);
+            var cuts = new SortedSet<double> { band.From, band.To };
+            foreach (double[] p in loProfile.Concat(hiProfile)) { cuts.Add(p[0]); cuts.Add(p[1]); }
+            var pieces = new List<double[]>();   // from, to, loDepth, hiDepth
+            double[] cut = cuts.ToArray();
+            for (int i = 0; i + 1 < cut.Length; i++)
+            {
+                double mid = (cut[i] + cut[i + 1]) / 2;
+                pieces.Add(new[] { cut[i], cut[i + 1], DepthAt(loProfile, mid), DepthAt(hiProfile, mid) });
+            }
+            Merge(pieces, minPieceMm);
+            foreach (double[] p in pieces)
+            {
+                double newLo = coreLo.Value - p[2], newHi = coreHi.Value + p[3];
+                CadWallBand piece = pieces.Count == 1 && Math.Abs(newLo - band.Lo) < 0.05 && Math.Abs(newHi - band.Hi) < 0.05
+                    ? band
+                    : band.Piece(p[0], p[1], newLo, newHi);
+                if (piece != band)
+                    piece.Assumptions.Add("finish drawn in stretches: this piece (" +
+                        (p[1] - p[0]).ToString("0", CultureInfo.InvariantCulture) + " mm of " +
+                        band.LengthMm.ToString("0", CultureInfo.InvariantCulture) + ") is its " +
+                        (coreHi.Value - coreLo.Value).ToString("0.#", CultureInfo.InvariantCulture) +
+                        " mm core with " + p[2].ToString("0.#", CultureInfo.InvariantCulture) + " mm and " +
+                        p[3].ToString("0.#", CultureInfo.InvariantCulture) +
+                        " mm of finish on its two faces, as drawn along it.");
+                result.Pieces.Add(piece);
+                var mine = new List<int>();
+                foreach (Candidate c in lo.Concat(hi))
+                    if (c.From <= p[0] + 1 && c.To >= p[1] - 1) mine.Add(c.Line);
+                result.LinesOf[piece] = mine.Distinct().ToList();
+            }
+            return result;
+        }
+
+        private static List<Candidate> Parallel(CadWallBand band, IList<CadSegment> lines, double angleTol,
+                                                double minOffset, double maxOffset)
+        {
+            var found = new List<Candidate>();
+            double cosTol = Math.Cos(angleTol * Math.PI / 180.0);
+            for (int i = 0; i < lines.Count; i++)
+            {
+                CadSegment s = lines[i];
+                double dx = s.B.X - s.A.X, dy = s.B.Y - s.A.Y, len = Math.Sqrt(dx * dx + dy * dy);
+                if (len <= 0 || Math.Abs((dx * band.Direction.X + dy * band.Direction.Y) / len) < cosTol) continue;
+                double oa = s.A.X * band.Normal.X + s.A.Y * band.Normal.Y;
+                double ob = s.B.X * band.Normal.X + s.B.Y * band.Normal.Y;
+                if (Math.Abs(oa - ob) > 1.0) continue;
+                double o = (oa + ob) / 2;
+                if (o < minOffset || o > maxOffset) continue;
+                double fa = s.A.X * band.Direction.X + s.A.Y * band.Direction.Y;
+                double fb = s.B.X * band.Direction.X + s.B.Y * band.Direction.Y;
+                double from = Math.Max(Math.Min(fa, fb), band.From), to = Math.Min(Math.Max(fa, fb), band.To);
+                if (to - from <= 0) continue;
+                found.Add(new Candidate { Line = i, Offset = o, From = from, To = to });
+            }
+            return found;
+        }
+
+        /// <summary>
+        /// The core face on one side: walking inward from the band's face (+1 from Lo,
+        /// -1 from Hi), the first offset whose lines together cover CoreCoverage of the band.
+        /// </summary>
+        private static double? CoreFace(CadWallBand band, List<Candidate> parallel, int inward, double maxDepthMm)
+        {
+            // Never deeper than a finish can be: a line further in is a layer of the wall, not its face.
+            double face = inward > 0 ? band.Lo : band.Hi;
+            double limit = Math.Min(maxDepthMm, band.ThicknessMm / 3.0);
+            var groups = parallel.Where(c => inward > 0 ? c.Offset >= face - 0.5 && c.Offset <= face + limit
+                                                        : c.Offset <= face + 0.5 && c.Offset >= face - limit)
+                                 .OrderBy(c => inward * c.Offset).ToList();
+            for (int i = 0; i < groups.Count;)
+            {
+                int j = i;
+                while (j + 1 < groups.Count && Math.Abs(groups[j + 1].Offset - groups[i].Offset) <= 1.0) j++;
+                var intervals = groups.Skip(i).Take(j - i + 1).Select(c => new[] { c.From, c.To })
+                                      .OrderBy(x => x[0]).ToList();
+                double covered = 0, curFrom = double.NaN, curTo = double.NaN;
+                foreach (double[] iv in intervals)
+                {
+                    if (double.IsNaN(curFrom)) { curFrom = iv[0]; curTo = iv[1]; continue; }
+                    if (iv[0] <= curTo) curTo = Math.Max(curTo, iv[1]);
+                    else { covered += curTo - curFrom; curFrom = iv[0]; curTo = iv[1]; }
+                }
+                if (!double.IsNaN(curFrom)) covered += curTo - curFrom;
+                if (covered >= CoreCoverage * band.LengthMm)
+                    return groups.Skip(i).Take(j - i + 1).Average(c => c.Offset);
+                i = j + 1;
+            }
+            return null;
+        }
+
+        /// <summary>Depth of finish along the band, as stretches; short breaks and short stretches smoothed away.</summary>
+        private static List<double[]> Profile(CadWallBand band, List<Candidate> side, double minPieceMm)
+        {
+            var cuts = new SortedSet<double> { band.From, band.To };
+            foreach (Candidate c in side) { cuts.Add(c.From); cuts.Add(c.To); }
+            double[] cut = cuts.ToArray();
+            var stretches = new List<double[]>();
+            for (int i = 0; i + 1 < cut.Length; i++)
+            {
+                double a = cut[i], b = cut[i + 1];
+                double depth = 0;
+                foreach (Candidate c in side)
+                    if (c.From <= a + 1e-6 && c.To >= b - 1e-6) depth = Math.Max(depth, c.Depth);
+                stretches.Add(new[] { a, b, depth });
+            }
+            MergeSide(stretches, minPieceMm);
+            return stretches;
+        }
+
+        private static void MergeSide(List<double[]> s, double minPieceMm)
+        {
+            for (int i = 0; i + 1 < s.Count;)
+            {
+                if (Math.Abs(s[i][2] - s[i + 1][2]) < 1.0) { s[i][1] = s[i + 1][1]; s.RemoveAt(i + 1); }
+                else i++;
+            }
+            bool changed = true;
+            while (changed && s.Count > 1)
+            {
+                changed = false;
+                int shortest = -1;
+                for (int i = 0; i < s.Count; i++)
+                    if (s[i][1] - s[i][0] < minPieceMm && (shortest < 0 || s[i][1] - s[i][0] < s[shortest][1] - s[shortest][0]))
+                        shortest = i;
+                if (shortest < 0) break;
+                int into = shortest == 0 ? 1
+                         : shortest == s.Count - 1 ? shortest - 1
+                         : (s[shortest - 1][1] - s[shortest - 1][0] >= s[shortest + 1][1] - s[shortest + 1][0]
+                            ? shortest - 1 : shortest + 1);
+                s[into][0] = Math.Min(s[into][0], s[shortest][0]);
+                s[into][1] = Math.Max(s[into][1], s[shortest][1]);
+                s.RemoveAt(shortest);
+                for (int i = 0; i + 1 < s.Count;)
+                {
+                    if (Math.Abs(s[i][2] - s[i + 1][2]) < 1.0) { s[i][1] = s[i + 1][1]; s.RemoveAt(i + 1); }
+                    else i++;
+                }
+                changed = true;
+            }
+        }
+
+        private static void Merge(List<double[]> pieces, double minPieceMm)
+        {
+            for (int i = 0; i + 1 < pieces.Count;)
+            {
+                if (Math.Abs(pieces[i][2] - pieces[i + 1][2]) < 1.0 && Math.Abs(pieces[i][3] - pieces[i + 1][3]) < 1.0)
+                { pieces[i][1] = pieces[i + 1][1]; pieces.RemoveAt(i + 1); }
+                else i++;
+            }
+            while (pieces.Count > 1)
+            {
+                int shortest = -1;
+                for (int i = 0; i < pieces.Count; i++)
+                    if (pieces[i][1] - pieces[i][0] < minPieceMm &&
+                        (shortest < 0 || pieces[i][1] - pieces[i][0] < pieces[shortest][1] - pieces[shortest][0]))
+                        shortest = i;
+                if (shortest < 0) break;
+                int into = shortest == 0 ? 1 : shortest == pieces.Count - 1 ? shortest - 1
+                         : (pieces[shortest - 1][1] - pieces[shortest - 1][0] >= pieces[shortest + 1][1] - pieces[shortest + 1][0]
+                            ? shortest - 1 : shortest + 1);
+                pieces[into][0] = Math.Min(pieces[into][0], pieces[shortest][0]);
+                pieces[into][1] = Math.Max(pieces[into][1], pieces[shortest][1]);
+                pieces.RemoveAt(shortest);
+            }
+        }
+
+        private static double DepthAt(List<double[]> profile, double at)
+        {
+            foreach (double[] p in profile)
+                if (at >= p[0] - 1e-6 && at <= p[1] + 1e-6) return p[2];
+            return 0;
         }
     }
 

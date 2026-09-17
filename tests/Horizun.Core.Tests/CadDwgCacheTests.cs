@@ -15,6 +15,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
+using System.Linq;
 using Horizun.Revit.Core;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -178,6 +179,54 @@ namespace Horizun.Core.Tests
             Assert.Equal("reading_is_not_complete", (string)stored["refused"]);
             Assert.False(File.Exists(entry.TsvPath));
             Assert.False(CadDwgCache.Lookup(dwg, sha, "engine", "opts").Hit);
+        }
+
+        // ---- one extraction per key, and a whole publication ----------------------
+
+        [Fact]
+        public void A_key_is_locked_once_and_a_second_owner_is_named()
+        {
+            Assert.Null(CadDwgCache.TryLock("k1"));
+            // this process already owns it: a second take by the same process is a stale lock
+            Assert.Null(CadDwgCache.TryLock("k1"));
+            CadDwgCache.Unlock("k1");
+            Assert.False(File.Exists(CadDwgCache.LockPath("k1")));
+        }
+
+        [Fact]
+        public void A_lock_held_by_a_live_process_is_not_taken()
+        {
+            // the test runner's parent process is alive and is not this process
+            int other = System.Diagnostics.Process.GetProcessesByName("dotnet")
+                          .Select(p => p.Id).FirstOrDefault(id => id != System.Diagnostics.Process.GetCurrentProcess().Id);
+            if (other == 0) return;   // no other dotnet process to stand in for a second reader
+            File.WriteAllText(CadDwgCache.LockPath("k2"), "{\"pid\":" + other + "}");
+            JObject owner = CadDwgCache.TryLock("k2");
+            Assert.NotNull(owner);
+            Assert.Equal(other, (int)owner["pid"]);
+            CadDwgCache.Unlock("k2");                        // not ours: left alone
+            Assert.True(File.Exists(CadDwgCache.LockPath("k2")));
+        }
+
+        [Fact]
+        public void A_lock_whose_owner_is_gone_is_taken_over()
+        {
+            File.WriteAllText(CadDwgCache.LockPath("k3"), "{\"pid\":2147483000}");
+            Assert.Null(CadDwgCache.TryLock("k3"));
+            JObject now = JObject.Parse(File.ReadAllText(CadDwgCache.LockPath("k3")));
+            Assert.Equal(System.Diagnostics.Process.GetCurrentProcess().Id, (int)now["pid"]);
+        }
+
+        [Fact]
+        public void A_stored_reading_leaves_no_temporary_file_and_replaces_an_old_one()
+        {
+            string tsv = File_("fresh.tsv", "H	done	1");
+            var entry = CadDwgCache.Lookup(tsv, "sha-fresh", "engine", "o");
+            var reading = new CadDwgReading { DrawingName = "unit.dwg", Complete = true };
+            Assert.True((bool)CadDwgCache.Store(entry, tsv, reading, tsv, 1.0)["stored"]);
+            Assert.True((bool)CadDwgCache.Store(entry, tsv, reading, tsv, 2.0)["stored"]);
+            Assert.Empty(Directory.GetFiles(_root, "*.tmp"));
+            Assert.True(CadDwgCache.Lookup(tsv, "sha-fresh", "engine", "o").Hit);
         }
     }
 }

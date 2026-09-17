@@ -85,6 +85,11 @@ namespace Horizun.Revit.Core
                     isHostFace = across <= hostHalfWidthMm + toleranceMm + FaceStandOffMm &&
                                  alongside > -toleranceMm;
                 }
+                // THE HOST'S OWN END. MEASURED (unit 912, 15BB4): a switch drawn inside
+                // its wall, 8 mm from the line that closes the wall's end, was withdrawn
+                // because that cap counted as a nearer wall. A line across the host's band
+                // at one of its ends is the host.
+                if (!isHostFace && IsCap(s, hostA, u, length, hostHalfWidthMm, toleranceMm)) continue;
                 if (isHostFace) host = Math.Min(host, d);
                 else if (d < other && Faces(symbol, s.A, s.B, toleranceMm)) { other = d; otherLine = s; }
             }
@@ -95,6 +100,21 @@ namespace Horizun.Revit.Core
             result.NearerWallDrawn = result.HostFaceMm.HasValue && result.OtherWallMm.HasValue &&
                                      other + toleranceMm < host && other <= hostSearchMm;
             return result;
+        }
+
+        private static bool IsCap(CadSegment s, CadPoint hostA, CadVector u, double length, double halfWidth, double tol)
+        {
+            double a0 = (s.A.X - hostA.X) * u.X + (s.A.Y - hostA.Y) * u.Y;
+            double a1 = (s.B.X - hostA.X) * u.X + (s.B.Y - hostA.Y) * u.Y;
+            double c0 = (s.A.X - hostA.X) * -u.Y + (s.A.Y - hostA.Y) * u.X;
+            double c1 = (s.B.X - hostA.X) * -u.Y + (s.B.Y - hostA.Y) * u.X;
+            if (Math.Abs(a0 - a1) > tol) return false;                         // not across the wall
+            double along = (a0 + a1) / 2;
+            if (Math.Min(Math.Abs(along), Math.Abs(along - length)) > tol) return false;   // not at an end
+            double lo = Math.Min(c0, c1), hi = Math.Max(c0, c1);
+            // it spans the band (a board or two of finish may stick out past it)
+            return lo <= -halfWidth + tol + FaceStandOffMm && hi >= halfWidth - tol - FaceStandOffMm &&
+                   lo >= -halfWidth - tol - FaceStandOffMm && hi <= halfWidth + tol + FaceStandOffMm;
         }
 
         /// <summary>True when the symbol's foot on the line falls within the line, give or take the tolerance.</summary>

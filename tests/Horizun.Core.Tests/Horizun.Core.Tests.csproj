@@ -259,6 +259,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDwgCache.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadBlockSymmetry.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadWallReadings.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadWallContinuity.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDeviceSide.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadHostPlausibility.cs" />
     <!-- MEP networks and repeated units: the two readings that turn a drawing into

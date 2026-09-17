@@ -146,11 +146,42 @@ namespace Horizun.Server.Tests
         [InlineData("{\"status\":\"healthy\"}", "ok")]
         [InlineData("{\"status\":\"degraded\"}", "not_evaluated")]
         [InlineData("{\"read_only\":true,\"agrees\":false}", "not_evaluated")]
+        [InlineData("{\"mode\":\"plan\",\"blocked\":0,\"execute_plan_request\":{\"actions\":[]}}", "ok")]
+        [InlineData("{\"mode\":\"plan\",\"blocked\":2,\"execute_plan_request\":{\"actions\":[]}}", "failed")]
+        [InlineData("{\"read_only\":true,\"agrees\":false,\"match_states\":{\"agrees\":3,\"differs\":1}}", "ok")]
         public void A_step_is_judged_by_the_fields_its_own_reply_carries(string reply, string expected)
         {
             ProcedureRun.Judge(ProcedureRun.Ok, JObject.Parse(reply), out string state, out string why);
             Assert.Equal(expected, state);
             Assert.False(string.IsNullOrEmpty(why));
+        }
+
+        [Fact]
+        public void The_assessment_keeps_operation_geometry_coverage_and_intervention_apart()
+        {
+            JObject plan = ProcedureRun.Assess("horizun_plan_from_cad", JObject.Parse(
+                "{\"mode\":\"plan\",\"blocked\":0,\"candidates_needing_review\":3," +
+                "\"coverage\":{\"fraction\":0.04}," +
+                "\"withdrawn\":{\"rows\":[{\"reason\":\"no_host_within_allowance\"},{\"reason\":\"no_host_within_allowance\"}]}," +
+                "\"execute_plan_request\":{\"actions\":[{\"arguments\":{\"elements\":[{},{},{}]}}]}}"));
+            Assert.Equal("ok", (string)plan["operation"]);
+            Assert.Equal(3, (int)plan["planned_rows"]);
+            Assert.Equal(3, (int)plan["intervention"]["needing_review"]);
+            Assert.Equal(2, (int)plan["intervention"]["withdrawn_by_reason"]["no_host_within_allowance"]);
+
+            JObject audit = ProcedureRun.Assess("horizun_audit_cad_model", JObject.Parse(
+                "{\"read_only\":true,\"agrees\":false,\"matched\":{\"total\":4}," +
+                "\"match_states\":{\"agrees\":3,\"differs\":1}," +
+                "\"candidate_coverage\":{\"read\":6,\"matched\":4,\"not_built\":2,\"not_built_eligible\":1}}"));
+            Assert.Equal("ok", (string)audit["operation"]);
+            Assert.Equal("some_built_differ", (string)audit["geometry"]["verdict"]);
+            Assert.False((bool)audit["complete"]);
+            Assert.Equal(2, (int)audit["coverage"]["not_built"]);
+
+            JObject apply = ProcedureRun.Assess("horizun_apply_cad_plan", JObject.Parse(
+                "{\"state\":\"applied\",\"stages_failed\":0,\"created_verified\":21}"));
+            Assert.Equal("ok", (string)apply["operation"]);
+            Assert.Null(apply["geometry"]);
         }
 
         [Fact]

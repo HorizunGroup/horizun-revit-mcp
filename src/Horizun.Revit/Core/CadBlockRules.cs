@@ -149,6 +149,8 @@ namespace Horizun.Revit.Core
             // layer, whatever it is called.
             if (rule.LayerPatterns.Count > 0 && !set_matches_layer(rule, instance.Layer, caseSensitive)) return false;
 
+            if (!AttributesMatch(rule.Geometry.BlockAttributes, instance.Attributes)) return false;
+
             if (rule.Geometry.BlockPatterns.Count == 0)
                 return rule.LayerPatterns.Count > 0;   // "every block on my layers"
 
@@ -158,6 +160,17 @@ namespace Horizun.Revit.Core
                 if (CadGlob.IsMatch(name, p, caseSensitive) || CadGlob.IsMatch(bare, p, caseSensitive))
                     return true;
             return false;
+        }
+
+        private static bool AttributesMatch(Dictionary<string, bool> wanted, Dictionary<string, string> has)
+        {
+            if (wanted == null || wanted.Count == 0) return true;
+            foreach (var kv in wanted)
+            {
+                bool present = has != null && has.Keys.Any(k => string.Equals(k, kv.Key, StringComparison.OrdinalIgnoreCase));
+                if (present != kv.Value) return false;
+            }
+            return true;
         }
 
         private static bool set_matches_layer(CadRule rule, string layer, bool caseSensitive)

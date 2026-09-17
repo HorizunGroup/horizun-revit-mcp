@@ -159,14 +159,25 @@ namespace Horizun.Revit.Commands
 
             // ---- the zone, applied to symbols exactly as to geometry -----------
             int outside = 0;
+            var heldOnBoundary = new JArray();
             if (set.ExtentMm != null)
             {
                 var kept = new List<CadIrEntity>();
                 foreach (CadIrEntity e in entities)
                 {
-                    if (set.ExtentMm.Contains(e.Points[0])) kept.Add(e);
+                    if (set.ExtentMm.ContainsSymbol(e.Points[0])) kept.Add(e);
                     else
                     {
+                        // A SYMBOL ON THE BOUNDARY BELONGS TO NEITHER UNIT until a person says
+                        // which: named here, counted outside, never claimed by two zones.
+                        if (set.ExtentMm.HoldsOnBoundary(e.Points[0]))
+                            heldOnBoundary.Add(new JObject
+                            {
+                                ["block"] = e.BlockName,
+                                ["handle"] = e.Handle,
+                                ["at_mm"] = new JArray(Math.Round(e.Points[0].X, 1), Math.Round(e.Points[0].Y, 1)),
+                                ["distance_to_boundary_mm"] = Math.Round(set.ExtentMm.DistanceToBoundary(e.Points[0]), 1)
+                            });
                         outside++;
                         CadInventoryRow row;
                         if (rowOfEntity.TryGetValue(e, out row)) row.Outcome = CadInventoryOutcome.OutsideExtent;
@@ -174,6 +185,14 @@ namespace Horizun.Revit.Commands
                 }
                 entities = kept;
                 report["outside_extent"] = outside;
+                if (set.ExtentMm.SymbolsOnBoundaryMm > 0)
+                {
+                    report["held_on_boundary"] = heldOnBoundary;
+                    report["held_on_boundary_means"] =
+                        "symbols no further than " + set.ExtentMm.SymbolsOnBoundaryMm + " mm from the zone's boundary: " +
+                        "left out of this zone (counted as outside_extent) so that no symbol is claimed by two " +
+                        "neighbouring units. A person assigns each one.";
+                }
             }
 
             // ---- what a mirror means, measured before it is decided -------------

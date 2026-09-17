@@ -1276,10 +1276,137 @@ namespace Horizun.Revit.Commands
                             throw new InvalidOperationException(
                                 "this family is hosted: Revit will not place it without a host element, and no " +
                                 "host was named for this row.");
-                        placed = p.Level == null
-                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
-                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
-                        PositionInstance(doc, p, placed);
+                        // A WALL-BASED FAMILY STANDS ON ITS WALL'S LINE. MEASURED (a test
+                        // family from Revit's "Electrical Fixture wall based" template):
+                        // asked for the drawn point 98.8 mm off the wall, Revit put the
+                        // instance on the wall's location line, and the postcondition
+                        // refused the whole atomic stage. So the drawn point is projected
+                        // onto the host's line HERE, the side it was drawn on decides the
+                        // facing, and both are reported - as the face route does.
+                        var hostWall = p.Host as Wall;
+                        var hostLine = (hostWall?.Location as LocationCurve)?.Curve as Line;
+                        if (hostWall != null && hostLine != null)
+                        {
+                            XYZ drawn = p.Start;
+                            XYZ a = hostLine.GetEndPoint(0), b = hostLine.GetEndPoint(1);
+                            XYZ dir = new XYZ(b.X - a.X, b.Y - a.Y, 0).Normalize();
+                            double t = (drawn.X - a.X) * dir.X + (drawn.Y - a.Y) * dir.Y;
+                            double length = new XYZ(b.X - a.X, b.Y - a.Y, 0).GetLength();
+                            if (t < -1e-6 || t > length + 1e-6)
+                                throw new InvalidOperationException(
+                                    "the drawn point projects beyond the ends of its host wall (" +
+                                    Math.Round(t * 304.8, 1) + " mm along a " + Math.Round(length * 304.8, 1) +
+                                    " mm wall). A wall-based family is placed on the wall's line; nothing was built.");
+                            var onLine = new XYZ(a.X + dir.X * t, a.Y + dir.Y * t, drawn.Z);
+                            XYZ exterior = hostWall.Orientation;
+                            double side = (drawn.X - onLine.X) * exterior.X + (drawn.Y - onLine.Y) * exterior.Y;
+                            double? deadBand = p.Input.Value<double?>("side_dead_band_mm");
+                            double? facingDeg = p.Input.Value<double?>("facing_degrees");
+                            string sideFrom = "the side of the wall line the symbol is drawn on";
+                            if (facingDeg.HasValue)
+                            {
+                                double f = facingDeg.Value * Math.PI / 180.0;
+                                double dot = Math.Cos(f) * exterior.X + Math.Sin(f) * exterior.Y;
+                                if (Math.Abs(dot) > 0.5) { side = dot; sideFrom = "the facing declared for this block"; }
+                            }
+                            else if (deadBand.HasValue && Math.Abs(side) * 304.8 < deadBand.Value)
+                                throw new InvalidOperationException(
+                                    "side_of_the_wall_not_stated: the symbol is drawn " +
+                                    Math.Round(Math.Abs(side) * 304.8, 1) + " mm from its wall's line, inside the " +
+                                    deadBand.Value + " mm dead band, and no facing is declared. Nothing was built.");
+                            p.HostedEvidence = new JObject
+                            {
+                                ["route"] = "wall_based_on_the_wall_line",
+                                ["drawn_at_mm"] = new JArray(Math.Round(drawn.X * 304.8, 1), Math.Round(drawn.Y * 304.8, 1),
+                                                             Math.Round(drawn.Z * 304.8, 1)),
+                                ["placed_at_mm"] = new JArray(Math.Round(onLine.X * 304.8, 1), Math.Round(onLine.Y * 304.8, 1),
+                                                              Math.Round(onLine.Z * 304.8, 1)),
+                                ["offset_from_wall_line_mm"] = Math.Round(side * 304.8, 1),
+                                ["side"] = side >= 0 ? "exterior" : "interior",
+                                ["side_from"] = sideFrom,
+                                ["means"] = "a wall-based family's origin is on its wall's location line; the device " +
+                                            "stands on the face its FACING points to, chosen from the side the symbol " +
+                                            "is drawn on."
+                            };
+                            p.Start = onLine;
+                            placed = p.Level == null
+                                ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
+                                : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
+                            doc.Regenerate();
+                            XYZ want = side >= 0 ? exterior : exterior.Negate();
+                            XYZ facing = placed.FacingOrientation;
+                            if (facing.X * want.X + facing.Y * want.Y < 0)
+                            {
+                                if (placed.CanFlipFacing)
+                                {
+                                    placed.flipFacing();
+                                    doc.Regenerate();
+                                    p.HostedEvidence["facing_by"] = "flip_facing";
+                                }
+                                else if (ElementTransformUtils.CanMirrorElement(doc, placed.Id))
+                                {
+                                    // MEASURED: a wall-based family without flip controls answers
+                                    // CanFlipFacing false. Its reflection across the wall's own
+                                    // plane is the same device on the other face of the same wall;
+                                    // the copy is kept and the original removed in this transaction.
+                                    ICollection<ElementId> copies = ElementTransformUtils.MirrorElements(
+                                        doc, new List<ElementId> { placed.Id },
+                                        Plane.CreateByNormalAndOrigin(exterior, onLine), true);
+                                    doc.Regenerate();
+                                    var reflected = doc.GetElement(copies?.FirstOrDefault() ?? ElementId.InvalidElementId)
+                                        as FamilyInstance;
+                                    if (reflected == null)
+                                        throw new InvalidOperationException(
+                                            "the reflection to the drawn face produced no instance. Nothing was built " +
+                                            "for this row.");
+                                    doc.Delete(placed.Id);
+                                    doc.Regenerate();
+                                    placed = reflected;
+                                    p.HostedEvidence["facing_by"] = "reflected_across_the_wall_line";
+                                    if (p.Input.Value<bool?>("flip") == true)
+                                    {
+                                        // the drawn reflection is this one: nothing more to reflect
+                                        p.MirrorMethod = "reflected_copy";
+                                        p.FlipDone = true;
+                                    }
+                                    else
+                                    {
+                                        // a second reflection, across the plane of the hand, turns the
+                                        // copy back into an unreflected device on the same face
+                                        XYZ o = ((LocationPoint)placed.Location).Point;
+                                        ICollection<ElementId> back = ElementTransformUtils.MirrorElements(
+                                            doc, new List<ElementId> { placed.Id },
+                                            Plane.CreateByNormalAndOrigin(placed.HandOrientation, o), true);
+                                        doc.Regenerate();
+                                        var turned = doc.GetElement(back?.FirstOrDefault() ?? ElementId.InvalidElementId)
+                                            as FamilyInstance;
+                                        if (turned == null)
+                                            throw new InvalidOperationException(
+                                                "the second reflection produced no instance. Nothing was built for this row.");
+                                        doc.Delete(placed.Id);
+                                        doc.Regenerate();
+                                        placed = turned;
+                                        p.HostedEvidence["facing_by"] = "reflected_twice (a half turn on the same wall)";
+                                    }
+                                }
+                                else
+                                    throw new InvalidOperationException(
+                                        "the device is drawn on the " + p.HostedEvidence.Value<string>("side") +
+                                        " side of its wall and this wall-based family can neither flip its facing " +
+                                        "nor be reflected. Nothing was built for this row.");
+                            }
+                            p.HostedFacing = want;
+                            ElementTransformUtils.MoveElement(doc, placed.Id,
+                                new XYZ(p.Start.X - ((LocationPoint)placed.Location).Point.X,
+                                        p.Start.Y - ((LocationPoint)placed.Location).Point.Y, 0));
+                        }
+                        else
+                        {
+                            placed = p.Level == null
+                                ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
+                                : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
+                            PositionInstance(doc, p, placed);
+                        }
                     }
                     else
                     {
@@ -1306,8 +1433,9 @@ namespace Horizun.Revit.Commands
                     // the hand, and stays where it was to the millimetre. So
                     // "cannot be mirrored" was one API answering a narrower
                     // question, and the row it refused was buildable all along.
-                    if (p.Input.Value<bool?>("flip") == true)
+                    if (p.Input.Value<bool?>("flip") == true && !p.FlipDone)
                     {
+                        p.FacingBeforeReflection = placed.FacingOrientation;
                         if (placed.CanFlipHand)
                         {
                             placed.flipHand();
@@ -2430,6 +2558,14 @@ namespace Horizun.Revit.Commands
             /// rather than asking whether some host exists.
             /// </summary>
             public CadFaceChoice FacePlacement;
+
+            /// <summary>A wall-based family placed on its wall's line: where, why, and the facing it must keep.</summary>
+            public JObject HostedEvidence;
+            public XYZ HostedFacing;
+            /// <summary>The requested reflection was already made while choosing the face.</summary>
+            public bool FlipDone;
+            /// <summary>Facing before a reflected copy replaced the instance: a reflection keeps it.</summary>
+            public XYZ FacingBeforeReflection;
 
             /// <summary>How a requested reflection was achieved: flip_hand or reflected_copy.</summary>
             public string MirrorMethod;

@@ -273,6 +273,13 @@ namespace Horizun.Revit.Core
 
         /// <summary>Of the crossing segments, how many the set said to keep whole.</summary>
         public int SegmentsCrossingKept;
+        /// <summary>Lines outside the zone read only because they lie within its wall margin.</summary>
+        public int SegmentsInMargin;
+        /// <summary>
+        /// Walls paired from lines in the margin whose centreline does not reach the
+        /// zone: the neighbour's walls. Named, never built.
+        /// </summary>
+        public JArray CandidatesOutsideExtent = new JArray();
 
         /// <summary>The zone this reading was bounded by, described, or null if it was the whole drawing.</summary>
         public string ExtentDescription;
@@ -386,6 +393,26 @@ namespace Horizun.Revit.Core
         /// that interprets a set with solid_hatch_layers passes the same reading,
         /// so a plan, its audit and its update agree on what is a wall.
         /// </summary>
+        /// <summary>How far outside a face an unhatched line may still be that face's finish (two boards, measured 33.4 mm).</summary>
+        private const double FinishDepthMm = 40.0;
+        /// <summary>A break in a finish line shorter than this is a symbol drawn over it, not a stretch without finish.</summary>
+        private const double FinishBreakMm = 100.0;
+
+        private static CadComposition CompositionOf(CadWallBand band, Dictionary<CadDoubleLine, CadComposition> made)
+        {
+            CadComposition c;
+            foreach (CadDoubleLine m in band.Members)
+                if (made.TryGetValue(m, out c) && c.IsComposite) return c;
+            return null;
+        }
+
+        private static bool CentrelineReaches(CadExtent zone, IList<CadPoint> line, double tolerance)
+        {
+            for (int i = 0; i + 1 < line.Count; i++)
+                if (zone.TouchesWithin(line[i], line[i + 1], tolerance)) return true;
+            return line.Count == 1 && zone.ContainsWithin(line[0], tolerance);
+        }
+
         public static CadInterpretation Interpret(IList<CadSegment> segments, CadRequirementSet set,
                                                   string sourceHash, IList<CadArcFact> arcs,
                                                   IEnumerable<string> existingNames, CadSolidHatch solid)
@@ -406,11 +433,25 @@ namespace Horizun.Revit.Core
             {
                 var kept = new List<CadSegment>();
                 bool whole = set.ExtentMm.Crossing == CadExtent.CrossingWhole;
+                double margin = set.ExtentMm.WallMarginMm;
                 foreach (CadSegment s in segments)
                 {
                     bool a = set.ExtentMm.Contains(s.A), b = set.ExtentMm.Contains(s.B);
                     if (a && b) { kept.Add(s); continue; }
-                    if (!set.ExtentMm.Touches(s.A, s.B)) { result.SegmentsOutsideExtent++; continue; }
+                    if (!set.ExtentMm.Touches(s.A, s.B))
+                    {
+                        // Outside, but within the margin: read, so the wall it faces
+                        // keeps both faces. Whether that wall is built is decided on
+                        // its centreline below, not on this line.
+                        if (margin > 0 && set.ExtentMm.TouchesWithin(s.A, s.B, margin))
+                        {
+                            kept.Add(s);
+                            result.SegmentsInMargin++;
+                            continue;
+                        }
+                        result.SegmentsOutsideExtent++;
+                        continue;
+                    }
                     result.SegmentsCrossingExtent++;
                     if (whole) { kept.Add(s); result.SegmentsCrossingKept++; }
                 }
@@ -425,7 +466,11 @@ namespace Horizun.Revit.Core
                                      (set.ExtentMm.Contains(arc.Middle) ? 1 : 0);
                         // An arc is judged by three of its points; one that only
                         // grazes the zone between them is not seen, and is outside.
-                        if (inside == 3 || (whole && inside > 0)) keptArcs.Add(arc);
+                        bool near = set.ExtentMm.WallMarginMm > 0 &&
+                                    set.ExtentMm.ContainsWithin(arc.Start, set.ExtentMm.WallMarginMm) &&
+                                    set.ExtentMm.ContainsWithin(arc.End, set.ExtentMm.WallMarginMm) &&
+                                    set.ExtentMm.ContainsWithin(arc.Middle, set.ExtentMm.WallMarginMm);
+                        if (inside == 3 || (whole && inside > 0) || near) keptArcs.Add(arc);
                     }
                     arcs = keptArcs;
                 }
@@ -495,6 +540,32 @@ namespace Horizun.Revit.Core
                         Ineligible(c, "more than one rule claims layer '" + layer + "' at precedence " +
                                       winner.Precedence + ": " + winner.Id + " -> " + winner.Produces +
                                       ", and " + others);
+                    }
+                }
+
+                if (set.ExtentMm != null && set.ExtentMm.WallMarginMm > 0)
+                {
+                    // THE MARGIN READS, THE ZONE DECIDES. A wall is this zone's when
+                    // its centreline reaches the zone within the point tolerance; a
+                    // demising wall drawn on the boundary does, the next flat's
+                    // partition that stops at its far face does not.
+                    var outside = produced.Where(c => c.Geometry != null && c.Geometry.Count >= 2 &&
+                                                      !CentrelineReaches(set.ExtentMm, c.Geometry,
+                                                                         set.PointToleranceMm)).ToList();
+                    foreach (CadCandidate c in outside)
+                    {
+                        produced.Remove(c);
+                        result.CandidatesOutsideExtent.Add(new JObject
+                        {
+                            ["candidate"] = c.Id,
+                            ["rule"] = c.RuleId,
+                            ["kind"] = c.ProposedKind,
+                            ["from_mm"] = new JArray(Math.Round(c.Geometry[0].X, 1), Math.Round(c.Geometry[0].Y, 1)),
+                            ["to_mm"] = new JArray(Math.Round(c.Geometry[c.Geometry.Count - 1].X, 1),
+                                                   Math.Round(c.Geometry[c.Geometry.Count - 1].Y, 1)),
+                            ["means"] = "read from lines in the wall margin; its centreline does not reach the zone, " +
+                                        "so it belongs to the neighbour and is not built here."
+                        });
                     }
                 }
 
@@ -1310,6 +1381,24 @@ namespace Horizun.Revit.Core
             var chosen = new List<CadDoubleLine>();
             var reasoning = new JArray();
             var whyOf = new Dictionary<CadDoubleLine, JObject>();
+
+            // WHAT EACH BAND IS MADE OF, before any is chosen: a leaf may be read before
+            // the composite that contains it, and the line between two leaves must be
+            // known as a material boundary by then.
+            var composition = new Dictionary<CadDoubleLine, CadComposition>();
+            var materialBoundaries = new HashSet<int>();
+            if (g.SolidHatchLayers.Count > 0 && result.SolidEvidence != null && g.Composite != CadCompositePolicy.Outer)
+            {
+                foreach (CadDoubleLine p in pairs)
+                {
+                    CadComposition comp = result.SolidEvidence.Compose(p, g.SolidHatchLayers, set.CaseSensitiveLayers,
+                        layerSegments, g.MinThicknessMm.Value, Math.Min(set.PointToleranceMm, 6.0),
+                        set.AngleToleranceDegrees);
+                    composition[p] = comp;
+                    if (comp.IsComposite && g.Composite == CadCompositePolicy.Leaves)
+                        foreach (int line in comp.SharedBoundaryLines) materialBoundaries.Add(line);
+                }
+            }
             // ORDERED BY HOW WELL THE TWO LINES MATCH, THEN BY WIDTH.
             //
             // MEASURED: ordering by thickness first chose a pair whose lines run
@@ -1334,7 +1423,8 @@ namespace Horizun.Revit.Core
                 {
                     List<CadLineUse> earlier;
                     if (!usesOf.TryGetValue(use.Line, out earlier)) continue;
-                    refusedContinuation = use.RefusalToContinue(earlier, set.PointToleranceMm);
+                    refusedContinuation = use.RefusalToContinue(earlier, set.PointToleranceMm,
+                                                                materialBoundaries.Contains(use.Line));
                     if (refusedContinuation != null) break;
                     continued.Add(use.Line);
                 }
@@ -1348,6 +1438,17 @@ namespace Horizun.Revit.Core
                 // THE HATCH SAYS WHICH STRIPS ARE MATERIAL. Asked before the length
                 // bounds and before the pair takes its lines, so the faces of a
                 // chase stay free for the walls on either side of it.
+                CadComposition made;
+                composition.TryGetValue(pair, out made);
+                if (made != null && made.IsComposite)
+                {
+                    why["composition"] = made.ToJson();
+                    if (g.Composite == CadCompositePolicy.Leaves)
+                    {
+                        why["outcome"] = "skipped_composite_read_as_leaves";
+                        continue;
+                    }
+                }
                 if (g.SolidHatchLayers.Count > 0)
                 {
                     if (result.SolidEvidence == null)
@@ -1357,7 +1458,10 @@ namespace Horizun.Revit.Core
                     }
                     CadSolidVerdict solid = result.SolidEvidence.Judge(pair, g.SolidHatchLayers, set.CaseSensitiveLayers);
                     why["solid"] = solid.ToJson();
-                    if (solid.Void)
+                    // A CAVITY INSIDE A COMPOSITION IS NOT A VOID. Under "composite" a band
+                    // of two hatched leaves with a gap between them is one wall.
+                    bool cavity = made != null && made.IsComposite && g.Composite == CadCompositePolicy.Composite;
+                    if (solid.Void && !cavity)
                     {
                         why["outcome"] = "skipped_no_hatched_material_between_faces";
                         result.SolidVetoes.Add(new JObject
@@ -1395,6 +1499,11 @@ namespace Horizun.Revit.Core
                 g.MinThicknessMm.Value, g.MaxThicknessMm.Value,
                 set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm, out relations);
 
+            var bridged = new JArray();
+            if (g.FaceBreaksMm.HasValue)
+                bands = CadWallContinuity.Bridge(bands, layerSegments, g.FaceBreaksMm.Value,
+                                                 set.AngleToleranceDegrees, bridged);
+
             // The lines NO pairing could claim. A compound wall's innermost
             // boundaries are often millimetres apart - the fixture's are 19 mm,
             // below any wall thickness anyone would declare - so nothing pairs
@@ -1416,10 +1525,39 @@ namespace Horizun.Revit.Core
                 }
             }
 
+            // FINISH IN STRETCHES (geometry.finish "follow"): the bands are cut where
+            // the drawn finish starts or stops, before the widening below would
+            // spread half a wall's finish over all of it.
+            if (g.Finish == "follow")
+            {
+                var pieces = new List<CadWallBand>();
+                var pieceLoose = new Dictionary<CadWallBand, List<int>>();
+                foreach (CadWallBand w in bands)
+                {
+                    CadFinishSegments.Result split = CadFinishSegments.Split(w, layerSegments,
+                        FinishDepthMm, FinishBreakMm, set.AngleToleranceDegrees);
+                    foreach (CadWallBand p in split.Pieces)
+                    {
+                        pieces.Add(p);
+                        var mine = new List<int>(split.LinesOf.TryGetValue(p, out List<int> l) ? l : new List<int>());
+                        List<int> inside;
+                        if (loose.TryGetValue(w, out inside)) mine.AddRange(inside);
+                        pieceLoose[p] = mine.Distinct().ToList();
+                        foreach (int i in pieceLoose[p])
+                        {
+                            usedFaces.Add(i);
+                            if (i < indices.Count) consumed.Add(indices[i]);
+                        }
+                    }
+                }
+                bands = CadWallContinuity.Dedupe(pieces);
+                loose = pieceLoose;
+            }
+
             // AN OUTER LAYER THE PAIRING LEFT OVER IS STILL A FACE. A board line
             // 15.9 mm outside the paired stud faces, running alongside the wall,
             // is the wall's own finish - the band is widened to it and says so.
-            foreach (var kv in loose)
+            foreach (var kv in g.Finish == "follow" ? new Dictionary<CadWallBand, List<int>>() : loose)
             {
                 CadWallBand w = kv.Key;
                 double before = w.ThicknessMm;
@@ -1468,7 +1606,8 @@ namespace Horizun.Revit.Core
                                                    Math.Round(band.End.X, 1), Math.Round(band.End.Y, 1)),
                     ["end_spread_mm"] = new JArray(Math.Round(band.FromSpreadMm, 1), Math.Round(band.ToSpreadMm, 1)),
                     ["ends"] = band.EndEvidence,
-                    ["review"] = new JArray(band.Review)
+                    ["review"] = new JArray(band.Review),
+                    ["composition"] = CompositionOf(band, composition)?.ToJson()
                 });
             }
 
@@ -1493,7 +1632,8 @@ namespace Horizun.Revit.Core
                 })),
                 ["pairs"] = reasoning,
                 ["wall_bands"] = walls,
-                ["relations"] = relations
+                ["relations"] = relations,
+                ["bridged_face_breaks"] = bridged
             });
 
             foreach (CadWallBand band in bands)
@@ -1587,6 +1727,13 @@ namespace Horizun.Revit.Core
                         "this is the expected shape of a Revit-authored DWG - but if the drawing really does show " +
                         "nested walls, put them on separate layers or narrow the rule's thickness bounds.");
 
+                CadComposition bandMade = CompositionOf(band, composition);
+                if (bandMade != null && bandMade.IsComposite)
+                    c.Assumptions.Add("the drawing hatches " + bandMade.Leaves.Count() + " separate leaves (" +
+                        string.Join(" + ", bandMade.Leaves.Select(l => l.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        (bandMade.GapCount > 0 ? ", with " + bandMade.GapCount + " unhatched gap(s)" : "") +
+                        ") inside this wall; the set's composite policy '" + g.Composite +
+                        "' builds it as one wall of its outer faces. The leaves are listed in double_line_reasoning.");
                 foreach (string assumption in band.Assumptions)
                     if (!c.Assumptions.Contains(assumption)) c.Assumptions.Add(assumption);
                 foreach (string reason in band.Review)

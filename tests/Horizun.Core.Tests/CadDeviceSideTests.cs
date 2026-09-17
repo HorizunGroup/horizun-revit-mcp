@@ -194,5 +194,30 @@ namespace Horizun.Core.Tests
             Assert.Contains("CadDeviceSide.Expected(drawnSide, half, c.Facing, n,", audit);
             Assert.DoesNotContain("the symbol's rotation, because it is drawn inside the wall's thickness", audit);
         }
+
+        [Fact]
+        public void A_wall_based_family_is_placed_on_its_wall_line_and_faces_the_drawn_side()
+        {
+            // MEASURED: Revit put a wall-based test family on the wall's location line,
+            // 98.8 mm from the drawn point, and the postcondition refused the whole stage.
+            var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
+            Assert.NotNull(d);
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            string create = read(@"src\Horizun.Revit\Commands\CreateElementsCommand.cs");
+            string geometry = read(@"src\Horizun.Revit\Commands\CreateElementsGeometry.cs");
+
+            Assert.Contains("[\"route\"] = \"wall_based_on_the_wall_line\"", create);
+            Assert.Contains("p.Start = onLine;", create);
+            Assert.Contains("placed.flipFacing();", create);
+            Assert.Contains("[\"facing_by\"] = \"reflected_across_the_wall_line\"", create);
+            Assert.Contains("side_of_the_wall_not_stated: the symbol is drawn", create);
+            Assert.Contains("the drawn point projects beyond the ends of its host wall", create);
+            Assert.Contains("Exact(\"facing_side\", Direction(p.HostedFacing),", geometry);
+            Assert.Contains("p.FacePlacement == null && p.HostedFacing == null && !reflectedCopy", geometry);
+            Assert.Contains("Exact(\"facing_after_reflection\"", geometry);
+            Assert.Contains("reflected_twice (a half turn on the same wall)", create);
+            Assert.Contains("if (p.HostedEvidence != null) row[\"placement\"] = p.HostedEvidence;", geometry);
+        }
     }
 }

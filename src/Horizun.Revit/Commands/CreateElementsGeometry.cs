@@ -569,7 +569,18 @@ namespace Horizun.Revit.Commands
             // The orientation of a face-hosted instance is checked by its hand
             // direction instead, which is the thing the drawing's rotation was
             // turned into.
-            if (p.Input["rotation_degrees"] != null && p.FacePlacement == null)
+            // A wall-based instance turns with its wall; what the row's rotation meant is
+            // the side it faces, and that is what is checked.
+            if (p.HostedFacing != null)
+                Exact("facing_side", Direction(p.HostedFacing),
+                      () => Direction(((FamilyInstance)e).FacingOrientation));
+            // A REFLECTED COPY reads its rotation in a mirrored frame: MEASURED, a row asking
+            // 0 came back pi. What a reflection across the hand's plane keeps is the facing.
+            bool reflectedCopy = p.MirrorMethod == "reflected_copy" && p.FacingBeforeReflection != null;
+            if (reflectedCopy && p.FacePlacement == null && p.HostedFacing == null)
+                Exact("facing_after_reflection", Direction(p.FacingBeforeReflection),
+                      () => Direction(((FamilyInstance)e).FacingOrientation));
+            if (p.Input["rotation_degrees"] != null && p.FacePlacement == null && p.HostedFacing == null && !reflectedCopy)
                 Numeric("rotation", ((p.Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI),
                     () => ((((LocationPoint)e.Location).Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI), 1e-8);
             if (p.SystemType != null && (p.Kind == "duct" || p.Kind == "pipe"))
@@ -617,6 +628,7 @@ namespace Horizun.Revit.Commands
                 ["source_comparison"] = traceComparison
             };
             if (p.FacePlacement != null) row["placement"] = p.FacePlacement.Evidence;
+            if (p.HostedEvidence != null) row["placement"] = p.HostedEvidence;
             if (e?.Location is LocationPoint point && p.Level != null)
             {
                 row["coordinate_reference"] = "internal_origin";

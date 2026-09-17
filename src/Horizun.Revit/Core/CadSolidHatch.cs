@@ -153,6 +153,58 @@ namespace Horizun.Revit.Core
     }
 
     /// <summary>What the hatch says about one pair of wall faces.</summary>
+    /// <summary>A stretch across a wall band: a leaf when hatched, a gap when not. Offsets from the pair's centreline.</summary>
+    public sealed class CadLeaf
+    {
+        public double Lo, Hi;
+        public bool Hatched;
+        public List<string> Patterns = new List<string>();
+        /// <summary>The drawn line (index on the layer) that bounds this leaf at <see cref="Hi"/>, or -1.</summary>
+        public int LineAtHi = -1;
+        /// <summary>How many thinner hatched stretches (finishes, as drawn) were merged into this leaf.</summary>
+        public int Finishes;
+        public double ThicknessMm => Hi - Lo;
+    }
+
+    /// <summary>What a band is made of, as the drawing shows it.</summary>
+    public sealed class CadComposition
+    {
+        public double ThicknessMm;
+        public int Stations;
+        public List<CadLeaf> Parts = new List<CadLeaf>();
+        public IEnumerable<CadLeaf> Leaves => Parts.Where(p => p.Hatched);
+        public int GapCount => Parts.Count(p => !p.Hatched);
+        /// <summary>Two or more hatched leaves: separate materials the drawing bounds with a line, or with a gap.</summary>
+        public bool IsComposite => Leaves.Count() >= 2;
+        /// <summary>Lines on the layer that separate two leaves directly (no gap between).</summary>
+        public IEnumerable<int> SharedBoundaryLines
+        {
+            get
+            {
+                for (int i = 0; i + 1 < Parts.Count; i++)
+                    if (Parts[i].Hatched && Parts[i + 1].Hatched && Parts[i].LineAtHi >= 0)
+                        yield return Parts[i].LineAtHi;
+            }
+        }
+
+        public JObject ToJson() => new JObject
+        {
+            ["thickness_mm"] = Math.Round(ThicknessMm, 1),
+            ["stations"] = Stations,
+            ["composite"] = IsComposite,
+            ["observed"] = "hatch entities sampled across the band; patterns are listed as drawn and are not a material",
+            ["parts"] = new JArray(Parts.Select(p => new JObject
+            {
+                ["kind"] = p.Hatched ? "leaf" : "gap",
+                ["from_centre_mm"] = new JArray(Math.Round(p.Lo, 1), Math.Round(p.Hi, 1)),
+                ["thickness_mm"] = Math.Round(p.ThicknessMm, 1),
+                ["patterns_as_drawn"] = new JArray(p.Patterns),
+                ["finishes_merged"] = p.Finishes,
+                ["line_at_upper_boundary"] = p.LineAtHi >= 0 ? (JToken)p.LineAtHi : JValue.CreateNull()
+            }))
+        };
+    }
+
     public sealed class CadSolidVerdict
     {
         public int Stations;
@@ -352,6 +404,174 @@ namespace Horizun.Revit.Core
             }
             v.Patterns = patterns.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
             return v;
+        }
+
+        /// <summary>The hatch instances (placed entities) the point is inside, by identity, not by pattern.</summary>
+        public List<string> RegionsAt(CadPoint p, IList<string> layerPatterns, bool caseSensitive = false)
+        {
+            var parity = new Dictionary<string, bool>(StringComparer.Ordinal);
+            long key = ((long)Math.Floor(p.X / Cell) << 32) ^ ((long)Math.Floor(p.Y / Cell) & 0xffffffffL);
+            List<int> bucket;
+            if (!_grid.TryGetValue(key, out bucket)) return new List<string>();
+            foreach (int k in bucket)
+            {
+                Ring r = _rings[k];
+                if (p.X < r.MinX || p.X > r.MaxX || p.Y < r.MinY || p.Y > r.MaxY) continue;
+                if (layerPatterns != null && !layerPatterns.Any(lp => CadGlob.IsMatch(r.Layer, lp, caseSensitive)))
+                    continue;
+                if (!Inside(p, r.Points)) continue;
+                bool v;
+                parity[r.Instance] = !(parity.TryGetValue(r.Instance, out v) && v);
+            }
+            return parity.Where(kv => kv.Value).Select(kv => kv.Key).OrderBy(x => x, StringComparer.Ordinal).ToList();
+        }
+
+        /// <summary>Step between two samples when a band is profiled for its leaves.</summary>
+        public const double ProfileStepMm = 4.0;
+        /// <summary>A change seen at this share of the stations is a boundary of the band, not a local split.</summary>
+        public const double BoundaryAgreement = 0.6;
+
+        /// <summary>
+        /// WHAT THE BAND IS MADE OF, AS OBSERVED. Each station is sampled across the
+        /// whole band; a sample is labelled by the hatch ENTITIES it stands in (their
+        /// identity, never their pattern name - a pattern says what a drafter drew, not
+        /// what was built). Where the label changes at most stations there is a
+        /// boundary. Stretches between boundaries are LEAVES when hatched and GAPS when
+        /// not. A leaf thinner than <paramref name="minLeafMm"/> is merged into the
+        /// hatched leaf beside it (a board is its stud's finish, as drawn), and a
+        /// boundary between two leaves counts only when a drawn line on
+        /// <paramref name="lines"/> runs along it - otherwise the two hatches are one
+        /// leaf drawn in two pieces.
+        /// </summary>
+        public CadComposition Compose(CadDoubleLine pair, IList<string> layerPatterns, bool caseSensitive,
+                                      IList<CadSegment> lines, double minLeafMm, double lineToleranceMm,
+                                      double angleToleranceDegrees)
+        {
+            var comp = new CadComposition { ThicknessMm = pair.ThicknessMm };
+            double dx = pair.End.X - pair.Start.X, dy = pair.End.Y - pair.Start.Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= 0 || pair.ThicknessMm <= 2) return comp;
+            double ux = dx / len, uy = dy / len, nx = -uy, ny = ux;
+            double half = pair.ThicknessMm / 2.0;
+            double[] fractions = { 0.1, 0.3, 0.5, 0.7, 0.9 };
+            int steps = Math.Max(2, (int)Math.Ceiling((2 * half - 2) / ProfileStepMm));
+            var cuts = new List<double>();
+            foreach (double f in fractions)
+            {
+                double cx = pair.Start.X + dx * f, cy = pair.Start.Y + dy * f;
+                string last = null;
+                double lastO = 0;
+                for (int k = 0; k <= steps; k++)
+                {
+                    double o = -half + 1 + (2 * half - 2) * k / steps;
+                    string label = string.Join("|", RegionsAt(new CadPoint(cx + nx * o, cy + ny * o, 0),
+                                                              layerPatterns, caseSensitive));
+                    if (last != null && label != last) cuts.Add((o + lastO) / 2);
+                    last = label;
+                    lastO = o;
+                }
+                comp.Stations++;
+            }
+            cuts.Sort();
+            var boundaries = new List<double>();
+            int need = (int)Math.Ceiling(BoundaryAgreement * comp.Stations);
+            for (int i = 0; i < cuts.Count;)
+            {
+                int j = i;
+                while (j + 1 < cuts.Count && cuts[j + 1] - cuts[j] <= 2 * ProfileStepMm) j++;
+                if (j - i + 1 >= need) boundaries.Add(cuts[(i + j) / 2]);
+                i = j + 1;
+            }
+            var edges = new List<double> { -half };
+            edges.AddRange(boundaries);
+            edges.Add(half);
+            var parts = new List<CadLeaf>();
+            for (int i = 0; i + 1 < edges.Count; i++)
+            {
+                double lo = edges[i], hi = edges[i + 1], mid = (lo + hi) / 2;
+                int hatched = 0;
+                var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (double f in fractions)
+                {
+                    var p = new CadPoint(pair.Start.X + dx * f + nx * mid, pair.Start.Y + dy * f + ny * mid, 0);
+                    if (RegionsAt(p, layerPatterns, caseSensitive).Count > 0) hatched++;
+                    foreach (string h in PatternsAt(p, layerPatterns, caseSensitive)) patterns.Add(h);
+                }
+                parts.Add(new CadLeaf
+                {
+                    Lo = lo, Hi = hi, Hatched = hatched >= need,
+                    Patterns = patterns.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList()
+                });
+            }
+            // every boundary is snapped to the drawn line along it when there is one;
+            // a boundary between two hatched parts needs that line to count at all
+            for (int i = 0; i + 1 < parts.Count; i++)
+            {
+                double at = parts[i].Hi, lineAt;
+                int line = LineAlong(pair, nx, ny, ux, uy, at, lines, lineToleranceMm, angleToleranceDegrees, out lineAt);
+                if (line >= 0)
+                {
+                    parts[i].Hi = lineAt;
+                    parts[i + 1].Lo = lineAt;
+                }
+                if (!parts[i].Hatched || !parts[i + 1].Hatched) continue;
+                if (line >= 0) { parts[i].LineAtHi = line; continue; }
+                parts[i].Hi = parts[i + 1].Hi;
+                parts[i].Patterns = parts[i].Patterns.Union(parts[i + 1].Patterns, StringComparer.OrdinalIgnoreCase)
+                                                     .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+                parts[i].LineAtHi = parts[i + 1].LineAtHi;
+                parts.RemoveAt(i + 1);
+                i--;
+            }
+            // thin hatched parts join the hatched neighbour across their drawn line
+            for (int i = 0; i < parts.Count; i++)
+            {
+                CadLeaf leaf = parts[i];
+                if (!leaf.Hatched || leaf.ThicknessMm >= minLeafMm) continue;
+                int into = -1;
+                if (i + 1 < parts.Count && parts[i + 1].Hatched) into = i + 1;
+                else if (i > 0 && parts[i - 1].Hatched) into = i - 1;
+                if (into < 0) continue;
+                CadLeaf other = parts[into];
+                other.Lo = Math.Min(other.Lo, leaf.Lo);
+                other.Hi = Math.Max(other.Hi, leaf.Hi);
+                if (into < i) other.LineAtHi = leaf.LineAtHi;
+                other.Patterns = other.Patterns.Union(leaf.Patterns, StringComparer.OrdinalIgnoreCase)
+                                               .OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+                other.Finishes++;
+                parts.RemoveAt(i);
+                i = -1;
+            }
+            comp.Parts = parts;
+            return comp;
+        }
+
+        private static int LineAlong(CadDoubleLine pair, double nx, double ny, double ux, double uy, double offset,
+                                     IList<CadSegment> lines, double tol, double angleTol, out double lineOffset)
+        {
+            lineOffset = offset;
+            if (lines == null) return -1;
+            double cx = (pair.Start.X + pair.End.X) / 2, cy = (pair.Start.Y + pair.End.Y) / 2;
+            double t0 = pair.Start.X * ux + pair.Start.Y * uy, t1 = pair.End.X * ux + pair.End.Y * uy;
+            double from = Math.Min(t0, t1), to = Math.Max(t0, t1);
+            double cosTol = Math.Cos(angleTol * Math.PI / 180.0);
+            int best = -1;
+            double bestAlong = 0;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                CadSegment s = lines[i];
+                if (s == null) continue;
+                double sx = s.B.X - s.A.X, sy = s.B.Y - s.A.Y, sl = Math.Sqrt(sx * sx + sy * sy);
+                if (sl <= 0 || Math.Abs((sx * ux + sy * uy) / sl) < cosTol) continue;
+                double oa = (s.A.X - cx) * nx + (s.A.Y - cy) * ny, ob = (s.B.X - cx) * nx + (s.B.Y - cy) * ny;
+                if (Math.Abs(oa - offset) > tol || Math.Abs(ob - offset) > tol) continue;
+                double a = s.A.X * ux + s.A.Y * uy, b = s.B.X * ux + s.B.Y * uy;
+                double along = Math.Min(Math.Max(a, b), to) - Math.Max(Math.Min(a, b), from);
+                if (along > bestAlong) { bestAlong = along; best = i; lineOffset = (oa + ob) / 2; }
+            }
+            if (bestAlong >= 0.5 * (to - from)) return best;
+            lineOffset = offset;
+            return -1;
         }
 
         /// <summary>One vertex of every ring: enough to check the hatches share the model's frame.</summary>

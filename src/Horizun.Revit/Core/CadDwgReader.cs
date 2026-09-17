@@ -236,7 +236,83 @@ namespace Horizun.Revit.Core
                 };
             }
 
+            // ANOTHER READER HOLDS THIS KEY: wait for its reading rather than start a second one.
+            bool ownsKey = false;
+            if (useCache && cached != null)
+            {
+                var waited = Stopwatch.StartNew();
+                JObject owner = CadDwgCache.TryLock(cached.Key);
+                while (owner != null && waited.Elapsed.TotalSeconds < Math.Max(5, timeoutSeconds))
+                {
+                    System.Threading.Thread.Sleep(2000);
+                    CadDwgCacheEntry again = CadDwgCache.Lookup(dwgPath, dwgSha, result.EngineVersion, options);
+                    if (again.Hit)
+                    {
+                        result.Reading = CadDwgExtract.Parse(File.ReadLines(again.TsvPath), assumeMmPerUnit);
+                        result.FromCache = true;
+                        result.Seconds = waited.Elapsed.TotalSeconds;
+                        result.CacheDetail = new JObject
+                        {
+                            ["state"] = "hit_after_waiting",
+                            ["key"] = again.Key,
+                            ["waited_for"] = owner,
+                            ["waited_seconds"] = Math.Round(waited.Elapsed.TotalSeconds, 1),
+                            ["means"] = "another reader was already extracting this file; its reading was used " +
+                                        "instead of starting a second extraction."
+                        };
+                        if (result.Reading.Complete) return result;
+                        result.Reading = null;
+                        result.FromCache = false;
+                    }
+                    owner = CadDwgCache.TryLock(cached.Key);
+                }
+                if (owner != null)
+                {
+                    result.Refusal = "extraction_in_progress_elsewhere";
+                    result.Seconds = waited.Elapsed.TotalSeconds;
+                    result.RefusalDetail = new JObject
+                    {
+                        ["refused"] = "extraction_in_progress_elsewhere",
+                        ["owner"] = owner,
+                        ["waited_seconds"] = Math.Round(waited.Elapsed.TotalSeconds, 1),
+                        ["means"] = "another process is extracting this same file and did not finish within this " +
+                                    "call's timeout. Nothing was started here; ask again later, or poll the job " +
+                                    "that owns the extraction."
+                    };
+                    return result;
+                }
+                ownsKey = true;
+            }
+            try
+            {
+                return Extract(result, engine, dwgPath, timeoutSeconds, assumeMmPerUnit, useCache, cached);
+            }
+            finally
+            {
+                if (ownsKey) CadDwgCache.Unlock(cached.Key);
+            }
+        }
+
+        private static CadDwgRunResult Extract(CadDwgRunResult result, string engine, string dwgPath,
+                                               int timeoutSeconds, double? assumeMmPerUnit, bool useCache,
+                                               CadDwgCacheEntry cached)
+        {
             string work = Path.Combine(Path.GetTempPath(), "horizun-dwg", Guid.NewGuid().ToString("N"));
+            try
+            {
+                return ExtractIn(work, result, engine, dwgPath, timeoutSeconds, assumeMmPerUnit, useCache, cached);
+            }
+            finally
+            {
+                // ONLY THIS RUN'S FOLDER: nothing else under horizun-dwg is touched.
+                try { if (Directory.Exists(work)) Directory.Delete(work, true); } catch { }
+            }
+        }
+
+        private static CadDwgRunResult ExtractIn(string work, CadDwgRunResult result, string engine, string dwgPath,
+                                                 int timeoutSeconds, double? assumeMmPerUnit, bool useCache,
+                                                 CadDwgCacheEntry cached)
+        {
             Directory.CreateDirectory(work);
             string scriptPath = Path.Combine(work, "extract.scr");
             string outPath = Path.Combine(work, "reading.tsv");

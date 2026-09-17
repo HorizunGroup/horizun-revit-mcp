@@ -243,6 +243,15 @@ namespace Horizun.Revit.Core
         public List<string> BlockPatterns = new List<string>();
 
         /// <summary>
+        /// For from:"blocks" - attribute tags an instance must carry ("present") or
+        /// must not carry ("absent"). An anonymous dynamic block ("*U32") says what it
+        /// is only through its attributes; a smoke detector and a smoke/CO detector of
+        /// one drawing differ by one tag. Tags compare case-insensitively.
+        /// </summary>
+        public Dictionary<string, bool> BlockAttributes =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
         /// For from:"blocks" - which way each block's DEVICE faces, in the block's
         /// own frame: "+x", "-x", "+y" or "-y", keyed by block-name glob.
         ///
@@ -264,6 +273,30 @@ namespace Horizun.Revit.Core
         /// masses), and the plan reads the DWG to know. Empty: lines alone decide.
         /// </summary>
         public List<string> SolidHatchLayers = new List<string>();
+
+        /// <summary>
+        /// What a band of several hatched leaves becomes (needs solid_hatch_layers):
+        /// "outer" (the default, the reading of its outer faces as one generic wall),
+        /// "leaves" (each leaf its own wall; a drawn line between two leaves bounds
+        /// both), or "composite" (one wall of the outer faces, even with a cavity
+        /// inside, its leaves recorded). A test-model experiment until a project
+        /// chooses; the choice is the set's, never the bridge's.
+        /// </summary>
+        public string Composite = CadCompositePolicy.Outer;
+
+        /// <summary>
+        /// Unhatched finish lines outside a band's faces: "widen" (the default - a line
+        /// alongside half the wall widens all of it) or "follow" (the wall is cut where
+        /// the finish starts or stops, and each piece carries only its own finish).
+        /// </summary>
+        public string Finish = "widen";
+
+        /// <summary>
+        /// Breaks in ONE face of a wall no longer than this are bridged while the other
+        /// face runs on (a meeting wall interrupts a face for its width). Null: every
+        /// break ends the reading, as before.
+        /// </summary>
+        public double? FaceBreaksMm;
         public bool SameLayerOnly = true;
 
         /// <summary>
@@ -297,6 +330,14 @@ namespace Horizun.Revit.Core
     /// still read whole, so coverage, the layer map and every "no rule matched"
     /// verdict still describe the real file rather than a window onto it.
     /// </summary>
+    public static class CadCompositePolicy
+    {
+        public const string Outer = "outer";
+        public const string Leaves = "leaves";
+        public const string Composite = "composite";
+        public static readonly string[] All = { Outer, Leaves, Composite };
+    }
+
     public sealed class CadExtent
     {
         public const string CrossingExclude = "exclude";
@@ -319,7 +360,110 @@ namespace Horizun.Revit.Core
         /// </summary>
         public string Crossing = CrossingExclude;
 
-        public bool Contains(CadPoint p) => p.X >= MinX && p.X <= MaxX && p.Y >= MinY && p.Y <= MaxY;
+        /// <summary>
+        /// THE UNIT'S FOOTPRINT, when a rectangle is not it. Vertices in drawing
+        /// millimetres, in order, not repeated at the end; concave allowed. The box
+        /// above is then the polygon's envelope and only a quick reject. A point on
+        /// an edge is inside: a boundary drawn on a wall's centreline must not lose
+        /// what stands on that line.
+        /// </summary>
+        public List<CadPoint> Polygon;
+
+        /// <summary>
+        /// HOW FAR OUTSIDE THE ZONE WALL LINES ARE STILL READ. MEASURED (units 915F
+        /// and 914): a zone bounded on the centreline of its demising walls, its
+        /// facade and its corridor wall dropped the outer face of every one of them,
+        /// so those walls were never read and 18 devices drawn on them had no host.
+        /// Lines within this distance are paired as if inside; afterwards a wall
+        /// whose centreline does not reach the zone (within the point tolerance) is
+        /// dropped by name, so the neighbour's walls are read and not built.
+        /// </summary>
+        public double WallMarginMm;
+
+        /// <summary>
+        /// A symbol no further than this from the zone's boundary belongs to neither side
+        /// until a person says so: it is left out of the zone and listed by name. Zero (the
+        /// default) keeps the inclusive edge.
+        /// </summary>
+        public double SymbolsOnBoundaryMm;
+
+        /// <summary>True when the point is inside and not held on the boundary.</summary>
+        public bool ContainsSymbol(CadPoint p) =>
+            Contains(p) && !(SymbolsOnBoundaryMm > 0 && DistanceToBoundary(p) <= SymbolsOnBoundaryMm);
+
+        /// <summary>True when the point is held on the boundary (near it, inside or outside).</summary>
+        public bool HoldsOnBoundary(CadPoint p) =>
+            SymbolsOnBoundaryMm > 0 && DistanceToBoundary(p) <= SymbolsOnBoundaryMm;
+
+        public bool Contains(CadPoint p)
+        {
+            if (p.X < MinX || p.X > MaxX || p.Y < MinY || p.Y > MaxY) return false;
+            if (Polygon == null) return true;
+            if (DistanceToBoundary(p) <= 1e-6) return true;
+            bool c = false;
+            for (int i = 0, j = Polygon.Count - 1; i < Polygon.Count; j = i++)
+            {
+                CadPoint pi = Polygon[i], pj = Polygon[j];
+                if ((pi.Y > p.Y) != (pj.Y > p.Y) &&
+                    p.X < (pj.X - pi.X) * (p.Y - pi.Y) / (pj.Y - pi.Y) + pi.X)
+                    c = !c;
+            }
+            return c;
+        }
+
+        /// <summary>Inside, or no further than <paramref name="margin"/> from the boundary.</summary>
+        public bool ContainsWithin(CadPoint p, double margin) =>
+            Contains(p) || (margin > 0 && DistanceToBoundary(p) <= margin);
+
+        /// <summary>The segment reaches the zone, or passes within <paramref name="margin"/> of it.</summary>
+        public bool TouchesWithin(CadPoint a, CadPoint b, double margin)
+        {
+            if (Touches(a, b)) return true;
+            if (margin <= 0) return false;
+            foreach (CadSegment edge in Edges())
+                if (SegmentDistance(a, b, edge.A, edge.B) <= margin) return true;
+            return false;
+        }
+
+        public double DistanceToBoundary(CadPoint p)
+        {
+            double best = double.MaxValue;
+            foreach (CadSegment edge in Edges())
+                best = Math.Min(best, PointSegment(p, edge.A, edge.B));
+            return best;
+        }
+
+        private IEnumerable<CadSegment> Edges()
+        {
+            List<CadPoint> ring = Polygon ?? new List<CadPoint>
+            {
+                new CadPoint(MinX, MinY), new CadPoint(MaxX, MinY), new CadPoint(MaxX, MaxY), new CadPoint(MinX, MaxY)
+            };
+            for (int i = 0; i < ring.Count; i++)
+                yield return new CadSegment(ring[i], ring[(i + 1) % ring.Count], null, CadCurveKind.Line, 0);
+        }
+
+        private static double PointSegment(CadPoint p, CadPoint a, CadPoint b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y, l2 = dx * dx + dy * dy;
+            double t = l2 <= 0 ? 0 : Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2));
+            double x = a.X + t * dx - p.X, y = a.Y + t * dy - p.Y;
+            return Math.Sqrt(x * x + y * y);
+        }
+
+        private static bool Cross(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            double Orient(CadPoint p, CadPoint q, CadPoint r) => (q.X - p.X) * (r.Y - p.Y) - (q.Y - p.Y) * (r.X - p.X);
+            double o1 = Orient(a, b, c), o2 = Orient(a, b, d), o3 = Orient(c, d, a), o4 = Orient(c, d, b);
+            return ((o1 > 0) != (o2 > 0)) && ((o3 > 0) != (o4 > 0));
+        }
+
+        private static double SegmentDistance(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            if (Cross(a, b, c, d)) return 0;
+            return Math.Min(Math.Min(PointSegment(a, c, d), PointSegment(b, c, d)),
+                            Math.Min(PointSegment(c, a, b), PointSegment(d, a, b)));
+        }
 
         /// <summary>
         /// Does the segment reach the zone at all - an end inside it, or passing
@@ -329,6 +473,12 @@ namespace Horizun.Revit.Core
         public bool Touches(CadPoint a, CadPoint b)
         {
             if (Contains(a) || Contains(b)) return true;
+            if (Polygon != null)
+            {
+                foreach (CadSegment edge in Edges())
+                    if (Cross(a, b, edge.A, edge.B) || PointSegment(edge.A, a, b) <= 1e-6) return true;
+                return false;
+            }
             // Liang-Barsky against the box, in plan.
             double t0 = 0, t1 = 1, dx = b.X - a.X, dy = b.Y - a.Y;
             double[] p = { -dx, dx, -dy, dy };
@@ -344,11 +494,16 @@ namespace Horizun.Revit.Core
         }
 
         public string Describe() =>
+            (Polygon != null ? "polygon of " + Polygon.Count + " vertices within " : "") +
             MinX.ToString("0.#", CultureInfo.InvariantCulture) + "," +
             MinY.ToString("0.#", CultureInfo.InvariantCulture) + " to " +
             MaxX.ToString("0.#", CultureInfo.InvariantCulture) + "," +
             MaxY.ToString("0.#", CultureInfo.InvariantCulture) + " mm" +
-            (Crossing == CrossingWhole ? ", entities it cuts kept whole" : "");
+            (Crossing == CrossingWhole ? ", entities it cuts kept whole" : "") +
+            (WallMarginMm > 0
+                ? ", wall lines read up to " + WallMarginMm.ToString("0.#", CultureInfo.InvariantCulture) +
+                  " mm outside it"
+                : "");
     }
 
     public sealed class CadRule
@@ -695,7 +850,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers"
+            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "block_attributes"
         };
 
         /// <summary>
@@ -789,18 +944,56 @@ namespace Horizun.Revit.Core
             {
                 foreach (JProperty prop in extent.Properties())
                     if (prop.Name != "min_x" && prop.Name != "min_y" && prop.Name != "max_x" && prop.Name != "max_y" &&
-                        prop.Name != "crossing")
+                        prop.Name != "crossing" && prop.Name != "polygon" && prop.Name != "wall_margin_mm" &&
+                        prop.Name != "symbols_on_boundary_mm")
                         throw new CadRequirementSetException(
                             "Unknown key '" + prop.Name + "' in source.extent_mm. Known: crossing, max_x, max_y, min_x, " +
-                            "min_y. A misspelt bound would be ignored and the zone would silently become the whole drawing.");
+                            "min_y, polygon, symbols_on_boundary_mm, wall_margin_mm. A misspelt bound would be ignored and the zone would " +
+                            "silently become the whole drawing.");
 
-                var box = new CadExtent
+                CadExtent box;
+                if (extent["polygon"] != null)
                 {
-                    MinX = RequireNumber(extent, "min_x"),
-                    MinY = RequireNumber(extent, "min_y"),
-                    MaxX = RequireNumber(extent, "max_x"),
-                    MaxY = RequireNumber(extent, "max_y")
-                };
+                    if (extent["min_x"] != null || extent["min_y"] != null || extent["max_x"] != null ||
+                        extent["max_y"] != null)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm has both a polygon and box bounds. Give one: two zones that disagree " +
+                            "would leave the choice between them to this bridge.");
+                    box = PolygonExtent(extent["polygon"]);
+                }
+                else
+                {
+                    box = new CadExtent
+                    {
+                        MinX = RequireNumber(extent, "min_x"),
+                        MinY = RequireNumber(extent, "min_y"),
+                        MaxX = RequireNumber(extent, "max_x"),
+                        MaxY = RequireNumber(extent, "max_y")
+                    };
+                }
+                JToken margin = extent["wall_margin_mm"];
+                if (margin != null)
+                {
+                    double? m = margin.Type == JTokenType.Integer || margin.Type == JTokenType.Float
+                        ? (double?)margin.Value<double>() : null;
+                    if (m == null || m < 0 || m > 2000)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.wall_margin_mm must be a number of millimetres between 0 and 2000; it " +
+                            "reads " + margin.ToString(Newtonsoft.Json.Formatting.None) + ". It is how far outside " +
+                            "the zone wall LINES are still read, so the walls on its boundary keep both faces.");
+                    box.WallMarginMm = m.Value;
+                }
+                JToken held = extent["symbols_on_boundary_mm"];
+                if (held != null)
+                {
+                    double? h = held.Type == JTokenType.Integer || held.Type == JTokenType.Float
+                        ? (double?)held.Value<double>() : null;
+                    if (h == null || h < 0 || h > 1000)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.symbols_on_boundary_mm must be a number of millimetres between 0 and " +
+                            "1000; it reads " + held.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                    box.SymbolsOnBoundaryMm = h.Value;
+                }
                 if (box.MaxX <= box.MinX || box.MaxY <= box.MinY)
                     throw new CadRequirementSetException(
                         "source.extent_mm is empty or inverted (" + box.Describe() + "): max must exceed min on " +
@@ -903,7 +1096,8 @@ namespace Horizun.Revit.Core
                     if (a.Geometry != null && b.Geometry != null &&
                         a.Geometry.Source == CadGeometrySource.Blocks &&
                         b.Geometry.Source == CadGeometrySource.Blocks &&
-                        !SamePatterns(a.Geometry.BlockPatterns, b.Geometry.BlockPatterns))
+                        (!SamePatterns(a.Geometry.BlockPatterns, b.Geometry.BlockPatterns) ||
+                         !SameAttributes(a.Geometry.BlockAttributes, b.Geometry.BlockAttributes)))
                         continue;
 
                     if (!string.Equals(a.Produces, b.Produces, StringComparison.Ordinal) &&
@@ -1553,6 +1747,73 @@ namespace Horizun.Revit.Core
                 foreach (JToken t in solidArray) c.SolidHatchLayers.Add(((string)t).Trim());
             }
 
+            JToken attrToken = g["block_attributes"];
+            if (attrToken != null)
+            {
+                var attrs = attrToken as JObject;
+                if (attrs == null || !attrs.HasValues)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_attributes must be a non-empty object of attribute " +
+                        "tag -> \"present\" or \"absent\".");
+                if (c.Source != CadGeometrySource.Blocks)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_attributes only means something with from:\"blocks\".");
+                foreach (JProperty a in attrs.Properties())
+                {
+                    string v = a.Value.Type == JTokenType.String ? ((string)a.Value).Trim() : null;
+                    if (string.IsNullOrWhiteSpace(a.Name) || (v != "present" && v != "absent"))
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.block_attributes['" + a.Name + "'] must be \"present\" " +
+                            "or \"absent\"; it reads " + a.Value.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                    c.BlockAttributes[a.Name.Trim()] = v == "present";
+                }
+            }
+
+            JToken compositeToken = g["composite"];
+            if (compositeToken != null)
+            {
+                string policy = compositeToken.Type == JTokenType.String ? ((string)compositeToken).Trim() : null;
+                if (policy == null || !CadCompositePolicy.All.Contains(policy))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.composite must be one of " +
+                        string.Join(", ", CadCompositePolicy.All) + "; it reads " +
+                        compositeToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.SolidHatchLayers.Count == 0 && policy != CadCompositePolicy.Outer)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.composite '" + policy + "' needs solid_hatch_layers - " +
+                        "the leaves of a wall are read from its hatch, and without it there is nothing to read.");
+                c.Composite = policy;
+            }
+
+            JToken finishToken = g["finish"];
+            if (finishToken != null)
+            {
+                string finish = finishToken.Type == JTokenType.String ? ((string)finishToken).Trim() : null;
+                if (finish != "widen" && finish != "follow")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.finish must be 'widen' or 'follow'; it reads " +
+                        finishToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.finish only means something with from:\"double_lines\".");
+                c.Finish = finish;
+            }
+
+            JToken breaksToken = g["face_breaks_mm"];
+            if (breaksToken != null)
+            {
+                double? mm = breaksToken.Type == JTokenType.Integer || breaksToken.Type == JTokenType.Float
+                    ? (double?)breaksToken.Value<double>() : null;
+                if (mm == null || mm <= 0 || mm > 500)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.face_breaks_mm must be a length in millimetres between 0 " +
+                        "and 500; it reads " + breaksToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.face_breaks_mm only means something with from:\"double_lines\".");
+                c.FaceBreaksMm = mm;
+            }
+
             c.MinThicknessMm = g.Value<double?>("min_thickness_mm");
             c.MaxThicknessMm = g.Value<double?>("max_thickness_mm");
             c.MinOverlapMm = g.Value<double?>("min_overlap_mm");
@@ -1627,6 +1888,67 @@ namespace Horizun.Revit.Core
                     "source.extent_mm." + key + " must be a number in millimetres; it reads '" +
                     t.ToString(Newtonsoft.Json.Formatting.None) + "'.");
             return v.Value;
+        }
+
+        private static bool SameAttributes(Dictionary<string, bool> a, Dictionary<string, bool> b)
+        {
+            if (a.Count != b.Count) return false;
+            foreach (var kv in a)
+            {
+                bool v;
+                if (!b.TryGetValue(kv.Key, out v) || v != kv.Value) return false;
+            }
+            return true;
+        }
+
+        private static CadExtent PolygonExtent(JToken token)
+        {
+            var arr = token as JArray;
+            if (arr == null || arr.Count < 3)
+                throw new CadRequirementSetException(
+                    "source.extent_mm.polygon must be an array of at least three [x, y] vertices in millimetres, " +
+                    "in order and not repeated at the end.");
+            var pts = new List<CadPoint>();
+            foreach (JToken v in arr)
+            {
+                var xy = v as JArray;
+                if (xy == null || xy.Count != 2 ||
+                    xy.Any(n => n.Type != JTokenType.Integer && n.Type != JTokenType.Float))
+                    throw new CadRequirementSetException(
+                        "source.extent_mm.polygon vertex " + v.ToString(Newtonsoft.Json.Formatting.None) +
+                        " is not an [x, y] pair of numbers in millimetres.");
+                pts.Add(new CadPoint(xy[0].Value<double>(), xy[1].Value<double>()));
+            }
+            double area = 0;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+                area += (pts[j].X * pts[i].Y) - (pts[i].X * pts[j].Y);
+            if (Math.Abs(area) / 2 < 1.0)
+                throw new CadRequirementSetException(
+                    "source.extent_mm.polygon encloses no area. A zone that contains nothing is not one somebody " +
+                    "meant to write.");
+            for (int i = 0; i < pts.Count; i++)
+                for (int j = i + 1; j < pts.Count; j++)
+                {
+                    int i2 = (i + 1) % pts.Count, j2 = (j + 1) % pts.Count;
+                    if (i2 == j || j2 == i) continue;
+                    if (ProperCross(pts[i], pts[i2], pts[j], pts[j2]))
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.polygon crosses itself (edges " + i + " and " + j + "). Inside and " +
+                            "outside are undefined for such a ring.");
+                }
+            return new CadExtent
+            {
+                Polygon = pts,
+                MinX = pts.Min(p => p.X), MinY = pts.Min(p => p.Y),
+                MaxX = pts.Max(p => p.X), MaxY = pts.Max(p => p.Y)
+            };
+        }
+
+        private static bool ProperCross(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            double O(CadPoint p, CadPoint q, CadPoint r) => (q.X - p.X) * (r.Y - p.Y) - (q.Y - p.Y) * (r.X - p.X);
+            double o1 = O(a, b, c), o2 = O(a, b, d), o3 = O(c, d, a), o4 = O(c, d, b);
+            return o1 * o2 < 0 && o3 * o4 < 0;
         }
 
         public static string CanonicalHash(JToken doc)

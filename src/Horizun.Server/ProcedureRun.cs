@@ -470,6 +470,7 @@ namespace Horizun.Server
             Judge(Ok, structured ?? result, out judged, out why);
             step["state"] = judged;
             step["evaluation"] = why;
+            step["assessment"] = Assess((string)step["tool"], structured ?? result);
 
             AdvanceState(record);
             Save(record);
@@ -730,6 +731,7 @@ namespace Horizun.Server
             Judge(outcome, result, out judged, out why);
             step["state"] = judged;
             step["evaluation"] = why;
+            step["assessment"] = Assess((string)step["tool"], result);
 
             AdvanceState(record);
             Save(record);
@@ -858,6 +860,33 @@ namespace Horizun.Server
                 why = "the reply says every total reconciles.";
                 return;
             }
+            // A PLAN: the operation succeeded when it produced a plan and blocked nothing.
+            // What it withdrew or holds for review is intervention, recorded in the
+            // assessment - not a failed operation, and not a complete unit either.
+            if (string.Equals((string)body["mode"], "plan", StringComparison.Ordinal) &&
+                body["execute_plan_request"] is JObject)
+            {
+                int blocked = (int?)body["blocked"] ?? 0;
+                if (blocked > 0)
+                {
+                    state = Failed;
+                    why = "the plan says " + blocked + " candidate(s) are BLOCKED.";
+                    return;
+                }
+                state = Ok;
+                why = "the reply is a plan with nothing blocked; what it withdrew or holds for review is in the " +
+                      "assessment.";
+                return;
+            }
+            // AN AUDIT: the operation succeeded when it read the model against the drawing.
+            // Whether the built elements agree is the GEOMETRIC verdict, kept apart.
+            if ((bool?)body["read_only"] == true && body["match_states"] is JObject)
+            {
+                state = Ok;
+                why = "the reply is an audit that read the model against the drawing; whether what is built " +
+                      "agrees is in the assessment.";
+                return;
+            }
             if (string.Equals((string)body["status"], "healthy", StringComparison.Ordinal))
             {
                 state = Ok;
@@ -869,6 +898,80 @@ namespace Horizun.Server
             why = "the reply carries no field this build knows how to read as evidence - no 'verified', no " +
                   "application outcome, no coverage statement. The result is kept; the verdict is not " +
                   "invented.";
+        }
+
+        /// <summary>
+        /// FOUR QUESTIONS, NEVER ONE. Whether the tool ran, whether what it built agrees
+        /// with the drawing, how much of the drawing it covered, and what a person must
+        /// still do - each from the reply's own fields, null where the reply says nothing.
+        /// </summary>
+        internal static JObject Assess(string tool, JToken result)
+        {
+            var body = result as JObject;
+            var a = new JObject { ["tool"] = tool };
+            if (body == null) return a;
+            if (body["stages_failed"] != null)
+            {
+                a["operation"] = (int?)body["stages_failed"] == 0 ? "ok" : "failed";
+                a["built_verified"] = body["created_verified"];
+                a["provenance_written"] = body["provenance_written"];
+            }
+            if (string.Equals((string)body["mode"], "plan", StringComparison.Ordinal))
+            {
+                var withdrawn = (body["withdrawn"] as JObject)?["rows"] as JArray;
+                int rows = 0;
+                if (body["execute_plan_request"]?["actions"] is JArray actions)
+                    foreach (JToken act in actions) rows += (act["arguments"]?["elements"] as JArray)?.Count ?? 0;
+                a["operation"] = ((int?)body["blocked"] ?? 0) == 0 ? "ok" : "blocked";
+                a["planned_rows"] = rows;
+                a["coverage_of_drawn_geometry"] = body["coverage"]?["fraction"];
+                var intervention = new JObject
+                {
+                    ["needing_review"] = body["candidates_needing_review"],
+                    ["withdrawn"] = withdrawn?.Count ?? 0
+                };
+                if (withdrawn != null)
+                {
+                    var byReason = new JObject();
+                    foreach (JToken w in withdrawn)
+                    {
+                        string reason = (string)w["reason"] ?? "unstated";
+                        byReason[reason] = ((int?)byReason[reason] ?? 0) + 1;
+                    }
+                    intervention["withdrawn_by_reason"] = byReason;
+                }
+                a["intervention"] = intervention;
+            }
+            if ((bool?)body["read_only"] == true && body["match_states"] is JObject states)
+            {
+                a["operation"] = "ok";
+                a["geometry"] = new JObject
+                {
+                    ["matched"] = body["matched"]?["total"],
+                    ["agrees"] = states["agrees"],
+                    ["differs"] = states["differs"],
+                    ["verdict"] = ((int?)states["differs"] ?? 0) == 0 ? "every_built_match_agrees" : "some_built_differ"
+                };
+                a["coverage"] = body["candidate_coverage"] is JObject cc
+                    ? new JObject
+                    {
+                        ["read"] = cc["read"], ["matched"] = cc["matched"], ["not_built"] = cc["not_built"],
+                        ["not_built_eligible"] = cc["not_built_eligible"], ["needing_review"] = cc["needing_review"]
+                    }
+                    : null;
+                a["complete"] = (bool?)body["agrees"];
+                a["not_measured"] = body["not_measured"];
+            }
+            if (body["reconciles"] != null)
+            {
+                a["operation"] = (bool?)body["reconciles"] == true ? "ok" : "failed";
+                a["inventory"] = new JObject
+                {
+                    ["total_rows"] = body["total_rows"],
+                    ["by_outcome"] = body["by_outcome"]
+                };
+            }
+            return a;
         }
 
         private static void AdvanceState(JObject record)
@@ -1061,10 +1164,35 @@ namespace Horizun.Server
             bool checksPassed = checks.OfType<JObject>().All(c => (bool?)c["passed"] == true);
             int checksRun = checks.Count;
 
+            // THE UNIT, NOT THE CALLS: what the recorded assessments say together.
+            var assessments = steps.Select(s => s["assessment"] as JObject).Where(x => x != null).ToList();
+            var geometry = assessments.Where(x => x["geometry"] is JObject).Select(x => (JObject)x["geometry"]).ToList();
+            int withdrawnTotal = 0, reviewTotal = 0;
+            foreach (JObject x in assessments)
+            {
+                withdrawnTotal += (int?)x["intervention"]?["withdrawn"] ?? 0;
+                reviewTotal += (int?)x["intervention"]?["needing_review"] ?? 0;
+            }
+            var unit = new JObject
+            {
+                ["operations_ok"] = assessments.Count(x => (string)x["operation"] == "ok"),
+                ["operations_assessed"] = assessments.Count(x => x["operation"] != null),
+                ["built_matches_differing"] = geometry.Sum(g => (int?)g["differs"] ?? 0),
+                ["audits_complete"] = geometry.Count == 0 ? null
+                    : (JToken)assessments.Where(x => x["geometry"] != null).All(x => (bool?)x["complete"] == true),
+                ["withdrawn_rows"] = withdrawnTotal,
+                ["rows_needing_review"] = reviewTotal,
+                ["means"] = "operations_ok says the calls did their job; built_matches_differing says whether what " +
+                            "was built agrees with the drawing; audits_complete says whether the drawing is fully " +
+                            "built; withdrawn and review rows are the intervention a person still owes. stages_failed " +
+                            "= 0 answers only the first."
+            };
+
             return new JObject
             {
                 ["steps"] = steps.Count,
                 ["by_state"] = byState,
+                ["unit_assessment"] = unit,
                 ["all_steps_ok"] = unmet == 0,
                 ["steps_means"] = unmet == 0
                     ? "every step was recorded and carried evidence this build could read."

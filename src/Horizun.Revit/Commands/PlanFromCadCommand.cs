@@ -423,6 +423,9 @@ namespace Horizun.Revit.Commands
                     ["segments_crossing"] = interpretation.SegmentsCrossingExtent,
                     ["crossing_policy"] = set.ExtentMm?.Crossing,
                     ["segments_crossing_kept_whole"] = interpretation.SegmentsCrossingKept,
+                    ["wall_margin_mm"] = set.ExtentMm?.WallMarginMm,
+                    ["segments_read_in_margin"] = interpretation.SegmentsInMargin,
+                    ["walls_outside_zone"] = interpretation.CandidatesOutsideExtent,
                     ["means"] =
                         "This set declares source.extent_mm, so everything below describes that zone and not " +
                         "the whole drawing. The drawing was still read whole. segments_crossing reach past the " +

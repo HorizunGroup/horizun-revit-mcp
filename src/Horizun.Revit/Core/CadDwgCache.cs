@@ -211,7 +211,9 @@ namespace Horizun.Revit.Core
             try
             {
                 Directory.CreateDirectory(Root);
-                File.Copy(tsvSource, entry.TsvPath, true);
+                // PUBLISHED WHOLE: written beside the target and moved into place, so a
+                // reader never finds half a report under a key.
+                Publish(entry.TsvPath, tmp => File.Copy(tsvSource, tmp, true));
 
                 var deps = new JArray();
                 string folder = null;
@@ -238,7 +240,7 @@ namespace Horizun.Revit.Core
                     ["entities"] = reading?.Entities?.Count ?? 0,
                     ["dependencies"] = deps
                 };
-                File.WriteAllText(entry.SidecarPath, side.ToString(Formatting.Indented));
+                Publish(entry.SidecarPath, tmp => File.WriteAllText(tmp, side.ToString(Formatting.Indented)));
                 return new JObject
                 {
                     ["stored"] = true,
@@ -255,6 +257,84 @@ namespace Horizun.Revit.Core
                     ["means"] = "the reading is still correct; only the cache write failed."
                 };
             }
+        }
+
+        private static void Publish(string target, Action<string> write)
+        {
+            string tmp = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                write(tmp);
+                if (File.Exists(target)) File.Replace(tmp, target, null);
+                else File.Move(tmp, target);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); } catch { }
+            }
+        }
+
+        // ---- one extraction per key at a time ------------------------------------
+
+        /// <summary>
+        /// ONE READING AT A TIME PER KEY. A client that timed out and asked again, or a
+        /// second Revit, must not start a second six-minute extraction of the same file:
+        /// the second caller waits for the first one's result instead. The lock is a file
+        /// naming its owner's process; a lock whose owner is gone is taken over.
+        /// </summary>
+        public static string LockPath(string key) => Path.Combine(Root, key + ".lock");
+
+        /// <summary>Null when this process now owns the key; otherwise who does.</summary>
+        public static JObject TryLock(string key)
+        {
+            Directory.CreateDirectory(Root);
+            string path = LockPath(key);
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    using (var f = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+                    {
+                        byte[] body = Encoding.UTF8.GetBytes(new JObject
+                        {
+                            ["pid"] = System.Diagnostics.Process.GetCurrentProcess().Id,
+                            ["since_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture)
+                        }.ToString(Formatting.None));
+                        f.Write(body, 0, body.Length);
+                    }
+                    return null;
+                }
+                catch (IOException)
+                {
+                    JObject owner = ReadLock(path);
+                    int pid = (int?)owner?["pid"] ?? -1;
+                    if (pid > 0 && Alive(pid) && pid != System.Diagnostics.Process.GetCurrentProcess().Id)
+                        return owner;
+                    // the owner is gone (or it is this process, which does not hold a
+                    // read of this key any more): the lock is stale
+                    try { File.Delete(path); } catch { return owner ?? new JObject { ["pid"] = pid }; }
+                }
+            }
+            return new JObject { ["error"] = "the lock could not be taken" };
+        }
+
+        public static void Unlock(string key)
+        {
+            string path = LockPath(key);
+            JObject owner = ReadLock(path);
+            if ((int?)owner?["pid"] == System.Diagnostics.Process.GetCurrentProcess().Id)
+                try { File.Delete(path); } catch { }
+        }
+
+        private static JObject ReadLock(string path)
+        {
+            try { return JObject.Parse(File.ReadAllText(path)); } catch { return null; }
+        }
+
+        private static bool Alive(int pid)
+        {
+            try { return !System.Diagnostics.Process.GetProcessById(pid).HasExited; }
+            catch { return false; }
         }
 
         /// <summary>

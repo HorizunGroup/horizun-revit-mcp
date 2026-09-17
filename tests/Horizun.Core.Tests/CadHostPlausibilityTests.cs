@@ -113,6 +113,38 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_cap_that_closes_the_hosts_own_end_is_not_a_nearer_wall()
+        {
+            // Unit 912, symbol 15BB4: host 161.9 mm on x = 41770.3 from y 26114.4; its end is
+            // closed by a line across it at y 26114.4; the symbol is drawn inside the wall.
+            var lines = new List<CadSegment>
+            {
+                Line(41705.2, 26114.4, 41835.4, 26114.4),
+                Line(41705.2, 26114.4, 41705.2, 26506.5),
+                Line(41835.4, 26114.4, 41835.4, 26506.5)
+            };
+            CadHostPlausibilityResult r = CadHostPlausibility.Check(
+                new CadPoint(41757.6, 26121.8), new CadPoint(41770.3, 26114.4), new CadPoint(41770.3, 26508.1),
+                80.95, lines, 2.0, 25.0, 250.0);
+            Assert.False(r.NearerWallDrawn);
+            Assert.Null(r.OtherWallMm);
+        }
+
+        [Fact]
+        public void A_wall_meeting_the_host_part_way_along_is_still_another_wall()
+        {
+            // a line across the band but NOT at an end is not a cap
+            var lines = new List<CadSegment>
+            {
+                Line(0, 80, 3000, 80),
+                Line(1500, -80, 1500, -600)
+            };
+            CadHostPlausibilityResult r = CadHostPlausibility.Check(
+                new CadPoint(1480, -120), new CadPoint(0, 0), new CadPoint(3000, 0), 80, lines, 2.0, 25.0, 250.0);
+            Assert.NotNull(r.OtherWallMm);
+        }
+
+        [Fact]
         public void A_finish_line_just_outside_the_host_face_is_still_the_host_face()
         {
             // Unit 915F, symbol 1587E: host 173.0 mm on y = 16136.1 (face 16049.6); the
