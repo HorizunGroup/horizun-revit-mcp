@@ -122,7 +122,7 @@ namespace Horizun.Revit.Commands
 
         /// <summary>A create row that re-makes this instance on another host (a concrete id or a placeholder).</summary>
         public static JObject SubstitutionRow(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
-                                              JObject carried)
+                                              JObject carried, ElementId levelIfUnhosted = null)
         {
             XYZ at = ((LocationPoint)fi.Location).Point;
             Wall oldHost = fi.Host as Wall;
@@ -138,9 +138,18 @@ namespace Horizun.Revit.Commands
             };
             if (oldHost != null && oldHost.LevelId != ElementId.InvalidElementId)
                 row["level_id"] = Rid.Value(oldHost.LevelId);
-            // THE SIDE IT LOOKS OUT OF, as the model holds it now.
+            else if (levelIfUnhosted != null)
+                row["level_id"] = Rid.Value(levelIfUnhosted);
+            // THE SIDE IT LOOKS OUT OF, as the model holds it now. A work-plane based instance looks
+            // out along its transform's Z, hosted or not: MEASURED, a face-hosted device keeps that
+            // transform when shortening its wall leaves it without a host.
             XYZ look = null;
-            try { look = fi.HostFace != null ? fi.GetTotalTransform().BasisZ : fi.FacingOrientation; } catch { }
+            try
+            {
+                look = fi.Symbol?.Family?.FamilyPlacementType == FamilyPlacementType.WorkPlaneBased
+                    ? fi.GetTotalTransform().BasisZ : fi.FacingOrientation;
+            }
+            catch { }
             if (look != null && Math.Abs(look.Z) < 0.5)
                 row["facing_degrees"] = Math.Round(Math.Atan2(look.Y, look.X) * 180.0 / Math.PI, 6);
             try

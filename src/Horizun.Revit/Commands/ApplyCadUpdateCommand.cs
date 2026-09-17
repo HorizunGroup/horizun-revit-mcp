@@ -229,8 +229,21 @@ namespace Horizun.Revit.Commands
                 if (tokens[key] != null) args["confirmation_token"] = tokens[key];
                 args["idempotency_key"] = (request.Value<string>("idempotency_key") ?? "cad-update") + "-" + key;
 
-                // A HOST THIS APPLY CREATED, named by its candidate.
+                // A HOST THIS APPLY CREATED, named by its candidate. The rehearsal ran against a stand-in,
+                // so the resolved call is rehearsed again for a token that matches it.
+                bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor);
                 string unresolved = CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);
+                if (unresolved == null && hadPlaceholder)
+                {
+                    var again = (JObject)args.DeepClone();
+                    again["dry_run"] = true;
+                    again.Remove("confirmation_token");
+                    again.Remove("idempotency_key");
+                    CommandResult rehearsed = child.Execute(uiApp, again.ToString(Formatting.None));
+                    string fresh = rehearsed.Success ? (rehearsed.Data as JObject)?.Value<string>("confirmation_token") : null;
+                    if (fresh != null) args["confirmation_token"] = fresh;
+                    else unresolved = "the resolved call did not rehearse: " + (rehearsed.Error ?? "no token");
+                }
                 CommandResult r;
                 if (unresolved != null)
                     r = CommandResult.Fail("host_not_created: " + unresolved + ". Nothing was sent for this action.");

@@ -1424,7 +1424,8 @@ namespace Horizun.Revit.Commands
 
         /// <summary>Re-create an instance on another host, then delete it: two actions and one index entry.</summary>
         private static void EmitSubstitution(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
-                                             string target, string key, JArray actions, JArray createIndex)
+                                             string target, string key, JArray actions, JArray createIndex,
+                                             ElementId levelIfUnhosted = null)
         {
             JObject carried = CadSplitDependents.CarriedParameters(fi);
             actions.Add(new JObject
@@ -1434,7 +1435,7 @@ namespace Horizun.Revit.Commands
                 ["arguments"] = new JObject
                 {
                     ["target_document"] = target, ["units"] = "mm",
-                    ["elements"] = new JArray(CadSplitDependents.SubstitutionRow(doc, fi, host, set, carried))
+                    ["elements"] = new JArray(CadSplitDependents.SubstitutionRow(doc, fi, host, set, carried, levelIfUnhosted))
                 }
             });
             createIndex.Add(CadSplitDependents.IndexEntry(key, fi, carried));
@@ -1510,6 +1511,34 @@ namespace Horizun.Revit.Commands
                     }
                     EmitSubstitution(doc, fi, Rid.Value(to.Id), set, target, "cad-update-rehome-" + n++, actions, createIndex);
                 }
+            }
+            // LEFT WITHOUT A HOST. MEASURED (campaign 4): shortening a wall past a face-hosted
+            // device keeps the device and drops its host, silently. One whose point a single wall
+            // of this update carries on a face is re-created there.
+            foreach (FamilyInstance fi in new FilteredElementCollector(doc).OfClass(typeof(FamilyInstance))
+                                                                          .Cast<FamilyInstance>())
+            {
+                Element hostNow;
+                try { hostNow = fi.Host; } catch { continue; }
+                if (hostNow != null) continue;
+                FamilyPlacementType kind;
+                try { kind = fi.Symbol.Family.FamilyPlacementType; } catch { continue; }
+                if (kind != FamilyPlacementType.WorkPlaneBased && kind != FamilyPlacementType.OneLevelBasedHosted) continue;
+                XYZ at = (fi.Location as LocationPoint)?.Point;
+                if (at == null) continue;
+                var carriers = walls.Where(x => CadHostResolver.CarriesPoint(x, at)).ToList();
+                if (carriers.Count == 0) continue;     // not a dependent of these walls
+                if (carriers.Count > 1)
+                {
+                    held.Add(new JObject
+                    {
+                        ["element_id"] = Rid.Value(fi.Id), ["host"] = null, ["why"] = "unhosted, and more than one wall carries it",
+                        ["candidates"] = new JArray(carriers.Select(x => Rid.Value(x.Id)))
+                    });
+                    continue;
+                }
+                EmitSubstitution(doc, fi, Rid.Value(carriers[0].Id), set, target, "cad-update-rehome-" + n++, actions,
+                                 createIndex, carriers[0].LevelId);
             }
             if (held.Count > 0) update.Rejected.Add("dependents left past their wall's end and not re-homed: " +
                                                    held.ToString(Newtonsoft.Json.Formatting.None));
