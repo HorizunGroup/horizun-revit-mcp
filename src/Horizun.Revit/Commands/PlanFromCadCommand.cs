@@ -197,7 +197,7 @@ namespace Horizun.Revit.Commands
                 if (solidHatch == null)
                     return CommandResult.Fail(
                         "solid_evidence_unread: " + ((string)solidRead["refused"] ?? "unknown") + ". " +
-                        ((string)solidRead["means"] ?? (string)solidRead["detail"] ?? "") +
+                        CadBlockSource.Explain(solidRead) +
                         " A wall rule of this set declares solid_hatch_layers, and its walls are not read " +
                         "without them. Nothing was examined.");
             }

@@ -463,6 +463,18 @@ namespace Horizun.Revit.Commands
         /// command that interprets such a set calls this, so the plan, the audit
         /// and the update agree on which pairs of faces enclose material.
         /// </summary>
+        /// <summary>
+        /// Why a read was refused, as text. MEASURED (campaign 4): the detail of a reader refusal is an
+        /// OBJECT (it names the missing reference), and casting it to a string threw instead of refusing.
+        /// </summary>
+        public static string Explain(JObject report)
+        {
+            if (report == null) return "";
+            JToken t = report["means"] ?? report["detail"];
+            if (t == null || t.Type == JTokenType.Null) return "";
+            return t.Type == JTokenType.String ? (string)t : t.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
         public static CadSolidHatch ReadSolid(Element element, CadInstanceFacts facts, CadRequirementSet set,
                                               CadHarvest harvest, string callerPath, int readTimeoutSeconds,
                                               JObject report)
