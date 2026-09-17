@@ -217,7 +217,9 @@ namespace Horizun.Revit.Commands
             // ---------------------------------------------------------- apply
             var applied = new JArray();
             var touched = new List<Touched>();
+            var keptInPlace = new JArray();
             int failures = 0;
+            bool wroteAlready = false;
             foreach (JObject action in actions.OfType<JObject>())
             {
                 string key = action.Value<string>("key") ?? "";
@@ -234,9 +236,10 @@ namespace Horizun.Revit.Commands
                 // A DEPENDENT'S ACTION IS REHEARSED AGAIN just before it runs: the actions before it
                 // changed what it acts on (MEASURED: the old instance lost its host when its wall was
                 // shortened, and the token issued at the start no longer matched).
+                // (MEASURED again: a retype after a re-shape of the same wall.) So every action after the
+                // first write is rehearsed again, in place - the whole list rehearsed cleanly first.
                 bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor) ||
-                                      key.StartsWith("cad-update-substitute-", StringComparison.Ordinal) ||
-                                      key.StartsWith("cad-update-rehome-", StringComparison.Ordinal);
+                                      wroteAlready;
                 string unresolved = CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);
                 if (unresolved == null && hadPlaceholder)
                 {
@@ -257,7 +260,27 @@ namespace Horizun.Revit.Commands
                 else if (FaultInjected(key))
                     r = CommandResult.Fail("fault_injected: HORIZUN_TEST_FAIL_ACTION names '" + key + "'. Nothing was sent.");
                 else
+                {
+                    // WHAT A RE-SHAPED WALL HOSTS STAYS WHERE IT STANDS. MEASURED (campaign 4): set_curve
+                    // on a wall whose start moved carried every face-hosted device along by the same
+                    // distance, silently. Their points are read before and put back after.
+                    Dictionary<long, XYZ> before = HostedPoints(doc, args);
                     r = child.Execute(uiApp, args.ToString(Formatting.None));
+                    if (r.Success && before.Count > 0)
+                    {
+                        var except = new HashSet<long>((action["hosted_to_substitute"] as JArray ?? new JArray())
+                                                          .Select(x => (long)x));
+                        foreach (JObject kept in KeepInPlace(uiApp, doc, before, except, title,
+                                                             (request.Value<string>("idempotency_key") ?? "cad-update") + "-" + key))
+                        {
+                            keptInPlace.Add(kept);
+                            if ((bool?)kept["restored"] == false) { r = CommandResult.Fail(
+                                "a hosted instance moved with its wall and could not be put back: " +
+                                kept.ToString(Formatting.None)); break; }
+                        }
+                    }
+                }
+                wroteAlready = true;
                 var row = new JObject
                 {
                     ["key"] = key, ["tool"] = tool, ["ok"] = r.Success,
@@ -531,6 +554,7 @@ namespace Horizun.Revit.Commands
                 ["migrated_from_v1"] = migrated,
                 ["restamp_failed"] = restampFailed,
                 ["restamps"] = restamps,
+                ["hosted_kept_in_place"] = keptInPlace,
                 ["substitutions"] = new JArray(touched.Where(x => x.RowIndex.HasValue).Select(x => new
                     {
                         t = x,
@@ -575,6 +599,67 @@ namespace Horizun.Revit.Commands
         }
 
         private const string RestampKey = "cad-update-restamp";
+
+        /// <summary>The points of what the walls of a set_curve action host, before it runs.</summary>
+        private static Dictionary<long, XYZ> HostedPoints(Document doc, JObject args)
+        {
+            var points = new Dictionary<long, XYZ>();
+            foreach (JObject op in (args["operations"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                if (!string.Equals(op.Value<string>("operation"), "set_curve", StringComparison.Ordinal)) continue;
+                foreach (JToken id in op["element_ids"] as JArray ?? new JArray())
+                {
+                    var wall = doc.GetElement(Rid.Make((long)id)) as Wall;
+                    if (wall == null) continue;
+                    foreach (FamilyInstance fi in CadSplitDependents.HostedOn(doc, wall))
+                        if (fi.Location is LocationPoint lp) points[Rid.Value(fi.Id)] = lp.Point;
+                }
+            }
+            return points;
+        }
+
+        /// <summary>Move back every instance the action displaced, through the typed move; report each.</summary>
+        private IEnumerable<JObject> KeepInPlace(UIApplication uiApp, Document doc, Dictionary<long, XYZ> before,
+                                                 HashSet<long> except, string title, string keyStem)
+        {
+            ICommand move = _resolve("horizun_transform_elements");
+            foreach (KeyValuePair<long, XYZ> kv in before)
+            {
+                if (except.Contains(kv.Key)) continue;
+                var fi = doc.GetElement(Rid.Make(kv.Key)) as FamilyInstance;
+                if (fi == null || !(fi.Location is LocationPoint lp)) continue;
+                XYZ d = kv.Value - lp.Point;
+                if (d.GetLength() * 304.8 < 0.5) continue;
+                var args = new JObject
+                {
+                    ["target_document"] = title, ["units"] = "mm",
+                    ["operations"] = new JArray(new JObject
+                    {
+                        ["operation"] = "move", ["element_ids"] = new JArray(kv.Key),
+                        ["vector"] = new JArray(Math.Round(d.X * 304.8, 4), Math.Round(d.Y * 304.8, 4), Math.Round(d.Z * 304.8, 4))
+                    }),
+                    ["dry_run"] = true
+                };
+                CommandResult dry = move.Execute(uiApp, args.ToString(Formatting.None));
+                string token = dry.Success ? (dry.Data as JObject)?.Value<string>("confirmation_token") : null;
+                CommandResult done = null;
+                if (token != null)
+                {
+                    args["dry_run"] = false;
+                    args["confirmation_token"] = token;
+                    args["idempotency_key"] = keyStem + "-keep-" + kv.Key;
+                    done = move.Execute(uiApp, args.ToString(Formatting.None));
+                }
+                XYZ now = (doc.GetElement(Rid.Make(kv.Key)) as FamilyInstance)?.Location is LocationPoint after ? after.Point : null;
+                yield return new JObject
+                {
+                    ["element_id"] = kv.Key,
+                    ["displaced_mm"] = Math.Round(d.GetLength() * 304.8, 1),
+                    ["restored"] = done != null && done.Success && now != null && now.DistanceTo(kv.Value) * 304.8 < 0.5,
+                    ["error"] = done == null ? (dry.Error ?? "no token") : (done.Success ? null : done.Error)
+                };
+            }
+        }
 
         private static bool FaultInjected(string key)
         {

@@ -290,6 +290,12 @@ namespace Horizun.Core.Tests
             string apply = Apply();
             Assert.Contains("CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);", apply);
             Assert.Contains("[\"substitutions\"] = new JArray(", apply);
+            // a re-shape puts back what its wall carried along; every action after a write is rehearsed in place
+            Assert.Contains("Dictionary<long, XYZ> before = HostedPoints(doc, args);", apply);
+            Assert.Contains("[\"hosted_kept_in_place\"] = keptInPlace", apply);
+            Assert.Contains("bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor) ||", apply);
+            Assert.Contains("wroteAlready;", apply);
+            Assert.Contains("[\"hosted_to_substitute\"] = new JArray(", plan);
             Assert.Contains("HoldSplit(update, a, \"kept_piece_occupied\"", plan);
             // its pieces are measured against the element's NEW line, not the one it stands on
             Assert.Contains("reshapedTo);", plan);

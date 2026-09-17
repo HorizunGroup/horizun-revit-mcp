@@ -852,6 +852,10 @@ namespace Horizun.Revit.Commands
                 actions.Add(new JObject
                 {
                     ["key"] = "cad-update-move-" + (n++),
+                    // what the apply must NOT put back after the re-shape: the dependents it re-creates
+                    ["hosted_to_substitute"] = new JArray((a.Evidence["split_dependents"] as JArray ?? new JArray())
+                        .OfType<JObject>().Where(d => (string)d["class"] == CadSplitRules.MovesTo)
+                        .Select(d => d["element_id"])),
                     ["tool"] = "horizun_transform_elements",
                     ["arguments"] = new JObject
                     {
