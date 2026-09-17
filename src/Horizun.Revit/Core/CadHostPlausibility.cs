@@ -25,6 +25,12 @@
 // host's own face, so the drawn face of the missing wall, 220 mm off the host's
 // centreline, passed as the host's. A face now stands within the half width plus
 // the point tolerance plus the finish a reading may leave outside the pair.
+//
+// AND A SYMBOL IS AGAINST A LINE ONLY WHERE IT FACES IT. MEASURED (unit 914, 15969):
+// with the narrower face band, a switch 168.6 mm off its host face was withdrawn
+// because the corner of a neighbouring wall's step, which starts 91 mm beyond the
+// symbol along the wall, was 133 mm away. A line whose extent the symbol does not
+// project onto is a corner, not a wall the symbol is drawn against.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -80,7 +86,7 @@ namespace Horizun.Revit.Core
                                  alongside > -toleranceMm;
                 }
                 if (isHostFace) host = Math.Min(host, d);
-                else if (d < other) { other = d; otherLine = s; }
+                else if (d < other && Faces(symbol, s.A, s.B, toleranceMm)) { other = d; otherLine = s; }
             }
 
             if (host < double.MaxValue) result.HostFaceMm = host;
@@ -89,6 +95,16 @@ namespace Horizun.Revit.Core
             result.NearerWallDrawn = result.HostFaceMm.HasValue && result.OtherWallMm.HasValue &&
                                      other + toleranceMm < host && other <= hostSearchMm;
             return result;
+        }
+
+        /// <summary>True when the symbol's foot on the line falls within the line, give or take the tolerance.</summary>
+        private static bool Faces(CadPoint p, CadPoint a, CadPoint b, double toleranceMm)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y;
+            double length = Math.Sqrt(dx * dx + dy * dy);
+            if (length <= 1e-9) return false;
+            double along = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / length;
+            return along >= -toleranceMm && along <= length + toleranceMm;
         }
 
         private static double Distance(CadPoint p, CadPoint a, CadPoint b)

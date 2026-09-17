@@ -89,6 +89,30 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_corner_of_a_neighbouring_wall_past_the_symbol_is_not_a_nearer_wall()
+        {
+            // Unit 914, symbol 15969: host 161.9 mm on y = 7048.5 (face 7129.5), the
+            // symbol 168.6 mm off it. A neighbouring wall steps out to y = 7200.9 from
+            // x = 32862.8 on, 91 mm past the symbol: its corner is 133 mm away.
+            var lines = new List<CadSegment>
+            {
+                Line(32202.4, 7129.5, 32878.7, 7129.5),
+                Line(32878.7, 7113.6, 32218.3, 7113.6),
+                Line(32862.8, 7112.0, 32862.8, 7200.9),
+                Line(32862.8, 7200.9, 32878.7, 7200.9),
+                Line(33008.9, 7200.9, 32878.7, 7200.9),
+                Line(32878.7, 7200.9, 32878.7, 7113.6)
+            };
+            CadHostPlausibilityResult r = CadHostPlausibility.Check(
+                new CadPoint(32771.9, 7298.1), new CadPoint(32218.3, 7048.5), new CadPoint(32880.3, 7048.5),
+                80.95, lines, 2.0, 25.0, 250.0);
+
+            Assert.False(r.NearerWallDrawn);
+            Assert.Equal(168.6, r.HostFaceMm.Value, 1);
+            Assert.Null(r.OtherWallMm);
+        }
+
+        [Fact]
         public void A_finish_line_just_outside_the_host_face_is_still_the_host_face()
         {
             // Unit 915F, symbol 1587E: host 173.0 mm on y = 16136.1 (face 16049.6); the
