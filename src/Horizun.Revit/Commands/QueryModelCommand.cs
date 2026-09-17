@@ -533,6 +533,17 @@ namespace Horizun.Revit.Commands
                         }
                     }
                     if (includeBox) json["bounding_box"] = BoxJson(elementBox, coordinateScale);
+                    if (request.Value<bool?>("include_cad_provenance") == true)
+                    {
+                        // WHICH DRAWING, WHICH RULES AND WHICH READING built it - the
+                        // record every CAD command writes, read back as stored.
+                        string problem;
+                        CadProvenance cad = null;
+                        try { cad = CadProvenanceStore.Read(element, out problem); }
+                        catch (Exception ex) { problem = ex.Message; }
+                        json["cad_provenance"] = cad == null ? JValue.CreateNull() : (JToken)cad.ToJson();
+                        if (problem != null) json["cad_provenance_problem"] = problem;
+                    }
                     if (request.Value<bool?>("include_orientation") == true)
                     {
                         JObject placement = Placement(element, transform, coordinateScale);

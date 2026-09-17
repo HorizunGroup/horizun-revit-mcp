@@ -930,6 +930,11 @@ namespace Horizun.Contracts
       ""type"": ""boolean"",
       ""default"": false
     },
+    ""include_cad_provenance"": {
+      ""type"": ""boolean"",
+      ""default"": false,
+      ""description"": ""Attach the CAD provenance record an element carries (v1, v2 or v3), as stored: drawing, rules, placement, as-built geometry and - from v3 - the reading and the drawing entities it used. Null when the element carries none.""
+    },
     ""include_orientation"": {
       ""type"": ""boolean"",
       ""default"": false,

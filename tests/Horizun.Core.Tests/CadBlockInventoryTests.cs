@@ -230,6 +230,9 @@ namespace Horizun.Core.Tests
             Assert.Contains("o[\"host_face\"] = face.ConvertToStableRepresentation(element.Document);", query);
             Assert.Contains("o[\"exterior_normal\"] = V(wall.Orientation);", query);
             Assert.Contains("\"\"include_orientation\"\": {", contract);
+            Assert.Contains("request.Value<bool?>(\"include_cad_provenance\") == true", query);
+            Assert.Contains("json[\"cad_provenance\"] = cad == null ? JValue.CreateNull() : (JToken)cad.ToJson();", query);
+            Assert.Contains("\"\"include_cad_provenance\"\": {", contract);
         }
     }
 }
