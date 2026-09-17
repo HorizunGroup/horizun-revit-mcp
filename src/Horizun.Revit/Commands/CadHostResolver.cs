@@ -146,7 +146,7 @@ namespace Horizun.Revit.Commands
         /// cannot be read answers NO: an unreadable face is not a face this
         /// bridge can place on.
         /// </summary>
-        private static bool CarriesPoint(Wall wall, XYZ point)
+        internal static bool CarriesPoint(Wall wall, XYZ point)
         {
             try
             {

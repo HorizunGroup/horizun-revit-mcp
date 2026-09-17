@@ -833,7 +833,8 @@ namespace Horizun.Revit.Core
                 // separate question, and the answer to it is still no.
                 if (!mine(s)) continue;   // not this run's business; the audit reports it
                 bool sameSet = set == null || string.IsNullOrEmpty(p.RequirementSetSha256) ||
-                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal);
+                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal) ||
+                               (scope != null && scope.RulesLineage.Contains(p.RequirementSetSha256));
                 if (!sameSet) continue;   // built under other rules; deleting it is not this run's call
 
                 // AN ORPHAN THAT SOMEBODY ALSO MOVED IS A CONFLICT.
@@ -1138,7 +1139,8 @@ namespace Horizun.Revit.Core
                 if (claimed.Contains(s.ElementId)) continue;
                 CadProvenance p = s.Provenance;
                 bool sameSet = set == null || string.IsNullOrEmpty(p.RequirementSetSha256) ||
-                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal);
+                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal) ||
+                               (scope != null && scope.RulesLineage.Contains(p.RequirementSetSha256));
                 if (!sameSet) continue;
                 List<CadPoint> asBuilt = AsBuilt(p);
                 if (asBuilt == null)

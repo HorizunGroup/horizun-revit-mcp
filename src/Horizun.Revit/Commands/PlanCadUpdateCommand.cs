@@ -232,6 +232,7 @@ namespace Horizun.Revit.Commands
             // WHICH ELEMENTS THIS PLACEMENT MAY CLAIM, decided once, at a desk.
             CadUpdateScope scope = CadPlacementRules.Resolve(minesUnderThisSet, placement, lineage,
                                                              lineagePlacements, placementsInModel);
+            foreach (string sha in rulesLineage) scope.RulesLineage.Add(sha);
 
             if (scope.AmbiguousLineageElements.Count > 0)
                 return CommandResult.FailWithDetail(
@@ -1476,6 +1477,8 @@ namespace Horizun.Revit.Commands
                     if (d.Lo >= -tol && d.Hi <= len + tol) continue;
                     FamilyInstance fi = byId[d.ElementId];
                     XYZ at = ((LocationPoint)fi.Location).Point;
+                    // STILL CARRIED BY ITS OWN WALL (a face runs past the line at a joined corner): not left behind.
+                    if (CadHostResolver.CarriesPoint(w, at)) continue;
                     var carriers = walls.Where(x => x.Id != w.Id && Carries(x, at, fi, tol)).ToList();
                     if (carriers.Count != 1 || !d.Recreatable)
                     {

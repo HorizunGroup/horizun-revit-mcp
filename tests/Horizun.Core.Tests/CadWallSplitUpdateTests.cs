@@ -116,6 +116,39 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void An_element_built_under_an_earlier_version_of_the_rules_can_be_split_when_that_version_is_declared()
+        {
+            // MEASURED (campaign 4): with a new walls version and its lineage declared, the split walls
+            // were neither orphans nor pairs - the orphan loop skipped every element of the older rules.
+            CadRequirementSet older = Set();
+            CadAuditSubject element = Built(Read(older, RevA, Pair(0, 6000)).Single(), older);
+            JObject newer = JObject.Parse(@"{
+              'schema': 'horizun.cad-requirements/1',
+              'requirement_set': { 'id': 'walls', 'version': '1.1.0' },
+              'source': { 'units': 'millimeter' },
+              'tolerances': { 'point_mm': 1.0, 'gap_mm': 25.0, 'angle_degrees': 2.0, 'arc_sagitta_mm': 5.0 },
+              'rules': [{ 'id': 'walls', 'precedence': 10, 'layers': ['A-WALL*'], 'produces': 'wall',
+                          'category': 'OST_Walls', 'height_mm': 2900,
+                          'geometry': { 'from': 'double_lines', 'min_thickness_mm': 100,
+                                        'max_thickness_mm': 400, 'min_overlap_fraction': 0.5 } }]
+            }".Replace('\'', '"'));
+            CadRequirementSet set = CadRequirementSet.Load(newer);
+            Assert.NotEqual(older.Sha256, set.Sha256);
+            List<CadCandidate> now = Read(set, RevB, Pair(0, 3000), Pair(4000, 6000));
+
+            var undeclared = new CadUpdateScope();
+            undeclared.Claimed.Add(1001);
+            CadUpdate without = CadUpdateRules.Plan(now, new[] { element }, set, undeclared, null, null, null, null);
+            Assert.Empty(without.Of("orphan"));
+
+            var declared = new CadUpdateScope();
+            declared.Claimed.Add(1001);
+            declared.RulesLineage.Add(older.Sha256);
+            CadUpdate with = CadUpdateRules.Plan(now, new[] { element }, set, declared, null, null, null, null);
+            Assert.Equal(CadChange.Split, with.Of("orphan").Single().Classification);
+        }
+
+        [Fact]
         public void Pieces_that_do_not_cover_half_the_old_line_are_not_a_split()
         {
             CadRequirementSet set = Set();

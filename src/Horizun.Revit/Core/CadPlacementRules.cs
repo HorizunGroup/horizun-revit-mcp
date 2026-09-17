@@ -211,6 +211,8 @@ namespace Horizun.Revit.Core
         /// <summary>Superseded-by-file elements that split across two placements, so the file alone cannot say which.</summary>
         public List<CadScopeExclusion> AmbiguousLineageElements = new List<CadScopeExclusion>();
         public int Unrelated;
+        /// <summary>Earlier versions of the same rules the caller declared this update supersedes.</summary>
+        public HashSet<string> RulesLineage = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public string Verdict = Identified;
         public JObject LookedFor = new JObject();
         public JObject Exists = new JObject();
