@@ -87,9 +87,8 @@ namespace Horizun.Revit.Commands
                     Category = category + (string.IsNullOrEmpty(mark) ? "" : " (Mark '" + mark + "')"),
                     Lo = alongs.Min(),
                     Hi = alongs.Max(),
-                    // A door or window is part of its wall's opening, and a MARKED instance would
-                    // duplicate its Mark while both exist: neither is re-created by this build.
-                    Recreatable = !opening && at != null && string.IsNullOrEmpty(mark)
+                    // A door or window is part of its wall's opening: not re-created by this build.
+                    Recreatable = !opening && at != null
                 });
             }
             return result;
@@ -107,7 +106,8 @@ namespace Horizun.Revit.Commands
                         p.StorageType == StorageType.None) continue;
                     var internalDef = p.Definition as InternalDefinition;
                     bool builtIn = internalDef != null && internalDef.BuiltInParameter != BuiltInParameter.INVALID;
-                    if (builtIn && internalDef.BuiltInParameter != BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS) continue;
+                    if (builtIn && internalDef.BuiltInParameter != BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS &&
+                        internalDef.BuiltInParameter != BuiltInParameter.ALL_MODEL_MARK) continue;
                     string name = p.Definition.Name;
                     if (carried[name] != null) continue;
                     JToken value = ManageSystemTypesCommand.Read(p);
