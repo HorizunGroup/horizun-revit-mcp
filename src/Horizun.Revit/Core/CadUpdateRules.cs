@@ -1225,6 +1225,17 @@ namespace Horizun.Revit.Core
                     // moved" and starts being "some other wall".
                     if (distance > 2000) continue;
 
+                    // A CANDIDATE A PERSON CALLED NEW IS NOBODY'S PARTNER. MEASURED: an
+                    // erased device kept "moved", paired with the copy a person had
+                    // just rejected, so it could not be decided as removed.
+                    if (rejected.Contains(create.CandidateId))
+                    {
+                        create.Evidence["pairing_rejected"] = true;
+                        create.Says += " A caller rejected the pairing with element " + orphan.ElementId +
+                                       ", so this is built as new.";
+                        continue;
+                    }
+
                     plausibleCreates.Add(create);
                     double score = lengthRatio * (1 - Math.Min(1, distance / 2000.0));
                     if (score <= bestScore) continue;
@@ -1276,14 +1287,6 @@ namespace Horizun.Revit.Core
                 // may not act on any of them.
                 foreach (CadUpdateAction maybe in plausibleCreates)
                 {
-                    if (rejected.Contains(maybe.CandidateId))
-                    {
-                        maybe.Evidence["pairing_rejected"] = true;
-                        maybe.Says += " A caller rejected the pairing with element " + orphan.ElementId +
-                                      ", so this is built as new.";
-                        continue;
-                    }
-
                     maybe.Automatic = false;
                     if (ReferenceEquals(maybe, best))
                     {
@@ -1335,6 +1338,13 @@ namespace Horizun.Revit.Core
                     continue;
                 double distance = was.PlanDistanceTo(create.Geometry[0]);
                 if (distance > 2000) continue;
+                if (rejected.Contains(create.CandidateId))
+                {
+                    create.Evidence["pairing_rejected"] = true;
+                    create.Says += " A caller rejected the pairing with element " + orphan.ElementId +
+                                   ", so this is built as new.";
+                    continue;
+                }
                 plausible.Add(create);
                 if (distance < bestDistance) { bestDistance = distance; best = create; }
             }
@@ -1360,13 +1370,6 @@ namespace Horizun.Revit.Core
 
             foreach (CadUpdateAction maybe in plausible)
             {
-                if (rejected.Contains(maybe.CandidateId))
-                {
-                    maybe.Evidence["pairing_rejected"] = true;
-                    maybe.Says += " A caller rejected the pairing with element " + orphan.ElementId +
-                                  ", so this is built as new.";
-                    continue;
-                }
                 maybe.Automatic = false;
                 maybe.Evidence["may_be_element"] = orphan.ElementId;
                 maybe.Says += ReferenceEquals(maybe, best)

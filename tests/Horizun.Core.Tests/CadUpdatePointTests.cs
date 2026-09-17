@@ -81,6 +81,28 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_copy_a_person_called_new_is_not_the_partner_of_an_erased_device()
+        {
+            // MEASURED on the controlled revision: 1588C erased, 1653C copied 668 mm away.
+            // The copy was offered as "1588C moved"; after a person rejected that pairing
+            // the erased device still read "moved", so it could not be decided as removed.
+            CadCandidate erased = Symbol(1000);
+            CadCandidate copy = Symbol(1600);
+            var subjects = new[] { Built(erased, 1000, 1000) };
+            CadUpdate offered = CadUpdateRules.Plan(new List<CadCandidate> { copy }, subjects, Set(), Sha);
+            Assert.Equal(CadChange.Moved, offered.Of("orphan").Single().Classification);
+
+            CadUpdate decided = CadUpdateRules.Plan(new List<CadCandidate> { copy }, subjects, Set(), Sha,
+                                                    null, null, new[] { copy.Id });
+            CadUpdateAction orphan = decided.Of("orphan").Single();
+            Assert.Equal(CadChange.Removed, orphan.Classification);
+            Assert.Null(orphan.PairedWith);
+            CadUpdateAction create = decided.Of("create").Single();
+            Assert.Equal(true, (bool?)create.Evidence["pairing_rejected"]);
+            Assert.True(create.Automatic);
+        }
+
+        [Fact]
         public void A_device_the_drawing_dropped_and_a_person_moved_is_a_conflict()
         {
             CadCandidate a = Symbol(1000);

@@ -70,6 +70,20 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void The_unit_route_is_executable_end_to_end()
+        {
+            // A batch runs it once per unit, so every step has to be dispatchable: the
+            // rehearsal's tokens travel to the apply by reference, whole.
+            McpWorkflowCatalog.Procedure unit = McpWorkflowCatalog.Procedures.Single(p => p.Id == "dwg-to-bim-unit");
+            Assert.Equal("executable", unit.Detail);
+            Assert.Equal(10, unit.Steps.Length);
+            Assert.All(unit.Steps, s => Assert.True(s.TemplateAudit() == null || s.TemplateAudit().Value<bool?>("agrees") == true,
+                                                    "step " + s.N));
+            Assert.Contains("rehearsal.tokens_by_key", unit.Steps.Single(s => s.N == 5).ArgumentsJson);
+            Assert.Contains("rehearsal.tokens_by_key", unit.Steps.Single(s => s.N == 8).ArgumentsJson);
+        }
+
+        [Fact]
         public void Every_placeholder_in_a_template_uses_the_resolver_vocabulary()
         {
             // The resolver reads exactly these, and ignores anything else in the

@@ -89,6 +89,11 @@ namespace Horizun.Server
                         Arg("source_view_id", "The view to duplicate. The original is never modified.", true),
                         Arg("parameter", "The parameter whose distinct values become colours; it must be filterable for the chosen categories.", true),
                         Arg("categories", "The BuiltInCategory names the colouring applies to.", true)),
+                    Prompt("dwg-to-bim-unit", "Convert one unit from a drawing, end to end",
+                        "Inventory, walls, devices and two audits for one unit, as a resumable run a batch repeats per unit.",
+                        Arg("walls_set", "The walls requirement set, bounded to the unit.", true),
+                        Arg("devices_set", "The devices requirement set, bounded to the same unit.", true),
+                        Arg("dwg_path", "The drawing the link shows, readable on this machine.", true)),
                     // The two DWG procedures the catalogue carried with no prompt behind them.
                     Prompt("dwg-mep-unit-conversion", "Convert DWG MEP units to a connected model",
                         "Plan, build, connect and audit MEP runs from a unit drawing, with repeated unit layouts recognised and every unjoined junction reported.",
@@ -297,6 +302,19 @@ namespace Horizun.Server
                         "rather than editing somebody's template. Read the returned legend: when palette_wrapped is " +
                         "true, two different values share a colour and the legend is the only way to tell them apart. " +
                         "Finish with horizun_capture_view and report the legend beside the image.";
+                    break;
+                case "dwg-to-bim-unit":
+                    string unitWalls = Argument(args, "walls_set", true);
+                    string unitDevices = Argument(args, "devices_set", true);
+                    string unitDrawing = Argument(args, "dwg_path", true);
+                    description = "Convert one unit from a drawing: inventory, walls, devices, audits.";
+                    body =
+                        "Call horizun_health first. Start horizun_run_procedure with procedure dwg-to-bim-unit and these " +
+                        "inputs: walls set " + unitWalls + ", devices set " + unitDevices + ", drawing " + unitDrawing +
+                        ", plus the document, the CAD link id and the level. Advance it step by step. A step that holds " +
+                        "- a rehearsal that is not clean, a reply that never arrived - is read and decided, never sent " +
+                        "again. At the end, report the inventory by outcome, what each audit found not built and why, " +
+                        "and say that finishing the steps is not accepting the unit.";
                     break;
                 case "dwg-mep-unit-conversion":
                     string mepSet = Argument(args, "requirement_set", true);

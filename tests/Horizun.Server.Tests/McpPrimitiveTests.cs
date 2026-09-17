@@ -147,7 +147,7 @@ namespace Horizun.Server.Tests
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
             // Twenty, three procedures added with the 2026-09-15 catalogue, and the two
             // DWG procedures that had no prompt behind them.
-            Assert.Equal(25, prompts.Count);
+            Assert.Equal(26, prompts.Count);
             foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
             {
                 Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));

@@ -1709,7 +1709,9 @@ namespace Horizun.Contracts
         ""source_fingerprint"": { ""type"": ""string"" },
         ""requirement_set_sha256"": { ""type"": ""string"" }
       } },
-    ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 200,
+    ""confirmation_tokens"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" },
+      ""description"": ""The rehearsal's tokens_by_key, whole: each action takes the token under its own key unless it carries confirmation_token itself."" },
+    ""actions"": { ""type"": ""array"", ""minItems"": 0, ""maxItems"": 200,
       ""description"": ""execute_plan_request.actions from the plan reply, unchanged."" },
     ""candidate_index"": { ""type"": ""array"",
       ""description"": ""Which CAD entity each created row came from, so provenance can be stamped. Without it elements are created but ANONYMOUS, and the reply says so rather than pretending provenance was written."" },

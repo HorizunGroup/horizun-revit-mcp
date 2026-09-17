@@ -76,6 +76,20 @@ namespace Horizun.Core.Tests
             Assert.Contains("rolled back whole with host_changed", Contract());
         }
 
+        [Fact]
+        public void A_procedure_can_hand_the_rehearsal_tokens_on_whole_and_an_empty_plan_writes_nothing()
+        {
+            string src = Source("src", "Horizun.Revit", "Commands", "ApplyCadPlanCommand.cs");
+            Assert.Contains("(request[\"confirmation_tokens\"] as JObject)?.Value<string>((string)action[\"key\"])", src);
+            Assert.Contains("[\"state\"] = \"nothing_to_apply\"", src);
+            Assert.Contains("[\"rehearsal\"] = new JObject { [\"tokens_by_key\"] = new JObject() }", src);
+            // The empty answer comes after the binding was re-measured, never before.
+            int drift = src.IndexOf("if (drift.Count > 0)", StringComparison.Ordinal);
+            int empty = src.IndexOf("[\"state\"] = \"nothing_to_apply\"", StringComparison.Ordinal);
+            Assert.True(drift > 0 && empty > drift);
+            Assert.Contains("\"\"confirmation_tokens\"\": { \"\"type\"\": \"\"object\"\"", Contract());
+        }
+
         // ------------------------------------------------------- geometry_id
 
         [Fact]

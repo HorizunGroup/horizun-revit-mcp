@@ -1524,6 +1524,226 @@ namespace Horizun.Server
 
             new Procedure
             {
+                Id = "dwg-to-bim-unit",
+                Title = "DWG to BIM, one unit, end to end",
+                Version = 1,
+                Permission = "read_only_to_safe_write",
+                Outcome = "One unit's walls and devices built from a CAD drawing, audited, with the drawing's " +
+                          "whole symbol inventory reconciled - the route a batch runs once per unit.",
+                Tools = new[] { "horizun_query_cad", "horizun_plan_from_cad", "horizun_apply_cad_plan",
+                                "horizun_audit_cad_model" },
+                Inputs = new[] { "the document, the CAD link id, the level", "the drawing path",
+                                 "the walls set and the devices set, both bounded to the unit" },
+                Scope = "The unit the two sets' extent names. Everything outside it is counted, not built.",
+                Output = "Walls and devices with provenance; two audits; the reconciled inventory.",
+                Errors = new[]
+                {
+                    "an inventory that does not reconcile - every placement must have exactly one outcome",
+                    "a rehearsal that does not come back clean stops the run before anything is written",
+                    "a step whose reply never arrived holds the run; it is never sent twice"
+                },
+                DependsOn = new string[0],
+                Acceptance = "Both applies report zero failed stages, the inventory reconciles, and each audit " +
+                             "matches what was built. What the audits report as not built is read by a person.",
+                Steps = new[]
+                {
+                    new Step
+                    {
+                        N = 1, Tool = "horizun_health", ArgumentsJson = @"{}",
+                        Purpose = "establish which document and which build every step below acts on.",
+                        Needs = "nothing", Preconditions = "Revit is running with the unit's model in front.",
+                        OnError = "stop.", ReadsBack = "the document title, the Revit year and the bridge build."
+                    },
+                    new Step
+                    {
+                        N = 2, Tool = "horizun_query_cad",
+                        ArgumentsJson = @"{
+  ""mode"": ""blocks"",
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800,
+  ""max_rows"": 1
+}",
+                        Purpose = "the whole symbol inventory, so what is not built is counted as well as what is.",
+                        Needs = "the document from step 1.",
+                        Preconditions = "the drawing is readable on this machine.",
+                        OnError = "an inventory that does not reconcile is a defect in the reading: stop.",
+                        ReadsBack = "total rows, rows by outcome, and the reconciliation."
+                    },
+                    new Step
+                    {
+                        N = 3, Tool = "horizun_plan_from_cad",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800
+}",
+                        Purpose = "the unit's walls, planned.", Needs = "step 1.",
+                        Preconditions = "the walls set is bounded to the unit.",
+                        OnError = "a refusal names what is missing; nothing was written.",
+                        ReadsBack = "the actions, what was withdrawn and what waits for review."
+                    },
+                    new Step
+                    {
+                        N = 4, Tool = "horizun_apply_cad_plan",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""apply_binding"": { ""$ref"": { ""step"": 3, ""path"": ""apply_binding"" } },
+  ""actions"": { ""$ref"": { ""step"": 3, ""path"": ""execute_plan_request.actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 3, ""path"": ""candidate_index"" } },
+  ""dry_run"": true
+}",
+                        Purpose = "rehearse the walls: Revit builds them provisionally and rolls back.",
+                        Needs = "the plan from step 3, unchanged.", Preconditions = "nothing else changed the model.",
+                        OnError = "a failed rehearsal stops the run; nothing was written.",
+                        ReadsBack = "each stage's rehearsal and the tokens by action key."
+                    },
+                    new Step
+                    {
+                        N = 5, Tool = "horizun_apply_cad_plan",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""apply_binding"": { ""$ref"": { ""step"": 3, ""path"": ""apply_binding"" } },
+  ""actions"": { ""$ref"": { ""step"": 3, ""path"": ""execute_plan_request.actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 3, ""path"": ""candidate_index"" } },
+  ""confirmation_tokens"": { ""$ref"": { ""step"": 4, ""path"": ""rehearsal.tokens_by_key"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "build the walls, with the tokens the rehearsal issued.",
+                        Needs = "steps 3 and 4.", Preconditions = "step 4 rehearsed cleanly.",
+                        OnError = "the reply names what landed; the run holds rather than sending it again.",
+                        ReadsBack = "created and verified elements, and the provenance written."
+                    },
+                    new Step
+                    {
+                        N = 6, Tool = "horizun_plan_from_cad",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""level_name"": { ""$input"": ""level_name"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" },
+  ""dwg_read_timeout_seconds"": 1800
+}",
+                        Purpose = "the unit's devices, planned against the walls step 5 built.",
+                        Needs = "step 5.", Preconditions = "the walls are in the model.",
+                        OnError = "a refusal names what is missing; nothing was written.",
+                        ReadsBack = "the actions, and every symbol by what became of it."
+                    },
+                    new Step
+                    {
+                        N = 7, Tool = "horizun_apply_cad_plan",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
+  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""execute_plan_request.actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
+  ""dry_run"": true
+}",
+                        Purpose = "rehearse the devices.", Needs = "step 6, unchanged.",
+                        Preconditions = "nothing else changed the model.",
+                        OnError = "a failed rehearsal stops the run; nothing was written.",
+                        ReadsBack = "each stage's rehearsal and the tokens by action key."
+                    },
+                    new Step
+                    {
+                        N = 8, Tool = "horizun_apply_cad_plan",
+                        ArgumentsJson = @"{
+  ""target_document"": { ""$input"": ""document"" },
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
+  ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""execute_plan_request.actions"" } },
+  ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
+  ""confirmation_tokens"": { ""$ref"": { ""step"": 7, ""path"": ""rehearsal.tokens_by_key"" } },
+  ""dry_run"": false
+}",
+                        Purpose = "build the devices.", Needs = "steps 6 and 7.",
+                        Preconditions = "step 7 rehearsed cleanly.",
+                        OnError = "the reply names what landed; the run holds rather than sending it again.",
+                        ReadsBack = "created and verified elements, and the provenance written."
+                    },
+                    new Step
+                    {
+                        N = 9, Tool = "horizun_audit_cad_model",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""walls_set"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" }
+}",
+                        Purpose = "the walls, against the drawing.", Needs = "step 5.",
+                        Preconditions = "the walls committed.",
+                        OnError = "a finding is a finding: it is read, not retried.",
+                        ReadsBack = "matched, differing and not-built walls, by code."
+                    },
+                    new Step
+                    {
+                        N = 10, Tool = "horizun_audit_cad_model",
+                        ArgumentsJson = @"{
+  ""instance_id"": { ""$input"": ""instance_id"" },
+  ""target_document"": { ""$input"": ""document"" },
+  ""requirement_set"": { ""$input"": ""devices_set"" },
+  ""dwg_path"": { ""$input"": ""dwg_path"" }
+}",
+                        Purpose = "the devices, against the drawing.", Needs = "step 8.",
+                        Preconditions = "the devices committed.",
+                        OnError = "a finding is a finding: it is read, not retried.",
+                        ReadsBack = "matched, differing and not-built devices, by code."
+                    }
+                },
+                InputSchemaJson = @"{
+  ""type"": ""object"",
+  ""required"": [""document"", ""instance_id"", ""level_name"", ""dwg_path"", ""walls_set"", ""devices_set""],
+  ""properties"": {
+    ""document"": { ""type"": ""string"", ""description"": ""Title of the ACTIVE document."" },
+    ""instance_id"": { ""type"": ""integer"", ""description"": ""The CAD link placement."" },
+    ""level_name"": { ""type"": ""string"", ""description"": ""The storey to build on."" },
+    ""dwg_path"": { ""type"": ""string"", ""description"": ""The drawing the link shows, readable on this machine."" },
+    ""walls_set"": { ""type"": ""object"", ""description"": ""The walls requirement set, bounded to the unit."" },
+    ""devices_set"": { ""type"": ""object"", ""description"": ""The devices requirement set, bounded to the same unit."" }
+  },
+  ""additionalProperties"": false
+}",
+                Checks = new[]
+                {
+                    new AcceptanceCheck
+                    {
+                        Step = 2, Path = "reconciles", Expect = "true",
+                        Why = "every placement in the drawing has exactly one outcome, or the counts below mean nothing."
+                    },
+                    new AcceptanceCheck
+                    {
+                        Step = 5, Path = "stages_failed", Expect = "zero",
+                        Why = "part of the walls did not land."
+                    },
+                    new AcceptanceCheck
+                    {
+                        Step = 8, Path = "stages_failed", Expect = "zero",
+                        Why = "part of the devices did not land."
+                    }
+                },
+                Example = "health, inventory, walls (plan, rehearse, build), devices (plan, rehearse, build), two audits.",
+                Limits = new[]
+                {
+                    "What the audits report as not built - withdrawn symbols, walls held for review - is a " +
+                    "person's reading; finishing the steps is not accepting the unit.",
+                    "One unit per run. A batch is a list of runs, and a run that holds is resumed by id."
+                }
+            },
+
+            new Procedure
+            {
                 Id = "dwg-mep-unit-conversion",
                 Title = "DWG MEP Units to a Connected Model",
                 Version = 1,

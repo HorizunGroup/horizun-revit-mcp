@@ -243,8 +243,28 @@ namespace Horizun.Revit.Commands
 
             // ---- the actions, exactly as the plan produced them -------------------
             JArray actions = submitted;
-            if (actions == null || actions.Count == 0)
+            if (actions == null)
                 return CommandResult.Fail("actions is required: the execute_plan_request.actions the plan produced.");
+            // A PLAN THAT EMITTED NOTHING is a unit already built, and the binding above
+            // has just proved it is THAT plan (its actions fingerprint is the empty
+            // list's). Refusing it made every re-run of a procedure fail on a unit
+            // with nothing left to do; answering it writes nothing and says so.
+            if (actions.Count == 0)
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = request.Value<string>("target_document") ?? SafeTitle(doc),
+                    ["instance_id"] = instanceId,
+                    ["dry_run"] = request["dry_run"] == null || request.Value<bool>("dry_run"),
+                    ["state"] = "nothing_to_apply",
+                    ["stages"] = new JArray(),
+                    ["stages_failed"] = 0,
+                    ["created_verified"] = 0,
+                    ["provenance_written"] = 0,
+                    ["rehearsal"] = new JObject { ["tokens_by_key"] = new JObject() },
+                    ["application"] = new JObject { ["state"] = "no_op", ["requested"] = 0 },
+                    ["means"] = "the plan this binding names emitted no actions: everything it read is already " +
+                                "built or was withdrawn with a reason. Nothing was written."
+                });
             if (actions.Count > 200)
                 return CommandResult.Fail("actions holds " + actions.Count + " entries; the bound is 200. " +
                                           "Split the conversion by stage or by layer rather than sending one " +
@@ -327,7 +347,12 @@ namespace Horizun.Revit.Commands
                 if (dryRun) callArgs["validation_mode"] = "revit_rollback";
                 if (!dryRun)
                 {
-                    string token = action.Value<string>("confirmation_token") ?? request.Value<string>("confirmation_token");
+                    // A MAP OF TOKENS BY ACTION KEY is what a rehearsal hands back
+                    // (tokens_by_key); a procedure passes it on whole rather than editing
+                    // every action it did not write.
+                    string token = action.Value<string>("confirmation_token") ??
+                                   (request["confirmation_tokens"] as JObject)?.Value<string>((string)action["key"]) ??
+                                   request.Value<string>("confirmation_token");
                     if (!string.IsNullOrWhiteSpace(token)) callArgs["confirmation_token"] = token;
                     if (!string.IsNullOrWhiteSpace(idempotencyKey))
                         callArgs["idempotency_key"] = idempotencyKey + "-" + (string)action["key"];
