@@ -397,6 +397,27 @@ namespace Horizun.Revit.Core
 
             result.Reading = CadDwgExtract.Parse(File.ReadLines(outPath), assumeMmPerUnit);
 
+            // A REFERENCE THE DRAWING WAS READ WITH BEFORE, AND IS MISSING NOW. Refused, and the
+            // cache keeps the earlier reading: storing this one would make the loss the new normal.
+            List<string> missing = cached != null && cached.Miss == "dependency_changed"
+                ? CadDwgCache.MissingReferences(cached.Detail, result.Reading.ExternalReferences)
+                : new List<string>();
+            if (missing.Count > 0)
+            {
+                result.Refusal = "external_reference_missing";
+                result.RefusalDetail = new JObject
+                {
+                    ["refused"] = "external_reference_missing",
+                    ["missing"] = new JArray(missing.Cast<object>().ToArray()),
+                    ["changed"] = cached.Detail?["changed"],
+                    ["means"] = "an earlier reading of this same drawing file had these references and this " +
+                                "folder does not. Read without them, the drawing loses whatever they drew, and " +
+                                "an update would take that for a demolition. Put the reference back beside the " +
+                                "drawing (or where its declared path says); nothing was planned from this reading."
+                };
+                return result;
+            }
+
             // KEPT ONLY WHEN IT IS WHOLE. A report with no end marker describes a
             // walk that stopped, and caching one would serve that stop forever.
             if (useCache && cached != null && result.Reading.Complete)

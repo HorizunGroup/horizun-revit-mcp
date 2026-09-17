@@ -177,6 +177,7 @@ namespace Horizun.Revit.Core
                 {
                     changed.Add(new JObject
                     {
+                        ["name"] = (string)dep["name"],
                         ["path"] = (string)dep["declared"] ?? (string)dep["name"],
                         ["was"] = was, ["now"] = "(absent)",
                         ["means"] = "the reference this drawing was read with is no longer on this machine"
@@ -187,6 +188,7 @@ namespace Horizun.Revit.Core
                 if (!string.Equals(was, now, StringComparison.OrdinalIgnoreCase))
                     changed.Add(new JObject
                     {
+                        ["name"] = (string)dep["name"],
                         ["path"] = path,
                         ["was"] = was,
                         ["now"] = now ?? "(absent)",
@@ -406,6 +408,25 @@ namespace Horizun.Revit.Core
         {
             try { return !System.Diagnostics.Process.GetProcessById(pid).HasExited; }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// The references an EARLIER reading of these same bytes had, that are gone now: absent
+        /// from this drawing's folder when the cache was consulted AND left unresolved by the fresh
+        /// reading. A drawing read without one of them is a different drawing - its walls or
+        /// symbols simply are not there - so the caller refuses rather than plan from it. A
+        /// reference that was never resolved (a seal on a drive this machine does not have) is not
+        /// one of these: it was not part of any reading.
+        /// </summary>
+        public static List<string> MissingReferences(JObject missDetail, IList<CadIrExternalReference> fresh)
+        {
+            var absent = new HashSet<string>(
+                (missDetail?["changed"] as JArray ?? new JArray()).OfType<JObject>()
+                    .Where(c => (string)c["now"] == "(absent)" && (string)c["name"] != null)
+                    .Select(c => (string)c["name"]), StringComparer.OrdinalIgnoreCase);
+            return (fresh ?? new List<CadIrExternalReference>())
+                .Where(x => x != null && x.Name != null && x.Resolved != true && absent.Contains(x.Name))
+                .Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         }
 
         private static string Key(string name, string declared) =>

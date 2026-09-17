@@ -261,6 +261,18 @@ namespace Horizun.Core.Tests
             CadDwgCacheEntry forCopy = CadDwgCache.Lookup(c, sha, "e", "o");
             Assert.False(forCopy.Hit);
             Assert.Contains("no longer on this machine", forCopy.Detail.ToString());
+
+            // THE FRESH READING OF THE COPY LEAVES IT UNRESOLVED: that is a missing reference, by name.
+            var fresh = new[]
+            {
+                new CadIrExternalReference { Name = "background", Path = "background.dwg", Resolved = false },
+                // never part of any reading: a seal on a drive this machine does not have
+                new CadIrExternalReference { Name = "seal", Path = @"P:\seals\seal.dwg", Resolved = false }
+            };
+            Assert.Equal(new[] { "background" }, CadDwgCache.MissingReferences(forCopy.Detail, fresh));
+            // the same reference resolved by the fresh reading (found somewhere this cache did not look) is not missing
+            fresh[0].Resolved = true;
+            Assert.Empty(CadDwgCache.MissingReferences(forCopy.Detail, fresh));
         }
 
         [Fact]

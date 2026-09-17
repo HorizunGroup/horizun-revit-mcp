@@ -618,6 +618,14 @@ namespace Horizun.Revit.Commands
                     "is one the next update builds a second time.")
             };
             if (blocksReadForReply != null) result["blocks"] = blocksReadForReply;
+            // WHAT WAS READ FROM THE FILE, and whether the reading was reused: the cache states hit or
+            // miss per read, with the reference that changed when a changed set is the reason.
+            var reads = new JObject();
+            if (solidRead != null)
+                reads["solid_hatch"] = new JObject { ["seconds"] = solidRead["seconds"], ["cache"] = solidRead["cache"] };
+            if (blocksReadForReply != null)
+                reads["blocks"] = new JObject { ["seconds"] = blocksReadForReply["seconds"], ["cache"] = blocksReadForReply["cache"] };
+            if (reads.Count > 0) result["dwg_reads"] = reads;
             return CommandResult.Ok(result);
         }
 

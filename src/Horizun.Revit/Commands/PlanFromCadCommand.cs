@@ -541,6 +541,41 @@ namespace Horizun.Revit.Commands
                                 "silently absent - an audit will report them as candidates nobody built."
                 };
 
+            // THE CATALOGUE, AS A WHOLE, before anything is written.
+            {
+                var wallRows = withdrawn.OfType<JObject>().Where(w => (string)w["kind"] == "wall").ToList();
+                var chosenRows = wallTypesChosen.OfType<JObject>().ToList();
+                var earlier = (request["withdrawn_walls"] as JArray ?? new JArray()).OfType<JObject>()
+                    .Where(w => (string)w["kind"] == "wall").ToList();
+                var symbolsOut = withdrawn.OfType<JObject>().Where(w => (string)w["kind"] != "wall").ToList();
+                var alternatives = new List<Tuple<string, double>>();
+                var notFound = new JArray();
+                foreach (string name in (request["alternative_wall_types"] as JArray ?? new JArray()).Select(x => (string)x))
+                {
+                    var wt = FindType(doc, name) as WallType;
+                    double width = double.NaN;
+                    try { if (wt != null) width = wt.Width * 304.8; } catch { }
+                    if (double.IsNaN(width)) notFound.Add(name);
+                    else alternatives.Add(Tuple.Create(name, width));
+                }
+                if (chosenRows.Count + wallRows.Count > 0 || earlier.Count > 0)
+                {
+                    double tol = chosenRows.Concat(wallRows).Select(r => r.Value<double?>("tolerance_mm"))
+                                           .FirstOrDefault(v => v.HasValue) ?? 3.2;
+                    JObject preflight = CadCatalogPreflight.Summarize(chosenRows, wallRows, alternatives, tol);
+                    if (notFound.Count > 0) preflight["alternatives_not_in_this_document"] = notFound;
+                    var affected = CadCatalogPreflight.AffectedSymbols(wallRows.Concat(earlier), symbolsOut,
+                                                                       set.PointToleranceMm);
+                    if (affected.Count > 0)
+                    {
+                        preflight["affected_symbols"] = affected;
+                        preflight["affected_symbols_lost_with_a_withdrawn_wall"] =
+                            affected.Count(a => (string)a["verdict"] == "lost_with_that_wall");
+                    }
+                    report["catalog_preflight"] = preflight;
+                }
+            }
+
             if (blocksReport != null)
             {
                 int considered = blocksReport.Value<int?>("instances_considered") ?? 0;

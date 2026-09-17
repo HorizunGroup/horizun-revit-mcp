@@ -414,6 +414,8 @@ namespace Horizun.Revit.Commands
             report["engine"] = run.EnginePath;
             report["engine_version"] = run.EngineVersion;
             report["seconds"] = Math.Round(run.Seconds, 1);
+            // WHETHER THE EXTRACTION WAS REUSED, and why not: a changed reference is a miss by name.
+            if (run.CacheDetail != null) report["cache"] = run.CacheDetail;
             if (!run.Ok)
             {
                 report["refused"] = run.Refusal;
