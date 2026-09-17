@@ -1429,7 +1429,7 @@ namespace Horizun.Revit.Commands
         /// <summary>Re-create an instance on another host, then delete it: two actions and one index entry.</summary>
         private static void EmitSubstitution(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
                                              string target, string key, JArray actions, JArray createIndex,
-                                             ElementId levelIfUnhosted = null)
+                                             ElementId levelIfUnhosted = null, XYZ pointOverride = null)
         {
             JObject carried = CadSplitDependents.CarriedParameters(fi);
             actions.Add(new JObject
@@ -1439,7 +1439,7 @@ namespace Horizun.Revit.Commands
                 ["arguments"] = new JObject
                 {
                     ["target_document"] = target, ["units"] = "mm",
-                    ["elements"] = new JArray(CadSplitDependents.SubstitutionRow(doc, fi, host, set, carried, levelIfUnhosted))
+                    ["elements"] = new JArray(CadSplitDependents.SubstitutionRow(doc, fi, host, set, carried, levelIfUnhosted, pointOverride))
                 }
             });
             createIndex.Add(CadSplitDependents.IndexEntry(key, fi, carried));
@@ -1479,6 +1479,30 @@ namespace Horizun.Revit.Commands
                 var byId = new Dictionary<long, FamilyInstance>();
                 foreach (CadSplitDependent d in CadSplitDependents.Read(doc, w, byId))
                 {
+                    // CARRIED AWAY FROM WHERE IT WAS BUILT. MEASURED (campaign 4): re-shaping a wall moves
+                    // its face-hosted devices with it; one the split meant to re-create elsewhere, and an
+                    // apply that stopped before doing so, leaves it on the wrong stretch. Its as-built point,
+                    // carried by exactly one other wall of this update, is where it is re-created.
+                    FamilyInstance hosted = byId[d.ElementId];
+                    string recordProblem;
+                    CadProvenance rec = CadProvenanceStore.Read(hosted, out recordProblem);
+                    List<CadPoint> built = CadUpdateRules.AsBuiltOf(rec);
+                    XYZ nowAt = (hosted.Location as LocationPoint)?.Point;
+                    if (built != null && built.Count == 1 && nowAt != null)
+                    {
+                        var was = new XYZ(built[0].X / 304.8, built[0].Y / 304.8, nowAt.Z);
+                        if (was.DistanceTo(nowAt) * 304.8 > tol && !CadHostResolver.CarriesPoint(w, was))
+                        {
+                            var home = walls.Where(x => x.Id != w.Id && Carries(x, was, hosted, tol) &&
+                                                        CadHostResolver.CarriesPoint(x, was)).ToList();
+                            if (home.Count == 1)
+                            {
+                                EmitSubstitution(doc, hosted, Rid.Value(home[0].Id), set, target, "cad-update-rehome-" + n++,
+                                                 actions, createIndex, null, was);
+                                continue;
+                            }
+                        }
+                    }
                     if (d.Lo >= -tol && d.Hi <= len + tol) continue;
                     FamilyInstance fi = byId[d.ElementId];
                     XYZ at = ((LocationPoint)fi.Location).Point;

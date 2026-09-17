@@ -122,9 +122,9 @@ namespace Horizun.Revit.Commands
 
         /// <summary>A create row that re-makes this instance on another host (a concrete id or a placeholder).</summary>
         public static JObject SubstitutionRow(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
-                                              JObject carried, ElementId levelIfUnhosted = null)
+                                              JObject carried, ElementId levelIfUnhosted = null, XYZ pointOverride = null)
         {
-            XYZ at = ((LocationPoint)fi.Location).Point;
+            XYZ at = pointOverride ?? ((LocationPoint)fi.Location).Point;
             Wall oldHost = fi.Host as Wall;
             var row = new JObject
             {
