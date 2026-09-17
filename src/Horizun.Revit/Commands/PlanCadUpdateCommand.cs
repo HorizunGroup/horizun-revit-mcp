@@ -1526,7 +1526,7 @@ namespace Horizun.Revit.Commands
                 if (kind != FamilyPlacementType.WorkPlaneBased && kind != FamilyPlacementType.OneLevelBasedHosted) continue;
                 XYZ at = (fi.Location as LocationPoint)?.Point;
                 if (at == null) continue;
-                var carriers = walls.Where(x => CadHostResolver.CarriesPoint(x, at)).ToList();
+                var carriers = walls.Where(x => Carries(x, at, fi, tol) && CadHostResolver.CarriesPoint(x, at)).ToList();
                 if (carriers.Count == 0) continue;     // not a dependent of these walls
                 if (carriers.Count > 1)
                 {
@@ -1534,6 +1534,22 @@ namespace Horizun.Revit.Commands
                     {
                         ["element_id"] = Rid.Value(fi.Id), ["host"] = null, ["why"] = "unhosted, and more than one wall carries it",
                         ["candidates"] = new JArray(carriers.Select(x => Rid.Value(x.Id)))
+                    });
+                    continue;
+                }
+                FamilyInstance standing = CadSplitDependents.HostedOn(doc, carriers[0]).FirstOrDefault(x =>
+                    x.GetTypeId() == fi.GetTypeId() && x.Location is LocationPoint lp && lp.Point.DistanceTo(at) * 304.8 <= tol);
+                if (standing != null)
+                {
+                    // ITS SUBSTITUTE ALREADY STANDS (an apply stopped before deleting it): only the delete remains.
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-rehome-delete-" + n++,
+                        ["tool"] = "horizun_delete_verified",
+                        ["arguments"] = new JObject
+                        {
+                            ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray(Rid.Value(fi.Id))
+                        }
                     });
                     continue;
                 }

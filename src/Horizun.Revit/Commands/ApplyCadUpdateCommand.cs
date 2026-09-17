@@ -231,7 +231,12 @@ namespace Horizun.Revit.Commands
 
                 // A HOST THIS APPLY CREATED, named by its candidate. The rehearsal ran against a stand-in,
                 // so the resolved call is rehearsed again for a token that matches it.
-                bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor);
+                // A DEPENDENT'S ACTION IS REHEARSED AGAIN just before it runs: the actions before it
+                // changed what it acts on (MEASURED: the old instance lost its host when its wall was
+                // shortened, and the token issued at the start no longer matched).
+                bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor) ||
+                                      key.StartsWith("cad-update-substitute-", StringComparison.Ordinal) ||
+                                      key.StartsWith("cad-update-rehome-", StringComparison.Ordinal);
                 string unresolved = CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);
                 if (unresolved == null && hadPlaceholder)
                 {
@@ -302,6 +307,17 @@ namespace Horizun.Revit.Commands
                             ["means"] = "candidate_index has no entry for this action, so nothing could be " +
                                         "stamped. The element exists and is ANONYMOUS: the next update will " +
                                         "build it again."
+                        });
+                        continue;
+                    }
+                    // A SUBSTITUTE FOR AN INSTANCE THAT HAD NO CAD IDENTITY gets none: stamping it
+                    // would give the next update an element that claims a drawing it never came from.
+                    if (entry.Value<bool?>("carried_identity") == false)
+                    {
+                        stamps.Add(new JObject
+                        {
+                            ["element_id"] = pair.ElementId, ["key"] = pair.Key, ["written"] = false,
+                            ["means"] = "a re-created instance whose original carried no CAD provenance: none is written"
                         });
                         continue;
                     }
