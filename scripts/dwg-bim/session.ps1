@@ -107,8 +107,14 @@ function Wait-Bridge([string]$server) {
 Set-Location $repo
 Close-Revit
 $dev = Join-Path $repo 'scripts\dev-addin-session.ps1'
-powershell -ExecutionPolicy Bypass -File $dev -Year $Year -Restore | Out-Null
-if ($Operation -eq 'stop') { "restored the add-in manifest for Revit $Year"; exit 0 }
+# A year never staged has no ledger and nothing to restore; any other restore failure stops here,
+# before a new manifest is staged over an installation in an unknown state.
+$ledger = Join-Path $env:USERPROFILE ".horizun\geometry-dev\session-$Year.json"
+if (Test-Path -LiteralPath $ledger) {
+    powershell -ExecutionPolicy Bypass -File $dev -Year $Year -Restore | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "restoring the add-in manifest for Revit $Year failed; nothing else was changed" }
+    if ($Operation -eq 'stop') { "restored the add-in manifest for Revit $Year"; exit 0 }
+} elseif ($Operation -eq 'stop') { "no isolated session was ever staged for Revit ${Year}: nothing to restore"; exit 0 }
 
 $out = powershell -ExecutionPolicy Bypass -File $dev -Year $Year -Enable
 $line = ($out | Select-String 'Matching server').ToString()
