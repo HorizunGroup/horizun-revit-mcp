@@ -1537,7 +1537,10 @@ namespace Horizun.Revit.Commands
             double across = Math.Abs(((at.X - o.X) * -u.Y + (at.Y - o.Y) * u.X) * 304.8);
             double half = 0;
             try { half = w.Width * 304.8 / 2.0; } catch { }
-            return across <= half + set.HostSearchMm && along >= -set.HostSearchMm && along <= len + set.HostSearchMm;
+            // ALONG, a gap's worth past either end: a device in a stretch the drawing removed is beyond BOTH
+            // pieces' ends by up to half the gap (MEASURED, campaign 5: 302 mm past the new piece's end).
+            double reach = Math.Max(set.HostSearchMm, CadHostPlausibility.JambGapMm);
+            return across <= half + set.HostSearchMm && along >= -reach && along <= len + reach;
         }
 
         /// <summary>
@@ -1655,7 +1658,12 @@ namespace Horizun.Revit.Commands
             var walls = update.Actions.Where(x => x.ElementId.HasValue && (x.Kind == "leave" || x.Kind == "set_curve"))
                               .Select(x => doc.GetElement(Rid.Make(x.ElementId.Value)) as Wall)
                               .Where(w => w != null).GroupBy(w => w.Id).Select(g => g.First()).ToList();
-            if (walls.Count == 0) return;
+            // EVERY WALL OF THE UPDATE, for WHOSE dependents are left without a host: a wall held for review
+            // (MEASURED: W1 held as resized after an apply stopped) still had them.
+            var anyWalls = update.Actions.Where(x => x.ElementId.HasValue)
+                                 .Select(x => doc.GetElement(Rid.Make(x.ElementId.Value)) as Wall)
+                                 .Where(w => w != null).GroupBy(w => w.Id).Select(g => g.First()).ToList();
+            if (anyWalls.Count == 0) return;
             double tol = Math.Max(set.PointToleranceMm, 1.0);
             var held = new JArray();
             int n = 0;
@@ -1746,7 +1754,7 @@ namespace Horizun.Revit.Commands
                     // NO WALL CARRIES IT: MEASURED (campaign 5) - an apply stopped after shortening a wall left
                     // a device in the removed stretch without a host, and this pass skipped it silently.
                     // One beside a wall of this update is held, with its alternatives and a key to decide it.
-                    if (carriers.Count == 0 && !walls.Any(x => Beside(x, at, set)))
+                    if (carriers.Count == 0 && !anyWalls.Any(x => Beside(x, at, set)))
                         continue;                      // not a dependent of these walls
                     JObject row = DecideOrphan(doc, fi, carriers.Count == 0 ? "unhosted, and no wall carries it"
                                                                            : "unhosted, and more than one wall carries it",
