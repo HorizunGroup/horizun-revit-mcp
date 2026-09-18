@@ -1655,9 +1655,6 @@ namespace Horizun.Revit.Commands
         private static void Rehome(Document doc, CadUpdate update, CadRequirementSet set, string target,
                                    JArray actions, JArray createIndex, DependentDecisionContext depCtx = null)
         {
-            var walls = update.Actions.Where(x => x.ElementId.HasValue && (x.Kind == "leave" || x.Kind == "set_curve"))
-                              .Select(x => doc.GetElement(Rid.Make(x.ElementId.Value)) as Wall)
-                              .Where(w => w != null).GroupBy(w => w.Id).Select(g => g.First()).ToList();
             // EVERY WALL OF THE UPDATE, for WHOSE dependents are left without a host: a wall held for review
             // (MEASURED: W1 held as resized after an apply stopped) still had them.
             var anyWalls = update.Actions.Where(x => x.ElementId.HasValue)
@@ -1667,7 +1664,7 @@ namespace Horizun.Revit.Commands
             double tol = Math.Max(set.PointToleranceMm, 1.0);
             var held = new JArray();
             int n = 0;
-            foreach (Wall w in walls)
+            foreach (Wall w in anyWalls)
             {
                 if (update.Actions.Any(x => x.ElementId == Rid.Value(w.Id) && x.Kind == "set_curve")) continue;
                 XYZ o, u;
@@ -1690,8 +1687,8 @@ namespace Horizun.Revit.Commands
                         var was = new XYZ(built[0].X / 304.8, built[0].Y / 304.8, nowAt.Z);
                         if (was.DistanceTo(nowAt) * 304.8 > tol && !CadHostResolver.CarriesPoint(w, was))
                         {
-                            var home = walls.Where(x => x.Id != w.Id && Carries(x, was, hosted, tol) &&
-                                                        CadHostResolver.CarriesPoint(x, was)).ToList();
+                            var home = anyWalls.Where(x => x.Id != w.Id && Carries(x, was, hosted, tol) &&
+                                                           CadHostResolver.CarriesPoint(x, was)).ToList();
                             if (home.Count == 1)
                             {
                                 EmitSubstitution(doc, hosted, Rid.Value(home[0].Id), set, target, "cad-update-rehome-" + n++,
@@ -1705,7 +1702,7 @@ namespace Horizun.Revit.Commands
                     XYZ at = ((LocationPoint)fi.Location).Point;
                     // STILL CARRIED BY ITS OWN WALL (a face runs past the line at a joined corner): not left behind.
                     if (CadHostResolver.CarriesPoint(w, at)) continue;
-                    var carriers = walls.Where(x => x.Id != w.Id && Carries(x, at, fi, tol)).ToList();
+                    var carriers = anyWalls.Where(x => x.Id != w.Id && Carries(x, at, fi, tol)).ToList();
                     if (carriers.Count != 1 || !d.Recreatable)
                     {
                         string why = !d.Recreatable ? "a class this build does not re-create"
@@ -1748,7 +1745,7 @@ namespace Horizun.Revit.Commands
                 if (kind != FamilyPlacementType.WorkPlaneBased && kind != FamilyPlacementType.OneLevelBasedHosted) continue;
                 XYZ at = (fi.Location as LocationPoint)?.Point;
                 if (at == null) continue;
-                var carriers = walls.Where(x => Carries(x, at, fi, tol) && CadHostResolver.CarriesPoint(x, at)).ToList();
+                var carriers = anyWalls.Where(x => Carries(x, at, fi, tol) && CadHostResolver.CarriesPoint(x, at)).ToList();
                 if (carriers.Count != 1)
                 {
                     // NO WALL CARRIES IT: MEASURED (campaign 5) - an apply stopped after shortening a wall left
