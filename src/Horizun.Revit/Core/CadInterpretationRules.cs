@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // Interpretation: geometry plus a requirement set becomes CANDIDATES.
@@ -1532,6 +1532,15 @@ namespace Horizun.Revit.Core
                 bands = CadWallContinuity.Bridge(bands, layerSegments, g.FaceBreaksMm.Value,
                                                  set.AngleToleranceDegrees, bridged);
 
+            // A PIER CLOSING A WALL'S END (opt-in; the project decides whether the box is the wall's end)
+            JArray piers = null;
+            if (g.EndPiers != null)
+            {
+                piers = new JArray();
+                bands = CadWallPiers.Apply(bands, layerSegments, g.EndPiers, g.MinOverlapMm.Value,
+                                           g.MaxThicknessMm.Value, set.AngleToleranceDegrees, piers);
+            }
+
             // The lines NO pairing could claim. A compound wall's innermost
             // boundaries are often millimetres apart - the fixture's are 19 mm,
             // below any wall thickness anyone would declare - so nothing pairs
@@ -1663,6 +1672,12 @@ namespace Horizun.Revit.Core
                 ["relations"] = relations,
                 ["bridged_face_breaks"] = bridged
             });
+            if (piers != null)
+                ((JObject)result.DoubleLineReasoning[result.DoubleLineReasoning.Count - 1])["end_piers"] = new JObject
+                {
+                    ["mode"] = g.EndPiers,
+                    ["found"] = piers
+                };
 
             foreach (CadWallBand band in bands)
             {

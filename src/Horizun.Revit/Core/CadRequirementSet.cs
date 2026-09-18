@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // The document that says what a DWG MEANS, and the refusals that keep it honest.
@@ -297,6 +297,14 @@ namespace Horizun.Revit.Core
         /// break ends the reading, as before.
         /// </summary>
         public double? FaceBreaksMm;
+
+        /// <summary>
+        /// A short, thicker box closing a wall's end (a pier, measured in case 159C4): null ignores
+        /// it as before; "report" lists every one found; "extend" carries the wall through it to its
+        /// end cap at the wall's own thickness. Whether such a box IS the wall's end is the project's
+        /// decision, which is why nothing reads it unless asked. See CadWallPiers.
+        /// </summary>
+        public string EndPiers;
         public bool SameLayerOnly = true;
 
         /// <summary>
@@ -858,7 +866,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "block_attributes"
+            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -1835,6 +1843,25 @@ namespace Horizun.Revit.Core
                     throw new CadRequirementSetException(
                         "rule '" + rule.Id + "': geometry.face_breaks_mm only means something with from:\"double_lines\".");
                 c.FaceBreaksMm = mm;
+            }
+
+            JToken piersToken = g["end_piers"];
+            if (piersToken != null)
+            {
+                string piers = piersToken.Type == JTokenType.String ? (string)piersToken : null;
+                if (piers != CadWallPiers.Report && piers != CadWallPiers.Extend)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers must be \"report\" or \"extend\"; it reads " +
+                        piersToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers only means something with from:\"double_lines\".");
+                double? overlap = g.Value<double?>("min_overlap_mm");
+                if (overlap == null || overlap <= 0)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers reads the stretches too short for the pairing, " +
+                        "which min_overlap_mm defines; without it there are none to read.");
+                c.EndPiers = piers;
             }
 
             c.MinThicknessMm = g.Value<double?>("min_thickness_mm");
