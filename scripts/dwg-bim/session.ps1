@@ -137,15 +137,21 @@ function Wait-Bridge([string]$server) {
                 "$(Get-Date -Format HH:mm:ss) declined $named for this Revit process"
             }
             # Revit 2023 raises Autodesk's own "External Tool Failure" for its Insights add-in at every start;
-            # it holds the UI thread. Closed ONLY when it names Insights, and only on the Revit this script started.
-            foreach ($h in [HzSession]::Dialogs($p.Id)) {
-                $el = $A::FromHandle($h)
-                $body = ($el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                         ForEach-Object { $_.Current.Name }) -join ' | '
-                if ($el.Current.Name -ne 'External Tools - External Tool Failure' -or $body -notmatch '"Insights"') { continue }
-                $close = $el.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-                    (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Close')))
-                if ($close) { $close.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
+            # it holds the UI thread. MEASURED 2026-09-18: in a Spanish Revit it is "Herramientas externas -
+            # Fallo de herramienta externa", nested INSIDE the main window (not a top-level dialog) and its
+            # close control is not a button - the first watcher saw none of it and left it to the person.
+            # Closed ONLY when it names Insights, only on the Revit this script started, by its own window close.
+            $cond = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $p.Id)
+            $isWindow = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
+            foreach ($top in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+                foreach ($el in @($top) + @($top.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isWindow))) {
+                    if ($el.Current.Name -notmatch '^(External Tools - External Tool Failure|Herramientas externas - Fallo de herramienta externa)$') { continue }
+                    $body = ($el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                             ForEach-Object { $_.Current.Name }) -join ' | '
+                    if ($body -notmatch '"Insights"') { continue }
+                    try { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
+                    catch { "$(Get-Date -Format HH:mm:ss) Insights notice seen but not closable: $($_.Exception.Message)" }
+                }
             }
             $env:HORIZUN_SERVER_EXE = $server
             & powershell -ExecutionPolicy Bypass -File (Join-Path $repo 'scripts\hz-call.ps1') -Tool horizun_health -TimeoutSec 30 -Quiet *> $null

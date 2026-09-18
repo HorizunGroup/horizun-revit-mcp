@@ -32,6 +32,8 @@ FAMILIES = {'door': ('Door.rft', 'HZ-TEST Door', 'OST_Doors'), 'window': ('Windo
 NOTICE = 'HZ-TEST generic opening: not a project family; its size is the template default.'
 DECISIONS_VERSION = 'split-openings-test-1.0.0'
 TOL_MM = 5.0
+# the Mark by its BuiltInParameter: a parameter's NAME is translated with the interface ("Marca")
+MARK = 'ALL_MODEL_MARK'
 
 
 def walls_set():
@@ -81,14 +83,14 @@ def value(p):
 
 def openings(s, name):
     _, q = s.call('horizun_query_model', {'target_document': s.doc, 'response_mode': 'full', 'max_rows': 50,
-                                          'return_parameters': ['Mark'], 'include_orientation': True,
+                                          'return_parameters': [MARK], 'include_orientation': True,
                                           'categories': ['OST_Doors', 'OST_Windows']}, name)
     out = {}
     for r in q.get('rows', []):
         if r.get('is_element_type'):
             continue
         p = r.get('placement') or {}
-        out[value((r.get('parameters') or {}).get('Mark')) or str(r['element_id'])] = {
+        out[value((r.get('parameters') or {}).get(MARK)) or str(r['element_id'])] = {
             'id': r['element_id'], 'host': r.get('host_id') or p.get('host_id'), 'point': p.get('point'),
             'category': r.get('category')}
     return out
@@ -168,7 +170,7 @@ def build(doc):
         types[kind] = t[0]['element_id']
     rows = [{'kind': 'family_instance', 'coordinate_mode': 'absolute', 'type_id': types[o['kind']], 'host_id': wall_id,
              'level_id': level, 'point': [o['x_in'] * MM, s.truth['wall']['centre_y_in'] * MM, 0.0],
-             'parameters': {'Mark': o['id']}} for o in s.truth['openings']]
+             'parameters': {MARK: o['id']}} for o in s.truth['openings']]
     reply, made = s.call.confirmed('horizun_create_elements', {'target_document': doc, 'units': 'mm', 'elements': rows},
                                    'openings')
     out['openings_created'] = {'error': refused(reply), 'rows': len(made.get('rows') or [])}
