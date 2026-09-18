@@ -156,6 +156,7 @@
          ScriptInvocation: without these two the project did not compile, so
          every test in it was silent rather than passing. -->
     <Compile Include="..\..\src\Horizun.Server\ProcedureRun.cs" />
+    <Compile Include="..\..\src\Horizun.Server\SharedRecordFile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />

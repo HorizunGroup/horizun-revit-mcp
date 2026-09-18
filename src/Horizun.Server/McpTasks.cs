@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — MCP Tasks (2025-11-25), backed by the existing durable
 // Revit job record rather than a second execution queue.
 //
@@ -580,7 +580,7 @@ namespace Horizun.Server
                         "Task request is too large for the " + MaxSidecarBytes + " byte durable sidecar limit. " +
                         "Nothing was submitted to Revit.");
                 File.WriteAllText(temp, serialized, new UTF8Encoding(false));
-                if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
+                SharedRecordFile.Swap(temp, path); // a reader of the record is waited out, not failed on
                 temp = null;
             }
             finally { if (temp != null) try { File.Delete(temp); } catch { } }

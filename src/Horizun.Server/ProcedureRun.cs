@@ -1502,7 +1502,7 @@ namespace Horizun.Server
             if (!File.Exists(path))
                 throw new ToolRefusal("no run with id '" + runId + "'. Runs older than " + RetentionDays +
                                       " days are swept.");
-            try { return JObject.Parse(File.ReadAllText(path)); }
+            try { return JObject.Parse(SharedRecordFile.ReadAllText(path)); }
             catch (Exception ex)
             {
                 throw new ToolRefusal("the run record for '" + runId + "' could not be read (" + ex.Message +
@@ -1514,11 +1514,8 @@ namespace Horizun.Server
         private static void Save(JObject record)
         {
             string target = PathOf((string)record["run_id"]);
-            string temporary = target + ".tmp";
-            File.WriteAllText(temporary, record.ToString(Formatting.Indented),
-                              new System.Text.UTF8Encoding(false));
-            if (File.Exists(target)) File.Replace(temporary, target, null);
-            else File.Move(temporary, target);
+            // a reader holding the file (a person, an indexer, a harness) is waited out, not failed on
+            SharedRecordFile.WriteAtomically(target, record.ToString(Formatting.Indented));
         }
 
         /// <summary>Remove runs nobody came back to. Best effort; never fails a call.</summary>
