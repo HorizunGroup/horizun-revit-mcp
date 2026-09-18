@@ -883,6 +883,22 @@ namespace Horizun.Revit.Commands
                     }
                 }
                 splitApplied |= split;
+                // WHAT A PERSON DECIDED TO DELETE GOES FIRST, by a verified delete of that one element.
+                // MEASURED (campaign 5, doors on W3): deleted after the re-shape, a door the new line no
+                // longer carried made Revit roll the re-shape back ("not cutting anything"), and with it
+                // the whole update. What is going anyway is removed before the wall changes under it.
+                if (split)
+                    foreach (JObject gone in (a.Evidence["split_dependents"] as JArray ?? new JArray()).OfType<JObject>()
+                                 .Where(dep => dep.Value<bool?>("delete") == true))
+                        actions.Add(new JObject
+                        {
+                            ["key"] = "cad-update-dependent-delete-" + (long)gone["element_id"],
+                            ["tool"] = "horizun_delete_verified",
+                            ["arguments"] = new JObject
+                            {
+                                ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray((long)gone["element_id"])
+                            }
+                        });
                 actions.Add(new JObject
                 {
                     ["key"] = "cad-update-move-" + (n++),
@@ -1001,18 +1017,7 @@ namespace Horizun.Revit.Commands
                     EmitSubstitution(doc, fi, host, set, target, "cad-update-substitute-" + sub++, actions, createIndex,
                                      null, slid);
                 }
-                // AND WHAT A PERSON DECIDED TO DELETE, by a verified delete of that one element.
-                foreach (JObject gone in (a.Evidence["split_dependents"] as JArray ?? new JArray()).OfType<JObject>()
-                             .Where(d => d.Value<bool?>("delete") == true))
-                    actions.Add(new JObject
-                    {
-                        ["key"] = "cad-update-dependent-delete-" + (long)gone["element_id"],
-                        ["tool"] = "horizun_delete_verified",
-                        ["arguments"] = new JObject
-                        {
-                            ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray((long)gone["element_id"])
-                        }
-                    });
+                // (what a person decided to delete was emitted before the re-shape, above)
             }
             Rehome(doc, update, set, target, actions, createIndex, depCtx);
 

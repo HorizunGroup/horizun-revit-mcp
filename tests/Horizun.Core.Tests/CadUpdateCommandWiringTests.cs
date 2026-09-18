@@ -42,6 +42,18 @@ namespace Horizun.Core.Tests
         private static string Store() => Source("src", "Horizun.Revit", "Core", "CadProvenanceStore.cs");
         private static string Contract() => Source("src", "Horizun.Contracts", "Contract.cs");
 
+        // MEASURED (campaign 5, doors on W3): a decided delete emitted AFTER the re-shape left a door with no
+        // wall under it and Revit rolled the whole update back. The delete goes before its split's set_curve.
+        [Fact]
+        public void A_decided_dependent_delete_is_emitted_before_the_reshape_of_its_split()
+        {
+            string plan = Plan();
+            int delete = plan.IndexOf("\"cad-update-dependent-delete-\"", System.StringComparison.Ordinal);
+            int move = plan.IndexOf("\"cad-update-move-\" + (n++)", System.StringComparison.Ordinal);
+            Assert.True(delete > 0 && move > 0 && delete < move, "the decided delete must be emitted before the move");
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(plan, "\"cad-update-dependent-delete-\""));
+        }
+
         [Fact]
         public void A_placed_DWG_is_sampled_by_its_total_transform_so_a_move_can_be_verified()
         {
