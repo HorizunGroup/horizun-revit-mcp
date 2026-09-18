@@ -220,7 +220,11 @@ def main(spec_path, doc, config=None):
     out = {'spec': os.path.basename(spec_path), 'spec_sha256': sha(spec_path), 'spec_version': spec['spec_version'],
            'document': doc, 'config': os.path.basename(config)}
     _, health = call('horizun_health', {}, 'health')
-    out['build'] = {k: health.get(k) for k in ('version', 'commit', 'contract_hash', 'revit_version')}
+    # health names them horizun_version / horizun_commit; the short names are read too for older builds
+    out['build'] = {'version': health.get('horizun_version') or health.get('version'),
+                    'commit': health.get('horizun_commit') or health.get('commit'),
+                    'contract_hash': health.get('contract_hash'), 'revit_version': health.get('revit_version'),
+                    'revit_build': health.get('revit_build'), 'built_from_clean_tree': health.get('built_from_clean_tree')}
     rvt, dwg, link = model(call, cfg, spec, doc)
     out['drawing'] = {'name': spec['drawing']['name'], 'sha256': sha(dwg), 'truth_sha256': truth.get('sha256')}
     if out['drawing']['sha256'] != truth.get('sha256'):
