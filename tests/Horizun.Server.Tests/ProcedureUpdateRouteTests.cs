@@ -182,6 +182,47 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Decisions_on_split_dependents_travel_with_the_walls_decision_and_are_optional()
+        {
+            // WITH them: the step-6 plan receives them as sent
+            _heldWalls = 1;
+            string runId = Start();
+            RunUntilItStops(runId);
+            int before = _calls.Count;
+            var dependent = new JObject
+            {
+                ["element_id"] = 860024, ["decision"] = "move_to", ["piece"] = "cadrev:new",
+                ["decision_key"] = "cadsplitdec:0123456789abcdef01234567"
+            };
+            Call(new JObject
+            {
+                ["operation"] = "decide", ["run_id"] = runId, ["step"] = 6, ["decision_version"] = "split-decisions-1.0.0",
+                ["values"] = new JObject
+                {
+                    ["accept_pairings"] = new JArray(), ["reject_pairings"] = new JArray(), ["resolve"] = new JArray(),
+                    ["dependent_decisions"] = new JArray(dependent)
+                }
+            });
+            RunUntilItStops(runId);
+            JObject sent = _sent[_calls.IndexOf("horizun_plan_cad_update", before)];
+            Assert.Equal("cadsplitdec:0123456789abcdef01234567", (string)sent["dependent_decisions"][0]["decision_key"]);
+
+            // WITHOUT them (a decision file written before the key existed): the property is not sent at all
+            _calls.Clear(); _sent.Clear();
+            string second = Start();
+            RunUntilItStops(second);
+            int from = _calls.Count;
+            Call(new JObject
+            {
+                ["operation"] = "decide", ["run_id"] = second, ["step"] = 6, ["decision_version"] = "update-route-decisions-1.0.0",
+                ["values"] = new JObject { ["accept_pairings"] = new JArray(), ["reject_pairings"] = new JArray(), ["resolve"] = new JArray() }
+            });
+            RunUntilItStops(second);
+            JObject old = _sent[_calls.IndexOf("horizun_plan_cad_update", from)];
+            Assert.Null(old["dependent_decisions"]);
+        }
+
+        [Fact]
         public void A_write_whose_reply_never_arrived_is_asked_again_with_the_same_key()
         {
             string runId = Start();

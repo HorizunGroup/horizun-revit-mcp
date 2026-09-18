@@ -1624,11 +1624,13 @@ namespace Horizun.Server
                     new Step
                     {
                         N = 6, Tool = "horizun_plan_cad_update", RequiresDecision = true,
-                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [] } }",
+                        DecisionUnlessJson = @"{ ""step"": 2, ""path"": ""awaiting_a_decision"", ""equals"": 0, ""values"": { ""accept_pairings"": [], ""reject_pairings"": [], ""resolve"": [], ""dependent_decisions"": [] } }",
                         DecisionNeeded = "for the WALLS, one grouped decision from the held rows of step 2: " +
                                          "accept_pairings [{element_id, candidate_id}], reject_pairings [candidate_id], " +
                                          "resolve [{element_id, decision}] - each an array, empty when there is nothing " +
-                                         "to say. A held row left out stays held and is listed again.",
+                                         "to say - and, optionally, dependent_decisions [{element_id, decision, piece, " +
+                                         "decision_key}] for the dependents a split held. A held row left out stays held " +
+                                         "and is listed again.",
                         ArgumentsJson = @"{
   ""instance_id"": { ""$input"": ""instance_id"" },
   ""target_document"": { ""$input"": ""document"" },
@@ -1640,7 +1642,8 @@ namespace Horizun.Server
   ""supersedes_requirement_set_sha256"": { ""$input"": ""supersedes_walls_set_sha256"", ""when_missing"": ""omit"" },
   ""accept_pairings"": { ""$decision"": ""accept_pairings"" },
   ""reject_pairings"": { ""$decision"": ""reject_pairings"" },
-  ""resolve"": { ""$decision"": ""resolve"" }
+  ""resolve"": { ""$decision"": ""resolve"" },
+  ""dependent_decisions"": { ""$decision"": ""dependent_decisions"", ""when_missing"": ""omit"" }
 }",
                         Purpose = "the walls update again, with a person's decisions on what it held.",
                         Needs = "steps 2-5 and the decision.", Preconditions = "the decision names rows step 2 listed.",

@@ -692,6 +692,10 @@ namespace Horizun.Server
                 JToken value = values?[key];
                 if (value == null)
                 {
+                    // AN OPTIONAL PART OF A DECISION: a decision file written before this key existed
+                    // still decides the step, and the property is not sent.
+                    if (string.Equals(holder.Value<string>("when_missing"), "omit", StringComparison.OrdinalIgnoreCase))
+                        return JValue.CreateUndefined();
                     problem = "no decision '" + key + "' recorded for step " + owner + ".";
                     return null;
                 }
