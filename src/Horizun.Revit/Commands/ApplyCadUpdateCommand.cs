@@ -528,6 +528,25 @@ namespace Horizun.Revit.Commands
                         if (existing == null) continue;
                         CadProvenance p = existing.Clone();
                         string was = p.BuiltGeometry;
+                        // A DISPLACEMENT THIS UPDATE DID NOT MAKE IS NOT LAUNDERED. MEASURED (campaign 5, copy G): an
+                        // apply stopped after re-shaping W1 left a device carried 338 mm; the resume's retype of W1
+                        // re-stamped it where it stood, and no later plan could see it had moved. A device whose
+                        // recorded point its host no longer carries keeps its record, for the re-home to act on.
+                        List<CadPoint> builtAt = CadUpdateRules.AsBuiltOf(existing);
+                        var hostWall = fi.Host as Wall;
+                        if (hostWall != null && builtAt != null && builtAt.Count == 1 &&
+                            !CadHostResolver.CarriesPoint(hostWall, new XYZ(builtAt[0].X / 304.8, builtAt[0].Y / 304.8,
+                                                                            ((fi.Location as LocationPoint)?.Point ?? XYZ.Zero).Z)))
+                        {
+                            restamps.Add(new JObject
+                            {
+                                ["element_id"] = id, ["reason"] = "host_reshaped_left_displaced", ["written"] = false,
+                                ["host_id"] = hostId, ["was_built_at_mm"] = was,
+                                ["means"] = "its host no longer carries the point it was built at: it was carried off it " +
+                                            "before this update. Its record is kept so the next plan re-homes it."
+                            });
+                            continue;
+                        }
                         p.BuiltGeometry = CadUpdateRules.Encode(PlanGeometry(fi));
                         if (string.Equals(was, p.BuiltGeometry, StringComparison.Ordinal)) continue;
                         p.WrittenUtc = DateTime.UtcNow.ToString("o");
