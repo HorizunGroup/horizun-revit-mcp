@@ -391,12 +391,28 @@ namespace Horizun.Revit.Commands
             JArray migrations = MigrationPlans(doc, update);
 
             // ---------------------------------------------------------- actions
+            // WHAT A PERSON DECIDED about the dependents a split held, bound to THIS document and set.
+            string depError;
+            List<CadDependentDecision> depDecisions = DependentDecisions(request, out depError);
+            if (depError != null)
+                return CommandResult.Fail("dependent_decisions refused: " + depError + ". Nothing was planned.");
+            var depCtx = new DependentDecisionContext
+            {
+                Decisions = depDecisions,
+                Context = title + "|" + (sourceSet != null ? sourceSet : "file:" + facts.FileSha256)
+            };
             string levelError;
             JArray createIndex, withdrawnRows, resolvedNames;
             JArray actions = Actions(doc, update, interpretation, set, request, title, harvest.Segments,
                                      sourceFingerprint, out levelError, out createIndex, out withdrawnRows,
-                                     out resolvedNames);
+                                     out resolvedNames, depCtx);
             if (levelError != null) return CommandResult.Fail(levelError);
+            foreach (CadDependentDecision d in depDecisions.Where(x => !x.Used))
+                depCtx.Problems.Add("not_held: element " + d.ElementId + " is not a dependent this plan holds for a " +
+                                    "person (it stays, moves by itself, or belongs to no split here)");
+            if (depCtx.Problems.Count > 0)
+                return CommandResult.Fail("dependent_decisions refused: " + string.Join("; ", depCtx.Problems) +
+                                          ". Nothing was planned: a decision that cannot stand is not skipped.");
 
             // WHAT THE APPLY MUST RE-STAMP without touching geometry: a v1 record
             // this run claimed becomes v2 (it now knows its placement), and under
@@ -644,7 +660,7 @@ namespace Horizun.Revit.Commands
                                       CadRequirementSet set, JObject request, string target,
                                       IList<CadSegment> drawn, string sourceFingerprint,
                                       out string levelError, out JArray createIndex, out JArray withdrawn,
-                                      out JArray resolved)
+                                      out JArray resolved, DependentDecisionContext depCtx = null)
         {
             levelError = null;
             createIndex = new JArray();
@@ -685,7 +701,7 @@ namespace Horizun.Revit.Commands
                     a.Evidence["split_retype"] = retype;
                 }
                 // WHAT THE ELEMENT HOSTS, piece by piece.
-                string dependentsHeld = ClassifyDependents(doc, update, a, set);
+                string dependentsHeld = ClassifyDependents(doc, update, a, set, depCtx);
                 if (dependentsHeld != null)
                 {
                     HoldSplit(update, a, "dependents_need_a_person", dependentsHeld);
@@ -958,18 +974,41 @@ namespace Horizun.Revit.Commands
                             ["target_document"] = target, ["units"] = "mm", ["operations"] = new JArray(retype)
                         }
                     });
+                var splitWall = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
+                XYZ lineO = null, lineU = null;
+                double lineLen;
+                if (splitWall != null) CadSplitDependents.LineOf(splitWall, out lineO, out lineU, out lineLen);
                 foreach (JObject move in (a.Evidence["split_dependents"] as JArray ?? new JArray()).OfType<JObject>()
                              .Where(d => (string)d["class"] == CadSplitRules.MovesTo))
                 {
                     var fi = doc.GetElement(Rid.Make((long)move["element_id"])) as FamilyInstance;
                     if (fi == null) continue;
-                    var host = new JObject
-                    {
-                        [CadSplitDependents.CreatedFor] = (string)move["target_candidate_id"],
-                        ["rehearse_with"] = a.ElementId.Value
-                    };
-                    EmitSubstitution(doc, fi, host, set, target, "cad-update-substitute-" + sub++, actions, createIndex);
+                    // A DECISION MAY SEND IT TO THE KEPT PIECE (the element itself) and slide it onto its piece.
+                    JToken host = move.Value<bool?>("target_is_kept") == true
+                        ? (JToken)a.ElementId.Value
+                        : new JObject
+                        {
+                            [CadSplitDependents.CreatedFor] = (string)move["target_candidate_id"],
+                            ["rehearse_with"] = a.ElementId.Value
+                        };
+                    XYZ at = (fi.Location as LocationPoint)?.Point;
+                    double? along = move.Value<double?>("move_along_mm");
+                    XYZ slid = along.HasValue && at != null && lineU != null ? at + lineU.Multiply(along.Value / 304.8) : null;
+                    EmitSubstitution(doc, fi, host, set, target, "cad-update-substitute-" + sub++, actions, createIndex,
+                                     null, slid);
                 }
+                // AND WHAT A PERSON DECIDED TO DELETE, by a verified delete of that one element.
+                foreach (JObject gone in (a.Evidence["split_dependents"] as JArray ?? new JArray()).OfType<JObject>()
+                             .Where(d => d.Value<bool?>("delete") == true))
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-dependent-delete-" + (long)gone["element_id"],
+                        ["tool"] = "horizun_delete_verified",
+                        ["arguments"] = new JObject
+                        {
+                            ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray((long)gone["element_id"])
+                        }
+                    });
             }
             Rehome(doc, update, set, target, actions, createIndex);
 
@@ -1379,7 +1418,43 @@ namespace Horizun.Revit.Commands
         /// split must wait (a dependent in the removed stretch, across a boundary, or of a class this
         /// build cannot re-create), or null; the classification is kept on the action either way.
         /// </summary>
-        private static string ClassifyDependents(Document doc, CadUpdate update, CadUpdateAction a, CadRequirementSet set)
+        /// <summary>The decisions on split dependents, and what they must be bound to.</summary>
+        internal sealed class DependentDecisionContext
+        {
+            public List<CadDependentDecision> Decisions = new List<CadDependentDecision>();
+            public string Context;
+            public List<string> Problems = new List<string>();
+        }
+
+        /// <summary>dependent_decisions, read strictly: each entry names an element, an outcome and the key it answers.</summary>
+        private static List<CadDependentDecision> DependentDecisions(JObject request, out string error)
+        {
+            error = null;
+            var list = new List<CadDependentDecision>();
+            JToken raw = request["dependent_decisions"];
+            if (raw == null) return list;
+            var arr = raw as JArray;
+            if (arr == null) { error = "dependent_decisions must be an array"; return list; }
+            if (arr.Count > 500) { error = "dependent_decisions carries " + arr.Count + " entries; 500 is the bound"; return list; }
+            var seen = new HashSet<long>();
+            foreach (JToken t in arr)
+            {
+                var o = t as JObject;
+                long? id = o?.Value<long?>("element_id");
+                string decision = o?.Value<string>("decision");
+                string key = o?.Value<string>("decision_key");
+                if (o == null || !id.HasValue || string.IsNullOrWhiteSpace(decision) || string.IsNullOrWhiteSpace(key))
+                { error = "each entry needs element_id, decision (stay | move_to | delete) and the decision_key its proposal gave"; return list; }
+                if (decision == "move_to" && string.IsNullOrWhiteSpace(o.Value<string>("piece")))
+                { error = "move_to for element " + id + " names no piece"; return list; }
+                if (!seen.Add(id.Value)) { error = "element " + id + " is decided twice"; return list; }
+                list.Add(new CadDependentDecision { ElementId = id.Value, Decision = decision, Piece = o.Value<string>("piece"), Key = key });
+            }
+            return list;
+        }
+
+        private static string ClassifyDependents(Document doc, CadUpdate update, CadUpdateAction a, CadRequirementSet set,
+                                                 DependentDecisionContext depCtx = null)
         {
             var wall = doc.GetElement(Rid.Make(a.ElementId.Value)) as Wall;
             XYZ o, u;
@@ -1405,12 +1480,18 @@ namespace Horizun.Revit.Commands
             var byId = new Dictionary<long, FamilyInstance>();
             List<CadSplitDependent> deps = CadSplitDependents.Read(doc, wall, byId);
             CadSplitRules.Classify(pieces, deps, Math.Max(set.PointToleranceMm, 1.0));
+            // EVERY HELD DEPENDENT GETS THE KEY A DECISION MUST QUOTE; decisions that quote it are applied.
+            List<string> problems = CadSplitRules.ApplyDecisions(pieces, deps, depCtx?.Decisions, depCtx?.Context ?? "",
+                                                                 a.ElementId.Value, Math.Max(set.PointToleranceMm, 1.0));
+            if (depCtx != null) depCtx.Problems.AddRange(problems);
             a.Evidence["split_dependents"] = new JArray(deps.Select(d => d.ToJson()));
-            var held = deps.Where(d => d.Class != CadSplitRules.Stays && d.Class != CadSplitRules.MovesTo).ToList();
+            var held = deps.Where(d => d.Class != CadSplitRules.Stays && d.Class != CadSplitRules.MovesTo &&
+                                       !d.Delete).ToList();
             if (held.Count == 0) return null;
             return held.Count + " dependent(s) cannot be placed on one piece without a person (" +
                    string.Join("; ", held.Take(6).Select(d => "element " + d.ElementId + " " + d.Class +
-                       (d.Alternatives.Count > 0 ? ": " + string.Join(" | ", d.Alternatives) : ""))) + ")";
+                       (d.Alternatives.Count > 0 ? ": " + string.Join(" | ", d.Alternatives) : "") +
+                       " [decision_key " + d.DecisionKey + "]")) + ")";
         }
 
         /// <summary>For a split offered: the piece that should keep the element (most dependents, same width, longest).</summary>

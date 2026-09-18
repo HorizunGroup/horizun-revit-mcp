@@ -285,7 +285,8 @@ namespace Horizun.Core.Tests
             // another width is a retype when the set lists the type; the dependents are classified piece by piece
             Assert.Contains("JObject retype = RetypeOperation(doc, a, interpretation, set, out noType);", plan);
             Assert.Contains("HoldSplit(update, a, \"dependents_need_a_person\", dependentsHeld);", plan);
-            Assert.Contains("EmitSubstitution(doc, fi, host, set, target, \"cad-update-substitute-\" + sub++, actions, createIndex);", plan);
+            Assert.Contains("EmitSubstitution(doc, fi, host, set, target, \"cad-update-substitute-\" + sub++, actions, createIndex,", plan);
+            Assert.Contains("CadSplitRules.ApplyDecisions(pieces, deps, depCtx?.Decisions", plan);
             Assert.Contains("Rehome(doc, update, set, target, actions, createIndex);", plan);
             string apply = Apply();
             Assert.Contains("CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);", apply);

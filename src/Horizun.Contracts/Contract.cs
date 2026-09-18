@@ -1638,6 +1638,15 @@ namespace Horizun.Contracts
       ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""candidate_id""], ""properties"": {
         ""element_id"": { ""type"": ""integer"" }, ""candidate_id"": { ""type"": ""string"" }
       }, ""additionalProperties"": false } },
+    ""dependent_decisions"": { ""type"": ""array"", ""maxItems"": 500,
+      ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision"", ""decision_key""],
+        ""properties"": {
+          ""element_id"": { ""type"": ""integer"" },
+          ""decision"": { ""type"": ""string"", ""enum"": [""stay"", ""move_to"", ""delete""] },
+          ""piece"": { ""type"": ""string"", ""description"": ""move_to: the piece (candidate id) of the split to put it on."" },
+          ""decision_key"": { ""type"": ""string"", ""description"": ""The decision_key the proposal gave this dependent (splits[].held / split_dependents). A key from another plan, document, drawing set or set of pieces is refused."" } },
+        ""additionalProperties"": false },
+      ""description"": ""Decisions on the DEPENDENTS a split held (in a gap, across two pieces, not re-creatable): stay on the kept piece, move_to a piece (slid onto it as little as needed and re-created there, carrying identity and parameters), or delete (a verified delete). Every entry must be used; one that is stale or names a dependent not held refuses the plan."" },
     ""resolve"": { ""type"": ""array"", ""maxItems"": 500,
       ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place), delete (an ORPHAN only - removed, or removed and moved by hand - deleted through horizun_delete_verified; nothing is ever deleted without this decision). A decision the change does not admit, or on an element not held, refuses the whole plan."",
       ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision""], ""properties"": {
