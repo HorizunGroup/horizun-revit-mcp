@@ -527,7 +527,9 @@ namespace Horizun.Revit.Commands
                 // a held element whose change admits a typed decision, or a pairing offered.
                 ["awaiting_a_decision"] = update.Actions.Count(a => !a.Automatic &&
                     ((a.ElementId.HasValue && CadDecisions.AllowedFor.Any(kv => kv.Value.Contains(a.Classification))) ||
-                     a.PairedWith != null || a.Evidence["may_be_element"] != null)),
+                     a.PairedWith != null || a.Evidence["may_be_element"] != null)) +
+                    // and every dependent held with a key: a decision resolves it
+                    depCtx.HeldOrphans.Count,
                 ["held_for_information"] = update.Actions.Count(a => !a.Automatic &&
                     !((a.ElementId.HasValue && CadDecisions.AllowedFor.Any(kv => kv.Value.Contains(a.Classification))) ||
                       a.PairedWith != null || a.Evidence["may_be_element"] != null)),
@@ -640,6 +642,8 @@ namespace Horizun.Revit.Commands
                     "is one the next update builds a second time.")
             };
             if (blocksReadForReply != null) result["blocks"] = blocksReadForReply;
+            // DEPENDENTS NO WALL RE-HOMES BY ITSELF, each with its alternatives and the key a decision quotes.
+            if (depCtx.HeldOrphans.Count > 0) result["orphans_held"] = depCtx.HeldOrphans;
             // WHAT WAS READ FROM THE FILE, and whether the reading was reused: the cache states hit or
             // miss per read, with the reference that changed when a changed set is the reason.
             var reads = new JObject();
@@ -1010,7 +1014,7 @@ namespace Horizun.Revit.Commands
                         }
                     });
             }
-            Rehome(doc, update, set, target, actions, createIndex);
+            Rehome(doc, update, set, target, actions, createIndex, depCtx);
 
             // A POINT MOVES BY A VECTOR, along its own wall.
             int m = 0;
@@ -1424,6 +1428,8 @@ namespace Horizun.Revit.Commands
             public List<CadDependentDecision> Decisions = new List<CadDependentDecision>();
             public string Context;
             public List<string> Problems = new List<string>();
+            /// <summary>Dependents no wall re-homes by itself, held with their alternatives and key.</summary>
+            public JArray HeldOrphans = new JArray();
         }
 
         /// <summary>dependent_decisions, read strictly: each entry names an element, an outcome and the key it answers.</summary>
@@ -1521,6 +1527,94 @@ namespace Horizun.Revit.Commands
             return best?.CandidateId;
         }
 
+        /// <summary>Beside a wall: within the host search of its line, laterally and along it.</summary>
+        private static bool Beside(Wall w, XYZ at, CadRequirementSet set)
+        {
+            XYZ o, u;
+            double len;
+            if (!CadSplitDependents.LineOf(w, out o, out u, out len)) return false;
+            double along = CadSplitDependents.AlongMm(o, u, at.X * 304.8, at.Y * 304.8);
+            double across = Math.Abs(((at.X - o.X) * -u.Y + (at.Y - o.Y) * u.X) * 304.8);
+            double half = 0;
+            try { half = w.Width * 304.8 / 2.0; } catch { }
+            return across <= half + set.HostSearchMm && along >= -set.HostSearchMm && along <= len + set.HostSearchMm;
+        }
+
+        /// <summary>
+        /// A dependent no wall of the update re-homes by itself: its alternatives are the walls BESIDE it
+        /// (parallel, within the host search), each a piece along one line; a person's decision - delete, or
+        /// move_to 'wall:ID' (slid onto that wall as little as needed) - is applied only when it quotes the
+        /// key given here (CadSplitRules.ApplyDecisions). Returns the held row, or null when decided.
+        /// </summary>
+        private static JObject DecideOrphan(Document doc, FamilyInstance fi, string why, CadRequirementSet set,
+                                            DependentDecisionContext depCtx, string target, JArray actions,
+                                            JArray createIndex, ref int n)
+        {
+            XYZ at = (fi.Location as LocationPoint)?.Point;
+            double tol = Math.Max(set.PointToleranceMm, 1.0);
+            var beside = at == null ? new List<Wall>() : CadHostResolver.Walls(doc).Where(w => Beside(w, at, set)).ToList();
+            XYZ o = null, u = null;
+            var pieces = new List<CadSplitPiece>();
+            Wall first = beside.OrderBy(w =>
+            {
+                XYZ wo, wu; double wl;
+                return CadSplitDependents.LineOf(w, out wo, out wu, out wl)
+                    ? Math.Abs(((at.X - wo.X) * -wu.Y + (at.Y - wo.Y) * wu.X)) : double.MaxValue;
+            }).FirstOrDefault();
+            double firstLen;
+            if (first != null && CadSplitDependents.LineOf(first, out o, out u, out firstLen))
+                foreach (Wall w in beside)
+                {
+                    XYZ wo, wu; double wl;
+                    if (!CadSplitDependents.LineOf(w, out wo, out wu, out wl)) continue;
+                    if (Math.Abs(wu.X * u.Y - wu.Y * u.X) > Math.Sin(set.AngleToleranceDegrees * Math.PI / 180.0)) continue;
+                    double a0 = CadSplitDependents.AlongMm(o, u, wo.X * 304.8, wo.Y * 304.8);
+                    double a1 = CadSplitDependents.AlongMm(o, u, (wo.X + wu.X * wl / 304.8) * 304.8, (wo.Y + wu.Y * wl / 304.8) * 304.8);
+                    pieces.Add(new CadSplitPiece { CandidateId = "wall:" + Rid.Value(w.Id), Lo = Math.Min(a0, a1), Hi = Math.Max(a0, a1) });
+                }
+            var dep = new CadSplitDependent { ElementId = Rid.Value(fi.Id), Category = fi.Category?.Name, Class = "orphaned" };
+            FamilyPlacementType kind = FamilyPlacementType.Invalid;
+            try { kind = fi.Symbol.Family.FamilyPlacementType; } catch { }
+            dep.Recreatable = kind == FamilyPlacementType.WorkPlaneBased || kind == FamilyPlacementType.OneLevelBasedHosted;
+            if (o != null && at != null)
+            {
+                double c = CadSplitDependents.AlongMm(o, u, at.X * 304.8, at.Y * 304.8), half = 0;
+                BoundingBoxXYZ bb = fi.get_BoundingBox(null);
+                if (bb != null)
+                    half = Math.Abs((bb.Max.X - bb.Min.X) * u.X * 304.8) / 2.0 + Math.Abs((bb.Max.Y - bb.Min.Y) * u.Y * 304.8) / 2.0;
+                dep.Lo = c - half; dep.Hi = c + half;
+            }
+            dep.Alternatives.Add("delete it");
+            foreach (CadSplitPiece p in pieces) dep.Alternatives.Add("move_to '" + p.CandidateId + "'");
+            List<string> problems = CadSplitRules.ApplyDecisions(pieces, new List<CadSplitDependent> { dep },
+                                                                 depCtx?.Decisions, depCtx?.Context ?? "", 0, tol);
+            if (depCtx != null) depCtx.Problems.AddRange(problems);
+            if (dep.Delete)
+            {
+                actions.Add(new JObject
+                {
+                    ["key"] = "cad-update-orphan-delete-" + dep.ElementId,
+                    ["tool"] = "horizun_delete_verified",
+                    ["arguments"] = new JObject { ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray(dep.ElementId) }
+                });
+                return null;
+            }
+            if (dep.Class == CadSplitRules.MovesTo && dep.TargetCandidateId != null && at != null)
+            {
+                long wallId = long.Parse(dep.TargetCandidateId.Substring("wall:".Length), CultureInfo.InvariantCulture);
+                var to = doc.GetElement(Rid.Make(wallId)) as Wall;
+                XYZ slid = dep.MoveAlongMm.HasValue ? at + u.Multiply(dep.MoveAlongMm.Value / 304.8) : at;
+                EmitSubstitution(doc, fi, wallId, set, target, "cad-update-rehome-" + n++, actions, createIndex,
+                                 to?.LevelId, slid);
+                return null;
+            }
+            return new JObject
+            {
+                ["element_id"] = dep.ElementId, ["host"] = null, ["why"] = why,
+                ["alternatives"] = new JArray(dep.Alternatives), ["decision_key"] = dep.DecisionKey
+            };
+        }
+
         /// <summary>Re-create an instance on another host, then delete it: two actions and one index entry.</summary>
         private static void EmitSubstitution(Document doc, FamilyInstance fi, JToken host, CadRequirementSet set,
                                              string target, string key, JArray actions, JArray createIndex,
@@ -1556,7 +1650,7 @@ namespace Horizun.Revit.Commands
         /// Anything else is listed and left alone.
         /// </summary>
         private static void Rehome(Document doc, CadUpdate update, CadRequirementSet set, string target,
-                                   JArray actions, JArray createIndex)
+                                   JArray actions, JArray createIndex, DependentDecisionContext depCtx = null)
         {
             var walls = update.Actions.Where(x => x.ElementId.HasValue && (x.Kind == "leave" || x.Kind == "set_curve"))
                               .Select(x => doc.GetElement(Rid.Make(x.ElementId.Value)) as Wall)
@@ -1606,14 +1700,11 @@ namespace Horizun.Revit.Commands
                     var carriers = walls.Where(x => x.Id != w.Id && Carries(x, at, fi, tol)).ToList();
                     if (carriers.Count != 1 || !d.Recreatable)
                     {
-                        held.Add(new JObject
-                        {
-                            ["element_id"] = d.ElementId, ["host"] = Rid.Value(w.Id),
-                            ["why"] = !d.Recreatable ? "a class this build does not re-create"
-                                    : carriers.Count == 0 ? "no wall of this update carries it"
-                                    : "more than one wall carries it",
-                            ["candidates"] = new JArray(carriers.Select(x => Rid.Value(x.Id)))
-                        });
+                        string why = !d.Recreatable ? "a class this build does not re-create"
+                                   : carriers.Count == 0 ? "no wall of this update carries it"
+                                   : "more than one wall carries it";
+                        JObject row = DecideOrphan(doc, fi, why, set, depCtx, target, actions, createIndex, ref n);
+                        if (row != null) held.Add(row);
                         continue;
                     }
                     Wall to = carriers[0];
@@ -1650,14 +1741,17 @@ namespace Horizun.Revit.Commands
                 XYZ at = (fi.Location as LocationPoint)?.Point;
                 if (at == null) continue;
                 var carriers = walls.Where(x => Carries(x, at, fi, tol) && CadHostResolver.CarriesPoint(x, at)).ToList();
-                if (carriers.Count == 0) continue;     // not a dependent of these walls
-                if (carriers.Count > 1)
+                if (carriers.Count != 1)
                 {
-                    held.Add(new JObject
-                    {
-                        ["element_id"] = Rid.Value(fi.Id), ["host"] = null, ["why"] = "unhosted, and more than one wall carries it",
-                        ["candidates"] = new JArray(carriers.Select(x => Rid.Value(x.Id)))
-                    });
+                    // NO WALL CARRIES IT: MEASURED (campaign 5) - an apply stopped after shortening a wall left
+                    // a device in the removed stretch without a host, and this pass skipped it silently.
+                    // One beside a wall of this update is held, with its alternatives and a key to decide it.
+                    if (carriers.Count == 0 && !walls.Any(x => Beside(x, at, set)))
+                        continue;                      // not a dependent of these walls
+                    JObject row = DecideOrphan(doc, fi, carriers.Count == 0 ? "unhosted, and no wall carries it"
+                                                                           : "unhosted, and more than one wall carries it",
+                                               set, depCtx, target, actions, createIndex, ref n);
+                    if (row != null) held.Add(row);
                     continue;
                 }
                 FamilyInstance standing = CadSplitDependents.HostedOn(doc, carriers[0]).FirstOrDefault(x =>
@@ -1679,8 +1773,12 @@ namespace Horizun.Revit.Commands
                 EmitSubstitution(doc, fi, Rid.Value(carriers[0].Id), set, target, "cad-update-rehome-" + n++, actions,
                                  createIndex, carriers[0].LevelId);
             }
-            if (held.Count > 0) update.Rejected.Add("dependents left past their wall's end and not re-homed: " +
-                                                   held.ToString(Newtonsoft.Json.Formatting.None));
+            if (held.Count > 0)
+            {
+                update.Rejected.Add("dependents left past their wall's end and not re-homed: " +
+                                    held.ToString(Newtonsoft.Json.Formatting.None));
+                if (depCtx != null) foreach (JToken h in held) depCtx.HeldOrphans.Add(h);
+            }
         }
 
         private static bool Carries(Wall w, XYZ at, FamilyInstance fi, double tolMm)

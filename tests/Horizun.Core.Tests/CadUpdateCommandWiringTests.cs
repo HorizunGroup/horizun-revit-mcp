@@ -287,7 +287,8 @@ namespace Horizun.Core.Tests
             Assert.Contains("HoldSplit(update, a, \"dependents_need_a_person\", dependentsHeld);", plan);
             Assert.Contains("EmitSubstitution(doc, fi, host, set, target, \"cad-update-substitute-\" + sub++, actions, createIndex,", plan);
             Assert.Contains("CadSplitRules.ApplyDecisions(pieces, deps, depCtx?.Decisions", plan);
-            Assert.Contains("Rehome(doc, update, set, target, actions, createIndex);", plan);
+            Assert.Contains("Rehome(doc, update, set, target, actions, createIndex, depCtx);", plan);
+            Assert.Contains("JObject row = DecideOrphan(doc, fi, ", plan);
             string apply = Apply();
             Assert.Contains("CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);", apply);
             Assert.Contains("[\"substitutions\"] = new JArray(", apply);
