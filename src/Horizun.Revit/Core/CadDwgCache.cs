@@ -304,8 +304,8 @@ namespace Horizun.Revit.Core
                         {
                             ["stored"] = false, ["refused"] = "changed_during_extraction",
                             ["what"] = dwgPath,
-                            ["means"] = "the drawing was written while it was being read; this reading is used for this " +
-                                        "run only and not cached."
+                            ["means"] = "the drawing was written while it was being read; this reading is not cached " +
+                                        "and nothing is planned from it."
                         };
                 }
                 if (extractionStartedUtc.HasValue)
@@ -322,7 +322,7 @@ namespace Horizun.Revit.Core
                             {
                                 ["stored"] = false, ["refused"] = "changed_during_extraction", ["what"] = path,
                                 ["means"] = "a reference was written after the extraction started; which version the " +
-                                            "reading saw is unknown, so it is used for this run only and not cached."
+                                            "reading saw is unknown, so it is not cached and nothing is planned from it."
                             };
                     }
                 }

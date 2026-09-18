@@ -427,6 +427,20 @@ namespace Horizun.Revit.Core
                                                    extractionStartedUtc);
                 result.CacheDetail = result.CacheDetail ?? new JObject();
                 result.CacheDetail["stored"] = stored;
+                // NOT PUBLISHED EITHER. A file written while it was read leaves the reading's inputs unknown:
+                // the plan would carry an identity for files it may not have seen. Refused; the next run
+                // reads one version.
+                if ((string)stored?["refused"] == "changed_during_extraction")
+                {
+                    result.Refusal = "changed_during_extraction";
+                    result.RefusalDetail = new JObject
+                    {
+                        ["refused"] = "changed_during_extraction",
+                        ["what"] = stored["what"],
+                        ["means"] = (string)stored["means"] + " Run again once the file is no longer being written."
+                    };
+                    return result;
+                }
             }
 
             if (!result.Reading.Complete)
