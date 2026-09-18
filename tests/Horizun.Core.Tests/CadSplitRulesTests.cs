@@ -26,6 +26,53 @@ namespace Horizun.Core.Tests
         private static CadSplitDependent Dep(long id, double lo, double hi, bool recreatable = true) =>
             new CadSplitDependent { ElementId = id, Category = "Data Devices", Lo = lo, Hi = hi, Recreatable = recreatable };
 
+        // MEASURED (campaign 5): a door on W3 standing on the NEW piece, decided "stay". The plan carried it
+        // out as a slide onto the kept piece - a re-creation of a door - and Revit rolled the update back.
+        [Fact]
+        public void An_opening_decided_to_stay_off_the_kept_piece_is_refused_in_the_plan()
+        {
+            var pieces = new List<CadSplitPiece>
+            {
+                new CadSplitPiece { CandidateId = "L", Lo = 0, Hi = 1258 },
+                new CadSplitPiece { CandidateId = "R", Lo = 2020, Hi = 3290, KeepsTheElement = true }
+            };
+            var door = new CadSplitDependent { ElementId = 7, Category = "Doors", Lo = -10, Hi = 900, Recreatable = false };
+            var deps = new List<CadSplitDependent> { door };
+            CadSplitRules.Classify(pieces, deps, 1.0);
+            Assert.Equal(CadSplitRules.Ambiguous, door.Class);
+            Assert.DoesNotContain(door.Alternatives, a => a.Contains("'L'"));
+            Assert.Contains(door.Alternatives, a => a.StartsWith("delete"));
+
+            List<string> problems = CadSplitRules.ApplyDecisions(pieces, deps, new List<CadDependentDecision>
+            {
+                new CadDependentDecision { ElementId = 7, Decision = "stay", Key = CadSplitRules.DecisionKey("D", 9, door, pieces) }
+            }, "D", 9, 1.0);
+            Assert.Contains(problems, p => p.StartsWith("cannot_move_an_opening: element 7"));
+        }
+
+        [Fact]
+        public void An_opening_that_stands_on_the_kept_piece_stays_and_one_in_the_gap_may_only_be_deleted()
+        {
+            var pieces = new List<CadSplitPiece>
+            {
+                new CadSplitPiece { CandidateId = "L", Lo = 0, Hi = 1258 },
+                new CadSplitPiece { CandidateId = "R", Lo = 2020, Hi = 3290, KeepsTheElement = true }
+            };
+            var onKept = new CadSplitDependent { ElementId = 7, Category = "Doors", Lo = 2100, Hi = 3000, Recreatable = false };
+            var inGap = new CadSplitDependent { ElementId = 8, Category = "Doors", Lo = 1300, Hi = 1900, Recreatable = false };
+            var deps = new List<CadSplitDependent> { onKept, inGap };
+            CadSplitRules.Classify(pieces, deps, 1.0);
+            Assert.Equal(CadSplitRules.Stays, onKept.Class);
+            Assert.Equal(CadSplitRules.InGap, inGap.Class);
+            Assert.Single(inGap.Alternatives);
+            List<string> problems = CadSplitRules.ApplyDecisions(pieces, deps, new List<CadDependentDecision>
+            {
+                new CadDependentDecision { ElementId = 8, Decision = "delete", Key = CadSplitRules.DecisionKey("D", 9, inGap, pieces) }
+            }, "D", 9, 1.0);
+            Assert.Empty(problems);
+            Assert.True(inGap.Delete);
+        }
+
         [Fact]
         public void Each_dependent_goes_to_the_one_piece_that_holds_it()
         {

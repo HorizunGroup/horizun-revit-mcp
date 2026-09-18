@@ -114,12 +114,19 @@ namespace Horizun.Revit.Core
                     d.Class = InGap;
                     d.Alternatives.Add("delete it (resolve: delete on element " + d.ElementId + ")");
                     CadSplitPiece nearest = pieces.OrderBy(p => Math.Min(Math.Abs(p.Lo - d.Hi), Math.Abs(d.Lo - p.Hi))).FirstOrDefault();
-                    if (nearest != null)
+                    // a door or window cannot be moved or re-created by this build: only what can be done is offered
+                    if (nearest != null && d.Recreatable)
                         d.Alternatives.Add("move it along its wall onto piece '" + nearest.CandidateId + "'");
                     continue;
                 }
                 d.Class = Ambiguous;
-                foreach (CadSplitPiece p in touching) d.Alternatives.Add("piece '" + p.CandidateId + "'");
+                foreach (CadSplitPiece p in touching)
+                    if (d.Recreatable || p.KeepsTheElement) d.Alternatives.Add("piece '" + p.CandidateId + "'");
+                if (!d.Recreatable)
+                {
+                    d.Alternatives.Add("delete it");
+                    d.Alternatives.Add("keep the element on the piece the " + d.Category + " stands on (accept that pairing instead)");
+                }
             }
         }
 
@@ -214,6 +221,18 @@ namespace Horizun.Revit.Core
                     continue;
                 }
                 double to = Math.Min(Math.Max(centre, lo), hi);
+                // MEASURED (campaign 5, a door on W3): "stay" on a kept piece the door does not stand on was
+                // carried out as a slide, which is a re-creation; Revit rolled the whole update back. A door
+                // or window stays only where it stands.
+                if (!d.Recreatable && Math.Abs(to - centre) >= 0.05)
+                {
+                    problems.Add("cannot_move_an_opening: element " + d.ElementId + " (" + d.Category + ") stands at " +
+                                 Math.Round(d.Lo, 0) + "-" + Math.Round(d.Hi, 0) + " mm and piece '" + target.CandidateId +
+                                 "' runs " + Math.Round(target.Lo, 0) + "-" + Math.Round(target.Hi, 0) + " mm; a door or " +
+                                 "window is part of its wall's opening and this build neither moves nor re-creates it. " +
+                                 "Delete it, or keep the element on the piece it stands on (accept that pairing instead).");
+                    continue;
+                }
                 d.DecidedFrom = d.Class;
                 d.Decision = dec.Decision == "stay" ? "stay" : "move_to";
                 d.MoveAlongMm = Math.Abs(to - centre) < 0.05 ? (double?)null : to - centre;
