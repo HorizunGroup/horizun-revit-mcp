@@ -109,6 +109,26 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_device_on_its_walls_end_face_is_projected_along_the_wall_not_moved()
+        {
+            // the wall runs x 0..6000 on y 0; the symbol is drawn 101.6 mm beyond its end and the device
+            // stands ON the end face (MEASURED, campaign 5 synthetic unit)
+            CadCandidate c = Drawn();
+            c.Geometry.Clear();
+            c.Geometry.Add(new CadPoint(6101.6, 0));
+            CadAuditSubject s = Built(c, 6000, 0, "6000,0,0");
+            s.OnHostEnd = true;
+            CadAudit a = Audit(c, s);
+            Assert.Equal(0, a.Count("moved"));
+            Assert.Equal("agrees", a.Matches.Single().State);
+
+            // on the end face but slid ACROSS it: that is a move
+            CadAuditSubject slid = Built(c, 6000, 60, "6000,60,0");
+            slid.OnHostEnd = true;
+            Assert.Equal(1, Audit(c, slid).Count("moved"));
+        }
+
+        [Fact]
         public void A_device_slid_along_its_wall_has_moved_even_though_it_is_close()
         {
             CadCandidate c = Drawn();

@@ -78,6 +78,12 @@ namespace Horizun.Revit.Core
         public double? HostWidthMm;
 
         /// <summary>
+        /// Standing on its host wall's END face (read from the face it is hosted on). Its projection from
+        /// the drawn point is ALONG the wall, and which side of the wall line it is on is not a question.
+        /// </summary>
+        public bool OnHostEnd;
+
+        /// <summary>
         /// The instance's hand and facing directions in plan, and whether Revit
         /// says it is reflected. Null where the element is not an instance or
         /// Revit would not say - which is unmeasured, not "not mirrored".
@@ -825,6 +831,8 @@ namespace Horizun.Revit.Core
         {
             if (!hit.HostElementId.HasValue || hit.HostLine == null || hit.HostLine.Count < 2) return;
             if (c.Geometry.Count != 1 || hit.Geometry.Count != 1) return;
+            // an END-face device has no side of the wall line to be on
+            if (hit.OnHostEnd) return;
             double angleTol = set != null ? set.AngleToleranceDegrees : 1.0;
             double tol = set != null ? set.RevisionCompareMm : 1.0;
 
@@ -1014,6 +1022,10 @@ namespace Horizun.Revit.Core
             {
                 double along, across;
                 bool split = SplitAlongHost(c.Geometry[0], hit.Geometry[0], hit.HostLine, out along, out across);
+                // ON THE END FACE the projection runs ALONG the wall and a move would be ACROSS it.
+                // MEASURED (campaign 5, synthetic unit): a device placed on a free end 101.6 mm from its
+                // drawn point read as "moved 101.6 mm along its wall".
+                if (split && hit.OnHostEnd) { double t = along; along = across; across = t; }
                 double sideways = split ? along : 0;
                 double outwards = split ? across : d.Offset ?? 0;
                 if (sideways > tolerance || outwards > faceAllowance)

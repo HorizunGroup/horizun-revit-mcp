@@ -119,6 +119,8 @@ namespace Horizun.Revit.Commands
                     }
                     var hostWall = host as Wall;
                     if (hostWall != null) s.HostWidthMm = CadUnits.FeetToMm(hostWall.Width);
+                    if (hostWall != null && e is FamilyInstance hosted && hosted.HostFace != null)
+                        s.OnHostEnd = CreateElementsPlacement.FaceKind(e.Document, hostWall, hosted.HostFace) == "end";
                 }
             }
             catch { }
