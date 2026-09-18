@@ -179,6 +179,75 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_publication_interrupted_between_its_two_files_is_a_miss()
+        {
+            string dwg = File_("unit.dwg", "host");
+            string sha = CadDwgCache.Sha256(dwg);
+            CadDwgCacheEntry e = CadDwgCache.Lookup(dwg, sha, "e", "o");
+            CadDwgCache.Store(e, File_("r1.tsv", "H\tdone\t1\n"), ReadingWith("x", null), dwg, 1.0);
+            Assert.True(CadDwgCache.Lookup(dwg, sha, "e", "o").Hit);
+            // the report replaced, its sidecar not (the process died between the two)
+            File.WriteAllText(e.TsvPath, "H\tdone\t2\n");
+            CadDwgCacheEntry after = CadDwgCache.Lookup(dwg, sha, "e", "o");
+            Assert.False(after.Hit);
+            Assert.Equal("publication_incomplete", after.Miss);
+        }
+
+        [Fact]
+        public void A_reading_whose_inputs_changed_while_it_was_read_is_not_kept()
+        {
+            string dir = Path.Combine(_root, "during");
+            string dwg = Set(dir, "unit.dwg", "host");
+            Set(dir, "background.dwg", "v1");
+            string sha = CadDwgCache.Sha256(dwg);
+            DateTime started = DateTime.UtcNow.AddSeconds(-5);
+            // the host itself written after it was hashed
+            File.WriteAllText(dwg, "host, edited while being read");
+            JObject r1 = CadDwgCache.Store(CadDwgCache.Lookup(dwg, sha, "e", "o"), File_("d1.tsv", "H\tdone\t1\n"),
+                                           ReadingWithAll("background", "background.dwg"), dwg, 1.0, sha, started);
+            Assert.False((bool)r1["stored"]);
+            Assert.Equal("changed_during_extraction", (string)r1["refused"]);
+            // a reference written after the extraction started
+            string sha2 = CadDwgCache.Sha256(dwg);
+            File.SetLastWriteTimeUtc(Path.Combine(dir, "background.dwg"), DateTime.UtcNow);
+            JObject r2 = CadDwgCache.Store(CadDwgCache.Lookup(dwg, sha2, "e", "o"), File_("d2.tsv", "H\tdone\t1\n"),
+                                           ReadingWithAll("background", "background.dwg"), dwg, 1.0, sha2, started);
+            Assert.False((bool)r2["stored"]);
+            Assert.Contains("background.dwg", (string)r2["what"]);
+            Assert.False(CadDwgCache.Lookup(dwg, sha2, "e", "o").Hit);
+        }
+
+        [Fact]
+        public void A_nested_relative_path_is_resolved_from_its_parents_folder_and_homonyms_stay_ambiguous()
+        {
+            // unit.dwg -> ARCH\A-109.dwg -> SUB\nested.dwg (relative to A-109's folder), and a file of the
+            // same name beside the unit that is NOT the one A-109 references
+            string top = Path.Combine(_root, "rel");
+            string unit = Set(top, "unit.dwg", "host");
+            Set(Path.Combine(top, "ARCH"), "A-109.dwg", "parent");
+            Set(Path.Combine(top, "ARCH", "SUB"), "nested.dwg", "the real child");
+            var refs = new List<CadIrExternalReference>
+            {
+                new CadIrExternalReference { Name = "A-109", Path = @".\ARCH\A-109.dwg" },
+                new CadIrExternalReference { Name = "nested", Path = @"SUB\nested.dwg" }
+            };
+            Assert.Equal(Path.Combine(top, "ARCH", "SUB", "nested.dwg"),
+                         CadDwgCache.ResolveAll(top, refs).Values.Last());
+
+            // two resolved references whose folders each hold a file of the bare name: ambiguous, left unresolved
+            var bare = new List<CadIrExternalReference>
+            {
+                new CadIrExternalReference { Name = "A-109", Path = @".\ARCH\A-109.dwg" },
+                new CadIrExternalReference { Name = "B", Path = @".\B\B.dwg" },
+                new CadIrExternalReference { Name = "twin", Path = "twin.dwg" }
+            };
+            Set(Path.Combine(top, "B"), "B.dwg", "other parent");
+            Set(Path.Combine(top, "ARCH"), "twin.dwg", "one");
+            Set(Path.Combine(top, "B"), "twin.dwg", "another");
+            Assert.Null(CadDwgCache.ResolveAll(top, bare).Values.Last());
+        }
+
+        [Fact]
         public void Alternating_between_two_reference_sets_reads_each_once()
         {
             // MEASURED (campaign 4): original and revised copy share the host bytes; each switch

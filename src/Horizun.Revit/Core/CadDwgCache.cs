@@ -48,6 +48,8 @@ namespace Horizun.Revit.Core
     public sealed class CadDwgCacheEntry
     {
         public string Key;
+        /// <summary>The host drawing's hash as it was taken for this key, before any extraction.</summary>
+        public string HostSha;
         public string TsvPath;
         public string SidecarPath;
         public bool Hit;
@@ -125,6 +127,7 @@ namespace Horizun.Revit.Core
             var entry = new CadDwgCacheEntry
             {
                 Key = key,
+                HostSha = dwgSha,
                 TsvPath = Path.Combine(Root, key + ".tsv"),
                 SidecarPath = Path.Combine(Root, key + ".json")
             };
@@ -141,6 +144,19 @@ namespace Horizun.Revit.Core
             {
                 entry.Miss = "sidecar_unreadable";
                 entry.Detail = new JObject { ["error"] = ex.Message };
+                return entry;
+            }
+            // A PUBLICATION INTERRUPTED BETWEEN ITS TWO FILES leaves one reading's report beside another's
+            // references. The sidecar names the report it describes; a mismatch is a miss, never a hit.
+            string describes = (string)side["tsv_sha256"];
+            if (describes != null && !string.Equals(describes, Sha256(entry.TsvPath), StringComparison.OrdinalIgnoreCase))
+            {
+                entry.Miss = "publication_incomplete";
+                entry.Detail = new JObject
+                {
+                    ["means"] = "the report under this key is not the one its sidecar describes (a publication was " +
+                                "interrupted between the two files). It is read again."
+                };
                 return entry;
             }
 
@@ -169,6 +185,8 @@ namespace Horizun.Revit.Core
                     try { vs = JObject.Parse(File.ReadAllText(variant)); } catch { continue; }
                     string vtsv = Path.ChangeExtension(variant, ".tsv");
                     if (!File.Exists(vtsv) || ChangedDependencies(vs, here).Count > 0) continue;
+                    string vdesc = (string)vs["tsv_sha256"];
+                    if (vdesc != null && !string.Equals(vdesc, Sha256(vtsv), StringComparison.OrdinalIgnoreCase)) continue;
                     entry.Hit = true;
                     entry.TsvPath = vtsv;
                     entry.Detail = HitDetail(Path.GetFileNameWithoutExtension(variant), vs);
@@ -255,7 +273,8 @@ namespace Horizun.Revit.Core
         /// failure to read: the caller already has its answer.
         /// </summary>
         public static JObject Store(CadDwgCacheEntry entry, string tsvSource, CadDwgReading reading,
-                                    string dwgPath, double seconds)
+                                    string dwgPath, double seconds, string hostShaBefore = null,
+                                    DateTime? extractionStartedUtc = null)
         {
             // WHOLE OR NOT AT ALL. A report with no end marker describes a walk
             // that stopped, and a cache would serve that stop to every later run.
@@ -274,6 +293,39 @@ namespace Horizun.Revit.Core
             try
             {
                 Directory.CreateDirectory(Root);
+                // WHAT WAS READ IS WHAT IS RECORDED. The host was hashed BEFORE the extraction (that hash
+                // is the key); a host or a reference written while the console was reading gives a
+                // reading of neither version, and it is not kept under either one's identity.
+                if (hostShaBefore != null)
+                {
+                    string hostNow = Sha256(dwgPath);
+                    if (!string.Equals(hostNow, hostShaBefore, StringComparison.OrdinalIgnoreCase))
+                        return new JObject
+                        {
+                            ["stored"] = false, ["refused"] = "changed_during_extraction",
+                            ["what"] = dwgPath,
+                            ["means"] = "the drawing was written while it was being read; this reading is used for this " +
+                                        "run only and not cached."
+                        };
+                }
+                if (extractionStartedUtc.HasValue)
+                {
+                    string folderNow = null;
+                    try { folderNow = Path.GetDirectoryName(dwgPath); } catch { }
+                    List<CadIrExternalReference> refsNow = reading?.ExternalReferences ?? new List<CadIrExternalReference>();
+                    foreach (string path in ResolveAll(folderNow, refsNow).Values.Where(v => v != null))
+                    {
+                        DateTime written;
+                        try { written = File.GetLastWriteTimeUtc(path); } catch { continue; }
+                        if (written > extractionStartedUtc.Value)
+                            return new JObject
+                            {
+                                ["stored"] = false, ["refused"] = "changed_during_extraction", ["what"] = path,
+                                ["means"] = "a reference was written after the extraction started; which version the " +
+                                            "reading saw is unknown, so it is used for this run only and not cached."
+                            };
+                    }
+                }
                 // THE READING BEING REPLACED IS KEPT, under a variant named by its references.
                 string kept = KeepAsVariant(entry);
                 // PUBLISHED WHOLE: written beside the target and moved into place, so a
@@ -307,7 +359,9 @@ namespace Horizun.Revit.Core
                     ["read_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                     ["seconds"] = Math.Round(seconds, 1),
                     ["entities"] = reading?.Entities?.Count ?? 0,
-                    ["dependencies"] = deps
+                    ["dependencies"] = deps,
+                    // the report this sidecar describes: a sidecar published beside another report is a miss
+                    ["tsv_sha256"] = Sha256(entry.TsvPath)
                 };
                 Publish(entry.SidecarPath, tmp => File.WriteAllText(tmp, side.ToString(Formatting.Indented)));
                 var stored = new JObject
@@ -538,10 +592,17 @@ namespace Horizun.Revit.Core
                 string leaf = null;
                 try { leaf = Path.GetFileName(x.Path ?? x.Name); } catch { }
                 if (string.IsNullOrWhiteSpace(leaf)) continue;
-                var found = folders.Select(f => Path.Combine(f, leaf))
-                                   .Where(p => { try { return File.Exists(p); } catch { return false; } })
-                                   .Select(Path.GetFullPath)
-                                   .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                bool relative = false;
+                try { relative = !string.IsNullOrWhiteSpace(x.Path) && (!Path.IsPathRooted(x.Path) || x.Path.StartsWith(".", StringComparison.Ordinal)); }
+                catch { }
+                // its declared RELATIVE path, from each resolved reference's folder (a nested reference records
+                // its path relative to its parent) - and only when that finds nothing, the bare file name
+                Func<Func<string, string>, List<string>> probe = make => folders.Select(make)
+                    .Where(p => { try { return p != null && File.Exists(p); } catch { return false; } })
+                    .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                List<string> found = relative ? probe(f => { try { return Path.Combine(f, x.Path); } catch { return null; } })
+                                              : new List<string>();
+                if (found.Count == 0) found = probe(f => Path.Combine(f, leaf));
                 if (found.Count != 1) continue;
                 result[key] = found[0];
                 if (x.Name != null) byName[x.Name] = found[0];

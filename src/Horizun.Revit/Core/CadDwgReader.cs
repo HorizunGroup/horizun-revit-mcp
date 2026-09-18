@@ -331,6 +331,7 @@ namespace Horizun.Revit.Core
 
             var console = new StringBuilder();
             var clock = Stopwatch.StartNew();
+            DateTime extractionStartedUtc = DateTime.UtcNow;
             try
             {
                 using (var p = Process.Start(psi))
@@ -422,7 +423,8 @@ namespace Horizun.Revit.Core
             // walk that stopped, and caching one would serve that stop forever.
             if (useCache && cached != null && result.Reading.Complete)
             {
-                JObject stored = CadDwgCache.Store(cached, outPath, result.Reading, dwgPath, result.Seconds);
+                JObject stored = CadDwgCache.Store(cached, outPath, result.Reading, dwgPath, result.Seconds, cached.HostSha,
+                                                   extractionStartedUtc);
                 result.CacheDetail = result.CacheDetail ?? new JObject();
                 result.CacheDetail["stored"] = stored;
             }
