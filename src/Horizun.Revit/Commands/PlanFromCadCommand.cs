@@ -1788,7 +1788,9 @@ namespace Horizun.Revit.Commands
         {
             List<ElementType> types = new FilteredElementCollector(doc).WhereElementIsElementType()
                 .Cast<ElementType>().ToList();
+            // the localized label first; then the language-independent one of a system wall family (TypeNames)
             return types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.Ordinal))
+                ?? types.FirstOrDefault(t => string.Equals(TypeNames.Canonical(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.OrdinalIgnoreCase))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.OrdinalIgnoreCase));

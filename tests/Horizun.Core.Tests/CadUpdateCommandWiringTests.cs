@@ -42,6 +42,21 @@ namespace Horizun.Core.Tests
         private static string Store() => Source("src", "Horizun.Revit", "Core", "CadProvenanceStore.cs");
         private static string Contract() => Source("src", "Horizun.Contracts", "Contract.cs");
 
+        // MEASURED (campaign 5b): in a Revit with a Spanish interface the system family is "Muro básico", and a
+        // set that says "Basic Wall: Generic - 8\"" found nothing. Wall types are also matched by their
+        // language-independent label, in the plan and in the update.
+        [Fact]
+        public void Wall_types_are_found_by_their_language_independent_label_too()
+        {
+            string names = Source("src", "Horizun.Revit", "Commands", "TypeNames.cs");
+            Assert.Contains("case WallKind.Basic: family = \"Basic Wall\"", names);
+            string plan = Source("src", "Horizun.Revit", "Commands", "PlanFromCadCommand.cs");
+            Assert.Contains("TypeNames.Canonical(t), name", plan);
+            string update = Plan();
+            Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(update, @"TypeNames\.Matches\(").Count);
+            Assert.DoesNotContain("wt.FamilyName + \": \" + wt.Name", update);
+        }
+
         // MEASURED (campaign 5, doors on W3): a decided delete emitted AFTER the re-shape left a door with no
         // wall under it and Revit rolled the whole update back. The delete goes before its split's set_curve.
         [Fact]

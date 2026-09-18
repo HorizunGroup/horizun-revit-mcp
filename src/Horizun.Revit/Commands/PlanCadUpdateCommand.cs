@@ -1084,8 +1084,7 @@ namespace Horizun.Revit.Commands
                 double best = double.MaxValue;
                 foreach (WallType wt in new FilteredElementCollector(doc).OfClass(typeof(WallType)).Cast<WallType>())
                 {
-                    string name = wt.FamilyName + ": " + wt.Name;
-                    if (!rule.WallTypes.Any(n => string.Equals(n, name, StringComparison.OrdinalIgnoreCase))) continue;
+                    if (!rule.WallTypes.Any(n => TypeNames.Matches(wt, n, StringComparison.OrdinalIgnoreCase))) continue;
                     double off = Math.Abs(wt.Width * 304.8 - c.ThicknessMm.Value);
                     if (off <= (rule.WallTypeToleranceMm ?? set.ThicknessToleranceMm) && off < best)
                     {
@@ -1100,7 +1099,7 @@ namespace Horizun.Revit.Commands
                 string wanted = c.FamilyType.Replace(" : ", ": ");
                 foreach (ElementType t in new FilteredElementCollector(doc).WhereElementIsElementType().Cast<ElementType>())
                 {
-                    if (!string.Equals(t.FamilyName + ": " + t.Name, wanted, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!TypeNames.Matches(t, wanted, StringComparison.OrdinalIgnoreCase)) continue;
                     if (!e.IsValidType(t.Id)) continue;
                     typeId = t.Id;
                     break;
