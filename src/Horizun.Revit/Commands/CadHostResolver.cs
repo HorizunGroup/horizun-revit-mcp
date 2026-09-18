@@ -44,6 +44,16 @@ namespace Horizun.Revit.Commands
         public bool NoWallsAtAll;
     }
 
+    /// <summary>A wall END that carries a point: which wall, which end, how far, and where it looks.</summary>
+    internal sealed class CadEndMatch
+    {
+        public Wall Wall;
+        public int End;
+        public double DistanceMm;
+        public XYZ EndPoint;
+        public XYZ Outward;
+    }
+
     /// <summary>Which slab a ring falls on, including the cases where nobody can say.</summary>
     internal sealed class CadSlabMatch
     {
@@ -136,6 +146,56 @@ namespace Horizun.Revit.Commands
             match.DistanceMm = CadUnits.FeetToMm(bestFeet);
             if (match.DistanceMm.Value <= match.AllowanceMm) match.Wall = best;
             return match;
+        }
+
+        /// <summary>
+        /// The nearest FREE wall end whose terminal face carries the point in plan, within the search.
+        /// Asked only when a rule allows end faces and no side face carried the point; the same test
+        /// the placement's end route makes (CreateElementsPlacement.EndFaces).
+        /// </summary>
+        public static CadEndMatch NearestEnd(IList<Wall> walls, XYZ point, double searchMm)
+        {
+            CadEndMatch best = null;
+            if (walls == null || point == null) return null;
+            foreach (Wall w in walls)
+            {
+                var lc = w.Location as LocationCurve;
+                Curve curve = lc?.Curve;
+                if (curve == null) continue;
+                double z = curve.GetEndPoint(0).Z + 1.0;           // one foot up: inside any wall's height
+                var probe = new XYZ(point.X, point.Y, z);
+                for (int end = 0; end <= 1; end++)
+                {
+                    XYZ e = curve.GetEndPoint(end);
+                    double plan = new XYZ(point.X - e.X, point.Y - e.Y, 0).GetLength() * 304.8;
+                    double halfWidth = 0;
+                    try { halfWidth = w.Width * 304.8 / 2.0; } catch { }
+                    if (plan > searchMm + halfWidth) continue;
+                    bool joined = false;
+                    try
+                    {
+                        foreach (Element j in lc.get_ElementsAtJoin(end))
+                            if (j != null && j.Id != w.Id) { joined = true; break; }
+                    }
+                    catch { }
+                    if (joined) continue;
+                    foreach (var f in CreateElementsPlacement.EndFaces(w).Where(x => x.Item3 == end))
+                    {
+                        IntersectionResult pr;
+                        try { pr = f.Item1.Project(probe); } catch { continue; }
+                        if (pr == null) continue;
+                        bool inside;
+                        try { inside = f.Item1.IsInside(pr.UVPoint); } catch { inside = false; }
+                        double front = f.Item1.FaceNormal.DotProduct(probe - pr.XYZPoint) * 304.8;
+                        double d = pr.Distance * 304.8;
+                        if (!inside || front < -1.0 || d > searchMm) continue;
+                        if (best == null || d < best.DistanceMm)
+                            best = new CadEndMatch { Wall = w, End = end, DistanceMm = d, EndPoint = e,
+                                                     Outward = f.Item1.FaceNormal };
+                    }
+                }
+            }
+            return best;
         }
 
         /// <summary>

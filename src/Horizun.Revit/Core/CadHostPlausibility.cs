@@ -46,6 +46,8 @@ namespace Horizun.Revit.Core
         /// <summary>The distance to the nearest line on the host layers that is NOT one of the host's faces.</summary>
         public double? OtherWallMm;
         public CadSegment OtherWallLine;
+        /// <summary>For an END-face host: the same wall resumes beyond the symbol - the end is a jamb.</summary>
+        public bool Jamb;
     }
 
     public static class CadHostPlausibility
@@ -99,6 +101,67 @@ namespace Horizun.Revit.Core
             // No drawn face of the host is not evidence of a different host.
             result.NearerWallDrawn = result.HostFaceMm.HasValue && result.OtherWallMm.HasValue &&
                                      other + toleranceMm < host && other <= hostSearchMm;
+            return result;
+        }
+
+        /// <summary>How far past a wall's end the same wall may resume and the end still be a jamb.</summary>
+        public const double JambGapMm = 1500.0;
+
+        /// <summary>
+        /// A symbol hosted on the END face of a model wall: is that the end the drawing shows it on?
+        /// <paramref name="endPoint"/> is the wall's end on its location line and <paramref name="outward"/>
+        /// the unit direction the end face looks along. Two refusals: a drawn end cap nearer the symbol
+        /// than the model's end (the drawing's wall runs further than the model's - case 159C4), and the
+        /// same wall resuming within <see cref="JambGapMm"/> beyond the symbol (a jamb: the device belongs
+        /// to the wall around the opening, not to its end).
+        /// </summary>
+        public static CadHostPlausibilityResult CheckEnd(CadPoint symbol, CadPoint endPoint, CadVector outward,
+                                                         double hostHalfWidthMm, IEnumerable<CadSegment> hostLayerLines,
+                                                         double angleToleranceDegrees, double toleranceMm)
+        {
+            var result = new CadHostPlausibilityResult();
+            if (hostLayerLines == null) return result;
+            var u = outward;
+            var n = new CadVector(-u.Y, u.X);
+            double s = (symbol.X - endPoint.X) * u.X + (symbol.Y - endPoint.Y) * u.Y;       // in front of the model end
+            double lateral = (symbol.X - endPoint.X) * n.X + (symbol.Y - endPoint.Y) * n.Y;
+            result.HostFaceMm = s;
+            double nearest = double.MaxValue;
+            foreach (CadSegment line in hostLayerLines)
+            {
+                if (line == null) continue;
+                CadVector? dir = line.PlanDirection;
+                if (dir == null) continue;
+                double a0 = (line.A.X - endPoint.X) * u.X + (line.A.Y - endPoint.Y) * u.Y;
+                double a1 = (line.B.X - endPoint.X) * u.X + (line.B.Y - endPoint.Y) * u.Y;
+                double c0 = (line.A.X - endPoint.X) * n.X + (line.A.Y - endPoint.Y) * n.Y;
+                double c1 = (line.B.X - endPoint.X) * n.X + (line.B.Y - endPoint.Y) * n.Y;
+                if (dir.Value.UndirectedAngleDegrees(n) <= angleToleranceDegrees)
+                {
+                    // a cap ACROSS the band, facing the symbol laterally, between the model end and the symbol
+                    double along = (a0 + a1) / 2;
+                    bool spans = Math.Min(c0, c1) <= lateral + toleranceMm && Math.Max(c0, c1) >= lateral - toleranceMm;
+                    if (spans && along > toleranceMm + FaceStandOffMm && along < s - toleranceMm && s - along < nearest)
+                    {
+                        nearest = s - along;
+                        result.OtherWallLine = line;
+                    }
+                }
+                else if (dir.Value.UndirectedAngleDegrees(u) <= angleToleranceDegrees)
+                {
+                    // the SAME wall resuming beyond the symbol: a face line inside the band that starts past it
+                    double c = (c0 + c1) / 2;
+                    double start = Math.Min(a0, a1);
+                    if (Math.Abs(c) <= hostHalfWidthMm + toleranceMm + FaceStandOffMm &&
+                        start > s + toleranceMm && start - s <= JambGapMm)
+                        result.Jamb = true;
+                }
+            }
+            if (nearest < double.MaxValue)
+            {
+                result.OtherWallMm = nearest;
+                result.NearerWallDrawn = true;
+            }
             return result;
         }
 

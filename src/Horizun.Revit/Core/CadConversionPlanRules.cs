@@ -743,6 +743,8 @@ namespace Horizun.Revit.Core
                     CadRule hostRule = set.Rules.FirstOrDefault(x => x.Id == c.RuleId);
                     if (hostRule != null && hostRule.HostLayers.Count > 0 && c.HostedOn == "wall")
                         o["host_layers"] = new JArray(hostRule.HostLayers);
+                    if (hostRule?.HostFaces != null && hostRule.HostFaces.Contains("end") && c.HostedOn == "wall")
+                        o["host_faces"] = new JArray(hostRule.HostFaces);
                     else if (NeedsWallHost.Contains(c.ProposedKind)) o["hosted_on"] = "wall";
 
                     // ORIENTATION, WHERE THE DRAWING GAVE ONE.

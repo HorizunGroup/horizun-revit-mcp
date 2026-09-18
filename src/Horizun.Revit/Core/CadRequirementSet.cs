@@ -562,6 +562,14 @@ namespace Horizun.Revit.Core
         public List<string> HostLayers = new List<string>();
 
         /// <summary>
+        /// Which faces of a wall a hosted symbol may stand on: "side" (the default) and, when the
+        /// set says so, "end" - the wall's terminal face, taken only where no side face carries the
+        /// point, never at a joined end, and never where the drawing shows a different end (a pier
+        /// the model does not have) or the same wall resuming beyond it (a jamb).
+        /// </summary>
+        public List<string> HostFaces;
+
+        /// <summary>
         /// For a wall rule: the wall types a reading may be built as, BY THICKNESS.
         /// The plan reads each type's width from the model and builds each wall
         /// with the one whose width is nearest the drawn thickness, within
@@ -835,7 +843,7 @@ namespace Horizun.Revit.Core
         private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal)
         {
             "id", "precedence", "discipline", "layers", "exclude_layers", "produces", "category", "hosted_on",
-            "host_layers", "wall_types",
+            "host_layers", "host_faces", "wall_types",
             "mirror", "mirror_variant_type",
             "family_type", "system_type", "level", "base_level", "top_level", "phase",
             "design_option", "geometry",
@@ -1235,6 +1243,21 @@ namespace Horizun.Revit.Core
                         "rule '" + rule.Id + "' declares host_layers and is not hosted_on 'wall'. The layers " +
                         "would be read by nothing.");
                 rule.HostLayers = list.Select(x => ((string)x).Trim()).ToList();
+            }
+            JToken hostFaces = r["host_faces"];
+            if (hostFaces != null)
+            {
+                var list = hostFaces as JArray;
+                if (list == null || list.Count == 0 ||
+                    list.Any(x => x.Type != JTokenType.String || ((string)x != "side" && (string)x != "end")))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_faces, which must be a non-empty array of 'side' and/or " +
+                        "'end'.");
+                if (rule.HostedOn != "wall")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_faces and is not hosted_on 'wall': only a wall has " +
+                        "side and end faces to choose between.");
+                rule.HostFaces = list.Select(x => (string)x).Distinct().ToList();
             }
             JToken wallTypes = r["wall_types"];
             if (wallTypes != null)

@@ -1181,6 +1181,8 @@ namespace Horizun.Revit.Commands
                     if (hostedOn != "wall") continue;
                     var hostLayers = (row["host_layers"] as JArray)?.Select(x => (string)x).ToList();
                     row.Remove("host_layers");
+                    bool endAllowed = (row["host_faces"] as JArray)?.Any(x => (string)x == "end") == true;
+                    row.Remove("host_faces");
 
                     // A DOOR CARRIES A POINT; A HOLE CARRIES A RING. Both need the
                     // same answer - which wall - so both are resolved here, from
@@ -1208,6 +1210,66 @@ namespace Horizun.Revit.Commands
                                "Convert the wall layers first and plan the openings against the model that " +
                                "results - a plan is computed before it is applied, so one run cannot build a " +
                                "wall and then host a door in it.";
+
+                    // THE END OF A WALL, when the rule allows it and no side carried the point.
+                    if (best == null && endAllowed && row.Value<string>("kind") == "family_instance")
+                    {
+                        CadEndMatch end = CadHostResolver.NearestEnd(walls, point, pointToleranceMm);
+                        if (end != null)
+                        {
+                            string endWithdrawn = null;
+                            JObject endEvidence = new JObject
+                            {
+                                ["wall"] = Rid.Value(end.Wall.Id), ["wall_end"] = end.End,
+                                ["distance_mm"] = Math.Round(end.DistanceMm, 1)
+                            };
+                            if (hostLayers != null && hostLayers.Count > 0 && drawn != null)
+                            {
+                                var lines = drawn.Where(s => s != null && hostLayers.Any(g =>
+                                    CadGlob.IsMatch(s.Layer ?? "", g, set.CaseSensitiveLayers)));
+                                CadHostPlausibilityResult pe = CadHostPlausibility.CheckEnd(
+                                    new CadPoint(point.X * 304.8, point.Y * 304.8),
+                                    new CadPoint(end.EndPoint.X * 304.8, end.EndPoint.Y * 304.8),
+                                    new CadVector(end.Outward.X, end.Outward.Y),
+                                    end.Wall.Width * 304.8 / 2.0, lines, set.AngleToleranceDegrees, set.PointToleranceMm);
+                                if (pe.NearerWallDrawn)
+                                {
+                                    endWithdrawn = "nearer_drawn_end_is_not_in_the_model";
+                                    endEvidence["drawn_end_mm"] = Math.Round(pe.OtherWallMm.Value, 1);
+                                    endEvidence["model_end_mm"] = Math.Round(pe.HostFaceMm.Value, 1);
+                                    endEvidence["means"] = "the drawing closes this wall NEARER the symbol than the model " +
+                                        "does (a pier or a return the model does not have). Hosting it on the model's " +
+                                        "end would bury it in that pier. NOT planned; decide what the drawn end is.";
+                                }
+                                else if (pe.Jamb)
+                                {
+                                    endWithdrawn = "end_is_a_jamb";
+                                    endEvidence["means"] = "the same wall resumes beyond the symbol: this end is a jamb, " +
+                                        "and a device there belongs to the wall around the opening. NOT planned.";
+                                }
+                            }
+                            if (endWithdrawn != null)
+                            {
+                                endEvidence["source_row"] = row["source_row"];
+                                endEvidence["kind"] = row.Value<string>("kind");
+                                endEvidence["at_mm"] = new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1));
+                                endEvidence["reason"] = endWithdrawn;
+                                withdrawn.Add(endEvidence);
+                                ((JArray)c["elements"]).Remove(row);
+                                continue;
+                            }
+                            row["host_id"] = Rid.Value(end.Wall.Id);
+                            row["host_face"] = "end";
+                            row.Remove("side_dead_band_mm");
+                            if (seen.Add("host:" + Rid.Value(end.Wall.Id)))
+                                resolved.Add(Resolved("host_wall", end.Wall,
+                                    "the free END of the wall nearest the drawn symbol, " +
+                                    end.DistanceMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm away (host_faces allows it)"));
+                            string zEnd = RaiseToStorey(doc, end.Wall, row);
+                            if (zEnd != null) return zEnd;
+                            continue;
+                        }
+                    }
 
                     if (best == null)
                     {

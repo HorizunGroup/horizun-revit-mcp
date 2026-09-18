@@ -73,6 +73,28 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void End_faces_are_allowed_only_by_name_and_only_on_a_wall()
+        {
+            CadRequirementSet ok = Set(@"[
+              { 'id': 'r-pier', 'layers': ['E-P'], 'produces': 'electrical_fixture', 'family_type': 'Duplex Receptacle: Standard',
+                'level': 'Level 1', 'hosted_on': 'wall', 'host_faces': ['side', 'end'], 'geometry': { 'from': 'blocks', 'blocks': ['OUT2'] } }
+            ]");
+            Assert.Equal(new[] { "side", "end" }, ok.Rules[0].HostFaces);
+            Assert.Null(Set(@"[
+              { 'id': 'r-plain', 'layers': ['E-P'], 'produces': 'electrical_fixture', 'family_type': 'Duplex Receptacle: Standard',
+                'level': 'Level 1', 'hosted_on': 'wall', 'geometry': { 'from': 'blocks', 'blocks': ['OUT2'] } }
+            ]").Rules[0].HostFaces);
+            Assert.Throws<CadRequirementSetException>(() => Set(@"[
+              { 'id': 'r-bad', 'layers': ['E-P'], 'produces': 'electrical_fixture', 'family_type': 'X: Y',
+                'level': 'Level 1', 'hosted_on': 'wall', 'host_faces': ['top'], 'geometry': { 'from': 'blocks', 'blocks': ['A'] } }
+            ]"));
+            Assert.Throws<CadRequirementSetException>(() => Set(@"[
+              { 'id': 'r-slab', 'layers': ['E-P'], 'produces': 'electrical_fixture', 'family_type': 'X: Y',
+                'level': 'Level 1', 'hosted_on': 'slab', 'host_faces': ['end'], 'geometry': { 'from': 'blocks', 'blocks': ['A'] } }
+            ]"));
+        }
+
+        [Fact]
         public void Two_listed_wall_types_of_one_width_are_flagged_before_they_tie()
         {
             CadRequirementSet set = Set(@"[

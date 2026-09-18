@@ -21,6 +21,59 @@ namespace Horizun.Core.Tests
         private static CadSegment Line(double ax, double ay, double bx, double by) =>
             new CadSegment(new CadPoint(ax, ay), new CadPoint(bx, by), "PLAN-A-WALL", CadCurveKind.Line, 0);
 
+        // ---- END-face hosts (campaign 5) ----------------------------------------------
+        // Case 159C4 (unit 914), the drawing's own lines: a 254 mm pier closes the west end of the
+        // wall the model built from x 34150; the symbol stands 62 mm in front of the PIER's end cap
+        // (x 34006) and 206 mm in front of the model wall's end.
+        private static readonly List<CadSegment> Pier159C4 = new List<CadSegment>
+        {
+            Line(34006, 3715, 34006, 3461), Line(34022, 3715, 34022, 3461), Line(34023, 3715, 34023, 3461),
+            Line(34022, 3461, 34152, 3461), Line(34152, 3715, 34022, 3715),
+            Line(34150, 3499, 36906, 3499), Line(34150, 3683, 36906, 3683)
+        };
+
+        [Fact]
+        public void A_symbol_on_an_end_the_model_does_not_have_is_not_on_the_model_walls_end()
+        {
+            CadHostPlausibilityResult r = CadHostPlausibility.CheckEnd(
+                new CadPoint(33944.2, 3525.1), new CadPoint(34150, 3591), new CadVector(-1, 0),
+                109.55, Pier159C4, 2.0, 1.0);
+
+            Assert.True(r.NearerWallDrawn);
+            Assert.Equal(62.0, r.OtherWallMm.Value, 0);
+            Assert.False(r.Jamb);
+        }
+
+        [Fact]
+        public void A_symbol_in_front_of_the_drawn_end_that_the_model_has_is_plausible()
+        {
+            var lines = new List<CadSegment>
+            {
+                Line(34150, 3481, 34150, 3700),                        // the drawn cap IS the model's end
+                Line(34150, 3481, 36906, 3481), Line(34150, 3700, 36906, 3700)
+            };
+            CadHostPlausibilityResult r = CadHostPlausibility.CheckEnd(
+                new CadPoint(34110, 3591), new CadPoint(34150, 3591), new CadVector(-1, 0), 109.55, lines, 2.0, 1.0);
+
+            Assert.False(r.NearerWallDrawn);
+            Assert.False(r.Jamb);
+        }
+
+        [Fact]
+        public void An_end_where_the_same_wall_resumes_past_the_symbol_is_a_jamb()
+        {
+            var lines = new List<CadSegment>
+            {
+                Line(34150, 3481, 34150, 3700),
+                Line(34150, 3481, 36906, 3481), Line(34150, 3700, 36906, 3700),
+                Line(33250, 3481, 31000, 3481), Line(33250, 3700, 31000, 3700)   // resumes 900 mm on
+            };
+            CadHostPlausibilityResult r = CadHostPlausibility.CheckEnd(
+                new CadPoint(34110, 3591), new CadPoint(34150, 3591), new CadVector(-1, 0), 109.55, lines, 2.0, 1.0);
+
+            Assert.True(r.Jamb);
+        }
+
         [Fact]
         public void A_symbol_drawn_against_an_unconverted_wall_is_not_plausibly_on_the_converted_one()
         {

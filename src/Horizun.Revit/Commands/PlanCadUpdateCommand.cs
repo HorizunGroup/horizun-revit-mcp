@@ -360,9 +360,15 @@ namespace Horizun.Revit.Commands
                         !string.Equals(hosted.HostedOn, "wall", StringComparison.OrdinalIgnoreCase)) continue;
                     if (walls == null) walls = CadHostResolver.Walls(doc);
                     CadPoint at = hosted.Geometry[0];
-                    CadHostMatch match = CadHostResolver.Nearest(
-                        walls, CadHostResolver.PointFromMm(at.X, at.Y, at.Z), set.HostSearchMm);
+                    XYZ atFeet = CadHostResolver.PointFromMm(at.X, at.Y, at.Z);
+                    CadHostMatch match = CadHostResolver.Nearest(walls, atFeet, set.HostSearchMm);
                     if (match.Wall != null) hostByCandidate[hosted.SemanticId] = Rid.Value(match.Wall.Id);
+                    else if (set.Rules.FirstOrDefault(r => r.Id == hosted.RuleId)?.HostFaces?.Contains("end") == true)
+                    {
+                        // THE SAME ANSWER THE CONVERSION GAVE, for a rule that allows wall ends.
+                        CadEndMatch end = CadHostResolver.NearestEnd(walls, atFeet, set.HostSearchMm);
+                        if (end != null) hostByCandidate[hosted.SemanticId] = Rid.Value(end.Wall.Id);
+                    }
                 }
             }
             catch { }
