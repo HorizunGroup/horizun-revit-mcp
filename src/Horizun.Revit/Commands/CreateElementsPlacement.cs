@@ -431,12 +431,27 @@ namespace Horizun.Revit.Commands
             if (pf.FaceNormal.Z > 0.99) return "top";
             if (pf.FaceNormal.Z < -0.99) return "bottom";
             var wall = host as Wall;
-            if (wall != null)
+            Curve curve = (wall?.Location as LocationCurve)?.Curve;
+            if (wall != null && curve != null)
             {
-                string stable;
-                try { stable = face.ConvertToStableRepresentation(doc); } catch { return "unresolved"; }
-                if (EndFaces(wall).Any(e => e.Item2.ConvertToStableRepresentation(doc) == stable)) return "end";
-                return "side";
+                // A FACE ALONG THE WALL'S OWN DIRECTION CLOSES AN END. MEASURED (campaign 5): after a
+                // wall was joined to that end, the instance kept the SAME stable reference, which now
+                // named the buried joint face; the device stayed where it was, inside the other wall.
+                XYZ n = pf.FaceNormal;
+                XYZ t0 = curve.ComputeDerivatives(0, true).BasisX.Normalize();
+                XYZ t1 = curve.ComputeDerivatives(1, true).BasisX.Normalize();
+                int end = n.DotProduct(t0) < -0.99 ? 0 : n.DotProduct(t1) > 0.99 ? 1 : -1;
+                if (end < 0) return "side";
+                bool joined = false;
+                try
+                {
+                    foreach (Element e in ((LocationCurve)wall.Location).get_ElementsAtJoin(end))
+                        if (e != null && e.Id != wall.Id) { joined = true; break; }
+                }
+                catch { }
+                if (joined) return "end_joined";
+                XYZ at = curve.GetEndPoint(end);
+                return Math.Abs((pf.Origin - at).DotProduct(end == 0 ? t0 : t1)) < 0.05 ? "end" : "end_displaced";
             }
             return "vertical";
         }

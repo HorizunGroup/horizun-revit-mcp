@@ -965,6 +965,20 @@ namespace Horizun.Revit.Commands
                             string kind = CreateElementsPlacement.FaceKind(element.Document, fi.Host, face);
                             o["host_face_kind"] = kind;
                             o["host_face_resolves"] = kind != "unresolved";
+                            // ON ITS FACE, OR NOT: the instance's point measured against the face it names.
+                            try
+                            {
+                                var hf = element.Document.GetElement(face)?.GetGeometryObjectFromReference(face) as Face;
+                                XYZ at = (fi.Location as LocationPoint)?.Point;
+                                IntersectionResult pr = hf != null && at != null ? hf.Project(at) : null;
+                                if (pr != null)
+                                {
+                                    o["host_face_distance_mm"] = Math.Round(pr.Distance * 304.8, 1);
+                                    o["on_host_face"] = pr.Distance * 304.8 <= 1.0 && hf.IsInside(pr.UVPoint);
+                                }
+                                else if (hf != null) o["on_host_face"] = false;
+                            }
+                            catch { }
                         }
                     }
                     catch { }
