@@ -1470,7 +1470,7 @@ namespace Horizun.Contracts
                     "nowhere, and passes every other check this bridge has. Read-only: no transaction is opened.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""instance_id"", ""requirement_set""],
+  ""required"": [""requirement_set""],
   ""properties"": {
     ""instance_id"": { ""type"": ""integer"",
       ""description"": ""Which CAD instance to read. List them with horizun_query_cad mode='instances'; there is no default drawing."" },
@@ -1493,6 +1493,8 @@ namespace Horizun.Contracts
     ""max_primitives"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 500000, ""default"": 200000 },
     ""max_per_batch"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200, ""default"": 100,
       ""description"": ""How many elements per create_elements call in the emitted request."" },
+    ""catalog_check_only"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""Check EVERY rule of the requirement set against this model at once - type loaded, family placement compatible with the rule's hosting, storey present, category, mounting height declared or not, listed wall types present and distinct - and return that table. No drawing is read and nothing is written; instance_id is not needed."" },
     ""alternative_wall_types"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""maxItems"": 50,
       ""description"": ""Wall type names to MEASURE against every interpreted thickness in catalog_preflight, and never to use: a type that would fit a withdrawn wall is a proposal for a person, not a choice this call makes."" },
     ""withdrawn_walls"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""maxItems"": 2000,

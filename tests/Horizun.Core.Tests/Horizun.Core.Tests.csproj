@@ -285,6 +285,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSplitRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadCatalogPreflight.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadCatalogCheck.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadPlacementRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateLedger.cs" />
     <!-- The RETIRED v1 provenance schema, written down as data. The store reads

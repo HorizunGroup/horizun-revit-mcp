@@ -80,6 +80,16 @@ namespace Horizun.Revit.Commands
             try { set = CadRequirementSet.Load(setJson); }
             catch (CadRequirementSetException ex) { return CommandResult.Fail("requirement_set refused: " + ex.Message); }
 
+            // ---- THE CATALOGUE ONLY: every rule against this model, nothing read, nothing written ----
+            if (request.Value<bool?>("catalog_check_only") == true)
+            {
+                var levelNames = new HashSet<string>(new FilteredElementCollector(doc).OfClass(typeof(Level))
+                    .Cast<Level>().Select(SafeName), StringComparer.Ordinal);
+                JObject check = CadCatalogCheck.Check(set, name => TypeFactsOf(doc, name), levelNames);
+                check["document"] = SafeTitle(doc);
+                return CommandResult.Ok(check);
+            }
+
             // ---- the drawing ------------------------------------------------------
             long instanceId = request.Value<long?>("instance_id") ?? -1;
             if (instanceId < 0)
@@ -1686,6 +1696,30 @@ namespace Horizun.Revit.Commands
                     return false;
                 default: return false;
             }
+        }
+
+        /// <summary>What the model says about a type name, for the catalogue check.</summary>
+        private static CadTypeFacts TypeFactsOf(Document doc, string name)
+        {
+            ElementType et = FindType(doc, name);
+            if (et == null) return new CadTypeFacts { Found = false };
+            var facts = new CadTypeFacts { Found = true };
+            try
+            {
+                if (et.Category != null)
+                    facts.Category = ((BuiltInCategory)(int)Rid.Value(et.Category.Id)).ToString();
+            }
+            catch { }
+            if (et is FamilySymbol fs)
+            {
+                try { facts.PlacementType = fs.Family.FamilyPlacementType.ToString(); } catch { }
+            }
+            if (et is WallType wt)
+            {
+                facts.IsWallType = true;
+                try { facts.WidthMm = wt.Width * 304.8; } catch { }
+            }
+            return facts;
         }
 
         private static ElementType FindType(Document doc, string name)
