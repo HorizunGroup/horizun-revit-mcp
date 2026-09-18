@@ -19,6 +19,10 @@
 //   "report"  every pier found is listed with its measures; nothing changes.
 //   "extend"  the wall is extended through the pier to its end cap, at the WALL's
 //             thickness (the type does not change), and the assumption is recorded.
+//             MEASURED (914, with finish "follow"): the finish step then reads the
+//             pier's own faces as that stretch's outer lines, so the pier becomes a
+//             162 mm stretch 254 mm wide beside the 219 mm wall. Both are readings
+//             of the drawing; which one the project wants is part of D6.
 //
 // A pier is recognised only when ALL of this holds, and each refusal is reported:
 //   - two face lines parallel to the wall, one on each side of it, starting at the
@@ -67,10 +71,14 @@ namespace Horizun.Revit.Core
                     {
                         double cap = (double)found["cap_along_mm"];
                         if (side < 0) from = cap; else to = cap;
+                        found["means"] = (string)found["means"] + " The wall is extended to it at its own thickness; " +
+                                         "the type is not changed (geometry.end_piers 'extend'). Under finish 'follow' " +
+                                         "the pier's drawn faces may then make that stretch a wall of its own width.";
                         notes.Add((string)found["means"]);
                     }
                     else if (ok)
-                        found["means"] = (string)found["means"] + " Not extended: geometry.end_piers is 'report'.";
+                        found["means"] = (string)found["means"] + " Not extended: geometry.end_piers is 'report'; " +
+                                         "under 'extend' the wall would reach its end cap at its own thickness.";
                     evidence?.Add(found);
                 }
                 if (Math.Abs(from - b.From) < 0.5 && Math.Abs(to - b.To) < 0.5)
@@ -165,9 +173,8 @@ namespace Horizun.Revit.Core
                 }
             }
             ev["means"] = "a pier " + F(thickness) + " mm thick and " + F(side * (cap.Value - end)) +
-                          " mm long closes this wall's " + (side < 0 ? "start" : "end") + ": the wall (" +
-                          F(b.ThicknessMm) + " mm) is extended to the pier's end cap at its own thickness; the type " +
-                          "is not changed (geometry.end_piers 'extend').";
+                          " mm long closes this wall's " + (side < 0 ? "start" : "end") + " (the wall is " +
+                          F(b.ThicknessMm) + " mm).";
             return ev;
         }
 
