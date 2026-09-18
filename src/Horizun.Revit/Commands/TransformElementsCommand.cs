@@ -153,6 +153,7 @@ namespace Horizun.Revit.Commands
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: transform elements";
             using (var tx = new Transaction(doc, txName))
             {
+                RevitErrorRecorder revitSaid = RevitErrorRecorder.On(tx);
                 tx.Start();
                 try
                 {
@@ -175,7 +176,7 @@ namespace Horizun.Revit.Commands
                 {
                     bool attempted = false; string rb = PlanFailure.NotAttempted;
                     if (tx.GetStatus() == TransactionStatus.Started) { attempted = true; rb = Guard.RollBack(tx).StatusName; }
-                    return CommandResult.Fail("Atomic transform failed: " + ex.Message + ". " +
+                    return CommandResult.Fail("Atomic transform failed: " + ex.Message + revitSaid.Said() + " " +
                         PlanFailure.SingleTransactionOutcome(attempted, rb, "nothing was transformed"));
                 }
             }
