@@ -393,6 +393,11 @@ namespace Horizun.Revit.Commands
                         // family cannot live on this host fails Revit's own placement,
                         // atomically, with the batch rolled back.
                         p.InstanceHost = Optional<Element>(doc, item, "host_id");
+                        string hostFace = item.Value<string>("host_face");
+                        if (hostFace != null && hostFace != "side" && hostFace != "end")
+                            throw new ArgumentException("host_face must be 'side' or 'end'");
+                        if (hostFace == "end" && p.InstanceHost == null)
+                            throw new ArgumentException("host_face 'end' needs host_id: the wall whose end the device is on");
                         p.RotationRadians = (item.Value<double?>("rotation_degrees") ?? 0) * System.Math.PI / 180.0;
                         StructuralType parsed;
                         if (!Enum.TryParse(item.Value<string>("structural_type") ?? "NonStructural", true, out parsed) ||
@@ -1231,7 +1236,8 @@ namespace Horizun.Revit.Commands
                             doc, p.Host, p.Start, p.Input.Value<double?>("rotation_degrees") * Math.PI / 180.0,
                             p.Input.Value<double?>("face_allowance_mm") ?? 300.0,
                             p.Input.Value<double?>("facing_degrees") * Math.PI / 180.0,
-                            p.Input.Value<double?>("side_dead_band_mm"));
+                            p.Input.Value<double?>("side_dead_band_mm"),
+                            p.Input.Value<string>("host_face"));
                         if (face.Refusal != null) throw new InvalidOperationException(face.Refusal);
 
                         placed = doc.Create.NewFamilyInstance(face.Face, face.Point, face.ReferenceDirection, symbol);
@@ -1276,6 +1282,11 @@ namespace Horizun.Revit.Commands
                             throw new InvalidOperationException(
                                 "this family is hosted: Revit will not place it without a host element, and no " +
                                 "host was named for this row.");
+                        if (string.Equals(p.Input.Value<string>("host_face"), "end", StringComparison.Ordinal))
+                            throw new InvalidOperationException(
+                                "end_face_needs_a_face_based_family: this family is wall based - Revit places it on " +
+                                "the wall's LINE, between its ends, and it cannot stand on a terminal face. Use a " +
+                                "work-plane (face) based family for a device on the end of a wall.");
                         // A WALL-BASED FAMILY STANDS ON ITS WALL'S LINE. MEASURED (a test
                         // family from Revit's "Electrical Fixture wall based" template):
                         // asked for the drawn point 98.8 mm off the wall, Revit put the

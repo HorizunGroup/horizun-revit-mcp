@@ -5753,7 +5753,7 @@ namespace Horizun.Contracts
             // drawing distinguishes a left-handed fixture from a right-handed one
             // that way. Applied with flipHand() and verified by re-reading
             // HandFlipped; a family that cannot be flipped refuses the row.
-            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm" },
+            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face" },
             ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees" },
             ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type" },
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter" },
@@ -5792,6 +5792,15 @@ namespace Horizun.Contracts
                 ["description"] = "How far a work-plane based family may sit from the face it is placed on. A " +
                                   "SEARCH-and-project distance, separate from the tolerance that decides which " +
                                   "host it belongs to and from the exactness its final position is checked with."
+            };
+            props["host_face"] = new JObject
+            {
+                ["type"] = "string",
+                ["enum"] = new JArray("side", "end"),
+                ["description"] = "family_instance with host_id on a WALL: 'side' (default) places on the face the " +
+                                  "point is in front of; 'end' places a work-plane based device on the wall's TERMINAL " +
+                                  "face at the end nearer the point, found by geometry. A joined end, a point outside " +
+                                  "the end face and a wall-based family are refused by name."
             };
             props["facing_degrees"] = new JObject
             {

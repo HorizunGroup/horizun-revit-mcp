@@ -956,7 +956,16 @@ namespace Horizun.Revit.Commands
                     try
                     {
                         Reference face = fi.HostFace;
-                        if (face != null) o["host_face"] = face.ConvertToStableRepresentation(element.Document);
+                        if (face != null)
+                        {
+                            o["host_face"] = face.ConvertToStableRepresentation(element.Document);
+                            // WHICH FACE, AND WHETHER IT IS STILL THERE. A face-hosted instance keeps its reference
+                            // after its host is edited; the reference may no longer resolve to a face, or name
+                            // another kind of face. Read, never assumed.
+                            string kind = CreateElementsPlacement.FaceKind(element.Document, fi.Host, face);
+                            o["host_face_kind"] = kind;
+                            o["host_face_resolves"] = kind != "unresolved";
+                        }
                     }
                     catch { }
                     return o;

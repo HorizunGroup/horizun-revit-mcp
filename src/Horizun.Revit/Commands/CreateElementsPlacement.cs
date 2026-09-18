@@ -103,8 +103,14 @@ namespace Horizun.Revit.Commands
         /// </summary>
         public static CadFaceChoice ChooseFace(Document doc, Element host, XYZ asked,
                                                double? rotationRadians, double allowanceMm,
-                                               double? facingRadians = null, double? sideDeadBandMm = null)
+                                               double? facingRadians = null, double? sideDeadBandMm = null,
+                                               string faceKind = null)
         {
+            // THE END OF A WALL, ONLY WHEN IT IS ASKED FOR BY NAME. A symbol beyond a wall's end is
+            // usually a symbol on the NEXT wall; taking the end face by default would host it on the
+            // wrong one. So the terminal face is a separate, explicit route.
+            if (string.Equals(faceKind, "end", StringComparison.Ordinal))
+                return ChooseEndFace(doc, host, asked, rotationRadians, allowanceMm);
             // THE ROTATION IS NOT A SIDE when the caller says so (CadDeviceSide):
             // inside the wall, only a declared facing or the centreline decides.
             bool sideRule = sideDeadBandMm.HasValue;
@@ -370,6 +376,183 @@ namespace Horizun.Revit.Commands
                                                          Math.Round(inPlane.Normalize().Z, 4));
 
             choice.Face = bestReference;
+            choice.Point = bestProjection.XYZPoint;
+            choice.ReferenceDirection = inPlane.Normalize();
+            return choice;
+        }
+
+        /// <summary>
+        /// The terminal faces of a wall - planar, vertical, their normal along the wall's own
+        /// direction - read from its geometry with references, never by an index into the faces.
+        /// Item3 is the end they close: 0 at the location curve's start, 1 at its end.
+        /// </summary>
+        public static List<Tuple<PlanarFace, Reference, int>> EndFaces(Wall wall)
+        {
+            var found = new List<Tuple<PlanarFace, Reference, int>>();
+            Curve curve = (wall?.Location as LocationCurve)?.Curve;
+            if (curve == null) return found;
+            var options = new Options { ComputeReferences = true, IncludeNonVisibleObjects = false };
+            GeometryElement geometry;
+            try { geometry = wall.get_Geometry(options); } catch { return found; }
+            if (geometry == null) return found;
+            XYZ start = curve.GetEndPoint(0), end = curve.GetEndPoint(1);
+            XYZ tangent0 = curve.ComputeDerivatives(0, true).BasisX.Normalize();
+            XYZ tangent1 = curve.ComputeDerivatives(1, true).BasisX.Normalize();
+            foreach (GeometryObject g in geometry)
+            {
+                var solid = g as Solid;
+                if (solid == null || solid.Faces.Size == 0) continue;
+                foreach (Face f in solid.Faces)
+                {
+                    var pf = f as PlanarFace;
+                    if (pf == null || pf.Reference == null) continue;
+                    XYZ n = pf.FaceNormal;
+                    if (Math.Abs(n.Z) > 0.01) continue;
+                    // a face closing the start looks backwards along the start tangent and lies at the start
+                    if (n.DotProduct(tangent0) < -0.99 && Math.Abs((pf.Origin - start).DotProduct(tangent0)) < 0.05)
+                        found.Add(Tuple.Create(pf, pf.Reference, 0));
+                    else if (n.DotProduct(tangent1) > 0.99 && Math.Abs((pf.Origin - end).DotProduct(tangent1)) < 0.05)
+                        found.Add(Tuple.Create(pf, pf.Reference, 1));
+                }
+            }
+            return found;
+        }
+
+        /// <summary>What kind of face of its host a reference names: side, end, top, bottom, or why not.</summary>
+        public static string FaceKind(Document doc, Element host, Reference face)
+        {
+            if (face == null) return "none";
+            Face f;
+            try { f = doc.GetElement(face)?.GetGeometryObjectFromReference(face) as Face; }
+            catch { return "unresolved"; }
+            if (f == null) return "unresolved";
+            var pf = f as PlanarFace;
+            if (pf == null) return "curved";
+            if (pf.FaceNormal.Z > 0.99) return "top";
+            if (pf.FaceNormal.Z < -0.99) return "bottom";
+            var wall = host as Wall;
+            if (wall != null)
+            {
+                string stable;
+                try { stable = face.ConvertToStableRepresentation(doc); } catch { return "unresolved"; }
+                if (EndFaces(wall).Any(e => e.Item2.ConvertToStableRepresentation(doc) == stable)) return "end";
+                return "side";
+            }
+            return "vertical";
+        }
+
+        /// <summary>
+        /// A device on the TERMINAL face of a wall. The face is found by geometry; the point must
+        /// project inside it and stand in front of it; a joined end has no exposed face and is
+        /// refused with the wall it is joined to.
+        /// </summary>
+        private static CadFaceChoice ChooseEndFace(Document doc, Element host, XYZ asked, double? rotationRadians,
+                                                   double allowanceMm)
+        {
+            var choice = new CadFaceChoice();
+            var evidence = new JObject { ["face_kind_asked"] = "end" };
+            choice.Evidence = evidence;
+            var wall = host as Wall;
+            var lc = wall?.Location as LocationCurve;
+            if (wall == null || lc == null)
+            {
+                choice.Refusal = "end_face_needs_a_wall: " + Describe(host) + " is not a wall with a location line, " +
+                                 "so it has no terminal face to place on.";
+                return choice;
+            }
+            // WHICH END: the one the point is nearer to along the wall.
+            IntersectionResult onLine = null;
+            try { onLine = lc.Curve.Project(asked); } catch { }
+            double param = 0.5;
+            try { if (onLine != null) param = lc.Curve.ComputeNormalizedParameter(onLine.Parameter); } catch { }
+            int endIndex = param >= 0.5 ? 1 : 0;
+            evidence["wall_end"] = endIndex;
+
+            var joined = new List<long>();
+            try
+            {
+                foreach (Element e in lc.get_ElementsAtJoin(endIndex))
+                    if (e != null && e.Id != wall.Id) joined.Add(Rid.Value(e.Id));
+            }
+            catch { }
+            if (joined.Count > 0)
+            {
+                evidence["joined_at_this_end"] = new JArray(joined);
+                choice.Refusal = "wall_end_is_joined: end " + endIndex + " of " + Describe(wall) + " is joined to " +
+                                 string.Join(", ", joined) + ", so it has no exposed terminal face - a device there " +
+                                 "stands on the other wall. Place it on that wall's side face, or unjoin the end.";
+                return choice;
+            }
+
+            var ends = EndFaces(wall).Where(e => e.Item3 == endIndex).ToList();
+            var rows = new JArray();
+            Tuple<PlanarFace, Reference, int> best = null;
+            IntersectionResult bestProjection = null;
+            double bestDistance = double.MaxValue;
+            foreach (var e in ends)
+            {
+                IntersectionResult projection;
+                try { projection = e.Item1.Project(asked); } catch { projection = null; }
+                if (projection == null)
+                {
+                    rows.Add(new JObject { ["rejected"] = "the point does not project onto this end face" });
+                    continue;
+                }
+                bool inside;
+                try { inside = e.Item1.IsInside(projection.UVPoint); } catch { inside = false; }
+                double outward = e.Item1.FaceNormal.DotProduct(asked - projection.XYZPoint) * 304.8;
+                double distanceMm = projection.Distance * 304.8;
+                rows.Add(new JObject
+                {
+                    ["distance_mm"] = Math.Round(distanceMm, 1),
+                    ["point_is_within_the_face"] = inside,
+                    ["in_front_mm"] = Math.Round(outward, 1),
+                    ["stable_reference"] = e.Item2.ConvertToStableRepresentation(doc)
+                });
+                if (!inside || outward < -1.0) continue;
+                if (distanceMm < bestDistance) { bestDistance = distanceMm; best = e; bestProjection = projection; }
+            }
+            evidence["end_faces_considered"] = rows;
+            if (ends.Count == 0)
+            {
+                choice.Refusal = "no_end_face: " + Describe(wall) + " exposes no planar terminal face at end " + endIndex +
+                                 " (a curved or cut end). Nothing was placed.";
+                return choice;
+            }
+            if (best == null)
+            {
+                choice.Refusal = "no_face_carries_this_point: the point is not in front of, and within the outline " +
+                                 "of, the terminal face at end " + endIndex + " of " + Describe(wall) + ". Nothing was placed.";
+                return choice;
+            }
+            if (bestDistance > allowanceMm)
+            {
+                choice.Refusal = "face_too_far: the terminal face of " + Describe(wall) + " is " +
+                                 bestDistance.ToString("0.#", CultureInfo.InvariantCulture) + " mm from the point and " +
+                                 allowanceMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm is the most allowed.";
+                return choice;
+            }
+
+            XYZ normal = best.Item1.FaceNormal;
+            XYZ wanted = rotationRadians.HasValue
+                ? new XYZ(Math.Cos(rotationRadians.Value), Math.Sin(rotationRadians.Value), 0)
+                : XYZ.BasisX;
+            XYZ inPlane = wanted - normal.Multiply(wanted.DotProduct(normal));
+            string directionFrom = "the symbol's own rotation, projected into the end face";
+            if (inPlane.GetLength() < 1e-6)
+            {
+                inPlane = normal.CrossProduct(XYZ.BasisZ);
+                directionFrom = "the end face itself: the symbol's rotation points along the face normal";
+            }
+            evidence["chosen_side"] = "end " + endIndex;
+            evidence["side_chosen_by"] = "asked for by name (host_face 'end'); the end nearer the point along the wall";
+            evidence["distance_mm"] = Math.Round(bestDistance, 1);
+            evidence["placed_at_mm"] = new JArray(Math.Round(bestProjection.XYZPoint.X * 304.8, 1),
+                                                  Math.Round(bestProjection.XYZPoint.Y * 304.8, 1),
+                                                  Math.Round(bestProjection.XYZPoint.Z * 304.8, 1));
+            evidence["face_normal"] = new JArray(Math.Round(normal.X, 4), Math.Round(normal.Y, 4), Math.Round(normal.Z, 4));
+            evidence["reference_direction_from"] = directionFrom;
+            choice.Face = best.Item2;
             choice.Point = bestProjection.XYZPoint;
             choice.ReferenceDirection = inPlane.Normalize();
             return choice;
