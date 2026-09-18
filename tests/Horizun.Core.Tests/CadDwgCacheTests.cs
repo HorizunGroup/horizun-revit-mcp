@@ -248,6 +248,29 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_set_identity_is_not_changed_by_another_folders_reading_of_the_same_host()
+        {
+            // MEASURED (campaign 5): the ORIGINAL set's identity took a reference name from a fixture's
+            // later reading (its A-109 referenced one more file) as "(absent)".
+            string o = Set(Path.Combine(_root, "id-o"), "unit.dwg", "host");
+            Set(Path.Combine(_root, "id-o"), "background.dwg", "v1");
+            string f = Set(Path.Combine(_root, "id-f"), "unit.dwg", "host");
+            Set(Path.Combine(_root, "id-f"), "background.dwg", "v1-edited");
+            Set(Path.Combine(_root, "id-f"), "nest.dwg", "only in the fixture");
+            string sha = CadDwgCache.Sha256(o);
+
+            CadDwgCache.Store(CadDwgCache.Lookup(o, sha, "e", "o"), File_("io.tsv", "H\tdone\t1\n"),
+                              ReadingWithAll("background", "background.dwg"), o, 1.0);
+            string before = CadDwgCache.SourceSetSha256(o, sha);
+            System.Threading.Thread.Sleep(20);
+            CadDwgCache.Store(CadDwgCache.Lookup(f, sha, "e", "o"), File_("if.tsv", "H\tdone\t2\n"),
+                              ReadingWithAll("background", "background.dwg", "nest", "nest.dwg"), f, 1.0);
+
+            Assert.Equal(before, CadDwgCache.SourceSetSha256(o, sha));
+            Assert.NotEqual(before, CadDwgCache.SourceSetSha256(f, sha));
+        }
+
+        [Fact]
         public void Alternating_between_two_reference_sets_reads_each_once()
         {
             // MEASURED (campaign 4): original and revised copy share the host bytes; each switch

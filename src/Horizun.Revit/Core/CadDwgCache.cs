@@ -422,11 +422,23 @@ namespace Horizun.Revit.Core
                 return null;
             string here = null;
             try { here = Path.GetDirectoryName(dwgPath); } catch { }
+            // THE READING OF THIS FOLDER, not the newest reading of these host bytes anywhere. MEASURED
+            // (campaign 5): after a fixture whose copy of A-109 references one more file was read, the
+            // ORIGINAL set's identity took that file's name as "(absent)" and changed with no file of the
+            // original changing. A reading whose references all resolve and hash as recorded FROM HERE is
+            // the one that describes this folder; only when none does is the newest one used.
+            var sides = new List<JObject>();
             foreach (string sidecar in Directory.GetFiles(Root, "*.json").OrderByDescending(File.GetLastWriteTimeUtc))
             {
-                JObject side;
-                try { side = JObject.Parse(File.ReadAllText(sidecar)); } catch { continue; }
-                if (!string.Equals((string)side["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
+                JObject candidate;
+                try { candidate = JObject.Parse(File.ReadAllText(sidecar)); } catch { continue; }
+                if (!string.Equals((string)candidate["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
+                sides.Add(candidate);
+            }
+            JObject valid = sides.FirstOrDefault(x => (x["dependencies"] as JArray)?.Count > 0 &&
+                                                      ChangedDependencies(x, here).Count == 0);
+            foreach (JObject side in valid != null ? new[] { valid } : sides.Take(1).ToArray())
+            {
                 var parts = new List<string>();
                 var recorded = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>().ToList();
                 Dictionary<string, string> resolvedHere = ResolveAll(here, recorded.Select(d => new CadIrExternalReference
