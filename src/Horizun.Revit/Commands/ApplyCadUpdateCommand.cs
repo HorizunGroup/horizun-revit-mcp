@@ -768,6 +768,21 @@ namespace Horizun.Revit.Commands
         /// verified width and height on the duct says nothing about any of it. MEASURED: two legs of an
         /// elbow resized one after the other kept the elbow and gained a transition each.
         /// </summary>
+        private static bool BehindInserted(Element fitting, IEnumerable<long> inserted)
+        {
+            var ids = new HashSet<long>(inserted);
+            try
+            {
+                var cm = (fitting as FamilyInstance)?.MEPModel?.ConnectorManager;
+                if (cm == null) return false;
+                foreach (Connector c in cm.Connectors)
+                    foreach (Connector o in c.AllRefs)
+                        if (o.Owner != null && ids.Contains(Rid.Value(o.Owner.Id))) return true;
+            }
+            catch { }
+            return false;
+        }
+
         private static JArray FittingsAfterResize(Document doc, JArray actions)
         {
             var report = new JArray();
@@ -810,7 +825,8 @@ namespace Horizun.Revit.Commands
                         rows.Add(new JObject
                         {
                             ["element_id"] = id,
-                            ["state"] = f == null ? "gone" : !was.Contains(id) ? "inserted_by_revit" : now.Contains(id) ? "still_attached" : "detached",
+                            ["state"] = f == null ? "gone" : !was.Contains(id) ? "inserted_by_revit" : now.Contains(id) ? "still_attached"
+                                      : BehindInserted(f, now.Where(n => !was.Contains(n))) ? "kept_behind_inserted_fitting" : "detached",
                             ["name"] = f == null ? null : (f as FamilyInstance)?.Symbol?.FamilyName + ": " + f.Name,
                             ["connector_sizes_mm"] = sizes
                         });
