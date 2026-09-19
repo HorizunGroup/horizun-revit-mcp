@@ -444,9 +444,69 @@ namespace Horizun.Revit.Commands
         /// or all of them join ONE fitting of the proposed kind), existing_fitting_differs, or
         /// occupied_by_other.
         /// </summary>
+        /// <summary>Every physical neighbour of an element, over ALL its connectors - a fitting trims the
+        /// run it joins, so the joining end is no longer where the drawing put the junction.</summary>
+        private static List<Element> AllNeighbours(Element e)
+        {
+            var list = new List<Element>();
+            ConnectorManager m = MepFacts.ManagerOf(e);
+            if (m == null) return list;
+            foreach (Connector c in MepFacts.Ordered(m))
+                foreach (Element n in Neighbours(c))
+                    if (!list.Any(x => x.Id == n.Id)) list.Add(n);
+            return list;
+        }
+
+        /// <summary>The ONE fitting every member is joined to, when there is exactly one; else null.</summary>
+        private static FamilyInstance CommonFitting(Junction j)
+        {
+            List<Element> common = null;
+            foreach (Element e in j.Elements)
+            {
+                var fits = AllNeighbours(e).Where(IsFitting).ToList();
+                common = common == null ? fits : common.Where(x => fits.Any(f => f.Id == x.Id)).ToList();
+            }
+            return common != null && common.Count == 1 ? common[0] as FamilyInstance : null;
+        }
+
+        private static string PartOf(FamilyInstance f)
+        {
+            try { return ((PartType)(f.Symbol.Family.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)?.AsInteger() ?? -1)).ToString(); }
+            catch { return ""; }
+        }
+
         private static JObject Existing(Junction j, double tolerance)
         {
             if (j.Elements.Count < 2) return null;
+            // A FITTING THAT ALREADY JOINS EVERY MEMBER - found through the members' connectors, not by
+            // where their ends are. MEASURED: after an elbow is placed the runs' ends move by its radius,
+            // so looking for a connector at the drawing's point finds nothing and a repeat rehearsed a
+            // second elbow.
+            if (j.Fitting != "direct")
+            {
+                FamilyInstance shared = CommonFitting(j);
+                if (shared != null)
+                {
+                    string part = PartOf(shared);
+                    bool same = string.Equals(part, j.Fitting, StringComparison.OrdinalIgnoreCase);
+                    return new JObject
+                    {
+                        ["state"] = same ? "already_connected" : "existing_fitting_differs",
+                        ["fitting_id"] = Rid.Value(shared.Id),
+                        ["fitting_part_type"] = part,
+                        ["says"] = same
+                            ? "one " + part.ToLowerInvariant() + " already joins every member of this junction; nothing was sent."
+                            : "a " + part + " joins these members where the drawing proposes a " + j.Fitting +
+                              ". It is left as it is and reported - replacing it is a decision, not a repair."
+                    };
+                }
+            }
+            else if (AllNeighbours(j.Elements[0]).Any(n => n.Id == j.Elements[1].Id))
+                return new JObject
+                {
+                    ["state"] = "already_connected",
+                    ["says"] = "the two runs are joined to each other in the model already; nothing was sent."
+                };
             var picks = j.Elements.Select(e => MepConnect.Nearest(e, j.At, tolerance)).ToList();
             if (picks.Any(p => !p.Found || p.Connector == null)) return null;
             var conns = picks.Select(p => p.Connector).ToList();
@@ -505,21 +565,24 @@ namespace Horizun.Revit.Commands
         /// <summary>The members' connectors at the junction, re-read after the operation.</summary>
         private static JObject Reread(Junction j, double tolerance)
         {
-            var arr = new JArray();
-            bool all = true;
-            foreach (Element e in j.Elements)
+            // Through the members' connectors: which fitting joins them all (or, for a direct join,
+            // whether they touch), not where their ends now are.
+            FamilyInstance shared = j.Fitting == "direct" ? null : CommonFitting(j);
+            bool joined = j.Fitting == "direct"
+                ? j.Elements.Count == 2 && AllNeighbours(j.Elements[0]).Any(n => n.Id == j.Elements[1].Id)
+                : shared != null;
+            var members = new JArray(j.Elements.Select(e => (JToken)new JObject
             {
-                MepConnectorPick p = MepConnect.Nearest(e, j.At, tolerance);
-                if (!p.Found || p.Connector == null) { all = false; arr.Add(new JObject { ["element_id"] = Rid.Value(e.Id), ["found"] = false }); continue; }
-                bool on = p.Connector.IsConnected;
-                all &= on;
-                arr.Add(new JObject
-                {
-                    ["element_id"] = Rid.Value(e.Id), ["connector"] = p.ConnectorId, ["connected"] = on,
-                    ["to"] = new JArray(Neighbours(p.Connector).Select(x => (JToken)Rid.Value(x.Id)))
-                });
-            }
-            return new JObject { ["members"] = arr, ["all_connected"] = all };
+                ["element_id"] = Rid.Value(e.Id),
+                ["joined_to"] = new JArray(AllNeighbours(e).Select(n => (JToken)Rid.Value(n.Id)))
+            }));
+            return new JObject
+            {
+                ["members"] = members,
+                ["fitting_id"] = shared == null ? null : (JToken)Rid.Value(shared.Id),
+                ["fitting_part_type"] = shared == null ? null : PartOf(shared),
+                ["all_connected"] = joined
+            };
         }
 
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
