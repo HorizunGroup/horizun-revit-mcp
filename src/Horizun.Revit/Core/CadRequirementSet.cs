@@ -232,6 +232,8 @@ namespace Horizun.Revit.Core
         /// The network reading honours the same flag, or the two would name runs differently.
         /// </summary>
         public bool MergeCollinear = true;
+        /// <summary>single_lines: read the edges of a CLOSED polyline as runs too. Off: a closed ring is a boundary, not a route.</summary>
+        public bool IncludeClosedPolylines;
         public double? MaxLengthMm;
         public double? MinAreaMm2;
         public double? MaxAreaMm2;
@@ -894,7 +896,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "merge_collinear", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
+            "same_layer_only", "bridge_openings_mm", "merge_collinear", "include_closed_polylines", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -1945,6 +1947,7 @@ namespace Horizun.Revit.Core
                     throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.merge_collinear must be true or false.");
                 c.MergeCollinear = (bool)mergeToken;
             }
+            c.IncludeClosedPolylines = g.Value<bool?>("include_closed_polylines") ?? false;
             c.MaxLengthMm = g.Value<double?>("max_length_mm");
             c.MinAreaMm2 = g.Value<double?>("min_area_mm2");
             c.MaxAreaMm2 = g.Value<double?>("max_area_mm2");

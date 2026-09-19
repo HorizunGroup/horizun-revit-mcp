@@ -1970,6 +1970,10 @@ namespace Horizun.Revit.Core
                 CadSegment s = merged[i];
                 if (g.MinLengthMm != null && s.PlanLength < g.MinLengthMm.Value) continue;
                 if (g.MaxLengthMm != null && s.PlanLength > g.MaxLengthMm.Value) continue;
+                // A CLOSED RING IS NOT A RUN: its edges stay unclaimed (and are reported as such) unless the rule
+                // declares include_closed_polylines. Four ducts in a box is what reading it as lines builds.
+                if (!g.IncludeClosedPolylines && s.SourceCurveId != null &&
+                    s.SourceCurveId.StartsWith("ring:", StringComparison.Ordinal)) continue;
                 if (i < indices.Count) consumed.Add(indices[i]);
 
                 var c = NewCandidate(rule, set, sourceHash, s.Layer,

@@ -186,6 +186,30 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_closed_ring_on_the_duct_layer_is_not_four_ducts_unless_the_rule_says_so()
+        {
+            // MEASURED on a real plan (campaign 7): a 24 x 24 in square drawn on the duct layer.
+            var ring = new List<CadSegment>
+            {
+                new CadSegment(new CadPoint(0, 0), new CadPoint(610, 0), "M-DUCT", CadCurveKind.Polyline, 0, "ring:7"),
+                new CadSegment(new CadPoint(610, 0), new CadPoint(610, 610), "M-DUCT", CadCurveKind.Polyline, 1, "ring:7"),
+                new CadSegment(new CadPoint(610, 610), new CadPoint(0, 610), "M-DUCT", CadCurveKind.Polyline, 2, "ring:7"),
+                new CadSegment(new CadPoint(0, 610), new CadPoint(0, 0), "M-DUCT", CadCurveKind.Polyline, 3, "ring:7"),
+                new CadSegment(new CadPoint(2000, 0), new CadPoint(7000, 0), "M-DUCT")
+            };
+            CadRequirementSet set = Set(Good.Replace('\'', '"'));
+            var ducts = CadInterpretationRules.Interpret(ring, set, "h").Candidates.Where(c => c.ProposedKind == "duct").ToList();
+            Assert.Single(ducts);                                   // the open line only
+            CadRequirementSet include = CadRequirementSet.Load(JObject.Parse((@"{ 'schema': 'horizun.cad-requirements/1',
+              'requirement_set': { 'id': 's', 'version': '1.0.0', 'title': 't' }, 'source': { 'units': 'millimeter' },
+              'tolerances': { 'point_mm': 25.4, 'gap_mm': 25.4, 'angle_degrees': 2.0, 'arc_sagitta_mm': 5.0 },
+              'rules': [ { 'id': 'd', 'precedence': 10, 'layers': ['M-DUCT'], 'produces': 'duct', 'family_type': 'Rectangular Duct: X',
+                 'system_type': 'Supply Air', 'level': 'Level 1', 'offset_mm': 2743.2,
+                 'geometry': { 'from': 'single_lines', 'merge_collinear': false, 'include_closed_polylines': true } } ] }").Replace('\'', '"')));
+            Assert.Equal(5, CadInterpretationRules.Interpret(ring, include, "h").Candidates.Count(c => c.ProposedKind == "duct"));
+        }
+
+        [Fact]
         public void A_run_with_a_section_is_emitted_with_width_and_height_and_no_diameter()
         {
             CadRequirementSet set = Set(Good.Replace('\'', '"'));

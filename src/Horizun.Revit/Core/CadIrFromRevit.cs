@@ -160,6 +160,7 @@ namespace Horizun.Revit.Core
                 else
                 {
                     e.Kind = chords.Count > 1 ? CadEntityKind.Polyline : CadEntityKind.Line;
+                    e.Closed = kv.Key.StartsWith("ring:", StringComparison.Ordinal);
                     e.Approximated = chords[0].SourceKind == CadCurveKind.Spline
                                   || chords[0].SourceKind == CadCurveKind.Arc;
                     e.Points.Add(chords[0].A);

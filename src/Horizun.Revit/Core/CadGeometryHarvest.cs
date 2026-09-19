@@ -267,8 +267,12 @@ namespace Horizun.Revit.Core
                     });
                     return;
                 }
+                // A CLOSED RING is named as one, so a rule reading lines as runs can tell a box drawn on the
+                // layer from a route. MEASURED on a real mechanical plan: a 24 x 24 in square on the duct layer.
+                string ring = pts.Count > 3 && pts[0].DistanceTo(pts[pts.Count - 1]) <= 1e-6
+                    ? "ring:" + h.Segments.Count.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
                 for (int i = 0; i < pts.Count - 1; i++)
-                    h.Segments.Add(new CadSegment(P(pts[i]), P(pts[i + 1]), layer, CadCurveKind.Polyline, i));
+                    h.Segments.Add(new CadSegment(P(pts[i]), P(pts[i + 1]), layer, CadCurveKind.Polyline, i, ring));
                 return;
             }
 
