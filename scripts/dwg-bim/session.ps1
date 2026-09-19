@@ -118,6 +118,21 @@ try {
                 if ($up.ok) { "$(Get-Date -Format HH:mm:ss) bridge up"; break }
             }
             if (-not $up -or -not $up.ok) { throw "the bridge did not answer for the recorded pid in $WaitMinutes min; the session is recorded - stop it with: session.ps1 stop -Year $Year" }
+            # The identity a result must carry: which source, which staged DLL, which server,
+            # which process. Read from disk here, not remembered - so a result can be checked
+            # against what was actually loaded.
+            $stagedDll = Join-Path $env:USERPROFILE ".horizun\dev-addin\$Year\Horizun\Horizun.Revit.dll"
+            $head = (git -C $repo rev-parse HEAD).Trim()
+            $dirty = @(git -C $repo status --porcelain --untracked-files=no -- src global.json Directory.Build.props).Count -gt 0
+            $stamp = [ordered]@{
+                schema = 'horizun.session-build/1'; year = $Year; source_commit = $head; product_sources_dirty = $dirty
+                staged_dll = $stagedDll
+                staged_dll_sha256 = $(if (Test-Path -LiteralPath $stagedDll) { (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
+                server_exe = $server; server_sha256 = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
+                revit_pid = [int]$state.identity.pid; revit_start_time = [string]$state.identity.start_time; revit_exe = [string]$state.identity.exe
+                session_dir = $dir; written_utc = (Get-Date).ToUniversalTime().ToString('o') }
+            $stamp | ConvertTo-Json | Set-Content -Path "$env:TEMP\hz_build.json" -Encoding utf8
+            "staged dll sha256 $($stamp.staged_dll_sha256)"
         }
     }
 }

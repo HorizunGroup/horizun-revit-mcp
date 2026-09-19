@@ -8,6 +8,7 @@
   somebody else's, and `session.ps1 stop` then leaves Revit running instead of closing it.
 
 Registration failures are returned, never swallowed: the caller records them."""
+import json
 import os
 import subprocess
 
@@ -21,6 +22,26 @@ def session_year():
             return f.read().strip() or None
     except OSError:
         return None
+
+
+def staged_build(health):
+    """The session's build stamp (%TEMP%\\hz_build.json), or a reason it cannot be attached.
+
+    Attached only when it names the same year AND the same process the bridge just answered
+    for: a stamp from an earlier session must not lend its identity to this result."""
+    p = os.path.join(os.environ.get('TEMP', ''), 'hz_build.json')
+    try:
+        with open(p, encoding='utf-8-sig') as f:
+            stamp = json.load(f)
+    except (OSError, ValueError):
+        return {'missing': 'no session build stamp (%TEMP%\\hz_build.json)'}
+    year = str(health.get('revit_version') or '')
+    pid = health.get('process_id')
+    if str(stamp.get('year')) != year:
+        return {'missing': 'the build stamp is for Revit %s, health answered for %s' % (stamp.get('year'), year)}
+    if pid is None or int(stamp.get('revit_pid') or 0) != int(pid):
+        return {'missing': 'the build stamp is for pid %s, health answered for pid %s' % (stamp.get('revit_pid'), pid)}
+    return stamp
 
 
 def env_for(env):

@@ -26,6 +26,7 @@ import os
 import sys
 
 import run_spec as RS
+import session_hooks
 
 MM = 25.4
 FAMILIES = {'door': ('Door.rft', 'HZ-TEST Door', 'OST_Doors'), 'window': ('Window.rft', 'HZ-TEST Window', 'OST_Windows')}
@@ -66,7 +67,8 @@ class Session:
         self.year = str(h.get('revit_version'))
         self.build = {'version': h.get('horizun_version'), 'commit': h.get('horizun_commit'),
                       'contract_hash': h.get('contract_hash'), 'revit_version': self.year,
-                      'revit_build': h.get('revit_build'), 'open_documents': h.get('open_documents')}
+                      'revit_build': h.get('revit_build'), 'open_documents': h.get('open_documents'),
+                      'process_id': h.get('process_id'), 'staged': session_hooks.staged_build(h)}
         self.truth = RS.load(os.path.join(os.path.dirname(self.cfg['drawings']['split-A']), 'SPLIT.truth.json'))
 
     def save(self, out):

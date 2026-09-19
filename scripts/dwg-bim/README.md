@@ -114,6 +114,22 @@ Revit's interface language matters for NAMES, never for this route's inputs: a r
 name a system wall type as `Basic Wall: <type>` in any language, and parameters are safest by
 BuiltInParameter (`ALL_MODEL_MARK`), because their display names are translated.
 
+## Run identity and summaries
+
+Every record carries the build it ran with, read from the run itself: `session.ps1 start` writes a
+build stamp (source commit, whether product sources were dirty, the staged DLL's SHA-256, the server's
+SHA-256, and the Revit pid/start/exe) and `run_spec.py`/`split_openings.py` attach it only when it
+names the same year and pid that health answered for. Health itself reports the add-in assembly
+hashed inside the Revit process; that is the DLL link of the chain.
+
+Summaries are derived, never written by hand:
+`python scripts/dwg-bim/identity_chain.py <selection.json>` takes an explicit selection (one named
+record per case, with a reason) and writes case -> candidate -> DLL -> Revit -> config -> result. It
+keeps the commit a run reported, decides product equivalence with git, and fails on an incompatible
+commit, a missing identity, a newer run of the same family the selection does not explain (including
+attempts that died before writing a record), or a result that was not selected explicitly.
+`python scripts/dwg-bim/identity_chain_test.py` covers those checks.
+
 ## Checklist for another machine
 
 1. Revit 2023–2027 (any subset), AutoCAD's `accoreconsole.exe` (the synthetic drawings), Python 3,
