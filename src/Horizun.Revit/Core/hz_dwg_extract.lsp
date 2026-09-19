@@ -171,8 +171,20 @@
   out)
 
 ;;; ATTDEF rows, kept out of hz-entity so that form stays under the one-line limit.
+;;; ONE WRITE PER 500 ROWS, NOT PER ROW. MEASURED (campaign 7) on a real permit set of
+;;; 57,548 entities: walking them took 0.4 s, formatting every row 5.9 s, and the
+;;; write-line per row 269 s of a 275 s read. The rows are the same bytes in the same
+;;; order; they reach the file in blocks joined by one strcat.
+(setq hz-buf nil hz-bufn 0)
+(defun hz-wl (s f)
+  (setq hz-buf (cons "\n" (cons s hz-buf)) hz-bufn (1+ hz-bufn))
+  (if (>= hz-bufn 500) (hz-flush f)))
+(defun hz-flush (f)
+  (if hz-buf (write-line (apply 'strcat (reverse (cdr hz-buf))) f))
+  (setq hz-buf nil hz-bufn 0))
+
 (defun hz-attdef (f base ed)
-  (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+  (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                       (hz-n 40 ed) "\t" (hz-n 50 ed) "\t"
                       (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
 
@@ -183,36 +195,36 @@
   (setq base (strcat "E\t" owner "\t" (if h h "") "\t" typ "\t" (hz-esc (if lay lay "")) "\t"))
   (cond
     ((= typ "TEXT")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed)) f))
     ((= typ "MTEXT")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed)) f))
     ((= typ "ATTDEF") (hz-attdef f base ed))
     ((= typ "INSERT")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 50 ed) "\t"
                          (hz-n 41 ed) "\t" (hz-n 42 ed) "\t" (hz-n 43 ed) "\t"
                          (hz-str 2 ed) "\t" (hz-dyn-fields ed)) f))
     ((= typ "LINE")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-pt (cdr (assoc 11 ed)))) f))
     ((= typ "CIRCLE")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed)) f))
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed)) f))
     ((= typ "ARC")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed) "\t"
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed))) "\t" (hz-n 40 ed) "\t"
                          (hz-n 50 ed) "\t" (hz-n 51 ed)) f))
     ((= typ "LWPOLYLINE")
-     (write-line (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed)) f))
+     (hz-wl (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed)) f))
     ((= typ "LEADER")
-     (write-line (strcat base (hz-lwpts ed)) f))
+     (hz-wl (strcat base (hz-lwpts ed)) f))
     ((= typ "HATCH")
-     (write-line (strcat base (hz-str 2 ed) "\t" (hz-n 70 ed) "\t" (hz-n 91 ed) "\t" (hz-hatch ed)) f))
+     (hz-wl (strcat base (hz-str 2 ed) "\t" (hz-n 70 ed) "\t" (hz-n 91 ed) "\t" (hz-hatch ed)) f))
     ((= typ "VERTEX")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed)))) f))
+     (hz-wl (strcat base (hz-pt (cdr (assoc 10 ed)))) f))
     ((= typ "ATTRIB")
-     (write-line (strcat "A\t" owner "\t" (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
-    (T (write-line base f))))
+     (hz-wl (strcat "A\t" owner "\t" (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
+    (T (hz-wl base f))))
 
 ;;; THE SPACES ARE REACHED BY tblobjname AND NOT BY tblsearch.
 ;;;
@@ -266,6 +278,7 @@
     (setq e (entnext e))))
 
 (defun hz-dump (path / f blk lay lst)
+  (setq hz-buf nil hz-bufn 0)
   (setq f (open path "w"))
   (write-line (strcat "H\tdwg\t" (hz-esc (getvar "DWGNAME"))) f)
   (write-line (strcat "H\tinsunits\t" (itoa (getvar "INSUNITS"))) f)
@@ -306,8 +319,9 @@
                     "*Paper_Space2" "*Paper_Space3" "*Paper_Space4" "*Paper_Space5"
                     "*Paper_Space6" "*Paper_Space7" "*Paper_Space8" "*Paper_Space9")
     (if (tblobjname "BLOCK" sp)
-      (progn (write-line (strcat "K\t" sp "\t0\t") f) (hz-space f sp))))
+      (progn (hz-flush f) (write-line (strcat "K\t" sp "\t0\t") f) (hz-space f sp))))
 
+  (hz-flush f)
   (write-line "H\tdone\t1" f)
   (close f)
   (princ "\nHZ-DUMP-OK\n")

@@ -141,6 +141,40 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_transition_is_the_piece_straight_at_both_ends_whichever_side_the_loop_meets_first()
+        {
+            // MEASURED on M106 (campaign 7): 8X6 run, 243 mm drawn transition, 290 mm unlabelled run, elbow,
+            // 6X6 labelled run. Propagating in loop order gave the transition 8X6.
+            foreach (bool reversed in new[] { false, true })
+            {
+                var runs = new List<CadRunSection>
+                {
+                    Run("a", 0, 0, 5000, 0), Run("t", 5000, 0, 5243, 0), Run("m", 5243, 0, 5533, 0),
+                    Run("c", 5533, 0, 5533, 3000)
+                };
+                if (reversed) runs.Reverse();
+                var r = Read(runs, Label("A", "8X6", 2500, 200), Label("C", "6X6", 5733, 1500));
+                Assert.Equal("transition", r.Runs.Single(x => x.RunId == "t").State);
+                Assert.NotNull(r.Runs.Single(x => x.RunId == "t").TransitionEnds);
+                Assert.Equal("propagated", r.Runs.Single(x => x.RunId == "m").State);
+                Assert.Equal(152.4, r.Runs.Single(x => x.RunId == "m").WidthMm.Value, 3);
+            }
+        }
+
+        [Fact]
+        public void Two_straight_pieces_between_two_sizes_leave_the_whole_chain_unsized()
+        {
+            var runs = new List<CadRunSection>
+            {
+                Run("a", 0, 0, 5000, 0), Run("p", 5000, 0, 5250, 0), Run("q", 5250, 0, 5500, 0), Run("b", 5500, 0, 9000, 0)
+            };
+            var r = Read(runs, Label("A", "12X8", 2500, 200), Label("B", "8X8", 7000, 200));
+            Assert.Equal("missing", r.Runs.Single(x => x.RunId == "p").State);
+            Assert.Equal("missing", r.Runs.Single(x => x.RunId == "q").State);
+            Assert.Contains("2 straight pieces could carry it", r.Runs.Single(x => x.RunId == "p").Reason);
+        }
+
+        [Fact]
         public void The_drawn_transitions_at_both_ends_get_both_sizes()
         {
             // 12X8 main, 280 mm drawn transition, the two-size run, 250 mm transition, 6X6.

@@ -1985,6 +1985,7 @@ namespace Horizun.Contracts
       ""description"": ""Which lists to return a page of; the others come back as counts. The summary always covers the whole analysis."" },
     ""page_offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0, ""description"": ""Where each listed array starts. listing.<name>.next_offset says where the next page starts."" },
     ""page_limit"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 5000, ""default"": 500, ""description"": ""At most this many entries per listed array. listing_complete=false means a list is a page."" },
+    ""expect_analysis_fingerprint"": { ""type"": ""string"", ""description"": ""The analysis_fingerprint of the first page. A later page whose full analysis differs (the source changed between pages) is refused rather than stitched onto pages of another reading."" },
     ""requirement_set"": { ""type"": ""object"",
       ""description"": ""The versioned DWG-to-BIM mapping the CONVERSION will use. When given, the system, bore and elevation of every layer are derived from its MEP rules by its own precedence, so this reading and the conversion cannot disagree about a layer - two statements about one layer is how a run gets BUILT at one height and CONNECTED at another with both replies looking correct. A layer two rules claim at EQUAL precedence is left undeclared and named, never resolved by sort order. Refused WHOLE when malformed."" },
     ""layer_declarations"": { ""type"": ""array"",

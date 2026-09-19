@@ -43,6 +43,7 @@ namespace Horizun.Revit.Core
             limit = Math.Max(0, Math.Min(MaxLimit, limit));
             var paging = new JObject();
             bool anyTruncated = false;
+            full["analysis_fingerprint"] = Fingerprint(full);
             foreach (string name in Lists)
             {
                 var arr = full[name] as JArray;
@@ -76,6 +77,22 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>The biggest layers of a reading, as a scope a caller can send back.</summary>
+        /// <summary>
+        /// A hash of every list of the FULL analysis, before paging. The same arguments over the same source give
+        /// the same fingerprint; a caller paging through sends the first page's fingerprint back and a later page
+        /// read from a changed source is refused instead of being stitched onto pages of another reading.
+        /// </summary>
+        public static string Fingerprint(JObject full)
+        {
+            var o = new JObject();
+            foreach (string name in Lists) if (full[name] != null) o[name] = full[name];
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] h = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(o.ToString(Newtonsoft.Json.Formatting.None)));
+                return "net:" + BitConverter.ToString(h, 0, 12).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
         public static JObject ScopeProposal(IEnumerable<CadSegment> segments, int top = 12)
         {
             var byLayer = segments.GroupBy(s => s.Layer ?? "", StringComparer.OrdinalIgnoreCase)

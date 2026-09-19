@@ -1009,9 +1009,12 @@ namespace Horizun.Revit.Commands
                     var rebuiltRuns = new HashSet<long>(refits.OfType<JObject>().SelectMany(r => (r["runs"] as JArray).Select(t => (long)t)));
                     var rest = new JArray(sectionWrites.OfType<JObject>().Where(w => !rebuiltRuns.Contains(w.Value<long>("target_id"))));
                     sectionWrites = rest;
+                    foreach (CadUpdateAction ra in update.Actions.Where(x => x.ElementId.HasValue && rebuiltRuns.Contains(x.ElementId.Value) &&
+                                                                              (string)x.Evidence["resolve_key"] == "cad-update-resolve-sections"))
+                        ra.Evidence["resolve_key"] = "cad-update-resolve-refit";
                     actions.Add(new JObject
                     {
-                        ["key"] = "cad-update-refit-fittings",
+                        ["key"] = "cad-update-resolve-refit",
                         ["tool"] = "horizun_cad_connect",
                         ["arguments"] = new JObject { ["target_document"] = target, ["refit"] = refits }
                     });
@@ -1461,9 +1464,11 @@ namespace Horizun.Revit.Commands
                 }
                 if (key.StartsWith("cad-update-resolve-", StringComparison.Ordinal))
                 {
-                    CadUpdateAction decided = update.Actions.FirstOrDefault(x =>
-                        string.Equals((string)x.Evidence["resolve_key"], key, StringComparison.Ordinal));
-                    if (decided != null) index.Add(Row(key, decided, null));
+                    // EVERY decided action behind this key: one batched action (every section resize, a refit)
+                    // carries several elements, and each must be re-stamped to this revision.
+                    foreach (CadUpdateAction decided in update.Actions.Where(x =>
+                                 string.Equals((string)x.Evidence["resolve_key"], key, StringComparison.Ordinal)))
+                        index.Add(Row(key, decided, null));
                     continue;
                 }
                 if (!key.StartsWith("cad-update-move-", StringComparison.Ordinal)) continue;

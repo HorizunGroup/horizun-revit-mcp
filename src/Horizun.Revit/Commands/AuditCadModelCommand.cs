@@ -133,6 +133,15 @@ namespace Horizun.Revit.Commands
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
                 harvest.Segments, set, sourceHash, harvest.Arcs, null, solidHatch);
 
+            // THE SAME PIECES THE PLAN BUILT. MEASURED (campaign 7): a set that cuts runs where their
+            // section changes built six pieces, and an audit reading whole runs reported every one of them
+            // "built_not_in_drawing". The plan's own section hook is read here too; what it leaves unsized
+            // stays in the reading, so it is reported as drawn and not built - which it is.
+            string sectionsFailure;
+            JObject sectionsRead = CadSectionsHook.Apply(element, facts, set, harvest, request, interpretation,
+                                                         new JArray(), true, out sectionsFailure);
+            if (sectionsFailure != null) return CommandResult.Fail(sectionsFailure);
+
             // THE SAME READING THE PLAN MADE, INCLUDING THE SYMBOLS.
             //
             // This command promises to read the drawing exactly as

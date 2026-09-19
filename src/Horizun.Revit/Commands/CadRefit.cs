@@ -194,9 +194,12 @@ namespace Horizun.Revit.Commands
         {
             var runIds = u.Runs.Select(r => Rid.Value(r.Id)).ToList();
             string kind = u.Part.ToLowerInvariant();
+            // WHERE THE FITTING STOOD - where its runs must meet again. Read before it is deleted.
+            XYZ at = (u.Fitting.Location as LocationPoint)?.Point;
+            if (at == null) { step = "read"; return "the fitting has no insertion point to rebuild at"; }
             step = "delete";
             JObject del = Call(app, resolve, "horizun_delete_verified",
-                new JObject { ["target_document"] = title, ["ids"] = new JArray(Rid.Value(u.Fitting.Id)) }, steps, step);
+                new JObject { ["target_document"] = title, ["mode"] = "ids", ["ids"] = new JArray(Rid.Value(u.Fitting.Id)) }, steps, step);
             if (del == null) return steps[step]?.Value<string>("error") ?? "the delete was refused";
             step = "resize";
             var writes = new JArray();
@@ -208,11 +211,48 @@ namespace Horizun.Revit.Commands
             JObject wr = Call(app, resolve, "horizun_write_params_verified",
                 new JObject { ["target_document"] = title, ["writes"] = writes }, steps, step);
             if (wr == null) return steps[step]?.Value<string>("error") ?? "the resize was refused";
-            step = "place";
-            if (FaultInjected("cad-refit-place"))
+            // THE RUNS MEET WHERE THE FITTING STOOD. MEASURED (campaign 7): with the elbow deleted, its two runs
+            // end 431 mm apart (the elbow had cut them back), and a fitting joins connectors that meet.
+            step = "meet";
+            ICommand mover = resolve?.Invoke("horizun_transform_elements");
+            if (mover == null) return "horizun_transform_elements could not be resolved";
+            var met = new JArray();
+            foreach (MEPCurve run in u.Runs)
             {
-                steps[step] = new JObject { ["ok"] = false, ["error"] = "fault_injected: HORIZUN_TEST_FAIL_ACTION names 'cad-refit-place'" };
-                return "fault_injected before the new fitting was placed";
+                var lc = run.Location as LocationCurve;
+                if (lc?.Curve == null) return "run " + Rid.Value(run.Id) + " has no location line";
+                XYZ p0 = lc.Curve.GetEndPoint(0), p1 = lc.Curve.GetEndPoint(1);
+                bool zeroNear = new XYZ(p0.X - at.X, p0.Y - at.Y, 0).GetLength() <= new XYZ(p1.X - at.X, p1.Y - at.Y, 0).GetLength();
+                XYZ keep = zeroNear ? p1 : p0, near = zeroNear ? p0 : p1;
+                var args = new JObject
+                {
+                    ["target_document"] = title, ["units"] = "mm",
+                    ["operations"] = new JArray(new JObject
+                    {
+                        ["operation"] = "set_curve", ["element_ids"] = new JArray(Rid.Value(run.Id)),
+                        ["start"] = new JArray(keep.X * 304.8, keep.Y * 304.8, keep.Z * 304.8),
+                        ["end"] = new JArray(at.X * 304.8, at.Y * 304.8, near.Z * 304.8)
+                    })
+                };
+                var sub = new JObject();
+                if (Call(app, resolve, "horizun_transform_elements", args, sub, "meet") == null)
+                {
+                    steps["meet"] = sub["meet"];
+                    return "run " + Rid.Value(run.Id) + " could not be brought to where the fitting stood: " +
+                           (sub["meet"]?.Value<string>("error") ?? "refused");
+                }
+                met.Add(new JObject { ["element_id"] = Rid.Value(run.Id), ["end_moved_mm"] = Math.Round(near.DistanceTo(new XYZ(at.X, at.Y, near.Z)) * 304.8, 1) });
+            }
+            steps["meet"] = new JObject { ["ok"] = true, ["runs"] = met, ["at_mm"] = new JArray(Math.Round(at.X * 304.8, 1), Math.Round(at.Y * 304.8, 1)) };
+            step = "place";
+            // A FAULT SEAM FOR TESTS, off unless Revit was started with it: after the delete, the resize and the
+            // move have been written, the placement is reported failed - to measure what the group undoes.
+            // "cad-refit-place" fires in a rehearsal and an apply; "cad-refit-place-apply" in an apply only.
+            bool applying = request.Value<bool?>("dry_run") == false;
+            if (FaultInjected("cad-refit-place") || (applying && FaultInjected("cad-refit-place-apply")))
+            {
+                steps[step] = new JObject { ["ok"] = false, ["error"] = "fault_injected: HORIZUN_TEST_FAIL_ACTION names the refit placement" };
+                return "fault_injected before the new fitting was placed (delete, resize and move were already written)";
             }
             JObject pl = Call(app, resolve, "horizun_create_elements", new JObject
             {
@@ -241,8 +281,12 @@ namespace Horizun.Revit.Commands
             args["dry_run"] = false;
             if (token != null) args["confirmation_token"] = token;
             args["idempotency_key"] = "cad-refit-" + step + "-" + Guid.NewGuid().ToString("N").Substring(0, 12);
+            int mark = Interference.Current?.Seen.Count ?? 0;
             CommandResult done = child.Execute(app, args.ToString(Formatting.None));
             steps[step] = new JObject { ["ok"] = done.Success, ["tool"] = tool, ["error"] = done.Success ? null : done.Error };
+            // what Revit raised while THIS step ran - its own words, the reason a step failed
+            Interference watch = Interference.Current;
+            if (watch != null && watch.Seen.Count > mark) steps[step]["revit_raised"] = RaisedRecord.Window(watch.Seen, mark);
             return done.Success ? (done.Data as JObject ?? new JObject()) : null;
         }
 

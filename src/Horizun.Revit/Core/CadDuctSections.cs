@@ -538,77 +538,128 @@ namespace Horizun.Revit.Core
         private static string NodeKey(CadPoint p, double tol) =>
             Math.Round(p.X / tol).ToString(CultureInfo.InvariantCulture) + "," + Math.Round(p.Y / tol).ToString(CultureInfo.InvariantCulture);
 
-        /// <summary>Through degree-2 nodes only; stops at branches, own labels and conflicts.</summary>
+        /// <summary>
+        /// UNLABELLED RUNS TAKE A SIZE CHAIN BY CHAIN, never in whatever order the loop meets them.
+        ///
+        /// MEASURED (campaign 7): with runs cut at their section changes, a drawn 243 mm transition sat
+        /// between an 8X6 piece and an unlabelled run that led, through an elbow, to a 6X6 label. The
+        /// first version propagated from whichever side it reached first and gave the transition 8X6.
+        /// Now every chain of unlabelled runs joined end to end (degree-2 joints only; a branch or a free
+        /// end stops it) is settled as a whole from what bounds it:
+        ///   one size and nothing else  -> every run of the chain takes it (through elbows and straights);
+        ///   the same size on both ends -> the same;
+        ///   two sizes, or one and an unsettled run -> the size changes inside the chain. The place is the
+        ///     one run that is straight at BOTH its ends (a drawn transition piece); with none, the one
+        ///     straight joint (an elbow does not change section); anything else is not decided - the
+        ///     whole chain stays unsized and says how many places could carry the change.
+        /// </summary>
         private static void Propagate(List<CadRunSection> runs, double tol)
         {
             tol = Math.Max(tol, 1.0);
-            var ends = new List<Tuple<CadRunSection, CadPoint>>();
-            foreach (CadRunSection r in runs) { ends.Add(Tuple.Create(r, r.Start)); ends.Add(Tuple.Create(r, r.End)); }
             Func<CadPoint, List<CadRunSection>> at = p =>
-                ends.Where(e => Dist(e.Item2, p) <= tol).Select(e => e.Item1).Distinct().ToList();
-
-            bool changed = true;
-            var offers = new Dictionary<CadRunSection, List<CadRunSection>>();
-            while (changed)
+                runs.Where(r => Dist(r.Start, p) <= tol || Dist(r.End, p) <= tol).ToList();
+            Func<CadRunSection, CadPoint, CadPoint> other = (r, p) => Dist(r.Start, p) <= tol ? r.End : r.Start;
+            Func<CadRunSection, CadRunSection, bool> straight = (a, b) =>
             {
-                changed = false;
-                offers.Clear();
-                foreach (CadRunSection src in runs.Where(r => r.WidthMm.HasValue))
-                    foreach (CadPoint end in new[] { src.Start, src.End })
+                double ax = a.End.X - a.Start.X, ay = a.End.Y - a.Start.Y, bx = b.End.X - b.Start.X, by = b.End.Y - b.Start.Y;
+                double la = Math.Sqrt(ax * ax + ay * ay), lb = Math.Sqrt(bx * bx + by * by);
+                if (la < 1e-9 || lb < 1e-9) return false;
+                return Math.Abs(ax * by - ay * bx) / (la * lb) <= Math.Sin(2.0 * Math.PI / 180);
+            };
+            var done = new HashSet<CadRunSection>();
+            foreach (CadRunSection seed in runs.Where(r => r.State == "missing").ToList())
+            {
+                if (done.Contains(seed)) continue;
+                // the chain, in order, with what bounds it at each end
+                var chain = new LinkedList<CadRunSection>();
+                chain.AddFirst(seed);
+                CadRunSection[] bound = new CadRunSection[2];
+                for (int side = 0; side < 2; side++)
+                {
+                    CadRunSection cur = seed;
+                    CadPoint node = side == 0 ? seed.Start : seed.End;
+                    while (true)
                     {
-                        List<CadRunSection> meeting = at(end);
-                        if (meeting.Count != 2) continue;                    // a branch or a free end stops it
-                        CadRunSection next = meeting.First(m => m != src);
-                        if (next.State != "missing") continue;               // own label / contradiction / ambiguity
-                        // A TRANSITION PIECE: the run's OTHER end meets a run whose size differs or is not
-                        // settled. MEASURED on a real plan: 11 in pieces drawn between two sizes took the size
-                        // of whichever side was known - building a straight duct where the drawing puts a
-                        // transition. Such a run stays without a size, and says why.
-                        CadPoint otherEnd = Dist(next.Start, end) <= tol ? next.End : next.Start;
-                        List<CadRunSection> beyond = at(otherEnd);
-                        CadRunSection far = beyond.Count == 2 ? beyond.First(m => m != next) : null;
-                        if (far != null && far != src &&
-                            (far.State == "contradictory" || far.State == "ambiguous" || far.State == "change_unlocated" ||
-                             (far.WidthMm.HasValue && (Math.Abs(far.WidthMm.Value - src.WidthMm.Value) > 0.01 ||
-                                                       Math.Abs(far.HeightMm.Value - src.HeightMm.Value) > 0.01))))
+                        List<CadRunSection> meeting = at(node);
+                        if (meeting.Count != 2) break;                           // a branch or a free end
+                        CadRunSection next = meeting.First(m => m != cur);
+                        if (next.State == "missing" && !chain.Contains(next))
                         {
-                            next.Reason = "a transition between " + src.RunId + " (" + src.WidthMm + "x" + src.HeightMm + " mm) and " +
-                                          far.RunId + " (" + (far.WidthMm.HasValue ? far.WidthMm + "x" + far.HeightMm + " mm" : far.State) +
-                                          "): no size is carried into it";
-                            next.State = "transition";
-                            if (far.WidthMm.HasValue)
-                                next.TransitionEnds = new JObject
-                                {
-                                    ["a"] = new JObject { ["run"] = src.RunId, ["at_mm"] = new JArray(Math.Round(end.X, 1), Math.Round(end.Y, 1)),
-                                                          ["width_mm"] = src.WidthMm, ["height_mm"] = src.HeightMm },
-                                    ["b"] = new JObject { ["run"] = far.RunId, ["at_mm"] = new JArray(Math.Round(otherEnd.X, 1), Math.Round(otherEnd.Y, 1)),
-                                                          ["width_mm"] = far.WidthMm, ["height_mm"] = far.HeightMm },
-                                    ["drawn_length_mm"] = Math.Round(Dist(next.Start, next.End), 1)
-                                };
+                            if (side == 0) chain.AddFirst(next); else chain.AddLast(next);
+                            node = other(next, node);
+                            cur = next;
                             continue;
                         }
-                        List<CadRunSection> list;
-                        if (!offers.TryGetValue(next, out list)) offers[next] = list = new List<CadRunSection>();
-                        list.Add(src);
+                        if (!chain.Contains(next)) bound[side] = next;
+                        break;
                     }
-                foreach (var kv in offers)
-                {
-                    var distinct = kv.Value.Select(s => Tuple.Create(s.WidthMm.Value, s.HeightMm.Value)).Distinct().ToList();
-                    CadRunSection next = kv.Key;
-                    if (distinct.Count > 1)
-                    {
-                        next.State = "contradictory";
-                        next.Reason = "two different sizes reach this unlabelled run from its two ends (" +
-                                      string.Join(", ", kv.Value.Select(s => s.RunId)) + "); it gets no size";
-                        continue;
-                    }
-                    CadRunSection from = kv.Value[0];
-                    next.State = "propagated";
-                    next.WidthMm = from.WidthMm; next.HeightMm = from.HeightMm;
-                    next.PropagatedFrom = from.RunId;
-                    next.Reason = "no label of its own; takes " + from.RunId + "'s size through an elbow or straight continuation";
-                    changed = true;
                 }
+                var list = chain.ToList();
+                foreach (CadRunSection r in list) done.Add(r);
+                CadRunSection A = bound[0], B = bound[1];
+                bool aSized = A != null && A.WidthMm.HasValue, bSized = B != null && B.WidthMm.HasValue;
+                bool aUnsettled = A != null && !aSized, bUnsettled = B != null && !bSized;
+                Action<CadRunSection, CadRunSection> give = (r, from) =>
+                {
+                    r.State = "propagated"; r.WidthMm = from.WidthMm; r.HeightMm = from.HeightMm; r.PropagatedFrom = from.RunId;
+                    r.Reason = "no label of its own; takes " + from.RunId + "'s size through an elbow or straight continuation";
+                };
+                bool same = aSized && bSized && Math.Abs(A.WidthMm.Value - B.WidthMm.Value) <= 0.01 &&
+                            Math.Abs(A.HeightMm.Value - B.HeightMm.Value) <= 0.01;
+                if ((aSized && B == null) || same) { foreach (var r in list) give(r, A); continue; }
+                if (bSized && A == null) { foreach (var r in list) give(r, B); continue; }
+                if (!(aSized || bSized) || (A == null || B == null)) continue;       // nothing settles it
+                // the size changes inside the chain: find the one place
+                var seq = new List<CadRunSection> { A };
+                seq.AddRange(list);
+                seq.Add(B);
+                var pieces = new List<int>();                                        // chain index of straight-both-ends runs
+                for (int i = 1; i < seq.Count - 1; i++)
+                    if (straight(seq[i - 1], seq[i]) && straight(seq[i], seq[i + 1])) pieces.Add(i);
+                var joints = new List<int>();                                        // joint between seq[i] and seq[i+1]
+                for (int i = 0; i < seq.Count - 1; i++) if (straight(seq[i], seq[i + 1])) joints.Add(i);
+                string sizeA = aSized ? A.WidthMm + "x" + A.HeightMm + " mm" : A.State;
+                string sizeB = bSized ? B.WidthMm + "x" + B.HeightMm + " mm" : B.State;
+                if (pieces.Count == 1)
+                {
+                    int k = pieces[0];
+                    CadRunSection t = seq[k];
+                    for (int i = 1; i < k; i++) if (aSized) give(seq[i], A);
+                    for (int i = k + 1; i < seq.Count - 1; i++) if (bSized) give(seq[i], B);
+                    CadRunSection left = seq[k - 1], right = seq[k + 1];
+                    t.State = "transition";
+                    t.Reason = "a transition between " + left.RunId + " (" + (left.WidthMm.HasValue ? left.WidthMm + "x" + left.HeightMm + " mm" : left.State) +
+                               ") and " + right.RunId + " (" + (right.WidthMm.HasValue ? right.WidthMm + "x" + right.HeightMm + " mm" : right.State) +
+                               "): the one unlabelled piece straight at both ends between " + sizeA + " and " + sizeB + "; no size is carried into it";
+                    if (left.WidthMm.HasValue && right.WidthMm.HasValue)
+                    {
+                        bool startTouchesLeft = Dist(t.Start, left.Start) <= tol || Dist(t.Start, left.End) <= tol;
+                        CadPoint na = startTouchesLeft ? t.Start : t.End;
+                        CadPoint nb = startTouchesLeft ? t.End : t.Start;
+                        t.TransitionEnds = new JObject
+                        {
+                            ["a"] = new JObject { ["run"] = left.RunId, ["at_mm"] = new JArray(Math.Round(na.X, 1), Math.Round(na.Y, 1)),
+                                                  ["width_mm"] = left.WidthMm, ["height_mm"] = left.HeightMm },
+                            ["b"] = new JObject { ["run"] = right.RunId, ["at_mm"] = new JArray(Math.Round(nb.X, 1), Math.Round(nb.Y, 1)),
+                                                  ["width_mm"] = right.WidthMm, ["height_mm"] = right.HeightMm },
+                            ["drawn_length_mm"] = Math.Round(Dist(t.Start, t.End), 1)
+                        };
+                    }
+                    continue;
+                }
+                if (pieces.Count == 0 && joints.Count == 1 && aSized && bSized)
+                {
+                    int j = joints[0];
+                    for (int i = 1; i <= j; i++) give(seq[i], A);
+                    for (int i = j + 1; i < seq.Count - 1; i++) give(seq[i], B);
+                    foreach (CadRunSection r in list)
+                        r.Reason += "; the size changes at the one straight joint of this chain (no transition is drawn; an elbow does not change section)";
+                    continue;
+                }
+                foreach (CadRunSection r in list)
+                    r.Reason = "the size changes somewhere along these " + list.Count + " unlabelled run(s) between " + sizeA + " and " + sizeB +
+                               ", and " + (pieces.Count > 1 ? pieces.Count + " straight pieces" : joints.Count + " straight joints") +
+                               " could carry it; nothing drawn says which, so none gets a size";
             }
         }
     }

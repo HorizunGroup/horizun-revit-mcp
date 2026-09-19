@@ -700,6 +700,14 @@ namespace Horizun.Revit.Commands
             int pageOffset = Math.Max(0, r.Request.Value<int?>("page_offset") ?? 0);
             int pageLimit = r.Request.Value<int?>("page_limit") ?? CadNetworkPaging.DefaultLimit;
             CadNetworkPaging.Page(reply, only, pageOffset, pageLimit);
+            string expected = r.Request.Value<string>("expect_analysis_fingerprint");
+            if (!string.IsNullOrWhiteSpace(expected) && !string.Equals(expected, reply.Value<string>("analysis_fingerprint"), StringComparison.Ordinal))
+                return CommandResult.FailWithDetail(
+                    "source_changed_between_pages: this page was read from an analysis whose fingerprint is " +
+                    reply.Value<string>("analysis_fingerprint") + ", not " + expected + ". The pages already read belong to " +
+                    "another reading; start again from offset 0.",
+                    new JObject { ["refused"] = "source_changed_between_pages", ["expected"] = expected,
+                                  ["now"] = reply["analysis_fingerprint"] });
             if (r.Request["layers"] == null && r.Request["layer"] == null && set == null)
                 reply["scope_proposal"] = CadNetworkPaging.ScopeProposal(segments);
 

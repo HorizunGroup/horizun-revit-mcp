@@ -139,6 +139,13 @@ namespace Horizun.Revit.Commands
                 parsed.Add(j);
             }
 
+            // DRAWN TRANSITIONS FIRST. Placing one brings its runs' ends together, which a run already
+            // holding an elbow at its other end cannot do: MEASURED (campaign 7), Revit refused the move
+            // with "the family is connected in a network and can no longer keep the connectivity". The
+            // order is otherwise the caller's (a stable sort).
+            parsed = parsed.Where(x => x.Fitting == "transition" && x.Drawn != null)
+                           .Concat(parsed.Where(x => !(x.Fitting == "transition" && x.Drawn != null))).ToList();
+
             var rows = new JArray();
             int joined = 0, skipped = 0, refused = 0, delegated = 0, existing = 0;
 
@@ -283,7 +290,17 @@ namespace Horizun.Revit.Commands
                     JObject trow;
                     using (var checkedGroup = new CheckedWriteGroup(doc, "Horizun: drawn transition"))
                     {
-                        trow = DelegateFitting(app, title, j, false, request, group != null ? runKey : "");
+                        // A FITTING JOINS CONNECTORS THAT MEET. The drawn piece leaves its two runs one piece
+                        // apart (MEASURED: 243-283 mm, and horizun_create_elements refuses anything over 1 mm).
+                        // Both runs are brought to the piece's midpoint - by horizun_transform_elements, inside
+                        // this same group - Revit then cuts them back to its own fitting's length, and the check
+                        // below decides whether that fitting sits in the drawn space. Undone together otherwise.
+                        JObject meet = MeetAtDrawnMidpoint(app, title, j, request, group != null ? runKey : "");
+                        if (meet.Value<bool>("ok"))
+                            trow = DelegateFitting(app, title, j, false, request, group != null ? runKey : "");
+                        else
+                            trow = j.Row("refused", "runs_not_brought_together", meet.Value<string>("why"));
+                        trow["brought_together"] = meet;
                         Attribute(trow, j, mark, true, tolerance, group != null);
                         string ts = trow.Value<string>("state");
                         if (ts == "created" || ts == "would_create")
@@ -334,6 +351,18 @@ namespace Horizun.Revit.Commands
                 // junction would face is undone here, on every path.
                 if (group != null) group.Dispose();
             }
+
+            // THE CONNECTION IS PART OF BUILDING. A fitting trims or extends the runs it joins, and a record
+            // that still says "built at the drawing's line" makes the next update read the connection as a
+            // person's move (MEASURED, campaign 7: five runs a drawn transition had extended). So after an
+            // apply, every run whose line the connection changed has its provenance re-stamped to the line it
+            // now has, marked as_connected with the junction - and a person's edit after that is a divergence
+            // from THIS line, which the update keeps as a person's.
+            // ONLY what THIS call made: a repeat must never re-stamp a person's later edit as "connected".
+            var madeHere = new HashSet<string>(rows.OfType<JObject>()
+                .Where(x => x.Value<string>("state") == "created" || x.Value<string>("state") == "joined")
+                .Select(x => x.Value<string>("junction") ?? x.Value<string>("id") ?? ""), StringComparer.Ordinal);
+            var madeJunctions = parsed.Where(x => madeHere.Contains(x.Id ?? "")).ToList();
 
             var result = new JObject
             {
@@ -394,6 +423,9 @@ namespace Horizun.Revit.Commands
                     "some junctions were made and some were not. What was joined IS in the model. A junction " +
                     "refused for an ambiguous or occupied connector is refused because joining the wrong end " +
                     "would be invisible afterwards, and re-sending it unchanged will refuse again.";
+            // A REHEARSAL RETURNS HERE: the provenance write below belongs to an apply only.
+            if (dryRun) return CommandResult.Ok(result);
+            result["provenance_as_connected"] = RecordAsConnected(doc, madeJunctions, tolerance);
             return CommandResult.Ok(result);
         }
 
@@ -662,6 +694,113 @@ namespace Horizun.Revit.Commands
             };
         }
 
+        private static JArray RecordAsConnected(Document doc, List<Junction> junctions, double tolerance)
+        {
+            var rows = new JArray();
+            var members = new Dictionary<long, string>();
+            foreach (Junction j in junctions)
+            {
+                if (j.Unresolved != null || j.Elements.Count < 2) continue;
+                JObject reread;
+                try { reread = Reread(j, tolerance); } catch { continue; }
+                if (reread.Value<bool?>("all_connected") != true) continue;
+                foreach (Element e in j.Elements)
+                    if (!members.ContainsKey(Rid.Value(e.Id))) members[Rid.Value(e.Id)] = j.Id ?? "junction";
+            }
+            if (members.Count == 0) return rows;
+            using (var t = new Transaction(doc, "Horizun: record as-connected geometry"))
+            {
+                if (t.Start() != TransactionStatus.Started) return rows;
+                foreach (var kv in members)
+                {
+                    Element e = doc.GetElement(Rid.Make(kv.Key));
+                    var lc = e?.Location as LocationCurve;
+                    if (lc?.Curve == null) continue;
+                    string problem;
+                    CadProvenance p = CadProvenanceStore.Read(e, out problem);
+                    if (p == null) continue;
+                    var now = new List<CadPoint>
+                    {
+                        new CadPoint(lc.Curve.GetEndPoint(0).X * 304.8, lc.Curve.GetEndPoint(0).Y * 304.8, lc.Curve.GetEndPoint(0).Z * 304.8),
+                        new CadPoint(lc.Curve.GetEndPoint(1).X * 304.8, lc.Curve.GetEndPoint(1).Y * 304.8, lc.Curve.GetEndPoint(1).Z * 304.8)
+                    };
+                    string was = p.BuiltGeometry;
+                    string encoded = CadUpdateRules.Encode(now);
+                    if (string.Equals(was, encoded, StringComparison.Ordinal)) continue;
+                    p.BuiltGeometry = encoded;
+                    string mark = "as_connected:" + kv.Value;
+                    if (p.SourceEntities == null || !p.SourceEntities.Contains(mark))
+                        p.SourceEntities = CadProvenanceStore.Capped(string.IsNullOrEmpty(p.SourceEntities) ? mark : p.SourceEntities + ";" + mark);
+                    p.WrittenUtc = DateTime.UtcNow.ToString("o");
+                    string why;
+                    bool ok = CadProvenanceStore.Write(e, p, out why);
+                    rows.Add(new JObject
+                    {
+                        ["element_id"] = kv.Key, ["junction"] = kv.Value, ["written"] = ok, ["was_built_at_mm"] = was,
+                        ["now_at_mm"] = encoded, ["error"] = ok ? null : why
+                    });
+                }
+                Guard.Commit(t, "record as-connected geometry");
+            }
+            return rows;
+        }
+
+        /// <summary>
+        /// Bring each member's end nearest the drawn piece to the piece's midpoint, through
+        /// horizun_transform_elements set_curve (rehearsed, then applied with its token). Z is each run's own.
+        /// </summary>
+        private JObject MeetAtDrawnMidpoint(UIApplication app, string title, Junction j, JObject request, string keySuffix)
+        {
+            var o = new JObject { ["ok"] = false };
+            var f = j.Drawn["from_mm"] as JArray; var t = j.Drawn["to_mm"] as JArray;
+            if (f == null || t == null || j.Elements.Count != 2) { o["why"] = "the drawn piece or its two runs are missing"; return o; }
+            double mx = (f[0].Value<double>() + t[0].Value<double>()) / 2, my = (f[1].Value<double>() + t[1].Value<double>()) / 2;
+            ICommand child = _resolve == null ? null : _resolve("horizun_transform_elements");
+            if (child == null) { o["why"] = "horizun_transform_elements could not be resolved"; return o; }
+            var moved = new JArray();
+            foreach (Element e in j.Elements)
+            {
+                var lc = e.Location as LocationCurve;
+                if (lc?.Curve == null) { o["why"] = "run " + Rid.Value(e.Id) + " has no location line"; return o; }
+                XYZ p0 = lc.Curve.GetEndPoint(0), p1 = lc.Curve.GetEndPoint(1);
+                double d0 = Math.Sqrt(Math.Pow(p0.X * 304.8 - mx, 2) + Math.Pow(p0.Y * 304.8 - my, 2));
+                double d1 = Math.Sqrt(Math.Pow(p1.X * 304.8 - mx, 2) + Math.Pow(p1.Y * 304.8 - my, 2));
+                XYZ keep = d0 <= d1 ? p1 : p0, near = d0 <= d1 ? p0 : p1;
+                var start = new JArray(Math.Round(keep.X * 304.8, 4), Math.Round(keep.Y * 304.8, 4), Math.Round(keep.Z * 304.8, 4));
+                var end = new JArray(Math.Round(mx, 4), Math.Round(my, 4), Math.Round(near.Z * 304.8, 4));
+                var args = new JObject
+                {
+                    ["target_document"] = title, ["units"] = "mm", ["dry_run"] = true,
+                    ["operations"] = new JArray(new JObject
+                    {
+                        ["operation"] = "set_curve", ["element_ids"] = new JArray(Rid.Value(e.Id)), ["start"] = start, ["end"] = end
+                    })
+                };
+                string idem = request.Value<string>("idempotency_key");
+                if (!string.IsNullOrWhiteSpace(idem)) args["idempotency_key"] = idem + "-" + (j.Id ?? "j") + "-meet-" + Rid.Value(e.Id) + keySuffix;
+                CommandResult dry = child.Execute(app, args.ToString(Formatting.None));
+                string token = dry.Success ? TokenOf(dry) : null;
+                if (!dry.Success || token == null)
+                { o["why"] = "set_curve on run " + Rid.Value(e.Id) + " did not rehearse: " + (dry.Error ?? "no token"); return o; }
+                args["dry_run"] = false;
+                args["confirmation_token"] = token;
+                CommandResult done = child.Execute(app, args.ToString(Formatting.None));
+                if (!done.Success) { o["why"] = "set_curve on run " + Rid.Value(e.Id) + " failed: " + done.Error; return o; }
+                moved.Add(new JObject
+                {
+                    ["element_id"] = Rid.Value(e.Id),
+                    ["end_moved_mm"] = Math.Round(Math.Min(d0, d1), 1),
+                    ["to_mm"] = end
+                });
+            }
+            o["ok"] = true;
+            o["runs"] = moved;
+            o["midpoint_mm"] = new JArray(Math.Round(mx, 1), Math.Round(my, 1));
+            o["means"] = "both runs were brought to the drawn piece's midpoint so the fitting has connectors that meet; " +
+                         "Revit then cut them back to its fitting's own length";
+            return o;
+        }
+
         /// <summary>
         /// A built transition against the drawn one: sizes at both ends, axis, and where its two ends sit
         /// relative to the drawn piece's ends. "fits" only when every end is within the tolerance.
@@ -759,7 +898,27 @@ namespace Horizun.Revit.Commands
             };
 
             CommandResult r;
-            try { r = child.Execute(app, args.ToString(Formatting.None)); }
+            try
+            {
+                // REHEARSE, THEN SPEND THE TOKEN - horizun_connect_mep's own protocol. MEASURED (campaign 7):
+                // the sequential rehearsal sent dry_run=false straight away and every direct join was
+                // refused "No such confirmation token"; no earlier case had two built collinear runs.
+                string idem = request.Value<string>("idempotency_key");
+                if (!string.IsNullOrWhiteSpace(idem)) args["idempotency_key"] = idem + "-" + (j.Id ?? "j") + "-direct" + keySuffix;
+                args["dry_run"] = true;
+                r = child.Execute(app, args.ToString(Formatting.None));
+                if (!dryRun && r.Success)
+                {
+                    string token = TokenOf(r);
+                    if (token == null)
+                        return j.Row("refused", "connect_mep_gave_no_token",
+                            "the delegated rehearsal succeeded and issued no confirmation token, so the join " +
+                            "cannot be authorised. Nothing was written.");
+                    args["dry_run"] = false;
+                    args["confirmation_token"] = token;
+                    r = child.Execute(app, args.ToString(Formatting.None));
+                }
+            }
             catch (Exception ex)
             {
                 return j.Row("refused", "connect_mep_threw", ex.Message);
@@ -842,9 +1001,21 @@ namespace Horizun.Revit.Commands
                 {
                     string token = TokenOf(r);
                     if (token == null)
-                        return j.Row("refused", "create_elements_gave_no_token",
+                    {
+                        JObject noToken = j.Row("refused", "create_elements_gave_no_token",
                             "the delegated rehearsal succeeded and issued no confirmation token, so the " +
                             "apply cannot be authorised. Nothing was written.");
+                        // WHY there was no token is in the rehearsal's own reply - kept, not paraphrased.
+                        var rehearsalReply = r.Data as JObject;
+                        if (rehearsalReply != null)
+                            noToken["rehearsal"] = new JObject
+                            {
+                                ["application"] = rehearsalReply["application"], ["state"] = rehearsalReply["state"],
+                                ["rows"] = rehearsalReply["rows"] ?? rehearsalReply["elements"], ["warnings"] = rehearsalReply["warnings"],
+                                ["confirmation_note"] = rehearsalReply["confirmation_note"] ?? rehearsalReply["confirmation"]
+                            };
+                        return noToken;
+                    }
 
                     var apply = (JObject)args.DeepClone();
                     apply["dry_run"] = false;
