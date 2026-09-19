@@ -100,6 +100,50 @@ namespace Horizun.Core.Tests
             return CadUpdateRules.Plan(b, new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA });
         }
 
+        private static List<CadPoint> L(double x0, double y0, double x1, double y1) =>
+            new List<CadPoint> { new CadPoint(x0, y0), new CadPoint(x1, y1) };
+
+        [Fact]
+        public void An_end_slid_along_its_run_onto_a_fitting_is_a_connection()
+        {
+            JObject how = CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 0),
+                                                           new List<CadPoint> { new CadPoint(4800, 0) }, 1.0);
+            Assert.NotNull(how);
+            Assert.Equal(-200.0, (double)how["ends"][1]["slid_along_run_mm"]);
+        }
+
+        [Fact]
+        public void A_slid_end_with_no_fitting_on_it_or_off_the_line_or_too_far_is_not()
+        {
+            var fitted = new List<CadPoint> { new CadPoint(4800, 0) };
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 0), new List<CadPoint>(), 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 50),
+                                                         new List<CadPoint> { new CadPoint(4800, 50) }, 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 2400, 0),
+                                                         new List<CadPoint> { new CadPoint(2400, 0) }, 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(100, 0, 4800, 0), fitted, 1.0));
+        }
+
+        [Fact]
+        public void A_run_trimmed_by_a_connection_is_unchanged_not_a_persons_move()
+        {
+            CadRequirementSet set = Set();
+            List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
+            CadAuditSubject held = Built(a[0], set, RevA, 1001, movedTo: L(0, 0, 5800, 0));
+            held.FittedEnds = new List<CadPoint> { new CadPoint(5800, 0) };
+            CadUpdate update = CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB), new List<CadAuditSubject> { held },
+                                                   set, RevB, lineage: new[] { RevA });
+            CadUpdateAction action = Assert.Single(update.Actions);
+            Assert.Equal("leave", action.Kind);
+            Assert.Equal(CadChange.Unchanged, action.Classification);
+            Assert.NotNull(action.Evidence["trimmed_to_fitting"]);
+
+            held.FittedEnds = new List<CadPoint>();
+            CadUpdateAction moved = Assert.Single(CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB),
+                new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA }).Actions);
+            Assert.Equal(CadChange.ManuallyDiverged, moved.Classification);
+        }
+
         [Fact]
         public void A_label_that_still_says_the_built_size_changes_nothing()
         {

@@ -68,6 +68,12 @@ namespace Horizun.Revit.Core
         /// </summary>
         public double? WidthMm;
 
+        /// <summary>
+        /// The ends of a duct or pipe that are joined to a FITTING, in mm. A connection trims or
+        /// extends a run along its own line to meet the fitting - which is not a person moving it.
+        /// </summary>
+        public List<CadPoint> FittedEnds = new List<CadPoint>();
+
         /// <summary>A RECTANGULAR duct's height, in mm; null for anything else (a round duct included).</summary>
         public double? HeightMm;
 

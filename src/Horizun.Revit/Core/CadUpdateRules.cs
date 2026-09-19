@@ -456,6 +456,7 @@ namespace Horizun.Revit.Core
             }
 
             var claimed = new HashSet<long>();
+            var trimmedToFitting = new Dictionary<long, JObject>();
 
             foreach (CadCandidate c in candidates)
             {
@@ -607,7 +608,13 @@ namespace Horizun.Revit.Core
                     continue;
                 }
 
-                if (SamePlace(asBuilt, held.Geometry, tolerance))
+                // A CONNECTION IS NOT A PERSON. MEASURED on a real plan: cad_connect put five elbows in,
+                // Revit trimmed the ten ducts on their legs back to the elbows, and the next update
+                // said "A PERSON MOVED THIS" ten times. An end that moved only along the run's own line,
+                // and now sits on a fitting, was moved by the connection.
+                JObject trim = TrimmedToFitting(asBuilt, held.Geometry, held.FittedEnds, tolerance);
+                if (trim != null) trimmedToFitting[held.ElementId] = trim;
+                if (trim != null || SamePlace(asBuilt, held.Geometry, tolerance))
                 {
                     // THE GEOMETRY AGREES. That is not the same as nothing having
                     // changed: a revision can leave a wall exactly where it was
@@ -929,11 +936,63 @@ namespace Horizun.Revit.Core
                         "honour is not a question about the drawing.";
             }
 
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                JObject how;
+                if (!a.ElementId.HasValue || !trimmedToFitting.TryGetValue(a.ElementId.Value, out how)) continue;
+                a.Evidence["trimmed_to_fitting"] = how;
+                if (a.Kind == "leave")
+                    a.Says += " Its ends moved only along its own line, onto the fitting(s) a connection put there - " +
+                              "a connection, not a person's move.";
+            }
             ProposePairings(update, set, tolerance,
                             new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
             ApplyAccepted(update, accepted);
             CarryHeightFacts(update, candidates);
             return update;
+        }
+
+        /// <summary>How far a connection may pull an end along its run: an elbow or a transition, never a re-route.</summary>
+        public const double FittingTrimBoundMm = 2000.0;
+
+        /// <summary>
+        /// Null unless the element is its as-built line with one or both ends slid ALONG that line
+        /// (within <see cref="FittingTrimBoundMm"/>) onto a fitting, and every other end where it was built.
+        /// </summary>
+        public static JObject TrimmedToFitting(List<CadPoint> built, List<CadPoint> now, List<CadPoint> fittedEnds,
+                                               double tolerance)
+        {
+            if (built == null || now == null || built.Count != 2 || now.Count != 2 ||
+                fittedEnds == null || fittedEnds.Count == 0) return null;
+            double dx = built[1].X - built[0].X, dy = built[1].Y - built[0].Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < 1e-6) return null;
+            double ux = dx / len, uy = dy / len;
+            foreach (bool reversed in new[] { false, true })
+            {
+                var ends = new JArray();
+                bool ok = true, anyTrim = false;
+                for (int i = 0; i < 2 && ok; i++)
+                {
+                    CadPoint b = built[i], n = now[reversed ? 1 - i : i];
+                    if (b.PlanDistanceTo(n) <= tolerance) { ends.Add("as_built"); continue; }
+                    double along = (n.X - b.X) * ux + (n.Y - b.Y) * uy;
+                    double off = Math.Abs(-(n.X - b.X) * uy + (n.Y - b.Y) * ux);
+                    bool onFitting = fittedEnds.Any(f => f.PlanDistanceTo(n) <= tolerance);
+                    if (off > tolerance || Math.Abs(along) > FittingTrimBoundMm || !onFitting) { ok = false; break; }
+                    anyTrim = true;
+                    ends.Add(new JObject { ["end"] = i, ["slid_along_run_mm"] = Math.Round(along, 1) });
+                }
+                if (ok && anyTrim)
+                    return new JObject
+                    {
+                        ["ends"] = ends,
+                        ["bound_mm"] = FittingTrimBoundMm,
+                        ["means"] = "the element is its as-built line with an end slid along that same line onto a " +
+                                    "fitting: the connection moved it, and it is compared as built."
+                    };
+            }
+            return null;
         }
 
         /// <summary>The origins a change can have; every action carries one in evidence.change_origin.</summary>
