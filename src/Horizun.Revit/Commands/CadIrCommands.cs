@@ -350,6 +350,25 @@ namespace Horizun.Revit.Commands
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
+            // A PAGE OF AN ANALYSIS ALREADY MADE is cut from it, when the request names its fingerprint and nothing
+            // it depends on has changed (Core/CadNetworkCache). Everything else reads afresh.
+            JObject early = null;
+            try { early = string.IsNullOrWhiteSpace(paramsJson) ? null : JObject.Parse(paramsJson); } catch { }
+            long cacheEpoch = CadNetworkCache.Kept.Epoch;
+            string cacheKey = early != null && QueryCacheLifecycle.Ready ? NetworkCacheKey(app, early) : null;
+            string expectedEarly = early?.Value<string>("expect_analysis_fingerprint");
+            JObject cachedFull;
+            if (cacheKey != null && !string.IsNullOrWhiteSpace(expectedEarly) &&
+                CadNetworkCache.Kept.TryGet(cacheKey, cacheEpoch, out cachedFull) &&
+                string.Equals(CadNetworkPaging.Fingerprint(cachedFull), expectedEarly, StringComparison.Ordinal))
+            {
+                var onlyCached = (early["lists"] as JArray)?.Select(t => (string)t).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+                CadNetworkPaging.Page(cachedFull, onlyCached, Math.Max(0, early.Value<int?>("page_offset") ?? 0),
+                                      early.Value<int?>("page_limit") ?? CadNetworkPaging.DefaultLimit);
+                cachedFull["analysis_cache"] = CadNetworkCache.HitBlock(cacheKey);
+                return CommandResult.Ok(cachedFull);
+            }
+
             CadReading r = CadReadingHelper.Resolve(app, paramsJson);
             if (!r.Ok) return r.Refusal;
 
@@ -721,6 +740,19 @@ namespace Horizun.Revit.Commands
             JObject textRefusal = r.Ir.RefuseIfBlind(CadAxes.Text, "reading pipe sizes and elevations off the drawing");
             if (textRefusal != null) reply["why_sizes_must_be_declared"] = textRefusal;
 
+            if (r.Request["layers"] == null && r.Request["layer"] == null && set == null)
+                reply["scope_proposal"] = CadNetworkPaging.ScopeProposal(segments);
+            if (cacheKey != null)
+            {
+                reply["analysis_cache"] = new JObject
+                {
+                    ["state"] = CadNetworkCache.Kept.Store(cacheKey, cacheEpoch, reply) ? "read_and_kept" : "read_not_kept",
+                    ["key"] = cacheKey,
+                    ["means"] = "this reading was made now. A later page that names its analysis_fingerprint is cut from it " +
+                                "while no document changes (10 minutes at most)."
+                };
+            }
+
             // THE LISTING IS PAGED; THE ANALYSIS IS NOT. See Core/CadNetworkPaging.cs.
             var only = (r.Request["lists"] as JArray)?.Select(t => (string)t).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
             int pageOffset = Math.Max(0, r.Request.Value<int?>("page_offset") ?? 0);
@@ -734,10 +766,24 @@ namespace Horizun.Revit.Commands
                     "another reading; start again from offset 0.",
                     new JObject { ["refused"] = "source_changed_between_pages", ["expected"] = expected,
                                   ["now"] = reply["analysis_fingerprint"] });
-            if (r.Request["layers"] == null && r.Request["layer"] == null && set == null)
-                reply["scope_proposal"] = CadNetworkPaging.ScopeProposal(segments);
-
             return CommandResult.Ok(reply);
+        }
+
+        /// <summary>The analysis a request asks for, as a cache key; null when any part of it cannot be established.</summary>
+        private static string NetworkCacheKey(UIApplication app, JObject request)
+        {
+            try
+            {
+                Document doc = app?.ActiveUIDocument?.Document;
+                long id = request.Value<long?>("instance_id") ?? -1;
+                if (doc == null || id < 0 || !Rid.CanRepresent(id)) return null;
+                List<JObject> unreadable;
+                CadInstanceFacts f = CadFacts.Collect(doc, out unreadable).FirstOrDefault(x => x.ElementId == id);
+                if (f == null) return null;
+                return CadNetworkCache.Key(doc.PathName, CadReadingHelper.Title(doc), id, f.TransformFingerprint,
+                                           f.FileSha256, request, QueryCacheLifecycle.Cache.Epoch);
+            }
+            catch { return null; }
         }
 
         /// <summary>
