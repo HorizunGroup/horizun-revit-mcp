@@ -1084,6 +1084,11 @@ namespace Horizun.Revit.Commands
                         }
 
                         row["level_id"] = Rid.Value(level.Id);
+                        // A run's declared height is relative to THIS storey; only here is
+                        // the storey known. Resolved to absolute Z and the key removed.
+                        double levelElevationMm = 0;
+                        try { levelElevationMm = CadUnits.FeetToMm(level.Elevation); } catch { }
+                        CadConversionPlanRules.ResolveOffsetFromLevel(row, levelElevationMm);
                         if (seen.Add("level:" + Rid.Value(level.Id)))
                             resolved.Add(Resolved("level", level,
                                 want ?? (defaultLevelId.HasValue ? "level_id " + defaultLevelId.Value : null)));

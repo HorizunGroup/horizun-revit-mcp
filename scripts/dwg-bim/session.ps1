@@ -31,7 +31,7 @@
 # which the drivers pass as HORIZUN_SERVER_EXE and HORIZUN_REVIT_YEAR.
 # -----------------------------------------------------------------------------
 param(
-    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('start', 'register', 'stop', 'status')][string]$Operation,
+    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('start', 'wait', 'register', 'stop', 'status')][string]$Operation,
     [ValidateSet('2023', '2024', '2025', '2026', '2027')][string]$Year = '2026',
     [string]$FailAction = '',
     [string[]]$DeclineAddIn = @(),
@@ -50,6 +50,9 @@ function Close-HzNamedUnsignedPrompt([int]$ProcessId, [string[]]$Names) {
     # The unsigned-add-in prompt, on THIS pid, for an add-in NAMED by the caller and
     # never Horizun: "Do Not Load" for this process only, no trust stored.
     if (-not $Names) { return @() }
+    # pwsh 7 does not load UIAutomation by itself (measured: the first live start died here
+    # after Revit was recorded - the session survived and 'wait' finished it).
+    Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
     $A = [System.Windows.Automation.AutomationElement]
     $done = @()
     $cond = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $ProcessId)
@@ -68,6 +71,36 @@ function Close-HzNamedUnsignedPrompt([int]$ProcessId, [string[]]$Names) {
     return $done
 }
 
+function Wait-HzSessionAndStamp($state) {
+    # Wait for the bridge of the RECORDED pid (declining only the named add-ins' prompts and
+    # closing Autodesk's Insights notice), then write the build stamp results carry.
+    $deadline = (Get-Date).AddMinutes($WaitMinutes)
+    $up = $null
+    while ((Get-Date) -lt $deadline) {
+        $declined = @(Close-HzNamedUnsignedPrompt -ProcessId ([int]$state.identity.pid) -Names $DeclineAddIn)
+        if ($declined.Count) { "$(Get-Date -Format HH:mm:ss) declined $($declined -join ', ') for this Revit process" }
+        $up = Wait-HzOwnedBridge -Probes $probes -Year $Year -Minutes 1
+        if ($up.notices_closed) { "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
+        if ($up.ok) { "$(Get-Date -Format HH:mm:ss) bridge up"; break }
+    }
+    if (-not $up -or -not $up.ok) { throw "the bridge did not answer for the recorded pid in $WaitMinutes min; the session is recorded - stop it with: session.ps1 stop -Year $Year" }
+    # The identity a result must carry: which source, which staged DLL, which server,
+    # which process. Read from disk here, not remembered - so a result can be checked
+    # against what was actually loaded.
+    $stagedDll = Join-Path $env:USERPROFILE ".horizun\dev-addin\$Year\Horizun\Horizun.Revit.dll"
+    $head = (git -C $repo rev-parse HEAD).Trim()
+    $dirty = @(git -C $repo status --porcelain -- src global.json Directory.Build.props).Count -gt 0
+    $stamp = [ordered]@{
+        schema = 'horizun.session-build/1'; year = $Year; source_commit = $head; product_sources_dirty = $dirty
+        staged_dll = $stagedDll
+        staged_dll_sha256 = $(if (Test-Path -LiteralPath $stagedDll) { (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
+        server_exe = $server; server_sha256 = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
+        revit_pid = [int]$state.identity.pid; revit_start_time = [string]$state.identity.start_time; revit_exe = [string]$state.identity.exe
+        session_dir = $(if ($state.dir) { $state.dir } else { $dir }); written_utc = (Get-Date).ToUniversalTime().ToString('o') }
+    $stamp | ConvertTo-Json | Set-Content -Path "$env:TEMP\hz_build.json" -Encoding utf8
+    "staged dll sha256 $($stamp.staged_dll_sha256)"
+}
+
 $lock = Enter-HzOwnedLock -Year $Year
 try {
     switch ($Operation) {
@@ -76,6 +109,13 @@ try {
             if (-not $s) { "no Revit $Year session is recorded"; break }
             [ordered]@{ phase = $s.phase; pid = $s.identity.pid; started = $s.started_utc
                         registered = @($s.ledger.documents | ForEach-Object { $_.title }) } | ConvertTo-Json -Depth 5
+        }
+        'wait' {
+            # Resume a recorded session whose start was interrupted before the bridge answered.
+            $s = Read-HzOwnedState $Year
+            if (-not $s -or $s.phase -ne 'running') { throw "no running Revit $Year session is recorded; nothing to wait for" }
+            $state = @{ identity = $s.identity; dir = $s.dir }
+            Wait-HzSessionAndStamp $state
         }
         'register' {
             $r = Register-HzOwnedDocument -Probes $probes -Year $Year -ExpectedTitle $ExpectedTitle -SourceFile $SourceFile
@@ -108,31 +148,7 @@ try {
             Set-Content -Path "$env:TEMP\hz_year.txt" -Value $Year -NoNewline
             "server: $server"
             "revit $Year pid $($state.identity.pid) recorded"
-            $deadline = (Get-Date).AddMinutes($WaitMinutes)
-            $up = $null
-            while ((Get-Date) -lt $deadline) {
-                $declined = @(Close-HzNamedUnsignedPrompt -ProcessId ([int]$state.identity.pid) -Names $DeclineAddIn)
-                if ($declined.Count) { "$(Get-Date -Format HH:mm:ss) declined $($declined -join ', ') for this Revit process" }
-                $up = Wait-HzOwnedBridge -Probes $probes -Year $Year -Minutes 1
-                if ($up.notices_closed) { "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
-                if ($up.ok) { "$(Get-Date -Format HH:mm:ss) bridge up"; break }
-            }
-            if (-not $up -or -not $up.ok) { throw "the bridge did not answer for the recorded pid in $WaitMinutes min; the session is recorded - stop it with: session.ps1 stop -Year $Year" }
-            # The identity a result must carry: which source, which staged DLL, which server,
-            # which process. Read from disk here, not remembered - so a result can be checked
-            # against what was actually loaded.
-            $stagedDll = Join-Path $env:USERPROFILE ".horizun\dev-addin\$Year\Horizun\Horizun.Revit.dll"
-            $head = (git -C $repo rev-parse HEAD).Trim()
-            $dirty = @(git -C $repo status --porcelain --untracked-files=no -- src global.json Directory.Build.props).Count -gt 0
-            $stamp = [ordered]@{
-                schema = 'horizun.session-build/1'; year = $Year; source_commit = $head; product_sources_dirty = $dirty
-                staged_dll = $stagedDll
-                staged_dll_sha256 = $(if (Test-Path -LiteralPath $stagedDll) { (Get-FileHash -LiteralPath $stagedDll -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null })
-                server_exe = $server; server_sha256 = (Get-FileHash -LiteralPath $server -Algorithm SHA256).Hash.ToLowerInvariant()
-                revit_pid = [int]$state.identity.pid; revit_start_time = [string]$state.identity.start_time; revit_exe = [string]$state.identity.exe
-                session_dir = $dir; written_utc = (Get-Date).ToUniversalTime().ToString('o') }
-            $stamp | ConvertTo-Json | Set-Content -Path "$env:TEMP\hz_build.json" -Encoding utf8
-            "staged dll sha256 $($stamp.staged_dll_sha256)"
+            Wait-HzSessionAndStamp $state
         }
     }
 }

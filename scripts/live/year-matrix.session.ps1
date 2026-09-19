@@ -384,7 +384,7 @@ function New-HzMatrixProbes {
             $env:HORIZUN_SERVER_EXE = $ServerExe; $env:HORIZUN_REVIT_YEAR = $Year
             $tag = (Get-Date -Format 'yyyyMMddHHmmssfff')
             $dryArgs = Join-Path $Dir "close-$tag.dry.args.json"; $dryOut = Join-Path $Dir "close-$tag.dry.out.json"
-            (@{ operation = 'close'; target_document = $Target; expected_version = $Year; dry_run = $true; activate_other = $true } |
+            (@{ operation = 'close'; target_document = $Target; dry_run = $true; activate_other = $true } |
                 ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $dryArgs -Encoding utf8
             & pwsh -NoProfile -File $hzCall -Tool horizun_document_session -ArgumentsPath $dryArgs -Json $dryOut -Quiet -TimeoutSec 300 | Out-Null
             # WHICH DOCUMENT DID THE REHEARSAL FIND? Its own reply says, and if
@@ -394,7 +394,7 @@ function New-HzMatrixProbes {
             $rehearsal = & $readRehearsal -ReplyPath $dryOut -ExpectTitle $expectTitle -ExpectPath $expectPath
             if (-not $rehearsal.ok) { return @{ ok = $false; error = [string]$rehearsal.error } }
             $args2 = Join-Path $Dir "close-$tag.args.json"; $out2 = Join-Path $Dir "close-$tag.out.json"
-            $applyArgs = @{ operation = 'close'; target_document = $Target; expected_version = $Year
+            $applyArgs = @{ operation = 'close'; target_document = $Target
                             discard_unsaved = $true; activate_other = $true
                             idempotency_key = "year-matrix-close-$Year-$tag" }
             # Only when one was issued: a token is the answer to "this would lose

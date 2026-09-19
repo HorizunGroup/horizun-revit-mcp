@@ -163,6 +163,34 @@ namespace Horizun.Revit.Core
         /// or a grid does not bear load, and passing the flag there would be a
         /// silent no-op that reads like a setting.
         /// </summary>
+        /// <summary>
+        /// Plan-internal: a run's height above its storey, resolved to absolute Z by
+        /// the plan command (which knows the storey) and never sent to create_elements.
+        /// </summary>
+        public const string OffsetFromLevelKey = "offset_from_level_mm";
+
+        /// <summary>
+        /// Resolve a run's declared height above its storey into absolute end Z, in
+        /// mm, and remove the plan-internal key. A run whose two ends already differ
+        /// in Z carries a fall (or a drawn slope) and is left as it is: the fall is
+        /// the more specific statement. Returns true when the row was changed.
+        /// </summary>
+        public static bool ResolveOffsetFromLevel(JObject row, double levelElevationMm)
+        {
+            if (row == null || row[OffsetFromLevelKey] == null) return false;
+            double offset = row.Value<double>(OffsetFromLevelKey);
+            row.Remove(OffsetFromLevelKey);
+            var start = row["start"] as JArray;
+            var end = row["end"] as JArray;
+            if (start == null || end == null || start.Count < 3 || end.Count < 3) return false;
+            double zA = start[2].Value<double>(), zB = end[2].Value<double>();
+            if (Math.Abs(zA - zB) > 1e-6) return false;
+            double z = Math.Round(levelElevationMm + zA + offset, 4, MidpointRounding.AwayFromZero);
+            start[2] = z;
+            end[2] = z;
+            return true;
+        }
+
         /// <summary>The runs Revit carries a system and a bore on.</summary>
         private static readonly HashSet<string> MepKinds =
             new HashSet<string>(StringComparer.Ordinal) { "pipe", "duct", "conduit", "cable_tray" };
@@ -556,6 +584,17 @@ namespace Horizun.Revit.Core
                     if (c.Geometry.Count < 2) return null;
                     o["start"] = Pt(c.Geometry[0]);
                     o["end"] = Pt(c.Geometry[c.Geometry.Count - 1]);
+                    // THE RULE'S HEIGHT, which never reached the run. offset_mm was
+                    // parsed onto the candidate and then dropped here: every duct and
+                    // pipe of a flat plan was emitted at the drawing's Z (0), so a
+                    // supply main declared 2743 mm above the storey was built IN the
+                    // floor (measured, campaign 6, M106). The height is relative to
+                    // the storey, and only the plan command knows the storey's
+                    // elevation - so it travels as a plan-internal key that
+                    // PlanFromCadCommand resolves together with the level and removes
+                    // before anything reaches create_elements.
+                    if (c.OffsetMm.HasValue && MepKinds.Contains(createKind))
+                        o[OffsetFromLevelKey] = c.OffsetMm.Value;
                     break;
 
                 case "shaft":
@@ -1098,6 +1137,8 @@ namespace Horizun.Revit.Core
 
                 start[2] = Round(centreAtStart);
                 end[2] = Round(centreAtEnd);
+                // The fall IS this run's height; the rule's flat offset no longer applies.
+                a.Arguments.Remove(OffsetFromLevelKey);
 
                 // THE BLOCK IS LIFTED HERE AND NOWHERE ELSE, because here is the
                 // only place the two heights were actually written.

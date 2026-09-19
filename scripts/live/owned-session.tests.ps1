@@ -212,6 +212,17 @@ try {
     $threw = $false; try { $null = Start-HzRecordedRevit -Probes $f.probes -Name 'unit' -Year '2099' -Dir $root -RevitExe $pwshExe } catch { $threw = $true }
     Check 'recorded start refuses beside a Revit of the same year it did not start' ($threw -and ($f.state.startCalls -eq 0) -and (-not (Test-Path -LiteralPath (Get-HzRecordPath 'unit' '2099'))))
 
+    # 13. The close the module SENDS is one the contract accepts (measured live 2026-09-19: the close
+    #     carried expected_version, the server refused it, and the session was - safely - left running).
+    $contract = Get-Content -LiteralPath (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'src\Horizun.Contracts\Contract.cs') -Raw
+    $m = [regex]::Match($contract, '\["close"\]\s*=\s*new\[\]\s*\{([^}]*)\}')
+    $allowed = @('operation', 'dry_run', 'idempotency_key') + @([regex]::Matches($m.Groups[1].Value, '"([a-z_]+)"') | ForEach-Object { $_.Groups[1].Value })
+    $ym = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'year-matrix.session.ps1') -Raw
+    $sent = @([regex]::Matches($ym, "@\{\s*operation\s*=\s*'close'[^}]*\}") | ForEach-Object {
+        [regex]::Matches($_.Value, '(?:^|[;{\s])([a-z_]+)\s*=') | ForEach-Object { $_.Groups[1].Value } })
+    $extra = @($sent | Where-Object { $_ -notin $allowed } | Sort-Object -Unique)
+    Check 'the close the module sends uses only keys the contract accepts for close' ($m.Success -and $sent.Count -gt 0 -and $extra.Count -eq 0) ("not accepted: " + ($extra -join ', '))
+
     # 12. The migrated scripts: no name-based kill, no MCP server termination, no discard of what is not registered.
     $scripts = [ordered]@{
         'live-cycle.ps1'               = Join-Path (Split-Path -Parent $PSScriptRoot) 'live-cycle.ps1'
