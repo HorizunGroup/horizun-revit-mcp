@@ -568,6 +568,7 @@ namespace Horizun.Revit.Commands
                 t.Commit();
             }
 
+            JArray fittingsAfterResize = FittingsAfterResize(doc, actions);
             var result = new JObject
             {
                 ["document"] = title,
@@ -586,6 +587,7 @@ namespace Horizun.Revit.Commands
                 ["restamp_failed"] = restampFailed,
                 ["restamps"] = restamps,
                 ["hosted_kept_in_place"] = keptInPlace,
+                ["fittings_after_resize"] = fittingsAfterResize,
                 ["substitutions"] = new JArray(touched.Where(x => x.RowIndex.HasValue).Select(x => new
                     {
                         t = x,
@@ -758,6 +760,65 @@ namespace Horizun.Revit.Commands
                 if (!id.HasValue) continue;
                 yield return new Touched { Key = key, ElementId = id.Value, RowIndex = row.Value<int?>("index") };
             }
+        }
+
+        /// <summary>
+        /// WHAT A RESIZE DID TO THE FITTINGS ON A DUCT'S ENDS, re-read from the model. Revit decides
+        /// this itself - it may resize a fitting, keep it and insert a transition, or refuse - and a
+        /// verified width and height on the duct says nothing about any of it. MEASURED: two legs of an
+        /// elbow resized one after the other kept the elbow and gained a transition each.
+        /// </summary>
+        private static JArray FittingsAfterResize(Document doc, JArray actions)
+        {
+            var report = new JArray();
+            if (doc == null || actions == null) return report;
+            foreach (JObject action in actions.OfType<JObject>())
+            {
+                var before = action["fittings_before"] as JObject;
+                if (before == null) continue;
+                foreach (JProperty prop in before.Properties())
+                {
+                    long ductId;
+                    if (!long.TryParse(prop.Name, out ductId)) continue;
+                    var was = new HashSet<long>((prop.Value as JArray ?? new JArray()).Select(t => (long)t));
+                    var now = new List<long>();
+                    var duct = doc.GetElement(Rid.Make(ductId)) as MEPCurve;
+                    try
+                    {
+                        if (duct?.ConnectorManager != null)
+                            foreach (Connector c in duct.ConnectorManager.Connectors)
+                                foreach (Connector o in c.AllRefs)
+                                    if (o.Owner is FamilyInstance fi && fi.Id != duct.Id && !now.Contains(Rid.Value(fi.Id)))
+                                        now.Add(Rid.Value(fi.Id));
+                    }
+                    catch { }
+                    var rows = new JArray();
+                    foreach (long id in was.Union(now))
+                    {
+                        Element f = doc.GetElement(Rid.Make(id));
+                        var sizes = new JArray();
+                        try
+                        {
+                            var cm = (f as FamilyInstance)?.MEPModel?.ConnectorManager;
+                            if (cm != null)
+                                foreach (Connector c in cm.Connectors)
+                                    sizes.Add(c.Shape == ConnectorProfileType.Round
+                                        ? (JToken)Math.Round(c.Radius * 2 * 304.8, 1)
+                                        : new JArray(Math.Round(c.Width * 304.8, 1), Math.Round(c.Height * 304.8, 1)));
+                        }
+                        catch { }
+                        rows.Add(new JObject
+                        {
+                            ["element_id"] = id,
+                            ["state"] = f == null ? "gone" : !was.Contains(id) ? "inserted_by_revit" : now.Contains(id) ? "still_attached" : "detached",
+                            ["name"] = f == null ? null : (f as FamilyInstance)?.Symbol?.FamilyName + ": " + f.Name,
+                            ["connector_sizes_mm"] = sizes
+                        });
+                    }
+                    report.Add(new JObject { ["duct"] = ductId, ["fittings"] = rows });
+                }
+            }
+            return report;
         }
 
         /// <summary>The elements a transform aimed at: a set_curve re-shapes one that already exists.</summary>

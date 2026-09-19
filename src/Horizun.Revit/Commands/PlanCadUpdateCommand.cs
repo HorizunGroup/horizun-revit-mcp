@@ -942,10 +942,15 @@ namespace Horizun.Revit.Commands
 
             // WHAT A PERSON DECIDED: a type change, or a turn in the element's own face.
             int d = 0;
+            var sectionWrites = new JArray();
+            var fittingsBefore = new JObject();
             foreach (CadUpdateAction a in update.Actions.Where(x => x.Automatic &&
                                                                     (x.Kind == CadDecisions.Retype || x.Kind == CadDecisions.RotateInFace)).ToList())
             {
                 string why;
+                // ALL SECTION RESIZES IN ONE TRANSACTION: two legs of one elbow resized one at a time
+                // leave Revit a fitting that fits neither half-way state (MEASURED: it kept the elbow and
+                // inserted a transition on each leg).
                 if (a.Kind == CadDecisions.Retype && a.Evidence.Value<bool?>("section") == true)
                 {
                     // A RECTANGULAR SECTION is the instance's own width and height: written by the
@@ -958,13 +963,10 @@ namespace Horizun.Revit.Commands
                         a.Says += " HELD: the decision could not become a typed action (" + why + ").";
                         continue;
                     }
-                    actions.Add(new JObject
-                    {
-                        ["key"] = "cad-update-resolve-" + (d++),
-                        ["tool"] = "horizun_write_params_verified",
-                        ["arguments"] = new JObject { ["target_document"] = target, ["writes"] = writes }
-                    });
-                    a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
+                    foreach (JToken w in writes) sectionWrites.Add(w);
+                    fittingsBefore[a.ElementId.Value.ToString(CultureInfo.InvariantCulture)] =
+                        a.Evidence["fittings_on_its_ends"] ?? new JArray();
+                    a.Evidence["resolve_key"] = "cad-update-resolve-sections";
                     continue;
                 }
                 JObject op = a.Kind == CadDecisions.Retype
@@ -990,6 +992,15 @@ namespace Horizun.Revit.Commands
                 });
                 a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
             }
+            if (sectionWrites.Count > 0)
+                actions.Add(new JObject
+                {
+                    ["key"] = "cad-update-resolve-sections",
+                    ["tool"] = "horizun_write_params_verified",
+                    ["arguments"] = new JObject { ["target_document"] = target, ["writes"] = sectionWrites },
+                    // read back by the apply: what the fittings on these ducts' ends became
+                    ["fittings_before"] = fittingsBefore
+                });
 
             // WHAT A PERSON DECIDED TO DELETE: one verified delete per element.
             int removals = 0;
