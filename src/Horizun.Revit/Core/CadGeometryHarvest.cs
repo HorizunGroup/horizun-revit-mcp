@@ -63,7 +63,18 @@ namespace Horizun.Revit.Core
                 ? "no curve needed chording; every segment is exactly what was drawn"
                 : "arcs and splines were chorded to within " + sagittaMm.ToString("0.##", CultureInfo.InvariantCulture) +
                   " mm of the true curve; those segments are APPROXIMATE, not what was drawn",
-            ["not_harvested"] = new JArray(NotHarvested),
+            // GROUPED, NOT REPEATED. MEASURED (campaign 7): 2,015 identical rows ("Point on layer ...") made
+            // 440 KB of every reply, and of every PAGE of a paged listing. Each distinct row is kept once with
+            // how many times it occurred; the total is exact and nothing is dropped from it.
+            ["not_harvested"] = new JArray(NotHarvested
+                .GroupBy(x => x.ToString(Newtonsoft.Json.Formatting.None))
+                .Select(g => { var o = (JObject)g.First().DeepClone(); o["occurrences"] = g.Count(); return o; })
+                .Take(200)),
+            ["not_harvested_total"] = NotHarvested.Count,
+            ["not_harvested_distinct"] = NotHarvested.Select(x => x.ToString(Newtonsoft.Json.Formatting.None)).Distinct().Count(),
+            ["not_harvested_means"] = "each distinct primitive this walk could not turn into segments, once, with its occurrences; " +
+                                      "not_harvested_total counts every one. More than 200 distinct kinds are cut at 200 and " +
+                                      "not_harvested_distinct says how many there are.",
             ["max_instance_depth"] = MaxDepth,
             ["truncated"] = Truncated,
             ["primitive_bound"] = PrimitiveBound,

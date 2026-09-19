@@ -1201,6 +1201,9 @@ namespace Horizun.Revit.Commands
                 {
                     ["fitting_id"] = fid, ["part"] = part, ["runs"] = runs, ["protected"] = protectedIds,
                     ["viable_to_rebuild"] = notViable == null, ["not_viable_because"] = notViable,
+                    ["viable_means"] = "by topology and sections only: whether Revit can PLACE the new fitting (a leg long enough " +
+                                       "for its radius, room for it) is known only when it is placed - MEASURED on a real plan, a " +
+                                       "70 mm leg could not take a 10 in elbow. The refit is then rolled back whole and says so.",
                     ["policy"] = policy, ["outcome"] = rebuild ? "rebuild" : "keep",
                     ["identity"] = rebuild ? "the fitting is replaced by a new one (new element id); the runs keep theirs" : "unchanged",
                     ["connections_kept"] = "every run stays joined at this junction; every run's other end keeps its connections",

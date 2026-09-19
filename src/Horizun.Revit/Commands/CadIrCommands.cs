@@ -545,7 +545,16 @@ namespace Horizun.Revit.Commands
                 piecesReport["means"] = "runs the conversion cuts where their section changes are read here as the same " +
                                         "pieces, so every network run names an element the conversion builds (or a piece " +
                                         "it keeps pending).";
-                if (sectionsRead?["by_rule"] != null) piecesReport["sections"] = sectionsRead["by_rule"];
+                // counts only: the per-run rows are horizun_plan_from_cad's reply, and repeating them on every page
+                // of a paged listing is what made a four-run page weigh as much as the whole reading
+                if (sectionsRead?["by_rule"] is JObject byRuleRead)
+                {
+                    var brief = new JObject();
+                    foreach (JProperty rp in byRuleRead.Properties())
+                        brief[rp.Name] = new JObject { ["runs"] = rp.Value["runs"], ["by_state"] = rp.Value["by_state"] };
+                    piecesReport["sections"] = brief;
+                    piecesReport["sections_means"] = "counts per state; the per-run rows, with labels and reasons, are in horizun_plan_from_cad's reply";
+                }
             }
 
             // THE ARCS THE READER KEPT AS ARCS. Without them a curve chorded to the
