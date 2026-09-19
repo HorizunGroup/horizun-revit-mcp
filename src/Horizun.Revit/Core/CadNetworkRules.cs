@@ -1134,13 +1134,31 @@ namespace Horizun.Revit.Core
                                  "the geometry does not say. Nothing was placed.";
                         return j;
                     }
+                    // THE BRANCH IS THE THIRD INCIDENCE, BY POSITION IN THE LIST - not "the
+                    // run whose id is neither of the other two". A run shorter than the
+                    // connect tolerance meets its node with BOTH ends, so one id appears
+                    // twice among three incidences; picking by id then found nothing and
+                    // the whole reading died on an unhandled exception (measured on a real
+                    // corridor supply plan whose main backtracks 19.7 mm at its end).
+                    int branchIndex = Enumerable.Range(0, incident.Count)
+                        .First(k => k != through.Item1 && k != through.Item2);
+                    string throughA = incident[through.Item1].RunId, throughB = incident[through.Item2].RunId;
+                    string branch = incident[branchIndex].RunId;
+                    if (throughA == throughB || branch == throughA || branch == throughB)
+                    {
+                        j.Kind = CadJunctionKind.Irregular;
+                        j.Automatic = false;
+                        j.Says = "one run meets this point with both of its ends - it is shorter than the connect " +
+                                 "tolerance, which in a drawing is a doubled-back or overdrawn end rather than a " +
+                                 "piece of duct or pipe. Three incidences, two runs: no fitting fits that, and " +
+                                 "which of them is real is a question for a person. Nothing was placed.";
+                        return j;
+                    }
                     j.Kind = CadJunctionKind.Tee;
                     j.Automatic = true;
-                    j.ThroughRunIds.Add(incident[through.Item1].RunId);
-                    j.ThroughRunIds.Add(incident[through.Item2].RunId);
-                    j.BranchRunId = incident.First(i =>
-                        i.RunId != incident[through.Item1].RunId &&
-                        i.RunId != incident[through.Item2].RunId).RunId;
+                    j.ThroughRunIds.Add(throughA);
+                    j.ThroughRunIds.Add(throughB);
+                    j.BranchRunId = branch;
                     j.Says = "three runs: " + j.ThroughRunIds[0] + " and " + j.ThroughRunIds[1] +
                              " run through, " + j.BranchRunId + " branches off. A tee.";
                     return j;
