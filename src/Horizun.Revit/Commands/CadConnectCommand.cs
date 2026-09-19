@@ -457,16 +457,53 @@ namespace Horizun.Revit.Commands
             return list;
         }
 
-        /// <summary>The ONE fitting every member is joined to, when there is exactly one; else null.</summary>
-        private static FamilyInstance CommonFitting(Junction j)
+        /// <summary>
+        /// Fittings reachable from a run through fittings only (at most three deep). MEASURED on the
+        /// rectangular synthetic: a tee between a 16x8 and a 12x8 run got Revit's own transitions on
+        /// its legs, so the runs touch the transitions and only reach the tee through them.
+        /// </summary>
+        private static List<Element> ReachableFittings(Element run)
         {
+            var seen = new List<Element>();
+            var frontier = AllNeighbours(run).Where(IsFitting).ToList();
+            for (int depth = 0; depth < 3 && frontier.Count > 0; depth++)
+            {
+                var next = new List<Element>();
+                foreach (Element f in frontier)
+                {
+                    if (seen.Any(x => x.Id == f.Id)) continue;
+                    seen.Add(f);
+                    next.AddRange(AllNeighbours(f).Where(IsFitting));
+                }
+                frontier = next;
+            }
+            return seen;
+        }
+
+        /// <summary>
+        /// The fitting of the junction's kind that every member reaches, when there is exactly one;
+        /// <paramref name="anyShared"/> is set when members share fittings but none of that kind.
+        /// </summary>
+        private static FamilyInstance CommonFitting(Junction j, out bool anyShared)
+        {
+            anyShared = false;
             List<Element> common = null;
             foreach (Element e in j.Elements)
             {
-                var fits = AllNeighbours(e).Where(IsFitting).ToList();
+                var fits = ReachableFittings(e);
                 common = common == null ? fits : common.Where(x => fits.Any(f => f.Id == x.Id)).ToList();
             }
-            return common != null && common.Count == 1 ? common[0] as FamilyInstance : null;
+            if (common == null || common.Count == 0) return null;
+            anyShared = true;
+            var ofKind = common.OfType<FamilyInstance>()
+                .Where(f => string.Equals(PartOf(f), j.Fitting, StringComparison.OrdinalIgnoreCase)).ToList();
+            return ofKind.Count == 1 ? ofKind[0] : (common.Count == 1 ? common[0] as FamilyInstance : null);
+        }
+
+        private static FamilyInstance CommonFitting(Junction j)
+        {
+            bool unused;
+            return CommonFitting(j, out unused);
         }
 
         private static string PartOf(FamilyInstance f)
