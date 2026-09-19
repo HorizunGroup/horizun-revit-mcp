@@ -182,6 +182,10 @@ namespace Horizun.Revit.Core
 
         /// <summary>The block definition this candidate was read from, when it was read from one.</summary>
         public string SourceBlockName;
+        /// <summary>The dynamic block behind an anonymous SourceBlockName, when there is one.</summary>
+        public string SourceEffectiveName;
+        /// <summary>The dynamic property values the source instance carried, when there were any.</summary>
+        public Dictionary<string, string> SourceDynamicProperties;
 
         /// <summary>
         /// Which way the device faces in plan, when the requirement set declares
@@ -331,7 +335,7 @@ namespace Horizun.Revit.Core
         /// and in every plan's binding, so an update can tell a new reading of the
         /// same bytes from a new drawing.
         /// </summary>
-        public const string ReadingRulesRevision = "2026.09.17-composition-finish-continuity";
+        public const string ReadingRulesRevision = "2026.09.19-dynamic-blocks";
 
         private static string _interpretationVersion;
 

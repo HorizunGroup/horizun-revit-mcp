@@ -80,6 +80,10 @@ namespace Horizun.Revit.Commands
                     {
                         Key = p.Key,
                         BlockName = p.BlockName,
+                        EffectiveName = p.Source == null ? null : p.Source.EffectiveName,
+                        EffectiveNameSource = p.Source == null ? null : p.Source.EffectiveNameSource,
+                        DynamicProperties = p.Source == null ? null : p.Source.DynamicProperties,
+                        DefinitionSignature = p.Source == null ? null : p.Source.DefinitionSignature,
                         Layer = p.Layer,
                         Space = p.Space ?? "unknown",
                         Path = new List<string>(p.Path),
@@ -232,6 +236,7 @@ namespace Horizun.Revit.Commands
                 {
                     ["candidate_id"] = c.Id,
                     ["block"] = c.SourceBlockName,
+                    ["effective_block"] = c.SourceEffectiveName,
                     ["policy"] = policy,
                     ["symmetry"] = measured?.ToJson()
                 };

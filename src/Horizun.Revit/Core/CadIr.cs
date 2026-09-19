@@ -387,8 +387,37 @@ namespace Horizun.Revit.Core
         /// <summary>Rotation in radians, for text and block instances.</summary>
         public double? RotationRadians;
 
-        /// <summary>For a block instance: the definition's name.</summary>
+        /// <summary>For a block instance: the name of the definition it REFERENCES - for a
+        /// dynamic block that is the anonymous "*U11" AutoCAD generated and renumbers on edit.</summary>
         public string BlockName;
+
+        /// <summary>
+        /// For an instance of a DYNAMIC block: the name of the dynamic definition it was
+        /// generated from ("OUT2" behind "*U11"). A different fact from BlockName, kept beside
+        /// it, never in place of it. Null when the instance is not dynamic or the reader cannot
+        /// see the link (a reading through Revit cannot).
+        /// </summary>
+        public string EffectiveName;
+
+        /// <summary>How the effective name was found: "repdata" (the instance's block
+        /// representation data) or "reptag" (the anonymous definition's AcDbBlockRepBTag).</summary>
+        public string EffectiveNameSource;
+
+        /// <summary>
+        /// For a dynamic block instance: the property values set ON THIS INSTANCE (visibility
+        /// state, flip, angle, distance), name to value as the drawing stores them. A property
+        /// never set keeps the definition's default and is absent - absent is not "none". Null
+        /// when the reader cannot see them.
+        /// </summary>
+        public Dictionary<string, string> DynamicProperties;
+
+        /// <summary>
+        /// A fingerprint of the geometry of the definition this instance references, when the
+        /// reader dumped the definition: two instances of one dynamic block with different
+        /// parameter values reference different anonymous definitions whose CONTENT differs,
+        /// and that content - not the renumbered name - is what separates the variants.
+        /// </summary>
+        public string DefinitionSignature;
 
         /// <summary>For a block instance: its attribute tag/value pairs, when the reader can reach them.</summary>
         public Dictionary<string, string> Attributes;
@@ -470,6 +499,16 @@ namespace Horizun.Revit.Core
             if (TextHeightMm.HasValue) o["text_height_mm"] = Math.Round(TextHeightMm.Value, 3, MidpointRounding.AwayFromZero);
             if (RotationRadians.HasValue) o["rotation_radians"] = Math.Round(RotationRadians.Value, 6, MidpointRounding.AwayFromZero);
             if (BlockName != null) o["block_name"] = BlockName;
+            if (EffectiveName != null)
+            {
+                o["effective_name"] = EffectiveName;
+                o["effective_name_from"] = EffectiveNameSource;
+                var dp = new JObject();
+                foreach (var kv in (DynamicProperties ?? new Dictionary<string, string>()).OrderBy(k => k.Key, StringComparer.Ordinal))
+                    dp[kv.Key] = kv.Value;
+                o["dynamic_properties"] = dp;
+                if (DefinitionSignature != null) o["definition_signature"] = DefinitionSignature;
+            }
             if (Attributes != null && Attributes.Count > 0)
             {
                 var a = new JObject();
@@ -719,6 +758,13 @@ namespace Horizun.Revit.Core
                     sb.Append(p.X.ToString("0.####", CultureInfo.InvariantCulture)).Append(',')
                       .Append(p.Y.ToString("0.####", CultureInfo.InvariantCulture)).Append(',')
                       .Append(p.Z.ToString("0.####", CultureInfo.InvariantCulture)).Append(';');
+                // Only when present, so a drawing without dynamic blocks keeps its fingerprint.
+                if (e.EffectiveName != null)
+                {
+                    sb.Append(Sep).Append("eff=").Append(e.EffectiveName).Append(Sep).Append(e.DefinitionSignature ?? "");
+                    foreach (var kv in (e.DynamicProperties ?? new Dictionary<string, string>()).OrderBy(k => k.Key, StringComparer.Ordinal))
+                        sb.Append(Sep).Append(kv.Key).Append('=').Append(kv.Value);
+                }
                 sb.Append('\n');
             }
             foreach (CadIrExternalReference x in ExternalReferences.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase))

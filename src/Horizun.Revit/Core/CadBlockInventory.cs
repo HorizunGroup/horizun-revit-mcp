@@ -40,6 +40,11 @@ namespace Horizun.Revit.Core
     {
         public string Key;
         public string BlockName;
+        /// <summary>The dynamic block behind an anonymous BlockName; a separate fact, not a rename.</summary>
+        public string EffectiveName;
+        public string EffectiveNameSource;
+        public Dictionary<string, string> DynamicProperties;
+        public string DefinitionSignature;
         public string Layer;
         public string Space;
         public List<string> Path = new List<string>();
@@ -62,6 +67,12 @@ namespace Horizun.Revit.Core
                 ["key"] = Key,
                 ["block_name"] = BlockName,
                 ["bare_name"] = CadBlockRules.BareName(BlockName),
+                ["effective_name"] = EffectiveName,
+                ["effective_name_from"] = EffectiveNameSource,
+                ["dynamic_properties"] = DynamicProperties == null ? null
+                    : new JObject(DynamicProperties.OrderBy(k => k.Key, StringComparer.Ordinal)
+                                                   .Select(k => new JProperty(k.Key, k.Value))),
+                ["definition_signature"] = DefinitionSignature,
                 ["layer"] = Layer,
                 ["space"] = Space,
                 ["outcome"] = Outcome,

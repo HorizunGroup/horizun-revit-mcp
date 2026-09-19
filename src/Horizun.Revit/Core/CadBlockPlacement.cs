@@ -105,7 +105,13 @@ namespace Horizun.Revit.Core
                 RotationRadians = RotationRadians,
                 ScaleX = Mirrored ? -1 : 1,
                 ScaleY = 1,
-                Attributes = Source.Attributes
+                Attributes = Source.Attributes,
+                // The dynamic block behind the reference travels with the placement: a nested
+                // or flattened instance is still that dynamic block, in that state.
+                EffectiveName = Source.EffectiveName,
+                EffectiveNameSource = Source.EffectiveNameSource,
+                DynamicProperties = Source.DynamicProperties,
+                DefinitionSignature = Source.DefinitionSignature
             };
             e.Points.Add(At);
             foreach (string p in Path) e.BlockPath.Add(p);

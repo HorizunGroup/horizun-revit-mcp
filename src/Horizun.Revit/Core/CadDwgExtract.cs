@@ -226,6 +226,12 @@ namespace Horizun.Revit.Core
                 bag[Unescape(a[2])] = Unescape(a[3]);
             }
 
+            // WHAT EACH DEFINITION DRAWS, fingerprinted. Two instances of one dynamic
+            // block with different parameter values reference different anonymous
+            // definitions; their names are renumbered on every edit, their CONTENT is
+            // what separates the variants. Handles are left out (they are per copy).
+            Dictionary<string, string> definitionSignature = DefinitionSignatures(raw);
+
             int n = 0;
             var topLevelHandles = new HashSet<string>(StringComparer.Ordinal);
             foreach (string[] f in raw)
@@ -303,6 +309,18 @@ namespace Horizun.Revit.Core
                         AddPoint(e, Point(f, 5, mm));
                         e.RotationRadians = Num(Field(f, 8));
                         e.BlockName = Unescape(Field(f, 12));
+                        // THE DYNAMIC BLOCK BEHIND AN ANONYMOUS REFERENCE (extractor fields 13-15;
+                        // absent from dumps made before them, which is not "not dynamic").
+                        string effective = Unescape(Field(f, 13));
+                        if (!string.IsNullOrWhiteSpace(effective))
+                        {
+                            e.EffectiveName = effective;
+                            e.EffectiveNameSource = Field(f, 14);
+                            e.DynamicProperties = DynamicProperties(Field(f, 15));
+                            string sig;
+                            if (e.BlockName != null && definitionSignature.TryGetValue(e.BlockName, out sig))
+                                e.DefinitionSignature = sig;
+                        }
                         double? sx = Num(Field(f, 9)), sy = Num(Field(f, 10));
                         if (sx.HasValue) e.ScaleX = sx;
                         if (sy.HasValue) e.ScaleY = sy;
@@ -419,6 +437,48 @@ namespace Horizun.Revit.Core
         private static void AddPoint(CadIrEntity e, CadPoint? p) { if (p.HasValue) e.Points.Add(p.Value); }
         private static double? Scale(double? v, double mm) { return v.HasValue ? (double?)(v.Value * mm) : null; }
         private static string Field(string[] f, int i) { return i < f.Length ? f[i] : null; }
+
+        /// <summary>"name=value;name=value" as the extractor writes an instance's dynamic
+        /// properties; empty when none were set on the instance (the definition's defaults hold).</summary>
+        public static Dictionary<string, string> DynamicProperties(string field)
+        {
+            var d = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (string.IsNullOrEmpty(field)) return d;
+            foreach (string pair in field.Split(';'))
+            {
+                int eq = pair.IndexOf('=');
+                if (eq <= 0) continue;
+                d[Unescape(pair.Substring(0, eq))] = Unescape(pair.Substring(eq + 1));
+            }
+            return d;
+        }
+
+        /// <summary>Per block definition: SHA-256 (24 hex) of its entity rows without handles and
+        /// owners, in the order the definition lists them.</summary>
+        public static Dictionary<string, string> DefinitionSignatures(IEnumerable<string[]> rows)
+        {
+            var text = new Dictionary<string, System.Text.StringBuilder>(StringComparer.Ordinal);
+            foreach (string[] f in rows)
+            {
+                if (f.Length < 5 || f[0] != "E") continue;
+                string owner = f[1];
+                if (owner.StartsWith("*Model_Space", StringComparison.OrdinalIgnoreCase) ||
+                    owner.StartsWith("*Paper_Space", StringComparison.OrdinalIgnoreCase)) continue;
+                System.Text.StringBuilder sb;
+                if (!text.TryGetValue(owner, out sb)) text[owner] = sb = new System.Text.StringBuilder();
+                sb.Append(f[3]).Append('|').Append(f[4]);
+                for (int i = 5; i < f.Length; i++) sb.Append('|').Append(f[i]);
+                sb.Append('\n');
+            }
+            var outp = new Dictionary<string, string>(StringComparer.Ordinal);
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                foreach (var kv in text)
+                {
+                    byte[] h = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(kv.Value.ToString()));
+                    outp[kv.Key] = BitConverter.ToString(h).Replace("-", "").ToLowerInvariant().Substring(0, 24);
+                }
+            return outp;
+        }
 
         private static void Bump(Dictionary<string, int> d, string k)
         {

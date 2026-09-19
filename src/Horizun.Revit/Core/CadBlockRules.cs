@@ -39,6 +39,10 @@ namespace Horizun.Revit.Core
     public sealed class CadUnclaimedBlock
     {
         public string BlockName;
+        /// <summary>The dynamic block behind an anonymous BlockName, when the reader saw it.</summary>
+        public string EffectiveName;
+        public string EffectiveNameSource;
+        public List<string> DynamicPropertiesSeen = new List<string>();
         public int Count;
         public List<string> Layers = new List<string>();
         public List<string> AttributeTags = new List<string>();
@@ -48,6 +52,9 @@ namespace Horizun.Revit.Core
         {
             ["block_name"] = BlockName,
             ["bare_name"] = CadBlockRules.BareName(BlockName),
+            ["effective_name"] = EffectiveName,
+            ["effective_name_from"] = EffectiveNameSource,
+            ["dynamic_properties_seen"] = new JArray(DynamicPropertiesSeen.OrderBy(x => x, StringComparer.Ordinal)),
             ["count"] = Count,
             ["layers"] = new JArray(Layers.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)),
             ["attribute_tags"] = new JArray(AttributeTags.OrderBy(x => x, StringComparer.Ordinal)),
@@ -150,8 +157,9 @@ namespace Horizun.Revit.Core
             if (rule.LayerPatterns.Count > 0 && !set_matches_layer(rule, instance.Layer, caseSensitive)) return false;
 
             if (!AttributesMatch(rule.Geometry.BlockAttributes, instance.Attributes)) return false;
+            if (!DynamicPropertiesMatch(rule.Geometry.DynamicProperties, instance.DynamicProperties)) return false;
 
-            if (rule.Geometry.BlockPatterns.Count == 0)
+            if (rule.Geometry.BlockPatterns.Count == 0 && rule.Geometry.EffectiveBlockPatterns.Count == 0)
                 return rule.LayerPatterns.Count > 0;   // "every block on my layers"
 
             string name = instance.BlockName ?? "";
@@ -159,7 +167,51 @@ namespace Horizun.Revit.Core
             foreach (string p in rule.Geometry.BlockPatterns)
                 if (CadGlob.IsMatch(name, p, caseSensitive) || CadGlob.IsMatch(bare, p, caseSensitive))
                     return true;
+            // THE EFFECTIVE NAME, only through the key that asks for it.
+            if (instance.EffectiveName != null)
+            {
+                string eff = instance.EffectiveName, effBare = BareName(eff);
+                foreach (string p in rule.Geometry.EffectiveBlockPatterns)
+                    if (CadGlob.IsMatch(eff, p, caseSensitive) || CadGlob.IsMatch(effBare, p, caseSensitive))
+                        return true;
+            }
             return false;
+        }
+
+        /// <summary>
+        /// A stated dynamic property matches only a value the instance CARRIES. Numbers compare
+        /// numerically (1e-6), text case-insensitively. Absent never matches a stated value.
+        /// </summary>
+        public static bool DynamicPropertiesMatch(Dictionary<string, string> wanted, Dictionary<string, string> has)
+        {
+            if (wanted == null || wanted.Count == 0) return true;
+            if (has == null) return false;
+            foreach (var kv in wanted)
+            {
+                string actual;
+                if (!has.TryGetValue(kv.Key, out actual)) return false;
+                double a, b;
+                if (double.TryParse(actual, NumberStyles.Float, CultureInfo.InvariantCulture, out a) &&
+                    double.TryParse(kv.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out b))
+                {
+                    if (Math.Abs(a - b) > 1e-6) return false;
+                }
+                else if (!string.Equals(actual, kv.Value, StringComparison.OrdinalIgnoreCase)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The name an instance is IDENTIFIED by: the dynamic block's effective name when there
+        /// is one, because AutoCAD renumbers the anonymous reference ("*U11" -> "*U14") on edit
+        /// and an identity built on it would read every edit as a delete and a new symbol.
+        /// A non-dynamic block keeps its own name, so identities made before this are unchanged.
+        /// </summary>
+        public static string IdentityName(CadIrEntity e)
+        {
+            if (e == null) return "root";
+            if (!string.IsNullOrEmpty(e.EffectiveName)) return "dyn:" + e.EffectiveName;
+            return e.BlockName ?? "root";
         }
 
         private static bool AttributesMatch(Dictionary<string, bool> wanted, Dictionary<string, string> has)
@@ -258,7 +310,10 @@ namespace Horizun.Revit.Core
                     OffsetMm = rule.OffsetMm,
                     RotationRadians = e.RotationRadians,
                     Mirrored = (e.ScaleX.HasValue && e.ScaleX.Value < 0) ^ (e.ScaleY.HasValue && e.ScaleY.Value < 0),
-                    SourceBlockName = e.BlockName
+                    SourceBlockName = e.BlockName,
+                    SourceEffectiveName = e.EffectiveName,
+                    SourceDynamicProperties = e.DynamicProperties == null ? null
+                        : new Dictionary<string, string>(e.DynamicProperties, StringComparer.Ordinal)
                 };
                 c.Geometry.Add(at);
 
@@ -279,8 +334,10 @@ namespace Horizun.Revit.Core
                 // deal weaker, and an anonymous block - a name AutoCAD generated,
                 // that nobody chose - is weaker again. A flat 1.0 would have made
                 // the eligibility machinery downstream meaningless for every symbol.
-                bool byName = rule.Geometry.BlockPatterns.Count > 0;
-                bool anonymous = IsAnonymous(e.BlockName);
+                bool byName = rule.Geometry.BlockPatterns.Count > 0 || rule.Geometry.EffectiveBlockPatterns.Count > 0;
+                // A DYNAMIC block's anonymous reference is AutoCAD's, but its effective name is the
+                // author's: an instance resolved to one is named, and says so.
+                bool anonymous = IsAnonymous(e.BlockName) && string.IsNullOrEmpty(e.EffectiveName);
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("block_match", 0.6, byName ? 1.0 : 0.4,
                     byName
                         ? "the rule names this block explicitly"
@@ -289,7 +346,10 @@ namespace Horizun.Revit.Core
                     anonymous
                         ? "'" + (e.BlockName ?? "(unnamed)") + "' is an anonymous block: AutoCAD generated " +
                           "the name and it says nothing about what the symbol is"
-                        : "the block carries a name somebody typed"));
+                        : (IsAnonymous(e.BlockName)
+                            ? "'" + e.BlockName + "' is the anonymous reference of the dynamic block '" +
+                              e.EffectiveName + "' (read from " + (e.EffectiveNameSource ?? "the drawing") + ")"
+                            : "the block carries a name somebody typed")));
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("orientation", 0.2,
                     e.RotationRadians.HasValue ? 1.0 : 0.0,
                     e.RotationRadians.HasValue
@@ -304,7 +364,7 @@ namespace Horizun.Revit.Core
                 // a symbol as for a pipe.
                 c.GeometryId = CadIdentity.GeometryId(CadCurveKind.Line, new List<CadPoint> { at },
                                                       set.PointToleranceMm);
-                c.SemanticId = CadIdentity.SemanticIdOf(e.Layer, (e.BlockName ?? "root"), c.GeometryId);
+                c.SemanticId = CadIdentity.SemanticIdOf(e.Layer, IdentityName(e), c.GeometryId);
 
                 // THE REVISION ID, NOT A READING ORDINAL. This candidate used to keep
                 // "b" + its position in the reading as its id, and provenance recorded
@@ -317,6 +377,7 @@ namespace Horizun.Revit.Core
                 c.SourceSurrogates.Add(c.Id);
                 if (e.Handle != null) c.SourceSurrogates.Add("handle:" + e.Handle);
                 c.SourceSurrogates.Add("block:" + (e.BlockName ?? "(unnamed)"));
+                if (e.EffectiveName != null) c.SourceSurrogates.Add("effective:" + e.EffectiveName);
 
                 // ATTRIBUTES ARE OBSERVED FACTS, and they travel as parameter
                 // writes only where the rule asked for them. A tag nobody mapped is
@@ -402,8 +463,16 @@ namespace Horizun.Revit.Core
             string key = e.BlockName ?? "(unnamed)";
             CadUnclaimedBlock u;
             if (!map.TryGetValue(key, out u))
-                map[key] = u = new CadUnclaimedBlock { BlockName = key, Example = e.Points[0] };
+                map[key] = u = new CadUnclaimedBlock { BlockName = key, Example = e.Points[0],
+                                                       EffectiveName = e.EffectiveName,
+                                                       EffectiveNameSource = e.EffectiveNameSource };
             u.Count++;
+            if (e.DynamicProperties != null)
+                foreach (var kv in e.DynamicProperties)
+                {
+                    string pair = kv.Key + "=" + kv.Value;
+                    if (!u.DynamicPropertiesSeen.Contains(pair, StringComparer.Ordinal)) u.DynamicPropertiesSeen.Add(pair);
+                }
             if (e.Layer != null && !u.Layers.Contains(e.Layer, StringComparer.OrdinalIgnoreCase))
                 u.Layers.Add(e.Layer);
             if (e.Attributes != null)

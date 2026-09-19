@@ -287,7 +287,8 @@ namespace Horizun.Revit.Commands
             List<CadInventoryRow> filtered = rows.Where(r =>
                 (outcomeFilter == null || r.Outcome == outcomeFilter) &&
                 (blockFilter == null || CadGlob.IsMatch(r.BlockName ?? "", blockFilter, false) ||
-                 CadGlob.IsMatch(CadBlockRules.BareName(r.BlockName) ?? "", blockFilter, false)) &&
+                 CadGlob.IsMatch(CadBlockRules.BareName(r.BlockName) ?? "", blockFilter, false) ||
+                 (r.EffectiveName != null && CadGlob.IsMatch(r.EffectiveName, blockFilter, false))) &&
                 (layerFilter == null || CadGlob.IsMatch(r.Layer ?? "", layerFilter, false))).ToList();
 
             JObject page = CadBlockInventory.Page(rows, filtered, offset, limit,

@@ -22,6 +22,7 @@
 ;;;   Y  <name> <blockrecord>              layout
 ;;;   E  <owner> <handle> <type> <layer> <data...>   entity
 ;;;   A  <ownerhandle> <tag> <value>       attribute of the INSERT above it
+;;;   an INSERT row ends: <reference name> <effective name> <how: repdata|reptag|definition|empty> <props>
 ;;;
 ;;; The walk is entnext over every block table record, which is the only walk
 ;;; that sees ALL of it: model space, every paper space, every block definition,
@@ -97,6 +98,78 @@
 ;;; here still gets a line: an unrecognised type is a FACT about the drawing,
 ;;; and a reader that silently drops what it does not model is how a conversion
 ;;; comes back 40% complete and says nothing.
+;;; DYNAMIC BLOCKS. An instance of a dynamic block is an INSERT of an ANONYMOUS
+;;; definition (*U11, *U25 ...) whose number AutoCAD reassigns on edit; the name a
+;;; person gave the block lives elsewhere. Two independent places, without ActiveX
+;;; (accoreconsole has none):
+;;;   repdata  the INSERT's extension dictionary AcDbBlockRepresentation/AcDbRepData
+;;;            points (340) at the dynamic definition's block record;
+;;;   reptag   the anonymous definition's xdata AcDbBlockRepBTag carries (1005) the
+;;;            handle of the definition it was generated from.
+;;; The reference name (*U11) is still written in its own field: the two are
+;;; different facts and neither replaces the other.
+(defun hz-dsub (d key / m)
+  (if d (progn (setq m (member (cons 3 key) (entget d))) (if m (cdr (assoc 360 m))))))
+
+(defun hz-dyn-rep (ed / rd)
+  (setq rd (hz-dsub (hz-dsub (cdr (assoc 360 ed)) "AcDbBlockRepresentation") "AcDbRepData"))
+  (if rd (cdr (assoc 340 (entget rd)))))
+
+(defun hz-dyn-tag (name / br rec xd h)
+  (setq br (tblobjname "BLOCK" name))
+  (if br
+    (progn
+      (setq rec (entget (cdr (assoc 330 (entget br))) '("AcDbBlockRepBTag")))
+      (setq xd (cdr (assoc -3 rec)))
+      (if xd (setq h (cdr (assoc 1005 (cdr (car xd))))))
+      (if h (handent h)))))
+
+;;; definition  the INSERT references a dynamic definition DIRECTLY (an instance in
+;;;             its default state, or one RESETBLOCK put back there): its own name is
+;;;             the effective name. MEASURED: without this, a reset instance lost its
+;;;             effective name and with it its identity.
+(defun hz-dyn-self (name / br)
+  (setq br (tblobjname "BLOCK" name))
+  (if br (hz-dsub (cdr (assoc 360 (entget (cdr (assoc 330 (entget br)))))) "ACAD_ENHANCEDBLOCK")))
+
+(defun hz-dyn-name (ed / r tg)
+  (setq r (hz-dyn-rep ed))
+  (if r
+    (list "repdata" (cdr (assoc 2 (entget r))))
+    (progn
+      (setq tg (hz-dyn-tag (cdr (assoc 2 ed))))
+      (if tg
+        (list "reptag" (cdr (assoc 2 (entget tg))))
+        (if (hz-dyn-self (cdr (assoc 2 ed))) (list "definition" (cdr (assoc 2 ed))) nil)))))
+
+;;; The three trailing INSERT fields, kept out of hz-entity so that form stays short
+;;; enough for accoreconsole to read as one script line.
+(defun hz-dyn-fields (ed / dyn)
+  (setq dyn (hz-dyn-name ed))
+  (strcat (if dyn (hz-esc (cadr dyn)) "") "\t" (if dyn (car dyn) "") "\t" (hz-dyn-props ed)))
+
+;;; The values set ON THIS INSTANCE (visibility state, flip, angle, distance ...),
+;;; as AutoCAD records them in the instance's ACAD_ENHANCEDBLOCKHISTORY: a name
+;;; (300) followed by its value. GRIP* entries are grip positions, not properties.
+;;; name=value pairs joined by ';'. A property never set on the instance keeps the
+;;; definition's default and is simply absent here - absent is not "none".
+(defun hz-dyn-props (ed / h out nm v)
+  (setq h (hz-dsub (hz-dsub (hz-dsub (cdr (assoc 360 ed)) "AcDbBlockRepresentation") "AppDataCache")
+                   "ACAD_ENHANCEDBLOCKHISTORY"))
+  (setq out "" nm nil)
+  (if h
+    (foreach item (entget h)
+      (cond
+        ((= (car item) 300) (setq nm (cdr item)))
+        ((and nm (member (car item) '(1 40 70 10 11)))
+         (setq v (cond ((= (car item) 1) (cdr item))
+                       ((listp (cdr item)) (strcat (hz-num (cadr item)) "," (hz-num (caddr item))))
+                       (T (hz-num (cdr item)))))
+         (if (not (wcmatch nm "GRIP*"))
+           (setq out (strcat out (if (= out "") "" ";") (hz-esc nm) "=" (hz-esc v))))
+         (setq nm nil)))))
+  out)
+
 (defun hz-entity (f owner ed / typ h lay base)
   (setq typ (cdr (assoc 0 ed))
         h   (cdr (assoc 5 ed))
@@ -117,7 +190,7 @@
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 50 ed) "\t"
                          (hz-n 41 ed) "\t" (hz-n 42 ed) "\t" (hz-n 43 ed) "\t"
-                         (hz-str 2 ed)) f))
+                         (hz-str 2 ed) "\t" (hz-dyn-fields ed)) f))
     ((= typ "LINE")
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-pt (cdr (assoc 11 ed)))) f))

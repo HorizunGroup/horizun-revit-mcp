@@ -243,6 +243,24 @@ namespace Horizun.Revit.Core
         public List<string> BlockPatterns = new List<string>();
 
         /// <summary>
+        /// For from:"blocks" - patterns matched against the EFFECTIVE name of a dynamic block
+        /// instance ("OUT2" behind the anonymous "*U11"), never against the reference name.
+        /// Kept apart from <see cref="BlockPatterns"/> on purpose: a set that names "EM" meant
+        /// the block called EM; claiming the dynamic variants of it is a separate statement the
+        /// set has to make, because one effective name can cover several devices.
+        /// </summary>
+        public List<string> EffectiveBlockPatterns = new List<string>();
+
+        /// <summary>
+        /// For from:"blocks" - dynamic property values an instance must carry, name to value
+        /// ("Visibility1": "WALL"). Compared as numbers when both sides parse as numbers, else
+        /// as text (case-insensitive). A property the instance never set is ABSENT, and an
+        /// absent property does not match a stated value: the definition's default is not read.
+        /// </summary>
+        public Dictionary<string, string> DynamicProperties =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+
+        /// <summary>
         /// For from:"blocks" - attribute tags an instance must carry ("present") or
         /// must not carry ("absent"). An anonymous dynamic block ("*U32") says what it
         /// is only through its attributes; a smoke detector and a smoke/CO detector of
@@ -866,7 +884,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "blocks", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
+            "same_layer_only", "bridge_openings_mm", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -1723,6 +1741,44 @@ namespace Horizun.Revit.Core
             else if (blocksToken != null && blocksToken.Type != JTokenType.Null)
                 throw new CadRequirementSetException(
                     "rule '" + rule.Id + "': geometry.blocks must be a list of block-name patterns.");
+
+            JToken effToken = g["effective_blocks"];
+            if (effToken is JArray)
+                foreach (JToken b3 in (JArray)effToken)
+                {
+                    string pattern = b3 == null ? null : b3.ToString();
+                    if (!string.IsNullOrWhiteSpace(pattern)) c.EffectiveBlockPatterns.Add(pattern.Trim());
+                }
+            else if (effToken != null && effToken.Type != JTokenType.Null)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.effective_blocks must be a list of dynamic-block name patterns.");
+            if (c.EffectiveBlockPatterns.Count > 0 && c.Source != CadGeometrySource.Blocks)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.effective_blocks only means something with from:\"blocks\".");
+
+            JToken dynToken = g["dynamic_properties"];
+            if (dynToken != null && dynToken.Type != JTokenType.Null)
+            {
+                var dyn = dynToken as JObject;
+                if (dyn == null || !dyn.HasValues)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.dynamic_properties must be a non-empty object of property " +
+                        "name -> value.");
+                if (c.Source != CadGeometrySource.Blocks)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.dynamic_properties only means something with from:\"blocks\".");
+                foreach (JProperty dp in dyn.Properties())
+                {
+                    if (string.IsNullOrWhiteSpace(dp.Name) || dp.Value == null || dp.Value.Type == JTokenType.Null ||
+                        dp.Value.Type == JTokenType.Object || dp.Value.Type == JTokenType.Array)
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.dynamic_properties['" + dp.Name + "'] must be a text or " +
+                            "number value.");
+                    c.DynamicProperties[dp.Name.Trim()] = dp.Value.Type == JTokenType.String
+                        ? (string)dp.Value
+                        : dp.Value.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
 
             JToken facingToken = g["block_facing"];
             if (facingToken != null && facingToken.Type != JTokenType.Null)
