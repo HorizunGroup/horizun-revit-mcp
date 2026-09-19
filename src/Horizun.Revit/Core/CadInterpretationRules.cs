@@ -157,6 +157,8 @@ namespace Horizun.Revit.Core
         public double? SillHeightMm;
         public double? HeadHeightMm;
         public double? DiameterMm;
+        /// <summary>A rectangular duct run's section, decided by CadDuctSections from the drawing's labels.</summary>
+        public double? SectionWidthMm, SectionHeightMm;
 
         /// <summary>
         /// The slope the rule declares for this run, when it declares one.
@@ -1924,8 +1926,10 @@ namespace Horizun.Revit.Core
         {
             var produced = new List<CadCandidate>();
             CadGeometryCriteria g = rule.Geometry;
-            List<CadSegment> merged = CadTopologyRules.MergeCollinear(
-                layerSegments, set.PointToleranceMm, set.AngleToleranceDegrees, out int mergedAway);
+            int mergedAway = 0;
+            List<CadSegment> merged = g.MergeCollinear
+                ? CadTopologyRules.MergeCollinear(layerSegments, set.PointToleranceMm, set.AngleToleranceDegrees, out mergedAway)
+                : layerSegments.Where(x => x != null && x.PlanLength > 1e-9).ToList();
 
             for (int i = 0; i < merged.Count; i++)
             {

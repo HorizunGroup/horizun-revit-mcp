@@ -225,6 +225,13 @@ namespace Horizun.Revit.Core
         public double? MinOverlapMm;
         public double? MinOverlapFraction;
         public double? MinLengthMm;
+        /// <summary>
+        /// For from:"single_lines": whether collinear drawn pieces are merged into one run
+        /// (the default). False keeps every drawn piece a run of its own - which is how a
+        /// plan that marks a size change at a vertex of a straight line keeps the change.
+        /// The network reading honours the same flag, or the two would name runs differently.
+        /// </summary>
+        public bool MergeCollinear = true;
         public double? MaxLengthMm;
         public double? MinAreaMm2;
         public double? MaxAreaMm2;
@@ -532,6 +539,7 @@ namespace Horizun.Revit.Core
                 : "");
     }
 
+
     public sealed class CadRule
     {
         public string Id;
@@ -564,6 +572,8 @@ namespace Horizun.Revit.Core
         public double? OffsetMm;
         public double? ThicknessMm;                  // when the rule DECLARES it rather than measuring it
         public double? DiameterMm;
+        /// <summary>For a duct rule: where each run's rectangular section is written (labels). Null: none.</summary>
+        public CadSectionRule Section;
         public double? SlopePercent;
         public string JoinRule;                      // none | auto | butt - passed through, applied by the writer
 
@@ -876,7 +886,7 @@ namespace Horizun.Revit.Core
             "height_mm", "offset_mm", "sill_height_mm", "head_height_mm",
             "thickness_mm", "diameter_mm", "slope_percent", "join_rule", "min_confidence", "structural",
             "allow_structural",
-            "naming",
+            "naming", "section",
             "on_ambiguous", "on_manual_divergence", "parameters"
         };
 
@@ -884,7 +894,7 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
+            "same_layer_only", "bridge_openings_mm", "merge_collinear", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -1323,6 +1333,9 @@ namespace Horizun.Revit.Core
             rule.OffsetMm = r.Value<double?>("offset_mm");
             rule.ThicknessMm = r.Value<double?>("thickness_mm");
             rule.DiameterMm = r.Value<double?>("diameter_mm");
+            JToken sectionToken = r["section"];
+            if (sectionToken != null && sectionToken.Type != JTokenType.Null)
+                rule.Section = CadDuctSections.Parse(rule.Id, sectionToken as JObject, r.Value<string>("produces"), rule.DiameterMm);
             rule.SlopePercent = r.Value<double?>("slope_percent");
             rule.SystemType = r.Value<string>("system_type");
             rule.Structural = r.Value<bool?>("structural");
@@ -1925,6 +1938,13 @@ namespace Horizun.Revit.Core
             c.MinOverlapMm = g.Value<double?>("min_overlap_mm");
             c.MinOverlapFraction = g.Value<double?>("min_overlap_fraction");
             c.MinLengthMm = g.Value<double?>("min_length_mm");
+            JToken mergeToken = g["merge_collinear"];
+            if (mergeToken != null && mergeToken.Type != JTokenType.Null)
+            {
+                if (mergeToken.Type != JTokenType.Boolean)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.merge_collinear must be true or false.");
+                c.MergeCollinear = (bool)mergeToken;
+            }
             c.MaxLengthMm = g.Value<double?>("max_length_mm");
             c.MinAreaMm2 = g.Value<double?>("min_area_mm2");
             c.MaxAreaMm2 = g.Value<double?>("max_area_mm2");

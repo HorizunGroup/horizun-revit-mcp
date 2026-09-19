@@ -410,6 +410,7 @@ namespace Horizun.Revit.Commands
                         p.Diameter = ReadDiameter(item, scale);
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<DuctType>(doc, item, "type_id");
                         p.SystemType = Need<MechanicalSystemType>(doc, item, "system_type_id");
+                        ReadSection(p, item, scale);
                         break;
                     case "pipe":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true); NonZero(p.Start, p.End);
@@ -2325,6 +2326,40 @@ namespace Horizun.Revit.Commands
         /// rectangular duct has a width and a height, and answering a request
         /// for a diameter by setting one of them would be a different duct.
         /// </summary>
+        /// <summary>
+        /// A RECTANGULAR SECTION: width and height together, in the call's units, on a type
+        /// whose shape is rectangular. Every way this can be two statements at once is a
+        /// refusal before anything is written: a diameter AND a section, only one side, a
+        /// non-positive side, or a section asked of a round or oval type - a round duct of
+        /// equal area is a different duct and is never substituted.
+        /// Width is the HORIZONTAL side of the section of a horizontal run, which is Revit's
+        /// own convention for a rectangular duct and is re-read from the connectors.
+        /// </summary>
+        private static void ReadSection(Plan p, JObject item, double scale)
+        {
+            JToken w = item["width"], h = item["height"];
+            if (w == null && h == null)
+            {
+                if (p.Diameter.HasValue && p.Type is DuctType round && round.Shape == ConnectorProfileType.Rectangular)
+                    throw new ArgumentException("diameter was given for a RECTANGULAR duct type ('" + p.Type.Name +
+                        "'): a rectangular run has a width and a height. Send width and height, or a round type.");
+                return;
+            }
+            if (w == null || h == null)
+                throw new ArgumentException("width and height come together: a section with one side is not a section");
+            if (p.Diameter.HasValue)
+                throw new ArgumentException("diameter AND width/height were both given: two sections for one run. Send one.");
+            double width = Finite(w.Value<double>(), "width") * scale, height = Finite(h.Value<double>(), "height") * scale;
+            if (width <= 0 || height <= 0) throw new ArgumentException("width and height must be positive");
+            var type = p.Type as DuctType;
+            if (type == null || type.Shape != ConnectorProfileType.Rectangular)
+                throw new ArgumentException("width/height were given but duct type '" + (p.Type?.Name ?? "?") + "' is " +
+                    (type == null ? "not a duct type" : type.Shape.ToString()).ToLowerInvariant() +
+                    ", not rectangular. A round duct of equal area is a different duct; choose a rectangular type.");
+            p.SectionWidth = width;
+            p.SectionHeight = height;
+        }
+
         private static double? ReadDiameter(JObject item, double scale)
         {
             double? mm = item.Value<double?>("diameter");
@@ -2558,6 +2593,8 @@ namespace Horizun.Revit.Commands
             public int SeparatorSegments;
             /// <summary>The bore the row declared, in FEET. Null: the type decides.</summary>
             public double? Diameter; public double ArcRadius;
+            /// <summary>A rectangular run's declared section, in FEET. Null: no section was declared.</summary>
+            public double? SectionWidth, SectionHeight;
             public List<StairRunSpec> StairRuns;
             public List<StairLandingSpec> StairLandings;
             public int DesiredRisers;
@@ -2632,6 +2669,7 @@ namespace Horizun.Revit.Commands
             /// <summary>Siblings one call made beside the row's own element. Never dropped.</summary>
             public List<ElementId> AlsoCreated = new List<ElementId>();
             public double? ExpectedDiameter; public double ExpectedArcRadius; public bool ExpectedArc;
+            public double? ExpectedWidth, ExpectedHeight;
             public Plan Plan;
             public List<Created> Batch;
         }

@@ -369,6 +369,23 @@ namespace Horizun.Revit.Core
                         break;
                     }
 
+                    case "LEADER":
+                    {
+                        // A leader's vertices, arrowhead FIRST: which run a size label names is
+                        // often said by the leader and not by distance.
+                        e.Kind = CadEntityKind.Leader;
+                        string lpts = Field(f, 5);
+                        if (!string.IsNullOrWhiteSpace(lpts))
+                            foreach (string v in lpts.Split(';'))
+                            {
+                                string[] xy = v.Split(',');
+                                if (xy.Length < 2) continue;
+                                double? x = Num(xy[0]), y = Num(xy[1]);
+                                if (x.HasValue && y.HasValue) e.Points.Add(new CadPoint(x.Value * mm, y.Value * mm, 0));
+                            }
+                        break;
+                    }
+
                     case "LWPOLYLINE":
                     {
                         e.Kind = CadEntityKind.Polyline;

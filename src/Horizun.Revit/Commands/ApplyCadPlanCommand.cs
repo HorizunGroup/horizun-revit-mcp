@@ -835,7 +835,7 @@ namespace Horizun.Revit.Commands
             "elements_created_means", "present_after_commit", "verified",
             "kind_verified", "type_verified", "host_verified", "curve_verified",
             "structural_verified", "identity_verified", "structural_type_verified",
-            "diameter_verified", "mep_system",
+            "diameter_verified", "section_verified", "mep_system",
             "connectors_verified", "inline_connections", "actual_class", "actual_category"
         };
 

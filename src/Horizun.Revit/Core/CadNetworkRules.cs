@@ -682,9 +682,19 @@ namespace Horizun.Revit.Core
                 : segments.Where(x => x == null || x.SourceCurveId == null ||
                                       !arcByCurve.ContainsKey(x.SourceCurveId)).ToList();
 
+            // THE SAME MERGING AS THE CONVERSION: a layer whose rule keeps drawn pieces apart
+            // (merge_collinear:false) is not merged here either, or the runs would be named
+            // differently from the elements built from them.
+            var keepApart = new List<CadSegment>();
+            if (declare != null)
+            {
+                keepApart = lineWork.Where(x => x != null && declare(x.Layer) is CadRunDeclaration dd && !dd.MergeCollinear).ToList();
+                if (keepApart.Count > 0) lineWork = lineWork.Except(keepApart).ToList();
+            }
             int mergedAway;
             List<CadSegment> straight = CadTopologyRules.MergeCollinear(
                 lineWork, opt.ConnectToleranceMm, opt.CollinearToleranceDegrees, out mergedAway);
+            straight.AddRange(keepApart.Where(x => x.PlanLength > 1e-9));
 
             // WHICH DRAWN ENTITIES EACH RUN CAME FROM, attributed by CONTAINMENT
             // rather than by matching endpoints.
@@ -887,6 +897,8 @@ namespace Horizun.Revit.Core
             public string SystemType;
             public double? DiameterMm;
             public double? ElevationMm;
+            /// <summary>False when the rule keeps drawn collinear pieces as runs (merge_collinear:false).</summary>
+            public bool MergeCollinear = true;
 
             /// <summary>
             /// The fall the rule declares, as a percentage. Null when it declares
@@ -1003,6 +1015,7 @@ namespace Horizun.Revit.Core
                     // elbow. Null stays null: a rule that declares no offset has not
                     // said the run is on the slab.
                     ElevationMm = rule.OffsetMm,
+                    MergeCollinear = rule.Geometry == null || rule.Geometry.MergeCollinear,
                     // PARSED, VALIDATED, AND UNTIL NOW DROPPED. A rule that declared
                     // 1% produced a horizontal pipe, in the one discipline where the
                     // slope IS the design.

@@ -528,6 +528,106 @@ namespace Horizun.Revit.Commands
             return solid;
         }
 
+        /// <summary>
+        /// The drawing's TEXTS and LEADERS on the given layers, in model millimetres - model
+        /// space and every placement of a block or external reference that carries them (a
+        /// corridor's duct sizes live in an xref). Same frame check as the symbols: labels that
+        /// do not land where Revit says the drawing is are refused, not used.
+        /// </summary>
+        public static bool ReadLabels(Element element, CadInstanceFacts facts, CadRequirementSet set, CadHarvest harvest,
+                                      string callerPath, int readTimeoutSeconds, IList<string> layerPatterns,
+                                      List<CadLabel> labels, List<CadLeaderLine> leaders, JObject report)
+        {
+            report["why"] = "a duct rule reads each run's section from the drawing's labels, and text is not " +
+                            "reachable through Revit's import. So the DWG itself is read for its texts and leaders.";
+            report["layers"] = new JArray(layerPatterns.Cast<object>().ToArray());
+            CadDwgReading reading = ReadDrawing(facts, set, callerPath, readTimeoutSeconds, report);
+            if (reading == null) return false;
+            CadPlacementReading placement = CadBlockPlacement.Place(reading.Entities);
+            Transform t = Transform.Identity;
+            var import = element as ImportInstance;
+            if (import != null) { try { t = import.GetTransform(); } catch { t = Transform.Identity; } }
+            Func<CadPoint, CadPoint> toModel = at =>
+            {
+                XYZ ft = t.OfPoint(new XYZ(at.X / 304.8, at.Y / 304.8, at.Z / 304.8));
+                return new CadPoint(ft.X * 304.8, ft.Y * 304.8, ft.Z * 304.8);
+            };
+            var byBlock = new Dictionary<string, List<CadPlacedBlock>>(StringComparer.OrdinalIgnoreCase);
+            foreach (CadPlacedBlock p in placement.Placed)
+            {
+                if (p.Space != null && p.Space != "model") continue;
+                List<CadPlacedBlock> list;
+                if (!byBlock.TryGetValue(p.BlockName ?? "", out list)) byBlock[p.BlockName ?? ""] = list = new List<CadPlacedBlock>();
+                list.Add(p);
+            }
+            bool cs = set.CaseSensitiveLayers;
+            int texts = 0, leaderCount = 0, skippedPaper = 0;
+            foreach (CadIrEntity e in reading.Entities)
+            {
+                bool isText = e.Kind == CadEntityKind.Text && e.Text != null && e.Points.Count > 0;
+                bool isLeader = e.Kind == CadEntityKind.Leader && e.Points.Count >= 2;
+                if (!isText && !isLeader) continue;
+                // The layer as Revit names it inside an xref ("XREF|LAYER") and bare both match.
+                string layer = e.Layer ?? "";
+                string bare = layer.Contains("|") ? layer.Substring(layer.LastIndexOf('|') + 1) : layer;
+                if (!layerPatterns.Any(p => CadGlob.IsMatch(layer, p, cs) || CadGlob.IsMatch(bare, p, cs))) continue;
+                var frames = new List<Tuple<string, Func<CadPoint, CadPoint>>>();
+                if (e.BlockPath.Count == 0)
+                {
+                    if (e.Space != "model") { skippedPaper++; continue; }
+                    frames.Add(Tuple.Create(e.Handle ?? e.Id, toModel));
+                }
+                else
+                {
+                    List<CadPlacedBlock> hosts;
+                    if (!byBlock.TryGetValue(e.BlockPath[e.BlockPath.Count - 1], out hosts)) continue;
+                    foreach (CadPlacedBlock p in hosts)
+                    {
+                        CadPlacedBlock frame = p;
+                        frames.Add(Tuple.Create(frame.Key + "/" + (e.Handle ?? e.Id), (Func<CadPoint, CadPoint>)(q => toModel(frame.Place(q)))));
+                    }
+                }
+                foreach (var f in frames)
+                {
+                    if (isText)
+                    {
+                        CadPoint a = e.Points[0];
+                        double rot = e.RotationRadians ?? 0;
+                        CadPoint a2 = new CadPoint(a.X + 1000 * Math.Cos(rot), a.Y + 1000 * Math.Sin(rot), a.Z);
+                        CadPoint m1 = f.Item2(a), m2 = f.Item2(a2);
+                        labels.Add(new CadLabel
+                        {
+                            Id = "text:" + f.Item1, Text = e.Text, Layer = layer, At = m1,
+                            RotationRadians = e.RotationRadians.HasValue ? Math.Atan2(m2.Y - m1.Y, m2.X - m1.X) : (double?)null
+                        });
+                        texts++;
+                    }
+                    else
+                    {
+                        var ld = new CadLeaderLine { Id = "leader:" + f.Item1, Layer = layer };
+                        foreach (CadPoint q in e.Points) ld.Points.Add(f.Item2(q));
+                        leaders.Add(ld);
+                        leaderCount++;
+                    }
+                }
+            }
+            report["texts"] = texts;
+            report["leaders"] = leaderCount;
+            report["on_sheets_not_read"] = skippedPaper;
+            var anchors = labels.Select(l => new CadIrEntity { Points = { l.At } }).ToList();
+            JObject frameCheck = FrameAgreement(anchors, harvest);
+            report["frame_check"] = frameCheck;
+            if ((bool?)frameCheck["agrees"] != true)
+            {
+                report["refused"] = "frame_unconfirmed";
+                report["means"] = "the labels read from the file do not land where Revit says this drawing is. No " +
+                                  "section was read from them.";
+                labels.Clear(); leaders.Clear();
+                return false;
+            }
+            return true;
+        }
+
         private static JObject FrameAgreement(IList<CadIrEntity> symbols, CadHarvest harvest)
         {
             var result = new JObject();

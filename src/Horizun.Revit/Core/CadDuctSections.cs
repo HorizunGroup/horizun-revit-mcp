@@ -1,0 +1,426 @@
+// -----------------------------------------------------------------------------
+// Horizun MCP — original Horizun code.
+//
+// A DUCT'S SECTION, RUN BY RUN, FROM THE DRAWING'S OWN LABELS.
+//
+// A plan draws a supply main as a line and writes its size beside it: "16X8",
+// "12X8", "6X6". A line carries no width; the label does. MEASURED on a real
+// corridor supply plan (campaign 6): 12 main polylines, 26 texts on the duct text
+// layer - sizes, airflows "(630 CFM)", damper tags "FSD" / "FD" - and runs whose
+// size changes along the corridor at short transition pieces.
+//
+// WHAT IT REFUSES TO GUESS.
+//
+//   A NUMBER IS NOT A SIZE. Only "W x H" (or "H x W", as the rule declares) is a
+//   section; airflow, damper tags and anything else are reported as not a size,
+//   by name, and never read as one.
+//
+//   UNITS ARE DECLARED, never deduced: "16X8" is inches on a US plan and
+//   millimetres on another; the rule says which.
+//
+//   NEAREST IS NOT ENOUGH. A leader that ends at a label and points at a run is
+//   the drawing saying which run; without one, a label is associated with a run
+//   only when it lies beside the run's interior, and a label about as close to
+//   two different runs is AMBIGUOUS and kept as such. A label written parallel to
+//   one run and across another prefers the parallel one - that is how a size is
+//   written along a duct - and the preference is recorded.
+//
+//   TWO SIZES ON ONE RUN is a contradiction: the run has no size.
+//
+//   PROPAGATION STOPS. A size travels from a labelled run to an unlabelled one
+//   only through a node where exactly two runs meet (an elbow or a straight
+//   continuation). It stops at a tee or cross (a branch's size is its own), at a
+//   run that has its own label (a different size there is a transition), and
+//   when two different sizes would arrive at one run.
+//
+// Every run gets a row saying which of those happened, with the entities, the
+// text, the value as written, the units, the interpretation and the reason.
+//
+// Revit-free.
+// -----------------------------------------------------------------------------
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text.RegularExpressions;
+using Newtonsoft.Json.Linq;
+
+namespace Horizun.Revit.Core
+{
+    /// <summary>The rule's declaration of where a duct's section is written.</summary>
+    public sealed class CadSectionRule
+    {
+        public List<string> LabelLayers = new List<string>();
+        /// <summary>"inch" or "mm": what the numbers in the label are.</summary>
+        public string LabelUnits;
+        /// <summary>"width_x_height" or "height_x_width": which number is the horizontal side.</summary>
+        public string LabelOrder;
+        public double MaxDistanceMm;
+        public double LeaderToleranceMm;
+        public double AmbiguityRatio = 1.5;
+        public double ParallelToleranceDegrees = 10.0;
+        public bool PropagateThroughElbows = true;
+
+        public double MmPerUnit => LabelUnits == "inch" ? 25.4 : 1.0;
+
+        public JObject ToJson() => new JObject
+        {
+            ["from"] = "labels",
+            ["label_layers"] = new JArray(LabelLayers),
+            ["label_units"] = LabelUnits,
+            ["label_order"] = LabelOrder,
+            ["max_distance_mm"] = MaxDistanceMm,
+            ["leader_tolerance_mm"] = LeaderToleranceMm,
+            ["ambiguity_ratio"] = AmbiguityRatio,
+            ["parallel_tolerance_degrees"] = ParallelToleranceDegrees,
+            ["propagate_through_elbows"] = PropagateThroughElbows
+        };
+    }
+
+    /// <summary>A text in model millimetres.</summary>
+    public sealed class CadLabel
+    {
+        public string Id;
+        public string Text;
+        public string Layer;
+        public CadPoint At;
+        public double? RotationRadians;
+    }
+
+    /// <summary>A leader in model millimetres; Points[0] is the arrowhead.</summary>
+    public sealed class CadLeaderLine
+    {
+        public string Id;
+        public string Layer;
+        public List<CadPoint> Points = new List<CadPoint>();
+    }
+
+    /// <summary>One run's section decision.</summary>
+    public sealed class CadRunSection
+    {
+        public string RunId;
+        public string SemanticId;
+        public CadPoint Start, End;
+        public List<string> SourceEntities = new List<string>();
+        /// <summary>documented | propagated | contradictory | ambiguous | missing</summary>
+        public string State = "missing";
+        public double? WidthMm, HeightMm;
+        public List<JObject> Labels = new List<JObject>();
+        public string PropagatedFrom;
+        public string Reason;
+
+        public JObject ToJson() => new JObject
+        {
+            ["run"] = RunId,
+            ["semantic_id"] = SemanticId,
+            ["from_mm"] = new JArray(Math.Round(Start.X, 1), Math.Round(Start.Y, 1)),
+            ["to_mm"] = new JArray(Math.Round(End.X, 1), Math.Round(End.Y, 1)),
+            ["source_entities"] = new JArray(SourceEntities),
+            ["state"] = State,
+            ["width_mm"] = WidthMm.HasValue ? (JToken)Math.Round(WidthMm.Value, 3) : JValue.CreateNull(),
+            ["height_mm"] = HeightMm.HasValue ? (JToken)Math.Round(HeightMm.Value, 3) : JValue.CreateNull(),
+            ["orientation"] = WidthMm.HasValue ? "width horizontal (the label's plan-side number), height vertical" : null,
+            ["labels"] = new JArray(Labels),
+            ["propagated_from"] = PropagatedFrom,
+            ["reason"] = Reason
+        };
+    }
+
+    public sealed class CadSectionReading
+    {
+        public List<CadRunSection> Runs = new List<CadRunSection>();
+        public List<JObject> SizeLabels = new List<JObject>();
+        public List<JObject> OtherTexts = new List<JObject>();
+
+        public JObject ToJson()
+        {
+            var byState = Runs.GroupBy(r => r.State).ToDictionary(g => g.Key, g => g.Count());
+            var o = new JObject();
+            foreach (var kv in byState.OrderBy(k => k.Key, StringComparer.Ordinal)) o[kv.Key] = kv.Value;
+            return new JObject
+            {
+                ["runs"] = Runs.Count,
+                ["by_state"] = o,
+                ["size_labels"] = SizeLabels.Count,
+                ["labels_used"] = SizeLabels.Count(l => l.Value<string>("outcome") == "associated"),
+                ["labels_not_used"] = new JArray(SizeLabels.Where(l => l.Value<string>("outcome") != "associated")),
+                ["other_texts"] = new JArray(OtherTexts),
+                ["rows"] = new JArray(Runs.Select(r => (JToken)r.ToJson())),
+                ["means"] = "documented: a label of the drawing names this run's size. propagated: an unlabelled run " +
+                            "took the size of its only neighbour through an elbow or a straight continuation. " +
+                            "contradictory / ambiguous / missing: no size - the run is NOT planned and is listed " +
+                            "for a person, with the reason."
+            };
+        }
+    }
+
+    public static class CadDuctSections
+    {
+        /// <summary>
+        /// The rule's "section" object, validated: every way it could be read two ways is a
+        /// refusal of the whole set.
+        /// </summary>
+        public static CadSectionRule Parse(string ruleId, JObject s, string produces, double? diameterMm)
+        {
+            Func<string, CadRequirementSetException> bad = m => new CadRequirementSetException("rule '" + ruleId + "': section " + m);
+            if (s == null) throw bad("must be an object.");
+            if (produces != "duct") throw bad("only means something for a rule that produces ducts.");
+            if (diameterMm.HasValue) throw bad("and diameter_mm are two sizes for one run; declare one.");
+            var known = new HashSet<string>(StringComparer.Ordinal)
+            { "from", "label_layers", "label_units", "label_order", "max_distance_mm", "leader_tolerance_mm",
+              "ambiguity_ratio", "parallel_tolerance_degrees", "propagate_through_elbows" };
+            foreach (JProperty p in s.Properties())
+                if (!known.Contains(p.Name)) throw bad("has no key '" + p.Name + "'.");
+            if (s.Value<string>("from") != "labels") throw bad("from must be \"labels\".");
+            var rule = new CadSectionRule();
+            var layers = s["label_layers"] as JArray;
+            if (layers == null || layers.Count == 0) throw bad("label_layers must list the layers the sizes are written on.");
+            foreach (JToken t in layers) if (!string.IsNullOrWhiteSpace((string)t)) rule.LabelLayers.Add(((string)t).Trim());
+            rule.LabelUnits = s.Value<string>("label_units");
+            if (rule.LabelUnits != "inch" && rule.LabelUnits != "mm")
+                throw bad("label_units must be \"inch\" or \"mm\" - the drawing's numbers are not guessed.");
+            rule.LabelOrder = s.Value<string>("label_order");
+            if (rule.LabelOrder != "width_x_height" && rule.LabelOrder != "height_x_width")
+                throw bad("label_order must be \"width_x_height\" or \"height_x_width\".");
+            double? maxd = s.Value<double?>("max_distance_mm");
+            if (!maxd.HasValue || maxd.Value <= 0) throw bad("max_distance_mm must be positive.");
+            rule.MaxDistanceMm = maxd.Value;
+            rule.LeaderToleranceMm = s.Value<double?>("leader_tolerance_mm") ?? maxd.Value / 2;
+            if (rule.LeaderToleranceMm <= 0) throw bad("leader_tolerance_mm must be positive.");
+            rule.AmbiguityRatio = s.Value<double?>("ambiguity_ratio") ?? 1.5;
+            if (rule.AmbiguityRatio < 1) throw bad("ambiguity_ratio must be at least 1.");
+            rule.ParallelToleranceDegrees = s.Value<double?>("parallel_tolerance_degrees") ?? 10.0;
+            rule.PropagateThroughElbows = s.Value<bool?>("propagate_through_elbows") ?? true;
+            return rule;
+        }
+
+        private static readonly Regex Size = new Regex(
+            @"^\s*(\d+(?:\.\d+)?)\s*(?:""|in|mm)?\s*[xX×]\s*(\d+(?:\.\d+)?)\s*(?:""|in|mm)?\s*$", RegexOptions.CultureInvariant);
+
+        /// <summary>MTEXT formatting codes and braces removed; nothing else changed.</summary>
+        public static string Plain(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text ?? "";
+            string s = Regex.Replace(text, @"\\[A-Za-z][^;\\]*;", "");
+            s = s.Replace("\\P", " ").Replace("{", "").Replace("}", "");
+            return s.Trim();
+        }
+
+        /// <summary>(first, second) numbers of a "W x H" label, or null.</summary>
+        public static Tuple<double, double> ParseSize(string text)
+        {
+            Match m = Size.Match(Plain(text));
+            if (!m.Success) return null;
+            return Tuple.Create(double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture),
+                                double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>Why a text is not a size - said by name, not guessed at.</summary>
+        public static string NotASize(string text)
+        {
+            string p = Plain(text).ToUpperInvariant();
+            if (p.Contains("CFM") || p.Contains("L/S") || p.Contains("M3/H")) return "airflow";
+            if (Regex.IsMatch(p, @"^\(?[A-Z]{1,4}\)?$")) return "tag";
+            return "not_a_section";
+        }
+
+        private static double Dist(CadPoint a, CadPoint b) => Math.Sqrt((a.X - b.X) * (a.X - b.X) + (a.Y - b.Y) * (a.Y - b.Y));
+
+        /// <summary>Distance from p to segment ab, and the parameter of the foot (0..1 inside).</summary>
+        private static double ToSegment(CadPoint p, CadPoint a, CadPoint b, out double t)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y, l2 = dx * dx + dy * dy;
+            t = l2 <= 0 ? 0 : ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2;
+            double tc = Math.Max(0, Math.Min(1, t));
+            var q = new CadPoint(a.X + tc * dx, a.Y + tc * dy);
+            return Dist(p, q);
+        }
+
+        private static bool Parallel(double? textRotation, CadPoint a, CadPoint b, double tolDeg)
+        {
+            if (!textRotation.HasValue) return false;
+            double run = Math.Atan2(b.Y - a.Y, b.X - a.X) * 180 / Math.PI;
+            double txt = textRotation.Value * 180 / Math.PI;
+            double d = Math.Abs(((run - txt) % 180 + 180) % 180);
+            return Math.Min(d, 180 - d) <= tolDeg;
+        }
+
+        /// <summary>
+        /// Decide each run's section from the labels and leaders. <paramref name="runs"/> are
+        /// (id, semantic id, start, end, source entities); coordinates in model millimetres.
+        /// </summary>
+        public static CadSectionReading Assign(IList<CadRunSection> runs, IList<CadLabel> labels,
+                                               IList<CadLeaderLine> leaders, CadSectionRule rule, double pointToleranceMm)
+        {
+            var reading = new CadSectionReading();
+            reading.Runs.AddRange(runs);
+            var byRun = runs.ToDictionary(r => r.RunId, StringComparer.Ordinal);
+
+            foreach (CadLabel label in labels.OrderBy(l => l.Id, StringComparer.Ordinal))
+            {
+                Tuple<double, double> size = ParseSize(label.Text);
+                var row = new JObject
+                {
+                    ["label"] = label.Id, ["text"] = label.Text, ["layer"] = label.Layer,
+                    ["at_mm"] = new JArray(Math.Round(label.At.X, 1), Math.Round(label.At.Y, 1))
+                };
+                if (size == null)
+                {
+                    row["not_a_size"] = NotASize(label.Text);
+                    reading.OtherTexts.Add(row);
+                    continue;
+                }
+                double first = size.Item1 * rule.MmPerUnit, second = size.Item2 * rule.MmPerUnit;
+                double width = rule.LabelOrder == "height_x_width" ? second : first;
+                double height = rule.LabelOrder == "height_x_width" ? first : second;
+                row["value_as_written"] = Plain(label.Text);
+                row["units"] = rule.LabelUnits;
+                row["width_mm"] = Math.Round(width, 3);
+                row["height_mm"] = Math.Round(height, 3);
+                reading.SizeLabels.Add(row);
+
+                // 1. A LEADER that ends at this label and points at a run.
+                CadRunSection byLeader = null;
+                double leaderGap = double.MaxValue;
+                string leaderId = null;
+                foreach (CadLeaderLine ld in leaders)
+                {
+                    if (ld.Points.Count < 2) continue;
+                    double tail = Dist(ld.Points[ld.Points.Count - 1], label.At);
+                    if (tail > rule.LeaderToleranceMm) continue;
+                    foreach (CadRunSection r in runs)
+                    {
+                        double t;
+                        double d = ToSegment(ld.Points[0], r.Start, r.End, out t);
+                        if (d <= Math.Max(pointToleranceMm, rule.LeaderToleranceMm / 4) && d < leaderGap)
+                        { leaderGap = d; byLeader = r; leaderId = ld.Id; }
+                    }
+                }
+                if (byLeader != null)
+                {
+                    row["outcome"] = "associated";
+                    row["run"] = byLeader.RunId;
+                    row["by"] = "leader " + leaderId + " (arrowhead " + Math.Round(leaderGap, 1) + " mm from the run)";
+                    byLeader.Labels.Add(row);
+                    continue;
+                }
+
+                // 2. BESIDE A RUN'S INTERIOR, parallel preferred, ambiguity kept.
+                var near = new List<Tuple<CadRunSection, double, bool>>();
+                foreach (CadRunSection r in runs)
+                {
+                    double t;
+                    double d = ToSegment(label.At, r.Start, r.End, out t);
+                    if (t < -0.02 || t > 1.02 || d > rule.MaxDistanceMm) continue;
+                    near.Add(Tuple.Create(r, d, Parallel(label.RotationRadians, r.Start, r.End, rule.ParallelToleranceDegrees)));
+                }
+                if (near.Count == 0)
+                {
+                    row["outcome"] = "no_run_within_reach";
+                    row["means"] = "no run passes beside this label within max_distance_mm; it names nothing this reading can see.";
+                    continue;
+                }
+                var pool = near.Any(x => x.Item3) ? near.Where(x => x.Item3).ToList() : near;
+                pool = pool.OrderBy(x => x.Item2).ToList();
+                var best = pool[0];
+                var second2 = pool.Skip(1).FirstOrDefault(x => x.Item1 != best.Item1);
+                if (second2 != null && second2.Item2 <= best.Item2 * rule.AmbiguityRatio + 1e-6)
+                {
+                    row["outcome"] = "ambiguous";
+                    row["candidates"] = new JArray(pool.Take(3).Select(x => (JToken)new JObject
+                    {
+                        ["run"] = x.Item1.RunId, ["distance_mm"] = Math.Round(x.Item2, 1), ["parallel"] = x.Item3
+                    }));
+                    foreach (var x in pool.Where(x => x.Item2 <= best.Item2 * rule.AmbiguityRatio + 1e-6))
+                        x.Item1.Labels.Add(row);
+                    continue;
+                }
+                row["outcome"] = "associated";
+                row["run"] = best.Item1.RunId;
+                row["by"] = "beside the run's interior at " + Math.Round(best.Item2, 1) + " mm" +
+                            (best.Item3 ? ", written parallel to it" : "") +
+                            (second2 == null ? "; no other run within reach"
+                                             : "; next run " + second2.Item1.RunId + " at " + Math.Round(second2.Item2, 1) + " mm");
+                best.Item1.Labels.Add(row);
+            }
+
+            // Each run: one size, contradiction, ambiguity or nothing.
+            foreach (CadRunSection r in runs)
+            {
+                var assoc = r.Labels.Where(l => l.Value<string>("outcome") == "associated" && l.Value<string>("run") == r.RunId).ToList();
+                var sizes = assoc.Select(l => Tuple.Create(l.Value<double>("width_mm"), l.Value<double>("height_mm"))).Distinct().ToList();
+                if (sizes.Count == 1)
+                {
+                    r.State = "documented"; r.WidthMm = sizes[0].Item1; r.HeightMm = sizes[0].Item2;
+                    r.Reason = assoc.Count + " label(s) of the drawing name this size";
+                }
+                else if (sizes.Count > 1)
+                {
+                    r.State = "contradictory";
+                    r.Reason = "labels name " + string.Join(" and ", sizes.Select(s => s.Item1 + "x" + s.Item2 + " mm")) +
+                               " for this one run; it gets no size";
+                }
+                else if (r.Labels.Any(l => l.Value<string>("outcome") == "ambiguous"))
+                {
+                    r.State = "ambiguous";
+                    r.Reason = "a size label lies about as close to another run; which one it names is not said";
+                }
+            }
+
+            if (rule.PropagateThroughElbows) Propagate(reading.Runs, pointToleranceMm);
+            foreach (CadRunSection r in reading.Runs.Where(x => x.State == "missing" && x.Reason == null))
+                r.Reason = "no label names this run and none could reach it through an elbow or a straight continuation";
+            return reading;
+        }
+
+        private static string NodeKey(CadPoint p, double tol) =>
+            Math.Round(p.X / tol).ToString(CultureInfo.InvariantCulture) + "," + Math.Round(p.Y / tol).ToString(CultureInfo.InvariantCulture);
+
+        /// <summary>Through degree-2 nodes only; stops at branches, own labels and conflicts.</summary>
+        private static void Propagate(List<CadRunSection> runs, double tol)
+        {
+            tol = Math.Max(tol, 1.0);
+            var ends = new List<Tuple<CadRunSection, CadPoint>>();
+            foreach (CadRunSection r in runs) { ends.Add(Tuple.Create(r, r.Start)); ends.Add(Tuple.Create(r, r.End)); }
+            Func<CadPoint, List<CadRunSection>> at = p =>
+                ends.Where(e => Dist(e.Item2, p) <= tol).Select(e => e.Item1).Distinct().ToList();
+
+            bool changed = true;
+            var offers = new Dictionary<CadRunSection, List<CadRunSection>>();
+            while (changed)
+            {
+                changed = false;
+                offers.Clear();
+                foreach (CadRunSection src in runs.Where(r => r.WidthMm.HasValue))
+                    foreach (CadPoint end in new[] { src.Start, src.End })
+                    {
+                        List<CadRunSection> meeting = at(end);
+                        if (meeting.Count != 2) continue;                    // a branch or a free end stops it
+                        CadRunSection next = meeting.First(m => m != src);
+                        if (next.State != "missing") continue;               // own label / contradiction / ambiguity
+                        List<CadRunSection> list;
+                        if (!offers.TryGetValue(next, out list)) offers[next] = list = new List<CadRunSection>();
+                        list.Add(src);
+                    }
+                foreach (var kv in offers)
+                {
+                    var distinct = kv.Value.Select(s => Tuple.Create(s.WidthMm.Value, s.HeightMm.Value)).Distinct().ToList();
+                    CadRunSection next = kv.Key;
+                    if (distinct.Count > 1)
+                    {
+                        next.State = "contradictory";
+                        next.Reason = "two different sizes reach this unlabelled run from its two ends (" +
+                                      string.Join(", ", kv.Value.Select(s => s.RunId)) + "); it gets no size";
+                        continue;
+                    }
+                    CadRunSection from = kv.Value[0];
+                    next.State = "propagated";
+                    next.WidthMm = from.WidthMm; next.HeightMm = from.HeightMm;
+                    next.PropagatedFrom = from.RunId;
+                    next.Reason = "no label of its own; takes " + from.RunId + "'s size through an elbow or straight continuation";
+                    changed = true;
+                }
+            }
+        }
+    }
+}

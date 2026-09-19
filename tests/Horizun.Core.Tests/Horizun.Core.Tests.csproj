@@ -279,6 +279,8 @@
          happened to click - identical in plan, backwards in the building. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadFallRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadRequirementSet.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadDuctSections.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkPaging.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />

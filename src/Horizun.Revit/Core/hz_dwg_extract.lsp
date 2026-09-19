@@ -170,6 +170,12 @@
          (setq nm nil)))))
   out)
 
+;;; ATTDEF rows, kept out of hz-entity so that form stays under the one-line limit.
+(defun hz-attdef (f base ed)
+  (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
+                      (hz-n 40 ed) "\t" (hz-n 50 ed) "\t"
+                      (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
+
 (defun hz-entity (f owner ed / typ h lay base)
   (setq typ (cdr (assoc 0 ed))
         h   (cdr (assoc 5 ed))
@@ -182,10 +188,7 @@
     ((= typ "MTEXT")
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 40 ed) "\t" (hz-n 50 ed) "\t" (hz-str 1 ed)) f))
-    ((= typ "ATTDEF")
-     (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
-                         (hz-n 40 ed) "\t" (hz-n 50 ed) "\t"
-                         (hz-str 2 ed) "\t" (hz-str 1 ed)) f))
+    ((= typ "ATTDEF") (hz-attdef f base ed))
     ((= typ "INSERT")
      (write-line (strcat base (hz-pt (cdr (assoc 10 ed))) "\t"
                          (hz-n 50 ed) "\t"
@@ -201,6 +204,8 @@
                          (hz-n 50 ed) "\t" (hz-n 51 ed)) f))
     ((= typ "LWPOLYLINE")
      (write-line (strcat base (hz-n 90 ed) "\t" (hz-n 70 ed) "\t" (hz-lwpts ed)) f))
+    ((= typ "LEADER")
+     (write-line (strcat base (hz-lwpts ed)) f))
     ((= typ "HATCH")
      (write-line (strcat base (hz-str 2 ed) "\t" (hz-n 70 ed) "\t" (hz-n 91 ed) "\t" (hz-hatch ed)) f))
     ((= typ "VERTEX")

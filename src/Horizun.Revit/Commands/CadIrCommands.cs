@@ -592,6 +592,14 @@ namespace Horizun.Revit.Commands
             JObject textRefusal = r.Ir.RefuseIfBlind(CadAxes.Text, "reading pipe sizes and elevations off the drawing");
             if (textRefusal != null) reply["why_sizes_must_be_declared"] = textRefusal;
 
+            // THE LISTING IS PAGED; THE ANALYSIS IS NOT. See Core/CadNetworkPaging.cs.
+            var only = (r.Request["lists"] as JArray)?.Select(t => (string)t).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
+            int pageOffset = Math.Max(0, r.Request.Value<int?>("page_offset") ?? 0);
+            int pageLimit = r.Request.Value<int?>("page_limit") ?? CadNetworkPaging.DefaultLimit;
+            CadNetworkPaging.Page(reply, only, pageOffset, pageLimit);
+            if (r.Request["layers"] == null && r.Request["layer"] == null && set == null)
+                reply["scope_proposal"] = CadNetworkPaging.ScopeProposal(segments);
+
             return CommandResult.Ok(reply);
         }
 

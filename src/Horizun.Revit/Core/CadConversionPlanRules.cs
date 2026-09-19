@@ -874,6 +874,13 @@ namespace Horizun.Revit.Core
                 o["system_type_name"] = c.SystemType;
             if (c.DiameterMm.HasValue && MepKinds.Contains(createKind))
                 o["diameter"] = c.DiameterMm.Value;
+            // THE SECTION THE DRAWING WROTE for this run, when the rule reads one - width and height
+            // travel together to create_elements, which re-reads both and the orientation.
+            if (c.SectionWidthMm.HasValue && c.SectionHeightMm.HasValue && createKind == "duct")
+            {
+                o["width"] = Math.Round(c.SectionWidthMm.Value, 3);
+                o["height"] = Math.Round(c.SectionHeightMm.Value, 3);
+            }
             // THE JOIN RULE, finally travelling. It has been parsed since this
             // schema existed and read by nothing: a set could say join_rule none
             // and Revit joined anyway, which moved the wall's ends and then failed

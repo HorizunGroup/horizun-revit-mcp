@@ -134,8 +134,30 @@ namespace Horizun.Revit.Commands
             }
 
             var rows = new JArray();
-            int joined = 0, skipped = 0, refused = 0, delegated = 0;
+            int joined = 0, skipped = 0, refused = 0, delegated = 0, existing = 0;
 
+            // WHAT A REHEARSAL PROVES. Rehearsing each fitting on its own proves its arguments
+            // and references only: MEASURED on a real plan, eight elbows rehearsed and one could be
+            // built, because each elbow trims the ducts it joins and the next one then has less room.
+            // So a rehearsal carries the junctions out IN SEQUENCE inside a transaction group that is
+            // rolled back - every later junction sees what the earlier ones did - and says so. When
+            // the group cannot be opened the scope is declared as arguments-and-references only.
+            string rehearsalMode = request.Value<string>("rehearsal") ?? "sequential";
+            if (rehearsalMode != "sequential" && rehearsalMode != "isolated")
+                return CommandResult.Fail("rehearsal must be \"sequential\" (the default) or \"isolated\".");
+            RolledBackRehearsal group = null;
+            string rehearsalScope = dryRun ? "arguments_and_references_only" : "applied";
+            if (dryRun && rehearsalMode == "sequential")
+            {
+                group = new RolledBackRehearsal(doc, "Horizun: cad_connect sequential rehearsal");
+                if (group.Started) rehearsalScope = "sequential_rolled_back";
+                else group = null;
+            }
+            bool writeNow = !dryRun || group != null;
+            string runKey = "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+
+            try
+            {
             foreach (Junction j in parsed)
             {
                 if (j.Unresolved != null)
@@ -177,6 +199,37 @@ namespace Horizun.Revit.Commands
                     continue;
                 }
 
+                // A STRAIGHT CONTINUATION BETWEEN TWO DIFFERENT SECTIONS is a transition, not a
+                // direct join: joining a 16x8 end to a 12x8 end directly is either refused by Revit
+                // or a network that does not flow. The reading proposes "direct" because a plan line
+                // carries no size; the built runs do, so the decision is made here, from them.
+                string sectionChange = null;
+                if (j.Fitting == "direct" && j.Elements.Count == 2)
+                {
+                    string sa = SectionOf(j.Elements[0]), sb = SectionOf(j.Elements[1]);
+                    if (sa != null && sb != null && sa != sb)
+                    {
+                        sectionChange = "the two runs differ in section (" + sa + " / " + sb + "): a transition, not a direct join";
+                        j.Fitting = "transition";
+                    }
+                }
+
+                // ALREADY THERE? Read from the connectors and the fitting between them - never from
+                // "the ends are close". A repeat must not rehearse a fitting that exists and fits.
+                JObject was = Existing(j, tolerance);
+                if (was != null)
+                {
+                    string ws = was.Value<string>("state");
+                    JObject exRow = j.Row(ws == "already_connected" ? "already_connected" : "refused",
+                                          ws == "already_connected" ? null : ws, was.Value<string>("says"));
+                    exRow["action"] = j.Fitting;
+                    exRow["existing"] = was;
+                    rows.Add(exRow);
+                    if (ws == "already_connected") existing++; else refused++;
+                    continue;
+                }
+                int mark = Interference.Current?.Seen.Count ?? 0;
+
                 if (j.Fitting == "direct")
                 {
                     if (j.Elements.Count != 2)
@@ -206,7 +259,8 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
 
-                    JObject directRow = DelegateDirect(app, title, j, pa, pb, dryRun, request);
+                    JObject directRow = DelegateDirect(app, title, j, pa, pb, !writeNow, request, group != null ? runKey : "");
+                    Attribute(directRow, j, mark, writeNow, tolerance, group != null);
                     rows.Add(directRow);
                     string directState = directRow.Value<string>("state");
                     if (directState == "joined" || directState == "would_join") joined++;
@@ -215,11 +269,20 @@ namespace Horizun.Revit.Commands
                 }
 
                 // ---- elbow, tee, cross: the typed command owns this -------------
-                JObject delegatedRow = DelegateFitting(app, title, j, dryRun, request);
+                JObject delegatedRow = DelegateFitting(app, title, j, !writeNow, request, group != null ? runKey : "");
+                Attribute(delegatedRow, j, mark, writeNow, tolerance, group != null);
+                if (sectionChange != null) delegatedRow["action_reason"] = sectionChange;
                 rows.Add(delegatedRow);
                 string state = delegatedRow.Value<string>("state");
                 if (state == "created" || state == "would_create") delegated++;
                 else refused++;
+            }
+            }
+            finally
+            {
+                // THE REHEARSAL LEAVES NOTHING. Every fitting it placed to learn what the next
+                // junction would face is undone here, on every path.
+                if (group != null) group.Dispose();
             }
 
             var result = new JObject
@@ -229,6 +292,24 @@ namespace Horizun.Revit.Commands
                 ["junctions_given"] = parsed.Count,
                 ["direct_joined"] = joined,
                 ["fittings_placed"] = delegated,
+                ["already_connected"] = existing,
+                ["rehearsal_rollback"] = group == null ? null : new JObject
+                {
+                    ["status"] = group.RollbackStatus,
+                    ["confirmed"] = group.RollbackConfirmed,
+                    ["means"] = group.RollbackConfirmed
+                        ? "every fitting the sequential rehearsal placed was rolled back; the model is as it was."
+                        : "the rollback did NOT report RolledBack: the model's state is UNCERTAIN - re-read it before trusting it."
+                },
+                ["rehearsal_scope"] = rehearsalScope,
+                ["rehearsal_scope_means"] = rehearsalScope == "sequential_rolled_back"
+                    ? "every junction was CARRIED OUT in order inside a transaction group and then rolled back, so " +
+                      "each one met the geometry the earlier ones left - a refusal here is what the apply meets."
+                    : rehearsalScope == "arguments_and_references_only"
+                        ? "each junction was rehearsed ON ITS OWN: its arguments and references hold. It does NOT " +
+                          "prove the network is buildable - each fitting shortens the runs it joins, and a later " +
+                          "one can have no room left. Ask rehearsal=\"sequential\" for that."
+                        : "the junctions were carried out.",
                 ["skipped"] = skipped,
                 ["refused"] = refused,
                 ["junctions"] = rows,
@@ -289,9 +370,161 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
+        /// <summary>
+        /// What Revit raised while THIS junction ran, and - when it was carried out - the state
+        /// re-read from the model afterwards.
+        /// </summary>
+        private static void Attribute(JObject row, Junction j, int mark, bool written, double tolerance, bool rehearsed)
+        {
+            row["action"] = j.Fitting;
+            Interference watch = Interference.Current;
+            if (watch != null && watch.Seen.Count > mark)
+                row["revit_raised"] = RaisedRecord.Window(watch.Seen, mark);
+            if (!written) return;
+            row["reread"] = Reread(j, tolerance);
+            if (rehearsed)
+            {
+                string s = row.Value<string>("state");
+                if (s == "created") row["state"] = "would_create";
+                else if (s == "joined") row["state"] = "would_join";
+                row["rehearsed_in_sequence"] = true;
+            }
+        }
+
+        /// <summary>"W x H mm" or "D mm" of a run, read from the model; null when it has neither.</summary>
+        private static string SectionOf(Element e)
+        {
+            try
+            {
+                Parameter w = e.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
+                Parameter h = e.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+                if (w != null && h != null && w.HasValue && h.HasValue && w.AsDouble() > 0)
+                    return Math.Round(w.AsDouble() * 304.8, 1).ToString(CultureInfo.InvariantCulture) + "x" +
+                           Math.Round(h.AsDouble() * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm";
+                foreach (BuiltInParameter d in new[] { BuiltInParameter.RBS_CURVE_DIAMETER_PARAM, BuiltInParameter.RBS_PIPE_DIAMETER_PARAM })
+                {
+                    Parameter p = e.get_Parameter(d);
+                    if (p != null && p.HasValue && p.AsDouble() > 0)
+                        return "D" + Math.Round(p.AsDouble() * 304.8, 1).ToString(CultureInfo.InvariantCulture) + " mm";
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static bool IsFitting(Element e)
+        {
+            var fi = e as FamilyInstance;
+            if (fi == null || fi.Category == null) return false;
+            long cat = Rid.Value(fi.Category.Id);
+            return cat == (long)BuiltInCategory.OST_DuctFitting || cat == (long)BuiltInCategory.OST_PipeFitting ||
+                   cat == (long)BuiltInCategory.OST_ConduitFitting || cat == (long)BuiltInCategory.OST_CableTrayFitting;
+        }
+
+        /// <summary>The physical neighbours of a connector: owners of the end connectors it is joined to.</summary>
+        private static List<Element> Neighbours(Connector c)
+        {
+            var list = new List<Element>();
+            try
+            {
+                foreach (Connector other in c.AllRefs)
+                {
+                    if (other == null || other.Owner == null || other.Owner.Id == c.Owner.Id) continue;
+                    if (other.ConnectorType != ConnectorType.End && other.ConnectorType != ConnectorType.Curve) continue;
+                    if (!list.Any(x => x.Id == other.Owner.Id)) list.Add(other.Owner);
+                }
+            }
+            catch { }
+            return list;
+        }
+
+        /// <summary>
+        /// Is this junction ALREADY made? Null when nothing is there yet. Otherwise a row whose state
+        /// is already_connected (every member's connector at the point joins the other member directly,
+        /// or all of them join ONE fitting of the proposed kind), existing_fitting_differs, or
+        /// occupied_by_other.
+        /// </summary>
+        private static JObject Existing(Junction j, double tolerance)
+        {
+            if (j.Elements.Count < 2) return null;
+            var picks = j.Elements.Select(e => MepConnect.Nearest(e, j.At, tolerance)).ToList();
+            if (picks.Any(p => !p.Found || p.Connector == null)) return null;
+            var conns = picks.Select(p => p.Connector).ToList();
+            if (conns.All(c => !c.IsConnected)) return null;
+            var detail = new JArray(picks.Select(p => (JToken)new JObject
+            {
+                ["element_id"] = Rid.Value(p.Connector.Owner.Id), ["connector"] = p.ConnectorId,
+                ["connected"] = p.Connector.IsConnected,
+                ["to"] = new JArray(Neighbours(p.Connector).Select(x => (JToken)Rid.Value(x.Id)))
+            }));
+            if (j.Fitting == "direct")
+            {
+                bool direct = false;
+                try { direct = conns[0].IsConnectedTo(conns[1]); } catch { }
+                return new JObject
+                {
+                    ["state"] = direct ? "already_connected" : "occupied_by_other",
+                    ["connectors"] = detail,
+                    ["says"] = direct ? "the two ends are joined to each other in the model already; nothing was sent."
+                                      : "a connector at this point is joined to something else; joining it here would take it away."
+                };
+            }
+            List<Element> common = null;
+            foreach (Connector c in conns)
+            {
+                var fits = Neighbours(c).Where(IsFitting).ToList();
+                common = common == null ? fits : common.Where(x => fits.Any(f => f.Id == x.Id)).ToList();
+            }
+            if (conns.All(c => c.IsConnected) && common != null && common.Count == 1)
+            {
+                var fitting = (FamilyInstance)common[0];
+                string part = "";
+                try { part = ((PartType)(fitting.Symbol.Family.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)?.AsInteger() ?? -1)).ToString(); } catch { }
+                bool same = string.Equals(part, j.Fitting, StringComparison.OrdinalIgnoreCase);
+                return new JObject
+                {
+                    ["state"] = same ? "already_connected" : "existing_fitting_differs",
+                    ["fitting_id"] = Rid.Value(fitting.Id),
+                    ["fitting_part_type"] = part,
+                    ["connectors"] = detail,
+                    ["says"] = same
+                        ? "one " + part.ToLowerInvariant() + " already joins every member at this point; nothing was sent."
+                        : "a " + part + " joins these members where the drawing proposes a " + j.Fitting +
+                          ". It is left as it is and reported - replacing it is a decision, not a repair."
+                };
+            }
+            return new JObject
+            {
+                ["state"] = "occupied_by_other",
+                ["connectors"] = detail,
+                ["says"] = "at least one member's connector at this point is already joined to something that is not " +
+                           "one shared fitting for this junction. Nothing was sent; joining it would take it away."
+            };
+        }
+
+        /// <summary>The members' connectors at the junction, re-read after the operation.</summary>
+        private static JObject Reread(Junction j, double tolerance)
+        {
+            var arr = new JArray();
+            bool all = true;
+            foreach (Element e in j.Elements)
+            {
+                MepConnectorPick p = MepConnect.Nearest(e, j.At, tolerance);
+                if (!p.Found || p.Connector == null) { all = false; arr.Add(new JObject { ["element_id"] = Rid.Value(e.Id), ["found"] = false }); continue; }
+                bool on = p.Connector.IsConnected;
+                all &= on;
+                arr.Add(new JObject
+                {
+                    ["element_id"] = Rid.Value(e.Id), ["connector"] = p.ConnectorId, ["connected"] = on,
+                    ["to"] = new JArray(Neighbours(p.Connector).Select(x => (JToken)Rid.Value(x.Id)))
+                });
+            }
+            return new JObject { ["members"] = arr, ["all_connected"] = all };
+        }
+
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
                                        MepConnectorPick a, MepConnectorPick b,
-                                       bool dryRun, JObject request)
+                                       bool dryRun, JObject request, string keySuffix = "")
         {
             ICommand child = _resolve == null ? null : _resolve("horizun_connect_mep");
             if (child == null)
@@ -340,7 +573,7 @@ namespace Horizun.Revit.Commands
 
         /// <summary>Turn a fitting junction into horizun_create_elements' own typed row and send it.</summary>
         private JObject DelegateFitting(UIApplication app, string title, Junction j,
-                                        bool dryRun, JObject request)
+                                        bool dryRun, JObject request, string keySuffix = "")
         {
             int need = j.Fitting == "cross" ? 4 : j.Fitting == "tee" ? 3 : 2;
             if (j.Elements.Count != need)
@@ -379,7 +612,7 @@ namespace Horizun.Revit.Commands
                 })
             };
             string key = request.Value<string>("idempotency_key");
-            if (!string.IsNullOrWhiteSpace(key)) args["idempotency_key"] = key + "-" + (j.Id ?? "j");
+            if (!string.IsNullOrWhiteSpace(key)) args["idempotency_key"] = key + "-" + (j.Id ?? "j") + keySuffix;
 
             CommandResult r;
             try
