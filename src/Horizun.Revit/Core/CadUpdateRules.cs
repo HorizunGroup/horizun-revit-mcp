@@ -703,7 +703,54 @@ namespace Horizun.Revit.Core
                     // changes, so a reading that compares position alone reports
                     // it as nothing to do - and the model keeps carrying the old
                     // size into every quantity and every clash.
-                    double? wantsWidth = c.ThicknessMm ?? c.DiameterMm;
+                    // A RECTANGULAR SECTION read from the drawing's labels: two numbers, both compared.
+                    // MEASURED need: a revised plan relabels a run 8x6 -> 10x6 and leaves its line alone.
+                    // The size of a rectangular duct is the INSTANCE's, not its type's, so honouring it
+                    // touches no other element - but the fittings on its ends follow it, and a person
+                    // may have sized it by hand. So it is a review with the evidence, carried out by a
+                    // person's `retype` decision as one verified write of width and height.
+                    if (c.SectionWidthMm.HasValue && c.SectionHeightMm.HasValue && held.WidthMm.HasValue)
+                    {
+                        const double sectionTolerance = 1.0;
+                        bool heldRectangular = held.HeightMm.HasValue;
+                        bool differs = !heldRectangular ||
+                                       Math.Abs(c.SectionWidthMm.Value - held.WidthMm.Value) > sectionTolerance ||
+                                       Math.Abs(c.SectionHeightMm.Value - held.HeightMm.Value) > sectionTolerance;
+                        if (differs)
+                        {
+                            string asks = Mm(c.SectionWidthMm.Value) + " x " + Mm(c.SectionHeightMm.Value) + " mm";
+                            string has = heldRectangular
+                                ? Mm(held.WidthMm.Value) + " x " + Mm(held.HeightMm.Value) + " mm"
+                                : "round, " + Mm(held.WidthMm.Value) + " mm";
+                            var resized = new CadUpdateAction
+                            {
+                                Kind = "review",
+                                Classification = CadChange.Resized,
+                                CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
+                                Geometry = new List<CadPoint>(c.Geometry),
+                                Automatic = false,
+                                Says = "the duct is exactly where the drawing says and the drawing's labels now ask for a " +
+                                       "DIFFERENT SECTION: " + asks + " where the element measures " + has + ". " +
+                                       (heldRectangular
+                                           ? "A rectangular duct's size is its own, so no other element changes with it; " +
+                                             "the fittings on its ends follow it. Nothing was changed: decide `retype` to " +
+                                             "write the new width and height (verified), or `keep`."
+                                           : "A round duct is not resized into a rectangular one - that is a different " +
+                                             "type, and an equal-area circle is never offered as a substitute. Nothing was changed."),
+                                Evidence = Where(c, held, p)
+                            };
+                            resized.Evidence["section"] = true;
+                            resized.Evidence["drawing_asks_width_mm"] = Math.Round(c.SectionWidthMm.Value, 3);
+                            resized.Evidence["drawing_asks_height_mm"] = Math.Round(c.SectionHeightMm.Value, 3);
+                            resized.Evidence["element_width_mm"] = Math.Round(held.WidthMm.Value, 3);
+                            if (heldRectangular) resized.Evidence["element_height_mm"] = Math.Round(held.HeightMm.Value, 3);
+                            else resized.Evidence["not_resizable"] = "held_round";
+                            update.Actions.Add(resized);
+                            continue;
+                        }
+                    }
+
+                    double? wantsWidth = c.SectionWidthMm.HasValue ? null : (c.ThicknessMm ?? c.DiameterMm);
                     // A THICKNESS IS JUDGED BY THE THICKNESS TOLERANCE, not by how far a
                     // revision may move a line: measured, 17 mm of wrong wall passed as
                     // unchanged under the 25 mm revision tolerance.
@@ -1796,6 +1843,7 @@ namespace Horizun.Revit.Core
         }
 
         private static string Quoted(string s) { return s == null ? "(nothing)" : "'" + s + "'"; }
+        private static string Mm(double v) { return v.ToString("0.#", CultureInfo.InvariantCulture); }
 
         /// <summary>
         /// Put the heights a fall walk computed onto the update's actions.

@@ -240,66 +240,10 @@ namespace Horizun.Revit.Commands
             // Only for rules that declare one. A run whose size the labels do not settle -
             // missing, ambiguous, contradictory - is NOT planned at a size nobody chose: it is
             // withdrawn with its reason, and every other run is planned.
-            JObject sectionsReport = null;
-            var sectionRules = set.Rules.Where(r => r.Section != null).ToList();
-            if (sectionRules.Count > 0)
-            {
-                sectionsReport = new JObject();
-                var labels = new List<CadLabel>();
-                var leaders = new List<CadLeaderLine>();
-                var readReport = new JObject();
-                bool read = CadBlockSource.ReadLabels(element, facts, set, harvest, request.Value<string>("dwg_path"),
-                    Math.Max(30, Math.Min(3600, request.Value<int?>("dwg_read_timeout_seconds") ?? 900)),
-                    sectionRules.SelectMany(r => r.Section.LabelLayers).Distinct(StringComparer.OrdinalIgnoreCase).ToList(),
-                    labels, leaders, readReport);
-                sectionsReport["read"] = readReport;
-                if (!read)
-                    return CommandResult.Fail(
-                        "sections_unread: " + ((string)readReport["refused"] ?? "unknown") + ". " +
-                        CadBlockSource.Explain(readReport) +
-                        " A duct rule of this set reads each run's section from labels, and no run is planned at " +
-                        "a size nobody chose. Nothing was planned.");
-                var byRule = new JObject();
-                foreach (CadRule rule in sectionRules)
-                {
-                    var mine = interpretation.Candidates.Where(c => c.RuleId == rule.Id && c.Geometry.Count >= 2).ToList();
-                    var runs = mine.Select(c => new CadRunSection
-                    {
-                        RunId = c.Id, SemanticId = c.SemanticId, Start = c.Geometry[0], End = c.Geometry[c.Geometry.Count - 1],
-                        SourceEntities = new List<string>(c.SourceSurrogates)
-                    }).ToList();
-                    bool cs = set.CaseSensitiveLayers;
-                    var myLabels = labels.Where(l =>
-                    {
-                        string bare = l.Layer.Contains("|") ? l.Layer.Substring(l.Layer.LastIndexOf('|') + 1) : l.Layer;
-                        return rule.Section.LabelLayers.Any(p => CadGlob.IsMatch(l.Layer, p, cs) || CadGlob.IsMatch(bare, p, cs));
-                    }).ToList();
-                    CadSectionReading sections = CadDuctSections.Assign(runs, myLabels, leaders, rule.Section, set.PointToleranceMm);
-                    var byId = mine.ToDictionary(c => c.Id, StringComparer.Ordinal);
-                    foreach (CadRunSection r in sections.Runs)
-                    {
-                        CadCandidate c = byId[r.RunId];
-                        if (r.WidthMm.HasValue && (r.State == "documented" || r.State == "propagated"))
-                        {
-                            c.SectionWidthMm = r.WidthMm; c.SectionHeightMm = r.HeightMm;
-                            continue;
-                        }
-                        interpretation.Candidates.Remove(c);
-                        withdrawn.Add(new JObject
-                        {
-                            ["candidate_id"] = c.Id, ["semantic_id"] = c.SemanticId, ["kind"] = "duct",
-                            ["at_mm"] = new JArray(Math.Round(r.Start.X, 1), Math.Round(r.Start.Y, 1),
-                                                   Math.Round(r.End.X, 1), Math.Round(r.End.Y, 1)),
-                            ["reason"] = "section_" + r.State,
-                            ["means"] = r.Reason
-                        });
-                    }
-                    var ruleReport = sections.ToJson();
-                    ruleReport["section_rule"] = rule.Section.ToJson();
-                    byRule[rule.Id] = ruleReport;
-                }
-                sectionsReport["by_rule"] = byRule;
-            }
+            string sectionsFailure;
+            JObject sectionsReport = CadSectionsHook.Apply(element, facts, set, harvest, request, interpretation,
+                                                           withdrawn, false, out sectionsFailure);
+            if (sectionsFailure != null) return CommandResult.Fail(sectionsFailure);
 
             JObject blocksReport = null;
             if (set.Rules.Any(r => r.Geometry != null && r.Geometry.Source == CadGeometrySource.Blocks))

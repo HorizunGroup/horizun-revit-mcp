@@ -134,6 +134,14 @@ namespace Horizun.Revit.Commands
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
                 harvest.Segments, set, sourceHash, harvest.Arcs, null, solidHatch);
 
+            // EACH DUCT RUN'S SECTION, read exactly as the first conversion read it. A revision
+            // that changes a label - 8x6 grown to 10x6 - leaves the line where it was, and only
+            // this reading can see that the run now asks for another size.
+            string sectionsFailure;
+            JObject sectionsReadForReply = CadSectionsHook.Apply(element, facts, set, harvest, request, interpretation,
+                                                                 new JArray(), true, out sectionsFailure);
+            if (sectionsFailure != null) return CommandResult.Fail(sectionsFailure);
+
             // THE SAME READING THE PLAN AND THE AUDIT MAKE, INCLUDING SYMBOLS.
             //
             // An update route that cannot see the drawing's named symbols reports
@@ -642,6 +650,7 @@ namespace Horizun.Revit.Commands
                     "is one the next update builds a second time.")
             };
             if (blocksReadForReply != null) result["blocks"] = blocksReadForReply;
+            if (sectionsReadForReply != null) result["sections"] = sectionsReadForReply;
             // DEPENDENTS NO WALL RE-HOMES BY ITSELF, each with its alternatives and the key a decision quotes.
             if (depCtx.HeldOrphans.Count > 0) result["orphans_held"] = depCtx.HeldOrphans;
             // WHAT WAS READ FROM THE FILE, and whether the reading was reused: the cache states hit or
@@ -937,6 +946,27 @@ namespace Horizun.Revit.Commands
                                                                     (x.Kind == CadDecisions.Retype || x.Kind == CadDecisions.RotateInFace)).ToList())
             {
                 string why;
+                if (a.Kind == CadDecisions.Retype && a.Evidence.Value<bool?>("section") == true)
+                {
+                    // A RECTANGULAR SECTION is the instance's own width and height: written by the
+                    // one verified parameter writer, never by a type change that would move others.
+                    JArray writes = SectionWrites(doc, a, out why);
+                    if (writes == null)
+                    {
+                        a.Automatic = false;
+                        a.Evidence["decision_not_carried_out"] = why;
+                        a.Says += " HELD: the decision could not become a typed action (" + why + ").";
+                        continue;
+                    }
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-resolve-" + (d++),
+                        ["tool"] = "horizun_write_params_verified",
+                        ["arguments"] = new JObject { ["target_document"] = target, ["writes"] = writes }
+                    });
+                    a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
+                    continue;
+                }
                 JObject op = a.Kind == CadDecisions.Retype
                     ? RetypeOperation(doc, a, interpretation, set, out why)
                     : TurnOperation(doc, a, out why);
@@ -1063,6 +1093,36 @@ namespace Horizun.Revit.Commands
                 decisions.Add(new CadDecision { ElementId = id.Value, Decision = decision.Trim() });
             }
             return null;
+        }
+
+        /// <summary>
+        /// The width and height a rectangular duct's section now asks for, as verified parameter
+        /// writes - plus the fittings on its ends, named so the reply can say what follows it.
+        /// </summary>
+        private static JArray SectionWrites(Document doc, CadUpdateAction a, out string why)
+        {
+            why = null;
+            var duct = a.ElementId.HasValue ? doc.GetElement(Rid.Make(a.ElementId.Value)) as Autodesk.Revit.DB.Mechanical.Duct : null;
+            if (duct == null) { why = "the element is not a duct"; return null; }
+            if (a.Evidence["not_resizable"] != null) { why = "the held duct is round: a round duct is not resized into a rectangular one"; return null; }
+            double? w = a.Evidence.Value<double?>("drawing_asks_width_mm"), h = a.Evidence.Value<double?>("drawing_asks_height_mm");
+            if (!w.HasValue || !h.HasValue || w <= 0 || h <= 0) { why = "the section evidence is incomplete"; return null; }
+            var fittings = new JArray();
+            try
+            {
+                foreach (Connector con in duct.ConnectorManager.Connectors)
+                    foreach (Connector other in con.AllRefs)
+                        if (other.Owner is FamilyInstance fi && fi.Id != duct.Id &&
+                            (other.ConnectorType & ConnectorType.Physical) != 0)
+                            fittings.Add(Rid.Value(fi.Id));
+            }
+            catch { }
+            a.Evidence["fittings_on_its_ends"] = fittings;
+            return new JArray
+            {
+                new JObject { ["target_id"] = a.ElementId.Value, ["parameter"] = "RBS_CURVE_WIDTH_PARAM", ["value"] = w.Value / 304.8 },
+                new JObject { ["target_id"] = a.ElementId.Value, ["parameter"] = "RBS_CURVE_HEIGHT_PARAM", ["value"] = h.Value / 304.8 }
+            };
         }
 
         /// <summary>

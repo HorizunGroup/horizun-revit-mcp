@@ -763,6 +763,13 @@ namespace Horizun.Revit.Commands
         /// <summary>The elements a transform aimed at: a set_curve re-shapes one that already exists.</summary>
         private static IEnumerable<long> TargetIds(JObject args)
         {
+            // A RESOLVED SECTION is written as parameters: the duct it resized is re-stamped too.
+            var written = new HashSet<long>();
+            foreach (JObject w in (args["writes"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                long value;
+                if (long.TryParse((w["target_id"] ?? "").ToString(), out value) && written.Add(value)) yield return value;
+            }
             JArray ops = args["operations"] as JArray;
             if (ops == null) yield break;
             foreach (JObject op in ops.OfType<JObject>())

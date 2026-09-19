@@ -68,6 +68,9 @@ namespace Horizun.Revit.Core
         /// </summary>
         public double? WidthMm;
 
+        /// <summary>A RECTANGULAR duct's height, in mm; null for anything else (a round duct included).</summary>
+        public double? HeightMm;
+
         /// <summary>What the element lives IN, when it lives in anything. Null for a free-standing thing.</summary>
         public long? HostElementId;
 

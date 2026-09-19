@@ -85,6 +85,7 @@ namespace Horizun.Revit.Commands
             catch { }
 
             s.WidthMm = WidthOf(e);
+            s.HeightMm = RectangularHeightOf(e);
 
             // WHAT IT IS CALLED. Only the kinds that carry an identity of their
             // own answer: a wall's name is its TYPE's name and is not a
@@ -207,6 +208,23 @@ namespace Horizun.Revit.Commands
                     if (w != null && w.StorageType == StorageType.Double) return CadUnits.FeetToMm(w.AsDouble());
                     return null;
                 }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// A rectangular duct's height. Asked only of a duct with NO diameter: a round duct
+        /// answers the height parameter with nothing useful, and a section is two numbers or none.
+        /// </summary>
+        private static double? RectangularHeightOf(Element e)
+        {
+            try
+            {
+                var duct = e as Duct;
+                if (duct == null || DiameterMm(duct).HasValue) return null;
+                Parameter h = duct.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+                if (h != null && h.StorageType == StorageType.Double && h.HasValue) return CadUnits.FeetToMm(h.AsDouble());
             }
             catch { }
             return null;
