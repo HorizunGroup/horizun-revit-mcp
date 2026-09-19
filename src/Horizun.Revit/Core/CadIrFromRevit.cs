@@ -70,6 +70,18 @@ namespace Horizun.Revit.Core
         /// import's declared subcategories - and may be null, in which case the
         /// layers axis is downgraded to Partial and says why.
         /// </summary>
+        /// <summary>
+        /// WHAT A LOOSE PIECE WAS DRAWN AS. The harvest gives a polyline's pieces no
+        /// curve id, so they arrive here one by one; they used to become LINE
+        /// entities, and a run's semantic id carries its source kind - so every run
+        /// drawn as a polyline piece got one id from horizun_cad_networks (read
+        /// through this IR) and another from the conversion (read from the harvest).
+        /// horizun_cad_connect then found no element for 14 of 20 runs of a real
+        /// corridor supply plan while run_identity said the two readings matched.
+        /// </summary>
+        public static string LooseEntityKind(CadCurveKind sourceKind) =>
+            sourceKind == CadCurveKind.Polyline ? CadEntityKind.Polyline : CadEntityKind.Line;
+
         public static CadIr Adapt(Document doc, Element instance, CadHarvest harvest,
                                   string sourceName, string sourceSha256, string revitVersion)
         {
@@ -160,7 +172,7 @@ namespace Horizun.Revit.Core
                 ir.Entities.Add(new CadIrEntity
                 {
                     Id = "e" + (++n).ToString(CultureInfo.InvariantCulture),
-                    Kind = CadEntityKind.Line,
+                    Kind = LooseEntityKind(s.SourceKind),
                     Layer = s.Layer,
                     Points = { s.A, s.B }
                 });
