@@ -85,7 +85,8 @@ namespace Horizun.Revit.Commands
             {
                 var levelNames = new HashSet<string>(new FilteredElementCollector(doc).OfClass(typeof(Level))
                     .Cast<Level>().Select(SafeName), StringComparer.Ordinal);
-                JObject check = CadCatalogCheck.Check(set, name => TypeFactsOf(doc, name), levelNames);
+                JObject check = CadCatalogCheck.Check(set, name => TypeFactsOf(doc, name), levelNames,
+                                                      produces => TypesOfKind(doc, produces));
                 check["document"] = SafeTitle(doc);
                 return CommandResult.Ok(check);
             }
@@ -1146,7 +1147,8 @@ namespace Horizun.Revit.Commands
                     if (et == null)
                         return "type_not_found: no element type in " + Quote(SafeTitle(doc)) + " is named " +
                                Quote(typeName) + ", which the rule producing these " + kind + "s asked for; " +
-                               CadCatalogCheck.LoadedOfFamily(typeName, SameFamily(doc, typeName)) + " " +
+                               CadCatalogCheck.LoadedOfFamily(typeName, SameFamily(doc, typeName), kind,
+                                                              TypesOfKind(doc, kind)) + " " +
                                "NOTHING was planned. Load the family or correct the requirement set - a plan that " +
                                "substitutes a default type builds a different building and verifies it happily.";
                     row["type_id"] = Rid.Value(et.Id);
@@ -1812,6 +1814,28 @@ namespace Horizun.Revit.Commands
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.OrdinalIgnoreCase))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>The loaded types of the class a rule's kind is built from, as labels, sorted; at most 25.</summary>
+        private static List<string> TypesOfKind(Document doc, string produces)
+        {
+            Type cls;
+            switch (produces)
+            {
+                case "duct": cls = typeof(Autodesk.Revit.DB.Mechanical.DuctType); break;
+                case "pipe": cls = typeof(Autodesk.Revit.DB.Plumbing.PipeType); break;
+                case "conduit": cls = typeof(Autodesk.Revit.DB.Electrical.ConduitType); break;
+                case "cable_tray": cls = typeof(Autodesk.Revit.DB.Electrical.CableTrayType); break;
+                case "wall": cls = typeof(WallType); break;
+                default: return new List<string>();
+            }
+            try
+            {
+                return new FilteredElementCollector(doc).OfClass(cls).Cast<ElementType>().Select(TypeLabel)
+                    .Where(x => x != null).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal)
+                    .Take(25).ToList();
+            }
+            catch { return new List<string>(); }
         }
 
         /// <summary>The loaded types of the family a "Family: Type" name names, as labels, sorted; at most 25.</summary>

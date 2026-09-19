@@ -100,6 +100,16 @@ namespace Horizun.Core.Tests
             Assert.Equal(loaded, duct["loaded_of_this_family"].ToObject<List<string>>());
             Assert.Contains("no type of family 'Oval Duct' is loaded", Row(check, "none")["problems"].ToString());
 
+            // no type of the named family at all (MEASURED in Revit 2023): the kind's loaded types are named instead
+            JObject byKind = CadCatalogCheck.Check(set, n => new CadTypeFacts { Found = false },
+                new HashSet<string> { "Level 1" },
+                produces => produces == "duct" ? new List<string> { "Conducto rectangular: Codos con radio / Tes" } : null);
+            string kindSaid = Row(byKind, "duct")["problems"].ToString();
+            Assert.Contains("no type of family 'Rectangular Duct' is loaded", kindSaid);
+            Assert.Contains("the duct types this model does load are 'Conducto rectangular: Codos con radio / Tes'", kindSaid);
+            Assert.Contains("another language", kindSaid);
+            Assert.Equal("Conducto rectangular: Codos con radio / Tes", (string)Row(byKind, "duct")["loaded_of_this_kind"][0]);
+
             Assert.Equal("Rectangular Duct", CadCatalogCheck.FamilyOf("Rectangular Duct: Radius Elbows / Tees"));
             Assert.Null(CadCatalogCheck.FamilyOf("Standard"));
             Assert.Contains("no family part", CadCatalogCheck.LoadedOfFamily("Standard", loaded));

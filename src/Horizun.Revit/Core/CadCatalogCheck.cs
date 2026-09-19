@@ -55,17 +55,29 @@ namespace Horizun.Revit.Core
             return at > 0 ? label.Substring(0, at).Trim() : null;
         }
 
-        /// <summary>What a type_not_found says about the family it named: the loaded types, or that there are none.</summary>
-        public static string LoadedOfFamily(string label, IList<string> sameFamily)
+        /// <summary>
+        /// What a type_not_found says: the loaded types of the family it named - or, when that family is not loaded
+        /// at all, the loaded types of the KIND the rule produces. MEASURED (campaign 7, Revit 2023): the family
+        /// "Rectangular Duct" was absent by that name, which is what a Revit running in another language does to
+        /// its system families.
+        /// </summary>
+        public static string LoadedOfFamily(string label, IList<string> sameFamily, string produces = null,
+                                            IList<string> sameKind = null)
         {
+            const string choice = ". Which of them the drawing means is the caller's decision, not this check's.";
             string family = FamilyOf(label);
             if (family == null) return "the name carries no family part, so no family can be listed";
-            if (sameFamily == null || sameFamily.Count == 0) return "no type of family '" + family + "' is loaded";
-            return "loaded types of family '" + family + "': " + string.Join(", ", sameFamily.Select(n => "'" + n + "'")) +
-                   ". Which of them the drawing means is the caller's decision, not this check's.";
+            if (sameFamily != null && sameFamily.Count > 0)
+                return "loaded types of family '" + family + "': " + string.Join(", ", sameFamily.Select(n => "'" + n + "'")) + choice;
+            if (sameKind != null && sameKind.Count > 0)
+                return "no type of family '" + family + "' is loaded; the " + (produces ?? "same-kind") + " types this model " +
+                       "does load are " + string.Join(", ", sameKind.Select(n => "'" + n + "'")) + " (a Revit running in " +
+                       "another language names its system families in that language)" + choice;
+            return "no type of family '" + family + "' is loaded";
         }
 
-        public static JObject Check(CadRequirementSet set, Func<string, CadTypeFacts> type, ICollection<string> levels)
+        public static JObject Check(CadRequirementSet set, Func<string, CadTypeFacts> type, ICollection<string> levels,
+                                    Func<string, List<string>> typesOfKind = null)
         {
             var rows = new JArray();
             int ok = 0, refused = 0, warned = 0;
@@ -108,9 +120,12 @@ namespace Horizun.Revit.Core
                     row["present"] = f.Found;
                     if (!f.Found)
                     {
+                        List<string> kind = f.SameFamily.Count == 0 && typesOfKind != null
+                            ? typesOfKind(rule.Produces) ?? new List<string>() : new List<string>();
                         problems.Add("type_not_found: '" + rule.FamilyType + "' is not loaded in this model; " +
-                                     LoadedOfFamily(rule.FamilyType, f.SameFamily));
+                                     LoadedOfFamily(rule.FamilyType, f.SameFamily, rule.Produces, kind));
                         row["loaded_of_this_family"] = new JArray(f.SameFamily);
+                        if (kind.Count > 0) row["loaded_of_this_kind"] = new JArray(kind);
                     }
                     else
                     {
