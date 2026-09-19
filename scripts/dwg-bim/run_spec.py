@@ -31,6 +31,8 @@ import subprocess
 import sys
 import uuid
 
+import session_hooks
+
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 
@@ -70,7 +72,7 @@ class Calls:
         a = os.path.join(self.dir, 'calls', stem + '.args.json')
         out = os.path.join(self.dir, 'calls', stem + '.json')
         io.open(a, 'x', encoding='utf-8').write(json.dumps(args, indent=1))
-        env = dict(os.environ, HORIZUN_SERVER_EXE=self.exe)
+        env = session_hooks.env_for(dict(os.environ, HORIZUN_SERVER_EXE=self.exe))
         subprocess.run(['pwsh', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
                         os.path.join(REPO, 'scripts', 'hz-call.ps1'), '-Tool', tool, '-ArgumentsPath', a,
                         '-TimeoutSec', str(timeout), '-Json', out, '-Quiet'],
@@ -80,6 +82,11 @@ class Calls:
         reply = load(out)
         r = reply.get('result', reply)
         sc = (r.get('structuredContent', r) if isinstance(r, dict) else {}) or {}
+        registered = session_hooks.after_call(tool, args, reply.get('is_error'), sc)
+        if registered is not None:
+            io.open(os.path.join(self.dir, 'calls', stem + '.registered.json'), 'x', encoding='utf-8').write(json.dumps(registered))
+            if not registered['ok']:
+                print('WARNING: %s was not registered in the isolated session: %s' % (tool, registered['detail']))
         return reply, sc
 
     def confirmed(self, tool, args, name):

@@ -43,26 +43,33 @@ function Ask-Health {
     return (Get-Content $health -Raw | ConvertFrom-Json).result
 }
 
-# EXACTLY ONE INSTANCE, or nothing. Three cycles were lost to this: instances
-# accumulated, the bridge correctly refused to pick between two Revit 2026s
-# ("this harness will not pick one - that is the same guess the bridge itself
-# refuses to make"), and the failure read as "the bridge never came up". Killing
-# and hoping is what produced the pile; verifying is what fixes it.
-Say 'closing every Revit (nothing to save: the fixture is read-only and detached)'
-Stop-Process -Name Revit -Force -ErrorAction SilentlyContinue
-$deadline = (Get-Date).AddSeconds(120)
-while ((Get-Process -Name Revit -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 3 }
-$left = @(Get-Process -Name Revit -ErrorAction SilentlyContinue)
-if ($left.Count -gt 0) {
-    Say ("REFUSING to continue: " + $left.Count + " Revit process(es) survived the close (" +
-         (($left | ForEach-Object { $_.Id }) -join ', ') + "). Installing over a running Revit " +
-         "changes nothing and starting a second instance makes the bridge refuse to pick one.")
+# ONLY THE REVIT THIS CYCLE STARTED IS EVER CLOSED. This used to be
+# `Stop-Process -Name Revit -Force`: every Revit on the machine, the owner's included,
+# killed with whatever was unsaved in it. The previous iteration's Revit is now
+# recorded (pid, start time, executable, and the model it opened) and closed by the
+# rules of scripts/live/owned-session.ps1 - registered documents only, re-read before
+# each close, never killed. Anything else of this year, or a Revit whose year cannot
+# be read, stops the cycle: installing over a running Revit is not something to guess.
+. (Join-Path $Repo 'scripts\live\owned-session.ps1')
+$probes = New-HzOwnedProbes -Repo $Repo -ServerExe $null
+$lock = Enter-HzOwnedLock -Year ([string]$Year)
+$prev = Close-HzRecordedRevit -Probes $probes -Name 'live-cycle' -Year ([string]$Year)
+if ($prev.state -notin @('no_record', 'closed', 'already_exited')) {
+    Say ("REFUSING to continue: the Revit this cycle started last time was left running (" + $prev.state + "): " + $prev.why)
     exit 4
 }
-# Stale discovery files name processes that are gone. The resolver skips them, but a
-# leftover for a pid that Windows has since REUSED is a live-looking lie.
-Get-ChildItem (Join-Path $env:USERPROFILE '.horizun\discovery') -Filter 'revit-*.json' -ErrorAction SilentlyContinue |
-    Remove-Item -Force -ErrorAction SilentlyContinue
+$free = Test-HzManifestChangeAllowed -Probes $probes -Year ([string]$Year)
+if (-not $free.ok) {
+    Say ("REFUSING to continue: " + $free.why + " It was not started by this cycle and is left alone.")
+    exit 4
+}
+# Stale discovery files name processes that are gone. ONLY those are removed: the
+# file of a Revit that is running belongs to whoever runs it.
+Get-ChildItem (Join-Path $env:USERPROFILE '.horizun\discovery') -Filter 'revit-*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+    $pidInFile = $null
+    try { $pidInFile = [int]((Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json).pid) } catch { }
+    if ($pidInFile -and -not (Get-Process -Id $pidInFile -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $_.FullName -Force }
+}
 
 Say 'installing'
 $log = & powershell -ExecutionPolicy Bypass -File (Join-Path $Repo 'install.ps1') -Years $Year 2>&1
@@ -75,7 +82,7 @@ if (-not ($log -match 'installed and verified')) {
 Say ("installed: " + ($stamp.Matches[0].Groups[1].Value))
 
 Say "starting Revit $Year by its own exe"
-Start-Process -FilePath "C:\Program Files\Autodesk\Revit $Year\Revit.exe"
+$null = Start-HzRecordedRevit -Probes $probes -Name 'live-cycle' -Year ([string]$Year) -Dir $scratch
 $deadline = (Get-Date).AddMinutes(6)
 $up = $false
 while ((Get-Date) -lt $deadline) {
@@ -104,7 +111,11 @@ while ((Get-Date) -lt $deadline) {
     $h = Ask-Health
     if ($h) {
         $active = ($h.open_documents | Where-Object { $_.is_active }).title
-        if ($active) { Say ("ACTIVE: $active   commit=" + $h.horizun_commit.Substring(0,12)); exit 0 }
+        if ($active) {
+            $reg = Register-HzRecordedDocument -Probes $probes -Name 'live-cycle' -Year ([string]$Year) -ExpectedTitle $active -SourceFile $Model
+            if (-not $reg.ok) { Say ("WARNING: the model was not registered, so the next cycle will leave this Revit running: " + $reg.why) }
+            Say ("ACTIVE: $active   commit=" + $h.horizun_commit.Substring(0,12)); exit 0
+        }
     }
     Start-Sleep -Seconds 15
 }

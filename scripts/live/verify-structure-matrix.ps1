@@ -99,17 +99,21 @@ function Ask-Health {
     try { return (Get-Content -LiteralPath $h -Raw | ConvertFrom-Json).result } catch { return $null }
 }
 
-function Close-EveryRevit {
-    Stop-Process -Name Revit -Force -ErrorAction SilentlyContinue
-    $deadline = (Get-Date).AddSeconds(150)
-    while ((Get-Process -Name Revit -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 3
+# ONLY A REVIT THIS SCRIPT STARTED IS EVER CLOSED. This used to be
+# `Stop-Process -Name Revit -Force` over every Revit on the machine. Each year's
+# Revit is now recorded (pid, start time, executable, and the model it opened) and
+# closed by the rules of owned-session.ps1: registered documents only, re-read
+# before each close, never killed. A Revit of that year this script did not start -
+# or one whose year cannot be read - blocks the YEAR; it is not touched.
+. (Join-Path $PSScriptRoot 'owned-session.ps1')
+$probes = New-HzOwnedProbes -Repo $repo -ServerExe $null
+function Close-RecordedRevit([string]$Y) {
+    $r = Close-HzRecordedRevit -Probes $probes -Name 'structure-matrix' -Year $Y
+    if ($r.state -notin @('no_record', 'closed', 'already_exited')) {
+        Say ("Revit $Y left running (" + $r.state + "): " + $r.why + " Recovery pending: " + $r.recovery_pending)
+        return $false
     }
-    # A discovery file naming a process that is gone is a live-looking lie, and
-    # worse once Windows reuses the pid.
-    Get-ChildItem (Join-Path $env:USERPROFILE '.horizun\discovery') -Filter 'revit-*.json' -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-    return @(Get-Process -Name Revit -ErrorAction SilentlyContinue).Count -eq 0
+    return $true
 }
 
 $rows = @()
@@ -146,13 +150,16 @@ foreach ($year in $Years) {
     }
 
     if (-not $health) {
-        if (-not (Close-EveryRevit)) {
-            $row.state = 'blocked'; $row.why = 'a Revit process survived the close'
+        if (-not (Close-RecordedRevit ([string]$year))) {
+            $row.state = 'blocked'; $row.why = 'the Revit this script started earlier for this year was left running (see recovery pending)'
             Say $row.why; $rows += $row; continue
         }
-
-        Say "starting Revit $year by its own exe"
-        Start-Process -FilePath $exe
+        try { $null = Start-HzRecordedRevit -Probes $probes -Name 'structure-matrix' -Year ([string]$year) -Dir $scratch -RevitExe $exe }
+        catch {
+            $row.state = 'blocked'; $row.why = $_.Exception.Message
+            Say $row.why; $rows += $row; continue
+        }
+        Say "started Revit $year by its own exe (recorded)"
         $deadline = (Get-Date).AddMinutes($StartupMinutes)
         while ((Get-Date) -lt $deadline) {
             $h = Ask-Health
@@ -217,6 +224,10 @@ foreach ($year in $Years) {
         Say $row.why; $rows += $row; continue
     }
     Say "ACTIVE: $active"
+    if (-not $reused) {
+        $reg = Register-HzRecordedDocument -Probes $probes -Name 'structure-matrix' -Year ([string]$year) -ExpectedTitle $active -SourceFile $MODEL[$year]
+        if (-not $reg.ok) { Say ("WARNING: the model was not registered, so this Revit will be left running at the end: " + $reg.why) }
+    }
 
     # THE PERFORMANCE SUITE IS HERE FOR A REASON BEYOND TIMINGS. It is the only
     # harness that applies a rule declaring an array length, and Revit lays such
@@ -262,14 +273,14 @@ foreach ($year in $Years) {
     $bad = @($row.rebar, $row.geometry, $row.performance | Where-Object { $_ -and $_.state -ne 'passed' })
     $row.state = $(if ($bad.Count -eq 0) { 'passed' } else { 'failed' })
     $rows += $row
+    if (-not $UseRunning -and -not $reused) { $null = Close-RecordedRevit ([string]$year) }
 }
 
 if ($UseRunning) {
     Say 'leaving Revit running (-UseRunning): closing it here would make the next run pay the startup dialog again'
 }
 else {
-    Say 'closing every Revit'
-    $null = Close-EveryRevit
+    Say 'each year closed the Revit it started (and only that); nothing else was touched'
 }
 
 # ---------------------------------------------------------------- the matrix

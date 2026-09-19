@@ -1,192 +1,124 @@
 # -----------------------------------------------------------------------------
 # Horizun Revit MCP - an ISOLATED Revit session for DWG -> BIM evaluation runs.
 #
-#   session.ps1 start [-Year 2026] [-ExpectPrefix HZ_] [-FailAction <action key>] [-DeclineAddIn <name>...]
-#   session.ps1 stop  [-Year 2026] [-ExpectPrefix HZ_]
+#   session.ps1 start    [-Year 2026] [-FailAction <action key>] [-DeclineAddIn <name>...]
+#   session.ps1 register [-Year 2026] [-ExpectedTitle <title>] [-SourceFile <path>]
+#   session.ps1 stop     [-Year 2026]
+#   session.ps1 status   [-Year 2026]
 #
-# start: closes the Revit THIS SCRIPT STARTED, and no other (a Save dialog is answered
-#        No only when it names a document starting with ExpectPrefix; anything else
-#        stops the script). Any other Revit of the same year stops the script untouched;
-#        a Revit of another year is never looked at. Stages the add-in built from THIS tree with
-#        dev-addin-session.ps1 (the permanent installation is not touched), starts
-#        Revit, answers "Do Not Load" ONLY for unsigned add-ins named in -DeclineAddIn
-#        (this process only, no trust stored), and waits until horizun_health answers.
-#        -FailAction sets HORIZUN_TEST_FAIL_ACTION for the started Revit only.
-# stop:  the same guarded close, then restores the original add-in manifest.
+# A thin wrapper over scripts/live/owned-session.ps1, which applies the rules of
+# scripts/live/year-matrix.session.ps1 (and its tests) to a session that spans
+# several commands. In short:
+#   start    builds this tree for the year, refuses if ANY Revit of that year - or
+#            one whose year cannot be read - is running, snapshots the year, enables
+#            the development manifest, starts Revit and records pid + start time +
+#            executable; then waits until the bridge answers FOR THAT PID. While it
+#            waits it may close Autodesk's Insights notice on that pid, and answer
+#            "Do Not Load" to the unsigned-add-in prompt ONLY for an add-in named in
+#            -DeclineAddIn (never Horizun). -FailAction sets HORIZUN_TEST_FAIL_ACTION
+#            for the started Revit only.
+#   register records the ACTIVE document by the path the bridge publishes. The
+#            drivers call it after every open or save-as that reported success; a
+#            document that is not registered is somebody else's.
+#   stop     closes only documents in the register, one at a time, re-reading the
+#            session before each; any other document - or an unanswered health, or
+#            an identity that no longer matches - leaves Revit RUNNING and writes
+#            recovery pending. The process is asked to exit, never killed. The
+#            manifest is restored and verified against the start snapshot.
+#   status   prints the recorded state; changes nothing.
 #
-# Writes the matching server path to $env:TEMP\hz_srv.txt, which scripts/hz-call.ps1
-# callers pass as HORIZUN_SERVER_EXE. No machine path is compiled in.
+# Writes the server path to $env:TEMP\hz_srv.txt and the year to $env:TEMP\hz_year.txt,
+# which the drivers pass as HORIZUN_SERVER_EXE and HORIZUN_REVIT_YEAR.
 # -----------------------------------------------------------------------------
 param(
-    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('start', 'stop')][string]$Operation,
-    [int]$Year = 2026,
-    [string]$ExpectPrefix = 'HZ_',
+    [Parameter(Mandatory = $true, Position = 0)][ValidateSet('start', 'register', 'stop', 'status')][string]$Operation,
+    [ValidateSet('2023', '2024', '2025', '2026', '2027')][string]$Year = '2026',
     [string]$FailAction = '',
     [string[]]$DeclineAddIn = @(),
-    [int]$WaitMinutes = 10
+    [string]$ExpectedTitle,
+    [string]$SourceFile,
+    [int]$WaitMinutes = 10,
+    [switch]$NoBuild
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-Add-Type @"
-using System; using System.Text; using System.Runtime.InteropServices; using System.Collections.Generic;
-public static class HzSession {
-  public delegate bool EnumProc(IntPtr h, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f, IntPtr l);
-  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr h, out int pid);
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
-  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
-  [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, int m, IntPtr w, IntPtr l);
-  [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
-  public static IntPtr Child(IntPtr parent, string text) {
-    IntPtr found = IntPtr.Zero;
-    EnumChildWindows(parent, (h,l) => { var t = new StringBuilder(256); GetWindowText(h,t,256);
-      if (t.ToString()==text) { found = h; return false; } return true; }, IntPtr.Zero);
-    return found;
-  }
-  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
-  /// every visible top-level dialog (#32770) of ONE process, whatever its title or language
-  public static List<IntPtr> Dialogs(int pid) {
-    var r = new List<IntPtr>();
-    EnumWindows((h,l) => { int p; GetWindowThreadProcessId(h, out p);
-      if (p==pid && IsWindowVisible(h)) { var c = new StringBuilder(64); GetClassName(h,c,64); if (c.ToString()=="#32770") r.Add(h); }
-      return true; }, IntPtr.Zero);
-    return r;
-  }
-}
-"@
+. (Join-Path $repo 'scripts\live\owned-session.ps1')
+$server = Join-Path $repo 'src\Horizun.Server\bin\Release\net8.0\horizun-mcp.exe'
+$probes = New-HzOwnedProbes -Repo $repo -ServerExe $server
 
-# THE REVIT THIS SCRIPT STARTED, recorded when it starts: pid, executable and start time (a pid is reused).
-$owned = Join-Path $env:USERPROFILE ".horizun\geometry-dev\session-$Year.revit.json"
-function Owned-Revit {
-    if (-not (Test-Path -LiteralPath $owned)) { return $null }
-    $o = Get-Content -LiteralPath $owned -Raw | ConvertFrom-Json
-    $p = Get-Process -Id $o.pid -ErrorAction SilentlyContinue
-    if (-not $p) { return $null }
-    # ticks, not text: ConvertFrom-Json turns an ISO time back into a DateTime (measured: the text
-    # comparison never matched, so the script did not recognise the Revit it had just started)
-    try { $start = $p.StartTime.ToUniversalTime().Ticks } catch { return $null }
-    if ($p.Path -ne $o.exe -or [long]$o.start_ticks -ne $start) { return $null }
-    return $p
-}
-
-# ONLY THE REVIT THIS SCRIPT STARTED IS EVER CLOSED. MEASURED 2026-09-18: the first version sent a
-# close to EVERY Revit.exe - it closed a person's own Revit 2023 session, of another year, holding a
-# document of theirs - and its Save guard read the English dialog only, so it never saw that session's
-# Spanish "Guardar archivo" and left it to the person. Now a Revit this script did not start is never
-# sent anything: of this year it stops the script (its manifest cannot change under it), of another
-# year it is not even looked at.
-function Close-Revit {
-    $p = Owned-Revit
-    if ($p) {
-        $p.CloseMainWindow() | Out-Null
-        for ($i = 0; $i -lt 20 -and -not $p.HasExited; $i++) {
-            Start-Sleep -Seconds 3
-            foreach ($h in [HzSession]::Dialogs($p.Id)) {
-                $el = [System.Windows.Automation.AutomationElement]::FromHandle($h)
-                $texts = ($el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                          ForEach-Object { $_.Current.Name }) -join ' | '
-                if ($texts -notmatch '(?i)save|guardar') { continue }
-                "dialog: $texts"
-                # ONLY a disposable model is discarded; any other document stops the script untouched.
-                if (-not ($texts -match [regex]::Escape($ExpectPrefix))) { throw "Save dialog names an unexpected document, left for a person: $texts" }
-                $no = [HzSession]::Child($h, '&No')
-                if ($no -eq [IntPtr]::Zero) { $no = [HzSession]::Child($h, 'No') }
-                if ($no -eq [IntPtr]::Zero) { throw 'no No button' }
-                [HzSession]::SendMessage($no, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-                "answered No"
-            }
-            $p.Refresh()
-        }
-        if (-not $p.HasExited) { throw "the isolated Revit $Year (PID $($p.Id)) did not close" }
-        # MEASURED (Revit 2024, 2026-09-18): a Revit.exe the closing one launched outlives it by seconds.
-        # A CHILD of the owned process is ours and is waited for; anything else stays refused below.
-        for ($i = 0; $i -lt 30; $i++) {
-            $children = @(Get-CimInstance Win32_Process -Filter "Name='Revit.exe'" | Where-Object { $_.ParentProcessId -eq $p.Id })
-            if ($children.Count -eq 0) { break }
-            "waiting for $($children.Count) process(es) the isolated Revit launched: $(($children | ForEach-Object { $_.ProcessId }) -join ', ')"
-            Start-Sleep -Seconds 2
-        }
-        Remove-Item -LiteralPath $owned
-    }
-    $others = @(Get-Process Revit -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\Revit $Year\*" })
-    if ($others.Count -gt 0) {
-        $who = ($others | ForEach-Object { "PID $($_.Id) '$($_.MainWindowTitle)'" }) -join '; '
-        throw "Revit $Year is running and was NOT started by this script ($who). It is left alone; nothing was changed."
-    }
-}
-
-function Wait-Bridge([string]$server) {
+function Close-HzNamedUnsignedPrompt([int]$ProcessId, [string[]]$Names) {
+    # The unsigned-add-in prompt, on THIS pid, for an add-in NAMED by the caller and
+    # never Horizun: "Do Not Load" for this process only, no trust stored.
+    if (-not $Names) { return @() }
     $A = [System.Windows.Automation.AutomationElement]
-    $deadline = (Get-Date).AddMinutes($WaitMinutes)
-    while ((Get-Date) -lt $deadline) {
-        $p = Owned-Revit
-        if ($p) {
-            $cond = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $p.Id)
-            foreach ($w in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
-                $dlg = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-                    (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Security - Unsigned Add-In')))
-                if (-not $dlg) { continue }
-                $body = ($dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                         ForEach-Object { $_.Current.Name }) -join "`n"
-                $named = $DeclineAddIn | Where-Object { $body -match ('Name:\s+' + [regex]::Escape($_) + '\s') }
-                if (-not $named -or $body -match 'Horizun') { "UNEXPECTED security dialog, left alone:`n$body"; exit 2 }
-                $btn = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
-                    (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Do Not Load')))
-                [HzSession]::SendMessage([IntPtr]$btn.Current.NativeWindowHandle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero) | Out-Null
-                "$(Get-Date -Format HH:mm:ss) declined $named for this Revit process"
-            }
-            # Revit 2023 raises Autodesk's own "External Tool Failure" for its Insights add-in at every start;
-            # it holds the UI thread. MEASURED 2026-09-18: in a Spanish Revit it is "Herramientas externas -
-            # Fallo de herramienta externa", nested INSIDE the main window (not a top-level dialog) and its
-            # close control is not a button - the first watcher saw none of it and left it to the person.
-            # Closed ONLY when it names Insights, only on the Revit this script started, by its own window close.
-            $cond = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $p.Id)
-            $isWindow = New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)
-            foreach ($top in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
-                foreach ($el in @($top) + @($top.FindAll([System.Windows.Automation.TreeScope]::Descendants, $isWindow))) {
-                    if ($el.Current.Name -notmatch '^(External Tools - External Tool Failure|Herramientas externas - Fallo de herramienta externa)$') { continue }
-                    $body = ($el.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-                             ForEach-Object { $_.Current.Name }) -join ' | '
-                    if ($body -notmatch '"Insights"') { continue }
-                    try { $el.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern).Close(); "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
-                    catch { "$(Get-Date -Format HH:mm:ss) Insights notice seen but not closable: $($_.Exception.Message)" }
-                }
-            }
-            $env:HORIZUN_SERVER_EXE = $server
-            & powershell -ExecutionPolicy Bypass -File (Join-Path $repo 'scripts\hz-call.ps1') -Tool horizun_health -TimeoutSec 30 -Quiet *> $null
-            if ($LASTEXITCODE -eq 0) { "$(Get-Date -Format HH:mm:ss) bridge up"; return }
-        }
-        Start-Sleep -Seconds 5
+    $done = @()
+    $cond = New-Object System.Windows.Automation.PropertyCondition($A::ProcessIdProperty, $ProcessId)
+    foreach ($w in $A::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)) {
+        $dlg = $w.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Security - Unsigned Add-In')))
+        if (-not $dlg) { continue }
+        $body = ($dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                 ForEach-Object { $_.Current.Name }) -join "`n"
+        $named = $Names | Where-Object { $body -match ('Name:\s+' + [regex]::Escape($_) + '\s') }
+        if (-not $named -or $body -match 'Horizun') { continue }
+        $btn = $dlg.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+            (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, 'Do Not Load')))
+        if ($btn) { $btn.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $done += $named }
     }
-    throw 'the bridge did not answer in time'
+    return $done
 }
 
-Set-Location $repo
-Close-Revit
-$dev = Join-Path $repo 'scripts\dev-addin-session.ps1'
-# A year never staged has no ledger and nothing to restore; any other restore failure stops here,
-# before a new manifest is staged over an installation in an unknown state.
-$ledger = Join-Path $env:USERPROFILE ".horizun\geometry-dev\session-$Year.json"
-if (Test-Path -LiteralPath $ledger) {
-    powershell -ExecutionPolicy Bypass -File $dev -Year $Year -Restore | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "restoring the add-in manifest for Revit $Year failed; nothing else was changed" }
-    if ($Operation -eq 'stop') { "restored the add-in manifest for Revit $Year"; exit 0 }
-} elseif ($Operation -eq 'stop') { "no isolated session was ever staged for Revit ${Year}: nothing to restore"; exit 0 }
-
-$out = powershell -ExecutionPolicy Bypass -File $dev -Year $Year -Enable
-$line = ($out | Select-String 'Matching server').ToString()
-$server = ($line -split ':\s+', 2)[1].Trim()
-Set-Content -Path "$env:TEMP\hz_srv.txt" -Value $server -NoNewline
-$exe = "C:\Program Files\Autodesk\Revit $Year\Revit.exe"
-if ($FailAction) {
-    # a TEST fault, for the started Revit only: the variable is set around the start and removed after
-    $env:HORIZUN_TEST_FAIL_ACTION = $FailAction
-    try { $proc = Start-Process -FilePath $exe -PassThru } finally { Remove-Item Env:HORIZUN_TEST_FAIL_ACTION -ErrorAction SilentlyContinue }
-} else {
-    $proc = Start-Process -FilePath $exe -PassThru
+$lock = Enter-HzOwnedLock -Year $Year
+try {
+    switch ($Operation) {
+        'status' {
+            $s = Read-HzOwnedState $Year
+            if (-not $s) { "no Revit $Year session is recorded"; break }
+            [ordered]@{ phase = $s.phase; pid = $s.identity.pid; started = $s.started_utc
+                        registered = @($s.ledger.documents | ForEach-Object { $_.title }) } | ConvertTo-Json -Depth 5
+        }
+        'register' {
+            $r = Register-HzOwnedDocument -Probes $probes -Year $Year -ExpectedTitle $ExpectedTitle -SourceFile $SourceFile
+            ($r | ConvertTo-Json -Depth 5 -Compress)
+            if (-not $r.ok) { exit 3 }
+        }
+        'stop' {
+            $r = Stop-HzOwnedSession -Probes $probes -Year $Year
+            if ($r.ok) { "stopped: Revit $Year session closed and its manifest restored (verified)" }
+            elseif ($r.state -eq 'no_session') { $r.why }
+            else {
+                $what = if ($r.close -and $r.close.state -notin @('closed', 'already_exited')) { "close: $($r.close.state) - $($r.close.why)" }
+                        else { "restore: $($r.restore.state) - $($r.restore.why)" }
+                "NOT stopped. $what Recovery pending: $($r.recovery_pending)"
+                exit 2
+            }
+        }
+        'start' {
+            $dir = Join-Path (Get-HzOwnedRoot) ("run-$Year-" + (Get-Date -Format 'yyyyMMddHHmmss'))
+            $null = New-Item -ItemType Directory -Force -Path $dir
+            if (-not $NoBuild) {
+                # Build BEFORE anything changes: a failed build leaves the machine as it was.
+                dotnet build (Join-Path $repo 'src\Horizun.Server\Horizun.Server.csproj') -c Release --nologo -v:q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'the server did not build; nothing was changed' }
+                dotnet build (Join-Path $repo 'src\Horizun.Revit\Horizun.Revit.csproj') -c Release "-p:RevitYear=$Year" --nologo -v:q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "the add-in for $Year did not build; nothing was changed" }
+            }
+            $state = Start-HzOwnedSession -Probes $probes -Year $Year -Dir $dir -ServerExe $server -FailAction $FailAction
+            Set-Content -Path "$env:TEMP\hz_srv.txt" -Value $server -NoNewline
+            Set-Content -Path "$env:TEMP\hz_year.txt" -Value $Year -NoNewline
+            "server: $server"
+            "revit $Year pid $($state.identity.pid) recorded"
+            $deadline = (Get-Date).AddMinutes($WaitMinutes)
+            $up = $null
+            while ((Get-Date) -lt $deadline) {
+                $declined = @(Close-HzNamedUnsignedPrompt -ProcessId ([int]$state.identity.pid) -Names $DeclineAddIn)
+                if ($declined.Count) { "$(Get-Date -Format HH:mm:ss) declined $($declined -join ', ') for this Revit process" }
+                $up = Wait-HzOwnedBridge -Probes $probes -Year $Year -Minutes 1
+                if ($up.notices_closed) { "$(Get-Date -Format HH:mm:ss) closed Autodesk's Insights failure notice" }
+                if ($up.ok) { "$(Get-Date -Format HH:mm:ss) bridge up"; break }
+            }
+            if (-not $up -or -not $up.ok) { throw "the bridge did not answer for the recorded pid in $WaitMinutes min; the session is recorded - stop it with: session.ps1 stop -Year $Year" }
+        }
+    }
 }
-@{ pid = $proc.Id; exe = $exe; start_ticks = $proc.StartTime.ToUniversalTime().Ticks } |
-    ConvertTo-Json | Set-Content -LiteralPath $owned -Encoding utf8
-"server: $server"
-Wait-Bridge $server
+finally { $lock.Dispose() }
