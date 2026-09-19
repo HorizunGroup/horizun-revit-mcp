@@ -118,7 +118,26 @@ namespace Horizun.Core.Tests
             };
             CadDuctSections.Assign(runs, new List<CadLabel> { Label("1", "12X8", 2500, 200), Label("2", "8X8", 7000, 200) },
                 new List<CadLeaderLine>(), Rule(), 25.4);
-            Assert.Equal("contradictory", runs.Single(r => r.RunId == "tr").State);
+            Assert.Equal("transition", runs.Single(r => r.RunId == "tr").State);
+            Assert.Null(runs.Single(r => r.RunId == "tr").WidthMm);
+        }
+
+        [Fact]
+        public void A_piece_between_a_known_size_and_an_unsettled_run_is_a_transition_not_a_guess()
+        {
+            // MEASURED on a real plan: an 11 in piece between a 12x8 run and a run whose labels contradict
+            // each other took 12x8 and would have been built as a straight 12x8 duct.
+            var runs = new List<CadRunSection>
+            {
+                Run("a", 0, 0, 5000, 0), Run("piece", 5000, 0, 5280, 0), Run("b", 5280, 0, 12000, 0)
+            };
+            CadDuctSections.Assign(runs, new List<CadLabel>
+            {
+                Label("1", "12X8", 2500, 200), Label("2", "8X8", 7000, 200), Label("3", "8X6", 10500, 200)
+            }, new List<CadLeaderLine>(), Rule(), 25.4);
+            Assert.Equal("contradictory", runs.Single(r => r.RunId == "b").State);
+            Assert.Equal("transition", runs.Single(r => r.RunId == "piece").State);
+            Assert.Contains("transition between", runs.Single(r => r.RunId == "piece").Reason);
         }
 
         private static CadRequirementSet Set(string section, string extra = "")

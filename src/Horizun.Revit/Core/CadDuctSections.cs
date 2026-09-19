@@ -148,8 +148,9 @@ namespace Horizun.Revit.Core
                 ["rows"] = new JArray(Runs.Select(r => (JToken)r.ToJson())),
                 ["means"] = "documented: a label of the drawing names this run's size. propagated: an unlabelled run " +
                             "took the size of its only neighbour through an elbow or a straight continuation. " +
-                            "contradictory / ambiguous / missing: no size - the run is NOT planned and is listed " +
-                            "for a person, with the reason."
+                            "transition: an unlabelled run between two different (or unsettled) sizes - a transition " +
+                            "piece, not a straight duct of either size. contradictory / ambiguous / missing / transition: " +
+                            "no size - the run is NOT planned and is listed for a person, with the reason."
             };
         }
     }
@@ -398,6 +399,24 @@ namespace Horizun.Revit.Core
                         if (meeting.Count != 2) continue;                    // a branch or a free end stops it
                         CadRunSection next = meeting.First(m => m != src);
                         if (next.State != "missing") continue;               // own label / contradiction / ambiguity
+                        // A TRANSITION PIECE: the run's OTHER end meets a run whose size differs or is not
+                        // settled. MEASURED on a real plan: 11 in pieces drawn between two sizes took the size
+                        // of whichever side was known - building a straight duct where the drawing puts a
+                        // transition. Such a run stays without a size, and says why.
+                        CadPoint otherEnd = Dist(next.Start, end) <= tol ? next.End : next.Start;
+                        List<CadRunSection> beyond = at(otherEnd);
+                        CadRunSection far = beyond.Count == 2 ? beyond.First(m => m != next) : null;
+                        if (far != null && far != src &&
+                            (far.State == "contradictory" || far.State == "ambiguous" ||
+                             (far.WidthMm.HasValue && (Math.Abs(far.WidthMm.Value - src.WidthMm.Value) > 0.01 ||
+                                                       Math.Abs(far.HeightMm.Value - src.HeightMm.Value) > 0.01))))
+                        {
+                            next.Reason = "a transition between " + src.RunId + " (" + src.WidthMm + "x" + src.HeightMm + " mm) and " +
+                                          far.RunId + " (" + (far.WidthMm.HasValue ? far.WidthMm + "x" + far.HeightMm + " mm" : far.State) +
+                                          "): no size is carried into it";
+                            next.State = "transition";
+                            continue;
+                        }
                         List<CadRunSection> list;
                         if (!offers.TryGetValue(next, out list)) offers[next] = list = new List<CadRunSection>();
                         list.Add(src);
