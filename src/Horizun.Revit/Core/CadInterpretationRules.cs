@@ -271,9 +271,11 @@ namespace Horizun.Revit.Core
     public sealed class CadUnclaimed
     {
         public string Layer;
-        public string Reason;       // no_rule_matched | below_min_confidence | ambiguous | geometry_not_found
+        public string Reason;       // no_rule_matched | below_min_confidence | ambiguous | geometry_not_found | closed_outline_not_a_run
         public int EntityCount;
         public List<string> RuleIds = new List<string>();
+        /// <summary>What a reviewer should read into this row, when the reason alone does not say it.</summary>
+        public string Means;
     }
 
     /// <summary>The whole reading of one drawing: proposals, refusals and coverage.</summary>
@@ -784,7 +786,7 @@ namespace Horizun.Revit.Core
                         FromDoubleLines(result, rule, set, layerSegments, indices, sourceHash, consumed));
                 case CadGeometrySource.DoubleArcs: return FromDoubleArcs(rule, set, layerSegments, indices, sourceHash, consumed, arcs);
                 case CadGeometrySource.ClosedLoops: return FromLoops(rule, set, layerSegments, indices, sourceHash, consumed);
-                case CadGeometrySource.SingleLines: return FromSingleLines(rule, set, layerSegments, indices, sourceHash, consumed);
+                case CadGeometrySource.SingleLines: return FromSingleLines(result, rule, set, layerSegments, indices, sourceHash, consumed);
                 case CadGeometrySource.PointClusters: return FromPointClusters(rule, set, layerSegments, indices, sourceHash, consumed);
                 default: return new List<CadCandidate>();   // blocks are the harvester's business, not the segments'
             }
@@ -1954,15 +1956,38 @@ namespace Horizun.Revit.Core
         // ---------------------------------------------------------------------
         // Grids, routes, single-line walls
         // ---------------------------------------------------------------------
-        private static List<CadCandidate> FromSingleLines(CadRule rule, CadRequirementSet set,
+        private static List<CadCandidate> FromSingleLines(CadInterpretation result, CadRule rule, CadRequirementSet set,
                                                           List<CadSegment> layerSegments, List<int> indices,
                                                           string sourceHash, HashSet<int> consumed)
         {
             var produced = new List<CadCandidate>();
             CadGeometryCriteria g = rule.Geometry;
+
+            // A CLOSED OUTLINE IS NOT A RUN: a ring's edges and its chords (a line joining two of its corners
+            // through the inside) stay unclaimed - and are reported - unless the rule declares
+            // include_closed_polylines. MEASURED (M102): a square with both diagonals on the duct layer read as
+            // six duct runs.
+            int rings = 0, chords = 0;
+            HashSet<CadSegment> outline = g.IncludeClosedPolylines
+                ? new HashSet<CadSegment>()
+                : CadRings.Figure(layerSegments, set.PointToleranceMm, out rings, out chords);
+            if (outline.Count > 0 && result != null)
+                result.Unclaimed.Add(new CadUnclaimed
+                {
+                    Layer = layerSegments[0].Layer ?? "(no layer)",
+                    Reason = "closed_outline_not_a_run",
+                    EntityCount = outline.Count,
+                    RuleIds = new List<string> { rule.Id },
+                    Means = rings + " closed outline(s) drawn on this layer - " + (outline.Count - chords) +
+                            " edge(s), and " + chords + " chord(s) joining their corners - were read as " +
+                            "outlines, not as " + rule.Produces + " runs. A rule whose runs ARE drawn as closed " +
+                            "loops says so with geometry.include_closed_polylines."
+                });
+
             int mergedAway = 0;
             List<CadSegment> merged = g.MergeCollinear
-                ? CadTopologyRules.MergeCollinear(layerSegments, set.PointToleranceMm, set.AngleToleranceDegrees, out mergedAway)
+                ? CadTopologyRules.MergeCollinear(layerSegments.Where(x => x != null && !outline.Contains(x)).ToList(),
+                                                  set.PointToleranceMm, set.AngleToleranceDegrees, out mergedAway)
                 : layerSegments.Where(x => x != null && x.PlanLength > 1e-9).ToList();
 
             for (int i = 0; i < merged.Count; i++)
@@ -1970,10 +1995,7 @@ namespace Horizun.Revit.Core
                 CadSegment s = merged[i];
                 if (g.MinLengthMm != null && s.PlanLength < g.MinLengthMm.Value) continue;
                 if (g.MaxLengthMm != null && s.PlanLength > g.MaxLengthMm.Value) continue;
-                // A CLOSED RING IS NOT A RUN: its edges stay unclaimed (and are reported as such) unless the rule
-                // declares include_closed_polylines. Four ducts in a box is what reading it as lines builds.
-                if (!g.IncludeClosedPolylines && s.SourceCurveId != null &&
-                    s.SourceCurveId.StartsWith("ring:", StringComparison.Ordinal)) continue;
+                if (outline.Contains(s)) continue;
                 if (i < indices.Count) consumed.Add(indices[i]);
 
                 var c = NewCandidate(rule, set, sourceHash, s.Layer,

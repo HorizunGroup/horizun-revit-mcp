@@ -200,7 +200,11 @@ namespace Horizun.Revit.Commands
                 ["approximate"] = s.SourceKind == CadCurveKind.Arc || s.SourceKind == CadCurveKind.Spline,
                 ["start_mm"] = new JArray(Round(s.A.X), Round(s.A.Y), Round(s.A.Z)),
                 ["end_mm"] = new JArray(Round(s.B.X), Round(s.B.Y), Round(s.B.Z)),
-                ["length_mm"] = Round(s.PlanLength)
+                ["length_mm"] = Round(s.PlanLength),
+                // WHICH CURVE, and which piece of it: a rule reading lines as runs decides on this, so a caller
+                // must be able to see it. Null for a line (its own curve); ring:N names a closed polyline.
+                ["source_curve"] = s.SourceCurveId,
+                ["source_index"] = s.SourceIndex
             });
 
             // THE ARCS, AS ARCS.

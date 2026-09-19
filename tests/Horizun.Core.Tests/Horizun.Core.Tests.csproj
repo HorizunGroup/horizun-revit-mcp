@@ -282,6 +282,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadDuctSections.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadNetworkPaging.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadJunctionEvidence.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadRings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadInterpretationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadConversionPlanRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadProvenanceRecord.cs" />

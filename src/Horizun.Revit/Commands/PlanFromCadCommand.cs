@@ -488,7 +488,8 @@ namespace Horizun.Revit.Commands
                 ["layer"] = u.Layer,
                 ["reason"] = u.Reason,
                 ["entity_count"] = u.EntityCount,
-                ["rules_that_looked"] = new JArray(u.RuleIds)
+                ["rules_that_looked"] = new JArray(u.RuleIds),
+                ["means"] = u.Means
             }));
             report["review_bypassed"] = includeIneligible;
             report["candidates_needing_review"] = interpretation.NeedingReview.Count();

@@ -685,7 +685,7 @@ namespace Horizun.Revit.Core
                     : e.Kind == CadEntityKind.Line ? CadCurveKind.Line
                     : CadCurveKind.Unknown;
                 for (int i = 0; i + 1 < e.Points.Count; i++)
-                    segs.Add(new CadSegment(e.Points[i], e.Points[i + 1], e.Layer, kind, i, e.Id));
+                    segs.Add(new CadSegment(e.Points[i], e.Points[i + 1], e.Layer, kind, i, e.Id, e.Closed));
             }
             return segs;
         }

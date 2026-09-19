@@ -421,6 +421,13 @@ namespace Horizun.Revit.Commands
             List<string> layersUsed;
             List<CadSegment> segments = CadReadingHelper.Selected(r, out layersUsed);
 
+            // A CLOSED OUTLINE IS NOT A RUN here either. The conversion leaves a ring and its chords unclaimed on a
+            // layer whose rule reads single lines (CadRings), and a network read from the same layers must not
+            // join what is never built: MEASURED (M102) a square with its diagonals read as four elbows and a cross.
+            int outlineLeftOut = 0, outlineRings = 0, outlineChords = 0;
+            if (set != null)
+                segments = CadRings.WithoutOutlines(segments, set, out outlineLeftOut, out outlineRings, out outlineChords);
+
             // WHERE THE TWO DISAGREE, NOTHING IS READ. Choosing one of them would
             // make the reading depend on which source this file happens to prefer,
             // which is not a decision about the building.
@@ -571,6 +578,16 @@ namespace Horizun.Revit.Commands
 
             JObject reply = network.ToJson();
             if (piecesReport != null) reply["section_pieces"] = piecesReport;
+            if (outlineLeftOut > 0)
+                reply["closed_outlines_left_out"] = new JObject
+                {
+                    ["segments"] = outlineLeftOut,
+                    ["outlines"] = outlineRings,
+                    ["chords"] = outlineChords,
+                    ["means"] = "closed outlines drawn on a layer whose rule reads single lines - their edges and the " +
+                                "chords joining their corners - are not runs, exactly as horizun_plan_from_cad reads " +
+                                "them; a rule declaring geometry.include_closed_polylines keeps them"
+                };
             if (drawnTransitions.Count > 0)
             {
                 var conns = reply["connections"] as JArray;

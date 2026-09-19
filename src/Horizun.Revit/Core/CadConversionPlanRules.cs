@@ -498,6 +498,8 @@ namespace Horizun.Revit.Core
                                                                .Take(10))
                 plan.Warnings.Add("layer '" + u.Layer + "' carries " + u.EntityCount +
                     " drawn element(s) that no rule claims");
+            foreach (CadUnclaimed u in interpretation.Unclaimed.Where(x => x.Reason == "closed_outline_not_a_run"))
+                plan.Warnings.Add("layer '" + u.Layer + "': " + u.Means);
             if (plan.Actions.Count == 0)
                 plan.Warnings.Add("nothing is planned: every candidate was deferred, or none was produced");
 

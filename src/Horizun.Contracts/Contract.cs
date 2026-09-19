@@ -1753,7 +1753,8 @@ namespace Horizun.Contracts
                     "a fingerprint, the units DECLARED on the CAD link type, and the SHA-256 of the file when this " +
                     "machine can read it. mode=layers reports the DWG layers - reached the only way Revit exposes " +
                     "them, through each curve's graphics style category - with a primitive census per layer and per " +
-                    "class. mode=geometry returns the curves in MILLIMETRES with a stable surrogate id per segment, " +
+                    "class. mode=geometry returns the curves in MILLIMETRES with a stable surrogate id per segment " +
+                    "and the curve it is a piece of (source_curve; a closed polyline is named ring:N), " +
                     "bounded and paginated, plus a set fingerprint over everything that matched. mode=coverage " +
                     "answers only what this bridge CANNOT read. Every reply carries a provenance block classifying " +
                     "each fact as native, derived, approximate or unavailable, and three of those are measured " +
