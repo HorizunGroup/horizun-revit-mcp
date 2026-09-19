@@ -68,6 +68,12 @@ namespace Horizun.Revit.Core
         public bool SplitAtSectionChanges;
         /// <summary>How close a branch's end must be to a run's interior to count as tapping it (mm).</summary>
         public double? TapToleranceMm;
+        /// <summary>
+        /// A label that no run passes beside may name the run whose FREE end it lies beyond, within this many
+        /// mm of that end - declared, never assumed. MEASURED (M106): three branch stubs whose "4X4" is written
+        /// past the stub's open end, 436-637 mm away, beside the damper or grille that ends the branch.
+        /// </summary>
+        public double? FreeEndMaxDistanceMm;
 
         public double MmPerUnit => LabelUnits == "inch" ? 25.4 : 1.0;
 
@@ -77,6 +83,7 @@ namespace Horizun.Revit.Core
             ["label_layers"] = new JArray(LabelLayers),
             ["split_at_section_changes"] = SplitAtSectionChanges,
             ["tap_tolerance_mm"] = TapToleranceMm.HasValue ? (JToken)TapToleranceMm.Value : JValue.CreateNull(),
+            ["free_end_max_distance_mm"] = FreeEndMaxDistanceMm.HasValue ? (JToken)FreeEndMaxDistanceMm.Value : JValue.CreateNull(),
             ["label_units"] = LabelUnits,
             ["label_order"] = LabelOrder,
             ["max_distance_mm"] = MaxDistanceMm,
@@ -192,7 +199,7 @@ namespace Horizun.Revit.Core
             var known = new HashSet<string>(StringComparer.Ordinal)
             { "from", "label_layers", "label_units", "label_order", "max_distance_mm", "leader_tolerance_mm",
               "ambiguity_ratio", "parallel_tolerance_degrees", "propagate_through_elbows",
-              "split_at_section_changes", "tap_tolerance_mm" };
+              "split_at_section_changes", "tap_tolerance_mm", "free_end_max_distance_mm" };
             foreach (JProperty p in s.Properties())
                 if (!known.Contains(p.Name)) throw bad("has no key '" + p.Name + "'.");
             if (s.Value<string>("from") != "labels") throw bad("from must be \"labels\".");
@@ -218,6 +225,9 @@ namespace Horizun.Revit.Core
             rule.SplitAtSectionChanges = s.Value<bool?>("split_at_section_changes") ?? false;
             rule.TapToleranceMm = s.Value<double?>("tap_tolerance_mm");
             if (rule.TapToleranceMm.HasValue && rule.TapToleranceMm.Value <= 0) throw bad("tap_tolerance_mm must be positive.");
+            rule.FreeEndMaxDistanceMm = s.Value<double?>("free_end_max_distance_mm");
+            if (rule.FreeEndMaxDistanceMm.HasValue && (rule.FreeEndMaxDistanceMm.Value <= 0 || rule.FreeEndMaxDistanceMm.Value > 5000))
+                throw bad("free_end_max_distance_mm must be positive and at most 5000 - a label farther than that from a run's end names something else.");
             return rule;
         }
 
@@ -282,6 +292,7 @@ namespace Horizun.Revit.Core
             var reading = new CadSectionReading();
             reading.Runs.AddRange(runs);
             var byRun = runs.ToDictionary(r => r.RunId, StringComparer.Ordinal);
+            var unreached = new List<Tuple<CadLabel, JObject>>();
 
             foreach (CadLabel label in labels.OrderBy(l => l.Id, StringComparer.Ordinal))
             {
@@ -348,6 +359,7 @@ namespace Horizun.Revit.Core
                 {
                     row["outcome"] = "no_run_within_reach";
                     row["means"] = "no run passes beside this label within max_distance_mm; it names nothing this reading can see.";
+                    unreached.Add(Tuple.Create(label, row));
                     continue;
                 }
                 var pool = near.Any(x => x.Item3) ? near.Where(x => x.Item3).ToList() : near;
@@ -377,6 +389,13 @@ namespace Horizun.Revit.Core
                 best.Item1.Labels.Add(row);
             }
 
+            // 3. BEYOND A FREE END, only when the rule declares how far - and only for a label nothing else
+            //    claimed. The run whose open end is nearest names it; a run that already carries its own label
+            //    does not take a second one from past its end, and two ends about as near is ambiguity.
+            if (rule.FreeEndMaxDistanceMm.HasValue)
+                foreach (var u in unreached)
+                    FreeEnd(u.Item1, u.Item2, runs, rule, pointToleranceMm);
+
             // Each run: one size, contradiction, ambiguity or nothing.
             foreach (CadRunSection r in runs)
             {
@@ -385,7 +404,9 @@ namespace Horizun.Revit.Core
                 if (sizes.Count == 1)
                 {
                     r.State = "documented"; r.WidthMm = sizes[0].Item1; r.HeightMm = sizes[0].Item2;
-                    r.Reason = assoc.Count + " label(s) of the drawing name this size";
+                    r.Reason = assoc.Count + " label(s) of the drawing name this size" +
+                               (assoc.Any(l => l.Value<bool?>("beyond_free_end") == true)
+                                   ? ", written beyond its free end (free_end_max_distance_mm, declared)" : "");
                 }
                 else if (sizes.Count > 1)
                 {
@@ -405,6 +426,77 @@ namespace Horizun.Revit.Core
             foreach (CadRunSection r in reading.Runs.Where(x => x.State == "missing" && x.Reason == null))
                 r.Reason = "no label names this run and none could reach it through an elbow or a straight continuation";
             return reading;
+        }
+
+        /// <summary>
+        /// The declared free-end reading of ONE label no run passes beside. A free end is an end no other run
+        /// meets - not at its own ends and not through its interior (a tap) - and the label must lie past it,
+        /// on the outward side. The row says which run, how far, and what was next.
+        /// </summary>
+        private static void FreeEnd(CadLabel label, JObject row, IList<CadRunSection> runs, CadSectionRule rule, double tol)
+        {
+            double reach = rule.FreeEndMaxDistanceMm.Value;
+            var ends = new List<Tuple<CadRunSection, double, bool>>();
+            foreach (CadRunSection r in runs)
+                foreach (bool atStart in new[] { true, false })
+                {
+                    CadPoint end = atStart ? r.Start : r.End, other = atStart ? r.End : r.Start;
+                    double len = Dist(end, other);
+                    if (len <= 0) continue;
+                    bool met = false;
+                    foreach (CadRunSection o in runs)
+                    {
+                        if (ReferenceEquals(o, r)) continue;
+                        double t;
+                        if (ToSegment(end, o.Start, o.End, out t) <= tol) { met = true; break; }
+                    }
+                    if (met) continue;
+                    double along = ((label.At.X - end.X) * (end.X - other.X) + (label.At.Y - end.Y) * (end.Y - other.Y)) / len;
+                    double d = Dist(label.At, end);
+                    if (along <= 0 || d > reach) continue;
+                    ends.Add(Tuple.Create(r, d, atStart));
+                }
+            if (ends.Count == 0)
+            {
+                row["means"] = "no run passes beside this label within max_distance_mm, and no run's free end lies within " +
+                               "free_end_max_distance_mm (" + reach.ToString("0.#", CultureInfo.InvariantCulture) +
+                               " mm) of it on its outward side; it names nothing this reading can see.";
+                return;
+            }
+            ends = ends.OrderBy(x => x.Item2).ToList();
+            var best = ends[0];
+            var next = ends.Skip(1).FirstOrDefault(x => x.Item1 != best.Item1);
+            if (next != null && next.Item2 <= best.Item2 * rule.AmbiguityRatio + 1e-6)
+            {
+                row["outcome"] = "ambiguous";
+                row["beyond_free_end"] = true;
+                row["candidates"] = new JArray(ends.Take(3).Select(x => (JToken)new JObject
+                {
+                    ["run"] = x.Item1.RunId, ["distance_from_free_end_mm"] = Math.Round(x.Item2, 1)
+                }));
+                row["means"] = "two runs end about as near this label; which one it names is not said";
+                foreach (var x in ends.Where(x => x.Item2 <= best.Item2 * rule.AmbiguityRatio + 1e-6))
+                    if (!x.Item1.Labels.Contains(row)) x.Item1.Labels.Add(row);
+                return;
+            }
+            if (best.Item1.Labels.Any(l => l.Value<string>("outcome") == "associated" || l.Value<string>("outcome") == "ambiguous"))
+            {
+                row["outcome"] = "free_end_of_a_labelled_run";
+                row["run"] = best.Item1.RunId;
+                row["means"] = "the nearest free end belongs to a run that already carries its own label; a second size " +
+                               "from past its end is not taken";
+                return;
+            }
+            row["outcome"] = "associated";
+            row["run"] = best.Item1.RunId;
+            row["along"] = best.Item3 ? 0.0 : 1.0;
+            row["beyond_free_end"] = true;
+            row["by"] = "beyond the run's free end at " + Math.Round(best.Item2, 1) + " mm (free_end_max_distance_mm " +
+                        reach.ToString("0.#", CultureInfo.InvariantCulture) + ", declared)" +
+                        (next == null ? "; no other free end within reach"
+                                      : "; next free end " + next.Item1.RunId + " at " + Math.Round(next.Item2, 1) + " mm");
+            row.Remove("means");
+            best.Item1.Labels.Add(row);
         }
 
         private static CadPoint Lerp(CadPoint a, CadPoint b, double t) =>

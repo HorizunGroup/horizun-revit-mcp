@@ -29,6 +29,12 @@ namespace Horizun.Revit.Core
         /// <summary>A wall type's width, mm.</summary>
         public double? WidthMm;
         public bool IsWallType;
+        /// <summary>
+        /// When the name is NOT loaded: the loaded types of the family it names ("Family: Type"). MEASURED
+        /// (campaign 7): Revit 2023's mechanical template has no "Rectangular Duct: Radius Elbows / Tees", and a
+        /// refusal that only says so leaves the caller guessing which name to declare instead.
+        /// </summary>
+        public List<string> SameFamily = new List<string>();
     }
 
     public static class CadCatalogCheck
@@ -40,6 +46,24 @@ namespace Horizun.Revit.Core
             ["wall"] = new[] { "WorkPlaneBased", "OneLevelBasedHosted" },
             ["slab"] = new[] { "WorkPlaneBased", "OneLevelBasedHosted" },
         };
+
+        /// <summary>The family part of a "Family: Type" label; null when the label names no family.</summary>
+        public static string FamilyOf(string label)
+        {
+            if (string.IsNullOrWhiteSpace(label)) return null;
+            int at = label.IndexOf(": ", StringComparison.Ordinal);
+            return at > 0 ? label.Substring(0, at).Trim() : null;
+        }
+
+        /// <summary>What a type_not_found says about the family it named: the loaded types, or that there are none.</summary>
+        public static string LoadedOfFamily(string label, IList<string> sameFamily)
+        {
+            string family = FamilyOf(label);
+            if (family == null) return "the name carries no family part, so no family can be listed";
+            if (sameFamily == null || sameFamily.Count == 0) return "no type of family '" + family + "' is loaded";
+            return "loaded types of family '" + family + "': " + string.Join(", ", sameFamily.Select(n => "'" + n + "'")) +
+                   ". Which of them the drawing means is the caller's decision, not this check's.";
+        }
 
         public static JObject Check(CadRequirementSet set, Func<string, CadTypeFacts> type, ICollection<string> levels)
         {
@@ -83,7 +107,11 @@ namespace Horizun.Revit.Core
                     row["family_type"] = rule.FamilyType;
                     row["present"] = f.Found;
                     if (!f.Found)
-                        problems.Add("type_not_found: '" + rule.FamilyType + "' is not loaded in this model");
+                    {
+                        problems.Add("type_not_found: '" + rule.FamilyType + "' is not loaded in this model; " +
+                                     LoadedOfFamily(rule.FamilyType, f.SameFamily));
+                        row["loaded_of_this_family"] = new JArray(f.SameFamily);
+                    }
                     else
                     {
                         row["placement_type"] = f.PlacementType;

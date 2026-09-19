@@ -73,6 +73,39 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_missing_type_names_what_its_family_does_have_and_chooses_none_of_them()
+        {
+            // MEASURED (campaign 7): Revit 2023's mechanical template has no "Rectangular Duct: Radius Elbows / Tees";
+            // the refusal said only that, and correcting the set meant guessing a name.
+            CadRequirementSet set = Set(@"[
+              { 'id': 'duct', 'layers': ['M-SUPPLY'], 'produces': 'duct', 'family_type': 'Rectangular Duct: Radius Elbows / Tees',
+                'system_type': 'Supply Air', 'level': 'Level 1', 'offset_mm': 2743.2,
+                'geometry': { 'from': 'single_lines', 'merge_collinear': false } },
+              { 'id': 'none', 'layers': ['M-X'], 'produces': 'duct', 'family_type': 'Oval Duct: Taps',
+                'system_type': 'Supply Air', 'level': 'Level 1', 'offset_mm': 2743.2,
+                'geometry': { 'from': 'single_lines', 'merge_collinear': false } }
+            ]");
+            var loaded = new List<string> { "Rectangular Duct: Mitered Elbows / Taps", "Rectangular Duct: Radius Elbows / Taps" };
+            JObject check = CadCatalogCheck.Check(set, n => new CadTypeFacts
+            {
+                Found = false, SameFamily = CadCatalogCheck.FamilyOf(n) == "Rectangular Duct" ? loaded : new List<string>()
+            }, new HashSet<string> { "Level 1" });
+
+            JObject duct = Row(check, "duct");
+            Assert.Equal("refused", (string)duct["verdict"]);
+            string said = duct["problems"].ToString();
+            Assert.Contains("loaded types of family 'Rectangular Duct'", said);
+            Assert.Contains("'Rectangular Duct: Radius Elbows / Taps'", said);
+            Assert.Contains("caller's decision", said);
+            Assert.Equal(loaded, duct["loaded_of_this_family"].ToObject<List<string>>());
+            Assert.Contains("no type of family 'Oval Duct' is loaded", Row(check, "none")["problems"].ToString());
+
+            Assert.Equal("Rectangular Duct", CadCatalogCheck.FamilyOf("Rectangular Duct: Radius Elbows / Tees"));
+            Assert.Null(CadCatalogCheck.FamilyOf("Standard"));
+            Assert.Contains("no family part", CadCatalogCheck.LoadedOfFamily("Standard", loaded));
+        }
+
+        [Fact]
         public void End_faces_are_allowed_only_by_name_and_only_on_a_wall()
         {
             CadRequirementSet ok = Set(@"[

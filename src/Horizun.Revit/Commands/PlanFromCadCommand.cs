@@ -1145,7 +1145,8 @@ namespace Horizun.Revit.Commands
                     ElementType et = FindType(doc, typeName);
                     if (et == null)
                         return "type_not_found: no element type in " + Quote(SafeTitle(doc)) + " is named " +
-                               Quote(typeName) + ", which the rule producing these " + kind + "s asked for. " +
+                               Quote(typeName) + ", which the rule producing these " + kind + "s asked for; " +
+                               CadCatalogCheck.LoadedOfFamily(typeName, SameFamily(doc, typeName)) + " " +
                                "NOTHING was planned. Load the family or correct the requirement set - a plan that " +
                                "substitutes a default type builds a different building and verifies it happily.";
                     row["type_id"] = Rid.Value(et.Id);
@@ -1781,7 +1782,7 @@ namespace Horizun.Revit.Commands
         private static CadTypeFacts TypeFactsOf(Document doc, string name)
         {
             ElementType et = FindType(doc, name);
-            if (et == null) return new CadTypeFacts { Found = false };
+            if (et == null) return new CadTypeFacts { Found = false, SameFamily = SameFamily(doc, name) };
             var facts = new CadTypeFacts { Found = true };
             try
             {
@@ -1811,6 +1812,17 @@ namespace Horizun.Revit.Commands
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.OrdinalIgnoreCase))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>The loaded types of the family a "Family: Type" name names, as labels, sorted; at most 25.</summary>
+        private static List<string> SameFamily(Document doc, string name)
+        {
+            string family = CadCatalogCheck.FamilyOf(name);
+            if (family == null) return new List<string>();
+            return new FilteredElementCollector(doc).WhereElementIsElementType().Cast<ElementType>()
+                .Where(t => { try { return string.Equals(t.FamilyName, family, StringComparison.OrdinalIgnoreCase); } catch { return false; } })
+                .Select(TypeLabel).Where(x => x != null).Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal).Take(25).ToList();
         }
 
         private static string TypeLabel(ElementType t)
