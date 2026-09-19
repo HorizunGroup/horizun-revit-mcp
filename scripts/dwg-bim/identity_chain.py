@@ -31,7 +31,7 @@ The selection shape (all paths explicit):
               "candidate_commit": "<its sha>",
               "config": {...optional explicit config identity...},
               "dll_sha256": "<optional, with dll_source>", "dll_unrecorded_reason": "<optional>",
-              "verdict": "all_true | status_ok | key:<name>"}]}
+              "verdict": "all_true | status_ok | status:<value> | key:<name> | path:<a.b.c>"}]}
 """
 import hashlib
 import io
@@ -91,6 +91,11 @@ def verdict_of(result, rule):
     if rule.startswith('status:'):
         s = result.get('status')
         return s == rule[7:], 'status %s' % s
+    if rule.startswith('path:'):
+        v = result
+        for part in rule[5:].split('.'):
+            v = v.get(part) if isinstance(v, dict) else None
+        return v is True, '%s = %s' % (rule[5:], v)
     if rule.startswith('key:'):
         k = rule[4:]
         return result.get(k) is True, '%s = %s' % (k, result.get(k))
@@ -100,6 +105,17 @@ def verdict_of(result, rule):
 def stamp_of(folder_name):
     m = re.match(r'^(\d{8}T\d{6}Z|\d{8}-\d{6})', folder_name)
     return m.group(1).replace('-', 'T') if m else None
+
+
+def record_document(result_path):
+    """The document a record is about: the record's own field, or the run header beside it (run.json)."""
+    r = load(result_path)
+    doc = (r.get('summary') or {}).get('document') if isinstance(r.get('summary'), dict) else None
+    doc = doc or r.get('document')
+    header = os.path.join(os.path.dirname(result_path), 'run.json')
+    if not doc and os.path.isfile(header):
+        doc = load(header).get('document')
+    return str(doc) if doc else None
 
 
 def later_runs(case, selected):
@@ -121,9 +137,7 @@ def later_runs(case, selected):
         res = os.path.join(folder, 'result.json')
         doc_re = case.get('family_document')
         if doc_re and os.path.isfile(res):
-            r = load(res)
-            doc = (r.get('summary') or {}).get('document') if isinstance(r.get('summary'), dict) else None
-            if not re.search(doc_re, str(doc or r.get('document') or '')):
+            if not re.search(doc_re, record_document(res) or ''):
                 continue
         st = stamp_of(name)
         if not (st and sel_stamp and st > sel_stamp):
@@ -169,6 +183,11 @@ def derive_case(sel, case, equal=git_product_equal):
         if not build.get(k_rec) and health.get(k_h) is not None:
             build[k_rec] = health.get(k_h)
     staged = build.get('staged') if isinstance(build.get('staged'), dict) else {}
+    header = os.path.join(os.path.dirname(path), 'run.json')
+    if not staged and os.path.isfile(header):
+        # a run header beside the record (the campaign driver's) carries the session build stamp
+        stamp = ((load(header).get('build') or {}).get('session_build_stamp'))
+        staged = stamp if isinstance(stamp, dict) else {}
     commit, dirty, raw = observed_commit(build)
     if health.get('horizun_commit') and str(health['horizun_commit']) != str(rec.get('build', {}).get('commit') or health['horizun_commit']):
         out['failures'].append('the record and its own health reply name different builds (%s vs %s)'

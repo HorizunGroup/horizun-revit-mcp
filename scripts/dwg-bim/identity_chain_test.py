@@ -121,6 +121,18 @@ class IdentityChain(unittest.TestCase):
         self.assertEqual(c['chain']['observed_build']['commit_as_reported'], 'aaaaaaa-dirty')
 
 
+    def test_nested_verdict_by_path(self):
+        p = self.record('20260919T010000Z-HZ_X-run')
+        rec = json.load(open(p, encoding='utf-8'))
+        rec['acceptance'] = {'passed': True}
+        json.dump(rec, open(p, 'w', encoding='utf-8'))
+        c = self.selection([self.case(p, verdict='path:acceptance.passed')])['cases'][0]
+        self.assertTrue(c['result']['passed'])
+        rec['acceptance'] = {'passed': False}
+        json.dump(rec, open(p, 'w', encoding='utf-8'))
+        c = self.selection([self.case(p, verdict='path:acceptance.passed')])['cases'][0]
+        self.assertFalse(c['result']['passed'])
+
     def health(self, result_path, sha, pid=7, commit='aaaaaaa'):
         calls = os.path.join(os.path.dirname(result_path), 'calls')
         os.makedirs(calls, exist_ok=True)

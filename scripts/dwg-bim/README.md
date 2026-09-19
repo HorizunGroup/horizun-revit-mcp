@@ -114,6 +114,28 @@ Revit's interface language matters for NAMES, never for this route's inputs: a r
 name a system wall type as `Basic Wall: <type>` in any language, and parameters are safest by
 BuiltInParameter (`ALL_MODEL_MARK`), because their display names are translated.
 
+## A duct network (DWG -> MEP, connected)
+
+`synthetic/make_mep_dwg.py <folder>` draws MEP-DUCT.dwg (a supply main broken at a tee, an elbow inside a
+polyline, an exhaust duct crossing it on another layer) and its truth file. The route is five public
+tools, in order:
+
+1. `horizun_plan_from_cad` + `horizun_apply_cad_plan` with a duct rule (`from: single_lines`, a type, a
+   system, `offset_mm` above the storey, `diameter_mm`): builds the runs at level + offset.
+2. `horizun_cad_networks` with the same requirement set, `layers` limited to the rule's layers, and
+   `identity_tolerance_mm` / `connect_tolerance_mm` equal to the set's `point_mm` and
+   `collinear_tolerance_degrees` equal to its `angle_degrees` - then `run_identity.matches_the_conversion`
+   is true and every run's semantic id is the element's.
+3. `horizun_cad_connect` with the reply's **`connections`** array (not `junctions`), `dry_run` first.
+4. `horizun_plan_mep` `operation: network_census`: components and open connectors, read from connector
+   connectivity - the evidence that the ducts are joined, not that a call succeeded.
+
+Expected on the synthetic drawing: 5 runs; a tee and an elbow placed; the crossing reported and NOT
+joined; 2 components (supply 6 elements / 3 open connectors, exhaust 1 / 2); identical after a real
+save, close and reopen; a repeat adds nothing. What a real plan adds that this route does not yet read:
+rectangular sizes (WxH labels), and a size per run - one rule gives one diameter to every run on its
+layer.
+
 ## Run identity and summaries
 
 Every record carries the build it ran with, read from the run itself: `session.ps1 start` writes a
