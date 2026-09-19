@@ -1647,6 +1647,8 @@ namespace Horizun.Contracts
           ""decision_key"": { ""type"": ""string"", ""description"": ""The decision_key the proposal gave this dependent (splits[].held / split_dependents). A key from another plan, document, drawing set or set of pieces is refused."" } },
         ""additionalProperties"": false },
       ""description"": ""Decisions on the DEPENDENTS a split held (in a gap, across two pieces, not re-creatable): stay on the kept piece, move_to a piece (slid onto it as little as needed and re-created there, carrying identity and parameters), or delete (a verified delete). Every entry must be used; one that is stale or names a dependent not held refuses the plan."" },
+    ""fitting_policy"": { ""type"": ""string"", ""enum"": [""keep"", ""rebuild_where_viable""], ""default"": ""keep"",
+      ""description"": ""What happens to the fittings on the ends of ducts a resolved section resize changes. keep: the fitting stays at its size and Revit is expected to insert a transition on each resized run (measured; re-read after the apply). rebuild_where_viable: a fitting whose every run takes the same new section is replaced (new element id) through horizun_cad_connect's refit, kept only whole. fittings_plan in the reply says, per fitting, which applies and why - before anything is written."" },
     ""resolve"": { ""type"": ""array"", ""maxItems"": 500,
       ""description"": ""Decisions on changes this plan HOLDS for a person, by element: retype (resized/retyped: change_type to the type the drawing now asks for - by thickness from wall_types for a wall), rotate_in_face (reoriented: a turn about the element's own face normal to the hand the drawing implies), keep (the element stays as it stands and its record is re-stamped so the next plan does not ask again), replace (a MIGRATION PLAN only - what placing it again would cost; never an automatic action, because moving a face-hosted element to another face cannot be done in place), delete (an ORPHAN only - removed, or removed and moved by hand - deleted through horizun_delete_verified; nothing is ever deleted without this decision). A decision the change does not admit, or on an element not held, refuses the whole plan."",
       ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""decision""], ""properties"": {
@@ -1823,8 +1825,8 @@ namespace Horizun.Contracts
       ""description"": ""The junctions to make. horizun_cad_networks' `connections` array is already in this shape and can be sent unchanged, provided that reading reported run_identity.matches_the_conversion - each entry carries its point, its fitting, and its members named by semantic id."",
       ""items"": { ""type"": ""object"", ""required"": [""at"", ""elements""], ""properties"": {
         ""id"": { ""type"": ""string"", ""description"": ""The junction node key, so the reply can be matched back to the reading."" },
-        ""fitting"": { ""type"": ""string"", ""enum"": [""direct"", ""elbow"", ""tee"", ""cross"", ""none""], ""default"": ""none"",
-          ""description"": ""direct joins two collinear ends with NO fitting. elbow, tee and cross are delegated to horizun_create_elements in Revit's own argument order: a tee lists the two through-run elements then the branch, a cross the first through pair then the second."" },
+        ""fitting"": { ""type"": ""string"", ""enum"": [""direct"", ""elbow"", ""tee"", ""cross"", ""transition"", ""none""], ""default"": ""none"",
+          ""description"": ""direct joins two collinear ends with NO fitting. transition joins two collinear runs of different section; with `drawn` it is a transition the drawing draws, measured against that space after it is built and undone when it does not fit. elbow, tee and cross are delegated to horizun_create_elements in Revit's own argument order: a tee lists the two through-run elements then the branch, a cross the first through pair then the second."" },
         ""at"": { ""type"": ""array"", ""minItems"": 2, ""items"": { ""type"": ""number"" },
           ""description"": ""[x, y] or [x, y, z] in millimetres - the point the drawing put this junction at. Without it the connector to join cannot be told from the one at the other end of the same pipe."" },
         ""elements"": { ""type"": ""array"", ""minItems"": 2,
@@ -1832,8 +1834,13 @@ namespace Horizun.Contracts
           ""items"": { ""type"": [""integer"", ""object""] } },
         ""automatic"": { ""type"": ""boolean"", ""default"": false,
           ""description"": ""What the network reading concluded. false means a person has to look, and the junction is SKIPPED unless include_needs_review says otherwise."" },
-        ""says"": { ""type"": ""string"", ""description"": ""The reading's own sentence, carried through to the reply verbatim."" }
+        ""says"": { ""type"": ""string"", ""description"": ""The reading's own sentence, carried through to the reply verbatim."" },
+        ""drawn"": { ""type"": ""object"", ""description"": ""For a transition the drawing draws (horizun_cad_networks emits it): from_mm, to_mm and length_mm of the drawn piece. The built fitting's ends are compared with these."" }
       }, ""additionalProperties"": false } },
+    ""refit"": { ""type"": ""array"",
+      ""description"": ""Instead of junctions: fittings to rebuild at a new section. Each {fitting_id, runs: [every run the fitting joins], width_mm, height_mm}. The fitting is deleted, the runs resized and a fitting of the same kind placed between them - each step by its typed command - inside one group kept only when the new fitting joins every run at the new section and every other connection is unchanged; otherwise rolled back, naming the step."" },
+    ""transition_fit_tolerance_mm"": { ""type"": ""number"", ""default"": 25.4, ""minimum"": 0.001,
+      ""description"": ""How far a drawn transition's built ends may sit from the drawn piece's ends. Beyond it the fitting is undone and reported with its length and offsets - the network is never moved to make it fit."" },
     ""connector_tolerance_mm"": { ""type"": ""number"", ""default"": 25.0, ""minimum"": 0.001,
       ""description"": ""How far a connector may sit from the junction point and still be the one meant. A second connector within half of this makes the pick AMBIGUOUS and the junction is refused rather than guessed."" },
     ""rehearsal"": { ""type"": ""string"", ""enum"": [""sequential"", ""isolated""], ""default"": ""sequential"",

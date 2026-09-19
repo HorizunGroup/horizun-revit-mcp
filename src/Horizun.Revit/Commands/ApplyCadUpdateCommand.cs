@@ -842,6 +842,13 @@ namespace Horizun.Revit.Commands
         {
             // A RESOLVED SECTION is written as parameters: the duct it resized is re-stamped too.
             var written = new HashSet<long>();
+            // ...and a refit's runs, whose section the refit wrote.
+            foreach (JObject rf in (args["refit"] as JArray ?? new JArray()).OfType<JObject>())
+                foreach (JToken t in rf["runs"] as JArray ?? new JArray())
+                {
+                    long value;
+                    if (long.TryParse(t.ToString(), out value) && written.Add(value)) yield return value;
+                }
             foreach (JObject w in (args["writes"] as JArray ?? new JArray()).OfType<JObject>())
             {
                 long value;

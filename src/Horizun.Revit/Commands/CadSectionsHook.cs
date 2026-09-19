@@ -49,6 +49,7 @@ namespace Horizun.Revit.Commands
             }
             var byRule = new JObject();
             int keptUnsized = 0;
+            int piecesMade = 0;
             foreach (CadRule rule in sectionRules)
             {
                 var mine = interpretation.Candidates.Where(c => c.RuleId == rule.Id && c.Geometry.Count >= 2).ToList();
@@ -65,6 +66,39 @@ namespace Horizun.Revit.Commands
                 }).ToList();
                 CadSectionReading sections = CadDuctSections.Assign(runs, myLabels, leaders, rule.Section, set.PointToleranceMm);
                 var byId = mine.ToDictionary(c => c.Id, StringComparer.Ordinal);
+                var renamed = new Dictionary<string, string>(StringComparer.Ordinal);
+                // A RUN CUT INTO PIECES is replaced by its pieces: each one a candidate of its own with the
+                // parent's decisions, its own line and identities, and the parent named in its lineage.
+                foreach (var parentId in sections.Runs.Where(x => x.ParentRunId != null).Select(x => x.ParentRunId).Distinct().ToList())
+                {
+                    CadCandidate parent = byId[parentId];
+                    int at = interpretation.Candidates.IndexOf(parent);
+                    interpretation.Candidates.RemoveAt(at);
+                    foreach (CadRunSection piece in sections.Runs.Where(x => x.ParentRunId == parentId))
+                    {
+                        double z0 = parent.Geometry[0].Z;
+                        CadCandidate pc = parent.Piece(new List<CadPoint> { new CadPoint(piece.Start.X, piece.Start.Y, z0),
+                                                                            new CadPoint(piece.End.X, piece.End.Y, z0) },
+                                                       piece.PieceKey, set.PointToleranceMm, interpretation.SourceHash);
+                        interpretation.Candidates.Insert(at++, pc);
+                        renamed[piece.RunId] = pc.Id;
+                        byId[pc.Id] = pc;
+                        piece.RunId = pc.Id;
+                        piece.SemanticId = pc.SemanticId;
+                    }
+                    piecesMade++;
+                }
+                // what the reading called a piece before it had an identity, everywhere it is cited
+                foreach (CadRunSection r in sections.Runs)
+                {
+                    string to;
+                    if (r.PropagatedFrom != null && renamed.TryGetValue(r.PropagatedFrom, out to)) r.PropagatedFrom = to;
+                    foreach (string end in new[] { "a", "b" })
+                    {
+                        var e = r.TransitionEnds?[end] as JObject;
+                        if (e != null && renamed.TryGetValue(e.Value<string>("run") ?? "", out to)) e["run"] = to;
+                    }
+                }
                 foreach (CadRunSection r in sections.Runs)
                 {
                     CadCandidate c = byId[r.RunId];
@@ -95,6 +129,7 @@ namespace Horizun.Revit.Commands
                 byRule[rule.Id] = ruleReport;
             }
             sectionsReport["by_rule"] = byRule;
+            sectionsReport["runs_cut_into_pieces"] = piecesMade;
             if (keepUnresolved)
             {
                 sectionsReport["unsized_runs_kept"] = keptUnsized;

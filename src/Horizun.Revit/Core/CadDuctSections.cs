@@ -60,6 +60,14 @@ namespace Horizun.Revit.Core
         public double AmbiguityRatio = 1.5;
         public double ParallelToleranceDegrees = 10.0;
         public bool PropagateThroughElbows = true;
+        /// <summary>
+        /// Cut a run whose labels name more than one size into pieces, at the only drawn event that
+        /// separates them (a branch tapping its interior) - or, with none, keep the stretch between the
+        /// labels as one piece whose change is not located. Declared, never assumed.
+        /// </summary>
+        public bool SplitAtSectionChanges;
+        /// <summary>How close a branch's end must be to a run's interior to count as tapping it (mm).</summary>
+        public double? TapToleranceMm;
 
         public double MmPerUnit => LabelUnits == "inch" ? 25.4 : 1.0;
 
@@ -67,6 +75,8 @@ namespace Horizun.Revit.Core
         {
             ["from"] = "labels",
             ["label_layers"] = new JArray(LabelLayers),
+            ["split_at_section_changes"] = SplitAtSectionChanges,
+            ["tap_tolerance_mm"] = TapToleranceMm.HasValue ? (JToken)TapToleranceMm.Value : JValue.CreateNull(),
             ["label_units"] = LabelUnits,
             ["label_order"] = LabelOrder,
             ["max_distance_mm"] = MaxDistanceMm,
@@ -108,6 +118,13 @@ namespace Horizun.Revit.Core
         public List<JObject> Labels = new List<JObject>();
         public string PropagatedFrom;
         public string Reason;
+        /// <summary>A piece: its parent run and its anchor key (see CadCandidate.PieceKey).</summary>
+        public string ParentRunId, PieceKey;
+        /// <summary>Where along the parent the piece lies (0..1), and why it was cut there.</summary>
+        public double? ParentFrom, ParentTo;
+        public string CutReason;
+        /// <summary>A transition piece with a settled size at both ends: the two neighbours and their sizes.</summary>
+        public JObject TransitionEnds;
 
         public JObject ToJson() => new JObject
         {
@@ -122,7 +139,12 @@ namespace Horizun.Revit.Core
             ["orientation"] = WidthMm.HasValue ? "width horizontal (the label's plan-side number), height vertical" : null,
             ["labels"] = new JArray(Labels),
             ["propagated_from"] = PropagatedFrom,
-            ["reason"] = Reason
+            ["reason"] = Reason,
+            ["piece_of"] = ParentRunId,
+            ["piece_key"] = PieceKey,
+            ["piece_along_parent"] = ParentFrom.HasValue ? new JArray(Math.Round(ParentFrom.Value, 4), Math.Round(ParentTo.Value, 4)) : null,
+            ["cut_reason"] = CutReason,
+            ["transition_ends"] = TransitionEnds
         };
     }
 
@@ -169,7 +191,8 @@ namespace Horizun.Revit.Core
             if (diameterMm.HasValue) throw bad("and diameter_mm are two sizes for one run; declare one.");
             var known = new HashSet<string>(StringComparer.Ordinal)
             { "from", "label_layers", "label_units", "label_order", "max_distance_mm", "leader_tolerance_mm",
-              "ambiguity_ratio", "parallel_tolerance_degrees", "propagate_through_elbows" };
+              "ambiguity_ratio", "parallel_tolerance_degrees", "propagate_through_elbows",
+              "split_at_section_changes", "tap_tolerance_mm" };
             foreach (JProperty p in s.Properties())
                 if (!known.Contains(p.Name)) throw bad("has no key '" + p.Name + "'.");
             if (s.Value<string>("from") != "labels") throw bad("from must be \"labels\".");
@@ -192,6 +215,9 @@ namespace Horizun.Revit.Core
             if (rule.AmbiguityRatio < 1) throw bad("ambiguity_ratio must be at least 1.");
             rule.ParallelToleranceDegrees = s.Value<double?>("parallel_tolerance_degrees") ?? 10.0;
             rule.PropagateThroughElbows = s.Value<bool?>("propagate_through_elbows") ?? true;
+            rule.SplitAtSectionChanges = s.Value<bool?>("split_at_section_changes") ?? false;
+            rule.TapToleranceMm = s.Value<double?>("tap_tolerance_mm");
+            if (rule.TapToleranceMm.HasValue && rule.TapToleranceMm.Value <= 0) throw bad("tap_tolerance_mm must be positive.");
             return rule;
         }
 
@@ -302,6 +328,9 @@ namespace Horizun.Revit.Core
                     row["outcome"] = "associated";
                     row["run"] = byLeader.RunId;
                     row["by"] = "leader " + leaderId + " (arrowhead " + Math.Round(leaderGap, 1) + " mm from the run)";
+                    double tl;
+                    ToSegment(leaders.First(x => x.Id == leaderId).Points[0], byLeader.Start, byLeader.End, out tl);
+                    row["along"] = Math.Round(tl, 6);
                     byLeader.Labels.Add(row);
                     continue;
                 }
@@ -338,6 +367,9 @@ namespace Horizun.Revit.Core
                 }
                 row["outcome"] = "associated";
                 row["run"] = best.Item1.RunId;
+                double tb;
+                ToSegment(label.At, best.Item1.Start, best.Item1.End, out tb);
+                row["along"] = Math.Round(tb, 6);
                 row["by"] = "beside the run's interior at " + Math.Round(best.Item2, 1) + " mm" +
                             (best.Item3 ? ", written parallel to it" : "") +
                             (second2 == null ? "; no other run within reach"
@@ -368,10 +400,139 @@ namespace Horizun.Revit.Core
                 }
             }
 
+            if (rule.SplitAtSectionChanges) Segment(reading, rule, pointToleranceMm);
             if (rule.PropagateThroughElbows) Propagate(reading.Runs, pointToleranceMm);
             foreach (CadRunSection r in reading.Runs.Where(x => x.State == "missing" && x.Reason == null))
                 r.Reason = "no label names this run and none could reach it through an elbow or a straight continuation";
             return reading;
+        }
+
+        private static CadPoint Lerp(CadPoint a, CadPoint b, double t) =>
+            new CadPoint(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t, a.Z + (b.Z - a.Z) * t);
+
+        /// <summary>
+        /// A RUN WHOSE LABELS NAME MORE THAN ONE SIZE IS CUT - never at a point nobody drew.
+        ///
+        /// MEASURED on a real plan: three straight runs of 5-9 m each carried two sizes (8X8 then 8X6) and
+        /// were left whole and unsized, which also left the drawn transitions at their ends without a size on
+        /// one side. The labels settle more than "contradiction": the section at a label is that label's, and
+        /// nothing is drawn between a run's end and its nearest label, so each END is determined. What is
+        /// not determined is where, BETWEEN the last label of one size and the first of the next, the change
+        /// happens - unless the drawing puts exactly one event there (a branch tapping the run), in which
+        /// case the cut is there. Never the midpoint between two texts.
+        ///
+        /// Pieces are keyed by what anchors them - the parent's end ("end:lo" / "end:hi", by coordinates,
+        /// so reversing the drawn direction changes nothing), the first label of an interior block, or the two
+        /// labels an unlocated change lies between - not by their order.
+        /// </summary>
+        private static void Segment(CadSectionReading reading, CadSectionRule rule, double tol)
+        {
+            double tapTol = rule.TapToleranceMm ?? Math.Max(tol, 1.0);
+            var original = reading.Runs.ToList();
+            var result = new List<CadRunSection>();
+            foreach (CadRunSection r in original)
+            {
+                if (r.State != "contradictory" || r.ParentRunId != null) { result.Add(r); continue; }
+                var assoc = r.Labels.Where(l => l.Value<string>("outcome") == "associated" && l.Value<string>("run") == r.RunId &&
+                                                l["along"] != null)
+                                    .OrderBy(l => l.Value<double>("along")).ThenBy(l => l.Value<string>("label"), StringComparer.Ordinal).ToList();
+                var blocks = new List<List<JObject>>();
+                foreach (JObject l in assoc)
+                {
+                    var last = blocks.LastOrDefault();
+                    if (last != null && Math.Abs(last[0].Value<double>("width_mm") - l.Value<double>("width_mm")) < 0.01 &&
+                        Math.Abs(last[0].Value<double>("height_mm") - l.Value<double>("height_mm")) < 0.01) last.Add(l);
+                    else blocks.Add(new List<JObject> { l });
+                }
+                Func<JObject, double> at = l => Math.Max(0.0, Math.Min(1.0, l.Value<double>("along")));
+                if (blocks.Count < 2 || Enumerable.Range(0, blocks.Count - 1).Any(i => at(blocks[i].Last()) >= at(blocks[i + 1][0])))
+                {
+                    r.Reason += "; its labels cannot be ordered along it into separate stretches, so it is not cut";
+                    result.Add(r);
+                    continue;
+                }
+                var taps = new List<Tuple<double, string>>();
+                foreach (CadRunSection q in original)
+                {
+                    if (q == r) continue;
+                    foreach (CadPoint e in new[] { q.Start, q.End })
+                    {
+                        double t;
+                        double d = ToSegment(e, r.Start, r.End, out t);
+                        if (d <= tapTol && Dist(e, r.Start) > tol && Dist(e, r.End) > tol && t > 0 && t < 1)
+                            taps.Add(Tuple.Create(t, q.RunId));
+                    }
+                }
+                bool lo = r.Start.X < r.End.X - 1e-9 || (Math.Abs(r.Start.X - r.End.X) <= 1e-9 && r.Start.Y <= r.End.Y);
+                string startKey = lo ? "end:lo" : "end:hi", endKey = lo ? "end:hi" : "end:lo";
+                var pieces = new List<CadRunSection>();
+                double cursor = 0.0;
+                string cursorWhy = "the run's own end";
+                for (int i = 0; i < blocks.Count; i++)
+                {
+                    List<JObject> b = blocks[i];
+                    bool final = i == blocks.Count - 1;
+                    string key = i == 0 ? startKey : final ? endKey
+                               : "block:" + b.Select(x => x.Value<string>("label")).OrderBy(x => x, StringComparer.Ordinal).First();
+                    double to;
+                    string toWhy, nextWhy = null;
+                    CadRunSection gap = null;
+                    if (final) { to = 1.0; toWhy = "the run's own end"; }
+                    else
+                    {
+                        List<JObject> n = blocks[i + 1];
+                        double a0 = at(b.Last()), a1 = at(n[0]);
+                        var inside = taps.Where(x => x.Item1 > a0 && x.Item1 < a1).ToList();
+                        string between = b.Last().Value<string>("label") + " (" + b.Last().Value<string>("text") + ") and " +
+                                         n[0].Value<string>("label") + " (" + n[0].Value<string>("text") + ")";
+                        if (inside.Count == 1)
+                        {
+                            to = inside[0].Item1;
+                            toWhy = "the branch " + inside[0].Item2 + " tapping the run - the only drawn event between the labels " + between;
+                            nextWhy = toWhy;
+                        }
+                        else
+                        {
+                            to = a0;
+                            toWhy = "the last label of this size, " + b.Last().Value<string>("label");
+                            // named by the two labels in a fixed order, so the drawn direction does not rename it
+                            var pair = new[] { b.Last().Value<string>("label"), n[0].Value<string>("label") }
+                                           .OrderBy(x => x, StringComparer.Ordinal).ToArray();
+                            string gk = "between:" + pair[0] + "|" + pair[1];
+                            gap = new CadRunSection
+                            {
+                                RunId = r.RunId + "|" + gk, ParentRunId = r.RunId, PieceKey = gk,
+                                SemanticId = r.SemanticId, SourceEntities = new List<string>(r.SourceEntities),
+                                Start = Lerp(r.Start, r.End, a0), End = Lerp(r.Start, r.End, a1), ParentFrom = a0, ParentTo = a1,
+                                State = "change_unlocated",
+                                Reason = "the drawing names " + b[0].Value<string>("text") + " up to label " + b.Last().Value<string>("label") +
+                                         " and " + n[0].Value<string>("text") + " from label " + n[0].Value<string>("label") + ", and " +
+                                         (inside.Count == 0 ? "draws nothing between them" : inside.Count + " branches tap between them") +
+                                         " that places the change; this stretch gets no size",
+                                CutReason = "bounded by the labels " + between
+                            };
+                            nextWhy = "the first label of the next size, " + n[0].Value<string>("label");
+                        }
+                    }
+                    var piece = new CadRunSection
+                    {
+                        RunId = r.RunId + "|" + key, ParentRunId = r.RunId, PieceKey = key, SemanticId = r.SemanticId,
+                        SourceEntities = new List<string>(r.SourceEntities),
+                        Start = Lerp(r.Start, r.End, cursor), End = Lerp(r.Start, r.End, to), ParentFrom = cursor, ParentTo = to,
+                        State = "documented", WidthMm = b[0].Value<double>("width_mm"), HeightMm = b[0].Value<double>("height_mm"),
+                        Labels = new List<JObject>(b),
+                        Reason = b.Count + " label(s) of the drawing name this size, and nothing drawn between them and the cut changes it",
+                        CutReason = "from " + cursorWhy + " to " + toWhy
+                    };
+                    if (Dist(piece.Start, piece.End) > tol) pieces.Add(piece);
+                    if (gap != null) { if (Dist(gap.Start, gap.End) > tol) pieces.Add(gap); cursor = gap.ParentTo.Value; }
+                    else cursor = to;
+                    cursorWhy = nextWhy ?? cursorWhy;
+                }
+                result.AddRange(pieces);
+            }
+            reading.Runs.Clear();
+            reading.Runs.AddRange(result);
         }
 
         private static string NodeKey(CadPoint p, double tol) =>
@@ -407,7 +568,7 @@ namespace Horizun.Revit.Core
                         List<CadRunSection> beyond = at(otherEnd);
                         CadRunSection far = beyond.Count == 2 ? beyond.First(m => m != next) : null;
                         if (far != null && far != src &&
-                            (far.State == "contradictory" || far.State == "ambiguous" ||
+                            (far.State == "contradictory" || far.State == "ambiguous" || far.State == "change_unlocated" ||
                              (far.WidthMm.HasValue && (Math.Abs(far.WidthMm.Value - src.WidthMm.Value) > 0.01 ||
                                                        Math.Abs(far.HeightMm.Value - src.HeightMm.Value) > 0.01))))
                         {
@@ -415,6 +576,15 @@ namespace Horizun.Revit.Core
                                           far.RunId + " (" + (far.WidthMm.HasValue ? far.WidthMm + "x" + far.HeightMm + " mm" : far.State) +
                                           "): no size is carried into it";
                             next.State = "transition";
+                            if (far.WidthMm.HasValue)
+                                next.TransitionEnds = new JObject
+                                {
+                                    ["a"] = new JObject { ["run"] = src.RunId, ["at_mm"] = new JArray(Math.Round(end.X, 1), Math.Round(end.Y, 1)),
+                                                          ["width_mm"] = src.WidthMm, ["height_mm"] = src.HeightMm },
+                                    ["b"] = new JObject { ["run"] = far.RunId, ["at_mm"] = new JArray(Math.Round(otherEnd.X, 1), Math.Round(otherEnd.Y, 1)),
+                                                          ["width_mm"] = far.WidthMm, ["height_mm"] = far.HeightMm },
+                                    ["drawn_length_mm"] = Math.Round(Dist(next.Start, next.End), 1)
+                                };
                             continue;
                         }
                         List<CadRunSection> list;

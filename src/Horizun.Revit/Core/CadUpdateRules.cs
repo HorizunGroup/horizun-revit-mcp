@@ -612,7 +612,7 @@ namespace Horizun.Revit.Core
                 // Revit trimmed the ten ducts on their legs back to the elbows, and the next update
                 // said "A PERSON MOVED THIS" ten times. An end that moved only along the run's own line,
                 // and now sits on a fitting, was moved by the connection.
-                JObject trim = TrimmedToFitting(asBuilt, held.Geometry, held.FittedEnds, tolerance);
+                JObject trim = TrimmedToFitting(asBuilt, held.Geometry, held.FittedEnds, tolerance, held.FittingAnchors);
                 if (trim != null) trimmedToFitting[held.ElementId] = trim;
                 if (trim != null || SamePlace(asBuilt, held.Geometry, tolerance))
                 {
@@ -945,11 +945,57 @@ namespace Horizun.Revit.Core
                     a.Says += " Its ends moved only along its own line, onto the fitting(s) a connection put there - " +
                               "a connection, not a person's move.";
             }
-            ProposePairings(update, set, tolerance,
-                            new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
-            ApplyAccepted(update, accepted);
+            var rejectedSet = new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal);
+            ProposePairings(update, set, tolerance, rejectedSet);
+            ApplyAccepted(update, WithLineage(update, candidates, subjects, accepted, rejectedSet));
             CarryHeightFacts(update, candidates);
             return update;
+        }
+
+        /// <summary>The "piece:&lt;parent&gt;#&lt;key&gt;" token a piece carries in its source entities, or null.</summary>
+        public static string PieceToken(string sourceEntities)
+        {
+            if (string.IsNullOrEmpty(sourceEntities)) return null;
+            foreach (string part in sourceEntities.Split(';'))
+                if (part.StartsWith("piece:", StringComparison.Ordinal)) return part;
+            return null;
+        }
+
+        /// <summary>
+        /// A PIECE WHOSE LINE MOVED IS STILL THAT PIECE when the drawing says so: the same drawn run (its
+        /// parent's semantic id) and the same anchor (its end, its first label, or the two labels an
+        /// unlocated change lies between). MEASURED need: a label moved 600 mm along a two-size main moves
+        /// the cut, so both pieces get new lines and new semantic ids; by geometry alone they are "an
+        /// element gone and a new one drawn", offered to a person. The lineage is a fact of the reading,
+        /// not a resemblance, so a UNIQUE lineage match is re-shaped in place - unless a person also moved
+        /// the element (a conflict stays a conflict) or a caller rejected the pairing.
+        /// </summary>
+        private static IDictionary<long, string> WithLineage(CadUpdate update, IList<CadCandidate> candidates,
+                                                             IList<CadAuditSubject> subjects,
+                                                             IDictionary<long, string> accepted, HashSet<string> rejected)
+        {
+            var merged = new Dictionary<long, string>(accepted ?? new Dictionary<long, string>());
+            var byCandidate = candidates.Where(c => c?.PieceOf != null)
+                                        .GroupBy(c => "piece:" + c.PieceOf + "#" + c.PieceKey, StringComparer.Ordinal)
+                                        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+            if (byCandidate.Count == 0) return merged;
+            var creates = update.Of("create").ToList();
+            foreach (CadUpdateAction orphan in update.Of("orphan").ToList())
+            {
+                if (!orphan.ElementId.HasValue || merged.ContainsKey(orphan.ElementId.Value)) continue;
+                if (orphan.Classification == CadChange.Conflict) continue;
+                CadAuditSubject s = subjects.FirstOrDefault(x => x.ElementId == orphan.ElementId.Value);
+                string token = PieceToken(s?.Provenance?.SourceEntities);
+                List<CadCandidate> same;
+                if (token == null || !byCandidate.TryGetValue(token, out same) || same.Count != 1) continue;
+                CadUpdateAction create = creates.FirstOrDefault(c => c.CandidateId == same[0].Id);
+                if (create == null || rejected.Contains(create.CandidateId)) continue;
+                if (merged.Values.Contains(create.CandidateId)) continue;
+                merged[orphan.ElementId.Value] = create.CandidateId;
+                create.Evidence["paired_by_lineage"] = token;
+                orphan.Evidence["paired_by_lineage"] = token;
+            }
+            return merged;
         }
 
         /// <summary>How far a connection may pull an end along its run: an elbow or a transition, never a re-route.</summary>
@@ -960,7 +1006,7 @@ namespace Horizun.Revit.Core
         /// (within <see cref="FittingTrimBoundMm"/>) onto a fitting, and every other end where it was built.
         /// </summary>
         public static JObject TrimmedToFitting(List<CadPoint> built, List<CadPoint> now, List<CadPoint> fittedEnds,
-                                               double tolerance)
+                                               double tolerance, List<CadPoint> fittingAnchors = null)
         {
             if (built == null || now == null || built.Count != 2 || now.Count != 2 ||
                 fittedEnds == null || fittedEnds.Count == 0) return null;
@@ -979,7 +1025,12 @@ namespace Horizun.Revit.Core
                     double along = (n.X - b.X) * ux + (n.Y - b.Y) * uy;
                     double off = Math.Abs(-(n.X - b.X) * uy + (n.Y - b.Y) * ux);
                     bool onFitting = fittedEnds.Any(f => f.PlanDistanceTo(n) <= tolerance);
-                    if (off > tolerance || Math.Abs(along) > FittingTrimBoundMm || !onFitting) { ok = false; break; }
+                    // ...AND THE FITTING IS STILL WHERE THE DRAWING PUT THE JUNCTION. Sliding along the axis
+                    // onto a fitting is also what a person's stretch looks like - Revit drags the fitting
+                    // along. A connection leaves the fitting anchored at the drawn end (an elbow's insertion
+                    // point at the corner, a transition's connector at the drawn piece's end); a stretch does not.
+                    bool anchored = fittingAnchors != null && fittingAnchors.Any(f => f.PlanDistanceTo(b) <= tolerance);
+                    if (off > tolerance || Math.Abs(along) > FittingTrimBoundMm || !onFitting || !anchored) { ok = false; break; }
                     anyTrim = true;
                     ends.Add(new JObject { ["end"] = i, ["slid_along_run_mm"] = Math.Round(along, 1) });
                 }
@@ -989,7 +1040,8 @@ namespace Horizun.Revit.Core
                         ["ends"] = ends,
                         ["bound_mm"] = FittingTrimBoundMm,
                         ["means"] = "the element is its as-built line with an end slid along that same line onto a " +
-                                    "fitting: the connection moved it, and it is compared as built."
+                                    "fitting that is still anchored at the drawn end: the connection moved it, and it is " +
+                                    "compared as built."
                     };
             }
             return null;

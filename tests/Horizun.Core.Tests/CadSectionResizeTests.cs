@@ -107,7 +107,8 @@ namespace Horizun.Core.Tests
         public void An_end_slid_along_its_run_onto_a_fitting_is_a_connection()
         {
             JObject how = CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 0),
-                                                           new List<CadPoint> { new CadPoint(4800, 0) }, 1.0);
+                                                           new List<CadPoint> { new CadPoint(4800, 0) }, 1.0,
+                                                           new List<CadPoint> { new CadPoint(5000, 0) });   // elbow at the drawn corner
             Assert.NotNull(how);
             Assert.Equal(-200.0, (double)how["ends"][1]["slid_along_run_mm"]);
         }
@@ -125,12 +126,29 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_person_who_stretched_a_connected_run_is_not_explained_away_as_the_connection()
+        {
+            // After connect, the elbow sat at the drawn corner (6000,0). A person then pulled the run's end
+            // back to 5500: Revit dragged the elbow along, so the fitting is no longer at the drawn corner.
+            CadRequirementSet set = Set();
+            List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
+            CadAuditSubject held = Built(a[0], set, RevA, 1001, movedTo: L(0, 0, 5500, 0));
+            held.FittedEnds = new List<CadPoint> { new CadPoint(5500, 0) };
+            held.FittingAnchors = new List<CadPoint> { new CadPoint(5700, 0), new CadPoint(5500, 0) };
+            CadUpdateAction act = Assert.Single(CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB),
+                new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA }).Actions);
+            Assert.Equal(CadChange.ManuallyDiverged, act.Classification);
+            Assert.Null(act.Evidence["trimmed_to_fitting"]);
+        }
+
+        [Fact]
         public void A_run_trimmed_by_a_connection_is_unchanged_not_a_persons_move()
         {
             CadRequirementSet set = Set();
             List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
             CadAuditSubject held = Built(a[0], set, RevA, 1001, movedTo: L(0, 0, 5800, 0));
             held.FittedEnds = new List<CadPoint> { new CadPoint(5800, 0) };
+            held.FittingAnchors = new List<CadPoint> { new CadPoint(6000, 0), new CadPoint(5800, 0) };
             CadUpdate update = CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB), new List<CadAuditSubject> { held },
                                                    set, RevB, lineage: new[] { RevA });
             CadUpdateAction action = Assert.Single(update.Actions);
@@ -142,6 +160,30 @@ namespace Horizun.Core.Tests
             CadUpdateAction moved = Assert.Single(CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB),
                 new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA }).Actions);
             Assert.Equal(CadChange.ManuallyDiverged, moved.Classification);
+        }
+
+        [Fact]
+        public void A_piece_whose_cut_moved_is_reshaped_in_place_by_its_lineage_and_not_rebuilt()
+        {
+            CadRequirementSet set = Set();
+            CadCandidate whole = Read(Wall(0, 6000), set, RevA)[0];
+            CadCandidate was = whole.Piece(L(0, 0, 2000, 0), "end:lo", set.PointToleranceMm, RevA);
+            CadAuditSubject held = Built(was, set, RevA, 1001);
+            held.Provenance.SourceEntities = string.Join(";", was.SourceSurrogates.Where(x => x != was.Id));
+            CadCandidate now = whole.Piece(L(0, 0, 2600, 0), "end:lo", set.PointToleranceMm, RevB);   // the label moved 600 mm
+            CadUpdate update = CadUpdateRules.Plan(new List<CadCandidate> { now }, new List<CadAuditSubject> { held }, set, RevB,
+                                                   lineage: new[] { RevA });
+            CadUpdateAction act = Assert.Single(update.Actions, a => a.Kind == "set_curve");
+            Assert.True(act.Automatic);
+            Assert.Equal(1001L, act.ElementId);
+            Assert.StartsWith("piece:", (string)act.Evidence["paired_by_lineage"]);
+            Assert.Empty(update.Of("create"));
+
+            // another anchor is another piece: never paired by lineage
+            CadCandidate other = whole.Piece(L(0, 0, 2600, 0), "end:hi", set.PointToleranceMm, RevB);
+            CadUpdate u2 = CadUpdateRules.Plan(new List<CadCandidate> { other }, new List<CadAuditSubject> { held }, set, RevB,
+                                               lineage: new[] { RevA });
+            Assert.DoesNotContain(u2.Actions, a => a.Evidence["paired_by_lineage"] != null);
         }
 
         [Fact]

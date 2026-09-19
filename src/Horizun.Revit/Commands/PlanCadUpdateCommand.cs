@@ -651,6 +651,7 @@ namespace Horizun.Revit.Commands
             };
             if (blocksReadForReply != null) result["blocks"] = blocksReadForReply;
             if (sectionsReadForReply != null) result["sections"] = sectionsReadForReply;
+            if (_fittingsPlan != null) { result["fittings_plan"] = _fittingsPlan; _fittingsPlan = null; }
             // DEPENDENTS NO WALL RE-HOMES BY ITSELF, each with its alternatives and the key a decision quotes.
             if (depCtx.HeldOrphans.Count > 0) result["orphans_held"] = depCtx.HeldOrphans;
             // WHAT WAS READ FROM THE FILE, and whether the reading was reused: the cache states hit or
@@ -943,6 +944,7 @@ namespace Horizun.Revit.Commands
             // WHAT A PERSON DECIDED: a type change, or a turn in the element's own face.
             int d = 0;
             var sectionWrites = new JArray();
+            JArray fittingsPlan = null;
             var fittingsBefore = new JObject();
             foreach (CadUpdateAction a in update.Actions.Where(x => x.Automatic &&
                                                                     (x.Kind == CadDecisions.Retype || x.Kind == CadDecisions.RotateInFace)).ToList())
@@ -993,14 +995,37 @@ namespace Horizun.Revit.Commands
                 a.Evidence["resolve_key"] = "cad-update-resolve-" + (d - 1);
             }
             if (sectionWrites.Count > 0)
-                actions.Add(new JObject
+            {
+                // WHAT HAPPENS TO THE FITTINGS, SAID BEFORE ANYTHING IS WRITTEN. MEASURED (campaign 6): with
+                // only the runs resized, Revit keeps an elbow at its old size and inserts a transition on each
+                // resized leg. fitting_policy "keep" (the default) accepts that and says so here;
+                // "rebuild_where_viable" replaces a fitting whose every run takes the same new section.
+                string policy = request.Value<string>("fitting_policy") ?? "keep";
+                JArray refits;
+                fittingsPlan = FittingsPlan(doc, sectionWrites, fittingsBefore, policy, out refits);
+                _fittingsPlan = fittingsPlan;
+                if (refits.Count > 0)
                 {
-                    ["key"] = "cad-update-resolve-sections",
-                    ["tool"] = "horizun_write_params_verified",
-                    ["arguments"] = new JObject { ["target_document"] = target, ["writes"] = sectionWrites },
-                    // read back by the apply: what the fittings on these ducts' ends became
-                    ["fittings_before"] = fittingsBefore
-                });
+                    var rebuiltRuns = new HashSet<long>(refits.OfType<JObject>().SelectMany(r => (r["runs"] as JArray).Select(t => (long)t)));
+                    var rest = new JArray(sectionWrites.OfType<JObject>().Where(w => !rebuiltRuns.Contains(w.Value<long>("target_id"))));
+                    sectionWrites = rest;
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-refit-fittings",
+                        ["tool"] = "horizun_cad_connect",
+                        ["arguments"] = new JObject { ["target_document"] = target, ["refit"] = refits }
+                    });
+                }
+                if (sectionWrites.Count > 0)
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-resolve-sections",
+                        ["tool"] = "horizun_write_params_verified",
+                        ["arguments"] = new JObject { ["target_document"] = target, ["writes"] = sectionWrites },
+                        // read back by the apply: what the fittings on these ducts' ends became
+                        ["fittings_before"] = fittingsBefore
+                    });
+            }
 
             // WHAT A PERSON DECIDED TO DELETE: one verified delete per element.
             int removals = 0;
@@ -1110,6 +1135,95 @@ namespace Horizun.Revit.Commands
         /// The width and height a rectangular duct's section now asks for, as verified parameter
         /// writes - plus the fittings on its ends, named so the reply can say what follows it.
         /// </summary>
+        /// <summary>The fittings plan the last Actions() built, for the reply of the same call.</summary>
+        [ThreadStatic] private static JArray _fittingsPlan;
+
+        /// <summary>
+        /// Per fitting on a resized duct's end: its runs with their section now and proposed, what is
+        /// protected, whether a rebuild is viable and why, and what the chosen policy does - including
+        /// what Revit is MEASURED to do when the fitting is kept (campaign 6). Nothing is written here.
+        /// </summary>
+        private static JArray FittingsPlan(Document doc, JArray writes, JObject fittingsBefore, string policy, out JArray refits)
+        {
+            refits = new JArray();
+            var plan = new JArray();
+            var proposed = new Dictionary<long, Tuple<double, double>>();
+            foreach (var g in writes.OfType<JObject>().GroupBy(w => w.Value<long>("target_id")))
+            {
+                double? w = g.FirstOrDefault(x => x.Value<string>("parameter") == "RBS_CURVE_WIDTH_PARAM")?.Value<double>("value");
+                double? h = g.FirstOrDefault(x => x.Value<string>("parameter") == "RBS_CURVE_HEIGHT_PARAM")?.Value<double>("value");
+                if (w.HasValue && h.HasValue) proposed[g.Key] = Tuple.Create(Math.Round(w.Value * 304.8, 1), Math.Round(h.Value * 304.8, 1));
+            }
+            var fittingIds = fittingsBefore.Properties().SelectMany(p => (p.Value as JArray ?? new JArray()).Select(t => (long)t)).Distinct().ToList();
+            foreach (long fid in fittingIds)
+            {
+                var f = doc.GetElement(Rid.Make(fid)) as FamilyInstance;
+                if (f?.MEPModel?.ConnectorManager == null) continue;
+                string part = "";
+                try { part = ((PartType)(f.Symbol.Family.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE)?.AsInteger() ?? -1)).ToString(); } catch { }
+                var runs = new JArray();
+                var protectedIds = new JArray();
+                var sizes = new HashSet<string>();
+                bool allResized = true, allRuns = true;
+                var seen = new HashSet<long>();
+                foreach (Connector c in f.MEPModel.ConnectorManager.Connectors)
+                    foreach (Connector o in c.AllRefs)
+                    {
+                        if (o.Owner == null || o.Owner.Id == f.Id) continue;
+                        long oid = Rid.Value(o.Owner.Id);
+                        if (!seen.Add(oid)) continue;
+                        var run = o.Owner as Autodesk.Revit.DB.Mechanical.Duct;
+                        if (run == null) { allRuns = false; protectedIds.Add(oid); continue; }
+                        Tuple<double, double> to;
+                        bool resized = proposed.TryGetValue(oid, out to);
+                        if (!resized) { allResized = false; protectedIds.Add(oid); }
+                        else sizes.Add(to.Item1.ToString(CultureInfo.InvariantCulture) + "x" + to.Item2.ToString(CultureInfo.InvariantCulture));
+                        double wNow = (run.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)?.AsDouble() ?? 0) * 304.8;
+                        double hNow = (run.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)?.AsDouble() ?? 0) * 304.8;
+                        runs.Add(new JObject
+                        {
+                            ["element_id"] = oid,
+                            ["section_now_mm"] = Math.Round(wNow, 1).ToString(CultureInfo.InvariantCulture) + "x" + Math.Round(hNow, 1).ToString(CultureInfo.InvariantCulture),
+                            ["section_proposed_mm"] = resized ? to.Item1.ToString(CultureInfo.InvariantCulture) + "x" + to.Item2.ToString(CultureInfo.InvariantCulture) : null,
+                            ["resized"] = resized
+                        });
+                    }
+                string notViable = !(part == "Elbow" || part == "Tee" || part == "Cross") ? "a " + part + " is not rebuilt by this route"
+                    : !allRuns ? "it is joined to another fitting (a chain), which is protected"
+                    : !allResized ? "a run of it is not being resized, and is protected"
+                    : sizes.Count != 1 ? "its runs are asked for different sections (" + string.Join(", ", sizes) + ")"
+                    : null;
+                bool rebuild = policy == "rebuild_where_viable" && notViable == null;
+                plan.Add(new JObject
+                {
+                    ["fitting_id"] = fid, ["part"] = part, ["runs"] = runs, ["protected"] = protectedIds,
+                    ["viable_to_rebuild"] = notViable == null, ["not_viable_because"] = notViable,
+                    ["policy"] = policy, ["outcome"] = rebuild ? "rebuild" : "keep",
+                    ["identity"] = rebuild ? "the fitting is replaced by a new one (new element id); the runs keep theirs" : "unchanged",
+                    ["connections_kept"] = "every run stays joined at this junction; every run's other end keeps its connections",
+                    ["transitions"] = rebuild
+                        ? "none appear: the new " + part.ToLowerInvariant() + " takes the new section at every end"
+                        : "expected to appear: Revit keeps this " + part.ToLowerInvariant() + " at its size and inserts a transition " +
+                          "on each resized run (measured, campaign 6; re-read after the apply in fittings_after_resize)",
+                    ["reason"] = rebuild ? "every run of it takes the same new section and nothing else is joined to it"
+                        : policy == "keep" ? "fitting_policy is keep (the default); send rebuild_where_viable to replace viable fittings"
+                        : "not viable: " + notViable
+                });
+                if (rebuild)
+                {
+                    string[] wh = sizes.First().Split('x');
+                    refits.Add(new JObject
+                    {
+                        ["fitting_id"] = fid,
+                        ["runs"] = new JArray(runs.Select(r => r["element_id"])),
+                        ["width_mm"] = double.Parse(wh[0], CultureInfo.InvariantCulture),
+                        ["height_mm"] = double.Parse(wh[1], CultureInfo.InvariantCulture)
+                    });
+                }
+            }
+            return plan;
+        }
+
         private static JArray SectionWrites(Document doc, CadUpdateAction a, out string why)
         {
             why = null;

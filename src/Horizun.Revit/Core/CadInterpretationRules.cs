@@ -58,6 +58,14 @@ namespace Horizun.Revit.Core
         public string GeometryId;
         /// <summary>What it is AND which layer it sits on. The identity an incremental run matches by.</summary>
         public string SemanticId;
+        /// <summary>The curve kind the identities were computed with; a piece of this candidate uses the same.</summary>
+        public CadCurveKind Kind;
+        /// <summary>
+        /// A PIECE of a drawn run cut where its section changes: the parent's semantic id and the piece's
+        /// anchor key ("end:lo", "block:&lt;label&gt;", "between:&lt;a&gt;|&lt;b&gt;"). Null for a whole run. Travels in the
+        /// provenance's source entities as "piece:&lt;parent&gt;#&lt;key&gt;" - never the enumeration order.
+        /// </summary>
+        public string PieceOf, PieceKey;
         public string ProposedKind;                         // rule.Produces
         public string RuleId;
         public string Layer;
@@ -233,6 +241,30 @@ namespace Horizun.Revit.Core
 
         /// <summary>Why it is not eligible, when it is not. Empty when it is.</summary>
         public List<string> IneligibleReasons = new List<string>();
+
+        /// <summary>
+        /// This candidate cut to <paramref name="geometry"/>: every decision the rule made is kept, the three
+        /// identities are those of the piece's own line (so the network and the update, which name runs by
+        /// geometry, name it the same), and the parent is remembered by its semantic id and the piece's key.
+        /// </summary>
+        public CadCandidate Piece(List<CadPoint> geometry, string key, double tolerance, string sourceHash)
+        {
+            var p = (CadCandidate)MemberwiseClone();
+            p.Geometry = new List<CadPoint>(geometry);
+            p.GeometryId = CadIdentity.GeometryId(Kind, p.Geometry, tolerance, false);
+            p.SemanticId = CadIdentity.SemanticId(Layer, "root", Kind, p.Geometry, tolerance, false);
+            p.Id = CadIdentity.RevisionId(sourceHash, p.SemanticId);
+            p.PieceOf = PieceOf ?? SemanticId;
+            p.PieceKey = key;
+            p.SourceSurrogates = new List<string>(SourceSurrogates) { p.Id, "piece:" + p.PieceOf + "#" + key };
+            p.ConfidenceFactors = new List<CadConfidenceFactor>(ConfidenceFactors);
+            p.Alternatives = new List<string>(Alternatives);
+            p.Assumptions = new List<string>(Assumptions);
+            p.UnresolvedFacts = new List<string>(UnresolvedFacts);
+            p.ExpectedVerification = new List<string>(ExpectedVerification);
+            p.IneligibleReasons = new List<string>(IneligibleReasons);
+            return p;
+        }
     }
 
     /// <summary>A piece of geometry nobody claimed, or that too many claimed.</summary>
@@ -247,6 +279,8 @@ namespace Horizun.Revit.Core
     /// <summary>The whole reading of one drawing: proposals, refusals and coverage.</summary>
     public sealed class CadInterpretation
     {
+        /// <summary>The source hash the revision ids of this reading were made with (a piece's id needs it).</summary>
+        public string SourceHash;
         public List<CadCandidate> Candidates = new List<CadCandidate>();
 
         /// <summary>
@@ -423,7 +457,7 @@ namespace Horizun.Revit.Core
                                                   string sourceHash, IList<CadArcFact> arcs,
                                                   IEnumerable<string> existingNames, CadSolidHatch solid)
         {
-            var result = new CadInterpretation { SolidEvidence = solid };
+            var result = new CadInterpretation { SolidEvidence = solid, SourceHash = sourceHash };
             if (set == null) throw new ArgumentNullException(nameof(set));
             segments = segments ?? new List<CadSegment>();
 
@@ -2040,6 +2074,7 @@ namespace Horizun.Revit.Core
                 ProposedKind = rule.Produces,
                 RuleId = rule.Id,
                 Layer = layer,
+                Kind = kind,
                 Discipline = rule.Discipline,
                 Category = rule.Category,
                 FamilyType = rule.FamilyType,

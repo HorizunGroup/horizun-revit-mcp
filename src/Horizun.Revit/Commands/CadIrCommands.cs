@@ -455,6 +455,99 @@ namespace Horizun.Revit.Commands
                                     "was read. Send one of them, or make them agree."
                     });
 
+            // THE SAME PIECES THE CONVERSION BUILDS. A rule that cuts a run where its section changes
+            // makes pieces the drawing does not contain as entities; read here from the raw segments,
+            // the network would name the whole run and connect would find no element built from it.
+            // So the conversion's own reading - same hook, same labels - replaces those segments.
+            JObject piecesReport = null;
+            var drawnTransitions = new JArray();
+            if (set != null && set.Rules.Any(x => x.Section != null && x.Section.SplitAtSectionChanges))
+            {
+                piecesReport = new JObject();
+                string sourceHash = r.Facts?.FileSha256 ?? CadFacts.SourceFingerprint(r.Facts) ?? "(no-source-identity)";
+                CadInterpretation reading = CadInterpretationRules.Interpret(r.Harvest.Segments, set, sourceHash, r.Harvest.Arcs);
+                var wholeLines = reading.Candidates.ToDictionary(c => c.SemanticId, c => c, StringComparer.Ordinal);
+                string hookFailure;
+                JObject sectionsRead = CadSectionsHook.Apply(r.Instance, r.Facts, set, r.Harvest, r.Request, reading,
+                                                             new JArray(), true, out hookFailure);
+                if (hookFailure != null) return CommandResult.Fail(hookFailure);
+                double tol = Math.Max(set.PointToleranceMm, 1.0);
+                int replaced = 0, added = 0;
+                var notCoordinated = new JArray();
+                foreach (var group in reading.Candidates.Where(c => c.PieceOf != null).GroupBy(c => c.PieceOf))
+                {
+                    CadCandidate parent;
+                    if (!wholeLines.TryGetValue(group.Key, out parent)) continue;
+                    CadRule rule = set.Rules.FirstOrDefault(x => x.Id == parent.RuleId);
+                    if (rule?.Geometry == null || rule.Geometry.MergeCollinear)
+                    {
+                        notCoordinated.Add(new JObject { ["run"] = parent.SemanticId, ["why"] =
+                            "the rule merges collinear segments, so the network would merge the pieces back; declare " +
+                            "geometry.merge_collinear false for a rule that cuts runs" });
+                        continue;
+                    }
+                    CadPoint a0 = parent.Geometry[0], a1 = parent.Geometry[parent.Geometry.Count - 1];
+                    int before = segments.Count;
+                    segments.RemoveAll(sg => string.Equals(sg.Layer, parent.Layer, StringComparison.Ordinal) &&
+                        ((sg.A.PlanDistanceTo(a0) <= tol && sg.B.PlanDistanceTo(a1) <= tol) ||
+                         (sg.A.PlanDistanceTo(a1) <= tol && sg.B.PlanDistanceTo(a0) <= tol)));
+                    replaced += before - segments.Count;
+                    foreach (CadCandidate piece in group)
+                    {
+                        segments.Add(new CadSegment(piece.Geometry[0], piece.Geometry[piece.Geometry.Count - 1], piece.Layer, piece.Kind));
+                        added++;
+                    }
+                }
+                // A DRAWN TRANSITION WITH A SIZE AT BOTH ENDS is not a duct: it is the fitting between
+                // its two neighbours. Its segment leaves the network and the connection is proposed
+                // instead, carrying where the drawing put it so connect can check the fit.
+                var bySemantic = reading.Candidates.GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().SemanticId, StringComparer.Ordinal);
+                foreach (JProperty ruleRows in (sectionsRead?["by_rule"] as JObject)?.Properties() ?? Enumerable.Empty<JProperty>())
+                    foreach (JObject row in (ruleRows.Value["rows"] as JArray ?? new JArray()).OfType<JObject>())
+                    {
+                        var ends = row["transition_ends"] as JObject;
+                        if (row.Value<string>("state") != "transition" || ends == null) continue;
+                        string ra = ends["a"]?.Value<string>("run"), rb = ends["b"]?.Value<string>("run");
+                        string sa, sb;
+                        if (ra == null || rb == null || !bySemantic.TryGetValue(ra, out sa) || !bySemantic.TryGetValue(rb, out sb)) continue;
+                        var f = row["from_mm"] as JArray; var t = row["to_mm"] as JArray;
+                        var pf = new CadPoint(f[0].Value<double>(), f[1].Value<double>());
+                        var pt = new CadPoint(t[0].Value<double>(), t[1].Value<double>());
+                        int n0 = segments.Count;
+                        segments.RemoveAll(sg => (sg.A.PlanDistanceTo(pf) <= tol && sg.B.PlanDistanceTo(pt) <= tol) ||
+                                                 (sg.A.PlanDistanceTo(pt) <= tol && sg.B.PlanDistanceTo(pf) <= tol));
+                        if (segments.Count == n0) continue;
+                        double z = 0;
+                        drawnTransitions.Add(new JObject
+                        {
+                            ["id"] = "drawn-transition:" + row.Value<string>("semantic_id"),
+                            ["junction_node"] = "drawn-transition:" + row.Value<string>("semantic_id"),
+                            ["fitting"] = "transition",
+                            ["automatic"] = true,
+                            ["says"] = "a transition the drawing draws between " + ends["a"].Value<double>("width_mm") + "x" +
+                                       ends["a"].Value<double>("height_mm") + " and " + ends["b"].Value<double>("width_mm") + "x" +
+                                       ends["b"].Value<double>("height_mm") + " mm",
+                            ["at"] = new JArray(Math.Round((pf.X + pt.X) / 2, 4), Math.Round((pf.Y + pt.Y) / 2, 4), z),
+                            ["elements"] = new JArray(new JObject { ["semantic_id"] = sa }, new JObject { ["semantic_id"] = sb }),
+                            ["drawn"] = new JObject
+                            {
+                                ["from_mm"] = new JArray(pf.X, pf.Y), ["to_mm"] = new JArray(pt.X, pt.Y),
+                                ["length_mm"] = row["transition_ends"]["drawn_length_mm"],
+                                ["piece_semantic_id"] = row["semantic_id"],
+                                ["provenance"] = "drawn: a short piece between two sized runs"
+                            },
+                            ["sendable"] = true
+                        });
+                    }
+                piecesReport["drawn_runs_replaced_by_pieces"] = replaced;
+                piecesReport["pieces"] = added;
+                piecesReport["not_coordinated"] = notCoordinated;
+                piecesReport["means"] = "runs the conversion cuts where their section changes are read here as the same " +
+                                        "pieces, so every network run names an element the conversion builds (or a piece " +
+                                        "it keeps pending).";
+                if (sectionsRead?["by_rule"] != null) piecesReport["sections"] = sectionsRead["by_rule"];
+            }
+
             // THE ARCS THE READER KEPT AS ARCS. Without them a curve chorded to the
             // declared sagitta comes back as a chain of straight runs with an elbow
             // at every chord - within tolerance geometrically, and a piece of
@@ -468,6 +561,16 @@ namespace Horizun.Revit.Commands
             }, CadReadingHelper.ArcsOn(r, layersUsed));
 
             JObject reply = network.ToJson();
+            if (piecesReport != null) reply["section_pieces"] = piecesReport;
+            if (drawnTransitions.Count > 0)
+            {
+                var conns = reply["connections"] as JArray;
+                if (conns != null) foreach (JToken dt in drawnTransitions) conns.Add(dt);
+                reply["drawn_transitions"] = drawnTransitions.Count;
+                reply["drawn_transitions_mean"] = "each drawn transition piece with a settled size at both ends left the " +
+                    "network as a run and was added to connections as a 'transition' between its two neighbours; the " +
+                    "components above therefore count those neighbours apart until connect places the fitting.";
+            }
             foreach (var p in CadReadingHelper.ReadingBlock(r, CadReadingHelper.Sagitta(r.Request)))
                 reply[p.Key] = p.Value;
 

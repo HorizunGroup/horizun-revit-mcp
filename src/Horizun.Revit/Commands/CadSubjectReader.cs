@@ -86,7 +86,7 @@ namespace Horizun.Revit.Commands
 
             s.WidthMm = WidthOf(e);
             s.HeightMm = RectangularHeightOf(e);
-            s.FittedEnds = FittedEndsOf(e);
+            s.FittedEnds = FittedEndsOf(e, s.FittingAnchors);
 
             // WHAT IT IS CALLED. Only the kinds that carry an identity of their
             // own answer: a wall's name is its TYPE's name and is not a
@@ -218,7 +218,7 @@ namespace Horizun.Revit.Commands
         /// A rectangular duct's height. Asked only of a duct with NO diameter: a round duct
         /// answers the height parameter with nothing useful, and a section is two numbers or none.
         /// </summary>
-        private static List<CadPoint> FittedEndsOf(Element e)
+        private static List<CadPoint> FittedEndsOf(Element e, List<CadPoint> anchors)
         {
             var ends = new List<CadPoint>();
             try
@@ -235,6 +235,10 @@ namespace Horizun.Revit.Commands
                         long cat = Rid.Value(fi.Category.Id);
                         if (cat != (long)BuiltInCategory.OST_DuctFitting && cat != (long)BuiltInCategory.OST_PipeFitting) continue;
                         ends.Add(Mm(c.Origin));
+                        var lp = fi.Location as LocationPoint;
+                        if (lp?.Point != null) anchors.Add(Mm(lp.Point));
+                        var fm = fi.MEPModel?.ConnectorManager;
+                        if (fm != null) foreach (Connector fc in fm.Connectors) anchors.Add(Mm(fc.Origin));
                         break;
                     }
                 }

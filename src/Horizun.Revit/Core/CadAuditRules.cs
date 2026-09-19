@@ -74,6 +74,13 @@ namespace Horizun.Revit.Core
         /// </summary>
         public List<CadPoint> FittedEnds = new List<CadPoint>();
 
+        /// <summary>
+        /// Where each fitting on those ends is ANCHORED, in mm: its insertion point and its connectors.
+        /// A connection leaves the fitting at the drawing's junction; a person who later stretches the run
+        /// drags the fitting away from it. Empty when not read (then a trim is never attributed).
+        /// </summary>
+        public List<CadPoint> FittingAnchors = new List<CadPoint>();
+
         /// <summary>A RECTANGULAR duct's height, in mm; null for anything else (a round duct included).</summary>
         public double? HeightMm;
 

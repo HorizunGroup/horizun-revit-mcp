@@ -81,6 +81,10 @@ namespace Horizun.Revit.Commands
             if (doc == null) return CommandResult.Fail("No document is open.");
             string title = SafeTitle(doc);
 
+            // A REFIT is its own operation: see CadRefit. It writes through the same delegates.
+            if (request["refit"] is JArray refit && refit.Count > 0)
+                return CadRefit.Run(app, doc, title, request, _resolve);
+
             JArray junctions = request["junctions"] as JArray;
             if (junctions == null || junctions.Count == 0)
                 return CommandResult.Fail(
@@ -89,6 +93,8 @@ namespace Horizun.Revit.Commands
                     "from it - the mapping is in horizun_apply_cad_plan's created rows.");
 
             double tolerance = request.Value<double?>("connector_tolerance_mm") ?? 25.0;
+            // how far a drawn transition's ends may sit from where the drawing put them (mm)
+            double fitTolerance = request.Value<double?>("transition_fit_tolerance_mm") ?? 25.4;
             if (tolerance <= 0)
                 return CommandResult.Fail(
                     "connector_tolerance_mm must be positive: it is how far a connector may sit from the point " +
@@ -268,10 +274,54 @@ namespace Horizun.Revit.Commands
                     continue;
                 }
 
+                // ---- a DRAWN transition: built, measured against the space the drawing gave it, and
+                // kept only if it fits. Its length is Revit's family's, not the drawing's; a transition
+                // that needs the ducts moved by more than the declared tolerance is undone and reported
+                // with the numbers, never "made to fit" by moving the network.
+                if (j.Fitting == "transition" && j.Drawn != null && writeNow)
+                {
+                    JObject trow;
+                    using (var checkedGroup = new CheckedWriteGroup(doc, "Horizun: drawn transition"))
+                    {
+                        trow = DelegateFitting(app, title, j, false, request, group != null ? runKey : "");
+                        Attribute(trow, j, mark, true, tolerance, group != null);
+                        string ts = trow.Value<string>("state");
+                        if (ts == "created" || ts == "would_create")
+                        {
+                            JObject check = TransitionCheck(j, trow, fitTolerance);
+                            trow["transition_check"] = check;
+                            if (check.Value<bool>("fits")) checkedGroup.Keep();
+                            else
+                            {
+                                checkedGroup.Undo();
+                                trow["state"] = "refused";
+                                trow["refused"] = "does_not_fit";
+                                trow["says"] = check.Value<string>("means");
+                                trow["undone"] = checkedGroup.Outcome;
+                            }
+                        }
+                        else checkedGroup.Undo();
+                    }
+                    trow["transition_origin"] = "drawn";
+                    trow["drawn"] = j.Drawn;
+                    rows.Add(trow);
+                    string tstate = trow.Value<string>("state");
+                    if (tstate == "created" || tstate == "would_create") delegated++;
+                    else refused++;
+                    continue;
+                }
+
                 // ---- elbow, tee, cross: the typed command owns this -------------
                 JObject delegatedRow = DelegateFitting(app, title, j, !writeNow, request, group != null ? runKey : "");
                 Attribute(delegatedRow, j, mark, writeNow, tolerance, group != null);
-                if (sectionChange != null) delegatedRow["action_reason"] = sectionChange;
+                if (sectionChange != null)
+                {
+                    delegatedRow["action_reason"] = sectionChange;
+                    // THREE KINDS OF TRANSITION, never confused: drawn (the drawing draws the piece), proposed
+                    // by a rule (two collinear runs of different section meet, nothing drawn between), and
+                    // inserted by Revit on its own (reported by the resize and re-read paths, never here).
+                    delegatedRow["transition_origin"] = "proposed_by_rule";
+                }
                 rows.Add(delegatedRow);
                 string state = delegatedRow.Value<string>("state");
                 if (state == "created" || state == "would_create") delegated++;
@@ -458,53 +508,44 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
-        /// Fittings reachable from a run through fittings only (at most three deep). MEASURED on the
-        /// rectangular synthetic: a tee between a 16x8 and a 12x8 run got Revit's own transitions on
-        /// its legs, so the runs touch the transitions and only reach the tee through them.
+        /// The junction's members and the fittings around them, as the pure evidence graph
+        /// (Core/CadJunctionEvidence): every end connector with its position and what it is joined to,
+        /// explored through fittings only, one step past the evidence bound so "beyond" can be said.
         /// </summary>
-        private static List<Element> ReachableFittings(Element run)
+        private static JunctionGraph GraphOf(Junction j)
         {
-            var seen = new List<Element>();
-            var frontier = AllNeighbours(run).Where(IsFitting).ToList();
-            for (int depth = 0; depth < 3 && frontier.Count > 0; depth++)
+            var g = new JunctionGraph();
+            var queue = new Queue<Tuple<Element, int>>();
+            foreach (Element e in j.Elements) queue.Enqueue(Tuple.Create(e, 0));
+            while (queue.Count > 0)
             {
-                var next = new List<Element>();
-                foreach (Element f in frontier)
+                var item = queue.Dequeue();
+                Element e = item.Item1;
+                long id = Rid.Value(e.Id);
+                if (g.Nodes.ContainsKey(id)) continue;
+                bool fitting = IsFitting(e);
+                JunctionGraph.Node node = g.Add(id, fitting, fitting ? PartOf((FamilyInstance)e) : null);
+                ConnectorManager m = MepFacts.ManagerOf(e);
+                if (m == null) continue;
+                int k = 0;
+                foreach (Connector c in MepFacts.Ordered(m))
                 {
-                    if (seen.Any(x => x.Id == f.Id)) continue;
-                    seen.Add(f);
-                    next.AddRange(AllNeighbours(f).Where(IsFitting));
+                    if (c.ConnectorType != ConnectorType.End) { k++; continue; }
+                    var end = new JunctionGraph.End { Index = k++, X = c.Origin.X * 304.8, Y = c.Origin.Y * 304.8 };
+                    foreach (Element n in Neighbours(c))
+                    {
+                        end.JoinedTo.Add(Rid.Value(n.Id));
+                        if (IsFitting(n) && item.Item2 <= CadJunctionEvidence.MaxChain) queue.Enqueue(Tuple.Create(n, item.Item2 + 1));
+                    }
+                    node.Ends.Add(end);
                 }
-                frontier = next;
             }
-            return seen;
+            return g;
         }
 
-        /// <summary>
-        /// The fitting of the junction's kind that every member reaches, when there is exactly one;
-        /// <paramref name="anyShared"/> is set when members share fittings but none of that kind.
-        /// </summary>
-        private static FamilyInstance CommonFitting(Junction j, out bool anyShared)
-        {
-            anyShared = false;
-            List<Element> common = null;
-            foreach (Element e in j.Elements)
-            {
-                var fits = ReachableFittings(e);
-                common = common == null ? fits : common.Where(x => fits.Any(f => f.Id == x.Id)).ToList();
-            }
-            if (common == null || common.Count == 0) return null;
-            anyShared = true;
-            var ofKind = common.OfType<FamilyInstance>()
-                .Where(f => string.Equals(PartOf(f), j.Fitting, StringComparison.OrdinalIgnoreCase)).ToList();
-            return ofKind.Count == 1 ? ofKind[0] : (common.Count == 1 ? common[0] as FamilyInstance : null);
-        }
-
-        private static FamilyInstance CommonFitting(Junction j)
-        {
-            bool unused;
-            return CommonFitting(j, out unused);
-        }
+        private static JObject Evidence(Junction j, double tolerance) =>
+            CadJunctionEvidence.Decide(GraphOf(j), j.Elements.Select(e => Rid.Value(e.Id)).ToList(), j.At.X, j.At.Y,
+                                       j.Fitting, tolerance);
 
         private static string PartOf(FamilyInstance f)
         {
@@ -521,21 +562,16 @@ namespace Horizun.Revit.Commands
             // second elbow.
             if (j.Fitting != "direct")
             {
-                FamilyInstance shared = CommonFitting(j);
-                if (shared != null)
+                // THE EVIDENCE IS AT THIS JUNCTION'S END of each member, not anywhere on the runs
+                // (Core/CadJunctionEvidence). Anything it cannot show is said, not guessed.
+                JObject ev = Evidence(j, tolerance);
+                string st = ev.Value<string>("state");
+                if (st != "not_connected")
                 {
-                    string part = PartOf(shared);
-                    bool same = string.Equals(part, j.Fitting, StringComparison.OrdinalIgnoreCase);
-                    return new JObject
-                    {
-                        ["state"] = same ? "already_connected" : "existing_fitting_differs",
-                        ["fitting_id"] = Rid.Value(shared.Id),
-                        ["fitting_part_type"] = part,
-                        ["says"] = same
-                            ? "one " + part.ToLowerInvariant() + " already joins every member of this junction; nothing was sent."
-                            : "a " + part + " joins these members where the drawing proposes a " + j.Fitting +
-                              ". It is left as it is and reported - replacing it is a decision, not a repair."
-                    };
+                    if (st == "existing_fitting_differs")
+                        ev["says"] = ev.Value<string>("says") + ". It is left as it is and reported - replacing it is a decision, not a repair.";
+                    if (st == "already_connected") ev["says"] = ev.Value<string>("says") + "; nothing was sent.";
+                    return ev;
                 }
             }
             else if (AllNeighbours(j.Elements[0]).Any(n => n.Id == j.Elements[1].Id))
@@ -604,7 +640,10 @@ namespace Horizun.Revit.Commands
         {
             // Through the members' connectors: which fitting joins them all (or, for a direct join,
             // whether they touch), not where their ends now are.
-            FamilyInstance shared = j.Fitting == "direct" ? null : CommonFitting(j);
+            JObject ev = j.Fitting == "direct" ? null : Evidence(j, tolerance);
+            long? evFitting = ev?.Value<long?>("fitting_id");
+            FamilyInstance shared = ev != null && ev.Value<string>("state") == "already_connected" && evFitting.HasValue
+                ? j.Elements[0].Document.GetElement(Rid.Make(evFitting.Value)) as FamilyInstance : null;
             bool joined = j.Fitting == "direct"
                 ? j.Elements.Count == 2 && AllNeighbours(j.Elements[0]).Any(n => n.Id == j.Elements[1].Id)
                 : shared != null;
@@ -618,8 +657,78 @@ namespace Horizun.Revit.Commands
                 ["members"] = members,
                 ["fitting_id"] = shared == null ? null : (JToken)Rid.Value(shared.Id),
                 ["fitting_part_type"] = shared == null ? null : PartOf(shared),
-                ["all_connected"] = joined
+                ["all_connected"] = joined,
+                ["evidence"] = ev
             };
+        }
+
+        /// <summary>
+        /// A built transition against the drawn one: sizes at both ends, axis, and where its two ends sit
+        /// relative to the drawn piece's ends. "fits" only when every end is within the tolerance.
+        /// </summary>
+        private static JObject TransitionCheck(Junction j, JObject row, double fitTolerance)
+        {
+            var o = new JObject();
+            long? fid = (row["reread"] as JObject)?.Value<long?>("fitting_id");
+            var fitting = fid.HasValue && j.Elements.Count > 0 ? j.Elements[0].Document.GetElement(Rid.Make(fid.Value)) as FamilyInstance : null;
+            var drawnFrom = j.Drawn["from_mm"] as JArray; var drawnTo = j.Drawn["to_mm"] as JArray;
+            if (fitting?.MEPModel?.ConnectorManager == null || drawnFrom == null || drawnTo == null)
+            {
+                o["fits"] = false;
+                o["means"] = "the fitting joining both members could not be re-read, so the fit was not measured and it is not kept";
+                return o;
+            }
+            var f0 = new XYZ(drawnFrom[0].Value<double>() / 304.8, drawnFrom[1].Value<double>() / 304.8, 0);
+            var f1 = new XYZ(drawnTo[0].Value<double>() / 304.8, drawnTo[1].Value<double>() / 304.8, 0);
+            XYZ axis = (f1 - f0).GetLength() > 1e-9 ? (f1 - f0).Normalize() : XYZ.BasisX;
+            var ends = new JArray();
+            double worst = 0;
+            bool collinear = true;
+            var sizes = new List<string>();
+            foreach (Connector c in fitting.MEPModel.ConnectorManager.Connectors)
+            {
+                XYZ p = new XYZ(c.Origin.X, c.Origin.Y, 0);
+                double d = Math.Min(p.DistanceTo(f0), p.DistanceTo(f1)) * 304.8;
+                worst = Math.Max(worst, d);
+                XYZ dir = c.CoordinateSystem.BasisZ;
+                if (Math.Abs(Math.Abs(dir.X * axis.X + dir.Y * axis.Y) - 1) > 0.01) collinear = false;
+                string size = c.Shape == ConnectorProfileType.Round
+                    ? "D" + Math.Round(c.Radius * 2 * 304.8, 1).ToString(CultureInfo.InvariantCulture)
+                    : Math.Round(c.Width * 304.8, 1).ToString(CultureInfo.InvariantCulture) + "x" +
+                      Math.Round(c.Height * 304.8, 1).ToString(CultureInfo.InvariantCulture);
+                sizes.Add(size);
+                ends.Add(new JObject
+                {
+                    ["at_mm"] = new JArray(Math.Round(c.Origin.X * 304.8, 1), Math.Round(c.Origin.Y * 304.8, 1), Math.Round(c.Origin.Z * 304.8, 1)),
+                    ["size_mm"] = size, ["from_drawn_end_mm"] = Math.Round(d, 1)
+                });
+            }
+            var memberSizes = j.Elements.Select(e => (SectionOf(e) ?? "").Replace(" mm", "")).OrderBy(x => x).ToList();
+            bool sizesMatch = sizes.OrderBy(x => x).SequenceEqual(memberSizes);
+            double fittingLength = 0;
+            var cs = fitting.MEPModel.ConnectorManager.Connectors.Cast<Connector>().ToList();
+            if (cs.Count == 2) fittingLength = cs[0].Origin.DistanceTo(cs[1].Origin) * 304.8;
+            bool fits = sizesMatch && collinear && worst <= fitTolerance;
+            o["fitting_id"] = fid.Value;
+            o["fitting"] = fitting.Symbol?.FamilyName + ": " + fitting.Name;
+            o["ends"] = ends;
+            o["sizes_match_members"] = sizesMatch;
+            o["member_sizes_mm"] = new JArray(memberSizes);
+            o["collinear_with_drawn_axis"] = collinear;
+            o["drawn_length_mm"] = j.Drawn["length_mm"];
+            o["fitting_length_mm"] = Math.Round(fittingLength, 1);
+            o["worst_end_offset_mm"] = Math.Round(worst, 1);
+            o["tolerance_mm"] = fitTolerance;
+            o["fits"] = fits;
+            o["means"] = fits
+                ? "the transition sits where the drawing draws it (ends within " + fitTolerance + " mm), with the members' sizes at its ends"
+                : "the transition does not fit the drawn space: " +
+                  (!sizesMatch ? "its end sizes are not the members' sizes; " : "") +
+                  (!collinear ? "it is not on the drawn axis; " : "") +
+                  (worst > fitTolerance ? "Revit's " + Math.Round(fittingLength, 1) + " mm fitting puts an end " + Math.Round(worst, 1) +
+                                          " mm from where the drawing ends the " + j.Drawn["length_mm"] + " mm piece (tolerance " + fitTolerance + " mm); " : "") +
+                  "it was undone rather than moving the network to make it fit";
+            return o;
         }
 
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
@@ -765,6 +874,8 @@ namespace Horizun.Revit.Commands
             public bool Automatic;
             public string Says;
             public CadPoint At;
+            /// <summary>A drawn transition: where the drawing put it (from_mm, to_mm, length_mm). Null otherwise.</summary>
+            public JObject Drawn;
             public List<Element> Elements = new List<Element>();
             public List<long> ElementIds = new List<long>();
 
@@ -802,12 +913,13 @@ namespace Horizun.Revit.Commands
                 };
 
                 if (j.Fitting != "none" && j.Fitting != "direct" && j.Fitting != "elbow" &&
-                    j.Fitting != "tee" && j.Fitting != "cross")
+                    j.Fitting != "tee" && j.Fitting != "cross" && j.Fitting != "transition")
                 {
                     error = "junctions[" + index + "].fitting is '" + j.Fitting +
-                            "'; it must be one of none, direct, elbow, tee, cross.";
+                            "'; it must be one of none, direct, elbow, tee, cross, transition.";
                     return null;
                 }
+                j.Drawn = o["drawn"] as JObject;
 
                 var at = o["at"] as JArray;
                 if (at == null || at.Count < 2)
