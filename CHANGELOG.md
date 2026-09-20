@@ -87,6 +87,42 @@ things — the record, the process (`alive` / `exited` / `not_ours` / `never_sta
 and the environment verified against files and hashes — and **never** takes the
 absence of Revit as evidence that the year's manifest was restored.
 
+### Eighteen new tools — 80 → 98
+
+The surface this release publishes is larger than the revision work above. Nothing was removed
+or renamed; **98 tools, 262 suboperations**, and the eighteen that are new fall into five
+groups.
+
+**Reading a DWG without importing it.** `horizun_cad_extract` reads a linked drawing's layers,
+lines, arcs, text and blocks directly; `horizun_cad_symbols` lists the block symbols it defines
+and where each is placed; `horizun_cad_unit_instances` finds repeated units and the transform
+that places each occurrence. Revit's own import cannot see a block name, which is why these
+exist.
+
+**Networks, not just lines.** `horizun_cad_networks` derives what a drawing says about its own
+network — which ends meet, what belongs between them, which stay open on purpose — and
+`horizun_cad_connect` builds those joins, placing the fitting each junction needs and verifying
+it. `horizun_connect_mep` connects or disconnects named connectors and refuses to close a
+visible gap by moving somebody's geometry. `horizun_cad_review` reports what a conversion could
+not settle, with the evidence for each held candidate.
+
+**IFC and IDS.** `horizun_plan_from_ifc` plans Revit elements from an IFC under a declared
+mapping without importing it, `horizun_apply_ifc_plan` carries that plan out through typed
+commands, and `horizun_validate_ids` checks a model against an IDS specification and reports
+each requirement it fails.
+
+**Model work.** `horizun_manage_materials` reads, creates and assigns materials;
+`horizun_copy_between_documents` copies elements between open documents keeping identity and
+reporting substitutions; `horizun_structural_connections` reads and applies structural
+connection types; `horizun_selection_exchange` reads what a person selected in Revit and can
+offer a set back for them to select.
+
+**Machine state and procedures.** `horizun_audit_access` reports what this bridge is allowed to
+do on this machine and who decided it; `horizun_repair_memory` recovers durable state when a
+record is unreadable; `horizun_run_procedure` runs a named, versioned procedure this machine
+has stored, and `horizun_promote_script` is how a verified script becomes one instead of
+staying ad-hoc code.
+
 ### Breaking
 
 - **`apply_binding` is now a required argument of `horizun_apply_cad_update`.** It

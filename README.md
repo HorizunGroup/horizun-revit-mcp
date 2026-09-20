@@ -3,8 +3,8 @@
 **Made in Colombia 🇨🇴 by Horizun Group.**
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
-**Autodesk Revit 2023–2027**. Its complete catalog contains **80 tools** <!--inventory:tools-->
-with **208 named suboperations and dispatch modes** <!--inventory:operations-->
+**Autodesk Revit 2023–2027**. Its complete catalog contains **98 tools** <!--inventory:tools-->
+with **262 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
 
@@ -28,8 +28,8 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 | Surface | What is available | Inspect it |
 |---|---|---|
-| MCP entry points | **80 tools** <!--inventory:tools-->, including **32 read-only** <!--inventory:reads--> and **48 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
-| Internal actions | **208 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| MCP entry points | **98 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **53 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| Internal actions | **262 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
 | Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
@@ -191,42 +191,50 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 
 | Tool | Capability |
 |---|---|
-| `horizun_health` | Report bridge health, active document, Revit year, loaded version and commit. |
-| `horizun_target` | Select the Revit instance to control when multiple sessions or years are open. |
 | `get_document_info` | Inspect the open document's identity and element counts. |
 | `horizun_document_session` | Inspect, open, save, save-as and close documents through explicit session operations. |
-| `horizun_open_document` | Open a model with checks for version upgrades and workshared central files. |
-| `horizun_save_document` | Save and inspect the resulting file's timestamp and size. |
-| `horizun_relinquish_all` | Release owned worksharing elements and report remaining ownership. |
 | `horizun_file_info` | Read RVT/RFA headers, version and worksharing metadata without opening or upgrading them. |
-| `horizun_submit_job` | Submit long-running Revit operations with a persistent job identifier. |
+| `horizun_health` | Report bridge health, active document, Revit year, loaded version and commit. |
 | `horizun_job_status` | Read progress and recovery state while Revit is busy or after a process restart. |
+| `horizun_open_document` | Open a model with checks for version upgrades and workshared central files. |
+| `horizun_relinquish_all` | Release owned worksharing elements and report remaining ownership. |
+| `horizun_repair_memory` | Report and recover durable state this bridge keeps when a record is unreadable. |
+| `horizun_save_document` | Save and inspect the resulting file's timestamp and size. |
+| `horizun_selection_exchange` | Read what a person selected in Revit, and offer a set back for them to select. |
+| `horizun_submit_job` | Submit long-running Revit operations with a persistent job identifier. |
+| `horizun_target` | Select the Revit instance to control when multiple sessions or years are open. |
 
 ### Model queries, audits and correction
 
 | Tool | Capability |
 |---|---|
-| `horizun_list_elements` | List and paginate elements across the host and loaded Revit links with model identity. |
-| `horizun_query_model` | Filter by category, type, level, parameters and spatial bounds; project fields and return grouped or compact summaries. |
-| `horizun_navigate` | Select elements, clear selection, zoom and open views. |
-| `horizun_capture_view` | Export the active or named view as an image for visual review by the client. |
-| `horizun_model_scan` | Measure model health, warnings, worksets, links, families, views and cleanup candidates. |
-| `horizun_audit_model` | Evaluate supplied model requirements with findings, coverage and prevention-gate evidence. |
 | `horizun_apply_corrections` | Rehearse and apply supported audit corrections with per-result verification. |
+| `horizun_apply_ifc_plan` | Carry out an IFC plan through typed commands that rehearse and re-read their own work. |
+| `horizun_audit_access` | Report what this bridge is allowed to do on this machine and who decided it. |
+| `horizun_audit_model` | Evaluate supplied model requirements with findings, coverage and prevention-gate evidence. |
+| `horizun_capture_view` | Export the active or named view as an image for visual review by the client. |
 | `horizun_delete_verified` | Delete explicit IDs or purge unused content; preview cascades and verify removals. |
+| `horizun_list_elements` | List and paginate elements across the host and loaded Revit links with model identity. |
+| `horizun_model_scan` | Measure model health, warnings, worksets, links, families, views and cleanup candidates. |
+| `horizun_navigate` | Select elements, clear selection, zoom and open views. |
+| `horizun_plan_from_ifc` | Plan Revit elements from an IFC file under a declared mapping, without importing it. |
+| `horizun_query_model` | Filter by category, type, level, parameters and spatial bounds; project fields and return grouped or compact summaries. |
+| `horizun_validate_ids` | Check a model against an IDS specification and report each requirement it fails. |
 
 ### Model creation, parameters and families
 
 | Tool | Capability |
 |---|---|
-| `horizun_create_elements` | Create levels, grids, walls, slabs, roofs, rooms, family instances, structural members, MEP runs, openings and stairs in typed batches. |
-| `horizun_transform_elements` | Move, copy, rotate, pin, change types or curves and adjust tag heads/leaders over explicit targets. |
-| `horizun_manage_system_types` | Duplicate system types; edit parameters, wall/slab/roof/ceiling layer structures and MEP junction preferences. |
-| `horizun_write_params_verified` | Write parameter values in batches and re-read each requested value. |
 | `horizun_bind_shared_param` | Bind shared parameters to categories and inspect group-variation behavior. |
-| `horizun_set_keynote` | Assign keynote values with the affected instance/type scope made explicit. |
+| `horizun_copy_between_documents` | Copy elements between open documents, keeping identity and reporting what was substituted. |
+| `horizun_create_elements` | Create levels, grids, walls, slabs, roofs, rooms, family instances, structural members, MEP runs, openings and stairs in typed batches. |
 | `horizun_create_family` | Create new parametric RFA files: solid/void forms, parameters, formulas, types, nested families and MEP connectors; optionally load them. |
 | `horizun_family_apply` | Apply family edits in a transaction with a geometry invariant and rollback on drift. |
+| `horizun_manage_materials` | Read, create and assign materials and their appearance and identity data. |
+| `horizun_manage_system_types` | Duplicate system types; edit parameters, wall/slab/roof/ceiling layer structures and MEP junction preferences. |
+| `horizun_set_keynote` | Assign keynote values with the affected instance/type scope made explicit. |
+| `horizun_transform_elements` | Move, copy, rotate, pin, change types or curves and adjust tag heads/leaders over explicit targets. |
+| `horizun_write_params_verified` | Write parameter values in batches and re-read each requested value. |
 
 ### Drawings, dimensions, sheets and schedules
 
@@ -255,28 +263,36 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 
 | Tool | Capability |
 |---|---|
-| `horizun_query_cad` | Inspect DWG instances, layers, curve geometry, profiles and readable coverage. |
-| `horizun_manage_cad_links` | List, add, reload and repoint CAD links with measured state. |
-| `horizun_plan_from_cad` | Interpret a DWG using supplied versioned rules and return a dependency-ordered BIM plan with omissions and provenance. |
 | `horizun_apply_cad_plan` | Build the plan through typed commands; verify source hashes and stamp created elements with CAD provenance. |
-| `horizun_audit_cad_model` | Compare the drawing against the model using provenance, geometry and measured differences. |
-| `horizun_plan_cad_update` | Plan changes between DWG revisions while identifying manual model edits that need review. |
 | `horizun_apply_cad_update` | Apply supported revision changes and preserve provenance for the next update. |
+| `horizun_audit_cad_model` | Compare the drawing against the model using provenance, geometry and measured differences. |
+| `horizun_cad_connect` | Build the joins a drawing declares, placing the fitting each junction needs and verifying it. |
+| `horizun_cad_extract` | Read a linked DWG directly - layers, lines, arcs, text and blocks - without importing it. |
+| `horizun_cad_networks` | Derive the network a drawing describes: which ends meet, what belongs between them and which stay open. |
+| `horizun_cad_review` | Report what a conversion could not settle, with the evidence for each held candidate. |
+| `horizun_cad_symbols` | List the block symbols a drawing defines and where each one is placed. |
+| `horizun_cad_unit_instances` | Find repeated units in a drawing and the transform that places each occurrence. |
+| `horizun_manage_cad_links` | List, add, reload and repoint CAD links with measured state. |
+| `horizun_plan_cad_update` | Plan changes between DWG revisions while identifying manual model edits that need review. |
+| `horizun_plan_from_cad` | Interpret a DWG using supplied versioned rules and return a dependency-ordered BIM plan with omissions and provenance. |
+| `horizun_query_cad` | Inspect DWG instances, layers, curve geometry, profiles and readable coverage. |
 
 ### Structure, reinforcement, MEP and coordination
 
 | Tool | Capability |
 |---|---|
-| `horizun_plan_structure` | Plan columns at grid intersections and beams along consecutive grid crossings. |
-| `horizun_query_structure` | Inspect members, hosts, cover, rebar, reinforcement systems, connections and quantities. |
-| `horizun_plan_reinforcement` | Plan reinforcement from supplied host and reinforcement requirements. |
+| `horizun_acc_upload_status` | Read Desktop Connector log evidence of ACC folder assignment for local files. |
 | `horizun_apply_reinforcement` | Apply supported reinforcement plans with typed checks and verification. |
 | `horizun_audit_reinforcement` | Audit reinforcement against supplied requirements and report coverage. |
-| `horizun_plan_mep` | Plan pipe/duct routes and fittings; inspect networks through actual connector connectivity. |
 | `horizun_clash` | Detect scoped clashes, plan supported penetrations and record coordination findings. |
+| `horizun_connect_mep` | Connect or disconnect named MEP connectors, refusing to close a visible gap by moving geometry. |
 | `horizun_coordination` | Track coordination findings, assignments, decisions, evidence and model-detected resolution or regression. |
 | `horizun_manage_links` | Add and manage Revit links/instances, paths, load state and pinning. |
-| `horizun_acc_upload_status` | Read Desktop Connector log evidence of ACC folder assignment for local files. |
+| `horizun_plan_mep` | Plan pipe/duct routes and fittings; inspect networks through actual connector connectivity. |
+| `horizun_plan_reinforcement` | Plan reinforcement from supplied host and reinforcement requirements. |
+| `horizun_plan_structure` | Plan columns at grid intersections and beams along consecutive grid crossings. |
+| `horizun_query_structure` | Inspect members, hosts, cover, rebar, reinforcement systems, connections and quantities. |
+| `horizun_structural_connections` | Read and apply structural connection types between framing elements. |
 
 ### Layers, groups and terrain
 
@@ -309,8 +325,10 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 | Tool | Capability |
 |---|---|
 | `horizun_execute_plan` | Compose up to 100 typed actions with dependencies, prior-result references and TransactionGroup rollback. |
-| `horizun_request_python_access` | Show an owner-approval request in Revit for custom Python execution. |
 | `horizun_execute_python` | Run client-generated Python against the Revit API, including preflight and script-supplied evidence; owner opt-in required. |
+| `horizun_promote_script` | Promote a verified script to a named procedure so it stops being ad-hoc code. |
+| `horizun_request_python_access` | Show an owner-approval request in Revit for custom Python execution. |
+| `horizun_run_procedure` | Run a named, versioned procedure that this machine has stored, with its own consent. |
 
 <!-- END TOOL CATALOG -->
 
@@ -320,7 +338,7 @@ A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
 and a stair are choices under `horizun_create_elements`; creating a section and
 placing a schedule are different actions under `horizun_manage_views`.
 
-The table contains **208 named suboperations and dispatch modes** <!--inventory:operations-->
+The table contains **262 named suboperations and dispatch modes** <!--inventory:operations-->
 across 26 multi-operation tools. A choice is counted once per tool, selector
 property and value, including nested selectors. Repeated `oneOf` schema paths
 are deduplicated. Some selectors refine another action: these numbers describe
@@ -330,14 +348,18 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | Tool | Selector | Named suboperations and modes |
 |---|---|---|
 | `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect` |
-| `horizun_navigate` | `operation` | `select`, `clear_selection`, `zoom`, `select_and_zoom`, `open_view` |
+| `horizun_repair_memory` | `operation` | `list`, `advice`, `observe`, `remedy`, `quarantine`, `release` |
+| `horizun_selection_exchange` | `operation` | `publish`, `read`, `clear`, `capabilities` |
 | `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
 | `horizun_delete_verified` | `mode` | `ids`, `purge_unused` |
+| `horizun_navigate` | `operation` | `select`, `clear_selection`, `zoom`, `select_and_zoom`, `open_view` |
+| `horizun_validate_ids` | `operation` | `precheck`, `validate` |
 | `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `wall_profile`, `displacement`, `stairs` |
-| `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff` |
-| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `pin`, `unpin`, `change_type`, `set_curve`, `move_tag_head`, `set_tag_leader` |
+| `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff`, `cross` |
 | `horizun_create_family` | `kind` | `extrusion`, `blend`, `revolution`, `sweep`, `swept_blend`, `pipe`, `duct`, `electrical`, `conduit`, `cable_tray`, `symbolic`, `model` |
-| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports` |
+| `horizun_manage_materials` | `operation` | `create`, `duplicate`, `update` |
+| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `mirror`, `pin`, `unpin`, `change_type`, `set_curve`, `move_tag_head`, `set_tag_leader` |
+| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports`, `create_filter`, `apply_filter`, `color_by_value`, `set_element_overrides`, `hide_elements`, `isolate_elements`, `reset_temporary`, `set_category_visibility`, `create_legend`, `place_legend_component` |
 | `horizun_manage_views` | `mode` | `center`, `center_x`, `center_y`, `left`, `right`, `top`, `bottom` |
 | `horizun_plan_views` | `operation` | `room_views`, `deliverable_set`, `delivery_open`, `delivery_status`, `delivery_record`, `delivery_approve`, `delivery_invalidate` |
 | `horizun_query_planimetry` | `mode` | `inventory`, `sheets`, `views`, `placements`, `annotations`, `references` |
@@ -349,21 +371,25 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_manage_revisions` | `operation` | `create_revision`, `update_revision` |
 | `horizun_manage_schedules` | `operation` | `create`, `duplicate`, `rename`, `add_fields`, `remove_fields`, `set_field`, `set_filters`, `set_sorting`, `set_options` |
 | `horizun_manage_schedules` | `kind` | `material_takeoff`, `sheet_list`, `view_list`, `revision_schedule`, `keynote_legend` |
-| `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile` |
+| `horizun_cad_connect` | `fitting` | `direct`, `elbow`, `tee`, `cross`, `transition`, `none` |
 | `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
-| `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
-| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
+| `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile`, `blocks` |
+| `horizun_connect_mep` | `operation` | `connect`, `disconnect` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `evidence` |
+| `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
 | `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
-| `horizun_coordination` | `operation` | `list`, `update`, `export`, `evidence` |
-| `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
+| `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
+| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff` |
 | `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
+| `horizun_promote_script` | `operation` | `list`, `show`, `propose`, `review`, `approve`, `activate`, `deactivate`, `source`, `resolve`, `invocation` |
+| `horizun_run_procedure` | `operation` | `start`, `advance`, `decide`, `record`, `reconcile`, `status`, `abandon` |
 <!-- END SUBOPERATIONS -->
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1091 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1261 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 
