@@ -12,6 +12,38 @@ The tools are `horizun_manage_cad_links`, `horizun_query_cad`,
 
 ---
 
+## An update writes geometry. It does not build a network.
+
+`horizun_apply_cad_update` carries out a revision's geometry: it re-shapes what the
+drawing moved, builds what it added, and re-reads every write from the model. It
+does **not** join anything. Joining is `horizun_cad_connect`, which is its own
+consented step, and the reply says so rather than leaving it to be assumed:
+
+```json
+"verdict": { "geometry": "applied", "network": "not_asserted" }
+```
+
+Two consequences worth knowing before you plan a revision:
+
+**A division is built unjoined.** When a revision cuts one run into two, both
+pieces are built in the right place, at the right size, holding nothing. Every
+count of elements, sizes and positions reports the model as correct. The reply
+lists the loose ends in `ends_that_meet_and_are_not_joined`; run
+`horizun_cad_connect` over them and accept *its* result before calling the
+revision built.
+
+**Re-shaping a run that fittings hold costs those fittings.** The plan asks for
+`release_fittings` — and releasing them does not bring the junction back. The
+apply therefore **refuses the whole plan before writing anything** unless you send
+`accept_connections_not_rebuilt: true`, which says you will connect the result
+yourself. Measured on a fixture: one of four declared joins survived such an
+update, and open ends went from six to eleven, with nothing reporting a failure.
+
+If that is not what you want, drop the pairing that needs the release and plan
+again — the update applies everything else.
+
+---
+
 ## The order, and why it is not negotiable
 
 ```
