@@ -351,6 +351,11 @@ namespace Horizun.Revit.Commands
                 // ---- elbow, tee, cross: the typed command owns this -------------
                 JObject delegatedRow = DelegateFitting(app, title, j, !writeNow, request, group != null ? runKey : "");
                 Attribute(delegatedRow, j, mark, writeNow, tolerance, group != null);
+                // A REFUSAL THAT NAMES THE WRONG CAUSE IS WORSE THAN A SHORT ONE. The delegate can only report
+                // that its batch rolled back; what is wrong is on the members, and it is measurable. See
+                // WhyItWouldNotGoIn: the piece left between this corner and the fitting on its other end,
+                // against the arm that fitting takes out of that same piece.
+                Explain(delegatedRow, j);
                 if (sectionChange != null)
                 {
                     delegatedRow["action_reason"] = sectionChange;
@@ -786,6 +791,16 @@ namespace Horizun.Revit.Commands
                 double d0 = Math.Sqrt(Math.Pow(p0.X * 304.8 - mx, 2) + Math.Pow(p0.Y * 304.8 - my, 2));
                 double d1 = Math.Sqrt(Math.Pow(p1.X * 304.8 - mx, 2) + Math.Pow(p1.Y * 304.8 - my, 2));
                 XYZ keep = d0 <= d1 ? p1 : p0, near = d0 <= d1 ? p0 : p1;
+
+                // REPLACING THE CURVE RE-EVALUATES EVERY CONNECTION THE RUN HAS, including the one at the end
+                // that is not moving. Where that far end is already in a network, Revit asks to disconnect it -
+                // a modal question with nobody at the keyboard - and the write rolls back. Moving the free
+                // connector's own origin moves this end and nothing else, so it is tried FIRST in exactly that
+                // case and nowhere else: the route that has always worked here is still the route everywhere else.
+                string whyNotByConnector;
+                JObject byConnector = MoveFreeEndOnly(e, mx, my, out whyNotByConnector);
+                if (byConnector != null) { moved.Add(byConnector); continue; }
+
                 var start = new JArray(Math.Round(keep.X * 304.8, 4), Math.Round(keep.Y * 304.8, 4), Math.Round(keep.Z * 304.8, 4));
                 var end = new JArray(Math.Round(mx, 4), Math.Round(my, 4), Math.Round(near.Z * 304.8, 4));
                 var args = new JObject
@@ -805,12 +820,19 @@ namespace Horizun.Revit.Commands
                 args["dry_run"] = false;
                 args["confirmation_token"] = token;
                 CommandResult done = child.Execute(app, args.ToString(Formatting.None));
-                if (!done.Success) { o["why"] = "set_curve on run " + Rid.Value(e.Id) + " failed: " + done.Error; return o; }
+                if (!done.Success)
+                {
+                    o["why"] = "set_curve on run " + Rid.Value(e.Id) + " failed: " + done.Error;
+                    o["the_connector_route_was_not_taken_because"] = whyNotByConnector;
+                    return o;
+                }
                 moved.Add(new JObject
                 {
                     ["element_id"] = Rid.Value(e.Id),
                     ["end_moved_mm"] = Math.Round(Math.Min(d0, d1), 1),
-                    ["to_mm"] = end
+                    ["to_mm"] = end,
+                    ["moved_by"] = "the run's whole curve, through horizun_transform_elements",
+                    ["why_not_the_connector"] = whyNotByConnector
                 });
             }
             o["ok"] = true;
@@ -921,6 +943,279 @@ namespace Horizun.Revit.Commands
                     new JArray(Math.Round(b.X * 304.8, 2), Math.Round(b.Y * 304.8, 2), Math.Round(b.Z * 304.8, 2)));
             }
             return o;
+        }
+
+        /// <summary>
+        /// WHY a fitting Revit refused would not go in, MEASURED on the members themselves.
+        ///
+        /// Revit's words for this case are "the duct/pipe has been modified to be in the opposite direction"
+        /// and "the family is connected in a network and can no longer keep the connectivity". Both are true
+        /// and neither is a diagnosis: they say what Revit did with the request, not what is wrong with the
+        /// drawing. What was reported instead - "usually one bad element poisoning a batch, retry in smaller
+        /// batches" - is a guess about a batch, and it sent the reader to look for the wrong thing.
+        ///
+        /// The cause is measurable. A turning fitting takes a length of STRAIGHT duct out of each member it
+        /// holds - its arm - and that arm is the distance from the connector it holds to where its two axes
+        /// cross. MEASURED across two models and fifteen installed elbows: 228.6 mm out of a 152.4 mm duct at
+        /// a square corner, 126.2 mm out of a 203.2 mm duct at a 45 degree one, the same number every time.
+        /// When the piece the drawing left between two corners is shorter than the two arms its corners want,
+        /// whichever corner is placed first takes its arm and the second one cannot: the end it would pull
+        /// back is already past the other end, which is exactly the duct Revit says has been reversed.
+        ///
+        /// So this reads what is LEFT of each member between this junction and its far end, and what the
+        /// fitting already holding that far end took out of this same piece, and reports both. It calls a
+        /// member short only when the piece has less left than that measured arm. It never decides the
+        /// junction and never invents the fitting's needs: where there is no fitting on the far end, or its
+        /// connectors are collinear and have no corner, the arm is reported as null and no verdict is drawn.
+        /// </summary>
+        private static JObject WhyItWouldNotGoIn(Junction j)
+        {
+            var members = new JArray();
+            string shortest = null; double worstShort = 0, leftOnWorst = 0, armOnWorst = 0; string whatHeldIt = null;
+            foreach (Element e in j.Elements)
+            {
+                if (e == null) continue;
+                List<Connector> all = MepConnect.ConnectorsOf(e);
+                Connector near = null, far = null;
+                double dn = double.MaxValue, df = -1;
+                foreach (Connector c in all)
+                {
+                    XYZ org; try { org = c.Origin; } catch { continue; }
+                    if (org == null) continue;
+                    double d = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(org.X) - j.At.X, 2) +
+                                         Math.Pow(CadUnits.FeetToMm(org.Y) - j.At.Y, 2));
+                    if (d < dn) { dn = d; near = c; }
+                    if (d > df) { df = d; far = c; }
+                }
+                if (near == null || far == null || ReferenceEquals(near, far)) continue;
+
+                var row = new JObject
+                {
+                    ["element"] = Rid.Value(e.Id),
+                    ["at_this_junction_mm"] = Math.Round(dn, 1),
+                    ["left_to_its_far_end_mm"] = Math.Round(df, 1)
+                };
+                try { row["width_mm"] = Math.Round(CadUnits.FeetToMm(near.Width), 1); } catch { }
+
+                Element holder = null; Connector holderEnd = null;
+                try
+                {
+                    foreach (Connector other in far.AllRefs)
+                    {
+                        if (other == null || other.Owner == null || other.Owner.Id == e.Id) continue;
+                        if (other.ConnectorType != ConnectorType.End) continue;
+                        holder = other.Owner; holderEnd = other; break;
+                    }
+                }
+                catch { }
+
+                var farEnd = new JObject { ["connected"] = holder != null };
+                if (holder != null)
+                {
+                    farEnd["held_by"] = Rid.Value(holder.Id);
+                    farEnd["what"] = NameOfType(holder);
+                    double? arm = ArmOfMm(holder, holderEnd);
+                    farEnd["arm_it_takes_mm"] = arm.HasValue ? (JToken)Math.Round(arm.Value, 1) : JValue.CreateNull();
+                    farEnd["arm_measured_how"] = arm.HasValue
+                        ? "the distance from the connector it holds to where that fitting's two axes cross"
+                        : "not measurable: this fitting's connectors are collinear, so it has no corner and takes no arm";
+                    if (arm.HasValue)
+                    {
+                        row["short_by_mm"] = Math.Round(Math.Max(0, arm.Value - df), 1);
+                        row["has_room_for_the_same_fitting"] = df >= arm.Value;
+                        if (df < arm.Value && arm.Value - df > worstShort)
+                        {
+                            worstShort = arm.Value - df; shortest = Rid.Value(e.Id).ToString(CultureInfo.InvariantCulture);
+                            leftOnWorst = df; armOnWorst = arm.Value; whatHeldIt = NameOfType(holder);
+                        }
+                    }
+                }
+                row["far_end"] = farEnd;
+                members.Add(row);
+            }
+
+            var o = new JObject { ["members"] = members };
+            if (shortest != null)
+            {
+                o["too_short"] = shortest;
+                o["reading"] = "member " + shortest + " has " + Math.Round(leftOnWorst, 1).ToString(CultureInfo.InvariantCulture) +
+                               " mm left between this junction and the fitting on its other end, and that fitting (" +
+                               whatHeldIt + ") takes " + Math.Round(armOnWorst, 1).ToString(CultureInfo.InvariantCulture) +
+                               " mm out of this same piece. A second fitting of that size does not fit in what is left: " +
+                               "it is short by " + Math.Round(worstShort, 1).ToString(CultureInfo.InvariantCulture) + " mm.";
+                o["what_would_make_it_possible"] = "a fitting whose arm is at most " +
+                               Math.Round(leftOnWorst, 1).ToString(CultureInfo.InvariantCulture) +
+                               " mm at this corner, or a longer piece between the two corners in the drawing. " +
+                               "Which fitting is acceptable is a project decision and this command does not make it.";
+            }
+            else
+                o["reading"] = "every member has room for a fitting the size of the one already on its far end, " +
+                               "so the refusal is not this. Revit's own words are in revit_said.";
+            return o;
+        }
+
+        /// <summary>
+        /// Put the measured reading on a refused row, and let it re-label the refusal ONLY when the
+        /// measurement demonstrates the cause. The delegate's own code and error are kept beside it:
+        /// nothing is paraphrased away, and a caller keying on the old code still finds it.
+        /// </summary>
+        private static void Explain(JObject row, Junction j)
+        {
+            if (row == null || row.Value<string>("state") != "refused") return;
+            JObject why;
+            try { why = WhyItWouldNotGoIn(j); }
+            catch (Exception ex) { row["why_refused"] = new JObject { ["not_measured"] = ex.Message }; return; }
+            row["why_refused"] = why;
+            if (why.Value<string>("too_short") == null) return;
+            row["delegated_refusal"] = row.Value<string>("refused");
+            row["delegated_said"] = row.Value<string>("says");
+            row["refused"] = "member_too_short_for_the_fitting";
+            row["says"] = why.Value<string>("reading") + " " + why.Value<string>("what_would_make_it_possible");
+        }
+
+        private static string NameOfType(Element e)
+        {
+            if (e == null) return null;
+            var sym = e.Document.GetElement(e.GetTypeId()) as ElementType;
+            if (sym == null) return e.Name;
+            return sym.FamilyName + ": " + sym.Name;
+        }
+
+        /// <summary>
+        /// The straight length a turning fitting takes out of the member on <paramref name="held"/>: the
+        /// distance from that connector to where its axis crosses the axis of the fitting's other end.
+        /// Null when the two axes are parallel - a transition, which has no corner and takes no arm.
+        /// </summary>
+        private static double? ArmOfMm(Element fitting, Connector held)
+        {
+            if (fitting == null || held == null) return null;
+            XYZ a0, da;
+            try { a0 = held.Origin; da = held.CoordinateSystem.BasisZ; } catch { return null; }
+            if (a0 == null || da == null) return null;
+            double best = 0; bool found = false;
+            foreach (Connector other in MepConnect.ConnectorsOf(fitting))
+            {
+                if (other == null || other.Id == held.Id) continue;
+                XYZ b0, db;
+                try { b0 = other.Origin; db = other.CoordinateSystem.BasisZ; } catch { continue; }
+                if (b0 == null || db == null) continue;
+                XYZ cross = da.CrossProduct(db);
+                double denom = cross.GetLength();
+                if (denom < 1e-9) continue;                       // parallel: no corner
+                double t = (b0 - a0).CrossProduct(db).DotProduct(cross) / (denom * denom);
+                double mm = Math.Abs(t) * 304.8;                  // da is a unit vector, so |t| is in feet
+                if (!found || mm > best) { best = mm; found = true; }
+            }
+            return found ? (double?)best : null;
+        }
+
+        /// <summary>
+        /// Move ONE end of a run to a point WITHOUT rewriting its curve.
+        ///
+        /// Setting LocationCurve.Curve replaces the whole line, and Revit re-evaluates EVERY connection the
+        /// run has - including the one at the end that is not moving. On a run whose far end is already in a
+        /// network that is "the family is connected in a network and can no longer keep the connectivity",
+        /// a modal question nobody is there to answer, and the write rolls back. MEASURED in campaign 8: the
+        /// third drawn transition of M102 was refused for exactly this, on a 6000 mm run whose near end had
+        /// to move 106.6 mm and whose far end was held by a transition.
+        ///
+        /// A connector's own origin moves that end and nothing else. This takes that route only where the
+        /// curve route cannot work - the far end connected - and verifies all three things afterwards: the
+        /// near end landed, the far end did not move, and the far end is still connected to what held it.
+        /// Anything else undoes itself and hands the case back to the curve route, which then refuses it the
+        /// way it always did.
+        /// </summary>
+        private static JObject MoveFreeEndOnly(Element e, double mx, double my, out string why)
+        {
+            why = null;
+            if (e == null) { why = "no element"; return null; }
+            List<Connector> all = MepConnect.ConnectorsOf(e);
+            Connector near = null, far = null;
+            double dn = double.MaxValue, df = -1;
+            foreach (Connector c in all)
+            {
+                XYZ org; try { org = c.Origin; } catch { continue; }
+                if (org == null) continue;
+                double d = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(org.X) - mx, 2) + Math.Pow(CadUnits.FeetToMm(org.Y) - my, 2));
+                if (d < dn) { dn = d; near = c; }
+                if (d > df) { df = d; far = c; }
+            }
+            if (near == null || far == null || ReferenceEquals(near, far)) { why = "this run does not expose two end connectors"; return null; }
+            bool farConnected; try { farConnected = far.IsConnected; } catch { farConnected = false; }
+            if (!farConnected) { why = "the far end is free, so the curve route applies"; return null; }
+            bool nearConnected; try { nearConnected = near.IsConnected; } catch { nearConnected = true; }
+            if (nearConnected) { why = "the end that must move is itself connected"; return null; }
+
+            XYZ farWas = far.Origin;
+            var heldBy = new List<long>();
+            try { foreach (Connector r in far.AllRefs) if (r != null && r.Owner != null && r.Owner.Id != e.Id) heldBy.Add(Rid.Value(r.Owner.Id)); }
+            catch { }
+            XYZ target = new XYZ(mx / 304.8, my / 304.8, near.Origin.Z);
+            double moved = dn;
+
+            Document doc = e.Document;
+            using (var t = new Transaction(doc, "Horizun: move a run's free end"))
+            {
+                t.Start();
+                try
+                {
+                    near.Origin = target;
+                    Guard.Commit(t, "move a run's free end");
+                }
+                catch (Exception ex)
+                {
+                    // WHAT THE ROLLBACK ACTUALLY DID, never what we hoped: a status other than RolledBack
+                    // leaves the model uncertain, and the caller has to be told which of the two it is.
+                    string undone = "not_started";
+                    if (t.HasStarted() && !t.HasEnded())
+                    {
+                        Guard.RollbackResult back = Guard.RollBack(t);
+                        undone = back.Confirmed ? "rolled_back" : "UNCERTAIN: " + back.StatusName;
+                    }
+                    why = "moving the free connector did not commit: " + ex.Message + " (" + undone + ")";
+                    return null;
+                }
+            }
+
+            // RE-READ, all three: the end that had to move, the end that had to stay, and the connection
+            // that had to survive. A move that reports itself is not a move.
+            List<Connector> after = MepConnect.ConnectorsOf(e);
+            Connector nearNow = null, farNow = null;
+            double dn2 = double.MaxValue, df2 = -1;
+            foreach (Connector c in after)
+            {
+                XYZ org; try { org = c.Origin; } catch { continue; }
+                if (org == null) continue;
+                double d = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(org.X) - mx, 2) + Math.Pow(CadUnits.FeetToMm(org.Y) - my, 2));
+                if (d < dn2) { dn2 = d; nearNow = c; }
+                if (d > df2) { df2 = d; farNow = c; }
+            }
+            double farDrift = farNow == null ? double.MaxValue
+                : Math.Sqrt(Math.Pow(CadUnits.FeetToMm(farNow.Origin.X - farWas.X), 2) +
+                            Math.Pow(CadUnits.FeetToMm(farNow.Origin.Y - farWas.Y), 2) +
+                            Math.Pow(CadUnits.FeetToMm(farNow.Origin.Z - farWas.Z), 2));
+            var heldNow = new List<long>();
+            try { if (farNow != null) foreach (Connector r in farNow.AllRefs) if (r != null && r.Owner != null && r.Owner.Id != e.Id) heldNow.Add(Rid.Value(r.Owner.Id)); }
+            catch { }
+            bool kept = heldBy.Count == heldNow.Count && heldBy.TrueForAll(heldNow.Contains);
+            if (dn2 > 0.2 || farDrift > 0.2 || !kept)
+            {
+                why = "the free-end move did not verify: the end landed " + Math.Round(dn2, 2).ToString(CultureInfo.InvariantCulture) +
+                      " mm from the target, the far end moved " + Math.Round(farDrift, 2).ToString(CultureInfo.InvariantCulture) +
+                      " mm, and its connection was " + (kept ? "kept" : "lost") + ".";
+                return null;
+            }
+            return new JObject
+            {
+                ["element_id"] = Rid.Value(e.Id),
+                ["end_moved_mm"] = Math.Round(moved, 1),
+                ["to_mm"] = new JArray(Math.Round(mx, 4), Math.Round(my, 4), Math.Round(CadUnits.FeetToMm(target.Z), 4)),
+                ["moved_by"] = "the free connector's own origin",
+                ["why_not_the_curve"] = "the far end is connected, and replacing the curve makes Revit re-evaluate that connection",
+                ["far_end_held_by"] = new JArray(heldNow.Select(x => (JToken)x)),
+                ["far_end_drift_mm"] = Math.Round(farDrift, 2),
+                ["verified"] = true
+            };
         }
 
         /// <summary>How far each end of each member moved between two readings of it.</summary>
@@ -1035,7 +1330,9 @@ namespace Horizun.Revit.Commands
                 catch (Exception ex) { words = ex.Message; }
 
                 TransactionStatus rolled = TransactionStatus.Uninitialized;
-                try { rolled = group.RollBack(); }
+                // THROUGH Guard, which is what reports the status instead of assuming it - and what the
+                // guard test looks for. Measured either way, but a raw call is a habit that eventually forgets.
+                try { rolled = Guard.RollBack(group).Status; }
                 catch (Exception ex) { words = (words == null ? "" : words + "; ") + "rolling back: " + ex.Message; }
                 group.Dispose();
                 fitting = fid.HasValue ? doc.GetElement(Rid.Make(fid.Value)) as FamilyInstance : null;
