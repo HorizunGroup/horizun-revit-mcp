@@ -196,6 +196,36 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void An_unfinished_record_is_never_swept_however_old_it_is()
+        {
+            // THE WHOLE POINT OF THIS STORE is that an unfinished update outlives the session that made
+            // it. A sweep that judged by age alone would delete exactly the records somebody still needs
+            // - and it would do it silently, on the next apply, months after they gave up for the day.
+            CadUpdateOperations.Begin("op-old-open", "HZ", null, Binding("f1"), null, Actions("a", "b"));
+            CadUpdateOperations.MarkAction("op-old-open", "a", CadUpdateOperations.Confirmed, null, null, null);
+            CadUpdateOperations.Finish("op-old-open", "partial");
+
+            CadUpdateOperations.Begin("op-old-done", "HZ", null, Binding("f1"), null, Actions("a"));
+            CadUpdateOperations.MarkAction("op-old-done", "a", CadUpdateOperations.Confirmed, null, null, null);
+            CadUpdateOperations.Finish("op-old-done", "finished");
+
+            int removed = CadUpdateOperations.SweepFinished(DateTime.UtcNow.AddDays(400));
+            Assert.Equal(1, removed);
+            Assert.NotNull(CadUpdateOperations.Read("op-old-open"));
+            Assert.Null(CadUpdateOperations.Read("op-old-done"));
+        }
+
+        [Fact]
+        public void A_recent_finished_record_is_kept()
+        {
+            CadUpdateOperations.Begin("op-fresh", "HZ", null, Binding("f1"), null, Actions("a"));
+            CadUpdateOperations.Finish("op-fresh", "finished");
+
+            Assert.Equal(0, CadUpdateOperations.SweepFinished());
+            Assert.NotNull(CadUpdateOperations.Read("op-fresh"));
+        }
+
+        [Fact]
         public void What_an_action_removed_is_recorded_as_removed_not_as_created()
         {
             // A SUBSTITUTION IS TWO FACTS. An update that replaces an element creates one and deletes

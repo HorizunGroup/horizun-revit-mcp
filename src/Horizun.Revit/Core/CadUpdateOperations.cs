@@ -68,11 +68,51 @@ namespace Horizun.Revit.Core
         /// Open a record for this operation, with every action pending. An id already recorded is
         /// returned as it stands - beginning twice is what a retry looks like from here.
         /// </summary>
+        /// <summary>Records this old are swept, and only when they are FINISHED.</summary>
+        public const int KeepFinishedForDays = 30;
+
+        /// <summary>
+        /// Drop finished records older than <see cref="KeepFinishedForDays"/>.
+        ///
+        /// A record that is OPEN or PARTIAL is never swept at any age: it is somebody's unfinished
+        /// update, and the whole point of this store is that it outlives the session that made it.
+        /// Only a run that reached its end is disposable. Bounded and best-effort - a sweep that cannot
+        /// run must not stop an apply from starting.
+        /// </summary>
+        public static int SweepFinished(DateTime? utcNow = null, int max = 500)
+        {
+            int removed = 0;
+            try
+            {
+                DateTime cutoff = (utcNow ?? DateTime.UtcNow).AddDays(-KeepFinishedForDays);
+                foreach (string file in Directory.GetFiles(Root, "op-*.json").Take(max))
+                {
+                    try
+                    {
+                        JObject o = JObject.Parse(File.ReadAllText(file));
+                        if (o.Value<string>("state") != "finished") continue;
+                        DateTime closed;
+                        if (!DateTime.TryParse(o.Value<string>("closed_utc"), CultureInfo.InvariantCulture,
+                                               DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
+                                               out closed)) continue;
+                        if (closed > cutoff) continue;
+                        File.Delete(file);
+                        removed++;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return removed;
+        }
+
         public static JObject Begin(string operationId, string document, string placementId,
                                     JObject binding, JObject decisions, JArray actions)
         {
             JObject existing = Read(operationId);
             if (existing != null) return existing;
+            // Swept when a NEW operation opens, which is the moment the store grows.
+            SweepFinished();
             var rows = new JArray();
             foreach (JObject a in (actions ?? new JArray()).OfType<JObject>())
                 rows.Add(new JObject
