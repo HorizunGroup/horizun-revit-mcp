@@ -404,6 +404,7 @@ namespace Horizun.Revit.Core
                 ProposePairings(update, set, tolerance,
                                 new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
                 ApplyAccepted(update, accepted);
+                HoldCreatesOnOccupiedGround(update, set, tolerance);
                 return update;
             }
 
@@ -950,6 +951,12 @@ namespace Horizun.Revit.Core
             var rejectedSet = new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal);
             ProposePairings(update, set, tolerance, rejectedSet);
             ApplyAccepted(update, WithLineage(update, candidates, subjects, accepted, rejectedSet));
+            // LAST, AND AFTER THE DECISIONS. Accepting a split releases its other pieces, and a released
+            // piece can lie on a DIFFERENT element's line than the one being re-shaped: measured on the
+            // fixture, an accepted pairing released a create that stood on a second element still in the
+            // model. Whatever else a plan decides, nothing it marks automatic may build on ground an
+            // element still holds.
+            HoldCreatesOnOccupiedGround(update, set, tolerance);
             CarryHeightFacts(update, candidates);
             return update;
         }
@@ -1505,7 +1512,6 @@ namespace Horizun.Revit.Core
             }
             ProposeSplits(update, set, tolerance, rejected);
             ProposeMerges(update, set, tolerance, rejected);
-            HoldCreatesOnOccupiedGround(update, set, tolerance);
         }
 
         /// <summary>How far a piece's line may sit from the old line and still be the same wall, split.</summary>
