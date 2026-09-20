@@ -955,6 +955,19 @@ namespace Horizun.Revit.Commands
         /// Returns the check of the first that fits, or null when none does; every attempt is reported with the
         /// length it produced. A name that names no loaded type is reported as such - never substituted.
         /// </summary>
+        /// <summary>
+        /// The declared transition types, each tried FROM THE SAME STATE and measured against the drawing.
+        ///
+        /// MEASURED (campaign 7): trying them one after another on the same fitting compared each candidate against
+        /// the model the previous one had left, so the answer depended on the order they were written in. Every
+        /// attempt now runs inside its own transaction group, is rolled back, and the rollback is CONFIRMED by
+        /// re-reading the fitting's type, its two ends and both members; a state that cannot be restored stops the
+        /// comparison instead of producing a ranking nobody can trust. The winner - the best measured fit, not the
+        /// first declared - is then applied once from that same base state and re-read.
+        ///
+        /// A name that no loaded type answers to, a bare type name two families answer to, and a type that is not a
+        /// transition are all REFUSED by name; none of them is substituted.
+        /// </summary>
         private static JObject FitByDeclaredType(Document doc, Junction j, JObject trow, JArray declared,
                                                  double fitTolerance, out JArray attempts)
         {
@@ -971,45 +984,43 @@ namespace Horizun.Revit.Commands
             List<FamilySymbol> loaded = new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol))
                 .Cast<FamilySymbol>().Where(s => s.Category != null &&
                     (BuiltInCategory)(int)Rid.Value(s.Category.Id) == BuiltInCategory.OST_DuctFitting).ToList();
+
+            JObject baseState = FittingState(fitting);
+            JObject baseMembers = MemberEnds(j);
             foreach (JToken t in declared)
             {
-                string want = t.Type == JTokenType.Integer ? null : (t.ToString() ?? "").Trim();
-                long id = t.Type == JTokenType.Integer ? t.Value<long>() : -1;
-                FamilySymbol sym = loaded.FirstOrDefault(s =>
-                    (id >= 0 && Rid.Value(s.Id) == id) ||
-                    (want != null && (string.Equals(s.FamilyName + ": " + s.Name, want, StringComparison.OrdinalIgnoreCase) ||
-                                      string.Equals(s.Name, want, StringComparison.OrdinalIgnoreCase))));
-                if (sym == null)
+                JObject refusal;
+                FamilySymbol sym = ResolveDeclaredType(t, loaded, out refusal);
+                if (sym == null) { attempts.Add(refusal); continue; }
+
+                var attempt = new JObject
                 {
-                    attempts.Add(new JObject
-                    {
-                        ["declared"] = t.ToString(),
-                        ["resolved"] = false,
-                        ["means"] = "no duct-fitting type of this model is named that; " +
-                                    CadCatalogCheck.LoadedOfFamily(want ?? "(by id)",
-                                        loaded.Where(s => string.Equals(s.FamilyName, CadCatalogCheck.FamilyOf(want ?? ""), StringComparison.OrdinalIgnoreCase))
-                                              .Select(s => s.FamilyName + ": " + s.Name).OrderBy(x => x, StringComparer.Ordinal).ToList(),
-                                        "duct fitting",
-                                        loaded.Select(s => s.FamilyName + ": " + s.Name).Distinct(StringComparer.Ordinal)
-                                              .OrderBy(x => x, StringComparer.Ordinal).Take(25).ToList())
-                    });
-                    continue;
-                }
+                    ["declared"] = t.ToString(),
+                    ["resolved"] = true,
+                    ["type"] = sym.FamilyName + ": " + sym.Name,
+                    ["type_id"] = Rid.Value(sym.Id),
+                    ["part_type"] = PartTypeOf(sym) ?? "unknown"
+                };
                 string words = null;
                 double centred = 0;
+                JObject check = null;
+                var group = new TransactionGroup(doc, "Horizun: try a declared transition type");
+                group.Start();
                 try
                 {
                     using (var tx = new Transaction(doc, "Horizun: declared transition type"))
                     {
                         tx.Start();
+                        if (FaultInjected("cad-transition-change-type"))
+                            throw new InvalidOperationException("injected fault: cad-transition-change-type");
                         if (!sym.IsActive) sym.Activate();
                         fitting.ChangeTypeId(sym.Id);
                         doc.Regenerate();
                         // THE FITTING GOES WHERE THE DRAWING PUT THE PIECE. Both runs were brought to the drawn
                         // midpoint so Revit could create it, so it grows from there and one end stays ON the
-                        // midpoint - 124 mm from the drawn end on M106, whatever its length. Centring it on the
-                        // drawn piece is not moving the network for convenience: it is the position the drawing
-                        // gives, the ducts follow, and every end is measured again below.
+                        // midpoint - 124 mm from the drawn end on M106, whatever its length.
+                        if (FaultInjected("cad-transition-centre"))
+                            throw new InvalidOperationException("injected fault: cad-transition-centre");
                         XYZ delta = CentringOffset(fitting, j);
                         if (delta != null && delta.GetLength() > 0.1 / 304.8)
                         {
@@ -1019,22 +1030,43 @@ namespace Horizun.Revit.Commands
                         }
                         tx.Commit();
                     }
+                    check = TransitionCheck(j, trow, fitTolerance);
                 }
                 catch (Exception ex) { words = ex.Message; }
-                JObject check = words == null ? TransitionCheck(j, trow, fitTolerance) : null;
-                attempts.Add(new JObject
+
+                TransactionStatus rolled = TransactionStatus.Uninitialized;
+                try { rolled = group.RollBack(); }
+                catch (Exception ex) { words = (words == null ? "" : words + "; ") + "rolling back: " + ex.Message; }
+                group.Dispose();
+                fitting = fid.HasValue ? doc.GetElement(Rid.Make(fid.Value)) as FamilyInstance : null;
+                JObject nowState = fitting != null ? FittingState(fitting) : null;
+                JObject nowMembers = MemberEnds(j);
+                bool restored = rolled == TransactionStatus.RolledBack && nowState != null &&
+                                JToken.DeepEquals(nowState, baseState) && JToken.DeepEquals(nowMembers, baseMembers);
+
+                attempt["revit_said"] = words;
+                attempt["centred_on_the_drawn_piece_mm"] = centred;
+                attempt["fitting_length_mm"] = check?["fitting_length_mm"];
+                attempt["worst_end_offset_mm"] = check?["worst_end_offset_mm"];
+                attempt["sizes_match_members"] = check?["sizes_match_members"];
+                attempt["collinear_with_drawn_axis"] = check?["collinear_with_drawn_axis"];
+                attempt["members_moved_mm"] = MemberMovement(baseMembers, check == null ? baseMembers : nowMembers);
+                attempt["rolled_back"] = rolled.ToString();
+                attempt["state_restored"] = restored;
+                attempt["fits"] = check?["fits"] ?? false;
+                attempts.Add(attempt);
+
+                if (!restored)
                 {
-                    ["declared"] = t.ToString(),
-                    ["resolved"] = true,
-                    ["type"] = sym.FamilyName + ": " + sym.Name,
-                    ["type_id"] = Rid.Value(sym.Id),
-                    ["revit_said"] = words,
-                    ["centred_on_the_drawn_piece_mm"] = centred,
-                    ["fitting_length_mm"] = check?["fitting_length_mm"],
-                    ["worst_end_offset_mm"] = check?["worst_end_offset_mm"],
-                    ["sizes_match_members"] = check?["sizes_match_members"],
-                    ["fits"] = check?["fits"] ?? false
-                });
+                    attempts.Add(new JObject
+                    {
+                        ["stopped"] = true,
+                        ["means"] = "the model was not put back the way it was after this attempt (" + rolled +
+                                    "), so the candidates that follow would not be measured from the same state. " +
+                                    "None of them was tried and no winner was applied."
+                    });
+                    return null;
+                }
                 if (check != null && check.Value<bool>("fits") &&
                     (best == null || check.Value<double>("worst_end_offset_mm") < best.Value<double>("worst_end_offset_mm")))
                 {
@@ -1042,35 +1074,160 @@ namespace Horizun.Revit.Commands
                     bestSymbol = sym;
                 }
             }
-            // THE BEST MEASURED FIT, not the first declared one: the order a caller writes its types in is not a
-            // fact about the drawing. The winner is applied again so the model ends as the reply says.
-            if (best != null && bestSymbol != null)
+
+            // THE BEST MEASURED FIT, applied ONCE from the same base state every candidate was measured from. The
+            // order a caller writes its types in is not a fact about the drawing.
+            if (best == null || bestSymbol == null) return null;
+            try
             {
-                try
+                using (var tx = new Transaction(doc, "Horizun: best declared transition type"))
                 {
-                    using (var tx = new Transaction(doc, "Horizun: best declared transition type"))
+                    tx.Start();
+                    if (FaultInjected("cad-transition-apply-winner"))
+                        throw new InvalidOperationException("injected fault: cad-transition-apply-winner");
+                    if (!bestSymbol.IsActive) bestSymbol.Activate();
+                    fitting.ChangeTypeId(bestSymbol.Id);
+                    doc.Regenerate();
+                    XYZ delta = CentringOffset(fitting, j);
+                    if (delta != null && delta.GetLength() > 0.1 / 304.8)
                     {
-                        tx.Start();
-                        fitting.ChangeTypeId(bestSymbol.Id);
+                        ElementTransformUtils.MoveElement(doc, fitting.Id, delta);
                         doc.Regenerate();
-                        XYZ delta = CentringOffset(fitting, j);
-                        if (delta != null && delta.GetLength() > 0.1 / 304.8)
-                        {
-                            ElementTransformUtils.MoveElement(doc, fitting.Id, delta);
-                            doc.Regenerate();
-                        }
-                        tx.Commit();
                     }
-                    best = TransitionCheck(j, trow, fitTolerance);
-                    best["chosen_among"] = attempts.Count;
-                }
-                catch (Exception ex)
-                {
-                    attempts.Add(new JObject { ["re_applying_the_best"] = bestSymbol.Name, ["revit_said"] = ex.Message });
-                    return null;
+                    tx.Commit();
                 }
             }
-            return best != null && best.Value<bool>("fits") ? best : null;
+            catch (Exception ex)
+            {
+                attempts.Add(new JObject
+                {
+                    ["applying_the_winner"] = bestSymbol.FamilyName + ": " + bestSymbol.Name,
+                    ["revit_said"] = ex.Message,
+                    ["means"] = "the winner did not go in; the drawn transition is refused and its whole group undone"
+                });
+                return null;
+            }
+            JObject applied = TransitionCheck(j, trow, fitTolerance);
+            applied["chosen_among"] = attempts.Count(a => a.Value<bool?>("resolved") == true);
+            applied["chosen_type"] = bestSymbol.FamilyName + ": " + bestSymbol.Name;
+            applied["applied_from_the_base_state"] = true;
+            if (!applied.Value<bool>("fits"))
+            {
+                attempts.Add(new JObject
+                {
+                    ["applying_the_winner"] = bestSymbol.FamilyName + ": " + bestSymbol.Name,
+                    ["means"] = "applied from the base state the winner no longer fits (" +
+                                applied.Value<double?>("worst_end_offset_mm") + " mm), so it is not kept: what was " +
+                                "measured in an isolated attempt has to hold in the model that is kept"
+                });
+                return null;
+            }
+            return applied;
+        }
+
+        /// <summary>The declared name or id as ONE loaded duct-fitting type, or the refusal that says why not.</summary>
+        private static FamilySymbol ResolveDeclaredType(JToken t, List<FamilySymbol> loaded, out JObject refusal)
+        {
+            refusal = null;
+            string want = t.Type == JTokenType.Integer ? null : (t.ToString() ?? "").Trim();
+            long id = t.Type == JTokenType.Integer ? t.Value<long>() : -1;
+            List<FamilySymbol> hits = id >= 0
+                ? loaded.Where(s => Rid.Value(s.Id) == id).ToList()
+                : loaded.Where(s => string.Equals(s.FamilyName + ": " + s.Name, want, StringComparison.OrdinalIgnoreCase)).ToList();
+            bool bare = false;
+            if (hits.Count == 0 && id < 0)
+            {
+                // A BARE TYPE NAME IS ACCEPTED ONLY WHEN ONE FAMILY ANSWERS TO IT. Taking the first the collector
+                // returns makes the answer depend on Revit's iteration order.
+                hits = loaded.Where(s => string.Equals(s.Name, want, StringComparison.OrdinalIgnoreCase)).ToList();
+                bare = true;
+            }
+            if (hits.Count > 1)
+            {
+                refusal = new JObject
+                {
+                    ["declared"] = t.ToString(),
+                    ["resolved"] = false,
+                    ["refused"] = bare ? "ambiguous_type_name" : "ambiguous_type_id",
+                    ["candidates"] = new JArray(hits.Select(x => (JToken)(x.FamilyName + ": " + x.Name))),
+                    ["means"] = hits.Count + " loaded duct-fitting types answer to '" + (want ?? id.ToString(CultureInfo.InvariantCulture)) +
+                                "'. Name the family too (\"Family: Type\"): choosing one of them here would make the " +
+                                "result depend on the order Revit lists them in."
+                };
+                return null;
+            }
+            if (hits.Count == 0)
+            {
+                refusal = new JObject
+                {
+                    ["declared"] = t.ToString(),
+                    ["resolved"] = false,
+                    ["refused"] = "type_not_found",
+                    ["means"] = "no duct-fitting type of this model is named that; " +
+                                CadCatalogCheck.LoadedOfFamily(want ?? "(by id)",
+                                    loaded.Where(s => string.Equals(s.FamilyName, CadCatalogCheck.FamilyOf(want ?? ""), StringComparison.OrdinalIgnoreCase))
+                                          .Select(s => s.FamilyName + ": " + s.Name).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                                    "duct fitting",
+                                    loaded.Select(s => s.FamilyName + ": " + s.Name).Distinct(StringComparer.Ordinal)
+                                          .OrderBy(x => x, StringComparer.Ordinal).Take(25).ToList())
+                };
+                return null;
+            }
+            FamilySymbol sym = hits[0];
+            string part = PartTypeOf(sym);
+            if (part != null && !string.Equals(part, "Transition", StringComparison.OrdinalIgnoreCase))
+            {
+                refusal = new JObject
+                {
+                    ["declared"] = t.ToString(),
+                    ["resolved"] = false,
+                    ["refused"] = "not_a_transition",
+                    ["type"] = sym.FamilyName + ": " + sym.Name,
+                    ["part_type"] = part,
+                    ["means"] = "this type's family is a " + part + ", not a Transition: putting it where a transition " +
+                                "goes would build a different fitting and measure it happily"
+                };
+                return null;
+            }
+            return sym;
+        }
+
+        /// <summary>A family's declared part type (Transition, Elbow, Tee...), or null when the family does not say.</summary>
+        private static string PartTypeOf(FamilySymbol sym)
+        {
+            try
+            {
+                Parameter p = sym?.Family?.get_Parameter(BuiltInParameter.FAMILY_CONTENT_PART_TYPE);
+                if (p == null || p.StorageType != StorageType.Integer) return null;
+                return ((PartType)p.AsInteger()).ToString();
+            }
+            catch { return null; }
+        }
+
+        /// <summary>What an isolated attempt must leave exactly as it found it: the fitting's type and where its ends are.</summary>
+        private static JObject FittingState(FamilyInstance fitting)
+        {
+            var o = new JObject { ["type_id"] = Rid.Value(fitting.GetTypeId()) };
+            var ends = new JArray();
+            try
+            {
+                var cs = fitting.MEPModel?.ConnectorManager?.Connectors?.Cast<Connector>()
+                    .OrderBy(c => c.Origin.X).ThenBy(c => c.Origin.Y).ThenBy(c => c.Origin.Z).ToList();
+                if (cs != null)
+                    foreach (Connector c in cs)
+                        ends.Add(new JArray(Math.Round(c.Origin.X * 304.8, 3), Math.Round(c.Origin.Y * 304.8, 3),
+                                            Math.Round(c.Origin.Z * 304.8, 3)));
+            }
+            catch { }
+            o["ends_mm"] = ends;
+            return o;
+        }
+
+        /// <summary>A named failure point, for the tests that have to see a failure handled. Never set in a real run.</summary>
+        private static bool FaultInjected(string key)
+        {
+            string named = Environment.GetEnvironmentVariable("HORIZUN_TEST_FAIL_ACTION");
+            return !string.IsNullOrWhiteSpace(named) && string.Equals(named.Trim(), key, StringComparison.Ordinal);
         }
 
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
