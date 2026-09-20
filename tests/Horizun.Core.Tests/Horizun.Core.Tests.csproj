@@ -296,6 +296,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadCatalogCheck.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadPlacementRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateLedger.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadUpdateOperations.cs" />
     <!-- The RETIRED v1 provenance schema, written down as data. The store reads
          the v1 GUID and never writes it again, so on a machine without the
          previous release every element is v2 and the v1 -> v2 migration cannot

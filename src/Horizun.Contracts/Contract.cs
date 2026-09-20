@@ -1586,7 +1586,9 @@ namespace Horizun.Contracts
     ""accept_placement_move"": { ""type"": ""boolean"", ""default"": false,
       ""description"": ""Required TRUE when the plan was re-derived under a placement that MOVED (its provenance.placement_move_accepted is true): applying it re-shapes elements to follow the drawing, and the write is where that consent is said again."" },
     ""idempotency_key"": { ""type"": ""string"",
-      ""description"": ""The same key with the SAME actions replays the recorded reply (replayed: true) and runs nothing; the same key with different actions is refused. Per Revit session, bounded."" }
+      ""description"": ""The same key with the SAME actions replays the recorded reply (replayed: true) and runs nothing; the same key with different actions is refused. Per Revit session, bounded."" },
+    ""continue_operation"": { ""type"": ""string"",
+      ""description"": ""CARRY OUT WHAT AN EARLIER CALL LEFT PENDING - the operation_id from its reply. Three different things get called a retry and this names the middle one: the SAME key over FINISHED work replays that reply and runs nothing; THIS continues work that stopped part-way, running only the actions still pending and skipping the ones already confirmed; and when the drawing or the model has MOVED since, neither applies - the guard refuses and you plan again, because the decisions in that plan were answers to a question that has changed. The record is durable on this machine, so save, close, open a NEW session and continue is a case this supports; an id this machine does not hold is refused rather than guessed."" }
   },
   ""additionalProperties"": false
 }")

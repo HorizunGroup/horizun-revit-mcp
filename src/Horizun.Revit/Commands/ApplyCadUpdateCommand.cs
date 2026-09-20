@@ -146,6 +146,21 @@ namespace Horizun.Revit.Commands
             try { if (Rid.CanRepresent(instanceIdArg)) instanceNow = doc.GetElement(Rid.Make(instanceIdArg)); }
             catch { }
 
+            // A CONTINUATION IS NOT HELD AGAINST ITS OWN CONFIRMED WORK. The binding records what the
+            // elements looked like when the plan was made; an action that has since landed moved one ON
+            // PURPOSE. MEASURED: filtering only what gets re-read left the binding's list intact, so the
+            // element came back as "it could not be re-read" - the operation refusing itself in a
+            // different sentence. The LIST is what has to be filtered; every element this operation did
+            // not touch is still measured exactly as before. See Core/CadUpdateOperations.cs.
+            JObject guardBinding = binding;
+            if (request.Value<string>("continue_operation") != null)
+            {
+                guardBinding = (JObject)binding.DeepClone();
+                guardBinding["touched_elements"] = CadUpdateOperations.ExceptWhatItDidItself(
+                    binding["touched_elements"] as JArray,
+                    CadUpdateOperations.Read(request.Value<string>("continue_operation")));
+            }
+
             var now = new CadApplyNow
             {
                 ActionsFingerprint = CadConversionPlanRules.ActionsFingerprint(actions),
@@ -158,13 +173,48 @@ namespace Horizun.Revit.Commands
                 TargetDocument = title,
                 RevitVersion = RevitBuild(uiApp),
                 LinkGeometryFingerprint = CadSourceCoherence.GeometryFingerprint(doc, instanceNow),
-                Touched = CadElementPrint.ReadAgain(doc, binding["touched_elements"] as JArray)
+                Touched = CadElementPrint.ReadAgain(doc, guardBinding["touched_elements"] as JArray)
             };
 
-            JArray drift = CadApplyGuard.Drift(binding, now);
+            JArray drift = CadApplyGuard.Drift(guardBinding, now);
             if (drift.Count > 0)
+            {
+                // BEFORE CALLING IT STALE, ASK WHETHER THIS CALLER IS THE ONE WHO MOVED IT.
+                //
+                // MEASURED: a caller whose apply committed and whose ANSWER was lost sends the same call
+                // again. The elements its own confirmed actions re-shaped no longer match the binding, so
+                // the guard answered "the drawing changed since the plan - plan again". That is safe and
+                // it is not true: nothing of anybody else's moved, and re-planning is not what this
+                // caller needs. What they asked was "did my call land?", and the record knows.
+                string keyNow = request.Value<string>("idempotency_key");
+                JObject mine = CadUpdateOperations.Read(keyNow);
+                string minePlan = (mine?["binding"] as JObject)?.Value<string>("actions_fingerprint");
+                if (mine != null && string.Equals(minePlan, binding.Value<string>("actions_fingerprint"),
+                                                  StringComparison.Ordinal))
+                {
+                    var left = CadUpdateOperations.PendingKeys(mine);
+                    string how = left.Count == 0
+                        ? "Every action of it is confirmed: the work LANDED and there is nothing to send again."
+                        : "Part of it is still to do (" + string.Join(", ", left) + "). Send this same call " +
+                          "with continue_operation='" + mine.Value<string>("operation_id") + "' and only the " +
+                          "pending actions will run.";
+                    return CommandResult.FailWithDetail(
+                        "already_applied_under_this_key: idempotency_key '" + keyNow + "' already ran " +
+                        "these exact actions on this machine, and what moved since is what THOSE actions did - " +
+                        "not somebody else's change. NOTHING was written now. " + how,
+                        new JObject
+                        {
+                            ["refused"] = "already_applied_under_this_key",
+                            ["operation"] = CadUpdateOperations.Describe(mine, "recognised"),
+                            ["drift_explained_by_this_operation"] = drift,
+                            ["means"] = "this is the answer to a lost reply: the record says what the earlier " +
+                                        "call did. It is NOT a stale plan - re-planning here would build a " +
+                                        "second copy of work that is already in the model."
+                        });
+                }
                 return CommandResult.FailWithDetail(CadApplyGuard.StalePlanMessage(drift),
                                                     new JObject { ["refused"] = "stale_plan", ["drift"] = drift });
+            }
 
             JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceNow, factsNow, false);
             string coherenceMessage;
@@ -182,7 +232,63 @@ namespace Horizun.Revit.Commands
             // replays what was recorded; the same key over different actions is
             // refused. Rehearsals are not recorded: a dry run writes nothing, so
             // there is nothing a replay could hide.
-            if (!dryRun)
+            // ---- WHICH OF THE THREE THINGS CALLED "RETRY" THIS IS --------------------
+            //
+            //   REPEAT    same key, same actions, already finished -> the ledger replays the reply
+            //             below and NOTHING runs again.
+            //   CONTINUE  continue_operation names an operation an earlier call left half done. The
+            //             actions it confirmed are skipped; the pending ones run, under the decisions
+            //             that call was given, against the world the guard above has just re-measured.
+            //   A NEW PLAN  the world moved. The guard refuses this call and the caller plans again;
+            //             the old decisions do not carry, because the question changed.
+            //
+            // The ledger lives in one Revit process. "Save, close, open a new session and continue" is
+            // a case a caller actually has, so the operation record is durable on disk instead - see
+            // Core/CadUpdateOperations.cs.
+            string continueId = request.Value<string>("continue_operation");
+            string operationId = continueId ?? idempotencyKey ??
+                                 ("op:" + actionsFingerprint + ":" + (placementId ?? title));
+            JObject operation = CadUpdateOperations.Read(operationId);
+            string operationShape = continueId != null ? "continued" : "fresh";
+            if (continueId != null)
+            {
+                if (operation == null)
+                    return CommandResult.Fail(
+                        "no_such_operation: nothing is recorded under '" + continueId + "' on this machine. A " +
+                        "continuation carries out what an earlier call left pending, and without its record " +
+                        "there is nothing to carry out - plan again from the current drawing and apply that. " +
+                        "NOTHING was written.");
+                string recorded = (operation["binding"] as JObject)?.Value<string>("actions_fingerprint");
+                if (!string.IsNullOrWhiteSpace(recorded) &&
+                    !string.Equals(recorded, binding.Value<string>("actions_fingerprint"), StringComparison.Ordinal))
+                    return CommandResult.FailWithDetail(
+                        "operation_is_for_other_actions: '" + continueId + "' was opened for a different plan. A " +
+                        "continuation may only carry out the work it was opened for; applying other actions under " +
+                        "its id would spend decisions somebody gave about one question on a different one. " +
+                        "NOTHING was written.",
+                        new JObject { ["refused"] = "operation_is_for_other_actions",
+                                      ["operation_was_opened_for"] = recorded,
+                                      ["this_call_carries"] = binding["actions_fingerprint"] });
+            }
+            var alreadyConfirmed = new HashSet<string>(
+                (operation?["actions"] as JArray ?? new JArray()).OfType<JObject>()
+                    .Where(r => r.Value<string>("state") == CadUpdateOperations.Confirmed)
+                    .Select(r => r.Value<string>("key") ?? ""), StringComparer.Ordinal);
+            if (continueId != null && alreadyConfirmed.Count ==
+                (operation["actions"] as JArray ?? new JArray()).Count)
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = title,
+                    ["wrote_nothing"] = true,
+                    ["operation"] = CadUpdateOperations.Describe(operation, "already_finished"),
+                    ["means"] = "every action of '" + continueId + "' is already confirmed. NOTHING ran. " +
+                                "There is nothing left of this operation to continue."
+                });
+
+            // A CONTINUATION DOES NOT GO THROUGH THE LEDGER. The ledger answers "this key already ran"
+            // with the reply that run produced - which is right for a repeat and wrong here, because the
+            // caller is asking for the part that did NOT run.
+            if (!dryRun && continueId == null)
             {
                 CadUpdateLedgerDecision decision = CadUpdateLedger.Decide(idempotencyKey, actionsFingerprint);
                 if (decision.Outcome == "refuse") return CommandResult.Fail(decision.Refusal);
@@ -208,6 +314,15 @@ namespace Horizun.Revit.Commands
             foreach (JObject action in actions.OfType<JObject>())
             {
                 string key = action.Value<string>("key") ?? "";
+                // WHAT IS ALREADY IN THE MODEL IS NOT REHEARSED EITHER: a confirmed create rehearsed
+                // again would ask to build a second one, and a confirmed re-shape would be rehearsed
+                // against an element that has already moved.
+                if (alreadyConfirmed.Contains(key))
+                {
+                    rehearsal.Add(new JObject { ["key"] = key, ["tool"] = action["tool"], ["ok"] = true,
+                        ["skipped"] = true, ["means"] = "confirmed by an earlier call of this operation" });
+                    continue;
+                }
                 string tool = action.Value<string>("tool");
                 ICommand child = tool == null ? null : _resolve(tool);
                 if (child == null)
@@ -253,6 +368,7 @@ namespace Horizun.Revit.Commands
                     ["tokens_by_key"] = tokens,
                     ["restamp_pending"] = restampRows.Count,
                     ["previous_partial"] = previousPartial,
+                    ["operation"] = CadUpdateOperations.Describe(operation, operationShape + "_rehearsal"),
                     ["means"] = clean
                         ? "every action rehearsed cleanly and nothing was written. Send the same actions with " +
                           "dry_run=false and each action's token from tokens_by_key."
@@ -267,6 +383,10 @@ namespace Horizun.Revit.Commands
             }
 
             // ---------------------------------------------------------- apply
+            // OPENED BEFORE THE FIRST WRITE, so a process that dies mid-update leaves a record naming
+            // what was confirmed and what was not. Opening an id that exists returns it as it stands.
+            operation = CadUpdateOperations.Begin(operationId, title, placementId, binding,
+                                                  binding["decisions_authorised"] as JObject, actions);
             var applied = new JArray();
             var touched = new List<Touched>();
             var keptInPlace = new JArray();
@@ -275,6 +395,15 @@ namespace Horizun.Revit.Commands
             foreach (JObject action in actions.OfType<JObject>())
             {
                 string key = action.Value<string>("key") ?? "";
+                // ALREADY DONE IS NOT DONE AGAIN. On a continuation the actions that landed are in the
+                // model; running them a second time is how a retry builds the revision twice.
+                if (alreadyConfirmed.Contains(key))
+                {
+                    applied.Add(new JObject { ["key"] = key, ["tool"] = action["tool"], ["ok"] = true,
+                        ["skipped"] = true,
+                        ["means"] = "confirmed by an earlier call of this operation; nothing ran." });
+                    continue;
+                }
                 string tool = action.Value<string>("tool");
                 ICommand child = _resolve(tool);
                 JObject args = (JObject)(action["arguments"] ?? new JObject()).DeepClone();
@@ -352,8 +481,19 @@ namespace Horizun.Revit.Commands
                 }
                 else failures++;
                 applied.Add(row);
+                // WRITTEN THE MOMENT THE ACTION LANDS, not at the end. A crash between here and the
+                // reply is exactly the case this record exists for: what it says then is the truth.
+                CadUpdateOperations.MarkAction(operationId, key,
+                    r.Success ? CadUpdateOperations.Confirmed : CadUpdateOperations.Failed,
+                    touched.Where(x => x.Key == key).Select(x => x.ElementId),
+                    string.Equals(tool, "horizun_delete_verified", StringComparison.Ordinal)
+                        ? TargetIds(args) : null,
+                    r.Success ? null : r.Error);
                 if (!r.Success) break;   // stop at the first failure; a half-updated model is nobody's revision
             }
+
+            // READ BACK FROM THE MODEL, after the writes and before the reply is built.
+            JArray openJunctions = CadOpenJunctions.Find(doc, touched.Select(x => x.ElementId).Distinct());
 
             // ----------------------------------------------------- provenance
             var stamps = new JArray();
@@ -662,6 +802,13 @@ namespace Horizun.Revit.Commands
                                     "rest were re-stamped under the placement's current transform.",
                 ["placement_move_accepted"] = planUnderMove,
                 ["previous_partial"] = previousPartial,
+                // WHAT THIS CALL BUILT AND DID NOT JOIN. See Core/CadOpenJunctions.cs: an update writes
+                // geometry, joining is its own consented step, and a division built by an update leaves
+                // two ends at the same point holding nothing. Every count of elements, sizes and
+                // positions calls that correct.
+                ["ends_that_meet_and_are_not_joined"] = openJunctions,
+                ["ends_that_meet_and_are_not_joined_means"] = CadOpenJunctions.Means(openJunctions),
+                ["operation"] = CadUpdateOperations.Describe(CadUpdateOperations.Read(operationId), operationShape),
                 ["replayed"] = false,
                 ["state"] = failures == 0 ? "applied" : "partial",
                 ["atomicity"] = "PER ACTION, not whole. Each typed command is atomic and verified in itself; the " +
@@ -670,8 +817,11 @@ namespace Horizun.Revit.Commands
                 ["partial_means"] = failures == 0
                     ? null
                     : "an action failed and the ones after it did not run. What landed IS in the model and is " +
-                      "stamped. Re-plan from the current drawing rather than re-sending this plan: the model has " +
-                      "moved since it was made.",
+                      "stamped. There are two ways on, and they are not the same: CONTINUE this operation - " +
+                      "send the same actions and apply_binding with continue_operation='" + operationId + "', " +
+                      "which carries out only what is still pending and only while nothing has moved - or, if " +
+                      "the drawing or the model HAS moved since, plan again from the current drawing, because " +
+                      "the decisions in this plan were answers to a question that has changed.",
                 ["re_plan_note"] = "the elements stamped above now carry THIS revision, so planning the next " +
                                    "update against this drawing will read them as built rather than missing."
             };
@@ -680,6 +830,7 @@ namespace Horizun.Revit.Commands
             // placement, and the next plan applied there carries it.
             CadUpdateLedger.Record(idempotencyKey, actionsFingerprint, placementId,
                                    failures == 0 ? "applied" : "partial", result);
+            CadUpdateOperations.Finish(operationId, failures == 0 ? "finished" : "partial");
             return CommandResult.Ok(result);
         }
 

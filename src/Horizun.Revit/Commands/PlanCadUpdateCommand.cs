@@ -592,7 +592,22 @@ namespace Horizun.Revit.Commands
                     ["instance_id"] = instanceId,
                     ["link_geometry_fingerprint"] = CadSourceCoherence.GeometryFingerprint(doc, element),
                     ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
-                        ["coherence_state"] = coherenceNow.Value<string>("state"),
+                    ["coherence_state"] = coherenceNow.Value<string>("state"),
+                    // WHAT THE CALLER AUTHORISED, AND OVER WHICH ELEMENTS. A continuation of a half-done
+                    // apply runs under the decisions the FIRST call was given - so those decisions have to
+                    // travel with the plan, by id, rather than be reconstructed later from memory by
+                    // whoever is holding the pieces. See Core/CadUpdateOperations.cs.
+                    ["decisions_authorised"] = new JObject
+                    {
+                        ["accept_pairings"] = request["accept_pairings"],
+                        ["resolve"] = request["resolve"],
+                        ["release_fittings"] = request["release_fittings"],
+                        ["release_protected_fittings"] = request["release_protected_fittings"],
+                        ["accept_placement_move"] = request["accept_placement_move"],
+                        ["means"] = "the decisions this plan was built under. They are answers to THIS " +
+                                    "drawing against THIS model; a continuation may carry them out and may " +
+                                    "not widen them, and a plan made after either moved does not inherit them."
+                    },
                     // AND THE ELEMENTS THE ACTIONS ARE ABOUT, as they are right now. Everything else here
                     // checks the drawing and the request; this checks the MODEL, which is where a person's
                     // work lives between a plan and its apply.
