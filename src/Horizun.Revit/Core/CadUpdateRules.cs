@@ -252,11 +252,17 @@ namespace Horizun.Revit.Core
             [RotateInFace] = new[] { CadChange.Reoriented },
             [Keep] = new[] { CadChange.ManuallyDiverged, CadChange.Resized, CadChange.Retyped, CadChange.Reoriented,
                              CadChange.Rehosted, CadChange.Reinterpreted, CadChange.Relayered, CadChange.Conflict,
-                             CadChange.Removed },
+                             CadChange.Removed, CadChange.Merge },
             [Replace] = new[] { CadChange.Rehosted, CadChange.Reoriented, CadChange.Conflict, CadChange.Reinterpreted },
             // DELETION IS A PERSON'S DECISION ON AN ORPHAN, and only on one: an element the
             // drawing no longer says, or no longer says and a person also moved.
-            [Delete] = new[] { CadChange.Removed, CadChange.Conflict }
+            //
+            // A MERGE PART IS THE THIRD. Accepting a merge re-shapes one element to the whole line and
+            // leaves the others standing inside it, on purpose - a pairing must never delete anything.
+            // Deleting them is how the merge is finished, and without this the only decision the part
+            // admitted was none at all, which left a duct inside another with no way forward but the
+            // Revit UI. Keeping them is the other answer, and it is allowed for the same reason.
+            [Delete] = new[] { CadChange.Removed, CadChange.Conflict, CadChange.Merge }
         };
 
         /// <summary>
