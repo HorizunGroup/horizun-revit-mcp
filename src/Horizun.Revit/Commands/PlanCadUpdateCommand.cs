@@ -529,6 +529,13 @@ namespace Horizun.Revit.Commands
                     "in 'a person decides' - and a reader with only the kind cannot tell them apart. The " +
                     "vocabulary is closed and every name is reported with its count, including the zeros: a " +
                     "key that simply disappeared would read as 'not measured' rather than 'none found'.",
+                // THE SAME QUESTION THE FIRST CONVERSION ASKS. An update is a plan like any other: its
+                // geometry is the link as Revit loaded it and its sizes are read from the file now, and
+                // those can be different issues of the drawing. A repoint reloads the link, so the
+                // ordinary route arrives here aligned - but a plan made against a link somebody else
+                // loaded, or whose sources moved since, must say so here too rather than only in
+                // horizun_plan_from_cad.
+                ["coherence"] = CadSourceCoherence.Evaluate(doc, element, facts, false),
                 // EVERY DIVISION IN ONE PLACE. See Core/CadRevisionShapes.cs: what survives, what is
                 // created, what a decision would remove, which fittings and joins are in the way, and
                 // the line before against the lines after. Assembled from the same actions, never
