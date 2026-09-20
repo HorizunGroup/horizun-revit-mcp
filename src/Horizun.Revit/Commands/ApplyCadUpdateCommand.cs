@@ -483,11 +483,27 @@ namespace Horizun.Revit.Commands
                 applied.Add(row);
                 // WRITTEN THE MOMENT THE ACTION LANDS, not at the end. A crash between here and the
                 // reply is exactly the case this record exists for: what it says then is the truth.
+                //
+                // WHAT AN ACTION REMOVED IS READ BACK, NOT INFERRED FROM ITS TOOL NAME.
+                //
+                // MEASURED: a fittings RELEASE is not horizun_delete_verified, so the fitting it deleted
+                // was recorded as neither created nor removed - and the continuation was then refused
+                // because the binding still expected to read it: "element 978345 ... it could not be
+                // re-read". The operation was held against work IT had done, one layer down from the
+                // first time this happened. The tool name was never the right question: what matters is
+                // which of the elements this action acted on are GONE now.
+                var actedOn = new List<long>(TargetIds(args));
+                var goneNow = new List<long>();
+                if (r.Success)
+                    foreach (long id in actedOn.Distinct())
+                    {
+                        try { if (doc.GetElement(Rid.ToElementId(id)) == null) goneNow.Add(id); }
+                        catch { goneNow.Add(id); }
+                    }
                 CadUpdateOperations.MarkAction(operationId, key,
                     r.Success ? CadUpdateOperations.Confirmed : CadUpdateOperations.Failed,
                     touched.Where(x => x.Key == key).Select(x => x.ElementId),
-                    string.Equals(tool, "horizun_delete_verified", StringComparison.Ordinal)
-                        ? TargetIds(args) : null,
+                    goneNow.Count > 0 ? goneNow : null,
                     r.Success ? null : r.Error);
                 if (!r.Success) break;   // stop at the first failure; a half-updated model is nobody's revision
             }
