@@ -757,9 +757,16 @@ namespace Horizun.Revit.Commands
 
         /// <summary>The requirement set's hash, or null when it cannot be loaded - the guard skips what it
         /// cannot measure rather than refusing a plan over a value it never had.</summary>
+        /// <summary>
+        /// EXACTLY WHAT THE PLANNER RECORDS, or the two disagree over nothing. Measured on the first live
+        /// case: the plan wrote "2026.20250408_1515" and this wrote "2026", so every apply reported the
+        /// Revit build as drift - a refusal that is correct in form and false in fact, which is the kind
+        /// that teaches people to ignore refusals.
+        /// </summary>
         private static string RevitBuild(UIApplication app)
         {
-            try { return app?.Application?.VersionNumber; } catch { return null; }
+            try { return app?.Application?.VersionNumber + "." + app?.Application?.VersionBuild; }
+            catch { return null; }
         }
 
         private static string SetShaOf(JObject setJson)

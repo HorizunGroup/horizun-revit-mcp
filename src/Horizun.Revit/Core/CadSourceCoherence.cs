@@ -94,6 +94,8 @@ namespace Horizun.Revit.Core
             string path = facts != null ? facts.ExternalPath : null;
             string fileSha = facts != null ? facts.FileSha256 : null;
             string setNow = CadDwgCache.SourceSetSha256(path, fileSha);
+            JObject setState = CadDwgCache.SetState(path, fileSha);
+            JObject record = CadLinkLoads.Read(doc, uid);
 
             o["sources_now"] = new JObject
             {
@@ -101,11 +103,61 @@ namespace Horizun.Revit.Core
                 ["file_sha256"] = fileSha,
                 ["source_set_sha256"] = setNow,
                 ["set_means"] = "the host file and every external reference resolved from beside it. This is " +
-                                "what moves when a drawing is revised; the host's own hash does not have to."
+                                "what moves when a drawing is revised; the host's own hash does not have to.",
+                ["set_state"] = setState
             };
 
-            JObject record = CadLinkLoads.Read(doc, uid);
+            // A REFERENCE THAT MOVED IS NOT AN UNKNOWN SET. The cache knows the name of what changed, and
+            // saying "the identity could not be computed" sends the reader to look for a missing file
+            // instead of at the revision they just received.
+            if (!fromSnapshot && record != null && setState.Value<string>("state") == "changed" &&
+                !string.IsNullOrWhiteSpace(record.Value<string>("source_set_sha256")))
+            {
+                o["state"] = NotAligned;
+                o["applicable"] = false;
+                o["why"] = "a_reference_of_the_drawing_changed";
+                o["differs"] = new JObject
+                {
+                    ["source_set_when_loaded"] = record["source_set_sha256"],
+                    ["source_set_now"] = "(not computable until the drawing is read again)",
+                    ["references_that_changed"] = setState["changed"]
+                };
+                o["means"] = "the drawing was revised through its references after this link was loaded: " +
+                             setState["changed"].ToString(Newtonsoft.Json.Formatting.None) + " no longer " +
+                             "hashes as it did. The geometry here is the older issue.";
+                o["remedy"] = "horizun_manage_cad_links operation=reload on this instance, then plan again.";
+                return o;
+            }
+
             string printNow = record == null ? null : GeometryFingerprint(doc, instance);
+
+            // THE WINDOW BETWEEN A LOAD AND THE FIRST READ OF WHAT IT LOADED.
+            //
+            // A load records the set identity from what this machine already knows about the file. After a
+            // REPOINT - which is how a revision arrives - the new drawing has never been read here, so the
+            // references are unknown and the record's set is null. The next plan then compares a number
+            // against nothing and answers coherence_unknown, and the caller is told to reload a link that
+            // was just loaded. MEASURED on the fixture: the ordinary repoint-then-plan order produced that
+            // every time.
+            //
+            // So the set is LEARNED at the first read after the load, and the record says so. It is not a
+            // claim about the moment of loading: anything that changed between the load and this first
+            // read is inside that window and cannot be seen. The window is named in the reply rather than
+            // smoothed over, and it only ever closes once - a record that already carries a set is never
+            // rewritten here, because that would quietly move the baseline a comparison depends on.
+            if (record != null && string.IsNullOrWhiteSpace(record.Value<string>("source_set_sha256")) &&
+                !string.IsNullOrWhiteSpace(setNow) &&
+                string.Equals(record.Value<string>("geometry_fingerprint"), printNow, StringComparison.Ordinal))
+            {
+                CadLinkLoads.LearnSet(doc, uid, setNow);
+                record = CadLinkLoads.Read(doc, uid) ?? record;
+                o["source_set_learned_at_first_read"] = true;
+                o["source_set_learned_means"] =
+                    "this link was loaded before anything on this machine had read the drawing, so its " +
+                    "references were unknown and the record carried no set. It was learned on this read, " +
+                    "with the link still fingerprinting as it did when it was loaded. Any change between " +
+                    "the load and this read is inside that window and was not seen.";
+            }
             JObject decided = CadSourceCoherenceRules.Decide(record, setNow, fileSha, printNow, fromSnapshot);
             if (record != null)
             {

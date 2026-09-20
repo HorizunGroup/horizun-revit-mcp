@@ -416,6 +416,51 @@ namespace Horizun.Revit.Core
         /// - the caller then has the host's hash only, and says so. Prefixed "set:" so it is
         /// never compared as if it were a single file's hash.
         /// </summary>
+        /// <summary>
+        /// WHY a set identity could not be computed, when it could not.
+        ///
+        /// "Unknown" covers two very different situations and the caller needs them apart: nothing on
+        /// this machine has ever read this drawing (so its references are genuinely unknown), or a
+        /// reading exists and one of the files it recorded no longer hashes as it did - which is not
+        /// unknown at all, it is a revision, and the cache knows the NAME of what moved.
+        ///
+        /// Measured on the fixture: a nested reference revised after a plan refused with "the identity
+        /// could not be computed", which is true and sends the reader to look for a missing file.
+        ///
+        /// Returns state = known | changed | never_read, with the names when changed.
+        /// </summary>
+        public static JObject SetState(string dwgPath, string hostSha)
+        {
+            var o = new JObject { ["state"] = "never_read" };
+            if (string.IsNullOrWhiteSpace(dwgPath) || string.IsNullOrWhiteSpace(hostSha) || !Directory.Exists(Root))
+                return o;
+            string here = null;
+            try { here = Path.GetDirectoryName(dwgPath); } catch { }
+            var sides = new List<JObject>();
+            foreach (string sidecar in Directory.GetFiles(Root, "*.json").OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                JObject candidate;
+                try { candidate = JObject.Parse(File.ReadAllText(sidecar)); } catch { continue; }
+                if (!string.Equals((string)candidate["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
+                sides.Add(candidate);
+            }
+            if (sides.Count == 0) return o;
+            foreach (JObject side in sides)
+                if (ChangedDependencies(side, here).Count == 0) { o["state"] = "known"; return o; }
+
+            var names = new JArray();
+            foreach (JObject side in sides.Take(1))
+                foreach (JObject dep in ChangedDependencies(side, here).OfType<JObject>())
+                    names.Add(dep["name"] ?? dep["path"] ?? "(unnamed)");
+            o["state"] = "changed";
+            o["changed"] = names;
+            o["means"] = "a reading of these host bytes exists here and at least one file it recorded no " +
+                         "longer hashes as it did. The drawing has been revised through its references; " +
+                         "the identity of the set now is not computable until it is read again, and what " +
+                         "moved is named above.";
+            return o;
+        }
+
         public static string SourceSetSha256(string dwgPath, string hostSha)
         {
             if (string.IsNullOrWhiteSpace(dwgPath) || string.IsNullOrWhiteSpace(hostSha) || !Directory.Exists(Root))

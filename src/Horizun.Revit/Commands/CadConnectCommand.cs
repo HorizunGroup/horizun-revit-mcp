@@ -451,6 +451,10 @@ namespace Horizun.Revit.Commands
             // A REHEARSAL RETURNS HERE: the provenance write below belongs to an apply only.
             if (dryRun) return CommandResult.Ok(result);
             result["provenance_as_connected"] = RecordAsConnected(doc, madeJunctions, tolerance);
+            // AND THE FITTINGS THEMSELVES. Nothing stamped one until now, so an update needing a fitting
+            // released could not tell one this bridge had placed from one somebody put there and tuned -
+            // and had to hold every one of them. See Core/CadFittingProvenance.cs.
+            result["provenance_fittings"] = RecordFittingsMade(doc, madeJunctions, tolerance);
             return CommandResult.Ok(result);
         }
 
@@ -717,6 +721,71 @@ namespace Horizun.Revit.Commands
                 ["all_connected"] = joined,
                 ["evidence"] = ev
             };
+        }
+
+        /// <summary>
+        /// Stamp every fitting this call placed with the junction it serves, the members it joins and a
+        /// print of what it is - so a later revision can say whether it is ours, ours-and-since-touched,
+        /// or of unknown origin, instead of holding all three alike.
+        ///
+        /// The fitting is found the same way everything else here is: from the members' connectors at the
+        /// drawn point, re-read from the model after the commit. A junction whose members turn out not to
+        /// be joined to anything is not stamped and says so.
+        /// </summary>
+        private static JArray RecordFittingsMade(Document doc, List<Junction> junctions, double tolerance)
+        {
+            var rows = new JArray();
+            if (junctions == null || junctions.Count == 0) return rows;
+            using (var t = new Transaction(doc, "Horizun: record the fittings this call placed"))
+            {
+                if (t.Start() != TransactionStatus.Started) return rows;
+                foreach (Junction j in junctions)
+                {
+                    if (j.Unresolved != null || j.Elements.Count < 2) continue;
+                    if (j.Fitting == "none" || j.Fitting == "direct") continue;
+                    Element fitting = null;
+                    var memberIds = new List<long>();
+                    foreach (Element e in j.Elements) memberIds.Add(Rid.Value(e.Id));
+                    foreach (Element e in j.Elements)
+                    {
+                        MepConnectorPick pick = MepConnect.Nearest(e, j.At, Math.Max(tolerance, 50.0));
+                        if (!pick.Found || pick.Connector == null) continue;
+                        try
+                        {
+                            foreach (Connector r in pick.Connector.AllRefs)
+                            {
+                                if (r?.Owner == null || memberIds.Contains(Rid.Value(r.Owner.Id))) continue;
+                                fitting = r.Owner;
+                                break;
+                            }
+                        }
+                        catch { }
+                        if (fitting != null) break;
+                    }
+                    if (fitting == null)
+                    {
+                        rows.Add(new JObject
+                        {
+                            ["junction"] = j.Id, ["stamped"] = false,
+                            ["means"] = "no fitting was found joined to these members at the drawn point, so " +
+                                        "there was nothing to stamp. What the junction row says stands."
+                        });
+                        continue;
+                    }
+                    string problem;
+                    CadProvenance from = null;
+                    try { from = CadProvenanceStore.Read(j.Elements[0], out problem); } catch { }
+                    bool ok = CadFittingProvenance.Stamp(doc, fitting, j.Id, j.Fitting, memberIds, from, out problem);
+                    rows.Add(new JObject
+                    {
+                        ["junction"] = j.Id, ["element_id"] = Rid.Value(fitting.Id), ["kind"] = j.Fitting,
+                        ["members"] = new JArray(memberIds.Select(x => (JToken)x)),
+                        ["stamped"] = ok, ["error"] = ok ? null : problem
+                    });
+                }
+                Guard.Commit(t, "record the fittings this call placed");
+            }
+            return rows;
         }
 
         private static JArray RecordAsConnected(Document doc, List<Junction> junctions, double tolerance)

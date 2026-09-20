@@ -725,12 +725,17 @@ namespace Horizun.Revit.Commands
                         long id = Rid.Value(r.Owner.Id);
                         if (!seen.Add(id)) continue;
                         var sym = doc.GetElement(r.Owner.GetTypeId()) as ElementType;
+                        JObject origin = CadFittingProvenance.Describe(doc, r.Owner);
                         found.Add(new JObject
                         {
                             ["element_id"] = id,
                             ["what"] = sym == null ? r.Owner.Name : sym.FamilyName + ": " + sym.Name,
                             ["joins_at_mm"] = new JArray(Math.Round(CadUnits.FeetToMm(c.Origin.X), 1),
-                                                         Math.Round(CadUnits.FeetToMm(c.Origin.Y), 1))
+                                                         Math.Round(CadUnits.FeetToMm(c.Origin.Y), 1)),
+                            // WHERE IT CAME FROM, in three answers rather than two. Having placed it is not
+                            // permission to delete it: one this bridge placed and a person then moved is
+                            // their work now, and is protected exactly like one nobody here placed.
+                            ["origin"] = origin
                         });
                     }
                 }
@@ -757,6 +762,9 @@ namespace Horizun.Revit.Commands
             // THE FITTINGS A CALLER HAS AGREED TO LOSE, by id. Nothing else is ever released: see the
             // hold below, and the ids it publishes with what they will be replaced by.
             var releaseFittings = new HashSet<long>((request["release_fittings"] as JArray ?? new JArray())
+                .Select(x => (long?)x).Where(x => x.HasValue).Select(x => x.Value));
+            // The second consent, for fittings whose loss costs somebody's work. See the hold below.
+            var releaseProtected = new HashSet<long>((request["release_protected_fittings"] as JArray ?? new JArray())
                 .Select(x => (long?)x).Where(x => x.HasValue).Select(x => x.Value));
 
             // THE CREATES, BUILT AS THE PLAN ROUTE BUILDS THEM. The candidates are
@@ -1002,13 +1010,30 @@ namespace Horizun.Revit.Commands
                 if (joined.Count > 0)
                 {
                     var release = joined.OfType<JObject>().Select(x => x.Value<long>("element_id")).ToList();
-                    bool allReleased = release.All(releaseFittings.Contains);
+                    // A FITTING SOMEBODY HAS TOUCHED NEEDS ITS OWN WORD. release_fittings says "I accept
+                    // losing the fittings this operation costs"; it cannot also mean "and I accept losing
+                    // the work somebody did to one of them", because the caller who wrote the first list
+                    // had no way of knowing the second existed. Ours-and-untouched goes in the first list;
+                    // ours-and-since-modified, and anything of unknown origin, needs the second.
+                    var protectedIds = joined.OfType<JObject>()
+                        .Where(x => (x["origin"] as JObject)?.Value<string>("origin") != CadFittingProvenance.MadeHere)
+                        .Select(x => x.Value<long>("element_id")).ToList();
+                    bool allReleased = release.All(releaseFittings.Contains) &&
+                                       protectedIds.All(releaseProtected.Contains);
                     a.Evidence["fittings_in_the_way"] = joined;
                     if (!allReleased)
                     {
                         a.Automatic = false;
                         a.Evidence["held_because"] = "fittings_must_be_released_first";
                         a.Evidence["release_fittings_to_proceed"] = new JArray(release);
+                        if (protectedIds.Count > 0)
+                        {
+                            a.Evidence["also_release_protected_fittings"] = new JArray(protectedIds);
+                            a.Evidence["protected_because"] =
+                                "each of these is either a fitting this bridge never placed, or one it placed " +
+                                "and somebody has changed since. Losing it loses somebody's work, so naming it " +
+                                "in release_fittings is not enough: name it in release_protected_fittings too.";
+                        }
                         a.Evidence["id_substitutions"] = new JArray(joined.OfType<JObject>().Select(x =>
                             (JToken)new JObject
                             {

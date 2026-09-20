@@ -90,6 +90,27 @@ namespace Horizun.Revit.Core
             catch { /* a record that cannot be written leaves the answer unknown, which is the safe one */ }
         }
 
+        /// <summary>
+        /// Fill in a set identity a load could not know, ONCE. See CadSourceCoherence for when this is
+        /// legitimate: the link must still fingerprint as it did when it was loaded, and a record that
+        /// already carries a set is never rewritten - moving a baseline quietly is worse than not having
+        /// one at all.
+        /// </summary>
+        public static void LearnSet(Document doc, string instanceUniqueId, string setSha256)
+        {
+            try
+            {
+                JObject o = Read(doc, instanceUniqueId);
+                if (o == null || !string.IsNullOrWhiteSpace((string)o["source_set_sha256"])) return;
+                o["source_set_sha256"] = setSha256;
+                o["source_set_learned_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+                o["source_set_learned_means"] = "not known when the link was loaded - nothing had read the " +
+                                                "drawing here yet - and learned at the first read afterwards.";
+                File.WriteAllText(PathFor(doc, instanceUniqueId), o.ToString(Formatting.Indented));
+            }
+            catch { }
+        }
+
         public static JObject Read(Document doc, string instanceUniqueId)
         {
             try
