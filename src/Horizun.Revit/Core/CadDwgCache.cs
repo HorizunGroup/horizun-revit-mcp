@@ -640,6 +640,18 @@ namespace Horizun.Revit.Core
         private static string Key(JObject dep) => Key((string)dep["name"], (string)dep["declared"]);
 
         /// <summary>
+        /// A DWG RECORDS ITS REFERENCES THE WAY AUTOCAD WROTE THEM - "ARCH\background.dwg" - and
+        /// that is what the file says on whatever machine reads it later. On Windows the backslash
+        /// is already the separator; anywhere else it is an ordinary filename character and every
+        /// folder step would be lost. So a declared path is translated once, here, at the single
+        /// point where it stops being data from the drawing and becomes a path to look at.
+        /// </summary>
+        private static string Declared(string declared) =>
+            declared == null || Path.DirectorySeparatorChar == '\\'
+                ? declared
+                : declared.Replace('\\', Path.DirectorySeparatorChar);
+
+        /// <summary>
         /// Every reference resolved from the drawing's folder, a NESTED one ("Parent|Child")
         /// from its parent's folder - a nested reference records its path relative to the file
         /// that references it, not to the drawing at the top.
@@ -680,17 +692,17 @@ namespace Horizun.Revit.Core
                 string had;
                 if (result.TryGetValue(key, out had) && had != null) continue;
                 string leaf = null;
-                try { leaf = Path.GetFileName(x.Path ?? x.Name); } catch { }
+                try { leaf = Path.GetFileName(Declared(x.Path) ?? x.Name); } catch { }
                 if (string.IsNullOrWhiteSpace(leaf)) continue;
                 bool relative = false;
-                try { relative = !string.IsNullOrWhiteSpace(x.Path) && (!Path.IsPathRooted(x.Path) || x.Path.StartsWith(".", StringComparison.Ordinal)); }
+                try { relative = !string.IsNullOrWhiteSpace(x.Path) && (!Path.IsPathRooted(Declared(x.Path)) || x.Path.StartsWith(".", StringComparison.Ordinal)); }
                 catch { }
                 // its declared RELATIVE path, from each resolved reference's folder (a nested reference records
                 // its path relative to its parent) - and only when that finds nothing, the bare file name
                 Func<Func<string, string>, List<string>> probe = make => folders.Select(make)
                     .Where(p => { try { return p != null && File.Exists(p); } catch { return false; } })
                     .Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                List<string> found = relative ? probe(f => { try { return Path.Combine(f, x.Path); } catch { return null; } })
+                List<string> found = relative ? probe(f => { try { return Path.Combine(f, Declared(x.Path)); } catch { return null; } })
                                               : new List<string>();
                 if (found.Count == 0) found = probe(f => Path.Combine(f, leaf));
                 if (found.Count != 1) continue;
@@ -719,17 +731,18 @@ namespace Horizun.Revit.Core
         {
             if (!string.IsNullOrWhiteSpace(x.Path))
             {
+                string declared = Declared(x.Path);
                 bool rooted = false;
-                try { rooted = Path.IsPathRooted(x.Path) && !x.Path.StartsWith(".", StringComparison.Ordinal); } catch { }
+                try { rooted = Path.IsPathRooted(declared) && !declared.StartsWith(".", StringComparison.Ordinal); } catch { }
                 // A RELATIVE PATH IS RELATIVE TO THE FILE THAT DECLARES IT - never to this process.
                 if (!rooted)
                 {
-                    if (parentFolder != null) yield return Path.Combine(parentFolder, x.Path);
-                    if (folder != null) yield return Path.Combine(folder, x.Path);
+                    if (parentFolder != null) yield return Path.Combine(parentFolder, declared);
+                    if (folder != null) yield return Path.Combine(folder, declared);
                 }
-                else yield return x.Path;
+                else yield return declared;
                 string leaf = null;
-                try { leaf = Path.GetFileName(x.Path); } catch { }
+                try { leaf = Path.GetFileName(declared); } catch { }
                 if (leaf != null)
                 {
                     if (parentFolder != null) yield return Path.Combine(parentFolder, leaf);

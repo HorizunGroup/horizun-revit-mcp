@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Horizun.Server;
@@ -46,6 +47,12 @@ namespace Horizun.Server.Tests
         [Fact]
         public void A_holder_that_never_lets_go_still_fails_and_leaves_the_record_whole()
         {
+            // The refusal here is the OPERATING SYSTEM's, not this code's: Windows will not swap a
+            // file somebody holds open. MEASURED on linux-x64: the same swap SUCCEEDS, because
+            // FileShare there is an advisory lock a rename does not consult. So off Windows this
+            // asserts what is true everywhere - patience is bounded and the record is never left
+            // half-written - rather than a guarantee that platform does not make.
+            bool windows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
             string target = Path.Combine(_dir, "run.json");
             File.WriteAllText(target, "old");
             TimeSpan before = SharedRecordFile.Patience;
@@ -53,8 +60,11 @@ namespace Horizun.Server.Tests
             try
             {
                 using (new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.Read))
-                    Assert.ThrowsAny<Exception>(() => SharedRecordFile.WriteAtomically(target, "new"));
-                Assert.Equal("old", File.ReadAllText(target));
+                {
+                    if (windows) Assert.ThrowsAny<Exception>(() => SharedRecordFile.WriteAtomically(target, "new"));
+                    else SharedRecordFile.WriteAtomically(target, "new");
+                }
+                Assert.Equal(windows ? "old" : "new", File.ReadAllText(target));
                 Assert.False(File.Exists(target + ".tmp"));
             }
             finally { SharedRecordFile.Patience = before; }

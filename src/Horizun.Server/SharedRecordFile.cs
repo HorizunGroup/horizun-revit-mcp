@@ -12,6 +12,7 @@
 // -----------------------------------------------------------------------------
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 
@@ -22,7 +23,11 @@ namespace Horizun.Server
         /// <summary>How long a sharing violation is waited out before it is reported.</summary>
         public static TimeSpan Patience = TimeSpan.FromSeconds(3);
 
-        private const int SharingViolation = 32, LockViolation = 33;
+        // Windows names a sharing violation 32 or 33. MEASURED on linux-x64: the same refusal,
+        // with the same message, arrives as HResult 0x0000000B - EWOULDBLOCK - because FileShare
+        // there is an advisory lock. Off Windows the retry never engaged without it. The code is
+        // ERROR_INVALID_FORMAT on Windows, so it is honoured only where it means what it means.
+        private const int SharingViolation = 32, LockViolation = 33, WouldBlock = 11;
 
         public static string ReadAllText(string path) => Retry(() => File.ReadAllText(path));
 
@@ -67,7 +72,8 @@ namespace Horizun.Server
         private static bool IsSharing(IOException ex)
         {
             int code = ex.HResult & 0xFFFF;
-            return code == SharingViolation || code == LockViolation;
+            if (code == SharingViolation || code == LockViolation) return true;
+            return code == WouldBlock && !RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         }
     }
 }
