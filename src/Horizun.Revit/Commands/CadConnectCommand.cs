@@ -1014,11 +1014,38 @@ namespace Horizun.Revit.Commands
                 {
                     farEnd["held_by"] = Rid.Value(holder.Id);
                     farEnd["what"] = NameOfType(holder);
-                    double? arm = ArmOfMm(holder, holderEnd);
+                    double turnThere;
+                    double? arm = ArmOfMm(holder, holderEnd, out turnThere);
+                    double turnHere = TurnAtMm(j);
                     farEnd["arm_it_takes_mm"] = arm.HasValue ? (JToken)Math.Round(arm.Value, 1) : JValue.CreateNull();
                     farEnd["arm_measured_how"] = arm.HasValue
                         ? "the distance from the connector it holds to where that fitting's two axes cross"
                         : "not measurable: this fitting's connectors are collinear, so it has no corner and takes no arm";
+                    // THE SCOPE OF THE NUMBER, beside the number. This arm belongs to THIS family, THIS
+                    // type, at THIS turn: nothing here is a law about fittings in general, and a reader
+                    // must not carry it to a corner it never described. Where the turn asked for differs
+                    // from the turn measured, the comparison is indicative and says so.
+                    farEnd["measured_on"] = new JObject
+                    {
+                        ["fitting"] = NameOfType(holder),
+                        ["turn_degrees"] = double.IsNaN(turnThere) ? (JToken)JValue.CreateNull() : Math.Round(turnThere, 1),
+                        ["member_width_mm"] = row["width_mm"],
+                        ["means"] = "the arm of a turning fitting depends on its family, its type, the sizes " +
+                                    "it joins and the angle it turns through. This one was measured on the " +
+                                    "fitting standing at the other end of this very piece; it is not a law " +
+                                    "about fittings, and it describes no other family or angle."
+                    };
+                    if (!double.IsNaN(turnHere))
+                    {
+                        farEnd["turn_at_this_junction_degrees"] = Math.Round(turnHere, 1);
+                        bool same = !double.IsNaN(turnThere) && Math.Abs(turnHere - turnThere) <= 2.0;
+                        farEnd["comparison"] = same ? "like_for_like" : "indicative_only";
+                        if (!same)
+                            farEnd["comparison_means"] =
+                                "the drawing turns through a different angle here than the fitting that was " +
+                                "measured, so its arm is not the arm this junction needs. What is left is a " +
+                                "fact; the shortfall computed from it is an indication, not a measurement.";
+                    }
                     if (arm.HasValue)
                     {
                         row["short_by_mm"] = Math.Round(Math.Max(0, arm.Value - df), 1);
@@ -1047,6 +1074,14 @@ namespace Horizun.Revit.Commands
                                Math.Round(leftOnWorst, 1).ToString(CultureInfo.InvariantCulture) +
                                " mm at this corner, or a longer piece between the two corners in the drawing. " +
                                "Which fitting is acceptable is a project decision and this command does not make it.";
+                // WHAT THIS VERDICT IS NOT. The arm it compared against was measured on one fitting in
+                // this model, at that fitting's own turn. Another family, another type, or a shorter-armed
+                // elbow may well fit where this one does not, and nothing here has measured that.
+                o["scope"] = "measured on the fitting standing at the other end of this same piece, at its " +
+                             "own angle. It is not a law about fittings: a different family, a different " +
+                             "type or a different turn takes a different arm, and declaring one of those in " +
+                             "the connect call is how to find out. This refusal says THIS fitting does not " +
+                             "fit here - never that no fitting does.";
             }
             else
                 o["reading"] = "every member has room for a fitting the size of the one already on its far end, " +
@@ -1086,13 +1121,21 @@ namespace Horizun.Revit.Commands
         /// distance from that connector to where its axis crosses the axis of the fitting's other end.
         /// Null when the two axes are parallel - a transition, which has no corner and takes no arm.
         /// </summary>
-        private static double? ArmOfMm(Element fitting, Connector held)
+        private static double? ArmOfMm(Element fitting, Connector held) { double turn; return ArmOfMm(fitting, held, out turn); }
+
+        /// <summary>
+        /// The arm, and the TURN it was measured at. Both travel together on purpose: the arm of a
+        /// turning fitting depends on the angle it turns through, and a number quoted without its angle
+        /// invites the reader to apply it to a corner it never described.
+        /// </summary>
+        private static double? ArmOfMm(Element fitting, Connector held, out double turnDegrees)
         {
+            turnDegrees = double.NaN;
             if (fitting == null || held == null) return null;
             XYZ a0, da;
             try { a0 = held.Origin; da = held.CoordinateSystem.BasisZ; } catch { return null; }
             if (a0 == null || da == null) return null;
-            double best = 0; bool found = false;
+            double best = 0, bestTurn = double.NaN; bool found = false;
             foreach (Connector other in MepConnect.ConnectorsOf(fitting))
             {
                 if (other == null || other.Id == held.Id) continue;
@@ -1104,9 +1147,37 @@ namespace Horizun.Revit.Commands
                 if (denom < 1e-9) continue;                       // parallel: no corner
                 double t = (b0 - a0).CrossProduct(db).DotProduct(cross) / (denom * denom);
                 double mm = Math.Abs(t) * 304.8;                  // da is a unit vector, so |t| is in feet
-                if (!found || mm > best) { best = mm; found = true; }
+                double dot = Math.Max(-1.0, Math.Min(1.0, da.Normalize().DotProduct(db.Normalize())));
+                double turn = 180.0 - Math.Acos(dot) * 180.0 / Math.PI;
+                if (!found || mm > best) { best = mm; bestTurn = turn; found = true; }
             }
+            turnDegrees = bestTurn;
             return found ? (double?)best : null;
+        }
+
+        /// <summary>The angle the drawing turns through at this junction, from the two members' lines.</summary>
+        private static double TurnAtMm(Junction j)
+        {
+            try
+            {
+                if (j.Elements.Count != 2) return double.NaN;
+                var dirs = new List<XYZ>();
+                foreach (Element e in j.Elements)
+                {
+                    var lc = e.Location as LocationCurve;
+                    if (lc?.Curve == null) return double.NaN;
+                    XYZ a = lc.Curve.GetEndPoint(0), b = lc.Curve.GetEndPoint(1);
+                    double da = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(a.X) - j.At.X, 2) + Math.Pow(CadUnits.FeetToMm(a.Y) - j.At.Y, 2));
+                    double db = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(b.X) - j.At.X, 2) + Math.Pow(CadUnits.FeetToMm(b.Y) - j.At.Y, 2));
+                    XYZ near = da <= db ? a : b, far = da <= db ? b : a;
+                    XYZ v = (far - near);
+                    if (v.GetLength() < 1e-9) return double.NaN;
+                    dirs.Add(v.Normalize());
+                }
+                double dot = Math.Max(-1.0, Math.Min(1.0, dirs[0].DotProduct(dirs[1])));
+                return 180.0 - Math.Acos(dot) * 180.0 / Math.PI;
+            }
+            catch { return double.NaN; }
         }
 
         /// <summary>
