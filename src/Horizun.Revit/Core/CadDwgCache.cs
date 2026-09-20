@@ -435,9 +435,20 @@ namespace Horizun.Revit.Core
                 if (!string.Equals((string)candidate["drawing_sha256"], hostSha, StringComparison.OrdinalIgnoreCase)) continue;
                 sides.Add(candidate);
             }
+            // AND WHEN NONE DESCRIBES THIS FOLDER, THE ANSWER IS "UNKNOWN", not the newest reading of
+            // these bytes somewhere else. MEASURED (block 8): the same host file sat in several fixture
+            // folders, one of which had an extra reference attached; with no valid reading for THIS
+            // folder the newest list won, its extra file resolved to "(absent)" from here, and the
+            // identity changed with no file of this folder changing. A plan compared that number against
+            // the one recorded when the link was loaded and reported the sources as revised - a false
+            // alarm, and one that withholds permission to apply, which is how it was noticed.
+            //
+            // Null means "this machine has not read THIS set", which the coherence rules report as
+            // unknown with a remedy: read the drawing once and ask again. A number computed from another
+            // folder's reference list is worse than no number, because it looks like one.
             JObject valid = sides.FirstOrDefault(x => (x["dependencies"] as JArray)?.Count > 0 &&
                                                       ChangedDependencies(x, here).Count == 0);
-            foreach (JObject side in valid != null ? new[] { valid } : sides.Take(1).ToArray())
+            foreach (JObject side in valid != null ? new[] { valid } : new JObject[0])
             {
                 var parts = new List<string>();
                 var recorded = (side["dependencies"] as JArray ?? new JArray()).OfType<JObject>().ToList();
