@@ -75,12 +75,14 @@ namespace Horizun.Revit.Core
         public const string Reinterpreted = "reinterpreted";
         /// <summary>One element the drawing now draws as several collinear pieces inside its old line.</summary>
         public const string Split = "split";
+        /// <summary>Several elements the drawing now draws as ONE run covering their lines: a division taken out.</summary>
+        public const string Merge = "merge";
 
         /// <summary>Every classification this bridge will ever emit, so a reader can switch exhaustively.</summary>
         public static readonly string[] All =
         {
             Unchanged, Added, Removed, Moved, Reshaped, Retyped, Relayered, Resized, Rehosted,
-            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted, Split
+            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted, Split, Merge
         };
     }
 
@@ -1502,6 +1504,8 @@ namespace Horizun.Revit.Core
                 }
             }
             ProposeSplits(update, set, tolerance, rejected);
+            ProposeMerges(update, set, tolerance, rejected);
+            HoldCreatesOnOccupiedGround(update, set, tolerance);
         }
 
         /// <summary>How far a piece's line may sit from the old line and still be the same wall, split.</summary>
@@ -1591,6 +1595,166 @@ namespace Horizun.Revit.Core
                     piece.Says += " HELD: element " + orphan.ElementId + " may have been split into this and " +
                                   (pieces.Count - 1) + " other piece(s). Building it now would put a wall inside " +
                                   "that one, which still stands at full length.";
+                }
+            }
+        }
+
+        /// <summary>
+        /// A CREATE ON GROUND A STANDING ELEMENT STILL HOLDS is never automatic.
+        ///
+        /// MEASURED (block 8, on the synthetic fixture): a division that MOVED left the plan with one
+        /// pairing offered, one orphan classified removed - and one create marked automatic whose line
+        /// lay inside that orphan is element, which still stands. The pairing rule had not held it
+        /// because the two lengths differ by a third, which is past the threshold at which "the same run,
+        /// re-shaped" stops being a reasonable reading. Both of those judgements are right. Building the
+        /// create anyway is not: an unattended run would have put a second duct inside the first, and the
+        /// model would have looked finished.
+        ///
+        /// The pairing rules ask "IS this that element?", which is a judgement with a threshold. This
+        /// asks something with no threshold in it at all: is there an element standing on this line right
+        /// now? If there is, the create waits for a person - who can accept a pairing, decide the element
+        /// away, or say the two really do belong side by side.
+        /// </summary>
+        private static void HoldCreatesOnOccupiedGround(CadUpdate update, CadRequirementSet set, double tolerance)
+        {
+            List<CadUpdateAction> standing = update.Of("orphan")
+                .Where(o => o.ElementId.HasValue && o.AsBuiltGeometry != null && o.AsBuiltGeometry.Count >= 2)
+                .ToList();
+            if (standing.Count == 0) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+
+            foreach (CadUpdateAction create in update.Of("create").Where(c => c.Geometry.Count >= 2))
+            {
+                foreach (CadUpdateAction o in standing)
+                {
+                    // the element it is already paired with is the move this plan is proposing, not a clash
+                    if (string.Equals(o.PairedWith, create.CandidateId, StringComparison.Ordinal)) continue;
+                    if (!string.Equals(create.Evidence.Value<string>("layer"), o.Evidence.Value<string>("was_layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(create.Evidence.Value<string>("rule_id"), o.Evidence.Value<string>("was_rule"),
+                                       StringComparison.Ordinal)) continue;
+                    List<CadPoint> was = o.AsBuiltGeometry;
+                    if (UndirectedAngle(was, create.Geometry) > angleLimit) continue;
+
+                    CadPoint a = was[0], b = was[was.Count - 1];
+                    double len = a.PlanDistanceTo(b);
+                    if (len <= 0) continue;
+                    double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+                    CadPoint p = create.Geometry[0], q = create.Geometry[create.Geometry.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Max(0, Math.Min(s0, s1)), hi = Math.Min(len, Math.Max(s0, s1));
+                    double overlap = hi - lo;
+                    if (overlap <= reach) continue;
+
+                    create.Automatic = false;
+                    create.Evidence["stands_there"] = o.ElementId.Value;
+                    create.Evidence["overlap_mm"] = Math.Round(overlap, 1);
+                    if (create.Evidence["held_because"] == null)
+                        create.Evidence["held_because"] = "occupied_by_a_standing_element";
+                    create.Says += " HELD: element " + o.ElementId.Value + " still stands on " +
+                                   Math.Round(overlap, 1).ToString("0.#", CultureInfo.InvariantCulture) +
+                                   " mm of this line. Building it now would put a second one inside it. " +
+                                   "Accept a pairing, decide that element, or say they belong side by side.";
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// SEVERAL ELEMENTS, NOW DRAWN AS ONE RUN. The mirror of a split, and the revision that takes a
+        /// division out: two pieces built from an earlier issue, and one line covering both.
+        ///
+        /// Without this the plan is two orphans and one create with nothing joining them - the reader is
+        /// told a run appeared and two disappeared in the same place, which is true and useless, and
+        /// applying it would build a third duct on top of the two that still stand.
+        ///
+        /// Offered, never taken, and for a harder reason than a split: a merge DESTROYS one of the
+        /// elements, and nothing in a DWG says which one carried the parameters somebody cares about. So
+        /// accepting the pairing re-shapes the longest to the whole line and leaves the others held, each
+        /// needing its own delete decision.
+        ///
+        /// The test is the split one read the other way round: every element collinear with the new line,
+        /// on its layer and rule, inside it, not overlapping the others, covering at least half of it
+        /// between them.
+        /// </summary>
+        private static void ProposeMerges(CadUpdate update, CadRequirementSet set, double tolerance,
+                                          HashSet<string> rejected)
+        {
+            List<CadUpdateAction> orphans = update.Of("orphan")
+                .Where(o => o.PairedWith == null && o.ElementId.HasValue &&
+                            o.AsBuiltGeometry != null && o.AsBuiltGeometry.Count >= 2).ToList();
+            if (orphans.Count < 2) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+
+            foreach (CadUpdateAction create in update.Of("create").Where(c => c.Geometry.Count >= 2).ToList())
+            {
+                if (create.Evidence["may_be_element"] != null || rejected.Contains(create.CandidateId)) continue;
+                CadPoint a = create.Geometry[0], b = create.Geometry[create.Geometry.Count - 1];
+                double len = a.PlanDistanceTo(b);
+                if (len <= 0) continue;
+                double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+
+                var parts = new List<Tuple<CadUpdateAction, double, double, double>>();
+                foreach (CadUpdateAction o in orphans)
+                {
+                    if (o.PairedWith != null) continue;
+                    if (!string.Equals(o.Evidence.Value<string>("was_layer"), create.Evidence.Value<string>("layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(o.Evidence.Value<string>("was_rule"), create.Evidence.Value<string>("rule_id"),
+                                       StringComparison.Ordinal)) continue;
+                    List<CadPoint> was = o.AsBuiltGeometry;
+                    if (UndirectedAngle(create.Geometry, was) > angleLimit) continue;
+                    CadPoint p = was[0], q = was[was.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Min(s0, s1), hi = Math.Max(s0, s1);
+                    if (lo < -reach || hi > len + reach || hi - lo <= reach) continue;
+                    parts.Add(Tuple.Create(o, lo, hi, off));
+                }
+                if (parts.Count < 2) continue;
+                parts = parts.OrderBy(t => t.Item2).ToList();
+                bool disjoint = true;
+                for (int i = 1; i < parts.Count; i++)
+                    if (parts[i].Item2 < parts[i - 1].Item3 - reach) { disjoint = false; break; }
+                if (!disjoint) continue;
+                double covered = parts.Sum(t => Math.Min(t.Item3, len) - Math.Max(t.Item2, 0));
+                if (covered < SplitCoverage * len) continue;
+
+                CadUpdateAction longest = parts.OrderByDescending(t => t.Item3 - t.Item2).First().Item1;
+                double confidence = Math.Round(Math.Min(1.0, covered / len), 4);
+                string why = parts.Count + " elements collinear with its line, on the same layer and rule, inside " +
+                             "it (at most " + parts.Max(t => t.Item4).ToString("0.#", CultureInfo.InvariantCulture) +
+                             " mm off), covering " + (confidence * 100).ToString("0", CultureInfo.InvariantCulture) +
+                             "% of its " + len.ToString("0", CultureInfo.InvariantCulture) + " mm";
+
+                create.Classification = CadChange.Merge;
+                create.Automatic = false;
+                create.PairConfidence = confidence;
+                create.Evidence["may_be_the_merge_of"] = new JArray(parts.Select(t => t.Item1.ElementId.Value));
+                create.Evidence["would_keep_element"] = longest.ElementId.Value;
+                create.Evidence["paired_on"] = why;
+                create.Says += " It may be a MERGE: " + why + ". Nothing in a DWG says a division was taken out " +
+                               "rather than one run removed and another drawn, so this is offered, not taken: " +
+                               "accept the pairing of element " + longest.ElementId.Value + " with this candidate " +
+                               "and that element is re-shaped to the whole line, keeping its id. The other " +
+                               "part(s) are NOT deleted by that: each one is its own decision.";
+                foreach (var t in parts)
+                {
+                    CadUpdateAction part = t.Item1;
+                    part.Automatic = false;
+                    if (part.Classification != CadChange.Conflict) part.Classification = CadChange.Merge;
+                    part.Evidence["may_have_been_merged_into"] = create.CandidateId;
+                    part.Evidence["merge_keeps_element"] = longest.ElementId.Value;
+                    part.Evidence["paired_on"] = why;
+                    part.Says += " HELD: it may have been MERGED into this candidate with " + (parts.Count - 1) +
+                                 " other(s). Removing it now would take out a duct the drawing still covers.";
                 }
             }
         }
@@ -1699,7 +1863,9 @@ namespace Horizun.Revit.Core
                 // it classified ambiguous would report the open question after it
                 // had been answered.
                 var splitInto = orphan.Evidence["may_have_been_split_into"] as JArray;
+                var mergeOf = create.Evidence["may_be_the_merge_of"] as JArray;
                 string settled = splitInto != null ? CadChange.Split
+                    : mergeOf != null ? CadChange.Merge
                     : SameShape(orphan.AsBuiltGeometry, create.Geometry, 1.0) ? CadChange.Moved : CadChange.Reshaped;
                 orphan.Classification = settled;
                 create.Classification = settled;
@@ -1734,6 +1900,33 @@ namespace Horizun.Revit.Core
                     create.Says = "a caller accepted that element " + orphan.ElementId + " was split. It is " +
                                   "re-shaped to this, its longest piece, and keeps its id; " + companions.Count +
                                   " other piece(s) are built new.";
+                }
+
+                // AN ACCEPTED MERGE keeps the element that was paired and HOLDS the others, one decision
+                // each. A pairing says "this run is that element, longer"; it does not say "delete the
+                // other duct", and reading it that way would destroy an element on the strength of a
+                // judgement about geometry.
+                if (mergeOf != null)
+                {
+                    var others = new JArray();
+                    foreach (long id in mergeOf.Select(x => (long)x))
+                    {
+                        if (id == orphan.ElementId) continue;
+                        CadUpdateAction part = update.Actions.FirstOrDefault(x => x.ElementId == id && x.Kind == "orphan");
+                        if (part == null) continue;
+                        part.Automatic = false;
+                        part.Classification = CadChange.Merge;
+                        part.Evidence["held_because"] = "the_other_part_of_a_merge";
+                        part.Evidence["merged_into_element"] = orphan.ElementId;
+                        part.Says = "element " + orphan.ElementId + " was accepted as the merged run and covers " +
+                                    "this one's line too. Removing this duct is a DELETE and is its own decision: " +
+                                    "accepting a pairing never deletes an element.";
+                        others.Add(id);
+                    }
+                    create.Evidence["merge_parts_still_standing"] = others;
+                    create.Says = "a caller accepted that element " + orphan.ElementId + " is this run, merged. " +
+                                  "It is re-shaped to the whole line and keeps its id; " + others.Count +
+                                  " other part(s) still stand and each needs its own decision.";
                 }
             }
         }
