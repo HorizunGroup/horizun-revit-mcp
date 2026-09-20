@@ -359,6 +359,69 @@ says one file is a re-issue of another, so it is a statement you make — and
 without it, an update would report your whole existing conversion as untouched
 and the new drawing as entirely new work.
 
+### One run drawn as two, and back
+
+`split` and `merge` are in the vocabulary, and both are **offered, never taken**.
+
+A run the drawing now shows as several collinear pieces inside its old line is offered as a
+**split**: the longest piece would keep the element and its id, the others would be built new.
+The reverse — several elements the drawing now shows as one run covering their lines — is a
+**merge**, and it is held for a harder reason: a merge destroys one of the elements and nothing
+in a DWG says which one carried the parameters somebody cares about. Accepting the pairing
+re-shapes the longest to the whole line and keeps its id; the others stay standing, each needing
+its own `delete` decision. **Accepting a pairing never deletes an element.**
+
+`divisions` in the reply carries one row per split or merge, held or accepted, so none of this
+has to be reconstructed from evidence keys: the origin element with the drawing entity and the
+ISSUE of the drawing it was built under, each piece with its geometry and which one keeps the
+element, `keeps` / `creates` / `removes`, `id_substitutions`, the fittings joined to the ends
+that move, the connections that must survive, the decisions being asked with what answering
+does, and the line before against the lines after.
+
+Three rules govern what may happen unattended:
+
+- **Nothing is built on ground an element still holds.** A create whose line lies inside a
+  standing element — same layer, same rule, collinear — is held with that element named and how
+  much of the line it holds, whatever else the plan decides. The pairing rules ask "is this that
+  element?", which has a threshold; this asks "is something standing here right now?", which has
+  none. Deciding that element away frees the ground, and the piece is built in the same plan.
+- **A run whose ends are in a network is not re-shaped.** Revit answers a `LocationCurve` set on
+  a connected MEP curve with a modal question nobody is there to answer, and the write rolls
+  back. A fitting cannot be released and put back either: re-connecting builds a new one where
+  the new ends meet, with a new id. So the re-shape is held, `id_substitutions` names every
+  fitting and what replaces it, and `release_fittings: [ids]` is how a caller agrees to that —
+  then the verified delete goes in **before** the re-shape, in the same ordered plan.
+- **A re-shaped run keeps the height it was built at.** A plan drawing carries no height; the
+  element has the one its rule gave it against the storey. A re-shape follows the drawing in
+  plan only.
+
+### Is it safe to build from this reading?
+
+A plan is made of two halves from two places: the GEOMETRY is the CAD link as Revit loaded it,
+the sizes and systems come from the drawing FILE read now. They can belong to different issues
+of the same drawing, and the host file's own hash does not move when one of its references is
+revised — on a sheet whose ductwork lives in an xref, that is the only revision there is.
+
+Every reading and every plan now carries `coherence`, in one of four states, and `applicable`:
+
+| state | what it means |
+|---|---|
+| `sources_match_the_link` | this bridge loaded the link, nothing has touched it since, and the drawing and every reference still hash as they did then. **Applicable.** |
+| `revisions_not_aligned` | the sources changed since: the geometry is the older issue. Reload and plan again. |
+| `coherence_unknown` | no record of this bridge loading it, or the link changed after that record, or the set identity could not be computed. |
+| `continued_snapshot` | the reading continued a snapshot and deliberately checked nothing. |
+
+`horizun_apply_cad_plan` re-checks it before writing and refuses `plan_not_applicable` — a plan
+made while the correspondence could not be shown is not applied because the model looks
+unchanged; it is not applied because nobody measured it. A source set that moved between the
+plan and the apply is `stale_plan` drift naming *the drawing's references*.
+
+The record lives with this bridge on this machine and does not travel with the model: elsewhere
+the answer is `coherence_unknown`, which withholds permission rather than granting it, and one
+typed reload clears it.
+
+A worked example, reproducible with no project data: `examples/dwg-revision-update/`.
+
 ### Which placement, and has it moved
 
 A drawing is not one thing in a model: it is a **file** (bytes on disk, or none

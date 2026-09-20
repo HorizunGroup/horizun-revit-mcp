@@ -1,0 +1,57 @@
+{
+ "schema": "horizun.cad-requirements/1",
+ "requirement_set": {
+  "id": "mep-split-synthetic",
+  "version": "1.0.0",
+  "title": "The synthetic split fixture: one rectangular supply layer sized from its own labels. No project data: the drawing is written by make_split_revisions.py and every number here is a property of THAT drawing."
+ },
+ "source": {
+  "units": "millimeter",
+  "role": "floor_plan",
+  "extent_mm": {
+   "min_x": -2540.0,
+   "min_y": -20320.0,
+   "max_x": 12700.0,
+   "max_y": 2540.0,
+   "crossing": "whole"
+  }
+ },
+ "tolerances": {
+  "point_mm": 25.4,
+  "gap_mm": 25.4,
+  "angle_degrees": 2.0,
+  "arc_sagitta_mm": 5.0
+ },
+ "rules": [
+  {
+   "id": "r-supply",
+   "precedence": 10,
+   "discipline": "mechanical",
+   "layers": [
+    "*M-SUPPLY"
+   ],
+   "produces": "duct",
+   "family_type": "Rectangular Duct: Radius Elbows / Tees",
+   "system_type": "Supply Air",
+   "level": "Level 1",
+   "offset_mm": 2743.2,
+   "geometry": {
+    "from": "single_lines",
+    "min_length_mm": 100.0,
+    "merge_collinear": false
+   },
+   "section": {
+    "from": "labels",
+    "label_layers": [
+     "*M-TEXT"
+    ],
+    "label_units": "inch",
+    "label_order": "width_x_height",
+    "max_distance_mm": 400,
+    "split_at_section_changes": true,
+    "tap_tolerance_mm": 80,
+    "free_end_max_distance_mm": 400
+   }
+  }
+ ]
+}
