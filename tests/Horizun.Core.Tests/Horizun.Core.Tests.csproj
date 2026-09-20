@@ -25,6 +25,7 @@
          same reason Reconcile is: it decides which caller gets which result, and
          that decision must be provable without a Revit in the room. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />

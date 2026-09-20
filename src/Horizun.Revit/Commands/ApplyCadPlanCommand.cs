@@ -110,43 +110,22 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("CAD instance " + instanceId + " is no longer readable in '" +
                                           SafeTitle(doc) + "'. Nothing was written.");
 
-            var drift = new JArray();
-            string nowSource = CadFacts.SourceFingerprint(facts);
-            if (!string.Equals(nowSource, expectedSource, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the drawing",
-                    ["planned_against"] = expectedSource,
-                    ["now"] = nowSource,
-                    ["means"] = "the file, its bytes, its path, its load state, its declared units or its " +
-                                "transform changed since the plan was made. The plan describes a different drawing."
-                });
-            if (!string.Equals(set.Sha256, expectedSetSha, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the requirement set",
-                    ["planned_against"] = expectedSetSha,
-                    ["now"] = set.Sha256,
-                    ["means"] = "the rules that decided what this drawing means are not the rules the plan used."
-                });
-
-            // THE ISSUE OF THE DRAWING. The source fingerprint above covers the HOST file; it cannot see a
-            // revision of something the host references, and on a sheet whose geometry all lives in an xref
-            // that is the only revision there is. The set identity moves when any of them does, so a set that
-            // changed between the plan and this apply is drift - this is the case of a drawing revised while
-            // the plan was being read.
-            string expectedSourceSet = binding.Value<string>("source_set_sha256");
-            string nowSourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);
-            if (!string.IsNullOrWhiteSpace(expectedSourceSet) &&
-                !string.Equals(expectedSourceSet, nowSourceSet, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the drawing's references",
-                    ["planned_against"] = expectedSourceSet,
-                    ["now"] = nowSourceSet ?? "(the set could not be identified now)",
-                    ["means"] = "the drawing or one of its external references was revised after this plan was " +
-                                "made. The host file alone may be untouched; the set is not. NOTHING was written."
-                });
+            // ONE GUARD FOR BOTH APPLIES. This command has re-measured its binding since it existed;
+            // horizun_apply_cad_update had none of it and wrote anyway. The checks now live in
+            // Core/CadApplyGuard.cs and both call them, because two copies of a rule this important is
+            // how one of them quietly stops being true. What stays here is what only THIS command has:
+            // the ids its plan resolved for levels and types.
+            var guardNow = new CadApplyNow
+            {
+                ActionsFingerprint = null,          // filled in below, once the actions have been shaped
+                SourceFingerprint = CadFacts.SourceFingerprint(facts),
+                SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
+                RequirementSetSha256 = set.Sha256,
+                InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                TargetDocument = SafeTitle(doc),
+                RevitVersion = SafeVersion(app)
+            };
+            JArray drift = CadApplyGuard.Drift(binding, guardNow);
 
             // THE RESOLVED IDS. A fingerprint over the actions cannot see this
             // one: the same number can point at a different thing. Between a plan
@@ -203,54 +182,12 @@ namespace Horizun.Revit.Commands
                     "object, wrap it: [ { ... } ]. This is not stale_plan: the plan and the model may well still " +
                     "agree, and no comparison was made against them.");
 
-            string nowActions = CadConversionPlanRules.ActionsFingerprint(submitted ?? new JArray());
-            if (!string.Equals(nowActions, expectedActions, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the actions",
-                    ["planned_against"] = expectedActions,
-                    ["now"] = nowActions,
-                    ["means"] = "the actions submitted are not the actions the plan emitted. A coordinate, a " +
-                                "type, an element or the stage order differs. NOTHING was written."
-                });
-
-            if (!string.IsNullOrWhiteSpace(expectedTarget) &&
-                !string.Equals(expectedTarget, SafeTitle(doc), StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the target document",
-                    ["planned_against"] = expectedTarget,
-                    ["now"] = SafeTitle(doc),
-                    ["means"] = "this plan was rehearsed against a different model. Applying it here would " +
-                                "build one model's drawing into another."
-                });
-
-            string nowRevit = SafeVersion(app);
-            if (!string.IsNullOrWhiteSpace(expectedRevit) && !string.IsNullOrWhiteSpace(nowRevit) &&
-                !string.Equals(expectedRevit, nowRevit, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the Revit build",
-                    ["planned_against"] = expectedRevit,
-                    ["now"] = nowRevit,
-                    ["means"] = "the plan was made against a different Revit; type and level resolution are not " +
-                                "guaranteed to mean the same thing across builds."
-                });
-
-            // THE READING. The same drawing read by another build can mean other walls;
-            // a plan carries the reading it was made with, and a binding from before
-            // readings were versioned carries none and is not held to it.
-            string expectedReading = binding.Value<string>("interpretation_version");
-            if (!string.IsNullOrWhiteSpace(expectedReading) &&
-                !string.Equals(expectedReading, CadInterpretationRules.InterpretationVersion, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the reading",
-                    ["planned_against"] = expectedReading,
-                    ["now"] = CadInterpretationRules.InterpretationVersion,
-                    ["means"] = "this build reads drawings differently from the build that made the plan; the " +
-                                "same bytes may now mean other elements."
-                });
+            // The actions could only be fingerprinted once their shape was checked, so that one check
+            // runs here - through the same guard, against the same binding.
+            guardNow.ActionsFingerprint = CadConversionPlanRules.ActionsFingerprint(submitted ?? new JArray());
+            foreach (JToken late in CadApplyGuard.Drift(binding, new CadApplyNow
+                     { ActionsFingerprint = guardNow.ActionsFingerprint }))
+                drift.Add(late);
 
             if (drift.Count > 0)
                 return CommandResult.Fail(
@@ -558,7 +495,7 @@ namespace Horizun.Revit.Commands
                 ["dry_run"] = dryRun,
                 ["binding_verified"] = new JObject
                 {
-                    ["source_fingerprint"] = nowSource,
+                    ["source_fingerprint"] = guardNow.SourceFingerprint,
                     ["requirement_set_sha256"] = set.Sha256,
                     ["plan_fingerprint"] = expectedPlan,
                     ["means"] = "the drawing, its transform and the rules are the ones this plan was made against"

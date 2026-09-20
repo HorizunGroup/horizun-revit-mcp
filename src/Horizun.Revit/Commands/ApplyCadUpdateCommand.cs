@@ -120,6 +120,58 @@ namespace Horizun.Revit.Commands
                     CadInterpretationRules.InterpretationVersion + "'. The same drawing may now mean other " +
                     "elements. Nothing was written; re-run horizun_plan_cad_update.");
 
+            // ---- WHAT MUST STILL BE TRUE, BEFORE ANYTHING IS WRITTEN --------------
+            //
+            // An update deletes fittings, re-shapes runs somebody may have touched and rewrites the record
+            // of where elements came from. Until now it checked none of that: it read 'actions' and
+            // 'provenance' and wrote. The plan emitted an apply_binding and NOTHING consumed it.
+            //
+            // The same guard horizun_apply_cad_plan uses, called here - see Core/CadApplyGuard.cs. Two
+            // copies of a rule this important is how one of them quietly stops being true.
+            JObject binding = request["apply_binding"] as JObject;
+            if (binding == null)
+                return CommandResult.Fail(
+                    "apply_binding is required - copy it verbatim from the horizun_plan_cad_update reply. It " +
+                    "names the drawing, its references, the rules, the reading, the actions and the elements " +
+                    "they act on, and this command re-measures every one of them before writing. NOTHING was " +
+                    "written.");
+
+            // WHICH CAD INSTANCE, from the binding: this command takes no instance_id, and the plan that
+            // made the binding read exactly one placement.
+            long instanceIdArg = binding.Value<long?>("instance_id") ?? -1;
+            List<JObject> unreadableNow;
+            CadInstanceFacts factsNow = CadFacts.Collect(doc, out unreadableNow)
+                                                .FirstOrDefault(f => f.ElementId == instanceIdArg);
+            Element instanceNow = null;
+            try { if (Rid.CanRepresent(instanceIdArg)) instanceNow = doc.GetElement(Rid.Make(instanceIdArg)); }
+            catch { }
+
+            var now = new CadApplyNow
+            {
+                ActionsFingerprint = CadConversionPlanRules.ActionsFingerprint(actions),
+                SourceFingerprint = factsNow == null ? null : CadFacts.SourceFingerprint(factsNow),
+                SourceSetSha256 = factsNow == null ? null
+                    : CadDwgCache.SourceSetSha256(factsNow.ExternalPath, factsNow.FileSha256),
+                RequirementSetSha256 = (request["requirement_set"] as JObject) == null ? null
+                    : SetShaOf(request["requirement_set"] as JObject),
+                InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                TargetDocument = title,
+                RevitVersion = RevitBuild(uiApp),
+                LinkGeometryFingerprint = CadSourceCoherence.GeometryFingerprint(doc, instanceNow),
+                Touched = CadElementPrint.ReadAgain(doc, binding["touched_elements"] as JArray)
+            };
+
+            JArray drift = CadApplyGuard.Drift(binding, now);
+            if (drift.Count > 0)
+                return CommandResult.FailWithDetail(CadApplyGuard.StalePlanMessage(drift),
+                                                    new JObject { ["refused"] = "stale_plan", ["drift"] = drift });
+
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceNow, factsNow, false);
+            string coherenceMessage;
+            JObject notApplicable = CadApplyGuard.CoherenceRefusal(binding, coherenceNow, out coherenceMessage);
+            if (notApplicable != null)
+                return CommandResult.FailWithDetail(coherenceMessage, notApplicable);
+
             bool dryRun = request.Value<bool?>("dry_run") ?? true;
             string idempotencyKey = request.Value<string>("idempotency_key");
             string actionsFingerprint = CadConversionPlanRules.ActionsFingerprint(actions) + ":" +
@@ -701,6 +753,19 @@ namespace Horizun.Revit.Commands
                     ["error"] = done == null ? (dry.Error ?? "no token") : (done.Success ? null : done.Error)
                 };
             }
+        }
+
+        /// <summary>The requirement set's hash, or null when it cannot be loaded - the guard skips what it
+        /// cannot measure rather than refusing a plan over a value it never had.</summary>
+        private static string RevitBuild(UIApplication app)
+        {
+            try { return app?.Application?.VersionNumber; } catch { return null; }
+        }
+
+        private static string SetShaOf(JObject setJson)
+        {
+            try { return CadRequirementSet.Load(setJson).Sha256; }
+            catch { return null; }
         }
 
         private static bool FaultInjected(string key)

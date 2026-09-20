@@ -402,6 +402,8 @@ namespace Horizun.Revit.Commands
             if (decisionErrors.Count > 0)
                 return CommandResult.Fail("resolve_refused: " + string.Join("; ", decisionErrors) +
                                           ". Nothing was planned: a decision that cannot stand is not skipped.");
+            // ONE EVALUATION, used by the reply and by the binding the apply re-measures.
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, element, facts, false);
             JArray migrations = MigrationPlans(doc, update);
 
             // ---------------------------------------------------------- actions
@@ -535,7 +537,7 @@ namespace Horizun.Revit.Commands
                 // ordinary route arrives here aligned - but a plan made against a link somebody else
                 // loaded, or whose sources moved since, must say so here too rather than only in
                 // horizun_plan_from_cad.
-                ["coherence"] = CadSourceCoherence.Evaluate(doc, element, facts, false),
+                ["coherence"] = coherenceNow,
                 // EVERY DIVISION IN ONE PLACE. See Core/CadRevisionShapes.cs: what survives, what is
                 // created, what a decision would remove, which fittings and joins are in the way, and
                 // the line before against the lines after. Assembled from the same actions, never
@@ -582,13 +584,26 @@ namespace Horizun.Revit.Commands
                 {
                     ["actions_fingerprint"] = CadConversionPlanRules.ActionsFingerprint(actions),
                     ["source_fingerprint"] = sourceFingerprint,
+                    // THE ISSUE OF THE DRAWING, AND WHETHER IT COULD BE SHOWN. The source fingerprint covers
+                    // the HOST file; it cannot see a revision of something the host references. And an update
+                    // writes more dangerously than a first conversion - it deletes, it re-shapes elements a
+                    // person may have touched, and it rewrites the record of where they came from - so the
+                    // apply has to be able to re-measure both. See Core/CadApplyGuard.cs.
+                    ["instance_id"] = instanceId,
+                    ["link_geometry_fingerprint"] = CadSourceCoherence.GeometryFingerprint(doc, element),
+                    ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
+                        ["coherence_state"] = coherenceNow.Value<string>("state"),
+                    // AND THE ELEMENTS THE ACTIONS ARE ABOUT, as they are right now. Everything else here
+                    // checks the drawing and the request; this checks the MODEL, which is where a person's
+                    // work lives between a plan and its apply.
+                    ["touched_elements"] = CadElementPrint.TouchedBy(doc, actions),
                     ["requirement_set_sha256"] = set.Sha256,
                     ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
                     ["target_document"] = title,
                     ["revit_version"] = SafeVersion(uiApp),
-                    ["means"] = "the actions above are ready calls to commands that rehearse, confirm and re-read " +
-                                "their own work. Send them through horizun_execute_plan. This binding is what " +
-                                "proves they are the ones this plan emitted."
+                    ["means"] = "horizun_apply_cad_update re-measures every one of these before writing and " +
+                                "refuses stale_plan naming which moved, or plan_not_applicable when the link " +
+                                "and the files cannot be shown to be the same issue. Copy it across unchanged."
                 },
                 ["provenance"] = new JObject
                 {
