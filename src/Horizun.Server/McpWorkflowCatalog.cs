@@ -1579,6 +1579,7 @@ namespace Horizun.Server
                         ArgumentsJson = @"{
   ""target_document"": { ""$input"": ""document"" },
   ""actions"": { ""$ref"": { ""step"": 2, ""path"": ""actions"" } },
+  ""apply_binding"": { ""$ref"": { ""step"": 2, ""path"": ""apply_binding"" } },
   ""candidate_index"": { ""$ref"": { ""step"": 2, ""path"": ""candidate_index"" } },
   ""provenance"": { ""$ref"": { ""step"": 2, ""path"": ""provenance"" } },
   ""dry_run"": false
@@ -1612,6 +1613,7 @@ namespace Horizun.Server
                         ArgumentsJson = @"{
   ""target_document"": { ""$input"": ""document"" },
   ""actions"": { ""$ref"": { ""step"": 4, ""path"": ""actions"" } },
+  ""apply_binding"": { ""$ref"": { ""step"": 4, ""path"": ""apply_binding"" } },
   ""candidate_index"": { ""$ref"": { ""step"": 4, ""path"": ""candidate_index"" } },
   ""provenance"": { ""$ref"": { ""step"": 4, ""path"": ""provenance"" } },
   ""dry_run"": false
@@ -1656,6 +1658,7 @@ namespace Horizun.Server
                         ArgumentsJson = @"{
   ""target_document"": { ""$input"": ""document"" },
   ""actions"": { ""$ref"": { ""step"": 6, ""path"": ""actions"" } },
+  ""apply_binding"": { ""$ref"": { ""step"": 6, ""path"": ""apply_binding"" } },
   ""candidate_index"": { ""$ref"": { ""step"": 6, ""path"": ""candidate_index"" } },
   ""provenance"": { ""$ref"": { ""step"": 6, ""path"": ""provenance"" } },
   ""dry_run"": false
@@ -1695,6 +1698,7 @@ namespace Horizun.Server
                         ArgumentsJson = @"{
   ""target_document"": { ""$input"": ""document"" },
   ""actions"": { ""$ref"": { ""step"": 8, ""path"": ""actions"" } },
+  ""apply_binding"": { ""$ref"": { ""step"": 8, ""path"": ""apply_binding"" } },
   ""candidate_index"": { ""$ref"": { ""step"": 8, ""path"": ""candidate_index"" } },
   ""provenance"": { ""$ref"": { ""step"": 8, ""path"": ""provenance"" } },
   ""dry_run"": false
