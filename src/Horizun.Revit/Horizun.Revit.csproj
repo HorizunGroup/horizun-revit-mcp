@@ -29,6 +29,12 @@
     <!-- TargetFramework follows the runtime Revit itself uses for the requested
          year. Order matters: for 2027 both of the last two conditions are true and
          the LAST assignment wins, which is the .NET 10 one. -->
+    <!-- 2022 needs nothing new here: it is <= 2024, so it lands on net48 like 2023
+         and 2024, and DefineConstants already yields REVIT2022 which Core/Rid.cs
+         compiles against. What it lacks is packages.lock.2022.json, which only a
+         restore can produce; until that exists a locked build of 2022 will fail
+         loudly rather than quietly resolving different package versions than the
+         verified years did. -->
     <TargetFramework Condition="$(RevitYear) &lt;= 2024">net48</TargetFramework>
     <TargetFramework Condition="$(RevitYear) &gt;= 2025">net8.0-windows7.0</TargetFramework>
     <TargetFramework Condition="$(RevitYear) &gt;= 2027">net10.0-windows</TargetFramework>

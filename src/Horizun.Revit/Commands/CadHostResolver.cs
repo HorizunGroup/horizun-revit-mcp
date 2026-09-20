@@ -34,8 +34,24 @@ namespace Horizun.Revit.Commands
         public double? DistanceMm;
         /// <summary>How far this set is willing to look, in mm.</summary>
         public double AllowanceMm;
+
+        /// <summary>Walls that were nearer and could not carry the point on any bounded face.</summary>
+        public int WallsPassedOver;
+
+        /// <summary>True when walls exist, one was nearest, and none of them carries this point.</summary>
+        public bool NoFaceCarriesThePoint;
         /// <summary>True when the document contains no wall at all - a different answer from "too far".</summary>
         public bool NoWallsAtAll;
+    }
+
+    /// <summary>A wall END that carries a point: which wall, which end, how far, and where it looks.</summary>
+    internal sealed class CadEndMatch
+    {
+        public Wall Wall;
+        public int End;
+        public double DistanceMm;
+        public XYZ EndPoint;
+        public XYZ Outward;
     }
 
     /// <summary>Which slab a ring falls on, including the cases where nobody can say.</summary>
@@ -80,19 +96,49 @@ namespace Horizun.Revit.Commands
                 return match;
             }
 
-            Wall best = null;
-            double bestFeet = double.MaxValue;
+            // NEAREST FIRST, BUT IT HAS TO CARRY THE POINT.
+            //
+            // A wall whose centreline is nearest can still be the wrong wall: the
+            // symbol may lie past its end, where it projects onto the PLANE of a
+            // face and onto no face at all. The writer tests exactly that when it
+            // places, so the search tests it here - otherwise a plan is clean and
+            // its apply is not, which is the split this whole binding exists to
+            // prevent.
+            var byDistance = new List<KeyValuePair<double, Wall>>();
             foreach (Wall w in walls)
             {
                 Curve curve = (w.Location as LocationCurve)?.Curve;
                 if (curve == null) continue;
                 double d;
-                try { d = curve.Distance(point); } catch { continue; }
-                if (d >= bestFeet) continue;
-                bestFeet = d; best = w;
+                // IN PLAN. MEASURED (campaign 4): a receptacle asked at 457 mm above its level
+                // was 480 mm from a wall line it stood 150 mm from, and was withdrawn.
+                try { d = curve.Distance(new XYZ(point.X, point.Y, curve.GetEndPoint(0).Z)); } catch { continue; }
+                byDistance.Add(new KeyValuePair<double, Wall>(d, w));
             }
+            byDistance.Sort((x, y) => x.Key.CompareTo(y.Key));
 
-            if (best == null) { match.NoWallsAtAll = true; return match; }
+            Wall best = null;
+            double bestFeet = double.MaxValue;
+            int passedOver = 0;
+            foreach (KeyValuePair<double, Wall> candidate in byDistance)
+            {
+                if (!CarriesPoint(candidate.Value, point)) { passedOver++; continue; }
+                best = candidate.Value;
+                bestFeet = candidate.Key;
+                break;
+            }
+            match.WallsPassedOver = passedOver;
+
+            if (best == null)
+            {
+                // Nothing carries it. Report the nearest one anyway, so the refusal
+                // can say how far the nearest wall was rather than only that none
+                // qualified.
+                if (byDistance.Count == 0) { match.NoWallsAtAll = true; return match; }
+                match.DistanceMm = CadUnits.FeetToMm(byDistance[0].Key);
+                match.NoFaceCarriesThePoint = true;
+                return match;
+            }
 
             double widthMm = 0;
             try { widthMm = CadUnits.FeetToMm(best.Width); } catch { }
@@ -100,6 +146,86 @@ namespace Horizun.Revit.Commands
             match.DistanceMm = CadUnits.FeetToMm(bestFeet);
             if (match.DistanceMm.Value <= match.AllowanceMm) match.Wall = best;
             return match;
+        }
+
+        /// <summary>
+        /// The nearest FREE wall end whose terminal face carries the point in plan, within the search.
+        /// Asked only when a rule allows end faces and no side face carried the point; the same test
+        /// the placement's end route makes (CreateElementsPlacement.EndFaces).
+        /// </summary>
+        public static CadEndMatch NearestEnd(IList<Wall> walls, XYZ point, double searchMm)
+        {
+            CadEndMatch best = null;
+            if (walls == null || point == null) return null;
+            foreach (Wall w in walls)
+            {
+                var lc = w.Location as LocationCurve;
+                Curve curve = lc?.Curve;
+                if (curve == null) continue;
+                double z = curve.GetEndPoint(0).Z + 1.0;           // one foot up: inside any wall's height
+                var probe = new XYZ(point.X, point.Y, z);
+                for (int end = 0; end <= 1; end++)
+                {
+                    XYZ e = curve.GetEndPoint(end);
+                    double plan = new XYZ(point.X - e.X, point.Y - e.Y, 0).GetLength() * 304.8;
+                    double halfWidth = 0;
+                    try { halfWidth = w.Width * 304.8 / 2.0; } catch { }
+                    if (plan > searchMm + halfWidth) continue;
+                    bool joined = false;
+                    try
+                    {
+                        foreach (Element j in lc.get_ElementsAtJoin(end))
+                            if (j != null && j.Id != w.Id) { joined = true; break; }
+                    }
+                    catch { }
+                    if (joined) continue;
+                    foreach (var f in CreateElementsPlacement.EndFaces(w).Where(x => x.Item3 == end))
+                    {
+                        IntersectionResult pr;
+                        try { pr = f.Item1.Project(probe); } catch { continue; }
+                        if (pr == null) continue;
+                        bool inside;
+                        try { inside = f.Item1.IsInside(pr.UVPoint); } catch { inside = false; }
+                        double front = f.Item1.FaceNormal.DotProduct(probe - pr.XYZPoint) * 304.8;
+                        double d = pr.Distance * 304.8;
+                        if (!inside || front < -1.0 || d > searchMm) continue;
+                        if (best == null || d < best.DistanceMm)
+                            best = new CadEndMatch { Wall = w, End = end, DistanceMm = d, EndPoint = e,
+                                                     Outward = f.Item1.FaceNormal };
+                    }
+                }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Does this wall have a bounded face the point lands on?
+        ///
+        /// The same test the placement makes, so the plan and the apply cannot
+        /// disagree about which wall a symbol belongs to. A wall whose faces
+        /// cannot be read answers NO: an unreadable face is not a face this
+        /// bridge can place on.
+        /// </summary>
+        internal static bool CarriesPoint(Wall wall, XYZ point)
+        {
+            try
+            {
+                foreach (ShellLayerType shell in new[] { ShellLayerType.Exterior, ShellLayerType.Interior })
+                {
+                    IList<Reference> refs = HostObjectUtils.GetSideFaces(wall, shell);
+                    if (refs == null) continue;
+                    foreach (Reference r in refs)
+                    {
+                        var face = wall.Document.GetElement(r)?.GetGeometryObjectFromReference(r) as Face;
+                        if (face == null) continue;
+                        IntersectionResult projection = face.Project(point);
+                        if (projection == null) continue;
+                        if (face.IsInside(projection.UVPoint)) return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
         }
 
         /// <summary>Every floor, roof and ceiling, read once for a whole pass.</summary>

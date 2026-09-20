@@ -37,6 +37,15 @@ namespace Horizun.Revit.Commands
         /// </summary>
         public static CadAuditSubject Measure(Element e) => Measure(e, null);
 
+        /// <summary>A direction's plan component, normalised; null when it points straight up or down.</summary>
+        private static CadVector? PlanUnit(XYZ v)
+        {
+            if (v == null) return null;
+            double len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
+            if (len < 1e-6) return null;
+            return new CadVector(v.X / len, v.Y / len);
+        }
+
         /// <summary>
         /// <paramref name="wantedParameters"/> is the set of parameter names some
         /// rule actually asked about. Only those are read: sweeping every
@@ -76,6 +85,8 @@ namespace Horizun.Revit.Commands
             catch { }
 
             s.WidthMm = WidthOf(e);
+            s.HeightMm = RectangularHeightOf(e);
+            s.FittedEnds = FittedEndsOf(e, s.FittingAnchors);
 
             // WHAT IT IS CALLED. Only the kinds that carry an identity of their
             // own answer: a wall's name is its TYPE's name and is not a
@@ -99,9 +110,31 @@ namespace Horizun.Revit.Commands
             try
             {
                 Element host = (e as FamilyInstance)?.Host;
-                if (host != null) s.HostElementId = Rid.Value(host.Id);
+                if (host != null)
+                {
+                    s.HostElementId = Rid.Value(host.Id);
+                    var hostCurve = (host.Location as LocationCurve)?.Curve;
+                    if (hostCurve != null)
+                    {
+                        s.HostLine.Add(Mm(hostCurve.GetEndPoint(0)));
+                        s.HostLine.Add(Mm(hostCurve.GetEndPoint(1)));
+                    }
+                    var hostWall = host as Wall;
+                    if (hostWall != null) s.HostWidthMm = CadUnits.FeetToMm(hostWall.Width);
+                    if (hostWall != null && e is FamilyInstance hosted && hosted.HostFace != null)
+                        s.OnHostEnd = CreateElementsPlacement.FaceKind(e.Document, hostWall, hosted.HostFace) == "end";
+                }
             }
             catch { }
+
+            // WHICH WAY ROUND. Read, never assumed: null is "Revit would not say".
+            var fi = e as FamilyInstance;
+            if (fi != null)
+            {
+                try { s.HandPlan = PlanUnit(fi.HandOrientation); } catch { }
+                try { s.FacingPlan = PlanUnit(fi.FacingOrientation); } catch { }
+                try { s.IsMirrored = fi.Mirrored; } catch { }
+            }
             return s;
         }
 
@@ -176,6 +209,52 @@ namespace Horizun.Revit.Commands
                     if (w != null && w.StorageType == StorageType.Double) return CadUnits.FeetToMm(w.AsDouble());
                     return null;
                 }
+            }
+            catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// A rectangular duct's height. Asked only of a duct with NO diameter: a round duct
+        /// answers the height parameter with nothing useful, and a section is two numbers or none.
+        /// </summary>
+        private static List<CadPoint> FittedEndsOf(Element e, List<CadPoint> anchors)
+        {
+            var ends = new List<CadPoint>();
+            try
+            {
+                var curve = e as MEPCurve;
+                if (curve?.ConnectorManager == null) return ends;
+                foreach (Connector c in curve.ConnectorManager.Connectors)
+                {
+                    if (c.ConnectorType != ConnectorType.End || !c.IsConnected) continue;
+                    foreach (Connector other in c.AllRefs)
+                    {
+                        var fi = other.Owner as FamilyInstance;
+                        if (fi?.Category == null || fi.Id == e.Id) continue;
+                        long cat = Rid.Value(fi.Category.Id);
+                        if (cat != (long)BuiltInCategory.OST_DuctFitting && cat != (long)BuiltInCategory.OST_PipeFitting) continue;
+                        ends.Add(Mm(c.Origin));
+                        var lp = fi.Location as LocationPoint;
+                        if (lp?.Point != null) anchors.Add(Mm(lp.Point));
+                        var fm = fi.MEPModel?.ConnectorManager;
+                        if (fm != null) foreach (Connector fc in fm.Connectors) anchors.Add(Mm(fc.Origin));
+                        break;
+                    }
+                }
+            }
+            catch { }
+            return ends;
+        }
+
+        private static double? RectangularHeightOf(Element e)
+        {
+            try
+            {
+                var duct = e as Duct;
+                if (duct == null || DiameterMm(duct).HasValue) return null;
+                Parameter h = duct.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+                if (h != null && h.StorageType == StorageType.Double && h.HasValue) return CadUnits.FeetToMm(h.AsDouble());
             }
             catch { }
             return null;

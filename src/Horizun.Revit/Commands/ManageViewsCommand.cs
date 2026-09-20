@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - views and sheets as one dependency-aware atomic batch.
 // -----------------------------------------------------------------------------
 using System;
@@ -12,7 +12,12 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ManageViewsCommand : ICommand
+    // PARTIAL, so the graphic-control operations (view filters, overrides, temporary
+    // hide/isolate, colour by value) live in ManageViewsGraphics.cs without either half
+    // re-implementing the resolution helpers or the verification contract. They are the
+    // same command and the same batch; they are two files because one 1,900-line file is
+    // not a place where a reviewer finds anything.
+    public sealed partial class ManageViewsCommand : ICommand
     {
         public string Name => "horizun_manage_views";
         public string Description => "Create plans, sections, elevations, drafting/3D views and sheets in one verified transaction.";
@@ -228,6 +233,13 @@ namespace Horizun.Revit.Commands
                     row["actual_center_internal_feet"] = new JArray(center.X, center.Y, center.Z);
                     row["center_error_on_sheet_internal_feet"] = SheetDistance(center, Point(a.Action["point"]) * a.Scale);
                 }
+                // What a graphic-control action produced beyond its id: the colour
+                // legend, and whether a hide was the temporary view mode or the
+                // permanent one. Both are things the caller would otherwise have to
+                // guess at, and guessing wrong about the second means expecting a
+                // printed sheet to show something that was never stored.
+                JObject detail = GraphicsDetail(a.Action, a.Operation.ToLowerInvariant());
+                if (detail != null) row["graphics"] = detail;
                 rows.Add(row);
             }
             if (verified != applied.Count)
@@ -528,6 +540,13 @@ namespace Horizun.Revit.Commands
                         break;
                     }
                     default:
+                        // The graphic-control half of this command: view filters, overrides,
+                        // temporary hide/isolate and colour by value. See ManageViewsGraphics.cs.
+                        if (IsGraphicsOperation(op)) { ValidateGraphics(doc, a, op, known); break; }
+                        // Legends. Two of Revit's operations here cannot be done at all
+                        // through its API; those refuse with the exact manual step rather
+                        // than with a generic failure. See ManageViewsLegends.cs.
+                        if (IsLegendOperation(op)) { ValidateLegend(doc, a, op, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -586,6 +605,8 @@ namespace Horizun.Revit.Commands
         private static Element Apply(Document doc, JObject a, Dictionary<string, ElementId> aliases, double scale)
         {
             string op = a.Value<string>("operation").ToLowerInvariant();
+            if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
+            if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -1079,7 +1100,13 @@ namespace Horizun.Revit.Commands
                     }
                     return true;
                 }
-                default: return false;
+                default:
+                {
+                    string graphicsOp = a.Operation.ToLowerInvariant();
+                    if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
+                    if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e);
+                    return false;
+                }
             }
         }
 
@@ -1198,6 +1225,15 @@ namespace Horizun.Revit.Commands
                     return typeof(View);
                 case "set_view_range": return typeof(ViewPlan);
                 case "set_viewport_type": case "align_viewports": return typeof(Viewport);
+                // Graphic control. create_filter yields the filter itself, so a later
+                // action in the same batch can reference it by key; everything else
+                // yields the view it changed.
+                case "create_filter": return typeof(ParameterFilterElement);
+                case "apply_filter": case "color_by_value": case "set_element_overrides":
+                case "hide_elements": case "isolate_elements": case "reset_temporary":
+                case "set_category_visibility": return typeof(View);
+                case "create_legend": return typeof(View);
+                case "place_legend_component": return typeof(Element);
                 default: return typeof(Element);
             }
         }

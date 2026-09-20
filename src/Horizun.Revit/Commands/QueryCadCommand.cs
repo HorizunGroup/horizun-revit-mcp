@@ -18,6 +18,10 @@
 //   coverage    WHAT THIS BRIDGE CANNOT READ. Published as a first-class answer
 //               rather than left to be discovered: text is unreachable, hatches
 //               arrive as zero-volume residue, no entity carries a handle.
+//   blocks      EVERY PLACED SYMBOL, read from the DWG file itself (block names are
+//               not reachable through Revit's import), one row per placement, in a
+//               stable order, paged, classified against a requirement set and
+//               reconciled against the totals the plan reports.
 //
 // THE HONESTY THAT COSTS SOMETHING. Two facts were MEASURED on Revit 2026 and
 // they shape every reply:
@@ -63,8 +67,8 @@ namespace Horizun.Revit.Commands
 
             string mode = (request.Value<string>("mode") ?? "instances").ToLowerInvariant();
             if (mode != "instances" && mode != "layers" && mode != "geometry" && mode != "coverage" &&
-                mode != "profile")
-                return CommandResult.Fail("mode must be instances, layers, geometry, coverage or profile.");
+                mode != "profile" && mode != "blocks")
+                return CommandResult.Fail("mode must be instances, layers, geometry, coverage, profile or blocks.");
 
             // A count of CAD over a half-loaded model is the canonical example of
             // a true-but-misleading answer, so coverage rides on every reply.
@@ -158,6 +162,8 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            if (mode == "blocks") return Blocks(doc, element, facts, harvest, request, visibility);
+
             if (mode == "profile")
             {
                 int maxLayers = Math.Max(1, Math.Min(200, request.Value<int?>("max_layers") ?? 40));
@@ -194,7 +200,11 @@ namespace Horizun.Revit.Commands
                 ["approximate"] = s.SourceKind == CadCurveKind.Arc || s.SourceKind == CadCurveKind.Spline,
                 ["start_mm"] = new JArray(Round(s.A.X), Round(s.A.Y), Round(s.A.Z)),
                 ["end_mm"] = new JArray(Round(s.B.X), Round(s.B.Y), Round(s.B.Z)),
-                ["length_mm"] = Round(s.PlanLength)
+                ["length_mm"] = Round(s.PlanLength),
+                // WHICH CURVE, and which piece of it: a rule reading lines as runs decides on this, so a caller
+                // must be able to see it. Null for a line (its own curve); ring:N names a closed polyline.
+                ["source_curve"] = s.SourceCurveId,
+                ["source_index"] = s.SourceIndex
             });
 
             // THE ARCS, AS ARCS.
@@ -243,6 +253,70 @@ namespace Horizun.Revit.Commands
                 ["visibility_coverage"] = visibility.ToJson(),
                 ["provenance"] = ProvenanceBlock()
             });
+        }
+
+        /// <summary>
+        /// Every placement of every block, against the requirement set that says
+        /// which zone and which rules - paged, in a stable order, reconciled.
+        /// </summary>
+        private static CommandResult Blocks(Document doc, Element element, CadInstanceFacts facts, CadHarvest harvest,
+                                            JObject request, DocumentVisibilityCoverage visibility)
+        {
+            JObject setJson = request["requirement_set"] as JObject;
+            if (setJson == null)
+                return CommandResult.Fail(
+                    "requirement_set is required for mode='blocks': it declares the zone and the rules each " +
+                    "placement is classified against. Pass the same set the plan uses and the two reconcile.");
+            CadRequirementSet set;
+            try { set = CadRequirementSet.Load(setJson); }
+            catch (CadRequirementSetException ex) { return CommandResult.Fail("requirement_set refused: " + ex.Message); }
+            if (facts == null)
+                return CommandResult.Fail("the CAD instance could not be identified, so its file cannot be read.");
+
+            int limit = Math.Max(1, Math.Min(5000, request.Value<int?>("max_rows") ?? 500));
+            int offset = Math.Max(0, request.Value<int?>("offset") ?? 0);
+            string outcomeFilter = request.Value<string>("outcome");
+            if (outcomeFilter != null && !CadInventoryOutcome.All.Contains(outcomeFilter))
+                return CommandResult.Fail("outcome must be one of: " + string.Join(", ", CadInventoryOutcome.All) + ".");
+            string blockFilter = request.Value<string>("block");
+            string layerFilter = request.Value<string>("layer");
+
+            string sourceHash = facts.FileSha256 ?? CadFacts.SourceFingerprint(facts) ?? "(no-source-identity)";
+            var interpretation = new CadInterpretation();
+            var rows = new List<CadInventoryRow>();
+            JObject report = CadBlockSource.Read(element, facts, set, harvest, sourceHash, interpretation,
+                request.Value<string>("dwg_path"),
+                Math.Max(30, Math.Min(3600, request.Value<int?>("dwg_read_timeout_seconds") ?? 900)), rows);
+
+            List<CadInventoryRow> filtered = rows.Where(r =>
+                (outcomeFilter == null || r.Outcome == outcomeFilter) &&
+                (blockFilter == null || CadGlob.IsMatch(r.BlockName ?? "", blockFilter, false) ||
+                 CadGlob.IsMatch(CadBlockRules.BareName(r.BlockName) ?? "", blockFilter, false) ||
+                 (r.EffectiveName != null && CadGlob.IsMatch(r.EffectiveName, blockFilter, false))) &&
+                (layerFilter == null || CadGlob.IsMatch(r.Layer ?? "", layerFilter, false))).ToList();
+
+            JObject page = CadBlockInventory.Page(rows, filtered, offset, limit,
+                report.Value<int?>("instances_considered"), report.Value<int?>("candidates"));
+            page["mode"] = "blocks";
+            page["document"] = SafeTitle(doc);
+            page["instance_id"] = Rid.Value(element.Id);
+            page["instance_name"] = facts.Name;
+            page["source_hash"] = sourceHash;
+            page["source_fingerprint"] = CadFacts.SourceFingerprint(facts);
+            page["requirement_set"] = new JObject
+            {
+                ["id"] = set.Id, ["version"] = set.Version, ["sha256"] = set.Sha256,
+                ["extent"] = set.ExtentMm == null ? null : set.ExtentMm.Describe()
+            };
+            page["filter"] = new JObject { ["outcome"] = outcomeFilter, ["block"] = blockFilter, ["layer"] = layerFilter };
+            report.Remove("unclaimed_blocks");
+            report.Remove("mirrored_symbols");
+            page["reading"] = report;
+            page["read_only"] = true;
+            page["units_of_this_reply"] = "model_at_mm in millimetres in the model's internal frame; drawing_at in " +
+                                          "the drawing's own units, before the link transform";
+            page["visibility_coverage"] = visibility.ToJson();
+            return CommandResult.Ok(page);
         }
 
         /// <summary>

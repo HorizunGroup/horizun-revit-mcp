@@ -199,7 +199,7 @@ namespace Horizun.Revit.Core
                 {
                     string v;
                     if (!e.BeforeValues.TryGetValue(k, out v)) v = null;
-                    sb.Append(k).Append('=').Append(v ?? " null").Append(R);
+                    sb.Append(k).Append('=').Append(v ?? "\0null").Append(R);
                 }
             }
             if (e.ProposedValues != null && e.ProposedValues.Count > 0)

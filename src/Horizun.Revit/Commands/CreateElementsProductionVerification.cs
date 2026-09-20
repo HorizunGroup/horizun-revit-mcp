@@ -28,6 +28,17 @@ namespace Horizun.Revit.Commands
                                     "for a declared diameter would be a different run. Nothing was created.");
                             bore.Set(plan.Diameter.Value);
                         }
+                        // THE SECTION, IN THE SAME TRANSACTION, set and re-read like the bore.
+                        if (plan.SectionWidth.HasValue && plan.SectionHeight.HasValue)
+                        {
+                            Parameter pw = element.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM);
+                            Parameter ph = element.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM);
+                            if (pw == null || ph == null || pw.IsReadOnly || ph.IsReadOnly)
+                                throw new InvalidOperationException(
+                                    "item " + plan.Index + ": this duct exposes no settable width and height. Nothing was created.");
+                            pw.Set(plan.SectionWidth.Value);
+                            ph.Set(plan.SectionHeight.Value);
+                        }
                         created.Add(new Created
                         {
                             Index = plan.Index, Kind = plan.Kind, Id = element.Id, Plan = plan, Batch = created,
@@ -45,11 +56,79 @@ namespace Horizun.Revit.Commands
                             ExpectedNumber = plan.WantNumber,
                             AlsoCreated = plan.AlsoCreated,
                             ExpectedDiameter = plan.Diameter,
+                            ExpectedWidth = plan.SectionWidth,
+                            ExpectedHeight = plan.SectionHeight,
                             ExpectedSystemName = plan.SystemName,
                             ExpectedSystemTypeId = plan.Kind == "mep_system" ? plan.SystemType?.Id : null,
                             ExpectedMembers = plan.SystemMembers?.Select(m => m.Id).ToList()
                         });
         }
+        /// <summary>
+        /// Width, height, shape and orientation of a rectangular run, read from the model:
+        /// the width/height parameters (0.1 mm), every end connector's Shape and Width/Height,
+        /// and - for a run that is not vertical - that the connector's width axis (BasisX)
+        /// lies horizontal, which is what "width WxH" means on a plan.
+        /// </summary>
+        private static JObject VerifySection(Element element, double width, double height)
+        {
+            const double tol = 0.1 / 304.8;
+            double? w = null, h = null;
+            try { w = element.get_Parameter(BuiltInParameter.RBS_CURVE_WIDTH_PARAM)?.AsDouble(); } catch { }
+            try { h = element.get_Parameter(BuiltInParameter.RBS_CURVE_HEIGHT_PARAM)?.AsDouble(); } catch { }
+            bool paramsOk = w.HasValue && h.HasValue && Math.Abs(w.Value - width) <= tol && Math.Abs(h.Value - height) <= tol;
+            var connectors = new JArray();
+            bool shapeOk = true, orientOk = true, connSizeOk = true;
+            int ends = 0;
+            string orientation = "not_applicable";
+            XYZ axis = null;
+            try
+            {
+                if ((element.Location as LocationCurve)?.Curve is Line ln) axis = ln.Direction;
+            }
+            catch { }
+            bool vertical = axis != null && Math.Abs(axis.Z) > 0.999;
+            ConnectorManager manager = MepFacts.ManagerOf(element);
+            if (manager != null)
+                foreach (Connector c in MepFacts.Ordered(manager))
+                {
+                    if (c.ConnectorType != ConnectorType.End) continue;
+                    ends++;
+                    string shape = Safe(() => c.Shape.ToString());
+                    bool isRect = c.Shape == ConnectorProfileType.Rectangular;
+                    double cw = 0, ch = 0;
+                    try { cw = c.Width; ch = c.Height; } catch { }
+                    bool sizeOk = isRect && Math.Abs(cw - width) <= tol && Math.Abs(ch - height) <= tol;
+                    XYZ bx = null;
+                    try { bx = c.CoordinateSystem.BasisX; } catch { }
+                    bool horizontalWidth = bx != null && Math.Abs(bx.Z) < 1e-6;
+                    shapeOk &= isRect;
+                    connSizeOk &= sizeOk;
+                    if (!vertical) orientOk &= horizontalWidth;
+                    connectors.Add(new JObject
+                    {
+                        ["connector"] = c.Id, ["shape"] = shape,
+                        ["width_mm"] = Math.Round(cw * 304.8, 3), ["height_mm"] = Math.Round(ch * 304.8, 3),
+                        ["width_axis"] = bx == null ? null : new JArray(Math.Round(bx.X, 6), Math.Round(bx.Y, 6), Math.Round(bx.Z, 6)),
+                        ["connected"] = Safe(() => c.IsConnected.ToString()) == "True"
+                    });
+                }
+            if (ends == 0) { shapeOk = false; connSizeOk = false; }
+            if (!vertical) orientation = orientOk ? "width_horizontal" : "width_not_horizontal";
+            bool ok = paramsOk && shapeOk && connSizeOk && orientOk;
+            return new JObject
+            {
+                ["requested_width_mm"] = Math.Round(width * 304.8, 3),
+                ["requested_height_mm"] = Math.Round(height * 304.8, 3),
+                ["read_width_mm"] = w.HasValue ? (JToken)Math.Round(w.Value * 304.8, 3) : JValue.CreateNull(),
+                ["read_height_mm"] = h.HasValue ? (JToken)Math.Round(h.Value * 304.8, 3) : JValue.CreateNull(),
+                ["shape_verified"] = shapeOk,
+                ["connector_size_verified"] = connSizeOk,
+                ["orientation"] = orientation,
+                ["end_connectors"] = connectors,
+                ["verified"] = ok
+            };
+        }
+
         private static JObject VerifyProductionProperties(Document doc, Created made)
         {
                 Element element = doc.GetElement(made.Id);
@@ -154,6 +233,17 @@ namespace Horizun.Revit.Commands
                     };
                 }
 
+                // THE SECTION, RE-READ: the two parameters, the shape of the connectors, and
+                // which way the width lies. A rectangular run whose width stood vertical is the
+                // requested numbers in the wrong building, so orientation is part of the check.
+                bool sectionMatches = true;
+                JObject sectionRow = null;
+                if (made.ExpectedWidth.HasValue && made.ExpectedHeight.HasValue)
+                {
+                    sectionRow = VerifySection(element, made.ExpectedWidth.Value, made.ExpectedHeight.Value);
+                    sectionMatches = (bool)sectionRow["verified"];
+                }
+
                 // THE NAME, RE-READ. Setting a property is not evidence that it
                 // took: Revit renames on collision in some paths and refuses in
                 // others, and a room's number is assigned by Revit the instant it
@@ -236,7 +326,7 @@ namespace Horizun.Revit.Commands
                 bool rowVerified = kindMatches && typeMatches && structuralTypeMatches && connectorsMatch &&
                                    inlineConnectionsMatch &&
                                    hostMatches && systemMatches && curveMatches && structuralMatches &&
-                                   diameterMatches && identityMatches;
+                                   diameterMatches && sectionMatches && identityMatches;
 
                 var verifyRow = new JObject
                 {
@@ -266,6 +356,7 @@ namespace Horizun.Revit.Commands
                 if (structuralRow != null) verifyRow["structural_verified"] = structuralRow;
                 if (identityRow != null) verifyRow["identity_verified"] = identityRow;
                 if (diameterRow != null) verifyRow["diameter_verified"] = diameterRow;
+                if (sectionRow != null) verifyRow["section_verified"] = sectionRow;
                 if (systemRow != null) verifyRow["mep_system"] = systemRow;
                 if (made.ExpectedConnected != null) verifyRow["connectors_verified"] = connectorsMatch;
                 if (inlineConnectionsRow != null) verifyRow["inline_connections"] = inlineConnectionsRow;

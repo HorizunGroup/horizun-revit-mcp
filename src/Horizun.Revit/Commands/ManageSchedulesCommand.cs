@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP - the schedule DEFINITION as a typed, verified surface.
 //
 // horizun_manage_schedules edits what a schedule IS - its fields, filters,
@@ -325,9 +325,35 @@ namespace Horizun.Revit.Commands
                                         : new JArray(a);
                         if (op == ScheduleEditRules.OpRemoveFields && (fields == null || fields.Count == 0))
                             return "remove_fields requires fields: an array of { parameter_id | name | field_index }.";
-                        if (op == ScheduleEditRules.OpSetField &&
-                            a["heading"] == null && a["hidden"] == null)
-                            return "set_field changes nothing: pass heading and/or hidden.";
+                        if (op == ScheduleEditRules.OpSetField)
+                        {
+                            // A caller reaching for a calculated value will pass `formula`.
+                            // Saying exactly why that cannot work - and that it is Revit's
+                            // limit rather than an argument error - sends them somewhere
+                            // useful instead of into a retry loop.
+                            if (a["formula"] != null || a["percentage_of"] != null)
+                                return ScheduleEditRules.CalculatedFieldRefusal;
+
+                            string formatError = ScheduleEditRules.ValidateFieldFormat(a["format"] as JObject);
+                            if (formatError != null) return formatError;
+
+                            if (a["heading"] == null && a["hidden"] == null && a["totals"] == null &&
+                                a["width"] == null && a["alignment"] == null && a["format"] == null)
+                                return "set_field changes nothing: pass heading, hidden, totals, width, " +
+                                       "alignment and/or format.";
+
+                            if (a["alignment"] != null &&
+                                ScheduleEditRules.CanonicalAlignment(a.Value<string>("alignment")) == null)
+                                return "alignment must be left, center or right.";
+
+                            if (a["width"] != null)
+                            {
+                                double width = a.Value<double>("width");
+                                if (!(width > 0) || width > 10000)
+                                    return "width must be greater than zero and at most 10000 (a sheet column " +
+                                           "width in millimetres).";
+                            }
+                        }
                         if (target != null)
                         {
                             List<ScheduleFieldFacts> facts = FieldFacts(target);
@@ -382,8 +408,10 @@ namespace Horizun.Revit.Commands
                         return null;
                     }
                     case ScheduleEditRules.OpSetOptions:
-                        if (a["itemized"] == null && a["grand_total"] == null && a["headers"] == null)
-                            return "set_options changes nothing: pass itemized, grand_total and/or headers.";
+                        if (a["itemized"] == null && a["grand_total"] == null && a["headers"] == null &&
+                            a["include_links"] == null)
+                            return "set_options changes nothing: pass itemized, grand_total, headers and/or " +
+                                   "include_links.";
                         return null;
                     default:
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -472,6 +500,29 @@ namespace Horizun.Revit.Commands
                     ScheduleField field = definition.GetField(ResolveFieldId(target, a));
                     if (a["heading"] != null) field.ColumnHeading = a.Value<string>("heading");
                     if (a["hidden"] != null) field.IsHidden = a.Value<bool>("hidden");
+
+                    // PER-FIELD TOTALS. ShowGrandTotal on the definition decides whether a
+                    // total ROW exists; this decides whether THIS column contributes a
+                    // number to it. Setting one without the other is the usual reason a
+                    // schedule ends up showing a grand-total line full of empty cells.
+                    if (a["totals"] != null)
+                        field.DisplayType = a.Value<bool>("totals")
+                            ? ScheduleFieldDisplayType.Totals
+                            : ScheduleFieldDisplayType.Standard;
+
+                    if (a["alignment"] != null)
+                    {
+                        ScheduleHorizontalAlignment? alignment = AlignmentValue(a.Value<string>("alignment"));
+                        if (alignment != null) field.HorizontalAlignment = alignment.Value;
+                    }
+
+                    // Width is a SHEET width in Revit internal feet. This command speaks
+                    // millimetres by contract, so the conversion happens once, here.
+                    if (a["width"] != null) field.SheetColumnWidth = a.Value<double>("width") / 304.8;
+
+                    JObject fieldFormat = a["format"] as JObject;
+                    if (fieldFormat != null) ApplyFieldFormat(field, fieldFormat);
+
                     return target;
                 }
                 case ScheduleEditRules.OpSetFilters:
@@ -501,6 +552,13 @@ namespace Horizun.Revit.Commands
                     if (a["itemized"] != null) definition.IsItemized = a.Value<bool>("itemized");
                     if (a["grand_total"] != null) definition.ShowGrandTotal = a.Value<bool>("grand_total");
                     if (a["headers"] != null) definition.ShowHeaders = a.Value<bool>("headers");
+
+                    // ELEMENTS FROM LINKS, on an EXISTING schedule. horizun_create_schedule
+                    // could set this at creation and nothing could change it afterwards, so a
+                    // schedule made without links had to be deleted and remade - losing its
+                    // placement on sheets, its formatting and its filters.
+                    if (a["include_links"] != null)
+                        definition.IncludeLinkedFiles = a.Value<bool>("include_links");
                     return target;
                 default:
                     throw new InvalidOperationException("unsupported operation '" + op + "'");
@@ -571,18 +629,10 @@ namespace Horizun.Revit.Commands
                     }
                     return true;
                 }
-                case ScheduleEditRules.OpSetField:
-                {
-                    ScheduleField field;
-                    try { field = definition.GetField(ResolveFieldId(schedule, a.Action)); }
-                    catch (Exception ex) { why = "the field could not be re-read: " + ex.Message; return false; }
-                    if (a.Action["heading"] != null &&
-                        !string.Equals(field.ColumnHeading, a.Action.Value<string>("heading"), StringComparison.Ordinal))
-                    { why = "the heading did not stick"; return false; }
-                    if (a.Action["hidden"] != null && field.IsHidden != a.Action.Value<bool>("hidden"))
-                    { why = "the visibility did not stick"; return false; }
-                    return true;
-                }
+                // The OpSetField re-read lives further down, with the totals
+                // check this copy did not have. Two cases with one label in one
+                // switch is not a duplicate that the compiler tolerates: the
+                // add-in did not build at all while both were here.
                 case ScheduleEditRules.OpSetFilters:
                 {
                     JArray wanted = (JArray)a.Action["filters"];
@@ -637,9 +687,55 @@ namespace Horizun.Revit.Commands
                     }
                     return true;
                 }
+                case ScheduleEditRules.OpSetField:
+                {
+                    ScheduleField field;
+                    try { field = definition.GetField(ResolveFieldId(schedule, a.Action)); }
+                    catch (Exception ex) { why = "the field could not be re-read: " + ex.Message; return false; }
+
+                    if (a.Action["heading"] != null && field.ColumnHeading != a.Action.Value<string>("heading"))
+                    { why = "the column heading did not stick"; return false; }
+                    if (a.Action["hidden"] != null && field.IsHidden != a.Action.Value<bool>("hidden"))
+                    { why = "the hidden flag did not stick"; return false; }
+                    if (a.Action["totals"] != null)
+                    {
+                        bool wantTotals = a.Action.Value<bool>("totals");
+                        bool gotTotals = field.DisplayType == ScheduleFieldDisplayType.Totals;
+                        if (gotTotals != wantTotals)
+                        {
+                            why = "the per-field total did not stick. A field whose parameter cannot be summed " +
+                                  "does not carry one, and Revit reverts it without complaining";
+                            return false;
+                        }
+                    }
+                    if (a.Action["alignment"] != null)
+                    {
+                        ScheduleHorizontalAlignment? wantAlignment =
+                            AlignmentValue(a.Action.Value<string>("alignment"));
+                        if (wantAlignment != null && field.HorizontalAlignment != wantAlignment.Value)
+                        { why = "the column alignment did not stick"; return false; }
+                    }
+                    if (a.Action["width"] != null)
+                    {
+                        double wantWidth = a.Action.Value<double>("width") / 304.8;
+                        if (Math.Abs(field.SheetColumnWidth - wantWidth) > 1e-6)
+                        { why = "the column width did not stick"; return false; }
+                    }
+                    JObject wantFormat = a.Action["format"] as JObject;
+                    if (wantFormat != null)
+                    {
+                        string formatWhy;
+                        if (!FieldFormatMatches(field, wantFormat, out formatWhy)) { why = formatWhy; return false; }
+                    }
+                    return true;
+                }
                 case ScheduleEditRules.OpSetOptions:
                     if (a.Action["itemized"] != null && definition.IsItemized != a.Action.Value<bool>("itemized"))
                     { why = "itemized did not stick"; return false; }
+
+                    if (a.Action["include_links"] != null &&
+                        definition.IncludeLinkedFiles != a.Action.Value<bool>("include_links"))
+                    { why = "include_links did not stick"; return false; }
                     if (a.Action["grand_total"] != null && definition.ShowGrandTotal != a.Action.Value<bool>("grand_total"))
                     { why = "grand_total did not stick"; return false; }
                     if (a.Action["headers"] != null && definition.ShowHeaders != a.Action.Value<bool>("headers"))
@@ -712,6 +808,96 @@ namespace Horizun.Revit.Commands
         /// even parameter ids collide); parameter_id and name go through the proved
         /// resolution rules.
         /// </summary>
+        /// <summary>
+        /// Write the number format of one column.
+        ///
+        /// FormatOptions.UseDefault IS LOAD-BEARING. A FormatOptions whose UseDefault is
+        /// true ignores every other field on it, so setting an accuracy without clearing
+        /// it is a call Revit accepts and discards: the column keeps the project units
+        /// and the reply would have reported a change that never happened.
+        /// </summary>
+        /// <summary>
+        /// The canonical alignment name, as Revit's enum. The NAME is canonicalised in
+        /// ScheduleEditRules, which is deliberately Revit-free so the rules can be proved
+        /// without a Revit in the room; only this mapping needs the API.
+        /// </summary>
+        private static ScheduleHorizontalAlignment? AlignmentValue(string requested)
+        {
+            switch (ScheduleEditRules.CanonicalAlignment(requested))
+            {
+                case "left": return ScheduleHorizontalAlignment.Left;
+                case "center": return ScheduleHorizontalAlignment.Center;
+                case "right": return ScheduleHorizontalAlignment.Right;
+                default: return null;
+            }
+        }
+
+        private static void ApplyFieldFormat(ScheduleField field, JObject format)
+        {
+            FormatOptions options = field.GetFormatOptions();
+            options.UseDefault = false;
+
+            string unit = format.Value<string>("unit_type_id");
+            if (!string.IsNullOrWhiteSpace(unit)) options.SetUnitTypeId(new ForgeTypeId(unit));
+
+            double? accuracy = format.Value<double?>("accuracy");
+            if (accuracy != null) options.Accuracy = accuracy.Value;
+
+            bool? suppressZeros = format.Value<bool?>("suppress_trailing_zeros");
+            if (suppressZeros != null && options.CanSuppressTrailingZeros())
+                options.SuppressTrailingZeros = suppressZeros.Value;
+
+            string rounding = format.Value<string>("rounding");
+            if (!string.IsNullOrWhiteSpace(rounding))
+            {
+                RoundingMethod method;
+                if (Enum.TryParse(rounding, true, out method) && Enum.IsDefined(typeof(RoundingMethod), method))
+                    options.RoundingMethod = method;
+            }
+
+            field.SetFormatOptions(options);
+        }
+
+        /// <summary>
+        /// Re-read the format and compare only what was SET. A FormatOptions carries a
+        /// value for everything; comparing the untouched fields would fail on defaults
+        /// nobody asked about.
+        /// </summary>
+        private static bool FieldFormatMatches(ScheduleField field, JObject wanted, out string why)
+        {
+            why = null;
+            FormatOptions options;
+            try { options = field.GetFormatOptions(); }
+            catch (Exception ex) { why = "the format could not be re-read: " + ex.Message; return false; }
+
+            if (options.UseDefault)
+            { why = "the column went back to the project default units, so the format did not stick"; return false; }
+
+            string unit = wanted.Value<string>("unit_type_id");
+            if (!string.IsNullOrWhiteSpace(unit))
+            {
+                string got;
+                try { ForgeTypeId id = options.GetUnitTypeId(); got = id == null ? null : id.TypeId; }
+                catch { got = null; }
+                if (!string.Equals(got, unit, StringComparison.Ordinal))
+                {
+                    why = "the unit did not stick: asked for " + unit + ", read back " + (got ?? "nothing");
+                    return false;
+                }
+            }
+
+            double? accuracy = wanted.Value<double?>("accuracy");
+            if (accuracy != null && Math.Abs(options.Accuracy - accuracy.Value) > 1e-12)
+            { why = "the accuracy did not stick"; return false; }
+
+            bool? suppressZeros = wanted.Value<bool?>("suppress_trailing_zeros");
+            if (suppressZeros != null && options.CanSuppressTrailingZeros() &&
+                options.SuppressTrailingZeros != suppressZeros.Value)
+            { why = "suppress_trailing_zeros did not stick"; return false; }
+
+            return true;
+        }
+
         private static ScheduleFieldId ResolveFieldId(ViewSchedule schedule, JObject entry)
         {
             ScheduleDefinition definition = schedule.Definition;

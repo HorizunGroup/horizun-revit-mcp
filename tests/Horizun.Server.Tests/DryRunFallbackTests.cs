@@ -205,7 +205,19 @@ namespace Horizun.Server.Tests
             int success = program.IndexOf("JToken data = reply[\"data\"];", System.StringComparison.Ordinal);
             Assert.True(success >= 0, "the success branch of the forwarder moved; this guard needs updating");
 
-            string branch = program.Substring(success, System.Math.Min(400, program.Length - success));
+            // THE BRANCH'S ANSWER, NOT A FIXED NUMBER OF CHARACTERS.
+            //
+            // This used to read the 400 bytes after the anchor, which stopped in
+            // the middle of a comment that had grown between the anchor and the
+            // return - so the guard failed while the forwarder was doing exactly
+            // what it asks for. The window is now the statement that answers:
+            // from the anchor to the end of the next return.
+            int answer = program.IndexOf("return ", success, System.StringComparison.Ordinal);
+            Assert.True(answer > success, "the success branch no longer returns anything; this guard needs updating");
+            int end = program.IndexOf(");", answer, System.StringComparison.Ordinal);
+            Assert.True(end > answer, "the success branch's return statement could not be read");
+
+            string branch = program.Substring(answer, end - answer);
             Assert.Contains("reply[\"fallback\"]", branch, System.StringComparison.Ordinal);
             Assert.Contains("reply[\"capability_gaps\"]", branch, System.StringComparison.Ordinal);
         }

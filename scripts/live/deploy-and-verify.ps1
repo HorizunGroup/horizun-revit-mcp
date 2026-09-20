@@ -12,11 +12,16 @@
 
       1  the tree must be CLEAN, because a binary stamps a commit and must be
          able to name one it actually is;
-      2  every open document is closed THROUGH THE BRIDGE, discarding nothing
-         that was saved, so Revit does not exit into a Save dialog;
-      3  Revit is asked to close and given time to; it is never killed, because
-         a killed Revit leaves journals and a lock file and the next start is
-         not the state anything measured;
+      2  only the Revit an EARLIER run of this cycle started - recorded by pid,
+         start time and executable - is ever closed, and in it only the
+         documents that run registered, re-read before each close; a document
+         the user opened there, or a Revit of this year the cycle did not start,
+         stops the cycle with nothing sent to it (scripts/live/owned-session.ps1);
+      3  that Revit is asked to close and given time to; it is never killed,
+         because a killed Revit leaves journals and a lock file and the next
+         start is not the state anything measured. An MCP server running the
+         installed executable is REPORTED and the cycle stops: it belongs to a
+         client (possibly the one driving this run) and is never killed;
       4  the add-in and the server are deployed TOGETHER - they share a contract
          hash and there is no partial deployment;
       5  the binaries are re-signed and then watched until they stop changing,
@@ -124,54 +129,34 @@ if (-not $CertificateThumbprint) {
 Say ("Signing certificate {0}" -f $CertificateThumbprint.Substring(0, 12))
 
 # --------------------------------------------------- 2 and 3. close, then exit
-$revit = @(Get-Process Revit -ErrorAction SilentlyContinue |
-           Where-Object { $_.Path -match ("Revit " + $Year) })
-if ($revit.Count -gt 1) { throw "expected at most one Revit $Year, found $($revit.Count)" }
-
-if ($revit.Count -eq 1) {
-    $h = Call 'horizun_health' @{} 'h0'
-    $docs = @(Field (Field $h 'result') 'open_documents')
-    if ($docs.Count -gt 0) { Say ("Open: " + (@($docs | ForEach-Object { $_.title }) -join ', ')) }
-    $n = 0
-    foreach ($d in $docs) {
-        $n++
-        $title = [string]$d.title
-        $common = @{ operation = 'close'; target_document = $title
-                     save_on_close = $false; activate_other = $true }
-        $dry = Call 'horizun_document_session' `
-            (($common.Clone()) + @{ dry_run = $true; discard_unsaved = $true
-                                    idempotency_key = [guid]::NewGuid().ToString() }) "dry$n"
-        $token = Field (Field $dry 'result') 'confirmation_token'
-        if ($token) {
-            $r = Call 'horizun_document_session' `
-                (($common.Clone()) + @{ dry_run = $false; discard_unsaved = $true
-                                        confirmation_token = $token
-                                        idempotency_key = [guid]::NewGuid().ToString() }) "apply$n"
-        } else {
-            # Nothing unsaved to discard: close plainly rather than asking for a
-            # permission the document does not need.
-            $r = Call 'horizun_document_session' `
-                (($common.Clone()) + @{ dry_run = $false; discard_unsaved = $false
-                                        idempotency_key = [guid]::NewGuid().ToString() }) "plain$n"
-        }
-        Say ("  closed {0}: {1}" -f $title, [string](Field (Field $r 'result') 'closed'))
-    }
-
-    $p = $revit[0]
-    $null = $p.CloseMainWindow()
-    if (-not $p.WaitForExit($RevitCloseTimeoutSeconds * 1000)) {
-        throw ("Revit did not exit within {0}s. A dialog is almost certainly waiting for a person - " +
-               "possibly on another monitor. It is NOT being killed: a killed Revit leaves a lock file " +
-               "and a journal, and the next start is not a state anything should measure." -f
-               $RevitCloseTimeoutSeconds)
-    }
-    Say 'Revit closed.'
+# This used to close EVERY document of any Revit of this year with discard_unsaved
+# and then kill every horizun-mcp process by name. Ownership is now proved, not
+# assumed: see scripts/live/owned-session.ps1.
+. (Join-Path $PSScriptRoot 'owned-session.ps1')
+$env:HORIZUN_REVIT_YEAR = [string]$Year
+$probes = New-HzOwnedProbes -Repo $repo -ServerExe $null
+$lock = Enter-HzOwnedLock -Year ([string]$Year)
+$prev = Close-HzRecordedRevit -Probes $probes -Name 'deploy-and-verify' -Year ([string]$Year) -ExitTimeoutSec $RevitCloseTimeoutSeconds
+if ($prev.state -notin @('no_record', 'closed', 'already_exited')) {
+    throw ("the Revit an earlier cycle started was left running ({0}): {1} Recovery pending: {2}. " +
+           "Nothing was killed and nothing was deployed." -f $prev.state, $prev.why, $prev.recovery_pending)
+}
+if ($prev.state -ne 'no_record') { Say ("Previous cycle's Revit: " + $prev.state) }
+$free = Test-HzManifestChangeAllowed -Probes $probes -Year ([string]$Year)
+if (-not $free.ok) {
+    throw ("{0} It was not started by this cycle; it is left alone and nothing was deployed." -f $free.why)
 }
 
-# The MCP server holds its own executable open. These are this cycle's own
-# clients, not the user's editors.
-Get-Process horizun-mcp -ErrorAction SilentlyContinue | Stop-Process -Force -Confirm:$false
-Start-Sleep -Seconds 2
+# The MCP server holds its own executable open, so a deploy over a running one
+# fails. Those processes belong to MCP clients - possibly the very client driving
+# this run - and are NOT this cycle's to end. Name them and stop.
+$servers = @(Get-CimInstance Win32_Process -Filter "Name = 'horizun-mcp.exe'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -ieq [IO.Path]::GetFullPath($serverExe)) })
+if ($servers.Count -gt 0) {
+    $list = @($servers | ForEach-Object { "pid {0} (parent {1})" -f $_.ProcessId, $_.ParentProcessId }) -join ', '
+    throw ("{0} MCP server process(es) run the installed executable: {1}. Close the MCP clients that " +
+           "started them and run again; this cycle does not end processes it did not start." -f $servers.Count, $list)
+}
 
 # ------------------------------------------------------------- 4 and 5. deploy
 & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repo 'scripts\deploy-both.ps1') 2>&1 |
@@ -203,7 +188,8 @@ if ($second.addinSig -ne 'Valid' -or $second.serverSig -ne 'Valid') {
 Say ("Signed-stable: add-in {0} server {1}" -f $second.addin.Substring(0, 12), $second.server.Substring(0, 12))
 
 # --------------------------------------------------- 6. Revit, at THIS commit
-Start-Process -FilePath $revitExe
+$null = Start-HzRecordedRevit -Probes $probes -Name 'deploy-and-verify' -Year ([string]$Year) -Dir $scratch -RevitExe $revitExe
+Say 'Revit started (recorded: pid, start time, executable).'
 $deadline = (Get-Date).AddMinutes($RevitStartTimeoutMinutes)
 $healthy = $false
 while ((Get-Date) -lt $deadline) {
@@ -243,6 +229,11 @@ foreach ($file in $OpenDocuments) {
     $res = Field $r 'result'
     Say ("  opened {0}: {1} active_verified={2}" -f (Split-Path $file -Leaf),
         [string](Field $res 'status'), [string](Field $res 'active_document_verified'))
+    # Registered by the path the bridge publishes, so the NEXT cycle may close it.
+    # A document that is not registered keeps this Revit running at that point.
+    $reg = Register-HzRecordedDocument -Probes $probes -Name 'deploy-and-verify' -Year ([string]$Year) `
+        -ExpectedTitle ([IO.Path]::GetFileNameWithoutExtension($file)) -SourceFile $file
+    if (-not $reg.ok) { Say ("  WARNING: not registered, the next cycle will leave this Revit running: " + $reg.why) }
 }
 
 # Opening several documents makes the LAST one active. ActiveDocument is an

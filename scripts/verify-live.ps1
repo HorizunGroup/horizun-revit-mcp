@@ -1835,13 +1835,28 @@ function Add-Write($name, $tool, $outcome, $detail) {
 # reported in their own section, and counted in NEITHER the coverage denominator
 # nor the gap list. The retirement is a fact about the surface, not a hole in it.
 # ---------------------------------------------------------------------------
-$RetiredProbes = @(
+# ---------------------------------------------------------------------------
+# PUBLISHED AND NOT PROBED.
+#
+# Different from retired and different from failing: the tool is on the surface,
+# this harness has no probe for it, and that is a real gap in the live evidence
+# rather than a property of the build. Each entry says what a probe would have to
+# stage, because that is why there is not one yet.
+# ---------------------------------------------------------------------------
+$UncoveredTools = @(
     @{ Tool = 'horizun_connect_mep'
-       Probes = @('connect_mep joins two pipes and confirms the joint from the model',
-                  'connect_mep generates a fitting and still confirms the joint')
-       Retired = '0.6.x (not published by this build)'
-       Covered = 'joining two MEP curves end to end, with and without a generated fitting, and confirming the joint by re-reading the connectors from the model.'
-       Replacement = 'No typed replacement in this version. MEP connection is reachable through horizun_execute_python, whose result is self-reported rather than host-verified.' }
+       Why = 'returned to the surface in this branch; its 0.6.x probes were removed when it left and have not been rewritten.'
+       AProbeWouldNeed = 'two pipes meeting end to end in the write document, then a re-read of both connectors to prove the joint - the fixture horizun_cad_connect exercises through its delegate.' }
+)
+
+$RetiredProbes = @(
+    # horizun_connect_mep CAME BACK. It was retired in 0.6.x as "not published by
+    # this build" and this branch publishes it again, so it does not belong here:
+    # a registry that says a live tool is gone reports a gap that is not a gap and
+    # hides one that is. It is now an UNCOVERED published tool - named in
+    # $UncoveredTools below with what a probe would have to build - rather than a
+    # retired one, because writing a probe that was never run would be a coverage
+    # claim nobody measured.
 
     @{ Tool = 'horizun_terminate_riser'
        Probes = @('terminate_riser builds all five pieces and re-reads each one')

@@ -3,7 +3,152 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased — documentation and distribution metadata
+## v2.0.0 — 2026-09-20
+
+**A revision update now re-measures the world it was planned against, can be
+continued after a failure, and never claims a network it did not build.** This is
+a major version because two calls that used to succeed now fail: see *Breaking*
+below before upgrading.
+
+### An apply that checks the plan is still about this model
+
+`horizun_apply_cad_update` accepted an `apply_binding` and **never read it**. A plan
+made against one issue of a drawing could be applied to a model whose drawing,
+references, link geometry, rules or elements had all moved since, and the command
+would carry it out and report success.
+
+Both CAD applies now go through the same check (`CadApplyGuard`), which names what
+moved before anything is written. Measured live on seven situations: a label edited
+after planning, geometry edited after planning, a nested reference revised, a source
+missing, the link reloaded, an element edited by hand, and a plan made while the
+sources and the link could not be shown to be the same issue. All seven refuse
+before any write, and the model's element and connector census is identical either
+side of the refusal.
+
+### An update that stops half-way can be continued
+
+Three different things get called a retry, and the product now tells them apart:
+
+| | |
+|---|---|
+| **repeat** | the same key over finished work replays that reply and runs nothing |
+| **continue** | `continue_operation` carries out only what is still pending, under the decisions the first call was given |
+| **a new plan** | the world moved; the old decisions do not carry, and the guard refuses |
+
+The operation record is durable on the machine, so **save the model, close Revit,
+open a new session and continue** works — measured across two sessions. The reply
+carries `operation` with what is confirmed, what is still to do, what each action
+created or removed, and the decisions that were authorised. Finished records are
+swept after 30 days; an unfinished one is never swept, at any age.
+
+A caller whose apply committed and whose answer was lost gets
+`already_applied_under_this_key`, naming what is left and how to continue, instead
+of being told the drawing had changed — what had changed was what their own call
+did.
+
+### It says what it leaves unjoined, and refuses what it cannot rebuild
+
+An update writes **geometry**. Joining is `horizun_cad_connect`'s consented step, and
+it always was — but nothing said so, and a division built by an update left two ends
+at the same point holding nothing while every count reported the model correct.
+
+- the reply carries `verdict`: `geometry` applied, `network: not_asserted`;
+- `ends_that_meet_and_are_not_joined` names the ends left loose at the points the
+  call worked at;
+- a plan that **releases fittings** is refused before any write unless the caller
+  sends `accept_connections_not_rebuilt`. Consenting to lose a fitting is not
+  consenting to lose the junction it served.
+
+### A fitting remembers where it came from
+
+Every fitting this bridge places is stamped with its junction, its members, its type
+and a print of how it was left, and reads back as `made_here`, `made_here_modified`
+or `origin_unknown`. A fitting the bridge placed and a person then moved is **their**
+work: releasing it needs `release_protected_fittings`, the same second consent as a
+fitting nobody here placed. A model from before this record is never claimed
+retrospectively.
+
+*(The stamping had never worked: it looked for a connector within 50 mm of the drawn
+junction, and inserting an elbow trims both runs ~380 mm back, so every fitting read
+as `origin_unknown`. The fitting that serves a junction is the one element, not a
+member, that **both** members hold.)*
+
+### Every held row of an update plan says why
+
+`held_rows` collects each row the plan will not carry out on its own with the reason
+in the same place, including what it is waiting for. A row whose `held_because` is
+null is a gap in the planner and is labelled as one.
+
+### Isolated Revit sessions report what is true
+
+`scripts/dwg-bim/session.ps1 status` asked the state file and answered from it, so a
+session whose Revit had gone still read *running*. It now reports three separate
+things — the record, the process (`alive` / `exited` / `not_ours` / `never_started`)
+and the environment verified against files and hashes — and **never** takes the
+absence of Revit as evidence that the year's manifest was restored.
+
+### Eighteen new tools — 80 → 98
+
+The surface this release publishes is larger than the revision work above. Nothing was removed
+or renamed; **98 tools, 262 suboperations**, and the eighteen that are new fall into five
+groups.
+
+**Reading a DWG without importing it.** `horizun_cad_extract` reads a linked drawing's layers,
+lines, arcs, text and blocks directly; `horizun_cad_symbols` lists the block symbols it defines
+and where each is placed; `horizun_cad_unit_instances` finds repeated units and the transform
+that places each occurrence. Revit's own import cannot see a block name, which is why these
+exist.
+
+**Networks, not just lines.** `horizun_cad_networks` derives what a drawing says about its own
+network — which ends meet, what belongs between them, which stay open on purpose — and
+`horizun_cad_connect` builds those joins, placing the fitting each junction needs and verifying
+it. `horizun_connect_mep` connects or disconnects named connectors and refuses to close a
+visible gap by moving somebody's geometry. `horizun_cad_review` reports what a conversion could
+not settle, with the evidence for each held candidate.
+
+**IFC and IDS.** `horizun_plan_from_ifc` plans Revit elements from an IFC under a declared
+mapping without importing it, `horizun_apply_ifc_plan` carries that plan out through typed
+commands, and `horizun_validate_ids` checks a model against an IDS specification and reports
+each requirement it fails.
+
+**Model work.** `horizun_manage_materials` reads, creates and assigns materials;
+`horizun_copy_between_documents` copies elements between open documents keeping identity and
+reporting substitutions; `horizun_structural_connections` reads and applies structural
+connection types; `horizun_selection_exchange` reads what a person selected in Revit and can
+offer a set back for them to select.
+
+**Machine state and procedures.** `horizun_audit_access` reports what this bridge is allowed to
+do on this machine and who decided it; `horizun_repair_memory` recovers durable state when a
+record is unreadable; `horizun_run_procedure` runs a named, versioned procedure this machine
+has stored, and `horizun_promote_script` is how a verified script becomes one instead of
+staying ad-hoc code.
+
+### Breaking
+
+- **`apply_binding` is now a required argument of `horizun_apply_cad_update`.** It
+  was neither declared nor read before. Any caller following the documented flow
+  already has it: copy the `apply_binding` block from the `horizun_plan_cad_update`
+  reply verbatim.
+- **A plan that releases fittings is refused** unless `accept_connections_not_rebuilt`
+  is `true`. A call that used to apply geometry and silently leave the network broken
+  now writes nothing until the caller says it accepts that.
+- `state: applied` never meant the network was built. It still does not; the new
+  `verdict` block says so explicitly rather than leaving it to be assumed.
+
+### Limits of this release
+
+- The live evidence for these changes is **Revit 2026**. The add-in compiles for
+  2023–2027 and the release gate runs the matrix; the DWG→BIM revision work above was
+  measured on one year.
+- `horizun_plan_cad_update` takes no outfall, so a revision that re-shapes a run on a
+  layer with a declared fall **holds it** rather than laying it level. Building a
+  falling run is `horizun_plan_from_cad` with an outfall, and pipes only — a duct has
+  no bore to turn an invert into a centreline, and asking for one is refused.
+- The unjoined-end report covers ends that coincide. A declared junction where the
+  model has a single loose end is invisible to it by construction; that is what the
+  drawing-aware acceptance is for.
+
+### Also in this release — documentation and distribution metadata
 
 - Correct Claude Desktop's required in-app extension step and installed recovery
   paths; align English, Spanish and agent instructions with Setup.
@@ -18,6 +163,7 @@ assumed. Dates are the day the work landed.
   measured 70/79/80-tool permission profiles and the core-only subset.
 - Deduplicate repeated schema branches in the suboperation counter: 208 distinct
   tool/selector/value choices replace 213 schema occurrences, with no tool removed.
+
 
 ## v1.3.3 — 2026-09-14
 

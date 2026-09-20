@@ -1,0 +1,244 @@
+// Copyright (c) Horizun. A rectangular duct section the drawing's labels change, seen by an update.
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Horizun.Revit.Core;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace Horizun.Core.Tests
+{
+    public class CadSectionResizeTests
+    {
+        private const string RevA = "sha-of-revision-a";
+        private const string RevB = "sha-of-revision-b";
+
+        private static CadRequirementSet Set(string familyType = null)
+        {
+            string family = familyType == null ? "" : ", 'family_type': '" + familyType + "'";
+            string doc = @"{
+              'schema': 'horizun.cad-requirements/1',
+              'requirement_set': { 'id': 'walls', 'version': '1.0.0', 'title': 'Walls' },
+              'source': { 'units': 'millimeter' },
+              'tolerances': { 'point_mm': 1.0, 'gap_mm': 25.0, 'angle_degrees': 2.0, 'arc_sagitta_mm': 5.0 },
+              'rules': [{ 'id': 'walls', 'precedence': 10, 'layers': ['A-WALL*'], 'produces': 'wall',
+                          'category': 'OST_Walls', 'height_mm': 3000FAMILY,
+                          'geometry': { 'from': 'double_lines', 'min_thickness_mm': 100,
+                                        'max_thickness_mm': 400, 'min_overlap_fraction': 0.5 } }]
+            }".Replace('\'', '"').Replace("FAMILY", family);
+            return CadRequirementSet.Load(JObject.Parse(doc));
+        }
+
+        private static List<CadSegment> Wall(double x0, double x1, double y = 0, string layer = "A-WALL")
+        {
+            return new List<CadSegment>
+            {
+                new CadSegment(new CadPoint(x0, y - 100), new CadPoint(x1, y - 100), layer),
+                new CadSegment(new CadPoint(x0, y + 100), new CadPoint(x1, y + 100), layer)
+            };
+        }
+
+        private static List<CadCandidate> Read(List<CadSegment> segs, CadRequirementSet set, string sha)
+        {
+            return CadInterpretationRules.Interpret(segs, set, sha).Candidates.ToList();
+        }
+
+        /// <summary>An element in the model, built from a candidate, sitting where it was put.</summary>
+        private static CadAuditSubject Built(CadCandidate from, CadRequirementSet set, string sourceSha,
+                                             long elementId, List<CadPoint> movedTo = null,
+                                             string typeName = "Generic - 200mm",
+                                             double? widthMm = null, long? hostId = null)
+        {
+            List<CadPoint> where = movedTo ?? from.Geometry;
+            return new CadAuditSubject
+            {
+                ElementId = elementId,
+                Category = "Walls",
+                TypeName = typeName,
+                WidthMm = widthMm,
+                HostElementId = hostId,
+                Geometry = new List<CadPoint>(where),
+                Provenance = new CadProvenance
+                {
+                    SchemaVersion = 1,
+                    CandidateId = from.Id,
+                    GeometryId = from.GeometryId,
+                    SemanticId = from.SemanticId,
+                    RuleId = from.RuleId,
+                    Layer = from.Layer,
+                    RequirementSetSha256 = set.Sha256,
+                    SourceFileSha256 = sourceSha,
+                    BuiltGeometry = Serialise(from.Geometry)
+                }
+            };
+        }
+
+        /// <summary>
+        /// Provenance stores the as-built geometry the way the writer stores it -
+        /// "x,y,z;x,y,z" - and a fixture that invented a different encoding would
+        /// simply read back as "no as-built recorded", which is a DIFFERENT case
+        /// with a different answer. So the product's own encoder is used.
+        /// </summary>
+        private static string Serialise(List<CadPoint> points) => CadUpdateRules.Encode(points);
+
+        private static string Of(CadUpdate update, string kind)
+        {
+            CadUpdateAction a = update.Of(kind).FirstOrDefault();
+            return a?.Classification;
+        }
+
+
+        private static CadUpdate Plan(double askW, double askH, double? heldW, double? heldH)
+        {
+            CadRequirementSet set = Set();
+            List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
+            CadAuditSubject held = Built(a[0], set, RevA, 1001, widthMm: heldW);
+            held.HeightMm = heldH;
+            List<CadCandidate> b = Read(Wall(0, 6000), set, RevB);
+            b[0].SectionWidthMm = askW;
+            b[0].SectionHeightMm = askH;
+            return CadUpdateRules.Plan(b, new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA });
+        }
+
+        private static List<CadPoint> L(double x0, double y0, double x1, double y1) =>
+            new List<CadPoint> { new CadPoint(x0, y0), new CadPoint(x1, y1) };
+
+        [Fact]
+        public void An_end_slid_along_its_run_onto_a_fitting_is_a_connection()
+        {
+            JObject how = CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 0),
+                                                           new List<CadPoint> { new CadPoint(4800, 0) }, 1.0,
+                                                           new List<CadPoint> { new CadPoint(5000, 0) });   // elbow at the drawn corner
+            Assert.NotNull(how);
+            Assert.Equal(-200.0, (double)how["ends"][1]["slid_along_run_mm"]);
+        }
+
+        [Fact]
+        public void A_slid_end_with_no_fitting_on_it_or_off_the_line_or_too_far_is_not()
+        {
+            var fitted = new List<CadPoint> { new CadPoint(4800, 0) };
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 0), new List<CadPoint>(), 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 4800, 50),
+                                                         new List<CadPoint> { new CadPoint(4800, 50) }, 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(0, 0, 2400, 0),
+                                                         new List<CadPoint> { new CadPoint(2400, 0) }, 1.0));
+            Assert.Null(CadUpdateRules.TrimmedToFitting(L(0, 0, 5000, 0), L(100, 0, 4800, 0), fitted, 1.0));
+        }
+
+        [Fact]
+        public void A_person_who_stretched_a_connected_run_is_not_explained_away_as_the_connection()
+        {
+            // After connect, the elbow sat at the drawn corner (6000,0). A person then pulled the run's end
+            // back to 5500: Revit dragged the elbow along, so the fitting is no longer at the drawn corner.
+            CadRequirementSet set = Set();
+            List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
+            CadAuditSubject held = Built(a[0], set, RevA, 1001, movedTo: L(0, 0, 5500, 0));
+            held.FittedEnds = new List<CadPoint> { new CadPoint(5500, 0) };
+            held.FittingAnchors = new List<CadPoint> { new CadPoint(5700, 0), new CadPoint(5500, 0) };
+            CadUpdateAction act = Assert.Single(CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB),
+                new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA }).Actions);
+            Assert.Equal(CadChange.ManuallyDiverged, act.Classification);
+            Assert.Null(act.Evidence["trimmed_to_fitting"]);
+        }
+
+        [Fact]
+        public void A_run_trimmed_by_a_connection_is_unchanged_not_a_persons_move()
+        {
+            CadRequirementSet set = Set();
+            List<CadCandidate> a = Read(Wall(0, 6000), set, RevA);
+            CadAuditSubject held = Built(a[0], set, RevA, 1001, movedTo: L(0, 0, 5800, 0));
+            held.FittedEnds = new List<CadPoint> { new CadPoint(5800, 0) };
+            held.FittingAnchors = new List<CadPoint> { new CadPoint(6000, 0), new CadPoint(5800, 0) };
+            CadUpdate update = CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB), new List<CadAuditSubject> { held },
+                                                   set, RevB, lineage: new[] { RevA });
+            CadUpdateAction action = Assert.Single(update.Actions);
+            Assert.Equal("leave", action.Kind);
+            Assert.Equal(CadChange.Unchanged, action.Classification);
+            Assert.NotNull(action.Evidence["trimmed_to_fitting"]);
+
+            held.FittedEnds = new List<CadPoint>();
+            CadUpdateAction moved = Assert.Single(CadUpdateRules.Plan(Read(Wall(0, 6000), set, RevB),
+                new List<CadAuditSubject> { held }, set, RevB, lineage: new[] { RevA }).Actions);
+            Assert.Equal(CadChange.ManuallyDiverged, moved.Classification);
+        }
+
+        [Fact]
+        public void A_piece_whose_cut_moved_is_reshaped_in_place_by_its_lineage_and_not_rebuilt()
+        {
+            CadRequirementSet set = Set();
+            CadCandidate whole = Read(Wall(0, 6000), set, RevA)[0];
+            CadCandidate was = whole.Piece(L(0, 0, 2000, 0), "end:lo", set.PointToleranceMm, RevA);
+            CadAuditSubject held = Built(was, set, RevA, 1001);
+            held.Provenance.SourceEntities = string.Join(";", was.SourceSurrogates.Where(x => x != was.Id));
+            CadCandidate now = whole.Piece(L(0, 0, 2600, 0), "end:lo", set.PointToleranceMm, RevB);   // the label moved 600 mm
+            CadUpdate update = CadUpdateRules.Plan(new List<CadCandidate> { now }, new List<CadAuditSubject> { held }, set, RevB,
+                                                   lineage: new[] { RevA });
+            CadUpdateAction act = Assert.Single(update.Actions, a => a.Kind == "set_curve");
+            Assert.True(act.Automatic);
+            Assert.Equal(1001L, act.ElementId);
+            Assert.StartsWith("piece:", (string)act.Evidence["paired_by_lineage"]);
+            Assert.Empty(update.Of("create"));
+
+            // another anchor is another piece: never paired by lineage
+            CadCandidate other = whole.Piece(L(0, 0, 2600, 0), "end:hi", set.PointToleranceMm, RevB);
+            CadUpdate u2 = CadUpdateRules.Plan(new List<CadCandidate> { other }, new List<CadAuditSubject> { held }, set, RevB,
+                                               lineage: new[] { RevA });
+            Assert.DoesNotContain(u2.Actions, a => a.Evidence["paired_by_lineage"] != null);
+        }
+
+        [Fact]
+        public void A_label_that_still_says_the_built_size_changes_nothing()
+        {
+            CadUpdate update = Plan(203.2, 152.4, 203.2, 152.4);
+            CadUpdateAction action = Assert.Single(update.Actions);
+            Assert.Equal("leave", action.Kind);
+            Assert.Equal(CadChange.Unchanged, action.Classification);
+        }
+
+        [Fact]
+        public void A_label_grown_from_8x6_to_10x6_is_a_resize_held_for_a_person_with_both_numbers()
+        {
+            CadUpdate update = Plan(254.0, 152.4, 203.2, 152.4);
+            CadUpdateAction action = Assert.Single(update.Actions);
+            Assert.Equal("review", action.Kind);
+            Assert.Equal(CadChange.Resized, action.Classification);
+            Assert.False(action.Automatic);
+            Assert.Equal(1001L, action.ElementId);
+            Assert.True(action.Evidence.Value<bool>("section"));
+            Assert.Equal(254.0, action.Evidence.Value<double>("drawing_asks_width_mm"));
+            Assert.Equal(152.4, action.Evidence.Value<double>("drawing_asks_height_mm"));
+            Assert.Equal(203.2, action.Evidence.Value<double>("element_width_mm"));
+            Assert.Null(action.Evidence["not_resizable"]);
+        }
+
+        [Fact]
+        public void A_height_change_alone_is_seen()
+        {
+            CadUpdateAction action = Assert.Single(Plan(203.2, 203.2, 203.2, 152.4).Actions);
+            Assert.Equal(CadChange.Resized, action.Classification);
+        }
+
+        [Fact]
+        public void A_round_duct_is_never_offered_a_rectangular_section()
+        {
+            // An equal-area circle is no substitute, and the reverse is a different type.
+            CadUpdateAction action = Assert.Single(Plan(254.0, 152.4, 200.0, null).Actions);
+            Assert.Equal(CadChange.Resized, action.Classification);
+            Assert.Equal("held_round", (string)action.Evidence["not_resizable"]);
+        }
+
+        [Fact]
+        public void The_retype_decision_carries_out_a_section_resize_and_nothing_else_is_touched()
+        {
+            CadUpdate update = Plan(254.0, 152.4, 203.2, 152.4);
+            List<string> errors = CadDecisions.Apply(update, new List<CadDecision>
+                { new CadDecision { ElementId = 1001, Decision = CadDecisions.Retype } });
+            Assert.Empty(errors);
+            CadUpdateAction action = Assert.Single(update.Actions);
+            Assert.Equal(CadDecisions.Retype, action.Kind);
+            Assert.True(action.Automatic);
+            Assert.Empty(update.Of("create"));
+            Assert.Empty(update.Of("orphan"));
+        }
+    }
+}

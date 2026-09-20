@@ -69,12 +69,20 @@ namespace Horizun.Revit.Core
         public const string Ambiguous = "ambiguous";
         /// <summary>The drawing changed AND a person changed the element. Nobody here can reconcile that.</summary>
         public const string Conflict = "conflict";
+        /// <summary>Same place, and the element no longer faces the way the drawing's symbol points.</summary>
+        public const string Reoriented = "reoriented";
+        /// <summary>The drawing's bytes did not change; the READING of them did (another build, or reading rules).</summary>
+        public const string Reinterpreted = "reinterpreted";
+        /// <summary>One element the drawing now draws as several collinear pieces inside its old line.</summary>
+        public const string Split = "split";
+        /// <summary>Several elements the drawing now draws as ONE run covering their lines: a division taken out.</summary>
+        public const string Merge = "merge";
 
         /// <summary>Every classification this bridge will ever emit, so a reader can switch exhaustively.</summary>
         public static readonly string[] All =
         {
             Unchanged, Added, Removed, Moved, Reshaped, Retyped, Relayered, Resized, Rehosted,
-            ManuallyDiverged, Ambiguous, Conflict
+            ManuallyDiverged, Ambiguous, Conflict, Reoriented, Reinterpreted, Split, Merge
         };
     }
 
@@ -112,6 +120,33 @@ namespace Horizun.Revit.Core
         /// <summary>orphan: where it was built, kept so a pairing can be judged on geometry.</summary>
         public List<CadPoint> AsBuiltGeometry;
 
+        /// <summary>orphan: where the element is NOW, and the line of the wall that holds it, when it has one.</summary>
+        public List<CadPoint> CurrentGeometry;
+        public List<CadPoint> HostLine;
+
+        /// <summary>move: the displacement, in mm, that takes the element to where revision B puts it.</summary>
+        public CadPoint? Vector;
+
+        /// <summary>The bore this run is to be built at, when the rule declares one.</summary>
+        public double? DiameterMm;
+
+        /// <summary>The slope the rule declares for it, when it declares one.</summary>
+        public double? SlopePercent;
+
+        /// <summary>
+        /// WHY THIS ACTION MAY NOT BE SENT YET, or null when it may.
+        ///
+        /// Same barrier as the conversion plan, for the same reason and in the same
+        /// words: a drawing is flat, a declared slope says how steep and not which
+        /// way, and a run built at the rule's elevation is a level drain. A blocked
+        /// action emits NO geometry_mm, so the caller has no coordinates to send to
+        /// horizun_create_elements - which is the only thing that actually stops a
+        /// write.
+        /// </summary>
+        public string BlockedUntil;
+
+        public bool Blocked { get { return BlockedUntil != null; } }
+
         public JObject ToJson()
         {
             var o = new JObject
@@ -127,7 +162,18 @@ namespace Horizun.Revit.Core
             if (SemanticId != null) o["semantic_id"] = SemanticId;
             if (GeometryId != null) o["geometry_id"] = GeometryId;
             if (ElementId.HasValue) o["element_id"] = ElementId.Value;
-            if (Geometry.Count > 0)
+            if (Vector.HasValue)
+                o["vector_mm"] = new JArray(Math.Round(Vector.Value.X, 3), Math.Round(Vector.Value.Y, 3),
+                                            Math.Round(Vector.Value.Z, 3));
+            if (Blocked)
+            {
+                o["blocked_until"] = BlockedUntil;
+                o["geometry_mm_withheld"] =
+                    "this action carries no coordinates while it is blocked. Publishing them would let a " +
+                    "caller send them to horizun_create_elements, which is exactly the write the block " +
+                    "exists to prevent.";
+            }
+            if (!Blocked && Geometry.Count > 0)
                 o["geometry_mm"] = new JArray(Geometry.Select(p => new JArray(
                     Math.Round(p.X, 4, MidpointRounding.AwayFromZero),
                     Math.Round(p.Y, 4, MidpointRounding.AwayFromZero),
@@ -172,6 +218,125 @@ namespace Horizun.Revit.Core
                 o[a.Classification] = (int)o[a.Classification] + 1;
             }
             return o;
+        }
+    }
+
+    /// <summary>A person's decision on one held change.</summary>
+    public sealed class CadDecision
+    {
+        public long ElementId;
+        public string Decision;
+    }
+
+    /// <summary>
+    /// WHAT A PERSON MAY DECIDE ABOUT A HELD CHANGE, and what each decision becomes.
+    ///
+    /// A held change used to have one way out: re-plan after editing the drawing or
+    /// the model by hand. The decisions here are the ones a typed command can carry
+    /// out and verify - measured on a face-hosted device: a turn in its own face and
+    /// a type change keep the element; a move to the other face cannot be done in
+    /// place at all (Revit refuses the turn, and a mirror keeps it on the old face),
+    /// so "replace" is a MIGRATION PLAN, never an automatic action.
+    /// </summary>
+    public static class CadDecisions
+    {
+        public const string Retype = "retype";
+        public const string RotateInFace = "rotate_in_face";
+        public const string Keep = "keep";
+        public const string Replace = "replace";
+        public const string Delete = "delete";
+
+        public static readonly Dictionary<string, string[]> AllowedFor = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            [Retype] = new[] { CadChange.Resized, CadChange.Retyped },
+            [RotateInFace] = new[] { CadChange.Reoriented },
+            [Keep] = new[] { CadChange.ManuallyDiverged, CadChange.Resized, CadChange.Retyped, CadChange.Reoriented,
+                             CadChange.Rehosted, CadChange.Reinterpreted, CadChange.Relayered, CadChange.Conflict,
+                             CadChange.Removed, CadChange.Merge },
+            [Replace] = new[] { CadChange.Rehosted, CadChange.Reoriented, CadChange.Conflict, CadChange.Reinterpreted },
+            // DELETION IS A PERSON'S DECISION ON AN ORPHAN, and only on one: an element the
+            // drawing no longer says, or no longer says and a person also moved.
+            //
+            // A MERGE PART IS THE THIRD. Accepting a merge re-shapes one element to the whole line and
+            // leaves the others standing inside it, on purpose - a pairing must never delete anything.
+            // Deleting them is how the merge is finished, and without this the only decision the part
+            // admitted was none at all, which left a duct inside another with no way forward but the
+            // Revit UI. Keeping them is the other answer, and it is allowed for the same reason.
+            [Delete] = new[] { CadChange.Removed, CadChange.Conflict, CadChange.Merge }
+        };
+
+        /// <summary>
+        /// Mark each decided action, or say why a decision cannot stand. A decision
+        /// on an element this plan does not hold for a person, or one its change does
+        /// not admit, is refused by name - a skipped decision reads as taken.
+        /// </summary>
+        public static List<string> Apply(CadUpdate update, IList<CadDecision> decisions)
+        {
+            var errors = new List<string>();
+            var seen = new HashSet<long>();
+            foreach (CadDecision d in decisions ?? new List<CadDecision>())
+            {
+                if (!seen.Add(d.ElementId))
+                {
+                    errors.Add("resolve names element " + d.ElementId + " twice");
+                    continue;
+                }
+                string[] allowed;
+                if (d.Decision == null || !AllowedFor.TryGetValue(d.Decision, out allowed))
+                {
+                    errors.Add("resolve: '" + d.Decision + "' is not a decision (retype, rotate_in_face, keep, replace, delete)");
+                    continue;
+                }
+                CadUpdateAction held = update.Actions.FirstOrDefault(a => a.ElementId == d.ElementId &&
+                                                                          (a.Kind == "review" || a.Kind == "orphan"));
+                if (held == null)
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is not held for a person in this plan");
+                    continue;
+                }
+                if (d.Decision == Delete && held.Kind != "orphan")
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is not an orphan; delete applies to an element " +
+                               "the drawing no longer says, and to nothing else");
+                    continue;
+                }
+                if (!allowed.Contains(held.Classification))
+                {
+                    errors.Add("resolve: element " + d.ElementId + " is " + held.Classification + ", and '" +
+                               d.Decision + "' applies to " + string.Join(", ", allowed) + " only");
+                    continue;
+                }
+                held.Evidence["decision"] = d.Decision;
+                held.Evidence["decided_by"] = "a person, through resolve";
+                switch (d.Decision)
+                {
+                    case Retype:
+                    case RotateInFace:
+                        held.Kind = d.Decision;
+                        held.Automatic = true;
+                        break;
+                    case Keep:
+                        held.Kind = "leave";
+                        held.Automatic = true;
+                        held.Says += " KEPT: a person decided the element stays as it is; its record is re-stamped " +
+                                     "with where it stands now, so the next plan does not ask again.";
+                        break;
+                    case Delete:
+                        held.Kind = Delete;
+                        held.Automatic = true;
+                        held.Says += " DELETE: a person decided the element goes with the drawing. It is deleted " +
+                                     "through horizun_delete_verified, which re-reads what died.";
+                        break;
+                    case Replace:
+                        held.Kind = "replace";
+                        held.Automatic = false;
+                        held.Says += " REPLACE: a person decided this element must be placed again. It is NOT an " +
+                                     "automatic action: the migration plan beside it lists what the new element " +
+                                     "would lose.";
+                        break;
+                }
+            }
+            return errors;
         }
     }
 
@@ -229,7 +394,10 @@ namespace Horizun.Revit.Core
             update.CandidatesRead = candidates.Count;
             update.SubjectsExamined = subjects.Count;
 
-            double tolerance = Math.Max(set != null ? set.PointToleranceMm : 1.0, 0.001);
+            // "IS IT STILL WHERE IT WAS BUILT" is the revision comparison, and it has
+            // its own number; point_mm is how close two endpoints must be to merge.
+            double tolerance = Math.Max(set != null && set.RevisionCompareMm > 0 ? set.RevisionCompareMm
+                                        : set != null ? set.PointToleranceMm : 1.0, 0.001);
 
             // THE PLACEMENT MOVED, AND THE CALLER SAID SO. Every semantic id is
             // derived from model coordinates, so after a placement move none of
@@ -242,6 +410,7 @@ namespace Horizun.Revit.Core
                 ProposePairings(update, set, tolerance,
                                 new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
                 ApplyAccepted(update, accepted);
+                HoldCreatesOnOccupiedGround(update, set, tolerance);
                 return update;
             }
 
@@ -296,6 +465,7 @@ namespace Horizun.Revit.Core
             }
 
             var claimed = new HashSet<long>();
+            var trimmedToFitting = new Dictionary<long, JObject>();
 
             foreach (CadCandidate c in candidates)
             {
@@ -382,7 +552,29 @@ namespace Horizun.Revit.Core
                         {
                             ["rule_id"] = c.RuleId,
                             ["layer"] = c.Layer,
-                            ["confidence"] = Math.Round(c.Confidence, 4)
+                            ["confidence"] = Math.Round(c.Confidence, 4),
+                            ["family_type"] = c.FamilyType,
+
+                            // WHAT THE DRAWING DID NOT CARRY, at the point where
+                            // something would be built from it.
+                            //
+                            // The geometry below is what the caller sends to
+                            // horizun_create_elements, and it is FLAT. Where the
+                            // rule declares a slope, this route cannot orient it -
+                            // that needs an outfall and a network walk, which
+                            // horizun_plan_from_cad has and this one does not - so
+                            // a run re-created by a revision would sit level beside
+                            // neighbours that carry the fall. A step in a drain is
+                            // worse than a drain laid level all the way, and the
+                            // one thing that must not happen is that it arrives
+                            // unannounced.
+                            ["unresolved_facts"] = new JArray(c.UnresolvedFacts),
+                            ["geometry_is"] = c.UnresolvedFacts.Count == 0
+                                ? "the drawn geometry at the height the rule declares."
+                                : "the drawn geometry at the height the rule declares - FLAT. Read " +
+                                  "unresolved_facts before sending it to horizun_create_elements: what " +
+                                  "the drawing did not carry is not supplied here, and a declared slope " +
+                                  "is not applied by this route."
                         }
                     });
                     continue;
@@ -425,7 +617,13 @@ namespace Horizun.Revit.Core
                     continue;
                 }
 
-                if (SamePlace(asBuilt, held.Geometry, tolerance))
+                // A CONNECTION IS NOT A PERSON. MEASURED on a real plan: cad_connect put five elbows in,
+                // Revit trimmed the ten ducts on their legs back to the elbows, and the next update
+                // said "A PERSON MOVED THIS" ten times. An end that moved only along the run's own line,
+                // and now sits on a fitting, was moved by the connection.
+                JObject trim = TrimmedToFitting(asBuilt, held.Geometry, held.FittedEnds, tolerance, held.FittingAnchors);
+                if (trim != null) trimmedToFitting[held.ElementId] = trim;
+                if (trim != null || SamePlace(asBuilt, held.Geometry, tolerance))
                 {
                     // THE GEOMETRY AGREES. That is not the same as nothing having
                     // changed: a revision can leave a wall exactly where it was
@@ -521,9 +719,61 @@ namespace Horizun.Revit.Core
                     // changes, so a reading that compares position alone reports
                     // it as nothing to do - and the model keeps carrying the old
                     // size into every quantity and every clash.
-                    double? wantsWidth = c.ThicknessMm ?? c.DiameterMm;
+                    // A RECTANGULAR SECTION read from the drawing's labels: two numbers, both compared.
+                    // MEASURED need: a revised plan relabels a run 8x6 -> 10x6 and leaves its line alone.
+                    // The size of a rectangular duct is the INSTANCE's, not its type's, so honouring it
+                    // touches no other element - but the fittings on its ends follow it, and a person
+                    // may have sized it by hand. So it is a review with the evidence, carried out by a
+                    // person's `retype` decision as one verified write of width and height.
+                    if (c.SectionWidthMm.HasValue && c.SectionHeightMm.HasValue && held.WidthMm.HasValue)
+                    {
+                        const double sectionTolerance = 1.0;
+                        bool heldRectangular = held.HeightMm.HasValue;
+                        bool differs = !heldRectangular ||
+                                       Math.Abs(c.SectionWidthMm.Value - held.WidthMm.Value) > sectionTolerance ||
+                                       Math.Abs(c.SectionHeightMm.Value - held.HeightMm.Value) > sectionTolerance;
+                        if (differs)
+                        {
+                            string asks = Mm(c.SectionWidthMm.Value) + " x " + Mm(c.SectionHeightMm.Value) + " mm";
+                            string has = heldRectangular
+                                ? Mm(held.WidthMm.Value) + " x " + Mm(held.HeightMm.Value) + " mm"
+                                : "round, " + Mm(held.WidthMm.Value) + " mm";
+                            var resized = new CadUpdateAction
+                            {
+                                Kind = "review",
+                                Classification = CadChange.Resized,
+                                CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
+                                Geometry = new List<CadPoint>(c.Geometry),
+                                Automatic = false,
+                                Says = "the duct is exactly where the drawing says and the drawing's labels now ask for a " +
+                                       "DIFFERENT SECTION: " + asks + " where the element measures " + has + ". " +
+                                       (heldRectangular
+                                           ? "A rectangular duct's size is its own, so no other element changes with it; " +
+                                             "the fittings on its ends follow it. Nothing was changed: decide `retype` to " +
+                                             "write the new width and height (verified), or `keep`."
+                                           : "A round duct is not resized into a rectangular one - that is a different " +
+                                             "type, and an equal-area circle is never offered as a substitute. Nothing was changed."),
+                                Evidence = Where(c, held, p)
+                            };
+                            resized.Evidence["section"] = true;
+                            resized.Evidence["drawing_asks_width_mm"] = Math.Round(c.SectionWidthMm.Value, 3);
+                            resized.Evidence["drawing_asks_height_mm"] = Math.Round(c.SectionHeightMm.Value, 3);
+                            resized.Evidence["element_width_mm"] = Math.Round(held.WidthMm.Value, 3);
+                            if (heldRectangular) resized.Evidence["element_height_mm"] = Math.Round(held.HeightMm.Value, 3);
+                            else resized.Evidence["not_resizable"] = "held_round";
+                            update.Actions.Add(resized);
+                            continue;
+                        }
+                    }
+
+                    double? wantsWidth = c.SectionWidthMm.HasValue ? null : (c.ThicknessMm ?? c.DiameterMm);
+                    // A THICKNESS IS JUDGED BY THE THICKNESS TOLERANCE, not by how far a
+                    // revision may move a line: measured, 17 mm of wrong wall passed as
+                    // unchanged under the 25 mm revision tolerance.
+                    double widthTolerance = c.ThicknessMm.HasValue && set != null
+                        ? set.ThicknessToleranceMm : Math.Max(tolerance, 1.0);
                     if (wantsWidth.HasValue && held.WidthMm.HasValue &&
-                        Math.Abs(wantsWidth.Value - held.WidthMm.Value) > Math.Max(tolerance, 1.0))
+                        Math.Abs(wantsWidth.Value - held.WidthMm.Value) > widthTolerance)
                     {
                         update.Actions.Add(new CadUpdateAction
                         {
@@ -550,7 +800,13 @@ namespace Horizun.Revit.Core
                     }
 
                     string wantsType = c.FamilyType;
-                    if (!string.IsNullOrWhiteSpace(wantsType) && !SameType(wantsType, held.TypeName))
+                    // A WALL TYPED BY THICKNESS carries whichever listed type fits; the
+                    // rule's single family type is only its fallback. MEASURED: every wall
+                    // of a unit built under wall_types came back "retyped".
+                    CadRule typeRule = set?.Rules.FirstOrDefault(r => r.Id == c.RuleId);
+                    bool listed = typeRule?.WallTypes != null && typeRule.WallTypes.Count > 0 &&
+                                  typeRule.WallTypes.Any(t => SameType(t, held.TypeName));
+                    if (!string.IsNullOrWhiteSpace(wantsType) && !SameType(wantsType, held.TypeName) && !listed)
                     {
                         update.Actions.Add(new CadUpdateAction
                         {
@@ -566,6 +822,34 @@ namespace Horizun.Revit.Core
                                    "changed here.",
                             Evidence = Where(c, held, p)
                         });
+                        continue;
+                    }
+
+                    // THE SAME PLACE, FACING ANOTHER WAY. A symbol's identity is its
+                    // position, so a rotated symbol matches the element built from
+                    // it and every comparison above agrees. The hand direction is
+                    // what the rotation decided; if it no longer agrees, the drawing
+                    // turned the symbol round.
+                    JObject turned;
+                    double? off = CadAuditRules.HandOffDegrees(c, held, set != null ? set.AngleToleranceDegrees : 1.0,
+                                                              out turned);
+                    if (off.HasValue && off.Value > (set != null ? set.AngleToleranceDegrees : 1.0))
+                    {
+                        var reoriented = new CadUpdateAction
+                        {
+                            Kind = "review",
+                            Classification = CadChange.Reoriented,
+                            CandidateId = c.Id, SemanticId = c.SemanticId, GeometryId = c.GeometryId, ElementId = held.ElementId,
+                            Geometry = new List<CadPoint>(c.Geometry),
+                            Automatic = false,
+                            Says = "the element is where the drawing puts it and faces " +
+                                   off.Value.ToString("0.#", CultureInfo.InvariantCulture) + " degrees from the way " +
+                                   "the drawing's symbol now points. Turning a wall-hosted device round is a new " +
+                                   "placement on its face, not a transform, so nothing was changed.",
+                            Evidence = Where(c, held, p)
+                        };
+                        foreach (JProperty prop in turned.Properties()) reoriented.Evidence[prop.Name] = prop.Value;
+                        update.Actions.Add(reoriented);
                         continue;
                     }
 
@@ -612,7 +896,8 @@ namespace Horizun.Revit.Core
                 // separate question, and the answer to it is still no.
                 if (!mine(s)) continue;   // not this run's business; the audit reports it
                 bool sameSet = set == null || string.IsNullOrEmpty(p.RequirementSetSha256) ||
-                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal);
+                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal) ||
+                               (scope != null && scope.RulesLineage.Contains(p.RequirementSetSha256));
                 if (!sameSet) continue;   // built under other rules; deleting it is not this run's call
 
                 // AN ORPHAN THAT SOMEBODY ALSO MOVED IS A CONFLICT.
@@ -622,7 +907,9 @@ namespace Horizun.Revit.Core
                 // reconciling them means knowing which of the two people was
                 // right - which is not a fact about the drawing.
                 List<CadPoint> orphanAsBuilt = AsBuilt(p);
-                bool alsoMovedByHand = orphanAsBuilt != null && s.Geometry != null && s.Geometry.Count >= 2 &&
+                // A POINT IS ONE POINT. This asked for two, so a device moved by hand
+                // and dropped by the drawing came back as a plain removal.
+                bool alsoMovedByHand = orphanAsBuilt != null && s.Geometry != null && s.Geometry.Count >= 1 &&
                                        !SamePlace(orphanAsBuilt, s.Geometry, tolerance);
 
                 update.Actions.Add(new CadUpdateAction
@@ -639,10 +926,13 @@ namespace Horizun.Revit.Core
                            "element. Deleting is never automatic here: the two cases look identical from the " +
                            "outside and only one of them is a deletion.",
                     AsBuiltGeometry = AsBuilt(p),
+                    CurrentGeometry = s.Geometry == null ? null : new List<CadPoint>(s.Geometry),
+                    HostLine = s.HostLine == null || s.HostLine.Count < 2 ? null : new List<CadPoint>(s.HostLine),
                     Evidence = new JObject
                     {
                         ["was_layer"] = p.Layer,
                         ["was_rule"] = p.RuleId,
+                        ["was_type"] = s.TypeName,
                         ["built_from_revision"] = p.CandidateId,
                         ["as_built_mm"] = p.BuiltGeometry,
                         ["also_moved_by_hand"] = alsoMovedByHand
@@ -655,10 +945,254 @@ namespace Horizun.Revit.Core
                         "honour is not a question about the drawing.";
             }
 
-            ProposePairings(update, set, tolerance,
-                            new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal));
-            ApplyAccepted(update, accepted);
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                JObject how;
+                if (!a.ElementId.HasValue || !trimmedToFitting.TryGetValue(a.ElementId.Value, out how)) continue;
+                a.Evidence["trimmed_to_fitting"] = how;
+                if (a.Kind == "leave")
+                    a.Says += " Its ends moved only along its own line, onto the fitting(s) a connection put there - " +
+                              "a connection, not a person's move.";
+            }
+            var rejectedSet = new HashSet<string>(rejectedPairings ?? new string[0], StringComparer.Ordinal);
+            ProposePairings(update, set, tolerance, rejectedSet);
+            ApplyAccepted(update, WithLineage(update, candidates, subjects, accepted, rejectedSet));
+            // LAST, AND AFTER THE DECISIONS. Accepting a split releases its other pieces, and a released
+            // piece can lie on a DIFFERENT element's line than the one being re-shaped: measured on the
+            // fixture, an accepted pairing released a create that stood on a second element still in the
+            // model. Whatever else a plan decides, nothing it marks automatic may build on ground an
+            // element still holds.
+            HoldCreatesOnOccupiedGround(update, set, tolerance);
+            CarryHeightFacts(update, candidates);
             return update;
+        }
+
+        /// <summary>The "piece:&lt;parent&gt;#&lt;key&gt;" token a piece carries in its source entities, or null.</summary>
+        public static string PieceToken(string sourceEntities)
+        {
+            if (string.IsNullOrEmpty(sourceEntities)) return null;
+            foreach (string part in sourceEntities.Split(';'))
+                if (part.StartsWith("piece:", StringComparison.Ordinal)) return part;
+            return null;
+        }
+
+        /// <summary>
+        /// A PIECE WHOSE LINE MOVED IS STILL THAT PIECE when the drawing says so: the same drawn run (its
+        /// parent's semantic id) and the same anchor (its end, its first label, or the two labels an
+        /// unlocated change lies between). MEASURED need: a label moved 600 mm along a two-size main moves
+        /// the cut, so both pieces get new lines and new semantic ids; by geometry alone they are "an
+        /// element gone and a new one drawn", offered to a person. The lineage is a fact of the reading,
+        /// not a resemblance, so a UNIQUE lineage match is re-shaped in place - unless a person also moved
+        /// the element (a conflict stays a conflict) or a caller rejected the pairing.
+        /// </summary>
+        private static IDictionary<long, string> WithLineage(CadUpdate update, IList<CadCandidate> candidates,
+                                                             IList<CadAuditSubject> subjects,
+                                                             IDictionary<long, string> accepted, HashSet<string> rejected)
+        {
+            var merged = new Dictionary<long, string>(accepted ?? new Dictionary<long, string>());
+            var byCandidate = candidates.Where(c => c?.PieceOf != null)
+                                        .GroupBy(c => "piece:" + c.PieceOf + "#" + c.PieceKey, StringComparer.Ordinal)
+                                        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+            if (byCandidate.Count == 0) return merged;
+            var creates = update.Of("create").ToList();
+            foreach (CadUpdateAction orphan in update.Of("orphan").ToList())
+            {
+                if (!orphan.ElementId.HasValue || merged.ContainsKey(orphan.ElementId.Value)) continue;
+                if (orphan.Classification == CadChange.Conflict) continue;
+                CadAuditSubject s = subjects.FirstOrDefault(x => x.ElementId == orphan.ElementId.Value);
+                string token = PieceToken(s?.Provenance?.SourceEntities);
+                List<CadCandidate> same;
+                if (token == null || !byCandidate.TryGetValue(token, out same) || same.Count != 1) continue;
+                CadUpdateAction create = creates.FirstOrDefault(c => c.CandidateId == same[0].Id);
+                if (create == null || rejected.Contains(create.CandidateId)) continue;
+                if (merged.Values.Contains(create.CandidateId)) continue;
+                merged[orphan.ElementId.Value] = create.CandidateId;
+                create.Evidence["paired_by_lineage"] = token;
+                orphan.Evidence["paired_by_lineage"] = token;
+            }
+            return merged;
+        }
+
+        /// <summary>How far a connection may pull an end along its run: an elbow or a transition, never a re-route.</summary>
+        public const double FittingTrimBoundMm = 2000.0;
+
+        /// <summary>
+        /// Null unless the element is its as-built line with one or both ends slid ALONG that line
+        /// (within <see cref="FittingTrimBoundMm"/>) onto a fitting, and every other end where it was built.
+        /// </summary>
+        public static JObject TrimmedToFitting(List<CadPoint> built, List<CadPoint> now, List<CadPoint> fittedEnds,
+                                               double tolerance, List<CadPoint> fittingAnchors = null)
+        {
+            if (built == null || now == null || built.Count != 2 || now.Count != 2 ||
+                fittedEnds == null || fittedEnds.Count == 0) return null;
+            double dx = built[1].X - built[0].X, dy = built[1].Y - built[0].Y;
+            double len = Math.Sqrt(dx * dx + dy * dy);
+            if (len < 1e-6) return null;
+            double ux = dx / len, uy = dy / len;
+            foreach (bool reversed in new[] { false, true })
+            {
+                var ends = new JArray();
+                bool ok = true, anyTrim = false;
+                for (int i = 0; i < 2 && ok; i++)
+                {
+                    CadPoint b = built[i], n = now[reversed ? 1 - i : i];
+                    if (b.PlanDistanceTo(n) <= tolerance) { ends.Add("as_built"); continue; }
+                    double along = (n.X - b.X) * ux + (n.Y - b.Y) * uy;
+                    double off = Math.Abs(-(n.X - b.X) * uy + (n.Y - b.Y) * ux);
+                    bool onFitting = fittedEnds.Any(f => f.PlanDistanceTo(n) <= tolerance);
+                    // ...AND THE FITTING IS STILL WHERE THE DRAWING PUT THE JUNCTION. Sliding along the axis
+                    // onto a fitting is also what a person's stretch looks like - Revit drags the fitting
+                    // along. A connection leaves the fitting anchored at the drawn end (an elbow's insertion
+                    // point at the corner, a transition's connector at the drawn piece's end); a stretch does not.
+                    bool anchored = fittingAnchors != null && fittingAnchors.Any(f => f.PlanDistanceTo(b) <= tolerance);
+                    if (off > tolerance || Math.Abs(along) > FittingTrimBoundMm || !onFitting || !anchored) { ok = false; break; }
+                    anyTrim = true;
+                    ends.Add(new JObject { ["end"] = i, ["slid_along_run_mm"] = Math.Round(along, 1) });
+                }
+                if (ok && anyTrim)
+                    return new JObject
+                    {
+                        ["ends"] = ends,
+                        ["bound_mm"] = FittingTrimBoundMm,
+                        ["means"] = "the element is its as-built line with an end slid along that same line onto a " +
+                                    "fitting that is still anchored at the drawn end: the connection moved it, and it is " +
+                                    "compared as built."
+                    };
+            }
+            return null;
+        }
+
+        /// <summary>The origins a change can have; every action carries one in evidence.change_origin.</summary>
+        public static readonly string[] Origins =
+        {
+            "none", "drawing", "reading", "drawing_and_reading", "placement", "rules", "drawing_and_rules",
+            "person", "drawing_and_person", "unknown"
+        };
+
+        /// <summary>
+        /// WHERE EACH CHANGE CAME FROM.
+        ///
+        /// MEASURED on this campaign: a build that read two collinear wall pieces as
+        /// one wall, run against the SAME drawing bytes, produced "reshaped",
+        /// "removed" and "added" rows - read as a revision of the drawing, when the
+        /// drawing had not changed at all. The element's provenance says which
+        /// bytes and which reading built it, so the question has an answer:
+        ///
+        ///   same bytes, same reading       person    (nothing else changed), or unknown for a
+        ///                                  size or type the record never kept
+        ///   same bytes, other reading      reading   (held: reinterpreted)
+        ///   same bytes, reading unrecorded reading   (held: nothing else can move a line)
+        ///   other bytes, other reading     drawing_and_reading (held: the two cannot be separated)
+        ///   other bytes, same reading      drawing
+        ///   built under other rules        rules
+        ///   a person edited it             person, or drawing_and_person for a conflict
+        ///
+        /// A held change is not lost: it stays in the plan as review, with its
+        /// origin, for a person to accept.
+        /// </summary>
+        public static JObject AttributeOrigins(CadUpdate update, IList<CadAuditSubject> subjects,
+                                               CadRequirementSet set, string sourceFileSha256,
+                                               string interpretationVersion, bool placementMoved = false,
+                                               string sourceSetSha256 = null)
+        {
+            var byId = new Dictionary<long, CadAuditSubject>();
+            foreach (CadAuditSubject s in subjects ?? new List<CadAuditSubject>())
+                if (s != null && !byId.ContainsKey(s.ElementId)) byId[s.ElementId] = s;
+            var counts = Origins.ToDictionary(o => o, o => 0, StringComparer.Ordinal);
+            int held = 0;
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                string origin;
+                CadAuditSubject s = null;
+                if (a.ElementId.HasValue) byId.TryGetValue(a.ElementId.Value, out s);
+                CadProvenance p = s?.Provenance;
+                bool changed = a.Kind != "leave" && a.Kind != "paired_away";
+                if (!changed) origin = "none";
+                else if (a.Classification == CadChange.ManuallyDiverged) origin = "person";
+                else if (a.Classification == CadChange.Conflict) origin = "drawing_and_person";
+                else if (p == null) origin = "unknown";
+                else if (set != null && !string.IsNullOrEmpty(p.RequirementSetSha256) &&
+                         !string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal))
+                {
+                    // THE RULES CHANGED - and the drawing too, when the record can show it.
+                    bool setsComparable = (sourceSetSha256 == null) == (p.SourceSetSha256 == null);
+                    bool drawingChanged = setsComparable && !string.IsNullOrEmpty(sourceFileSha256) &&
+                        (!string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal) ||
+                         !string.Equals(p.SourceSetSha256, sourceSetSha256, StringComparison.Ordinal));
+                    origin = drawingChanged ? "drawing_and_rules" : "rules";
+                    if (!setsComparable)
+                        a.Evidence["origin_not_comparable"] =
+                            "the rules changed; whether the drawing changed too cannot be shown from this record";
+                }
+                else
+                {
+                    // A RECORD MADE WITH THE HOST'S HASH ALONE cannot be compared with a reading of
+                    // a drawing that has references: neither says whether a reference changed.
+                    bool comparable = (sourceSetSha256 == null) == (p.SourceSetSha256 == null);
+                    bool sameBytes = comparable && !string.IsNullOrEmpty(sourceFileSha256) &&
+                                     string.Equals(p.SourceFileSha256, sourceFileSha256, StringComparison.Ordinal) &&
+                                     string.Equals(p.SourceSetSha256, sourceSetSha256, StringComparison.Ordinal);
+                    bool readingKnown = !string.IsNullOrEmpty(p.InterpretationVersion) &&
+                                        !string.IsNullOrEmpty(interpretationVersion);
+                    bool sameReading = readingKnown &&
+                                       string.Equals(p.InterpretationVersion, interpretationVersion, StringComparison.Ordinal);
+                    // A SIZE OR TYPE the record never kept cannot be attributed: after an
+                    // update re-stamps an element to a revision, the thickness that
+                    // revision asks for and the type the element has were never compared
+                    // at the moment of building. MEASURED: a wall moved by the drawing and
+                    // re-shaped by the update came back "resized" and was blamed on a person.
+                    bool sizeOrType = a.Classification == CadChange.Resized || a.Classification == CadChange.Retyped;
+                    if (!comparable)
+                    {
+                        origin = "unknown";
+                        a.Evidence["origin_not_comparable"] =
+                            "the record names " + (p.SourceSetSha256 != null ? "the drawing with its references" : "the host file only") +
+                            " and this reading " + (sourceSetSha256 != null ? "the drawing with its references" : "the host file only") +
+                            ", so whether a reference changed cannot be shown.";
+                    }
+                    else if (sameBytes && placementMoved) origin = "placement";
+                    else if (sameBytes && sameReading && sizeOrType) origin = "unknown";
+                    else if (sameBytes && sameReading) origin = "person";
+                    else if (sameBytes) origin = "reading";
+                    else if (readingKnown && !sameReading) origin = "drawing_and_reading";
+                    else if (readingKnown) origin = "drawing";
+                    else origin = string.IsNullOrEmpty(sourceFileSha256) ? "unknown" : "drawing";
+                    if (origin == "reading" || origin == "drawing_and_reading")
+                    {
+                        a.Evidence["reading_built_with"] = p.InterpretationVersion;
+                        a.Evidence["reading_now"] = interpretationVersion;
+                        if (a.Kind == "set_curve" || a.Kind == "move" || a.Kind == "orphan")
+                        {
+                            if (a.Automatic) held++;
+                            a.Automatic = false;
+                            if (origin == "reading")
+                            {
+                                a.Classification = CadChange.Reinterpreted;
+                                a.Kind = "review";
+                            }
+                            a.Says += origin == "reading"
+                                ? " HELD: the drawing's bytes are the ones this element was built from, so this " +
+                                  "difference comes from how the drawing is READ now, not from the drawing."
+                                : " HELD: the drawing changed AND the reading changed since this element was " +
+                                  "built, and this plan cannot say how much of the difference is which.";
+                        }
+                    }
+                }
+                a.Evidence["change_origin"] = origin;
+                counts[origin]++;
+            }
+            var result = new JObject
+            {
+                ["reading_now"] = interpretationVersion,
+                ["source_file_sha256_now"] = sourceFileSha256,
+                ["held_because_of_the_reading"] = held,
+                ["means"] = "each action says in evidence.change_origin where its change came from. 'reading' " +
+                            "is a difference produced by reading the SAME bytes differently; such rows are held " +
+                            "for review. 'unknown' is an element whose provenance cannot say (a create has no " +
+                            "element, and records written before readings were versioned carry no reading)."
+            };
+            foreach (var kv in counts) result[kv.Key] = kv.Value;
+            return result;
         }
 
         /// <summary>
@@ -759,8 +1293,12 @@ namespace Horizun.Revit.Core
                         Automatic = true,
                         Says = "the PLACEMENT moved and nobody has touched this element since it was built: it is " +
                                "still on the line the drawing used to be on. Re-shaped to follow the drawing, and it " +
-                               "keeps its id, its parameters and everything hosted on it.",
-                        Evidence = where
+                               "keeps its id, its parameters and everything hosted on it. THE GEOMETRY BELOW IS " +
+                               "FLAT: if this run was built to a fall, re-shaping it onto the drawing's line " +
+                               "DESTROYS that fall while its neighbours keep theirs - a step in the middle of a " +
+                               "drain, on an element that keeps its id and its parameters and therefore looks " +
+                               "surgically updated. Read unresolved_facts before sending this one.",
+                        Evidence = Flat(where, c)
                     });
                     continue;
                 }
@@ -784,7 +1322,8 @@ namespace Horizun.Revit.Core
                 if (claimed.Contains(s.ElementId)) continue;
                 CadProvenance p = s.Provenance;
                 bool sameSet = set == null || string.IsNullOrEmpty(p.RequirementSetSha256) ||
-                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal);
+                               string.Equals(p.RequirementSetSha256, set.Sha256, StringComparison.Ordinal) ||
+                               (scope != null && scope.RulesLineage.Contains(p.RequirementSetSha256));
                 if (!sameSet) continue;
                 List<CadPoint> asBuilt = AsBuilt(p);
                 if (asBuilt == null)
@@ -854,6 +1393,11 @@ namespace Horizun.Revit.Core
             foreach (CadUpdateAction orphan in orphans)
             {
                 List<CadPoint> was = orphan.AsBuiltGeometry;
+                if (was != null && was.Count == 1)
+                {
+                    ProposePointPairing(orphan, creates, rejected);
+                    continue;
+                }
                 if (was == null || was.Count < 2) continue;
 
                 CadUpdateAction best = null;
@@ -888,6 +1432,17 @@ namespace Horizun.Revit.Core
                     // Beyond a couple of metres this stops being "the same wall,
                     // moved" and starts being "some other wall".
                     if (distance > 2000) continue;
+
+                    // A CANDIDATE A PERSON CALLED NEW IS NOBODY'S PARTNER. MEASURED: an
+                    // erased device kept "moved", paired with the copy a person had
+                    // just rejected, so it could not be decided as removed.
+                    if (rejected.Contains(create.CandidateId))
+                    {
+                        create.Evidence["pairing_rejected"] = true;
+                        create.Says += " A caller rejected the pairing with element " + orphan.ElementId +
+                                       ", so this is built as new.";
+                        continue;
+                    }
 
                     plausibleCreates.Add(create);
                     double score = lengthRatio * (1 - Math.Min(1, distance / 2000.0));
@@ -940,15 +1495,8 @@ namespace Horizun.Revit.Core
                 // may not act on any of them.
                 foreach (CadUpdateAction maybe in plausibleCreates)
                 {
-                    if (rejected.Contains(maybe.CandidateId))
-                    {
-                        maybe.Evidence["pairing_rejected"] = true;
-                        maybe.Says += " A caller rejected the pairing with element " + orphan.ElementId +
-                                      ", so this is built as new.";
-                        continue;
-                    }
-
                     maybe.Automatic = false;
+                    maybe.Evidence["may_be_element"] = orphan.ElementId;
                     if (ReferenceEquals(maybe, best))
                     {
                         maybe.Says += " HELD: it may instead be element " + orphan.ElementId + " moved (" +
@@ -959,7 +1507,6 @@ namespace Horizun.Revit.Core
                     else
                     {
                         maybe.Classification = CadChange.Ambiguous;
-                        maybe.Evidence["may_be_element"] = orphan.ElementId;
                         maybe.Evidence["held_because"] =
                             "another candidate in this plan is a closer match for element " + orphan.ElementId +
                             ", but this one is close enough that it could be that element too";
@@ -968,6 +1515,352 @@ namespace Horizun.Revit.Core
                                       "where that element may already be. Reject the pairing to say this is new.";
                     }
                 }
+            }
+            ProposeSplits(update, set, tolerance, rejected);
+            ProposeMerges(update, set, tolerance, rejected);
+        }
+
+        /// <summary>How far a piece's line may sit from the old line and still be the same wall, split.</summary>
+        public const double SplitOffsetMm = 50.0;
+        /// <summary>How much of the old line the pieces must cover between them.</summary>
+        public const double SplitCoverage = 0.5;
+
+        /// <summary>
+        /// ONE WALL, NOW DRAWN AS SEVERAL. MEASURED (revision C): a wall with a stretch
+        /// removed came back as two pieces inside its old line, each under 80% of its
+        /// length, so no move was offered: two creates withdrawn for the space the old
+        /// wall holds, and the old wall an orphan. The same wall is offered as SPLIT -
+        /// every piece collinear with the old line, on its layer and rule, inside it,
+        /// not overlapping each other, covering at least half of it. The longest piece
+        /// would keep the element's id; the others would be built new. It is a
+        /// judgement, offered and held, never taken.
+        /// </summary>
+        private static void ProposeSplits(CadUpdate update, CadRequirementSet set, double tolerance,
+                                          HashSet<string> rejected)
+        {
+            List<CadUpdateAction> creates = update.Of("create").Where(c => c.Geometry.Count >= 2).ToList();
+            if (creates.Count < 2) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+            foreach (CadUpdateAction orphan in update.Of("orphan").ToList())
+            {
+                if (orphan.PairedWith != null) continue;
+                List<CadPoint> was = orphan.AsBuiltGeometry;
+                if (was == null || was.Count < 2) continue;
+                CadPoint a = was[0], b = was[was.Count - 1];
+                double len = a.PlanDistanceTo(b);
+                if (len <= 0) continue;
+                double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+
+                var pieces = new List<Tuple<CadUpdateAction, double, double, double>>();
+                foreach (CadUpdateAction c in creates)
+                {
+                    if (c.Evidence["may_be_element"] != null || rejected.Contains(c.CandidateId)) continue;
+                    if (!string.Equals(c.Evidence.Value<string>("layer"), orphan.Evidence.Value<string>("was_layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(c.Evidence.Value<string>("rule_id"), orphan.Evidence.Value<string>("was_rule"),
+                                       StringComparison.Ordinal)) continue;
+                    if (UndirectedAngle(was, c.Geometry) > angleLimit) continue;
+                    CadPoint p = c.Geometry[0], q = c.Geometry[c.Geometry.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Min(s0, s1), hi = Math.Max(s0, s1);
+                    if (lo < -reach || hi > len + reach || hi - lo <= reach) continue;
+                    pieces.Add(Tuple.Create(c, lo, hi, off));
+                }
+                if (pieces.Count < 2) continue;
+                pieces = pieces.OrderBy(t => t.Item2).ToList();
+                bool disjoint = true;
+                for (int i = 1; i < pieces.Count; i++)
+                    if (pieces[i].Item2 < pieces[i - 1].Item3 - reach) { disjoint = false; break; }
+                if (!disjoint) continue;
+                double covered = pieces.Sum(t => Math.Min(t.Item3, len) - Math.Max(t.Item2, 0));
+                if (covered < SplitCoverage * len) continue;
+
+                CadUpdateAction keep = pieces.OrderByDescending(t => t.Item3 - t.Item2).First().Item1;
+                double confidence = Math.Round(Math.Min(1.0, covered / len), 4);
+                string why = pieces.Count + " collinear pieces on the same layer and rule inside its as-built line " +
+                             "(at most " + pieces.Max(t => t.Item4).ToString("0.#", CultureInfo.InvariantCulture) +
+                             " mm off it), covering " + (confidence * 100).ToString("0", CultureInfo.InvariantCulture) +
+                             "% of its " + len.ToString("0", CultureInfo.InvariantCulture) + " mm";
+                if (orphan.Classification != CadChange.Conflict) orphan.Classification = CadChange.Split;
+                orphan.PairedWith = keep.CandidateId;
+                orphan.PairConfidence = confidence;
+                orphan.Evidence["may_have_been_split_into"] = new JArray(pieces.Select(t => t.Item1.CandidateId));
+                orphan.Evidence["paired_on"] = why;
+                orphan.Evidence["pair_confidence"] = confidence;
+                orphan.Says += " It may have been SPLIT: " + why + ". Nothing in a DWG says so, so this is offered, " +
+                               "not taken: accept the pairing with '" + keep.CandidateId + "' (the longest piece) and " +
+                               "this element is re-shaped to that piece, keeping its id, and the other pieces are " +
+                               "built new beside it.";
+                foreach (var t in pieces)
+                {
+                    CadUpdateAction piece = t.Item1;
+                    piece.Automatic = false;
+                    piece.Classification = orphan.Classification == CadChange.Conflict ? CadChange.Conflict : CadChange.Split;
+                    piece.Evidence["may_be_element"] = orphan.ElementId;
+                    piece.Evidence["split_of"] = orphan.ElementId;
+                    piece.Evidence["paired_on"] = why;
+                    if (ReferenceEquals(piece, keep)) piece.Evidence["split_keeps_the_element"] = true;
+                    piece.Says += " HELD: element " + orphan.ElementId + " may have been split into this and " +
+                                  (pieces.Count - 1) + " other piece(s). Building it now would put a wall inside " +
+                                  "that one, which still stands at full length.";
+                }
+            }
+        }
+
+        /// <summary>
+        /// A CREATE ON GROUND A STANDING ELEMENT STILL HOLDS is never automatic.
+        ///
+        /// MEASURED (block 8, on the synthetic fixture): a division that MOVED left the plan with one
+        /// pairing offered, one orphan classified removed - and one create marked automatic whose line
+        /// lay inside that orphan is element, which still stands. The pairing rule had not held it
+        /// because the two lengths differ by a third, which is past the threshold at which "the same run,
+        /// re-shaped" stops being a reasonable reading. Both of those judgements are right. Building the
+        /// create anyway is not: an unattended run would have put a second duct inside the first, and the
+        /// model would have looked finished.
+        ///
+        /// The pairing rules ask "IS this that element?", which is a judgement with a threshold. This
+        /// asks something with no threshold in it at all: is there an element standing on this line right
+        /// now? If there is, the create waits for a person - who can accept a pairing, decide the element
+        /// away, or say the two really do belong side by side.
+        /// </summary>
+        public static void HoldCreatesOnOccupiedGround(CadUpdate update, CadRequirementSet set, double tolerance)
+        {
+            List<CadUpdateAction> standing = update.Of("orphan")
+                .Where(o => o.ElementId.HasValue && o.AsBuiltGeometry != null && o.AsBuiltGeometry.Count >= 2)
+                .ToList();
+
+            // GROUND THAT HAS SINCE BEEN FREED. A hold is not a verdict about the drawing; it is about
+            // what is standing in the model right now. When a person decides the element away - the
+            // decision this hold exists to ask for - the ground is free and the piece may be built.
+            // Measured on the fixture: without this the delete was carried out and the piece it was
+            // blocking stayed held, so the revision ended one run short with nothing left to decide.
+            foreach (CadUpdateAction create in update.Of("create").ToList())
+            {
+                long? on = create.Evidence.Value<long?>("stands_there");
+                if (!on.HasValue) continue;
+                if (standing.Any(o => o.ElementId == on.Value)) continue;
+                create.Evidence.Remove("stands_there");
+                create.Evidence.Remove("overlap_mm");
+                if (create.Evidence.Value<string>("held_because") == "occupied_by_a_standing_element")
+                    create.Evidence.Remove("held_because");
+                if (create.Evidence["may_be_element"] == null && create.Evidence["split_of"] == null)
+                {
+                    create.Automatic = true;
+                    create.Says += " The element that stood on this line is no longer standing: it was decided " +
+                                   "away in this same plan, so the ground is free and this piece is built.";
+                }
+            }
+            if (standing.Count == 0) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+
+            foreach (CadUpdateAction create in update.Of("create").Where(c => c.Geometry.Count >= 2))
+            {
+                foreach (CadUpdateAction o in standing)
+                {
+                    // the element it is already paired with is the move this plan is proposing, not a clash
+                    if (string.Equals(o.PairedWith, create.CandidateId, StringComparison.Ordinal)) continue;
+                    if (!string.Equals(create.Evidence.Value<string>("layer"), o.Evidence.Value<string>("was_layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(create.Evidence.Value<string>("rule_id"), o.Evidence.Value<string>("was_rule"),
+                                       StringComparison.Ordinal)) continue;
+                    List<CadPoint> was = o.AsBuiltGeometry;
+                    if (UndirectedAngle(was, create.Geometry) > angleLimit) continue;
+
+                    CadPoint a = was[0], b = was[was.Count - 1];
+                    double len = a.PlanDistanceTo(b);
+                    if (len <= 0) continue;
+                    double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+                    CadPoint p = create.Geometry[0], q = create.Geometry[create.Geometry.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Max(0, Math.Min(s0, s1)), hi = Math.Min(len, Math.Max(s0, s1));
+                    double overlap = hi - lo;
+                    if (overlap <= reach) continue;
+
+                    create.Automatic = false;
+                    create.Evidence["stands_there"] = o.ElementId.Value;
+                    create.Evidence["overlap_mm"] = Math.Round(overlap, 1);
+                    if (create.Evidence["held_because"] == null)
+                        create.Evidence["held_because"] = "occupied_by_a_standing_element";
+                    create.Says += " HELD: element " + o.ElementId.Value + " still stands on " +
+                                   Math.Round(overlap, 1).ToString("0.#", CultureInfo.InvariantCulture) +
+                                   " mm of this line. Building it now would put a second one inside it. " +
+                                   "Accept a pairing, decide that element, or say they belong side by side.";
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// SEVERAL ELEMENTS, NOW DRAWN AS ONE RUN. The mirror of a split, and the revision that takes a
+        /// division out: two pieces built from an earlier issue, and one line covering both.
+        ///
+        /// Without this the plan is two orphans and one create with nothing joining them - the reader is
+        /// told a run appeared and two disappeared in the same place, which is true and useless, and
+        /// applying it would build a third duct on top of the two that still stand.
+        ///
+        /// Offered, never taken, and for a harder reason than a split: a merge DESTROYS one of the
+        /// elements, and nothing in a DWG says which one carried the parameters somebody cares about. So
+        /// accepting the pairing re-shapes the longest to the whole line and leaves the others held, each
+        /// needing its own delete decision.
+        ///
+        /// The test is the split one read the other way round: every element collinear with the new line,
+        /// on its layer and rule, inside it, not overlapping the others, covering at least half of it
+        /// between them.
+        /// </summary>
+        private static void ProposeMerges(CadUpdate update, CadRequirementSet set, double tolerance,
+                                          HashSet<string> rejected)
+        {
+            List<CadUpdateAction> orphans = update.Of("orphan")
+                .Where(o => o.PairedWith == null && o.ElementId.HasValue &&
+                            o.AsBuiltGeometry != null && o.AsBuiltGeometry.Count >= 2).ToList();
+            if (orphans.Count < 2) return;
+            double reach = Math.Max(tolerance, 25.0);
+            double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
+
+            foreach (CadUpdateAction create in update.Of("create").Where(c => c.Geometry.Count >= 2).ToList())
+            {
+                if (create.Evidence["may_be_element"] != null || rejected.Contains(create.CandidateId)) continue;
+                CadPoint a = create.Geometry[0], b = create.Geometry[create.Geometry.Count - 1];
+                double len = a.PlanDistanceTo(b);
+                if (len <= 0) continue;
+                double ux = (b.X - a.X) / len, uy = (b.Y - a.Y) / len;
+
+                var parts = new List<Tuple<CadUpdateAction, double, double, double>>();
+                foreach (CadUpdateAction o in orphans)
+                {
+                    if (o.PairedWith != null) continue;
+                    if (!string.Equals(o.Evidence.Value<string>("was_layer"), create.Evidence.Value<string>("layer"),
+                                       StringComparison.Ordinal)) continue;
+                    if (!string.Equals(o.Evidence.Value<string>("was_rule"), create.Evidence.Value<string>("rule_id"),
+                                       StringComparison.Ordinal)) continue;
+                    List<CadPoint> was = o.AsBuiltGeometry;
+                    if (UndirectedAngle(create.Geometry, was) > angleLimit) continue;
+                    CadPoint p = was[0], q = was[was.Count - 1];
+                    double off = Math.Max(Math.Abs((p.X - a.X) * -uy + (p.Y - a.Y) * ux),
+                                          Math.Abs((q.X - a.X) * -uy + (q.Y - a.Y) * ux));
+                    if (off > SplitOffsetMm) continue;
+                    double s0 = (p.X - a.X) * ux + (p.Y - a.Y) * uy, s1 = (q.X - a.X) * ux + (q.Y - a.Y) * uy;
+                    double lo = Math.Min(s0, s1), hi = Math.Max(s0, s1);
+                    if (lo < -reach || hi > len + reach || hi - lo <= reach) continue;
+                    parts.Add(Tuple.Create(o, lo, hi, off));
+                }
+                if (parts.Count < 2) continue;
+                parts = parts.OrderBy(t => t.Item2).ToList();
+                bool disjoint = true;
+                for (int i = 1; i < parts.Count; i++)
+                    if (parts[i].Item2 < parts[i - 1].Item3 - reach) { disjoint = false; break; }
+                if (!disjoint) continue;
+                double covered = parts.Sum(t => Math.Min(t.Item3, len) - Math.Max(t.Item2, 0));
+                if (covered < SplitCoverage * len) continue;
+
+                CadUpdateAction longest = parts.OrderByDescending(t => t.Item3 - t.Item2).First().Item1;
+                double confidence = Math.Round(Math.Min(1.0, covered / len), 4);
+                string why = parts.Count + " elements collinear with its line, on the same layer and rule, inside " +
+                             "it (at most " + parts.Max(t => t.Item4).ToString("0.#", CultureInfo.InvariantCulture) +
+                             " mm off), covering " + (confidence * 100).ToString("0", CultureInfo.InvariantCulture) +
+                             "% of its " + len.ToString("0", CultureInfo.InvariantCulture) + " mm";
+
+                create.Classification = CadChange.Merge;
+                create.Automatic = false;
+                create.PairConfidence = confidence;
+                create.Evidence["may_be_the_merge_of"] = new JArray(parts.Select(t => t.Item1.ElementId.Value));
+                create.Evidence["would_keep_element"] = longest.ElementId.Value;
+                create.Evidence["paired_on"] = why;
+                create.Says += " It may be a MERGE: " + why + ". Nothing in a DWG says a division was taken out " +
+                               "rather than one run removed and another drawn, so this is offered, not taken: " +
+                               "accept the pairing of element " + longest.ElementId.Value + " with this candidate " +
+                               "and that element is re-shaped to the whole line, keeping its id. The other " +
+                               "part(s) are NOT deleted by that: each one is its own decision.";
+                foreach (var t in parts)
+                {
+                    CadUpdateAction part = t.Item1;
+                    part.Automatic = false;
+                    if (part.Classification != CadChange.Conflict) part.Classification = CadChange.Merge;
+                    part.Evidence["may_have_been_merged_into"] = create.CandidateId;
+                    part.Evidence["merge_keeps_element"] = longest.ElementId.Value;
+                    part.Evidence["paired_on"] = why;
+                    part.Says += " HELD: it may have been MERGED into this candidate with " + (parts.Count - 1) +
+                                 " other(s). Removing it now would take out a duct the drawing still covers.";
+                }
+            }
+        }
+
+        /// <summary>
+        /// THE SAME DEVICE, MOVED. A symbol that moved has a new identity, so it
+        /// arrives as a create and its element as an orphan - exactly as a wall
+        /// does, and with the same danger: applying the create builds a second
+        /// device. The resemblance is layer, rule and family type, within two
+        /// metres of where the element was built; it is offered, never taken, and
+        /// every candidate that could be this element is held.
+        /// </summary>
+        private static void ProposePointPairing(CadUpdateAction orphan, List<CadUpdateAction> creates,
+                                                HashSet<string> rejected)
+        {
+            CadPoint was = orphan.AsBuiltGeometry[0];
+            CadUpdateAction best = null;
+            double bestDistance = double.MaxValue;
+            var plausible = new List<CadUpdateAction>();
+            foreach (CadUpdateAction create in creates)
+            {
+                if (create.Geometry.Count != 1) continue;
+                if (!string.Equals(create.Evidence.Value<string>("layer"), orphan.Evidence.Value<string>("was_layer"),
+                                   StringComparison.Ordinal)) continue;
+                if (!string.Equals(create.Evidence.Value<string>("rule_id"), orphan.Evidence.Value<string>("was_rule"),
+                                   StringComparison.Ordinal)) continue;
+                string wasType = orphan.Evidence.Value<string>("was_type");
+                string nowType = create.Evidence.Value<string>("family_type");
+                if (!string.IsNullOrWhiteSpace(wasType) && !string.IsNullOrWhiteSpace(nowType) && !SameType(nowType, wasType))
+                    continue;
+                double distance = was.PlanDistanceTo(create.Geometry[0]);
+                if (distance > 2000) continue;
+                if (rejected.Contains(create.CandidateId))
+                {
+                    create.Evidence["pairing_rejected"] = true;
+                    create.Says += " A caller rejected the pairing with element " + orphan.ElementId +
+                                   ", so this is built as new.";
+                    continue;
+                }
+                plausible.Add(create);
+                if (distance < bestDistance) { bestDistance = distance; best = create; }
+            }
+            if (best == null) return;
+
+            string why = "same layer, rule and type, " + bestDistance.ToString("0", CultureInfo.InvariantCulture) +
+                         " mm from where the element was built";
+            double score = Math.Round(1 - Math.Min(1, bestDistance / 2000.0), 4);
+            string implied = plausible.Count == 1 ? CadChange.Moved : CadChange.Ambiguous;
+            if (orphan.Classification == CadChange.Conflict) implied = CadChange.Conflict;
+            orphan.Classification = implied;
+            best.Classification = implied;
+            orphan.PairedWith = best.CandidateId;
+            orphan.PairConfidence = score;
+            orphan.Evidence["may_be_the_same_as"] = best.CandidateId;
+            orphan.Evidence["paired_on"] = why;
+            orphan.Evidence["pair_confidence"] = score;
+            orphan.Says += " A candidate in this same plan looks like it (" + why + "). Nothing in a DWG says " +
+                           "whether it IS, so this is offered, not taken: accept the pairing and the element is " +
+                           "moved along its own wall and keeps its id, instead of a second device being built.";
+            best.Evidence["may_be_element"] = orphan.ElementId;
+            best.Evidence["paired_on"] = why;
+
+            foreach (CadUpdateAction maybe in plausible)
+            {
+                maybe.Automatic = false;
+                maybe.Evidence["may_be_element"] = orphan.ElementId;
+                maybe.Says += ReferenceEquals(maybe, best)
+                    ? " HELD: it may instead be element " + orphan.ElementId + " moved (" + why + "). Building it " +
+                      "now would put a second device beside that one."
+                    : " HELD: element " + orphan.ElementId + " could be this rather than the candidate it was " +
+                      "paired with.";
+                if (!ReferenceEquals(maybe, best)) maybe.Classification = CadChange.Ambiguous;
             }
         }
 
@@ -992,13 +1885,22 @@ namespace Horizun.Revit.Core
                                         "element happens to carry that id now. Nothing was paired.");
                     continue;
                 }
+                if (orphan.AsBuiltGeometry != null && orphan.AsBuiltGeometry.Count == 1 && create.Geometry.Count == 1)
+                {
+                    AcceptPointPairing(update, orphan, create);
+                    continue;
+                }
+
                 // ACCEPTING RESOLVES IT. A pairing offered as ambiguous and then
                 // accepted by a person is no longer ambiguous - it is the change
                 // the shape said it was, now with somebody's name on it. Leaving
                 // it classified ambiguous would report the open question after it
                 // had been answered.
-                string settled = SameShape(orphan.AsBuiltGeometry, create.Geometry, 1.0)
-                    ? CadChange.Moved : CadChange.Reshaped;
+                var splitInto = orphan.Evidence["may_have_been_split_into"] as JArray;
+                var mergeOf = create.Evidence["may_be_the_merge_of"] as JArray;
+                string settled = splitInto != null ? CadChange.Split
+                    : mergeOf != null ? CadChange.Merge
+                    : SameShape(orphan.AsBuiltGeometry, create.Geometry, 1.0) ? CadChange.Moved : CadChange.Reshaped;
                 orphan.Classification = settled;
                 create.Classification = settled;
 
@@ -1012,7 +1914,144 @@ namespace Horizun.Revit.Core
                 create.Says = "a caller accepted that this is element " + orphan.ElementId + " moved. It is " +
                               "re-shaped in place, so it keeps its id, its parameters and everything hosted on it.";
                 create.Evidence["accepted_pairing"] = true;
+
+                // AN ACCEPTED SPLIT releases its other pieces, and the element names them.
+                if (splitInto != null)
+                {
+                    var companions = new JArray();
+                    foreach (string id in splitInto.Select(x => (string)x))
+                    {
+                        if (id == create.CandidateId) continue;
+                        CadUpdateAction piece = update.Of("create").FirstOrDefault(c => c.CandidateId == id);
+                        if (piece == null) continue;
+                        piece.Automatic = true;
+                        piece.Evidence["split_companion_of"] = orphan.ElementId;
+                        piece.Says = "a caller accepted that element " + orphan.ElementId + " was split: this piece " +
+                                     "is built new beside it, and the element is re-shaped to its longest piece.";
+                        companions.Add(id);
+                    }
+                    create.Evidence["split_companions"] = companions;
+                    create.Says = "a caller accepted that element " + orphan.ElementId + " was split. It is " +
+                                  "re-shaped to this, its longest piece, and keeps its id; " + companions.Count +
+                                  " other piece(s) are built new.";
+                }
+
+                // AN ACCEPTED MERGE keeps the element that was paired and HOLDS the others, one decision
+                // each. A pairing says "this run is that element, longer"; it does not say "delete the
+                // other duct", and reading it that way would destroy an element on the strength of a
+                // judgement about geometry.
+                if (mergeOf != null)
+                {
+                    var others = new JArray();
+                    foreach (long id in mergeOf.Select(x => (long)x))
+                    {
+                        if (id == orphan.ElementId) continue;
+                        CadUpdateAction part = update.Actions.FirstOrDefault(x => x.ElementId == id && x.Kind == "orphan");
+                        if (part == null) continue;
+                        part.Automatic = false;
+                        part.Classification = CadChange.Merge;
+                        part.Evidence["held_because"] = "the_other_part_of_a_merge";
+                        part.Evidence["merged_into_element"] = orphan.ElementId;
+                        part.Says = "element " + orphan.ElementId + " was accepted as the merged run and covers " +
+                                    "this one's line too. Removing this duct is a DELETE and is its own decision: " +
+                                    "accepting a pairing never deletes an element.";
+                        others.Add(id);
+                    }
+                    create.Evidence["merge_parts_still_standing"] = others;
+                    create.Says = "a caller accepted that element " + orphan.ElementId + " is this run, merged. " +
+                                  "It is re-shaped to the whole line and keeps its id; " + others.Count +
+                                  " other part(s) still stand and each needs its own decision.";
+                }
             }
+        }
+
+        /// <summary>
+        /// An accepted point pairing: the element is MOVED, keeping its id.
+        ///
+        /// A wall-hosted device moves ALONG its wall: the displacement is the part
+        /// of (where revision B draws it - where the element is now) that runs
+        /// along the host's line, so the device stays on the face it is on. A
+        /// symbol that crossed to the other side of its wall is not a move - it is
+        /// a new placement on another face - and stays a review. A device with no
+        /// host moves to the drawn point.
+        /// </summary>
+        private static void AcceptPointPairing(CadUpdate update, CadUpdateAction orphan, CadUpdateAction create)
+        {
+            CadPoint target = create.Geometry[0];
+            CadPoint now = orphan.CurrentGeometry != null && orphan.CurrentGeometry.Count == 1
+                ? orphan.CurrentGeometry[0] : orphan.AsBuiltGeometry[0];
+            CadPoint vector;
+            if (orphan.HostLine != null && orphan.HostLine.Count >= 2)
+            {
+                CadPoint a = orphan.HostLine[0], b = orphan.HostLine[orphan.HostLine.Count - 1];
+                double dx = b.X - a.X, dy = b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+                if (len <= 1e-9)
+                {
+                    update.Rejected.Add("element " + orphan.ElementId + ": its host line has no length, so no move " +
+                                        "along it can be computed. Nothing was paired.");
+                    return;
+                }
+                double ux = dx / len, uy = dy / len;
+                double sideNow = (now.X - a.X) * -uy + (now.Y - a.Y) * ux;
+                double sideThen = (target.X - a.X) * -uy + (target.Y - a.Y) * ux;
+                if (Math.Sign(sideNow) != Math.Sign(sideThen) && Math.Abs(sideThen) > 1.0 && Math.Abs(sideNow) > 1.0)
+                {
+                    update.Rejected.Add("element " + orphan.ElementId + " is on one side of its wall and revision B " +
+                                        "draws '" + create.CandidateId + "' on the other. That is a new placement on " +
+                                        "another face, not a move. Nothing was paired.");
+                    return;
+                }
+                double along = (target.X - now.X) * ux + (target.Y - now.Y) * uy;
+                vector = new CadPoint(along * ux, along * uy, 0);
+            }
+            else
+            {
+                vector = new CadPoint(target.X - now.X, target.Y - now.Y, 0);
+            }
+
+            orphan.Kind = "paired_away";
+            orphan.Automatic = true;
+            orphan.Classification = orphan.Classification == CadChange.Conflict ? CadChange.Conflict : CadChange.Moved;
+            orphan.Says = "paired with '" + create.CandidateId + "' by the caller: this element is being moved to " +
+                          "where revision B draws it rather than left behind and duplicated.";
+            create.Kind = "move";
+            create.ElementId = orphan.ElementId;
+            create.Automatic = true;
+            create.Vector = vector;
+            create.Classification = orphan.Classification;
+            create.Says = "a caller accepted that this is element " + orphan.ElementId + " moved. It is moved " +
+                          Math.Sqrt(vector.X * vector.X + vector.Y * vector.Y).ToString("0.#", CultureInfo.InvariantCulture) +
+                          " mm" + (orphan.HostLine != null ? " along its own wall" : "") + " and keeps its id, its " +
+                          "parameters and its host." +
+                          (orphan.Classification == CadChange.Conflict
+                              ? " It had ALSO been moved by hand; accepting the pairing replaces that edit with " +
+                                "the drawing's position, which is the caller's decision."
+                              : "");
+            create.Evidence["accepted_pairing"] = true;
+            create.Evidence["moved_from_mm"] = new JArray(Math.Round(now.X, 3), Math.Round(now.Y, 3));
+        }
+
+        /// <summary>
+        /// The evidence an action carries, plus WHAT THE DRAWING DID NOT SAY.
+        ///
+        /// The geometry on an update action is what the caller sends to
+        /// horizun_create_elements or horizun_transform_elements, and it is flat:
+        /// this route reads one line at a time and a fall is a property of the
+        /// whole network, which only an outfall and a walk can supply. Publishing
+        /// the candidate's own unresolved facts here is the difference between a
+        /// stated limitation and a trap.
+        /// </summary>
+        private static JObject Flat(JObject evidence, CadCandidate c)
+        {
+            JObject o = evidence == null ? new JObject() : (JObject)evidence.DeepClone();
+            o["unresolved_facts"] = new JArray(c.UnresolvedFacts);
+            o["geometry_is"] = c.UnresolvedFacts.Count == 0
+                ? "the drawn geometry at the height the rule declares."
+                : "the drawn geometry at the height the rule declares - FLAT. What the drawing did not " +
+                  "carry is listed above and is NOT supplied here; a declared slope in particular is not " +
+                  "applied by this route, because orienting a fall needs an outfall and a walk of the whole " +
+                  "network.";
+            return o;
         }
 
         private static double UndirectedAngle(List<CadPoint> a, List<CadPoint> b)
@@ -1064,6 +2103,9 @@ namespace Horizun.Revit.Core
             double nowLength = now[0].PlanDistanceTo(now[now.Count - 1]);
             return Math.Abs(wasLength - nowLength) <= Math.Max(tolerance, 1.0);
         }
+
+        /// <summary>The as-built geometry a provenance record carries, or null.</summary>
+        public static List<CadPoint> AsBuiltOf(CadProvenance p) => AsBuilt(p);
 
         private static List<CadPoint> AsBuilt(CadProvenance p)
         {
@@ -1139,6 +2181,178 @@ namespace Horizun.Revit.Core
         }
 
         private static string Quoted(string s) { return s == null ? "(nothing)" : "'" + s + "'"; }
+        private static string Mm(double v) { return v.ToString("0.#", CultureInfo.InvariantCulture); }
+
+        /// <summary>
+        /// Put the heights a fall walk computed onto the update's actions.
+        ///
+        /// The same three rules as the conversion plan, because they are the same
+        /// three facts: WHICH END IS WHICH is decided by position and never by
+        /// order; an INVERT IS NOT A CENTRELINE, so a run with no declared bore
+        /// takes no height at all; and a walk that refused, or one whose own
+        /// conflicts say a node is at two inverts, applies to nothing.
+        ///
+        /// Returns the actions it could not give a height to, each with its reason.
+        /// They stay blocked, and a blocked action publishes no coordinates.
+        /// </summary>
+        public static List<JObject> ApplyFall(CadUpdate update, CadNetwork network, CadFall fall,
+                                              double planToleranceMm, out string refusal)
+        {
+            refusal = null;
+            var notGiven = new List<JObject>();
+            if (update == null || network == null || fall == null)
+            {
+                refusal = "nothing_to_apply: an update, the network it was read from and a computed fall are " +
+                          "all required.";
+                return notGiven;
+            }
+            if (!fall.Ok)
+            {
+                refusal = "fall_refused: " + fall.Refusal + " No action was given a height.";
+                return notGiven;
+            }
+            if (fall.Conflicts.Count > 0)
+            {
+                refusal = "fall_conflicts: the walk found " + fall.Conflicts.Count + " node(s) the outfall " +
+                          "reaches two ways at different inverts. NOTHING was applied - an update that " +
+                          "half-carries a contradiction is worse than one that carries none.";
+                return notGiven;
+            }
+
+            var runOf = new Dictionary<string, CadRun>(StringComparer.Ordinal);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            foreach (CadRun run in network.Runs)
+            {
+                if (run == null || run.SemanticId == null) continue;
+                if (runOf.ContainsKey(run.SemanticId)) ambiguous.Add(run.SemanticId);
+                else runOf[run.SemanticId] = run;
+            }
+            var fallOf = new Dictionary<string, CadRunFall>(StringComparer.Ordinal);
+            foreach (CadRunFall f in fall.Runs)
+                if (f != null && f.RunId != null) fallOf[f.RunId] = f;
+
+            double tolerance = planToleranceMm > 0 ? planToleranceMm : 1.0;
+
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                if (a == null || !a.Blocked) continue;
+                if (a.Geometry.Count < 2) { Skip(notGiven, a, "this action has no two ends to put a height on."); continue; }
+
+                if (a.SemanticId == null || ambiguous.Contains(a.SemanticId))
+                { Skip(notGiven, a, "no single run of the network carries this semantic id."); continue; }
+
+                CadRun matched;
+                if (!runOf.TryGetValue(a.SemanticId, out matched))
+                { Skip(notGiven, a, "no run of the network carries this semantic id. Both readings must use " +
+                                    "the same point tolerance or their ids do not agree."); continue; }
+
+                CadRunFall heights;
+                if (!fallOf.TryGetValue(matched.Id, out heights))
+                { Skip(notGiven, a, "the fall walk never reached this run - its own blocked and unreachable " +
+                                    "lists say why."); continue; }
+
+                CadPoint first = a.Geometry[0], last = a.Geometry[a.Geometry.Count - 1];
+                var planFirst = new CadPoint(first.X, first.Y, 0);
+                var planLast = new CadPoint(last.X, last.Y, 0);
+                var runStart = new CadPoint(matched.Start.X, matched.Start.Y, 0);
+                var runEnd = new CadPoint(matched.End.X, matched.End.Y, 0);
+
+                bool straight = planFirst.PlanDistanceTo(runStart) <= tolerance &&
+                                planLast.PlanDistanceTo(runEnd) <= tolerance;
+                bool swapped = planFirst.PlanDistanceTo(runEnd) <= tolerance &&
+                               planLast.PlanDistanceTo(runStart) <= tolerance;
+
+                if (straight && swapped)
+                { Skip(notGiven, a, "both ends sit within tolerance of both ends of the matching run, so " +
+                                    "position cannot say which end is downstream. A fall applied backwards " +
+                                    "is a pipe running uphill in a model that looks finished."); continue; }
+                if (!straight && !swapped)
+                { Skip(notGiven, a, "the ends of this action are not where the matching network run's ends " +
+                                    "are. The id matched and the geometry did not."); continue; }
+
+                if (!a.DiameterMm.HasValue || a.DiameterMm.Value <= 0)
+                { Skip(notGiven, a, "this run declares no bore, so the computed invert cannot be turned into " +
+                                    "the centreline an element is placed on. Half a diameter is 75 mm on a " +
+                                    "150 mm drain - it is not a rounding."); continue; }
+
+                double half = a.DiameterMm.Value / 2.0;
+                double zFirst = (straight ? heights.StartZMm : heights.EndZMm) + half;
+                double zLast = (straight ? heights.EndZMm : heights.StartZMm) + half;
+
+                a.Geometry[0] = new CadPoint(first.X, first.Y, zFirst);
+                a.Geometry[a.Geometry.Count - 1] = new CadPoint(last.X, last.Y, zLast);
+                a.BlockedUntil = null;
+                a.Says += " Its two ends carry the heights this drawing's declared slope implies, " +
+                          Math.Abs(zFirst - zLast).ToString("0.#", CultureInfo.InvariantCulture) +
+                          " mm apart, as CENTRELINES - the computed invert plus half the " +
+                          a.DiameterMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm bore.";
+            }
+            return notGiven;
+        }
+
+        private static void Skip(List<JObject> into, CadUpdateAction a, string why)
+        {
+            into.Add(new JObject
+            {
+                ["candidate_id"] = a.CandidateId,
+                ["semantic_id"] = a.SemanticId,
+                ["kind"] = a.Kind,
+                ["why"] = why,
+                ["stays"] = "blocked, and it publishes no coordinates."
+            });
+        }
+
+        /// <summary>
+        /// Every action that would put geometry in the model learns the two facts a
+        /// HEIGHT needs - the bore and the declared slope - and is BLOCKED where the
+        /// slope says a height is missing rather than zero.
+        ///
+        /// It runs as one pass over the finished actions rather than at each of the
+        /// ten places an action is built: a rule applied in ten places is a rule
+        /// that will be applied in nine the next time somebody adds an eleventh.
+        ///
+        /// set_curve is blocked for a stronger reason than create. A create adds a
+        /// flat run beside neighbours that fall; a RE-SHAPE takes an element that
+        /// already exists - possibly built to a fall, with fittings at both ends -
+        /// and flattens it, destroying height that was there, on an element that
+        /// keeps its id and its parameters and therefore looks surgically updated.
+        /// </summary>
+        private static void CarryHeightFacts(CadUpdate update, IList<CadCandidate> candidates)
+        {
+            if (update == null || candidates == null) return;
+            var byId = new Dictionary<string, CadCandidate>(StringComparer.Ordinal);
+            foreach (CadCandidate c in candidates)
+                if (c != null && c.Id != null) byId[c.Id] = c;
+
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                if (a == null || a.CandidateId == null) continue;
+                CadCandidate candidate;
+                if (!byId.TryGetValue(a.CandidateId, out candidate)) continue;
+
+                a.DiameterMm = candidate.DiameterMm;
+                a.SlopePercent = candidate.SlopePercent;
+
+                bool putsGeometry = a.Kind == "create" || a.Kind == "set_curve";
+                if (!putsGeometry) continue;
+                if (!candidate.SlopePercent.HasValue ||
+                    Math.Abs(candidate.SlopePercent.Value) <= 1e-9) continue;
+
+                a.Automatic = false;
+                a.BlockedUntil =
+                    "a fall: this run's rule declares a slope of " +
+                    candidate.SlopePercent.Value.ToString("0.###", CultureInfo.InvariantCulture) +
+                    "% and this reading is flat. " +
+                    (a.Kind == "set_curve"
+                        ? "RE-SHAPING it onto the drawing's line would DESTROY the height it already has " +
+                          "while its neighbours keep theirs - a step in the middle of a drain, on an element " +
+                          "that keeps its id and its parameters and so looks surgically updated."
+                        : "Building it at the rule's elevation gives a level run beside neighbours that " +
+                          "fall.") +
+                    " Name the OUTFALL and the heights are written; until then this action carries no " +
+                    "coordinates.";
+            }
+        }
 
         private static bool SamePlace(List<CadPoint> a, List<CadPoint> b, double tolerance)
         {

@@ -67,6 +67,13 @@ namespace Horizun.Revit.Core
             {
                 ["core"] = new[]
                 {
+                    // FOUR, and the guard on this list says so by name.
+                    //
+                    // horizun_repair_memory was put here so it would belong to some
+                    // pack at all - every tool must, or no restricted session can
+                    // reach it - and core is not that pack: it is what a session
+                    // cannot work without, not everything that is always available.
+                    // It is in administration now, with the other recovery tools.
                     "horizun_health", "horizun_target", "horizun_job_status", "horizun_submit_job"
                 },
                 ["read"] = new[]
@@ -77,6 +84,8 @@ namespace Horizun.Revit.Core
                     "horizun_query_detail_2d", "horizun_query_planimetry", "horizun_quantities",
                     "horizun_capture_view", "horizun_query_cad", "horizun_plan_from_cad",
                     "horizun_audit_cad_model", "horizun_plan_cad_update",
+                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_unit_instances",
+                    "horizun_cad_symbols", "horizun_cad_review",
                     "horizun_query_structure", "horizun_plan_reinforcement",
                     "horizun_audit_reinforcement"
                 },
@@ -85,7 +94,9 @@ namespace Horizun.Revit.Core
                     "horizun_create_elements", "horizun_transform_elements", "horizun_write_params_verified",
                     "horizun_delete_verified", "horizun_set_keynote", "horizun_bind_shared_param",
                     "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_execute_plan",
-                    "horizun_apply_cad_plan", "horizun_apply_cad_update", "horizun_manage_cad_links"
+                    "horizun_apply_cad_plan", "horizun_apply_cad_update", "horizun_manage_cad_links",
+                    "horizun_cad_connect",
+                    "horizun_manage_materials", "horizun_copy_between_documents"
                 },
                 ["architecture"] = new[]
                 {
@@ -98,12 +109,17 @@ namespace Horizun.Revit.Core
                     "horizun_split_multilayer_slabs", "horizun_copy_slab_elevations",
                     "horizun_plan_structure", "horizun_create_elements",
                     "horizun_query_structure", "horizun_plan_reinforcement",
-                    "horizun_apply_reinforcement", "horizun_audit_reinforcement"
+                    "horizun_apply_reinforcement", "horizun_audit_reinforcement",
+                    "horizun_structural_connections"
                 },
                 ["mep"] = new[]
                 {
-                    "horizun_manage_system_types", "horizun_plan_mep", "horizun_create_elements",
-                    "horizun_query_model"
+                    "horizun_manage_system_types", "horizun_plan_mep", "horizun_connect_mep",
+                    "horizun_create_elements", "horizun_query_model",
+                    // A DWG is where most MEP in this bridge starts, and a session
+                    // doing MEP work reaches for the network reading and the
+                    // connectivity review far more often than for a CAD census.
+                    "horizun_cad_networks", "horizun_cad_connect", "horizun_cad_review"
                 },
                 ["documentation"] = new[]
                 {
@@ -123,7 +139,8 @@ namespace Horizun.Revit.Core
                 {
                     "horizun_audit_model", "horizun_apply_corrections", "horizun_model_scan", "horizun_clash",
                     "horizun_coordination", "horizun_query_planimetry", "horizun_audit_planimetry",
-                    "horizun_capture_view", "horizun_audit_reinforcement"
+                    "horizun_capture_view", "horizun_audit_reinforcement",
+                    "horizun_audit_access"
                 },
                 ["coordination"] = new[]
                 {
@@ -143,17 +160,20 @@ namespace Horizun.Revit.Core
                 ["interoperability"] = new[]
                 {
                     "horizun_export", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
-                    "horizun_manage_links", "horizun_budget_compare"
+                    "horizun_manage_links", "horizun_budget_compare", "horizun_run_procedure",
+                    "horizun_validate_ids", "horizun_coordination", "horizun_plan_from_ifc",
+                    "horizun_apply_ifc_plan", "horizun_create_elements"
                 },
                 ["powerbi"] = new[]
                 {
                     "horizun_power_bi_push", "horizun_excel_write_rows", "horizun_excel_read_rows",
-                    "horizun_budget_compare"
+                    "horizun_budget_compare", "horizun_selection_exchange"
                 },
                 ["administration"] = new[]
                 {
                     "horizun_document_session", "horizun_open_document", "horizun_save_document",
-                    "horizun_relinquish_all"
+                    "horizun_relinquish_all",
+                    "horizun_promote_script", "horizun_repair_memory"
                 },
                 ["unsafe_code"] = new[]
                 {

@@ -99,6 +99,55 @@ namespace Horizun.Revit.Core
         /// ACTIVE document only - this never switches documents on the caller's behalf,
         /// because silently retargeting is the failure it exists to prevent.
         /// </summary>
+        /// <summary>
+        /// The READ-side guard: refuse when the caller named a document and the active one
+        /// is not it. Returns null when there is nothing to object to.
+        ///
+        /// OPTIONAL, UNLIKE THE MUTATION GATE, and the asymmetry is deliberate. A mutation
+        /// that does not name its target changes whatever happens to be in front, so
+        /// naming it is mandatory. A read that does not name one produces a report about
+        /// whatever happens to be in front - which is recoverable, because the reply says
+        /// which document it read. What must never happen is a caller naming a document,
+        /// getting a clean report, and that report being about a different file: a clean
+        /// report about a model nobody looked at is worse than no report.
+        ///
+        /// `target_document` and `target_document_title` are both accepted. The second is
+        /// what horizun_model_scan shipped with and callers already send; renaming it
+        /// would break working callers to no purpose.
+        /// </summary>
+        public static CommandResult ReadGuard(Document active, JObject request, string commandName)
+        {
+            string wanted = request?.Value<string>("target_document")
+                            ?? request?.Value<string>("target_document_title");
+            if (string.IsNullOrWhiteSpace(wanted)) return null;
+
+            string actual = Safe(() => active?.Title);
+            if (TitlesMatch(wanted, actual)) return null;
+
+            return CommandResult.Fail(
+                "Refusing to read: '" + commandName + "' was asked for document '" + wanted +
+                "' and the ACTIVE document is '" + (actual ?? "(title unreadable)") + "'. Nothing was read. " +
+                "Two Revit hosts run side by side on machines like this one, and a clean report about a model " +
+                "nobody looked at is worse than no report. Activate the intended document, or check you are " +
+                "talking to the right Revit host.");
+        }
+
+        /// <summary>Titles compared without the .rvt a caller may or may not have typed.</summary>
+        private static bool TitlesMatch(string wanted, string actual)
+        {
+            if (actual == null) return false;
+            return string.Equals(StripExtension(wanted), StripExtension(actual),
+                                 StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string StripExtension(string value)
+        {
+            value = (value ?? "").Trim();
+            if (value.EndsWith(".rvt", StringComparison.OrdinalIgnoreCase))
+                value = value.Substring(0, value.Length - 4);
+            return value;
+        }
+
         public static GateResult ForMutation(UIApplication app, JObject request, string commandName)
         {
             string revitYear = Safe(() => app?.Application?.VersionNumber);

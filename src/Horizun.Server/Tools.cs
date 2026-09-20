@@ -48,7 +48,11 @@ namespace Horizun.Server
                 { "horizun_excel_read_rows",  (a, ct) => { ct.ThrowIfCancellationRequested(); return ExcelReadRows.Handle(a); } },
                 { "horizun_power_bi_push",    (a, ct) => PowerBiPush.Handle(a, ct) },
                 { "horizun_budget_compare",   (a, ct) => BudgetCompare.Handle(a, ct) },
-                { "horizun_target",           (a, ct) => { ct.ThrowIfCancellationRequested(); return Targets.Handle(a); } }
+                { "horizun_repair_memory",    (a, ct) => RepairMemoryTool.Handle(a, ct) },
+                { "horizun_promote_script",   (a, ct) => ScriptPromotionTool.Handle(a, ct) },
+                { "horizun_selection_exchange", (a, ct) => PowerBiSelection.Handle(a, ct) },
+                { "horizun_target",           (a, ct) => { ct.ThrowIfCancellationRequested(); return Targets.Handle(a); } },
+                { "horizun_run_procedure",    (a, ct) => ProcedureRun.Handle(a, ct) }
             };
 
         /// <summary>
@@ -99,6 +103,17 @@ namespace Horizun.Server
             Horizun.Contracts.CommandContract contract = Horizun.Contracts.Contract.Find(t.Name);
             string reason;
             return Horizun.Revit.Core.Settings.IsToolAllowed(contract, out reason);
+        }
+
+        /// <summary>
+        /// Enabled with the TOOL-PACK restriction lifted and nothing else. Used only to
+        /// measure what the pack selection saves; never to decide whether a call may run.
+        /// </summary>
+        private static bool IsEnabledIgnoringPacks(ToolDef t)
+        {
+            Horizun.Contracts.CommandContract contract = Horizun.Contracts.Contract.Find(t.Name);
+            string reason;
+            return Horizun.Revit.Core.Settings.IsToolAllowedIgnoringPacks(contract, out reason);
         }
 
         /// <summary>
@@ -176,12 +191,30 @@ namespace Horizun.Server
         }
 
         public static JArray List(bool advertiseTaskSupport = false)
+            => Build(advertiseTaskSupport, IsEnabled);
+
+        /// <summary>
+        /// The list this server would publish if no tool pack were selected, at the same
+        /// permission posture. It is the BASELINE for the discovery-cost measurement in
+        /// Protocol/DiscoveryCost.cs and has no other caller: a client never sees it, and
+        /// nothing dispatches from it.
+        /// </summary>
+        public static JArray ListIgnoringPacks(bool advertiseTaskSupport = false)
+            => Build(advertiseTaskSupport, IsEnabledIgnoringPacks);
+
+        private static JArray Build(bool advertiseTaskSupport, Func<ToolDef, bool> enabled)
         {
             var arr = new JArray();
             Discovered live = Live();
+            // DETERMINISTIC ORDER (2026-07-28 asks for it, and prompt caches pay for it).
+            // The contract's own declaration order is already stable across processes and
+            // across machines - it is a literal list in one file - so publishing in that
+            // order costs nothing and makes two calls to tools/list byte-identical while
+            // nothing has changed. Sorting by name would also be stable but would scatter
+            // related tools, and the contract order groups them the way a reader expects.
             foreach (var t in All)
             {
-                if (!IsEnabled(t)) continue;
+                if (!enabled(t)) continue;
                 if (WithheldReason(t, live) != null) continue;
                 var published = new JObject
                 {
@@ -202,6 +235,15 @@ namespace Horizun.Server
                     {
                         ["taskSupport"] = McpTasks.Supports(t) ? "optional" : "forbidden"
                     };
+
+                // MCP Apps: a tool declares its interactive view in its own description,
+                // through _meta.ui.resourceUri, and the host may preload it before the
+                // tool is ever called. Only horizun_clash has one, and only because the
+                // app renders that reply and nothing else - an app attached to a tool
+                // whose payload it cannot render is a blank panel the user blames their
+                // client for.
+                if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
+
                 arr.Add(published);
             }
             return arr;

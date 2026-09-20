@@ -156,21 +156,44 @@ try {
     # 1. WHICH REVITS ARE HERE. Detected, not assumed: the add-in is compiled
     #    against each year's own RevitAPI.dll, so its presence IS the test.
     # =========================================================================
+    # 2022 IS DETECTED BUT NOT DEFAULTED. Its API is present on some machines and
+    # the code already carries its compatibility guards (Core/Rid.cs compiles under
+    # REVIT2022, and the file probe reaches SavedInVersion by reflection precisely
+    # because it exists on 2022 and is gone by 2026). What 2022 does NOT have in
+    # this repository is a verified NuGet lock file, and a locked restore cannot be
+    # produced without restoring - which is a build, and is the owner's to run.
+    #
+    # So: it is offered when explicitly asked for with -Years, and it is never part
+    # of the default matrix. Building it silently would put an unverified year into
+    # a release that claims 2023-2027.
     $detected = @()
     foreach ($y in 2023..2027) {
         if (Test-Path (Join-Path "C:\Program Files\Autodesk\Revit $y" 'RevitAPI.dll')) { $detected += $y }
     }
+    $optional = @()
+    foreach ($y in @(2022)) {
+        if (Test-Path (Join-Path "C:\Program Files\Autodesk\Revit $y" 'RevitAPI.dll')) { $optional += $y }
+    }
     if ($detected.Count -eq 0) {
+        $extra = if ($optional.Count -gt 0) {
+            " Revit " + ($optional -join ', ') + " IS installed and can be built with -Years " +
+            ($optional -join ',') + ", but it is outside the verified matrix and is never built by default."
+        } else { '' }
         throw ("No Revit 2023-2027 found under C:\Program Files\Autodesk. This add-in compiles against " +
                "the Revit API of the machine it runs on; without a Revit there is nothing to build " +
-               "against and nothing to install into. Nothing was changed.")
+               "against and nothing to install into. Nothing was changed." + $extra)
     }
 
     if ($Years) {
-        $missing = @($Years | Where-Object { $detected -notcontains $_ })
+        # An explicitly requested year may be one of the optional ones. It still has
+        # to be INSTALLED - presence of the API is the only test that matters - but
+        # asking for it is allowed.
+        $buildable = @($detected) + @($optional)
+        $missing = @($Years | Where-Object { $buildable -notcontains $_ })
         if ($missing.Count -gt 0) {
             throw ("Revit " + ($missing -join ', ') + " is not installed on this machine (no RevitAPI.dll), " +
-                   "so it cannot be built here. Installed years: " + ($detected -join ', ') + ". Nothing was changed.")
+                   "so it cannot be built here. Installed years: " + ((@($detected) + @($optional)) -join ', ') +
+                   ". Nothing was changed.")
         }
     }
     else { $Years = $detected }

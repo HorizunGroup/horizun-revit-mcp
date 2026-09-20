@@ -60,6 +60,15 @@ namespace Horizun.Revit.Commands
             Document doc = app.ActiveUIDocument?.Document;
             if (doc == null) return CommandResult.Fail("No document is open.");
 
+            // A PLAN NAMED FOR ONE DOCUMENT IS NOT COMPUTED AGAINST ANOTHER.
+            //
+            // MEASURED: a plan asked for HZ_CLEAN2 while HZ_CLEAN3 was in front was
+            // computed against HZ_CLEAN3 - its host ids, its "already built" -
+            // and then carried HZ_CLEAN2 into the request it emitted. The audit
+            // and the update planner already refused this; the plan did not.
+            CommandResult wrongDocument = DocumentGate.ReadGuard(doc, request, Name);
+            if (wrongDocument != null) return wrongDocument;
+
             // ---- the requirement set: whole, or refused whole ---------------------
             JObject setJson = request["requirement_set"] as JObject;
             if (setJson == null)
@@ -70,6 +79,17 @@ namespace Horizun.Revit.Commands
             CadRequirementSet set;
             try { set = CadRequirementSet.Load(setJson); }
             catch (CadRequirementSetException ex) { return CommandResult.Fail("requirement_set refused: " + ex.Message); }
+
+            // ---- THE CATALOGUE ONLY: every rule against this model, nothing read, nothing written ----
+            if (request.Value<bool?>("catalog_check_only") == true)
+            {
+                var levelNames = new HashSet<string>(new FilteredElementCollector(doc).OfClass(typeof(Level))
+                    .Cast<Level>().Select(SafeName), StringComparer.Ordinal);
+                JObject check = CadCatalogCheck.Check(set, name => TypeFactsOf(doc, name), levelNames,
+                                                      produces => TypesOfKind(doc, produces));
+                check["document"] = SafeTitle(doc);
+                return CommandResult.Ok(check);
+            }
 
             // ---- the drawing ------------------------------------------------------
             long instanceId = request.Value<long?>("instance_id") ?? -1;
@@ -174,8 +194,26 @@ namespace Horizun.Revit.Commands
             // building part of it. Gathered here, where the document is open, so
             // the collision is a refusal in the plan rather than a rollback
             // halfway through the apply.
+            // THE WALL HATCH, WHEN A WALL RULE ASKS FOR IT - read before the
+            // interpretation, because it decides which pairs of faces are walls.
+            CadSolidHatch solidHatch = null;
+            JObject solidRead = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.SolidHatchLayers.Count > 0))
+            {
+                solidRead = new JObject();
+                solidHatch = CadBlockSource.ReadSolid(element, facts, set, harvest, request.Value<string>("dwg_path"),
+                                                      Math.Max(30, Math.Min(3600,
+                                                          request.Value<int?>("dwg_read_timeout_seconds") ?? 900)),
+                                                      solidRead);
+                if (solidHatch == null)
+                    return CommandResult.Fail(
+                        "solid_evidence_unread: " + ((string)solidRead["refused"] ?? "unknown") + ". " +
+                        CadBlockSource.Explain(solidRead) +
+                        " A wall rule of this set declares solid_hatch_layers, and its walls are not read " +
+                        "without them. Nothing was examined.");
+            }
             CadInterpretation interpretation = CadInterpretationRules.Interpret(
-                harvest.Segments, set, sourceHash, harvest.Arcs, ExistingNames(doc, set));
+                harvest.Segments, set, sourceHash, harvest.Arcs, ExistingNames(doc, set), solidHatch);
 
             // A NAMING THAT COULD NOT BE SETTLED STOPS THE PLAN.
             //
@@ -190,11 +228,191 @@ namespace Horizun.Revit.Commands
                     "reachable from imported geometry at any depth - so every name comes from the requirement " +
                     "set, and a name it cannot settle is not one to guess at.");
 
+            // ---- the symbols, read from the FILE ---------------------------------
+            //
+            // Only when the set asks for them. A set with no blocks rule never
+            // starts a second reader, and one that does gets told what it cost.
+            // Rows a host could not be found for. Declared here because the reply
+            // is assembled before the resolution runs.
+            var withdrawn = new JArray();
+
+            // ---- each duct run's SECTION, from the drawing's labels -------------
+            //
+            // Only for rules that declare one. A run whose size the labels do not settle -
+            // missing, ambiguous, contradictory - is NOT planned at a size nobody chose: it is
+            // withdrawn with its reason, and every other run is planned.
+            string sectionsFailure;
+            JObject sectionsReport = CadSectionsHook.Apply(element, facts, set, harvest, request, interpretation,
+                                                           withdrawn, false, out sectionsFailure);
+            if (sectionsFailure != null) return CommandResult.Fail(sectionsFailure);
+
+            JObject blocksReport = null;
+            if (set.Rules.Any(r => r.Geometry != null && r.Geometry.Source == CadGeometrySource.Blocks))
+                blocksReport = CadBlockSource.Read(element, facts, set, harvest, sourceHash, interpretation,
+                                          request.Value<string>("dwg_path"),
+                                          Math.Max(30, Math.Min(3600,
+                                              request.Value<int?>("dwg_read_timeout_seconds") ?? 900)));
+
             bool includeIneligible = request.Value<bool?>("include_candidates_needing_review") ?? false;
             string sourceFingerprint = CadFacts.SourceFingerprint(facts);
+            // ---- what this drawing has already built here ----------------------
+            //
+            // Read BEFORE planning, with the audit's own matcher, so that a second
+            // apply of the same plan builds nothing rather than a second copy of
+            // everything. MEASURED before this existed: 8 devices, then 8 more,
+            // exactly coincident.
+            var alreadyBuilt = new JArray();
+            string alreadyBuiltProblem = null;
+            try
+            {
+                var provenanceProblems = new List<string>();
+                List<CadAuditSubject> standing = AuditCadModelCommand.Subjects(
+                    doc, set, interpretation, provenanceProblems, false);
+                if (standing.Count > 0)
+                {
+                    CadAudit standingAudit = CadAuditRules.Compare(interpretation.Candidates, standing, set,
+                                                                   sourceFingerprint, facts.FileSha256);
+                    var built = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (CadMatch m in standingAudit.Matches)
+                    {
+                        if (m.CandidateId == null) continue;
+                        built.Add(m.CandidateId);
+                        alreadyBuilt.Add(new JObject
+                        {
+                            ["candidate_id"] = m.CandidateId,
+                            ["element_id"] = m.ElementId,
+                            ["matched_on"] = m.MatchedOn,
+                            ["state"] = m.State,
+                            ["differences"] = new JArray(m.Differences)
+                        });
+                    }
+                    if (built.Count > 0)
+                        foreach (CadCandidate c in interpretation.Candidates)
+                            if (built.Contains(c.Id)) c.EligibleForAutomaticApply = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                alreadyBuiltProblem = ex.Message;
+            }
+            JObject alreadyBuiltReport = null;
+            if (alreadyBuilt.Count > 0)
+                alreadyBuiltReport = new JObject
+                {
+                    ["count"] = alreadyBuilt.Count,
+                    ["rows"] = alreadyBuilt,
+                    ["agree"] = alreadyBuilt.Count(x => (string)x["state"] == "agrees"),
+                    ["differ"] = alreadyBuilt.Count(x => (string)x["state"] == "differs"),
+                    ["means"] = "these candidates are already in this model, matched by the same ladder the " +
+                                "audit uses. They are NOT planned again: applying this plan a second time " +
+                                "would otherwise build a second copy of each, exactly coincident. Each row says " +
+                                "whether the element AGREES with this drawing or DIFFERS, and in what: a row that " +
+                                "differs is built and not correct, and bringing it back is " +
+                                "horizun_plan_cad_update's work, not this plan's."
+                };
+
+
             CadConversionPlan plan = CadConversionPlanRules.Plan(interpretation, set, sourceFingerprint, includeIneligible);
 
+            // ---- the fall, when the caller says where the drawing drains to -----
+            //
+            // A slope declared per layer says HOW STEEP and not WHICH WAY. The
+            // direction is a fact about the network, so without an outfall every
+            // run here is built flat - connected, and draining nowhere.
+            JObject fallBlock = null;
+            JArray outfall = request["outfall"] as JArray;
+            if (outfall != null)
+            {
+                if (outfall.Count < 2)
+                    return CommandResult.Fail(
+                        "outfall_malformed: outfall must be [x, y] in millimetres, in the drawing's own " +
+                        "coordinates - the point the network drains to. NOTHING was planned.");
+
+                // THE SAME GEOMETRY AND THE SAME TOLERANCE AS THE INTERPRETATION.
+                // A semantic id is layer plus endpoints at a tolerance; two readings
+                // agree on an id only when their tolerances agree, and this plan is
+                // matched to this network by exactly that id.
+                var options = new CadNetworkOptions
+                {
+                    ConnectToleranceMm = set.PointToleranceMm,
+                    IdentityToleranceMm = set.PointToleranceMm,
+                    GapReviewDistanceMm = set.GapToleranceMm
+                };
+                CadNetwork network = CadNetworkRules.Build(
+                    harvest.Segments, options, CadNetworkRules.DeclarationsFrom(set), harvest.Arcs);
+
+                double outfallTolerance = request.Value<double?>("outfall_tolerance_mm") ?? 50.0;
+                var at = new CadPoint(outfall[0].Value<double>(), outfall[1].Value<double>(),
+                                      outfall.Count > 2 ? outfall[2].Value<double>() : 0);
+                string node = CadFallRules.NodeNear(network, at, outfallTolerance);
+                if (node == null)
+                    return CommandResult.FailWithDetail(
+                        "outfall_matches_no_node: no junction of this drawing's network is within " +
+                        outfallTolerance.ToString("0.#", CultureInfo.InvariantCulture) + " mm of that point.",
+                        new JObject
+                        {
+                            ["refused"] = "outfall_matches_no_node",
+                            ["outfall"] = outfall,
+                            ["tolerance_mm"] = outfallTolerance,
+                            ["nodes"] = network.Junctions.Count,
+                            ["means"] = "an outfall placed on the wrong node inverts an entire drainage " +
+                                        "layout while looking plausible, so the nearest node is NOT taken " +
+                                        "when it is out of tolerance. NOTHING was planned."
+                        });
+
+                CadFall fall = CadFallRules.Compute(network, node,
+                    request.Value<double?>("outfall_invert_mm") ?? 0.0, run => run.SlopePercent);
+
+                CadConversionPlanRules.CadFallApplication applied =
+                    CadConversionPlanRules.ApplyFall(plan, network, fall, set.PointToleranceMm);
+
+                // ASKED FOR FALL AND GOT NONE IS A REFUSAL, not a footnote.
+                //
+                // The plan would come back byte-identical to one nobody asked about
+                // fall at all, and the only difference would live in a block the
+                // caller has to read. This one is loud instead.
+                if (!applied.Ok || applied.ActionsGivenFall == 0)
+                    return CommandResult.FailWithDetail(
+                        "fall_not_applied: an outfall was named and no planned run took a height from it. " +
+                        (applied.Refusal ?? "Every run that could have taken one was skipped; the detail " +
+                         "says why, run by run - commonly a layer with no declared slope, or a run with no " +
+                         "declared bore, which is what an invert has to be turned into a centreline with.") +
+                        " If nothing in this drawing falls - a pressure main, a duct, a conduit - then omit " +
+                        "the outfall and every run is planned at the elevation its rule declares, which for " +
+                        "those is correct. NOTHING was planned.",
+                        new JObject
+                        {
+                            ["refused"] = "fall_not_applied",
+                            ["fall"] = fall.ToJson(),
+                            ["fall_application"] = applied.ToJson()
+                        });
+
+                // The plan changed after it was fingerprinted, so it is fingerprinted
+                // again - the fingerprint is what an apply checks the plan by.
+                plan.PlanFingerprint = CadConversionPlanRules.Fingerprint(
+                    plan, set, sourceFingerprint, includeIneligible);
+
+                fallBlock = new JObject
+                {
+                    ["outfall_node"] = node,
+                    ["outfall_tolerance_mm"] = outfallTolerance,
+                    ["fall"] = fall.ToJson(),
+                    ["fall_application"] = applied.ToJson(),
+                    ["means"] = "the planned runs carry the heights this drawing's declared slopes imply, " +
+                                "measured along the network from the outfall. The upstream end of each run " +
+                                "was decided by the NETWORK and not by which point the drawing listed first."
+                };
+            }
+
             JObject report = CadConversionPlanRules.ToJson(plan, set);
+            report["fall"] = fallBlock ?? (JToken)JValue.CreateNull();
+            if (fallBlock == null)
+                report["fall_means"] =
+                    "no outfall was named, so every run is planned at the flat elevation its rule declares. " +
+                    "A slope declared per layer says HOW STEEP and not WHICH WAY: the direction is a fact " +
+                    "about the network, and naming the point it drains to is the only thing that settles it. " +
+                    "A drainage layout built flat is connected and drains nowhere, and passes every other " +
+                    "check this bridge has.";
             report["mode"] = "plan";
             report["document"] = SafeTitle(doc);
             report["instance_id"] = instanceId;
@@ -203,14 +421,61 @@ namespace Horizun.Revit.Commands
             {
                 ["fingerprint"] = sourceFingerprint,
                 ["file_sha256"] = facts.FileSha256,
+                ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                 ["external_path"] = facts.ExternalPath,
                 ["linked_file_status"] = facts.LinkedFileStatus,
                 ["declared_units"] = declared,
                 ["transform_fingerprint"] = facts.TransformFingerprint,
                 ["units_agree_with_requirement_set"] = unitsAgree,
-                ["unit_mismatch_accepted"] = !unitsAgree
+                ["unit_mismatch_accepted"] = !unitsAgree,
+                // WHICH HALF CAME FROM WHERE. source_set_sha256 above already moves when a reference does;
+                // this says why that matters here - the geometry is the link's, the labels are the file's,
+                // and a plan can be made of one issue's runs and the next issue's sizes without a word.
+                ["geometry_source"] = CadReadingHelper.GeometrySource(facts.ExternalPath)
             };
             report["harvest_coverage"] = harvest.CoverageJson(set.ArcSagittaMm);
+
+            // MAY THIS PLAN BE APPLIED? Two halves, two places: the geometry is the link as Revit loaded it,
+            // the sizes are the file read now. Publishing both identities made a mismatch observable; it did
+            // not make building from one safe. See Core/CadSourceCoherence.cs - only a state this bridge can
+            // DEMONSTRATE grants applicable, and everything else keeps the diagnosis and withholds it.
+            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false);
+            report["coherence"] = coherence;
+            bool applicable = coherence.Value<bool?>("applicable") ?? false;
+            report["applicable"] = applicable;
+            report["applicable_means"] = applicable
+                ? "the link and the files are the same issue of the drawing, so horizun_apply_cad_plan will " +
+                  "accept this plan - it re-checks the same thing before writing."
+                : "this plan is NOT ready to apply: " + coherence.Value<string>("means") + " The actions are " +
+                  "still here to read and to reason about; horizun_apply_cad_plan will refuse them while the " +
+                  "state is " + coherence.Value<string>("state") + ". " + coherence.Value<string>("remedy");
+
+            // THE ZONE, NAMED BESIDE EVERY NUMBER IT CHANGED.
+            //
+            // Coverage, the layer map and "no rule matched" all describe the zone
+            // when there is one, and a reader who does not know that reads them
+            // as being about the floor. The crossing count is the one worth
+            // arguing with: those are runs that leave the apartment.
+            if (interpretation.ExtentDescription != null)
+                report["extent"] = new JObject
+                {
+                    ["declared_mm"] = interpretation.ExtentDescription,
+                    ["segments_outside"] = interpretation.SegmentsOutsideExtent,
+                    ["segments_crossing"] = interpretation.SegmentsCrossingExtent,
+                    ["crossing_policy"] = set.ExtentMm?.Crossing,
+                    ["segments_crossing_kept_whole"] = interpretation.SegmentsCrossingKept,
+                    ["wall_margin_mm"] = set.ExtentMm?.WallMarginMm,
+                    ["segments_read_in_margin"] = interpretation.SegmentsInMargin,
+                    ["walls_outside_zone"] = interpretation.CandidatesOutsideExtent,
+                    ["means"] =
+                        "This set declares source.extent_mm, so everything below describes that zone and not " +
+                        "the whole drawing. The drawing was still read whole. segments_crossing reach past the " +
+                        "zone's edge: under crossing_policy 'exclude' they were NOT planned - half a run built to " +
+                        "an invisible boundary is worse than none - and under 'whole' they were read entire, never " +
+                        "clipped."
+                };
+            if (interpretation.IdentityCollisions.Count > 0)
+                report["identity_collisions"] = interpretation.IdentityCollisions;
 
             // WHAT EACH NAMING PASS DECIDED, and on what. A reviewer checking
             // "why is this grid called 3" reads named_on rather than re-deriving
@@ -229,6 +494,21 @@ namespace Horizun.Revit.Commands
                     "set. named_on records what each assignment was earned on, so it can be checked without " +
                     "being re-derived.";
             }
+            if (blocksReport != null) report["blocks"] = blocksReport;
+            if (sectionsReport != null) report["sections"] = sectionsReport;
+            if (alreadyBuiltReport != null) report["already_built"] = alreadyBuiltReport;
+            if (interpretation.ClosedLoops.Count > 0)
+            {
+                report["closed_loops"] = new JArray(interpretation.ClosedLoops);
+                report["closed_loops_means"] =
+                    "every closed loop these rules met, and what was read into it. A loop whose corners are joined " +
+                    "THROUGH its inside is a figure - a route does not cross itself - and its edges are not runs. A " +
+                    "loop with nothing crossing it is not decided by its shape: its edges are proposed and HELD for " +
+                    "review, because a ring main closes and so does a boundary drawn on the same layer.";
+            }
+            if (alreadyBuiltProblem != null) report["already_built_unreadable"] = alreadyBuiltProblem;
+            if (interpretation.DoubleLineReasoning.Count > 0)
+                report["double_line_reasoning"] = interpretation.DoubleLineReasoning;
             report["layer_map"] = new JObject(interpretation.LayerMap
                 .OrderBy(kv => kv.Key, StringComparer.OrdinalIgnoreCase)
                 .Select(kv => new JProperty(kv.Key, new JArray(kv.Value))));
@@ -237,7 +517,8 @@ namespace Horizun.Revit.Commands
                 ["layer"] = u.Layer,
                 ["reason"] = u.Reason,
                 ["entity_count"] = u.EntityCount,
-                ["rules_that_looked"] = new JArray(u.RuleIds)
+                ["rules_that_looked"] = new JArray(u.RuleIds),
+                ["means"] = u.Means
             }));
             report["review_bypassed"] = includeIneligible;
             report["candidates_needing_review"] = interpretation.NeedingReview.Count();
@@ -263,7 +544,16 @@ namespace Horizun.Revit.Commands
             // guess. Choosing a storey for somebody's building is exactly the kind
             // of decision this bridge does not make on its own.
             var resolved = new JArray();
-            string unresolved = ResolveNames(doc, creates, request, resolved);
+            var wallTypesChosen = new JArray();
+            string unresolved = ResolveWallTypes(doc, creates, resolved, withdrawn, wallTypesChosen);
+            if (unresolved != null) return CommandResult.Fail(unresolved);
+            if (wallTypesChosen.Count > 0) report["wall_types_chosen"] = wallTypesChosen;
+            if (solidRead != null)
+            {
+                solidRead["pairs_without_hatched_material"] = interpretation.SolidVetoes;
+                report["solid_evidence"] = solidRead;
+            }
+            unresolved = ResolveNames(doc, creates, request, resolved);
             if (unresolved != null) return CommandResult.Fail(unresolved);
 
             // THE TWO LEVELS A SHAFT RUNS BETWEEN, and the view a room separator
@@ -275,8 +565,118 @@ namespace Horizun.Revit.Commands
 
             // The HOST, after the level and the type: a door needs a wall, and
             // the drawing has no ids to name one with.
-            unresolved = ResolveHosts(doc, creates, resolved, set.PointToleranceMm);
+            unresolved = ResolveHosts(doc, creates, resolved, set, harvest.Segments, withdrawn);
             if (unresolved != null) return CommandResult.Fail(unresolved);
+            WithdrawHostless(doc, creates, withdrawn);
+            WithdrawOccupied(doc, creates, set, withdrawn);
+
+            // A BATCH WITH NOTHING LEFT IN IT IS NOT A BATCH. Withdrawing the only
+            // row of a stage must not leave an empty create for the apply to send.
+            creates = creates.Where(c => ((JArray)c["elements"]).Count > 0).ToList();
+
+            // ---- what became of every instance, counted where it is known -----
+            //
+            // This used to sit beside the blocks report, which is assembled before
+            // the hosts are resolved - so it counted the plan's intentions rather
+            // than its rows, and reported 21 modelled while the request it emitted
+            // held 8. Thirteen rows had been withdrawn in between. The accounting
+            // is the one thing that must not lose anything, so it runs here, where
+            // the rows are final.
+            int emittedRows = creates.Sum(c => ((JArray)c["elements"]).Count);
+            if (withdrawn.Count > 0)
+                report["withdrawn"] = new JObject
+                {
+                    ["rows"] = withdrawn,
+                    ["means"] = "these candidates were read, matched a rule and were NOT planned: each one says " +
+                                "why and what it measured. They are not failures of the run and they are not " +
+                                "silently absent - an audit will report them as candidates nobody built."
+                };
+
+            // THE CATALOGUE, AS A WHOLE, before anything is written.
+            {
+                var wallRows = withdrawn.OfType<JObject>().Where(w => (string)w["kind"] == "wall").ToList();
+                var chosenRows = wallTypesChosen.OfType<JObject>().ToList();
+                var earlier = (request["withdrawn_walls"] as JArray ?? new JArray()).OfType<JObject>()
+                    .Where(w => (string)w["kind"] == "wall").ToList();
+                var symbolsOut = withdrawn.OfType<JObject>().Where(w => (string)w["kind"] != "wall").ToList();
+                var alternatives = new List<Tuple<string, double>>();
+                var notFound = new JArray();
+                foreach (string name in (request["alternative_wall_types"] as JArray ?? new JArray()).Select(x => (string)x))
+                {
+                    var wt = FindType(doc, name) as WallType;
+                    double width = double.NaN;
+                    try { if (wt != null) width = wt.Width * 304.8; } catch { }
+                    if (double.IsNaN(width)) notFound.Add(name);
+                    else alternatives.Add(Tuple.Create(name, width));
+                }
+                if (chosenRows.Count + wallRows.Count > 0 || earlier.Count > 0)
+                {
+                    double tol = chosenRows.Concat(wallRows).Select(r => r.Value<double?>("tolerance_mm"))
+                                           .FirstOrDefault(v => v.HasValue) ?? 3.2;
+                    JObject preflight = CadCatalogPreflight.Summarize(chosenRows, wallRows, alternatives, tol);
+                    if (notFound.Count > 0) preflight["alternatives_not_in_this_document"] = notFound;
+                    var affected = CadCatalogPreflight.AffectedSymbols(wallRows.Concat(earlier), symbolsOut,
+                                                                       set.PointToleranceMm);
+                    if (affected.Count > 0)
+                    {
+                        preflight["affected_symbols"] = affected;
+                        preflight["affected_symbols_lost_with_a_withdrawn_wall"] =
+                            affected.Count(a => (string)a["verdict"] == "lost_with_that_wall");
+                    }
+                    report["catalog_preflight"] = preflight;
+                }
+            }
+
+            if (blocksReport != null)
+            {
+                int considered = blocksReport.Value<int?>("instances_considered") ?? 0;
+                // From the total, never from the listed names: the list is bounded.
+                int unclaimed = blocksReport.Value<int?>("unclaimed_instances") ?? 0;
+                int tied = 0;
+                foreach (JObject t in (blocksReport["ties"] as JArray ?? new JArray()).OfType<JObject>())
+                    tied += t.Value<int?>("count") ?? 0;
+                int mirrorPending = plan.Deferred.Count(d =>
+                    d.Reasons.Any(r => r != null && r.Contains("MIRRORED")));
+                // ALREADY BUILT IS NOT HELD FOR REVIEW. Those candidates are made
+                // ineligible so they are not built twice, and used to be counted as
+                // waiting for a person - 39 of them, on a model where all 39 agreed.
+                var builtIds = new HashSet<string>(alreadyBuilt.OfType<JObject>()
+                    .Select(x => (string)x["candidate_id"]).Where(x => x != null), StringComparer.Ordinal);
+                int alreadyThere = plan.Deferred.Count(d => d.CandidateId != null && builtIds.Contains(d.CandidateId) &&
+                    !d.Reasons.Any(r => r != null && r.Contains("MIRRORED")));
+                int reviewed = plan.Deferred.Count - mirrorPending - alreadyThere;
+                // Only the rows a SYMBOL produced; a withdrawn wall is not an instance.
+                List<JObject> withdrawnSymbols = withdrawn.OfType<JObject>()
+                    .Where(w => (string)w["kind"] != "wall").ToList();
+
+                blocksReport["classification"] = new JObject
+                {
+                    ["considered"] = considered,
+                    ["modelled"] = emittedRows,
+                    ["outside_the_rules"] = unclaimed,
+                    ["ambiguous_two_rules_of_equal_precedence"] = tied,
+                    ["mirror_unresolved"] = mirrorPending,
+                    ["already_built"] = alreadyThere,
+                    ["held_for_review"] = reviewed,
+                    ["no_host_within_allowance"] = withdrawnSymbols.Count(w =>
+                        (string)w["reason"] == "no_host_within_allowance" ||
+                        (string)w["reason"] == "no_wall_face_carries_this_point"),
+                    ["side_of_the_wall_not_stated"] = withdrawnSymbols.Count(w =>
+                        (string)w["reason"] == "side_of_the_wall_not_stated"),
+                    ["nearer_drawn_wall_is_not_in_the_model"] = withdrawnSymbols.Count(w =>
+                        (string)w["reason"] == "nearer_drawn_wall_is_not_in_the_model"),
+                    ["family_needs_a_host_the_rule_does_not_declare"] = withdrawnSymbols.Count(w =>
+                        (string)w["reason"] == "family_needs_a_host_the_rule_does_not_declare"),
+                    ["means"] = "every block instance this reading considered, by what became of it. " +
+                                "outside_the_rules is not a failure: it is a symbol this correspondence set is " +
+                                "not about, and the set is deliberately bounded. modelled is the number of rows " +
+                                "the emitted request actually carries, counted after every exclusion.",
+                    ["unaccounted"] = considered - emittedRows - unclaimed - tied - mirrorPending - alreadyThere
+                                      - reviewed - withdrawnSymbols.Count,
+                    ["unaccounted_means"] = "instances this classification cannot place. It should be zero; a " +
+                                            "number here is a defect in the accounting, not in the drawing."
+                };
+            }
 
             var emittedActions = new JArray(creates.Select(c => new JObject
             {
@@ -289,33 +689,65 @@ namespace Horizun.Revit.Commands
             // reports, never off the position of the row in the reply: a create
             // that skips a row would otherwise stamp every following element
             // with somebody else's origin, which is worse than stamping none.
+            // BY NAME, NOT BY POSITION.
+            //
+            // This used to pair element k of each batch with plan action k, which
+            // is correct exactly as long as no row is ever left out - and rows are
+            // now left out, because a symbol with no wall under it waits while its
+            // neighbours are built. Positional pairing would have given the second
+            // element the third's source entity, and the audit would then report a
+            // model agreeing with a drawing it does not agree with.
+            //
+            // Each emitted row carries `source_row`, assigned when the plan was
+            // emitted; the index is built by reading that number back off the rows
+            // that remain. A row with no name is reported rather than guessed at.
+            var actionByRow = new Dictionary<int, CadPlannedAction>();
+            foreach (CadPlannedAction a in plan.Actions)
+                if (a.SourceRow > 0) actionByRow[a.SourceRow] = a;
+
             var candidateIndex = new JArray();
-            int cursor = 0;
+            var unnamed = new JArray();
             foreach (JObject c in creates)
             {
-                int count = ((JArray)c["elements"]).Count;
                 var rows = new JArray();
-                for (int k = 0; k < count && cursor + k < plan.Actions.Count; k++)
+                var elements = (JArray)c["elements"];
+                for (int k = 0; k < elements.Count; k++)
                 {
-                    CadPlannedAction a = plan.Actions[cursor + k];
+                    var row = elements[k] as JObject;
+                    int? sourceRow = row?.Value<int?>("source_row");
+                    CadPlannedAction a;
+                    if (sourceRow == null || !actionByRow.TryGetValue(sourceRow.Value, out a))
+                    {
+                        unnamed.Add(new JObject
+                        {
+                            ["element_index"] = k,
+                            ["source_row"] = sourceRow,
+                            ["means"] = "this row carries no source_row this plan issued, so nothing can say " +
+                                        "which CAD entity it came from. It will be created and left ANONYMOUS " +
+                                        "rather than stamped with somebody else's origin."
+                        });
+                        continue;
+                    }
                     rows.Add(new JObject
                     {
                         ["element_index"] = k,
+                        ["source_row"] = sourceRow.Value,
                         ["candidate_id"] = a.CandidateId,
                         ["geometry_id"] = a.GeometryId,
                         ["semantic_id"] = a.SemanticId,
                         ["rule_id"] = a.RuleId,
                         ["layer"] = a.Layer,
-                        ["confidence"] = Math.Round(a.Confidence, 4)
+                        ["confidence"] = Math.Round(a.Confidence, 4),
+                        ["source_entities"] = new JArray(a.SourceEntities)
                     });
                 }
-                cursor += count;
                 candidateIndex.Add(new JObject
                 {
                     ["key"] = "cad-stage-" + (int)c["stage"] + "-batch-" + (int)c["batch_of_stage"],
                     ["candidates"] = rows
                 });
             }
+            if (unnamed.Count > 0) report["rows_without_a_name"] = unnamed;
             report["candidate_index"] = candidateIndex;
 
             report["execute_plan_request"] = new JObject
@@ -336,6 +768,12 @@ namespace Horizun.Revit.Commands
                 ["actions_fingerprint"] = CadConversionPlanRules.ActionsFingerprint(emittedActions),
                 ["source_fingerprint"] = sourceFingerprint,
                 ["requirement_set_sha256"] = set.Sha256,
+                ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
+                // THE ISSUE OF THE DRAWING THIS PLAN WAS MADE OF, and whether that could be demonstrated.
+                // The apply re-measures both: a set that moved between the plan and the apply is drift like
+                // any other, and a plan made while the coherence could not be shown is not applied at all.
+                ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
+                ["coherence_state"] = coherence.Value<string>("state"),
                 ["target_document"] = target,
                 ["revit_version"] = SafeVersion(app),
                 ["means"] = "horizun_apply_cad_plan re-measures every one of these before writing and refuses " +
@@ -356,6 +794,283 @@ namespace Horizun.Revit.Commands
         /// <paramref name="resolved"/> so the apply can check the id still stands
         /// for the same thing it stood for here.
         /// </summary>
+        /// <summary>
+        /// The resolution this command applies to its rows - names, levels and
+        /// types; shafts and views; hosts and faces - offered to the update planner
+        /// so a revision builds exactly what a first conversion would. Rows it
+        /// withdraws land in <paramref name="withdrawn"/>; a refusal comes back as
+        /// the error string.
+        /// </summary>
+        internal static string ResolveRows(Document doc, List<JObject> creates, JObject request, JArray resolved,
+                                           CadRequirementSet set, IList<CadSegment> drawn, JArray withdrawn,
+                                           IDictionary<long, CadPoint[]> reshapedTo = null)
+        {
+            string e = ResolveWallTypes(doc, creates, resolved, withdrawn, null);
+            if (e != null) return e;
+            e = ResolveNames(doc, creates, request, resolved);
+            if (e != null) return e;
+            e = ResolveShaftsAndViews(doc, creates, resolved);
+            if (e != null) return e;
+            e = ResolveHosts(doc, creates, resolved, set, drawn, withdrawn);
+            if (e != null) return e;
+            WithdrawHostless(doc, creates, withdrawn);
+            WithdrawOccupied(doc, creates, set, withdrawn, reshapedTo);
+            return null;
+        }
+
+        /// <summary>
+        /// THE WALL TYPE, BY THE THICKNESS THE DRAWING GIVES.
+        ///
+        /// MEASURED on two apartments: a set naming one wall type built 52 walls at
+        /// 152.4 mm whose drawn thicknesses ran from 125 to 322 mm, and the audit let
+        /// 18 of them pass because it compared widths with the revision tolerance.
+        /// A rule that lists wall_types gets, per wall, the listed type whose width -
+        /// read from THIS model, not declared - is nearest the drawn thickness within
+        /// the rule's tolerance. None fits: the wall is withdrawn with the nearest
+        /// type named (or built as family_type when the rule says so). Two fit
+        /// equally: withdrawn, because choosing between them is not a measurement.
+        /// </summary>
+        private static string ResolveWallTypes(Document doc, List<JObject> creates, JArray resolved,
+                                               JArray withdrawn, JArray chosen)
+        {
+            var byName = new Dictionary<string, WallType>(StringComparer.Ordinal);
+            var seen = new HashSet<long>();
+            foreach (JObject c in creates)
+                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
+                {
+                    var choices = row["wall_type_choices"] as JArray;
+                    if (choices == null) continue;
+                    double tolerance = row.Value<double?>("wall_type_tolerance_mm") ?? 3.2;
+                    string otherwise = row.Value<string>("wall_type_otherwise") ?? "withdraw";
+                    double thickness = row.Value<double?>("interpreted_thickness_mm") ?? double.NaN;
+                    foreach (string k in new[] { "wall_type_choices", "wall_type_tolerance_mm",
+                                                 "wall_type_otherwise", "interpreted_thickness_mm" })
+                        row.Remove(k);
+
+                    var options = new List<Tuple<string, WallType, double>>();
+                    foreach (string name in choices.Select(x => (string)x))
+                    {
+                        WallType w;
+                        if (!byName.TryGetValue(name, out w))
+                        {
+                            w = FindType(doc, name) as WallType;
+                            if (w == null)
+                                return "wall_type_not_found: the set lists '" + name + "' among the wall types to " +
+                                       "choose by thickness, and " + Quote(SafeTitle(doc)) + " has no wall type of that " +
+                                       "name. NOTHING was planned.";
+                            byName[name] = w;
+                        }
+                        double width;
+                        try { width = w.Width * 304.8; } catch { continue; }
+                        options.Add(Tuple.Create(name, w, width));
+                    }
+                    var ranked = options.OrderBy(o => Math.Abs(o.Item3 - thickness)).ThenBy(o => o.Item1, StringComparer.Ordinal).ToList();
+                    var fitting = ranked.Where(o => Math.Abs(o.Item3 - thickness) <= tolerance + 1e-6).ToList();
+                    Tuple<string, WallType, double> nearest = ranked.FirstOrDefault();
+
+                    JObject Where() => new JObject
+                    {
+                        ["source_row"] = row["source_row"],
+                        ["kind"] = "wall",
+                        ["from_mm"] = row["start"],
+                        ["to_mm"] = row["end"],
+                        ["thickness_mm"] = Math.Round(thickness, 1),
+                        ["tolerance_mm"] = tolerance,
+                        ["nearest_type"] = nearest == null ? null : nearest.Item1,
+                        ["nearest_width_mm"] = nearest == null ? (JToken)JValue.CreateNull() : Math.Round(nearest.Item3, 1),
+                        ["candidates"] = new JArray(ranked.Take(4).Select(o => new JObject
+                        {
+                            ["type"] = o.Item1, ["width_mm"] = Math.Round(o.Item3, 1),
+                            ["off_by_mm"] = Math.Round(o.Item3 - thickness, 1)
+                        }))
+                    };
+
+                    if (fitting.Count == 0)
+                    {
+                        if (otherwise == "family_type")
+                        {
+                            JObject note = Where();
+                            note["chosen"] = row.Value<string>("type_name");
+                            note["because"] = "no listed type is within the tolerance; the rule says to build the " +
+                                              "wall as its family_type, and the audit will report the width";
+                            if (chosen != null) chosen.Add(note);
+                            continue;
+                        }
+                        JObject w = Where();
+                        w["reason"] = "no_wall_type_for_this_thickness";
+                        w["means"] = "the drawing gives this wall a thickness no listed wall type has, within the " +
+                                     "tolerance. It is NOT planned: building it at another width misstates every " +
+                                     "quantity and every face a device is placed on. Add a type of this width, or " +
+                                     "list one.";
+                        withdrawn.Add(w);
+                        ((JArray)c["elements"]).Remove(row);
+                        continue;
+                    }
+                    if (fitting.Count > 1 &&
+                        Math.Abs(Math.Abs(fitting[0].Item3 - thickness) - Math.Abs(fitting[1].Item3 - thickness)) < 0.05 &&
+                        Rid.Value(fitting[0].Item2.Id) != Rid.Value(fitting[1].Item2.Id))
+                    {
+                        JObject w = Where();
+                        w["reason"] = "wall_types_fit_equally";
+                        w["means"] = "two listed wall types are equally near this thickness, so which one it is " +
+                                     "is not a measurement. It is NOT planned.";
+                        withdrawn.Add(w);
+                        ((JArray)c["elements"]).Remove(row);
+                        continue;
+                    }
+
+                    Tuple<string, WallType, double> pick = fitting[0];
+                    row["type_name"] = pick.Item1;
+                    if (seen.Add(Rid.Value(pick.Item2.Id)))
+                        resolved.Add(Resolved("wall_type", pick.Item2, pick.Item1, TypeLabel(pick.Item2)));
+                    if (chosen != null)
+                    {
+                        JObject note = Where();
+                        note["chosen"] = pick.Item1;
+                        note["chosen_width_mm"] = Math.Round(pick.Item3, 1);
+                        note["off_by_mm"] = Math.Round(pick.Item3 - thickness, 1);
+                        chosen.Add(note);
+                    }
+                }
+            return null;
+        }
+
+        /// <summary>
+        /// A FAMILY THAT NEEDS A HOST IS NOT PLANNED WITHOUT ONE.
+        ///
+        /// MEASURED on a second apartment with the first one's rules: the panel
+        /// rule declared no host - the first zone had no panel, so it was never
+        /// exercised - and the panelboard family can only be placed on one. The
+        /// rehearsal refused it, and because a stage is atomic, the one row took
+        /// the other 41 with it. The row is withdrawn here instead, naming the
+        /// rule: which host a panel stands on is the requirement set's statement
+        /// to make, not this bridge's guess.
+        /// </summary>
+        private static void WithdrawHostless(Document doc, List<JObject> creates, JArray withdrawn)
+        {
+            foreach (JObject c in creates)
+                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
+                {
+                    string kind = row.Value<string>("kind");
+                    if (kind != "family_instance" || row["host_id"] != null) continue;
+                    long? typeId = row.Value<long?>("type_id");
+                    var symbol = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as FamilySymbol : null;
+                    if (symbol == null) continue;
+                    FamilyPlacementType placement;
+                    try { placement = symbol.Family.FamilyPlacementType; } catch { continue; }
+                    if (placement == FamilyPlacementType.OneLevelBased || placement == FamilyPlacementType.TwoLevelsBased)
+                        continue;
+                    XYZ point = PlanPoint(row["point"]);
+                    withdrawn.Add(new JObject
+                    {
+                        ["source_row"] = row["source_row"],
+                        ["kind"] = kind,
+                        ["at_mm"] = point == null ? null
+                            : new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                        ["reason"] = "family_needs_a_host_the_rule_does_not_declare",
+                        ["family"] = SafeName(symbol.Family),
+                        ["type"] = SafeName(symbol),
+                        ["placement_type"] = placement.ToString(),
+                        ["means"] = "this family can only be placed on a host, and the rule that produced the row " +
+                                    "declares none. It is NOT planned; the rows beside it are. Declaring hosted_on " +
+                                    "on that rule is a statement about the building a person makes."
+                    });
+                    ((JArray)c["elements"]).Remove(row);
+                }
+        }
+
+        /// <summary>
+        /// A WALL IS NOT PLANNED WHERE A WALL ALREADY STANDS.
+        ///
+        /// MEASURED on a model built from this drawing: after the wall reading
+        /// improved - two pairs of collinear pieces were read as the two walls they
+        /// are - planning the same drawing again recognised nine built walls by
+        /// identity and emitted two new ones exactly on top of four that stand.
+        /// Identity cannot see that: the reading changed, not the drawing. So a
+        /// planned wall whose solid intersects a wall already on its level is
+        /// WITHDRAWN, naming the occupant. Nothing is replaced here; comparing a
+        /// built wall with a changed reading is horizun_plan_cad_update's work.
+        /// </summary>
+        private static void WithdrawOccupied(Document doc, List<JObject> creates, CadRequirementSet set, JArray withdrawn,
+                                             IDictionary<long, CadPoint[]> reshapedTo = null)
+        {
+            List<Wall> standing = null;
+            double? defaultWidthMm = null;
+            foreach (JObject c in creates)
+                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
+                {
+                    if (row.Value<string>("kind") != "wall") continue;
+                    var s = row["start"] as JArray;
+                    var t = row["end"] as JArray;
+                    if (s == null || t == null || s.Count < 2 || t.Count < 2) continue;
+                    if (standing == null) standing = CadHostResolver.Walls(doc);
+                    if (standing.Count == 0) return;
+
+                    double widthMm;
+                    long? typeId = row.Value<long?>("type_id");
+                    var wallType = typeId.HasValue ? doc.GetElement(Rid.Make(typeId.Value)) as WallType : null;
+                    if (wallType != null) widthMm = wallType.Width * 304.8;
+                    else
+                    {
+                        if (defaultWidthMm == null)
+                        {
+                            var d = doc.GetElement(doc.GetDefaultElementTypeId(ElementTypeGroup.WallType)) as WallType;
+                            defaultWidthMm = d != null ? d.Width * 304.8 : 0;
+                        }
+                        widthMm = defaultWidthMm.Value;
+                    }
+                    long? levelId = row.Value<long?>("level_id");
+                    var a0 = new CadPoint((double)s[0], (double)s[1]);
+                    var a1 = new CadPoint((double)t[0], (double)t[1]);
+
+                    var occupants = new JArray();
+                    foreach (Wall w in standing)
+                    {
+                        if (levelId.HasValue && Rid.Value(w.LevelId) != levelId.Value) continue;
+                        Line line = (w.Location as LocationCurve)?.Curve as Line;
+                        if (line == null) continue;
+                        XYZ p0 = line.GetEndPoint(0), p1 = line.GetEndPoint(1);
+                        var w0 = new CadPoint(p0.X * 304.8, p0.Y * 304.8);
+                        var w1 = new CadPoint(p1.X * 304.8, p1.Y * 304.8);
+                        // A WALL THE SAME UPDATE RE-SHAPES holds the space of its NEW line.
+                        CadPoint[] next = null;
+                        if (reshapedTo != null && reshapedTo.TryGetValue(Rid.Value(w.Id), out next))
+                        { w0 = next[0]; w1 = next[1]; }
+                        double across, along;
+                        if (!CadWallReadings.SolidsIntersect(a0, a1, widthMm, w0, w1,
+                                w.Width * 304.8, set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm,
+                                out across, out along))
+                            continue;
+                        string problem;
+                        CadProvenance p = CadProvenanceStore.Read(w, out problem);
+                        occupants.Add(new JObject
+                        {
+                            ["element_id"] = Rid.Value(w.Id),
+                            ["across_overlap_mm"] = Math.Round(across, 1),
+                            ["along_overlap_mm"] = Math.Round(along, 1),
+                            ["built_from_cad"] = p != null,
+                            ["its_candidate_id"] = p?.CandidateId
+                        });
+                    }
+                    if (occupants.Count == 0) continue;
+
+                    withdrawn.Add(new JObject
+                    {
+                        ["source_row"] = row["source_row"],
+                        ["kind"] = "wall",
+                        ["from_mm"] = new JArray(Math.Round(a0.X, 1), Math.Round(a0.Y, 1)),
+                        ["to_mm"] = new JArray(Math.Round(a1.X, 1), Math.Round(a1.Y, 1)),
+                        ["reason"] = "space_already_occupied_by_a_built_wall",
+                        ["occupied_by"] = occupants,
+                        ["means"] = "a wall already stands where this one would go, on the same level. Building " +
+                                    "it would put two walls in one space. It is NOT planned. If the wall there was " +
+                                    "built from this drawing under an earlier reading, horizun_plan_cad_update " +
+                                    "compares the two; nothing is replaced or deleted here."
+                    });
+                    ((JArray)c["elements"]).Remove(row);
+                }
+        }
+
         private static string ResolveNames(Document doc, List<JObject> creates, JObject request, JArray resolved)
         {
             string defaultLevelName = request.Value<string>("level_name");
@@ -415,6 +1130,11 @@ namespace Horizun.Revit.Commands
                         }
 
                         row["level_id"] = Rid.Value(level.Id);
+                        // A run's declared height is relative to THIS storey; only here is
+                        // the storey known. Resolved to absolute Z and the key removed.
+                        double levelElevationMm = 0;
+                        try { levelElevationMm = CadUnits.FeetToMm(level.Elevation); } catch { }
+                        CadConversionPlanRules.ResolveOffsetFromLevel(row, levelElevationMm);
                         if (seen.Add("level:" + Rid.Value(level.Id)))
                             resolved.Add(Resolved("level", level,
                                 want ?? (defaultLevelId.HasValue ? "level_id " + defaultLevelId.Value : null)));
@@ -459,7 +1179,9 @@ namespace Horizun.Revit.Commands
                     ElementType et = FindType(doc, typeName);
                     if (et == null)
                         return "type_not_found: no element type in " + Quote(SafeTitle(doc)) + " is named " +
-                               Quote(typeName) + ", which the rule producing these " + kind + "s asked for. " +
+                               Quote(typeName) + ", which the rule producing these " + kind + "s asked for; " +
+                               CadCatalogCheck.LoadedOfFamily(typeName, SameFamily(doc, typeName), kind,
+                                                              TypesOfKind(doc, kind)) + " " +
                                "NOTHING was planned. Load the family or correct the requirement set - a plan that " +
                                "substitutes a default type builds a different building and verifies it happily.";
                     row["type_id"] = Rid.Value(et.Id);
@@ -489,14 +1211,15 @@ namespace Horizun.Revit.Commands
         /// the failure this whole path exists to prevent.
         /// </summary>
         private static string ResolveHosts(Document doc, List<JObject> creates, JArray resolved,
-                                           double pointToleranceMm)
+                                           CadRequirementSet set, IList<CadSegment> drawn, JArray withdrawn)
         {
+            double pointToleranceMm = set.HostSearchMm;
             List<Wall> walls = null;
             List<Element> slabs = null;
             var seen = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (JObject c in creates)
-                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>())
+                foreach (JObject row in ((JArray)c["elements"]).OfType<JObject>().ToList())
                 {
                     string hostedOn = row.Value<string>("hosted_on");
                     if (hostedOn == null) continue;
@@ -509,6 +1232,10 @@ namespace Horizun.Revit.Commands
                         continue;
                     }
                     if (hostedOn != "wall") continue;
+                    var hostLayers = (row["host_layers"] as JArray)?.Select(x => (string)x).ToList();
+                    row.Remove("host_layers");
+                    bool endAllowed = (row["host_faces"] as JArray)?.Any(x => (string)x == "end") == true;
+                    row.Remove("host_faces");
 
                     // A DOOR CARRIES A POINT; A HOLE CARRIES A RING. Both need the
                     // same answer - which wall - so both are resolved here, from
@@ -537,14 +1264,198 @@ namespace Horizun.Revit.Commands
                                "results - a plan is computed before it is applied, so one run cannot build a " +
                                "wall and then host a door in it.";
 
+                    // THE END OF A WALL, when the rule allows it and no side carried the point.
+                    if (best == null && endAllowed && row.Value<string>("kind") == "family_instance")
+                    {
+                        CadEndMatch end = CadHostResolver.NearestEnd(walls, point, pointToleranceMm);
+                        if (end != null)
+                        {
+                            string endWithdrawn = null;
+                            JObject endEvidence = new JObject
+                            {
+                                ["wall"] = Rid.Value(end.Wall.Id), ["wall_end"] = end.End,
+                                ["distance_mm"] = Math.Round(end.DistanceMm, 1)
+                            };
+                            if (hostLayers != null && hostLayers.Count > 0 && drawn != null)
+                            {
+                                var lines = drawn.Where(s => s != null && hostLayers.Any(g =>
+                                    CadGlob.IsMatch(s.Layer ?? "", g, set.CaseSensitiveLayers)));
+                                CadHostPlausibilityResult pe = CadHostPlausibility.CheckEnd(
+                                    new CadPoint(point.X * 304.8, point.Y * 304.8),
+                                    new CadPoint(end.EndPoint.X * 304.8, end.EndPoint.Y * 304.8),
+                                    new CadVector(end.Outward.X, end.Outward.Y),
+                                    end.Wall.Width * 304.8 / 2.0, lines, set.AngleToleranceDegrees, set.PointToleranceMm);
+                                if (pe.NearerWallDrawn)
+                                {
+                                    endWithdrawn = "nearer_drawn_end_is_not_in_the_model";
+                                    endEvidence["drawn_end_mm"] = Math.Round(pe.OtherWallMm.Value, 1);
+                                    endEvidence["model_end_mm"] = Math.Round(pe.HostFaceMm.Value, 1);
+                                    endEvidence["means"] = "the drawing closes this wall NEARER the symbol than the model " +
+                                        "does (a pier or a return the model does not have). Hosting it on the model's " +
+                                        "end would bury it in that pier. NOT planned; decide what the drawn end is.";
+                                }
+                                else if (pe.Jamb)
+                                {
+                                    endWithdrawn = "end_is_a_jamb";
+                                    endEvidence["means"] = "the same wall resumes beyond the symbol: this end is a jamb, " +
+                                        "and a device there belongs to the wall around the opening. NOT planned.";
+                                }
+                            }
+                            if (endWithdrawn != null)
+                            {
+                                endEvidence["source_row"] = row["source_row"];
+                                endEvidence["kind"] = row.Value<string>("kind");
+                                endEvidence["at_mm"] = new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1));
+                                endEvidence["reason"] = endWithdrawn;
+                                withdrawn.Add(endEvidence);
+                                ((JArray)c["elements"]).Remove(row);
+                                continue;
+                            }
+                            row["host_id"] = Rid.Value(end.Wall.Id);
+                            row["host_face"] = "end";
+                            row.Remove("side_dead_band_mm");
+                            if (seen.Add("host:" + Rid.Value(end.Wall.Id)))
+                                resolved.Add(Resolved("host_wall", end.Wall,
+                                    "the free END of the wall nearest the drawn symbol, " +
+                                    end.DistanceMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm away (host_faces allows it)"));
+                            string zEnd = RaiseToStorey(doc, end.Wall, row);
+                            if (zEnd != null) return zEnd;
+                            continue;
+                        }
+                    }
+
                     if (best == null)
-                        return "host_too_far: the nearest wall to a hosted element at (" +
-                               Mm(point.X) + ", " + Mm(point.Y) + ") mm is " +
-                               bestMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm away, and " +
-                               allowance.ToString("0.#", CultureInfo.InvariantCulture) + " mm is the most this " +
-                               "set allows. NOTHING was planned. Either the wall layers have not been converted " +
-                               "yet - convert them first, then plan the openings - or the drawing puts this " +
-                               "symbol somewhere no wall runs, which is a finding about the drawing.";
+                    {
+                        // A SYMBOL WAITS; A HOLE STOPS THE RUN.
+                        //
+                        // An opening or a door IS its host - one cut in the wrong
+                        // element, or in none, is a defect in somebody's model. A
+                        // device is not: it is one of many marks on a plan, and the
+                        // other twenty should not wait for it. So this row is
+                        // WITHDRAWN, by name, with the distance that withdrew it.
+                        string kind = row.Value<string>("kind");
+                        bool isDevice = kind == "family_instance" || kind == "structural_column";
+                        if (!isDevice)
+                            return "host_too_far: the nearest wall to a hosted element at (" +
+                                   Mm(point.X) + ", " + Mm(point.Y) + ") mm is " +
+                                   bestMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm away, and " +
+                                   allowance.ToString("0.#", CultureInfo.InvariantCulture) + " mm is the most this " +
+                                   "set allows. NOTHING was planned. Either the wall layers have not been " +
+                                   "converted yet - convert them first, then plan the openings - or the drawing " +
+                                   "puts this symbol somewhere no wall runs, which is a finding about the drawing.";
+
+                        withdrawn.Add(new JObject
+                        {
+                            ["source_row"] = row["source_row"],
+                            ["kind"] = kind,
+                            ["at_mm"] = new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                            ["reason"] = match.NoFaceCarriesThePoint
+                                ? "no_wall_face_carries_this_point"
+                                : "no_host_within_allowance",
+                            ["walls_passed_over"] = match.WallsPassedOver,
+                            ["nearest_wall_mm"] = Math.Round(bestMm, 1),
+                            ["allowance_mm"] = Math.Round(allowance, 1),
+                            ["means"] = "the drawing puts this symbol where no converted wall runs. It is NOT " +
+                                        "planned and NOT built; the rows beside it are, and this one keeps its " +
+                                        "own name so nothing else inherits its origin."
+                        });
+                        ((JArray)c["elements"]).Remove(row);
+                        continue;
+                    }
+
+                    // IS THIS THE WALL THE DRAWING SHOWS IT AGAINST? Only when the rule
+                    // said where its hosts are drawn; otherwise nothing is claimed.
+                    if (hostLayers != null && hostLayers.Count > 0 && drawn != null)
+                    {
+                        var hostCurve = (best.Location as LocationCurve)?.Curve;
+                        if (hostCurve != null)
+                        {
+                            var lines = drawn.Where(s => s != null && hostLayers.Any(g =>
+                                CadGlob.IsMatch(s.Layer ?? "", g, set.CaseSensitiveLayers)));
+                            XYZ h0 = hostCurve.GetEndPoint(0), h1 = hostCurve.GetEndPoint(1);
+                            CadHostPlausibilityResult plausible = CadHostPlausibility.Check(
+                                new CadPoint(point.X * 304.8, point.Y * 304.8),
+                                new CadPoint(h0.X * 304.8, h0.Y * 304.8), new CadPoint(h1.X * 304.8, h1.Y * 304.8),
+                                best.Width * 304.8 / 2.0, lines, set.AngleToleranceDegrees, set.PointToleranceMm,
+                                set.HostSearchMm);
+                            if (plausible.NearerWallDrawn)
+                            {
+                                string kind = row.Value<string>("kind");
+                                CadSegment o = plausible.OtherWallLine;
+                                withdrawn.Add(new JObject
+                                {
+                                    ["source_row"] = row["source_row"],
+                                    ["kind"] = kind,
+                                    ["at_mm"] = new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                                    ["reason"] = "nearer_drawn_wall_is_not_in_the_model",
+                                    ["nearest_wall_mm"] = Math.Round(bestMm, 1),
+                                    ["host_that_was_nearest"] = Rid.Value(best.Id),
+                                    ["host_face_line_mm"] = Math.Round(plausible.HostFaceMm.Value, 1),
+                                    ["other_wall_line_mm"] = Math.Round(plausible.OtherWallMm.Value, 1),
+                                    ["other_wall_line"] = new JObject
+                                    {
+                                        ["layer"] = o.Layer,
+                                        ["from_mm"] = new JArray(Math.Round(o.A.X, 1), Math.Round(o.A.Y, 1)),
+                                        ["to_mm"] = new JArray(Math.Round(o.B.X, 1), Math.Round(o.B.Y, 1))
+                                    },
+                                    ["means"] = "the nearest converted wall is within the host search, but the drawing " +
+                                                "shows this symbol against a DIFFERENT wall line, clearly nearer, that no " +
+                                                "wall in the model stands on. Hosting it on the converted wall would " +
+                                                "build it on the wrong wall. It is NOT planned; convert that wall first."
+                                });
+                                ((JArray)c["elements"]).Remove(row);
+                                continue;
+                            }
+                        }
+                    }
+
+                    // WHICH FACE, decided now by the rule the placement applies
+                    // (CadDeviceSide), so a symbol nobody can place on a side is
+                    // withdrawn by name instead of refusing its whole stage.
+                    string deviceKind = row.Value<string>("kind");
+                    double? deadBand = row.Value<double?>("side_dead_band_mm");
+                    var sideCurve = (best.Location as LocationCurve)?.Curve as Line;
+                    if (deadBand.HasValue && deviceKind == "family_instance" && sideCurve != null)
+                    {
+                        XYZ s0 = sideCurve.GetEndPoint(0), s1 = sideCurve.GetEndPoint(1);
+                        double lx = (s1.X - s0.X) * 304.8, ly = (s1.Y - s0.Y) * 304.8;
+                        double ll = Math.Sqrt(lx * lx + ly * ly);
+                        if (ll > 1e-6)
+                        {
+                            var normal = new CadVector(-ly / ll, lx / ll);
+                            double offset = (point.X - s0.X) * 304.8 * normal.X + (point.Y - s0.Y) * 304.8 * normal.Y;
+                            double? facingDegrees = row.Value<double?>("facing_degrees");
+                            CadVector? facing = facingDegrees.HasValue
+                                ? new CadVector(Math.Cos(facingDegrees.Value * Math.PI / 180.0),
+                                                Math.Sin(facingDegrees.Value * Math.PI / 180.0))
+                                : (CadVector?)null;
+                            string sideFrom;
+                            int side = CadDeviceSide.Expected(offset, best.Width * 304.8 / 2.0, facing, normal,
+                                                              deadBand.Value, out sideFrom);
+                            if (side == 0)
+                            {
+                                withdrawn.Add(new JObject
+                                {
+                                    ["source_row"] = row["source_row"],
+                                    ["kind"] = deviceKind,
+                                    ["at_mm"] = new JArray(Math.Round(point.X * 304.8, 1), Math.Round(point.Y * 304.8, 1)),
+                                    ["reason"] = "side_of_the_wall_not_stated",
+                                    ["host_that_was_nearest"] = Rid.Value(best.Id),
+                                    ["offset_from_centreline_mm"] = Math.Round(offset, 1),
+                                    ["half_width_mm"] = Math.Round(best.Width * 304.8 / 2.0, 1),
+                                    ["dead_band_mm"] = deadBand.Value,
+                                    ["facing_declared"] = facingDegrees.HasValue,
+                                    ["means"] = "the symbol is drawn over the wall's own thickness, too close to its " +
+                                                "centreline for that to say which face, and no facing declared for its " +
+                                                "block points out of one. The rotation is not read as a side (measured: it " +
+                                                "is not one). It is NOT planned; declare geometry.block_facing for the " +
+                                                "block, or place it by hand."
+                                });
+                                ((JArray)c["elements"]).Remove(row);
+                                continue;
+                            }
+                        }
+                    }
 
                     row["host_id"] = Rid.Value(best.Id);
                     if (seen.Add("host:" + Rid.Value(best.Id)))
@@ -902,14 +1813,73 @@ namespace Horizun.Revit.Commands
             }
         }
 
+        /// <summary>What the model says about a type name, for the catalogue check.</summary>
+        private static CadTypeFacts TypeFactsOf(Document doc, string name)
+        {
+            ElementType et = FindType(doc, name);
+            if (et == null) return new CadTypeFacts { Found = false, SameFamily = SameFamily(doc, name) };
+            var facts = new CadTypeFacts { Found = true };
+            try
+            {
+                if (et.Category != null)
+                    facts.Category = ((BuiltInCategory)(int)Rid.Value(et.Category.Id)).ToString();
+            }
+            catch { }
+            if (et is FamilySymbol fs)
+            {
+                try { facts.PlacementType = fs.Family.FamilyPlacementType.ToString(); } catch { }
+            }
+            if (et is WallType wt)
+            {
+                facts.IsWallType = true;
+                try { facts.WidthMm = wt.Width * 304.8; } catch { }
+            }
+            return facts;
+        }
+
         private static ElementType FindType(Document doc, string name)
         {
             List<ElementType> types = new FilteredElementCollector(doc).WhereElementIsElementType()
                 .Cast<ElementType>().ToList();
+            // the localized label first; then the language-independent one of a system wall family (TypeNames)
             return types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.Ordinal))
+                ?? types.FirstOrDefault(t => string.Equals(TypeNames.Canonical(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.Ordinal))
                 ?? types.FirstOrDefault(t => string.Equals(TypeLabel(t), name, StringComparison.OrdinalIgnoreCase))
                 ?? types.FirstOrDefault(t => string.Equals(SafeName(t), name, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>The loaded types of the class a rule's kind is built from, as labels, sorted; at most 25.</summary>
+        private static List<string> TypesOfKind(Document doc, string produces)
+        {
+            Type cls;
+            switch (produces)
+            {
+                case "duct": cls = typeof(Autodesk.Revit.DB.Mechanical.DuctType); break;
+                case "pipe": cls = typeof(Autodesk.Revit.DB.Plumbing.PipeType); break;
+                case "conduit": cls = typeof(Autodesk.Revit.DB.Electrical.ConduitType); break;
+                case "cable_tray": cls = typeof(Autodesk.Revit.DB.Electrical.CableTrayType); break;
+                case "wall": cls = typeof(WallType); break;
+                default: return new List<string>();
+            }
+            try
+            {
+                return new FilteredElementCollector(doc).OfClass(cls).Cast<ElementType>().Select(TypeLabel)
+                    .Where(x => x != null).Distinct(StringComparer.Ordinal).OrderBy(x => x, StringComparer.Ordinal)
+                    .Take(25).ToList();
+            }
+            catch { return new List<string>(); }
+        }
+
+        /// <summary>The loaded types of the family a "Family: Type" name names, as labels, sorted; at most 25.</summary>
+        private static List<string> SameFamily(Document doc, string name)
+        {
+            string family = CadCatalogCheck.FamilyOf(name);
+            if (family == null) return new List<string>();
+            return new FilteredElementCollector(doc).WhereElementIsElementType().Cast<ElementType>()
+                .Where(t => { try { return string.Equals(t.FamilyName, family, StringComparison.OrdinalIgnoreCase); } catch { return false; } })
+                .Select(TypeLabel).Where(x => x != null).Distinct(StringComparer.Ordinal)
+                .OrderBy(x => x, StringComparer.Ordinal).Take(25).ToList();
         }
 
         private static string TypeLabel(ElementType t)

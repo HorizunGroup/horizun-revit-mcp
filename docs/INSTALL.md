@@ -83,6 +83,41 @@ Close Revit, run the new release's Setup and complete the
 completa los pasos del cliente. Source compilation is described separately in
 [BUILDING.md](BUILDING.md); it is not required to update a release installation.
 
+### Upgrading to 2.0 / Actualizar a la 2.0
+
+Installing is the same. **Two calls that worked before now fail**, and both are in
+`horizun_apply_cad_update`. Instalar es igual; dos llamadas que antes funcionaban
+ahora fallan, ambas en `horizun_apply_cad_update`.
+
+| What changed | What to do |
+|---|---|
+| `apply_binding` is a **required** argument | Copy the `apply_binding` block from the `horizun_plan_cad_update` reply, verbatim. Any caller following the documented flow already receives it. |
+| A plan that **releases fittings** is refused | Either drop the pairing that needs the release and plan again, or send `accept_connections_not_rebuilt: true` — which says you will run `horizun_cad_connect` over the result and accept its verdict. |
+
+Nothing else in the tool set changed shape. No other tool was removed, renamed or
+given a required argument. Ninguna otra herramienta cambió de forma.
+
+**Reading a reply.** `state: applied` has never meant the network was built and
+still does not. 2.0 says so in the reply: `verdict.geometry` is verified by
+re-reading the model, and `verdict.network` is `not_asserted`. Joining is
+`horizun_cad_connect`, and its result is what makes a revision *built*.
+
+### Going back / Volver atrás
+
+Install the older Setup over the new one; close Revit first. Settings are read
+with unknown keys preserved, so nothing a newer version wrote is destroyed.
+Instala el Setup anterior encima; los ajustes se conservan.
+
+Two limits worth knowing before you do:
+
+- **What 2.0 recorded, 1.3 does not read.** Operation records (used to continue an
+  update that stopped part-way) and the provenance stamped on fittings are ignored
+  by older versions. Nothing breaks; the protections they enable simply stop
+  applying, and an older `horizun_apply_cad_update` will again apply a plan without
+  re-measuring the world it was made against.
+- **Models are not downgraded.** Elements built or re-shaped by 2.0 stay exactly as
+  they are. It is the checking that goes away, not the geometry.
+
 ## Common questions / Preguntas frecuentes
 
 **Must I clone or compile the repository? / ¿Tengo que clonar o compilar?**

@@ -110,25 +110,22 @@ namespace Horizun.Revit.Commands
                 return CommandResult.Fail("CAD instance " + instanceId + " is no longer readable in '" +
                                           SafeTitle(doc) + "'. Nothing was written.");
 
-            var drift = new JArray();
-            string nowSource = CadFacts.SourceFingerprint(facts);
-            if (!string.Equals(nowSource, expectedSource, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the drawing",
-                    ["planned_against"] = expectedSource,
-                    ["now"] = nowSource,
-                    ["means"] = "the file, its bytes, its path, its load state, its declared units or its " +
-                                "transform changed since the plan was made. The plan describes a different drawing."
-                });
-            if (!string.Equals(set.Sha256, expectedSetSha, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the requirement set",
-                    ["planned_against"] = expectedSetSha,
-                    ["now"] = set.Sha256,
-                    ["means"] = "the rules that decided what this drawing means are not the rules the plan used."
-                });
+            // ONE GUARD FOR BOTH APPLIES. This command has re-measured its binding since it existed;
+            // horizun_apply_cad_update had none of it and wrote anyway. The checks now live in
+            // Core/CadApplyGuard.cs and both call them, because two copies of a rule this important is
+            // how one of them quietly stops being true. What stays here is what only THIS command has:
+            // the ids its plan resolved for levels and types.
+            var guardNow = new CadApplyNow
+            {
+                ActionsFingerprint = null,          // filled in below, once the actions have been shaped
+                SourceFingerprint = CadFacts.SourceFingerprint(facts),
+                SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
+                RequirementSetSha256 = set.Sha256,
+                InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                TargetDocument = SafeTitle(doc),
+                RevitVersion = SafeVersion(app)
+            };
+            JArray drift = CadApplyGuard.Drift(binding, guardNow);
 
             // THE RESOLVED IDS. A fingerprint over the actions cannot see this
             // one: the same number can point at a different thing. Between a plan
@@ -185,39 +182,12 @@ namespace Horizun.Revit.Commands
                     "object, wrap it: [ { ... } ]. This is not stale_plan: the plan and the model may well still " +
                     "agree, and no comparison was made against them.");
 
-            string nowActions = CadConversionPlanRules.ActionsFingerprint(submitted ?? new JArray());
-            if (!string.Equals(nowActions, expectedActions, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the actions",
-                    ["planned_against"] = expectedActions,
-                    ["now"] = nowActions,
-                    ["means"] = "the actions submitted are not the actions the plan emitted. A coordinate, a " +
-                                "type, an element or the stage order differs. NOTHING was written."
-                });
-
-            if (!string.IsNullOrWhiteSpace(expectedTarget) &&
-                !string.Equals(expectedTarget, SafeTitle(doc), StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the target document",
-                    ["planned_against"] = expectedTarget,
-                    ["now"] = SafeTitle(doc),
-                    ["means"] = "this plan was rehearsed against a different model. Applying it here would " +
-                                "build one model's drawing into another."
-                });
-
-            string nowRevit = SafeVersion(app);
-            if (!string.IsNullOrWhiteSpace(expectedRevit) && !string.IsNullOrWhiteSpace(nowRevit) &&
-                !string.Equals(expectedRevit, nowRevit, StringComparison.Ordinal))
-                drift.Add(new JObject
-                {
-                    ["what"] = "the Revit build",
-                    ["planned_against"] = expectedRevit,
-                    ["now"] = nowRevit,
-                    ["means"] = "the plan was made against a different Revit; type and level resolution are not " +
-                                "guaranteed to mean the same thing across builds."
-                });
+            // The actions could only be fingerprinted once their shape was checked, so that one check
+            // runs here - through the same guard, against the same binding.
+            guardNow.ActionsFingerprint = CadConversionPlanRules.ActionsFingerprint(submitted ?? new JArray());
+            foreach (JToken late in CadApplyGuard.Drift(binding, new CadApplyNow
+                     { ActionsFingerprint = guardNow.ActionsFingerprint }))
+                drift.Add(late);
 
             if (drift.Count > 0)
                 return CommandResult.Fail(
@@ -226,10 +196,73 @@ namespace Horizun.Revit.Commands
                     "and review the new plan; a plan aimed at a drawing that has since changed is a plan aimed " +
                     "at a different building. Drift: " + drift.ToString(Formatting.None));
 
+            // MAY THIS BE BUILT AT ALL? Drift is "something moved since the plan"; this is the prior
+            // question - whether the geometry the plan is made of and the files its sizes were read from
+            // can be shown to be the same issue of the drawing. A plan made while that could not be shown
+            // is not applied because the model looked unchanged; it is not applied because nobody measured
+            // the correspondence. Re-evaluated HERE, because a link can be reloaded between the two calls
+            // (which is the remedy) and because a plan carried from another session must not be taken on
+            // trust. See Core/CadSourceCoherence.cs.
+            Element instanceElement = null;
+            try { instanceElement = doc.GetElement(Rid.Make(instanceId)); } catch { }
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, false);
+            string statePlanned = binding.Value<string>("coherence_state");
+            bool applicableNow = coherenceNow.Value<bool?>("applicable") ?? false;
+            if (!applicableNow)
+                return CommandResult.FailWithDetail(
+                    "plan_not_applicable: " + coherenceNow.Value<string>("state") + ". " +
+                    coherenceNow.Value<string>("means") + " NOTHING WAS WRITTEN. " +
+                    coherenceNow.Value<string>("remedy"),
+                    new JObject
+                    {
+                        ["refused"] = "plan_not_applicable",
+                        ["coherence_now"] = coherenceNow,
+                        ["coherence_when_planned"] = statePlanned,
+                        ["means"] = "a plan is applied only when this bridge can SHOW that the geometry it was " +
+                                    "made of and the files its sizes came from are the same issue of the " +
+                                    "drawing. Warning and writing anyway would put one issue's runs in the " +
+                                    "model with another issue's sizes, and the model would look finished."
+                    });
+            if (!string.IsNullOrWhiteSpace(statePlanned) &&
+                !string.Equals(statePlanned, CadSourceCoherence.Aligned, StringComparison.Ordinal))
+                return CommandResult.FailWithDetail(
+                    "plan_not_applicable: this plan was made while the coherence of its sources was '" +
+                    statePlanned + "', so its actions were read from a state nobody could vouch for. The link " +
+                    "is coherent NOW - plan again against it and apply that plan. NOTHING WAS WRITTEN.",
+                    new JObject
+                    {
+                        ["refused"] = "plan_not_applicable",
+                        ["coherence_when_planned"] = statePlanned,
+                        ["coherence_now"] = coherenceNow,
+                        ["means"] = "the remedy was applied after the plan was made, which fixes the model's " +
+                                    "state and not the plan: the actions still describe what was read earlier."
+                    });
+
+
             // ---- the actions, exactly as the plan produced them -------------------
             JArray actions = submitted;
-            if (actions == null || actions.Count == 0)
+            if (actions == null)
                 return CommandResult.Fail("actions is required: the execute_plan_request.actions the plan produced.");
+            // A PLAN THAT EMITTED NOTHING is a unit already built, and the binding above
+            // has just proved it is THAT plan (its actions fingerprint is the empty
+            // list's). Refusing it made every re-run of a procedure fail on a unit
+            // with nothing left to do; answering it writes nothing and says so.
+            if (actions.Count == 0)
+                return CommandResult.Ok(new JObject
+                {
+                    ["document"] = request.Value<string>("target_document") ?? SafeTitle(doc),
+                    ["instance_id"] = instanceId,
+                    ["dry_run"] = request["dry_run"] == null || request.Value<bool>("dry_run"),
+                    ["state"] = "nothing_to_apply",
+                    ["stages"] = new JArray(),
+                    ["stages_failed"] = 0,
+                    ["created_verified"] = 0,
+                    ["provenance_written"] = 0,
+                    ["rehearsal"] = new JObject { ["tokens_by_key"] = new JObject() },
+                    ["application"] = new JObject { ["state"] = "no_op", ["requested"] = 0 },
+                    ["means"] = "the plan this binding names emitted no actions: everything it read is already " +
+                                "built or was withdrawn with a reason. Nothing was written."
+                });
             if (actions.Count > 200)
                 return CommandResult.Fail("actions holds " + actions.Count + " entries; the bound is 200. " +
                                           "Split the conversion by stage or by layer rather than sending one " +
@@ -298,9 +331,26 @@ namespace Horizun.Revit.Commands
 
                 callArgs["target_document"] = target;
                 callArgs["dry_run"] = dryRun;
+
+                // A REHEARSAL THAT ONLY READS ARGUMENTS IS NOT A REHEARSAL.
+                //
+                // MEASURED twice in one session: a batch of twenty-one rows
+                // rehearsed clean and failed on the apply - first because a family
+                // could not be mirrored, then because a work-plane based family had
+                // been sent through the wrong overload. Neither is an argument
+                // error; both are what Revit does when the row is actually built.
+                // horizun_create_elements can build provisionally, verify and roll
+                // the whole group back, and a conversion is exactly the case worth
+                // the extra transaction.
+                if (dryRun) callArgs["validation_mode"] = "revit_rollback";
                 if (!dryRun)
                 {
-                    string token = action.Value<string>("confirmation_token") ?? request.Value<string>("confirmation_token");
+                    // A MAP OF TOKENS BY ACTION KEY is what a rehearsal hands back
+                    // (tokens_by_key); a procedure passes it on whole rather than editing
+                    // every action it did not write.
+                    string token = action.Value<string>("confirmation_token") ??
+                                   (request["confirmation_tokens"] as JObject)?.Value<string>((string)action["key"]) ??
+                                   request.Value<string>("confirmation_token");
                     if (!string.IsNullOrWhiteSpace(token)) callArgs["confirmation_token"] = token;
                     if (!string.IsNullOrWhiteSpace(idempotencyKey))
                         callArgs["idempotency_key"] = idempotencyKey + "-" + (string)action["key"];
@@ -445,7 +495,7 @@ namespace Horizun.Revit.Commands
                 ["dry_run"] = dryRun,
                 ["binding_verified"] = new JObject
                 {
-                    ["source_fingerprint"] = nowSource,
+                    ["source_fingerprint"] = guardNow.SourceFingerprint,
                     ["requirement_set_sha256"] = set.Sha256,
                     ["plan_fingerprint"] = expectedPlan,
                     ["means"] = "the drawing, its transform and the rules are the ones this plan was made against"
@@ -783,7 +833,7 @@ namespace Horizun.Revit.Commands
             "elements_created_means", "present_after_commit", "verified",
             "kind_verified", "type_verified", "host_verified", "curve_verified",
             "structural_verified", "identity_verified", "structural_type_verified",
-            "diameter_verified", "mep_system",
+            "diameter_verified", "section_verified", "mep_system",
             "connectors_verified", "inline_connections", "actual_class", "actual_category"
         };
 
@@ -885,6 +935,7 @@ namespace Horizun.Revit.Commands
                         RequirementSetSha256 = set.Sha256,
                         SourceFingerprint = CadFacts.SourceFingerprint(facts),
                         SourceFileSha256 = facts.FileSha256,
+                        SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
                         PlanFingerprint = planFingerprint,
                         WrittenUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                         // PROVENANCE v2: the placement kept APART from the file, so
@@ -895,7 +946,10 @@ namespace Horizun.Revit.Commands
                         PlacementOrigin = CadPlacementRules.EncodeOrigin(facts.TransformOrigin),
                         PlacementBasis = CadPlacementRules.EncodeBasis(facts.TransformBasisX, facts.TransformBasisY,
                                                                        facts.TransformScale ?? 1.0),
-                        SourcePath = string.IsNullOrWhiteSpace(facts.ExternalPath) ? null : facts.ExternalPath
+                        SourcePath = string.IsNullOrWhiteSpace(facts.ExternalPath) ? null : facts.ExternalPath,
+                        // PROVENANCE v3: which reading, and which entities it used.
+                        InterpretationVersion = CadInterpretationRules.InterpretationVersion,
+                        SourceEntities = Entities(c?["source_entities"] as JArray)
                     };
                     // An element with no candidate is an element nothing can trace.
                     // Writing an EMPTY provenance record would be worse than
@@ -990,6 +1044,13 @@ namespace Horizun.Revit.Commands
 
         private static CadPoint Mm(XYZ p) =>
             new CadPoint(CadUnits.FeetToMm(p.X), CadUnits.FeetToMm(p.Y), CadUnits.FeetToMm(p.Z));
+
+        /// <summary>The drawing entities a candidate was read from, as provenance keeps them.</summary>
+        internal static string Entities(JArray entities)
+        {
+            if (entities == null || entities.Count == 0) return null;
+            return string.Join(";", entities.Select(t => t?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)));
+        }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }
         private static string SafeVersion(UIApplication a)

@@ -1,0 +1,168 @@
+{
+ "spec_version": "dwg-bim-run-spec/1",
+ "name": "synthetic-unit",
+ "about": "A SYNTHETIC unit (make_synthetic_dwg.py). Every height, type and host mode here is a TEST HYPOTHESIS, not a project decision.",
+ "drawing": {
+  "name": "synthetic-unit",
+  "units": "inch",
+  "truth": "SYNTH-UNIT.truth.json"
+ },
+ "level": "Level 1",
+ "device_categories": [
+  "OST_ElectricalFixtures"
+ ],
+ "decisions": null,
+ "walls_set": {
+  "schema": "horizun.cad-requirements/1",
+  "requirement_set": {
+   "id": "synthetic-walls",
+   "version": "1.0.0",
+   "title": "synthetic unit walls - double lines, one listed type (8 in); the 5 in stub is withdrawn by design"
+  },
+  "source": {
+   "units": "millimeter",
+   "role": "floor_plan",
+   "extent_mm": {
+    "min_x": -300.0,
+    "min_y": -300.0,
+    "max_x": 6400.0,
+    "max_y": 5000.0,
+    "crossing": "whole"
+   }
+  },
+  "tolerances": {
+   "point_mm": 25.0,
+   "gap_mm": 150.0,
+   "angle_degrees": 2.0,
+   "arc_sagitta_mm": 5.0,
+   "wall_overlap_mm": 1.0,
+   "revision_compare_mm": 25.0,
+   "thickness_mm": 3.2
+  },
+  "rules": [
+   {
+    "id": "r-wall",
+    "precedence": 10,
+    "discipline": "architecture",
+    "layers": [
+     "A-WALL"
+    ],
+    "produces": "wall",
+    "family_type": "Basic Wall: Generic - 8\"",
+    "level": "Level 1",
+    "height_mm": 2700.0,
+    "join_rule": "none",
+    "geometry": {
+     "from": "double_lines",
+     "min_thickness_mm": 60.0,
+     "max_thickness_mm": 400.0,
+     "min_overlap_mm": 200.0
+    },
+    "wall_types": {
+     "types": [
+      "Basic Wall: Generic - 8\""
+     ],
+     "tolerance_mm": 3.2,
+     "otherwise": "withdraw"
+    }
+   }
+  ]
+ },
+ "devices_set": {
+  "schema": "horizun.cad-requirements/1",
+  "requirement_set": {
+   "id": "synthetic-devices",
+   "version": "1.0.0",
+   "title": "synthetic unit receptacles - test mounting height 457.2 mm, side and end faces allowed"
+  },
+  "source": {
+   "units": "millimeter",
+   "role": "floor_plan",
+   "extent_mm": {
+    "min_x": -300.0,
+    "min_y": -300.0,
+    "max_x": 6400.0,
+    "max_y": 5000.0
+   }
+  },
+  "tolerances": {
+   "point_mm": 25.0,
+   "gap_mm": 500.0,
+   "angle_degrees": 2.0,
+   "arc_sagitta_mm": 5.0,
+   "symmetry_mm": 1.0,
+   "host_search_mm": 250.0,
+   "face_projection_mm": 300.0,
+   "revision_compare_mm": 10.0
+  },
+  "rules": [
+   {
+    "id": "r-out",
+    "precedence": 10,
+    "discipline": "electrical",
+    "layers": [
+     "E-P"
+    ],
+    "produces": "electrical_fixture",
+    "category": "OST_ElectricalFixtures",
+    "family_type": "Duplex Receptacle: Standard",
+    "level": "Level 1",
+    "offset_mm": 457.2,
+    "geometry": {
+     "from": "blocks",
+     "blocks": [
+      "OUT"
+     ],
+     "block_facing": {
+      "OUT": "+y"
+     }
+    },
+    "hosted_on": "wall",
+    "host_layers": [
+     "A-WALL"
+    ],
+    "host_faces": [
+     "side",
+     "end"
+    ],
+    "mirror": "preserve"
+   }
+  ]
+ },
+ "acceptance": {
+  "match_radius_mm": 300.0,
+  "elevation_mm": 457.2,
+  "tolerance_mm": 1.0,
+  "plan_offset_max_mm": 160.0,
+  "symbols": {
+   "R1": {
+    "built": true,
+    "face": "side"
+   },
+   "R2": {
+    "built": true,
+    "face": "side"
+   },
+   "R3": {
+    "built": true,
+    "face": "side"
+   },
+   "R4": {
+    "built": true,
+    "face": "end"
+   },
+   "R5": {
+    "built": false,
+    "why": "its 5 in wall has no listed type and is withdrawn"
+   },
+   "R6": {
+    "built": false,
+    "why": "no wall carries it"
+   }
+  },
+  "walls": {
+   "built": 5,
+   "withdrawn": 1
+  }
+ }
+}

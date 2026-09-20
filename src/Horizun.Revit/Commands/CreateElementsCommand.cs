@@ -393,6 +393,11 @@ namespace Horizun.Revit.Commands
                         // family cannot live on this host fails Revit's own placement,
                         // atomically, with the batch rolled back.
                         p.InstanceHost = Optional<Element>(doc, item, "host_id");
+                        string hostFace = item.Value<string>("host_face");
+                        if (hostFace != null && hostFace != "side" && hostFace != "end")
+                            throw new ArgumentException("host_face must be 'side' or 'end'");
+                        if (hostFace == "end" && p.InstanceHost == null)
+                            throw new ArgumentException("host_face 'end' needs host_id: the wall whose end the device is on");
                         p.RotationRadians = (item.Value<double?>("rotation_degrees") ?? 0) * System.Math.PI / 180.0;
                         StructuralType parsed;
                         if (!Enum.TryParse(item.Value<string>("structural_type") ?? "NonStructural", true, out parsed) ||
@@ -405,6 +410,7 @@ namespace Horizun.Revit.Commands
                         p.Diameter = ReadDiameter(item, scale);
                         p.Level = Need<Level>(doc, item, "level_id"); p.Type = Need<DuctType>(doc, item, "type_id");
                         p.SystemType = Need<MechanicalSystemType>(doc, item, "system_type_id");
+                        ReadSection(p, item, scale);
                         break;
                     case "pipe":
                         p.Start = Point(item["start"], scale, true); p.End = Point(item["end"], scale, true); NonZero(p.Start, p.End);
@@ -869,14 +875,20 @@ namespace Horizun.Revit.Commands
                         // refuse as stale instead of putting the fitting somewhere else.
                         string subtype = (item.Value<string>("fitting") ?? "").ToLowerInvariant();
                         if (subtype != "elbow" && subtype != "union" && subtype != "transition" && subtype != "tee" &&
-                            subtype != "takeoff")
-                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff");
+                            subtype != "takeoff" && subtype != "cross")
+                            throw new ArgumentException("fitting must name one of: elbow, union, transition, tee, takeoff, cross");
                         p.FittingSubtype = subtype;
-                        int need = subtype == "tee" ? 3 : 2;
+                        // A CROSS TAKES FOUR. Revit has had NewCrossFitting in every
+                        // year this bridge supports, and offering only up to a tee meant
+                        // a four-way junction had to be refused or built as two tees -
+                        // which is a different piece of pipework, with an extra fitting
+                        // and a length of main that does not exist.
+                        int need = subtype == "cross" ? 4 : subtype == "tee" ? 3 : 2;
                         var membersToken = item["elements"] as JArray;
                         if (membersToken == null || membersToken.Count != need)
                             throw new ArgumentException("elements must contain exactly " + need + " entries for a " + subtype +
                                 (subtype == "tee" ? " (the two through-run elements, then the branch)" :
+                                 subtype == "cross" ? " (the first through pair, then the second through pair - Revit's own argument order)" :
                                  subtype == "takeoff" ? " (the branch whose open connector taps in, then the main curve)" : ""));
                         var members = new List<FittingMember>();
                         var sides = new List<List<ConnectorFact>>();
@@ -990,13 +1002,20 @@ namespace Horizun.Revit.Commands
                                 throw new ArgumentException("the chosen connectors turn " +
                                     turn.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) +
                                     " degrees; a " + subtype + " joins collinear runs - use fitting 'elbow'.");
-                            if (subtype == "tee")
+                            // The same generalisation as at create time: a tee has one
+                            // member past the through pair and a cross has two. Handling
+                            // only the tee left a cross's members unresolved at plan
+                            // time, so the REHEARSAL could not refuse a cross whose
+                            // fourth connector was already taken - it was discovered
+                            // inside the transaction instead.
+                            for (int extra = 2; extra < members.Count; extra++)
                             {
-                                ConnectorFact branch, unusedCorner; string branchCode, branchReason;
-                                if (!MepRules.SelectPair(sides[2], new List<ConnectorFact> { chosenA }, named[2], null,
-                                                         out branch, out unusedCorner, out branchCode, out branchReason))
-                                    throw new ArgumentException(branchCode + " (branch): " + branchReason);
-                                members[2].ConnectorId = branch.Id; members[2].Fact = branch;
+                                ConnectorFact extraFact, unusedCorner; string extraCode, extraReason;
+                                if (!MepRules.SelectPair(sides[extra], new List<ConnectorFact> { chosenA },
+                                                         named[extra], null,
+                                                         out extraFact, out unusedCorner, out extraCode, out extraReason))
+                                    throw new ArgumentException(extraCode + " (member " + extra + "): " + extraReason);
+                                members[extra].ConnectorId = extraFact.Id; members[extra].Fact = extraFact;
                             }
                         }
                         p.FittingMembers = members;
@@ -1117,6 +1136,20 @@ namespace Horizun.Revit.Commands
                             throw new InvalidOperationException("top_level_id was not accepted");
                         SetDouble(wall, BuiltInParameter.WALL_TOP_OFFSET, p.TopOffset);
                     }
+
+                    // THE JOIN RULE, APPLIED. It has been in the requirement-set
+                    // schema since the schema existed, described as "passed
+                    // through, applied by the writer", and applied by nobody. A
+                    // set saying join_rule: none got joins anyway - which trims a
+                    // wall's ends back to whatever it meets, moves the centreline
+                    // the drawing gave, and then fails the postcondition that
+                    // checks it. MEASURED: 1.6 mm, item 14 of 16, batch rolled back.
+                    if (string.Equals(p.Input.Value<string>("join_rule"), "none", StringComparison.Ordinal))
+                    {
+                        WallUtils.DisallowWallJoinAtEnd(wall, 0);
+                        WallUtils.DisallowWallJoinAtEnd(wall, 1);
+                        doc.Regenerate();
+                    }
                     return wall;
                 case "floor":
                     Floor madeFloor = Floor.Create(doc, p.Loops, p.Type.Id, p.Level.Id);
@@ -1174,11 +1207,297 @@ namespace Horizun.Revit.Commands
                 {
                     FamilySymbol symbol = (FamilySymbol)p.Type;
                     if (!symbol.IsActive) { symbol.Activate(); doc.Regenerate(); }
-                    FamilyInstance placed = p.Host != null
-                        ? p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType) : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType)
-                        : p.Level == null ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
-                        : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
-                    PositionInstance(doc, p, placed);
+
+                    // WHICH ROUTE THIS FAMILY NEEDS, read from the family itself.
+                    //
+                    // MEASURED: every device family in Revit's own electrical
+                    // template is WorkPlaneBased, and the wall-host overload
+                    // ACCEPTS one and returns an instance with Host == null,
+                    // raising nothing. A route chosen by category, or by which
+                    // overload happens to compile, builds that silently.
+                    string placementType;
+                    CadPlacementRoute route = CreateElementsPlacement.RouteFor(symbol, out placementType);
+                    FamilyInstance placed;
+
+                    if (route == CadPlacementRoute.Unsupported)
+                        throw new InvalidOperationException(
+                            "this family is " + placementType + ", which this command does not place. The " +
+                            "routes it has are a level, a host element and a face. Nothing was built for this " +
+                            "row rather than placing it by a route that fits a different family.");
+
+                    if (route == CadPlacementRoute.Face)
+                    {
+                        if (p.Host == null)
+                            throw new InvalidOperationException(
+                                "this family is work-plane based: Revit places it on a FACE, and no host was " +
+                                "named for this row. Name the host (hosted_on in a requirement set, host_id " +
+                                "here) or use a family that stands on a level.");
+
+                        CadFaceChoice face = CreateElementsPlacement.ChooseFace(
+                            doc, p.Host, p.Start, p.Input.Value<double?>("rotation_degrees") * Math.PI / 180.0,
+                            p.Input.Value<double?>("face_allowance_mm") ?? 300.0,
+                            p.Input.Value<double?>("facing_degrees") * Math.PI / 180.0,
+                            p.Input.Value<double?>("side_dead_band_mm"),
+                            p.Input.Value<string>("host_face"));
+                        if (face.Refusal != null) throw new InvalidOperationException(face.Refusal);
+
+                        placed = doc.Create.NewFamilyInstance(face.Face, face.Point, face.ReferenceDirection, symbol);
+                        p.FacePlacement = face;
+
+                        // THE POINT MOVED, ON PURPOSE, AND BY A MEASURED AMOUNT.
+                        //
+                        // A symbol is drawn beside the wall it belongs to, not on
+                        // its face - 134 mm out, on the drawing this was built
+                        // from. The device is placed ON the face and the
+                        // postcondition checks THAT point, because it is what was
+                        // asked of Revit; the row reports the drawn point, the
+                        // placed point and the distance between them, so nobody
+                        // has to take the projection on trust.
+                        face.Evidence["drawn_at_mm"] = new JArray(Math.Round(p.Start.X * 304.8, 1),
+                                                                  Math.Round(p.Start.Y * 304.8, 1),
+                                                                  Math.Round(p.Start.Z * 304.8, 1));
+                        p.Start = face.Point;
+
+                        // THE LEVEL FOLLOWS THE HOST, and the row is told so.
+                        //
+                        // A face-hosted instance has no level of its own: Revit
+                        // answers -1 and no elevation. Checking the row's level_id
+                        // against that refuses a placement that is correct, and
+                        // dropping it silently would be a key accepted and ignored.
+                        // So it is dropped LOUDLY: named here, with the level its
+                        // host stands on.
+                        if (p.Level != null)
+                        {
+                            face.Evidence["level_asked_for"] = SafePlanName(p.Level);
+                            face.Evidence["level_means"] =
+                                "a work-plane based family is hosted by a FACE and carries no level of its own. " +
+                                "This row's level was used to resolve the plan and is NOT a property of the " +
+                                "created instance; the level it stands on is its host's.";
+                            p.Level = null;
+                        }
+                        doc.Regenerate();
+                    }
+                    else if (route == CadPlacementRoute.HostedOnElement)
+                    {
+                        if (p.Host == null)
+                            throw new InvalidOperationException(
+                                "this family is hosted: Revit will not place it without a host element, and no " +
+                                "host was named for this row.");
+                        if (string.Equals(p.Input.Value<string>("host_face"), "end", StringComparison.Ordinal))
+                            throw new InvalidOperationException(
+                                "end_face_needs_a_face_based_family: this family is wall based - Revit places it on " +
+                                "the wall's LINE, between its ends, and it cannot stand on a terminal face. Use a " +
+                                "work-plane (face) based family for a device on the end of a wall.");
+                        // A WALL-BASED FAMILY STANDS ON ITS WALL'S LINE. MEASURED (a test
+                        // family from Revit's "Electrical Fixture wall based" template):
+                        // asked for the drawn point 98.8 mm off the wall, Revit put the
+                        // instance on the wall's location line, and the postcondition
+                        // refused the whole atomic stage. So the drawn point is projected
+                        // onto the host's line HERE, the side it was drawn on decides the
+                        // facing, and both are reported - as the face route does.
+                        var hostWall = p.Host as Wall;
+                        var hostLine = (hostWall?.Location as LocationCurve)?.Curve as Line;
+                        if (hostWall != null && hostLine != null)
+                        {
+                            XYZ drawn = p.Start;
+                            XYZ a = hostLine.GetEndPoint(0), b = hostLine.GetEndPoint(1);
+                            XYZ dir = new XYZ(b.X - a.X, b.Y - a.Y, 0).Normalize();
+                            double t = (drawn.X - a.X) * dir.X + (drawn.Y - a.Y) * dir.Y;
+                            double length = new XYZ(b.X - a.X, b.Y - a.Y, 0).GetLength();
+                            if (t < -1e-6 || t > length + 1e-6)
+                                throw new InvalidOperationException(
+                                    "the drawn point projects beyond the ends of its host wall (" +
+                                    Math.Round(t * 304.8, 1) + " mm along a " + Math.Round(length * 304.8, 1) +
+                                    " mm wall). A wall-based family is placed on the wall's line; nothing was built.");
+                            var onLine = new XYZ(a.X + dir.X * t, a.Y + dir.Y * t, drawn.Z);
+                            XYZ exterior = hostWall.Orientation;
+                            double side = (drawn.X - onLine.X) * exterior.X + (drawn.Y - onLine.Y) * exterior.Y;
+                            double? deadBand = p.Input.Value<double?>("side_dead_band_mm");
+                            double? facingDeg = p.Input.Value<double?>("facing_degrees");
+                            string sideFrom = "the side of the wall line the symbol is drawn on";
+                            if (facingDeg.HasValue)
+                            {
+                                double f = facingDeg.Value * Math.PI / 180.0;
+                                double dot = Math.Cos(f) * exterior.X + Math.Sin(f) * exterior.Y;
+                                if (Math.Abs(dot) > 0.5) { side = dot; sideFrom = "the facing declared for this block"; }
+                            }
+                            else if (deadBand.HasValue && Math.Abs(side) * 304.8 < deadBand.Value)
+                                throw new InvalidOperationException(
+                                    "side_of_the_wall_not_stated: the symbol is drawn " +
+                                    Math.Round(Math.Abs(side) * 304.8, 1) + " mm from its wall's line, inside the " +
+                                    deadBand.Value + " mm dead band, and no facing is declared. Nothing was built.");
+                            p.HostedEvidence = new JObject
+                            {
+                                ["route"] = "wall_based_on_the_wall_line",
+                                ["drawn_at_mm"] = new JArray(Math.Round(drawn.X * 304.8, 1), Math.Round(drawn.Y * 304.8, 1),
+                                                             Math.Round(drawn.Z * 304.8, 1)),
+                                ["placed_at_mm"] = new JArray(Math.Round(onLine.X * 304.8, 1), Math.Round(onLine.Y * 304.8, 1),
+                                                              Math.Round(onLine.Z * 304.8, 1)),
+                                ["offset_from_wall_line_mm"] = Math.Round(side * 304.8, 1),
+                                ["side"] = side >= 0 ? "exterior" : "interior",
+                                ["side_from"] = sideFrom,
+                                ["means"] = "a wall-based family's origin is on its wall's location line; the device " +
+                                            "stands on the face its FACING points to, chosen from the side the symbol " +
+                                            "is drawn on."
+                            };
+                            p.Start = onLine;
+                            placed = p.Level == null
+                                ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
+                                : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
+                            doc.Regenerate();
+                            XYZ want = side >= 0 ? exterior : exterior.Negate();
+                            XYZ facing = placed.FacingOrientation;
+                            if (facing.X * want.X + facing.Y * want.Y < 0)
+                            {
+                                if (placed.CanFlipFacing)
+                                {
+                                    placed.flipFacing();
+                                    doc.Regenerate();
+                                    p.HostedEvidence["facing_by"] = "flip_facing";
+                                }
+                                else if (ElementTransformUtils.CanMirrorElement(doc, placed.Id))
+                                {
+                                    // MEASURED: a wall-based family without flip controls answers
+                                    // CanFlipFacing false. Its reflection across the wall's own
+                                    // plane is the same device on the other face of the same wall;
+                                    // the copy is kept and the original removed in this transaction.
+                                    ICollection<ElementId> copies = ElementTransformUtils.MirrorElements(
+                                        doc, new List<ElementId> { placed.Id },
+                                        Plane.CreateByNormalAndOrigin(exterior, onLine), true);
+                                    doc.Regenerate();
+                                    var reflected = doc.GetElement(copies?.FirstOrDefault() ?? ElementId.InvalidElementId)
+                                        as FamilyInstance;
+                                    if (reflected == null)
+                                        throw new InvalidOperationException(
+                                            "the reflection to the drawn face produced no instance. Nothing was built " +
+                                            "for this row.");
+                                    doc.Delete(placed.Id);
+                                    doc.Regenerate();
+                                    placed = reflected;
+                                    p.HostedEvidence["facing_by"] = "reflected_across_the_wall_line";
+                                    if (p.Input.Value<bool?>("flip") == true)
+                                    {
+                                        // the drawn reflection is this one: nothing more to reflect
+                                        p.MirrorMethod = "reflected_copy";
+                                        p.FlipDone = true;
+                                    }
+                                    else
+                                    {
+                                        // a second reflection, across the plane of the hand, turns the
+                                        // copy back into an unreflected device on the same face
+                                        XYZ o = ((LocationPoint)placed.Location).Point;
+                                        ICollection<ElementId> back = ElementTransformUtils.MirrorElements(
+                                            doc, new List<ElementId> { placed.Id },
+                                            Plane.CreateByNormalAndOrigin(placed.HandOrientation, o), true);
+                                        doc.Regenerate();
+                                        var turned = doc.GetElement(back?.FirstOrDefault() ?? ElementId.InvalidElementId)
+                                            as FamilyInstance;
+                                        if (turned == null)
+                                            throw new InvalidOperationException(
+                                                "the second reflection produced no instance. Nothing was built for this row.");
+                                        doc.Delete(placed.Id);
+                                        doc.Regenerate();
+                                        placed = turned;
+                                        p.HostedEvidence["facing_by"] = "reflected_twice (a half turn on the same wall)";
+                                    }
+                                }
+                                else
+                                    throw new InvalidOperationException(
+                                        "the device is drawn on the " + p.HostedEvidence.Value<string>("side") +
+                                        " side of its wall and this wall-based family can neither flip its facing " +
+                                        "nor be reflected. Nothing was built for this row.");
+                            }
+                            p.HostedFacing = want;
+                            ElementTransformUtils.MoveElement(doc, placed.Id,
+                                new XYZ(p.Start.X - ((LocationPoint)placed.Location).Point.X,
+                                        p.Start.Y - ((LocationPoint)placed.Location).Point.Y, 0));
+                            // THE HEIGHT ON THE WALL is the instance's elevation from its level.
+                            Parameter elevation = placed.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
+                            if (p.Level != null && elevation != null && !elevation.IsReadOnly)
+                            {
+                                double wantZ = p.Start.Z - p.Level.ProjectElevation;
+                                if (Math.Abs(elevation.AsDouble() - wantZ) > 1e-6 && !elevation.Set(wantZ))
+                                    throw new InvalidOperationException(
+                                        "the elevation of this wall-based device could not be set. Nothing was built for this row.");
+                                doc.Regenerate();
+                                p.HostedEvidence["elevation_from_level_mm"] = Math.Round(wantZ * 304.8, 1);
+                            }
+                        }
+                        else
+                        {
+                            placed = p.Level == null
+                                ? doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.StructuralType)
+                                : doc.Create.NewFamilyInstance(p.Start, symbol, p.Host, p.Level, p.StructuralType);
+                            PositionInstance(doc, p, placed);
+                        }
+                    }
+                    else
+                    {
+                        if (p.Host != null)
+                            throw new InvalidOperationException(
+                                "this family stands on a LEVEL (" + placementType + ") and a host was named for " +
+                                "it. Revit would ignore the host and the row would report a hosting that does " +
+                                "not exist.");
+                        placed = p.Level == null
+                            ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
+                            : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
+                        PositionInstance(doc, p, placed);
+                    }
+
+                    // THE MIRROR, BY WHICHEVER OPERATION THIS FAMILY SUPPORTS.
+                    //
+                    // A symbol the drawing shows reflected is not the same symbol
+                    // turned: no angle reproduces a reflection, and on a handed
+                    // device that is exactly what the symbol was drawn to say.
+                    //
+                    // MEASURED on the family that first refused: CanFlipHand and
+                    // CanFlipFacing are both false, and CanMirrorElement is TRUE -
+                    // the reflected copy keeps its host AND its host face, reverses
+                    // the hand, and stays where it was to the millimetre. So
+                    // "cannot be mirrored" was one API answering a narrower
+                    // question, and the row it refused was buildable all along.
+                    if (p.Input.Value<bool?>("flip") == true && !p.FlipDone)
+                    {
+                        p.FacingBeforeReflection = placed.FacingOrientation;
+                        if (placed.CanFlipHand)
+                        {
+                            placed.flipHand();
+                            doc.Regenerate();
+                            p.MirrorMethod = "flip_hand";
+                        }
+                        else if (ElementTransformUtils.CanMirrorElement(doc, placed.Id))
+                        {
+                            // A true reflection about the plane through the
+                            // instance, perpendicular to its hand. MirrorElements
+                            // COPIES: the reflected copy is what was asked for and
+                            // the original is removed in this same transaction, so
+                            // the row reports one element and the model holds one.
+                            XYZ hand = placed.HandOrientation;
+                            XYZ origin = (placed.Location as LocationPoint)?.Point ?? p.Start;
+                            var one = new List<ElementId> { placed.Id };
+                            ICollection<ElementId> copies = ElementTransformUtils.MirrorElements(
+                                doc, one, Plane.CreateByNormalAndOrigin(hand, origin), true);
+                            doc.Regenerate();
+
+                            ElementId copyId = copies?.FirstOrDefault() ?? ElementId.InvalidElementId;
+                            var reflected = doc.GetElement(copyId) as FamilyInstance;
+                            if (reflected == null)
+                                throw new InvalidOperationException(
+                                    "the reflection produced no instance to keep. Nothing was built for this row.");
+
+                            doc.Delete(placed.Id);
+                            doc.Regenerate();
+                            placed = reflected;
+                            p.MirrorMethod = "reflected_copy";
+                        }
+                        else
+                            throw new InvalidOperationException(
+                                "the drawing shows this symbol mirrored and this family supports no reflection: " +
+                                "CanFlipHand, CanFlipFacing and CanMirrorElement are all false. Nothing was " +
+                                "built for this row rather than building it the wrong way round. A requirement " +
+                                "set can say what the mirror means with mirror: symmetric (checked against the " +
+                                "block's own geometry) or mirror: variant.");
+                    }
                     return placed;
                 }
                 case "duct": return Duct.Create(doc, p.SystemType.Id, p.Type.Id, p.Level.Id, p.Start, p.End);
@@ -1539,14 +1858,20 @@ namespace Horizun.Revit.Commands
                                 " (deferred batch selection; the whole batch rolls back)");
                         p.FittingMembers[0].ConnectorId = chosenA.Id; p.FittingMembers[0].Fact = chosenA;
                         p.FittingMembers[1].ConnectorId = chosenB.Id; p.FittingMembers[1].Fact = chosenB;
-                        if (p.FittingMembers.Count > 2)
+                        // EVERY MEMBER PAST THE FIRST PAIR, not only the third. A tee
+                        // has one; a cross has two, and the version that handled exactly
+                        // one left the cross's fourth member with no connector chosen -
+                        // which surfaces as a null-reference inside Revit's factory
+                        // rather than as a refusal anybody can read.
+                        for (int extra = 2; extra < p.FittingMembers.Count; extra++)
                         {
-                            ConnectorFact branchFact, unusedCorner; string branchCode, branchReason;
-                            if (!MepRules.SelectPair(factSides[2], new List<ConnectorFact> { chosenA },
-                                                     p.FittingMembers[2].NamedConnector, null,
-                                                     out branchFact, out unusedCorner, out branchCode, out branchReason))
-                                throw new InvalidOperationException(branchCode + " (branch): " + branchReason);
-                            p.FittingMembers[2].ConnectorId = branchFact.Id; p.FittingMembers[2].Fact = branchFact;
+                            ConnectorFact extraFact, unusedCorner; string extraCode, extraReason;
+                            if (!MepRules.SelectPair(factSides[extra], new List<ConnectorFact> { chosenA },
+                                                     p.FittingMembers[extra].NamedConnector, null,
+                                                     out extraFact, out unusedCorner, out extraCode, out extraReason))
+                                throw new InvalidOperationException(extraCode + " (member " + extra + "): " + extraReason);
+                            p.FittingMembers[extra].ConnectorId = extraFact.Id;
+                            p.FittingMembers[extra].Fact = extraFact;
                         }
                     }
                     if (p.FittingSubtype == "takeoff")
@@ -1603,6 +1928,7 @@ namespace Horizun.Revit.Commands
                         case "union": return doc.Create.NewUnionFitting(live[0], live[1]);
                         case "transition": return doc.Create.NewTransitionFitting(live[0], live[1]);
                         case "tee": return doc.Create.NewTeeFitting(live[0], live[1], live[2]);
+                        case "cross": return doc.Create.NewCrossFitting(live[0], live[1], live[2], live[3]);
                         default: throw new InvalidOperationException("unsupported fitting '" + p.FittingSubtype + "'");
                     }
                 }
@@ -2000,6 +2326,40 @@ namespace Horizun.Revit.Commands
         /// rectangular duct has a width and a height, and answering a request
         /// for a diameter by setting one of them would be a different duct.
         /// </summary>
+        /// <summary>
+        /// A RECTANGULAR SECTION: width and height together, in the call's units, on a type
+        /// whose shape is rectangular. Every way this can be two statements at once is a
+        /// refusal before anything is written: a diameter AND a section, only one side, a
+        /// non-positive side, or a section asked of a round or oval type - a round duct of
+        /// equal area is a different duct and is never substituted.
+        /// Width is the HORIZONTAL side of the section of a horizontal run, which is Revit's
+        /// own convention for a rectangular duct and is re-read from the connectors.
+        /// </summary>
+        private static void ReadSection(Plan p, JObject item, double scale)
+        {
+            JToken w = item["width"], h = item["height"];
+            if (w == null && h == null)
+            {
+                if (p.Diameter.HasValue && p.Type is DuctType round && round.Shape == ConnectorProfileType.Rectangular)
+                    throw new ArgumentException("diameter was given for a RECTANGULAR duct type ('" + p.Type.Name +
+                        "'): a rectangular run has a width and a height. Send width and height, or a round type.");
+                return;
+            }
+            if (w == null || h == null)
+                throw new ArgumentException("width and height come together: a section with one side is not a section");
+            if (p.Diameter.HasValue)
+                throw new ArgumentException("diameter AND width/height were both given: two sections for one run. Send one.");
+            double width = Finite(w.Value<double>(), "width") * scale, height = Finite(h.Value<double>(), "height") * scale;
+            if (width <= 0 || height <= 0) throw new ArgumentException("width and height must be positive");
+            var type = p.Type as DuctType;
+            if (type == null || type.Shape != ConnectorProfileType.Rectangular)
+                throw new ArgumentException("width/height were given but duct type '" + (p.Type?.Name ?? "?") + "' is " +
+                    (type == null ? "not a duct type" : type.Shape.ToString()).ToLowerInvariant() +
+                    ", not rectangular. A round duct of equal area is a different duct; choose a rectangular type.");
+            p.SectionWidth = width;
+            p.SectionHeight = height;
+        }
+
         private static double? ReadDiameter(JObject item, double scale)
         {
             double? mm = item.Value<double?>("diameter");
@@ -2233,6 +2593,8 @@ namespace Horizun.Revit.Commands
             public int SeparatorSegments;
             /// <summary>The bore the row declared, in FEET. Null: the type decides.</summary>
             public double? Diameter; public double ArcRadius;
+            /// <summary>A rectangular run's declared section, in FEET. Null: no section was declared.</summary>
+            public double? SectionWidth, SectionHeight;
             public List<StairRunSpec> StairRuns;
             public List<StairLandingSpec> StairLandings;
             public int DesiredRisers;
@@ -2248,6 +2610,24 @@ namespace Horizun.Revit.Commands
             public string FittingSubtype; public List<FittingMember> FittingMembers;
             public Element TakeoffMain; public int? TakeoffMainBatchIndex;
             public Wall OpeningHost; public Element InstanceHost;
+
+            /// <summary>
+            /// The face this row was placed on, when the family is work-plane
+            /// based. Kept so the postcondition can re-read the SAME reference
+            /// rather than asking whether some host exists.
+            /// </summary>
+            public CadFaceChoice FacePlacement;
+
+            /// <summary>A wall-based family placed on its wall's line: where, why, and the facing it must keep.</summary>
+            public JObject HostedEvidence;
+            public XYZ HostedFacing;
+            /// <summary>The requested reflection was already made while choosing the face.</summary>
+            public bool FlipDone;
+            /// <summary>Facing before a reflected copy replaced the instance: a reflection keeps it.</summary>
+            public XYZ FacingBeforeReflection;
+
+            /// <summary>How a requested reflection was achieved: flip_hand or reflected_copy.</summary>
+            public string MirrorMethod;
             public Element SlabHost; public string SlabShape; public XYZ SlabCenter;
             public double SlabWidth, SlabHeight, RotationRadians;
             public List<XYZ> ProfilePoints; public XYZ BeamDirection;
@@ -2289,6 +2669,7 @@ namespace Horizun.Revit.Commands
             /// <summary>Siblings one call made beside the row's own element. Never dropped.</summary>
             public List<ElementId> AlsoCreated = new List<ElementId>();
             public double? ExpectedDiameter; public double ExpectedArcRadius; public bool ExpectedArc;
+            public double? ExpectedWidth, ExpectedHeight;
             public Plan Plan;
             public List<Created> Batch;
         }

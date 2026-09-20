@@ -22,6 +22,31 @@ namespace Horizun.Revit.Commands
         /// MEASURING what it lists. Unreadable counts as not-revision: the row stays
         /// visible rather than silently vanishing behind the filter.
         /// </summary>
+        /// <summary>
+        /// One field: what it is called, and whether its value comes from a formula.
+        ///
+        /// A caller that cannot see which columns are calculated cannot tell an editable
+        /// column from one whose values Revit computes - and will try to write to it.
+        /// </summary>
+        private static JObject FieldSummary(ScheduleField field)
+        {
+            var summary = new JObject();
+            try { summary["name"] = field.GetName(); } catch { summary["name"] = "(unreadable)"; }
+            try { summary["field_type"] = field.FieldType.ToString(); } catch { }
+            try
+            {
+                summary["is_calculated"] = field.IsCalculatedField;
+                if (field.IsCalculatedField)
+                    summary["means"] =
+                        "Revit computes this column from a formula. It can be added, removed, hidden, " +
+                        "formatted and re-ordered from here; the FORMULA itself can only be written by hand " +
+                        "in Revit, because the API exposes no way to set one.";
+            }
+            catch { summary["is_calculated"] = JValue.CreateNull(); }
+            try { summary["hidden"] = field.IsHidden; } catch { }
+            return summary;
+        }
+
         private static bool IsRevisionSchedule(ViewSchedule s)
         {
             try { return s.IsTitleblockRevisionSchedule; } catch { return false; }
@@ -58,8 +83,12 @@ namespace Horizun.Revit.Commands
                     ["is_revision_schedule"] = IsRevisionSchedule(schedule),
                     ["include_links"] = schedule.Definition.IncludeLinkedFiles,
                     ["itemized"] = schedule.Definition.IsItemized,
+                    // NAME AND KIND. A list of names cannot tell a calculated column from an
+                    // ordinary one, and the difference decides what a caller may do with it:
+                    // a calculated field can be added, hidden, formatted and removed, and its
+                    // formula can only be written by hand in Revit.
                     ["fields"] = new JArray(schedule.Definition.GetFieldOrder().Select(id =>
-                        (JToken)schedule.Definition.GetField(id).GetName())),
+                        (JToken)FieldSummary(schedule.Definition.GetField(id)))),
                     ["body_rows"] = body.NumberOfRows,
                     ["body_columns"] = body.NumberOfColumns
                 });

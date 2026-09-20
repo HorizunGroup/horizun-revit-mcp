@@ -172,12 +172,20 @@ namespace Horizun.Revit.Core
         /// </summary>
         public string SourceCurveId { get; }
 
+        /// <summary>
+        /// An edge of a CLOSED outline (a polyline that returns to its own vertex), whichever reader made it:
+        /// the harvest names the ring ring:N, an IR names it by its entity. A rule reading lines as runs
+        /// leaves these - and the ring's chords - unclaimed unless it declares include_closed_polylines.
+        /// </summary>
+        public bool ClosedRing { get; }
+
         public CadSegment(CadPoint a, CadPoint b, string layer = null,
                           CadCurveKind sourceKind = CadCurveKind.Line, int sourceIndex = 0,
-                          string sourceCurveId = null)
+                          string sourceCurveId = null, bool closedRing = false)
         {
             A = a; B = b; Layer = layer; SourceKind = sourceKind; SourceIndex = sourceIndex;
             SourceCurveId = sourceCurveId;
+            ClosedRing = closedRing;
         }
 
         public double Length => A.DistanceTo(B);
@@ -611,7 +619,7 @@ namespace Horizun.Revit.Core
                 string key = string.CompareOrdinal(ka, kb) <= 0 ? ka + "=>" + kb : kb + "=>" + ka;
                 // The layer is part of identity: the same line on two layers is
                 // two statements about the building, not one drawn twice.
-                key = (s.Layer ?? "") + "" + key;
+                key = (s.Layer ?? "") + "\u001f" + key;
                 List<CadSegment> bucket;
                 if (!groups.TryGetValue(key, out bucket))
                 {

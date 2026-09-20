@@ -1833,8 +1833,8 @@ namespace Horizun.Revit.Commands
         private static string OpenPathSignature(IReadOnlyList<string> segmentSignatures)
         {
             if (segmentSignatures == null || segmentSignatures.Count == 0) return null;
-            string forward = string.Join("", segmentSignatures);
-            string backward = string.Join("", segmentSignatures.Reverse());
+            string forward = string.Join("\u001f", segmentSignatures);
+            string backward = string.Join("\u001f", segmentSignatures.Reverse());
             return Detail2DRules.Sha256Hex("open:" +
                 (string.CompareOrdinal(forward, backward) <= 0 ? forward : backward));
         }

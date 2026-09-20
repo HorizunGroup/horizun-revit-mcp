@@ -131,14 +131,23 @@ namespace Horizun.Core.Tests
         /// <summary>The sections the model_scan schema will actually accept.</summary>
         private static List<string> ContractSections()
         {
-            string c = Contract();
-            // Scoped to the one enum that lists model_scan's sections. Other tools
-            // in this file have enums of their own, and a loose match would compare
-            // this list against somebody else's.
-            Match m = Regex.Match(c, @"""""enum"""": \[""""document"""",([^\]]*)\]");
-            Assert.True(m.Success, "the model_scan sections enum was not found in the contract");
-            return Regex.Matches("\"\"document\"\"," + m.Groups[1].Value, @"""""([a-z_]+)""""")
-                        .Cast<Match>().Select(x => x.Groups[1].Value).ToList();
+            // READ FROM THE PARSED SCHEMA, not scraped out of the source file.
+            //
+            // The first version matched a regex against Contract.cs and asserted
+            // "the model_scan sections enum was not found in the contract" when it
+            // missed - which is what it reported after the schema was reformatted,
+            // and it reads like the contract lost its enum. This asks the object
+            // the command is actually validated against.
+            // The local helper Contract() returns the FILE's text; the contract
+            // object lives in Horizun.Contracts and is named in full here so the
+            // two cannot be confused again.
+            Horizun.Contracts.CommandContract c =
+                Horizun.Contracts.Contract.Find("horizun_model_scan");
+            Assert.NotNull(c);
+            JToken enumeration = c.InputSchema?["properties"]?["sections"]?["items"]?["enum"];
+            Assert.True(enumeration is JArray,
+                        "horizun_model_scan declares no sections enum in its input schema");
+            return ((JArray)enumeration).Select(x => (string)x).ToList();
         }
 
         [Fact]

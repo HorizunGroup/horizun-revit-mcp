@@ -211,6 +211,8 @@ namespace Horizun.Revit.Core
         /// <summary>Superseded-by-file elements that split across two placements, so the file alone cannot say which.</summary>
         public List<CadScopeExclusion> AmbiguousLineageElements = new List<CadScopeExclusion>();
         public int Unrelated;
+        /// <summary>Earlier versions of the same rules the caller declared this update supersedes.</summary>
+        public HashSet<string> RulesLineage = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public string Verdict = Identified;
         public JObject LookedFor = new JObject();
         public JObject Exists = new JObject();
@@ -272,6 +274,11 @@ namespace Horizun.Revit.Core
 
         public const string RestampMigrated = "migrated_from_v1";
         public const string RestampPlacementMoved = "placement_moved_accepted";
+        public const string RestampCarried = "carried_to_this_revision";
+        /// <summary>A person kept the element as it stands: its as-built geometry becomes where it stands now.</summary>
+        public const string RestampAccepted = "accepted_as_it_stands";
+        /// <summary>Left as it stands under a newer version of the same rules the caller declared.</summary>
+        public const string RestampRulesSuperseded = "rules_superseded";
 
         // ------------------------------------------------------------ identity
 

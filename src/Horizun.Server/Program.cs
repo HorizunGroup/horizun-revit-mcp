@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — original Horizun code.
 //
 // A stdio MCP server. It reads newline-delimited JSON-RPC from stdin, answers the
@@ -64,6 +64,20 @@ namespace Horizun.Server
         private static readonly InFlight _inFlight = new InFlight();
         private static readonly McpSession _session = new McpSession();
         private static string _negotiatedProtocol;
+
+        /// <summary>
+        /// True once a LEGACY initialize handshake has completed in this process.
+        ///
+        /// NOT A VERSION FLAG, and it is never consulted to decide how to shape a result:
+        /// every request carries its own protocol declaration and ResultEnvelope reads that
+        /// and nothing else. This answers a different question - "is the peer on this stdio
+        /// channel a client that speaks the handshake dialect?" - which the specification
+        /// scopes to the process for exactly this kind of decision. It exists so an
+        /// unsolicited notification goes only to a client whose protocol has unsolicited
+        /// notifications in it.
+        /// </summary>
+        private static bool _legacyHandshake;
+
         private static ToolListMonitor _toolListMonitor;
 
         /// <summary>
@@ -94,6 +108,7 @@ namespace Horizun.Server
                           "shutting down. Nothing further will be accepted: results could not be delivered, " +
                           "and a mutation whose outcome cannot be reported must not be started.", null);
                 Volatile.Write(ref _responseChannelLost, 1);
+                Protocol.SubscriptionStream.MarkAllTermination(Protocol.SubscriptionStream.TransportLost);
                 try { _inFlight.CancelAll(); } catch (Exception ex) { Log.Warn("cancel-all after channel loss: " + ex.Message); }
             });
 
@@ -235,15 +250,39 @@ namespace Horizun.Server
                         continue;
                     }
 
+                    JObject prms = msg["params"] as JObject;
+
+                    // WHICH PROTOCOL ERA IS THIS REQUEST IN. 2026-07-28 removed the
+                    // handshake: a modern request carries its version and the client's
+                    // capabilities in _meta and expects to be served with no session at
+                    // all. Read before the lifecycle gate, because the gate's whole
+                    // premise - "nothing happens before initialize" - is a legacy rule
+                    // and applying it to a modern request would refuse every one of them.
+                    //
+                    // A request with no modern _meta reads exactly as it did before this
+                    // existed, so the legacy path is untouched.
+                    Protocol.RequestEnvelope envelope;
+                    try
+                    {
+                        envelope = Protocol.RequestEnvelope.Read(method, prms);
+                    }
+                    catch (Protocol.McpDataError de)
+                    {
+                        Log.Warn("protocol metadata refused: " + de.Message);
+                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.ErrorData);
+                        continue;
+                    }
+
+                    // A modern session has no notifications/initialized to hang this off.
+                    if (envelope.Era == Protocol.McpEra.Modern) EnsureToolListMonitor();
+
                     string lifecycleError;
-                    if (!_session.Allows(method, isNotification, out lifecycleError))
+                    if (!_session.Allows(method, isNotification, envelope.Era, out lifecycleError))
                     {
                         Log.Warn("message refused by MCP lifecycle: " + lifecycleError);
                         if (!isNotification) _writer.TryError(id, -32600, lifecycleError);
                         continue;
                     }
-
-                    JObject prms = msg["params"] as JObject;
 
                     // Cancellation is a notification and must be handled by the READER,
                     // immediately - queueing it behind the work it cancels would be a joke.
@@ -258,19 +297,38 @@ namespace Horizun.Server
                     // order, which is what `initialize` in particular needs.
                     if (method == "tools/call" && !isNotification)
                     {
-                        DispatchToolCall(id, prms);
+                        DispatchToolCall(id, prms, envelope);
                         continue;
                     }
 
                     if (method == "tasks/result" && !isNotification)
                     {
+                        if (envelope.Era == Protocol.McpEra.Modern)
+                        {
+                            _writer.TryError(id, -32601,
+                                "tasks/result was removed when tasks became the " +
+                                Protocol.ExtensionRegistry.Tasks + " extension. Poll tasks/get: its reply carries " +
+                                "the final result once the task is completed, and the error once it has failed.");
+                            continue;
+                        }
                         DispatchTaskResult(id, prms);
+                        continue;
+                    }
+
+                    // subscriptions/listen is the other method that outlives its request.
+                    // On stdio the response IS the stream: it is dispatched off this
+                    // thread, stays open while notifications flow tagged with its id, and
+                    // answers once when it ends. See Protocol/SubscriptionStream.cs.
+                    if (method == "subscriptions/listen" && !isNotification)
+                    {
+                        DispatchSubscription(id, prms, envelope);
                         continue;
                     }
 
                     try
                     {
-                        JToken result = Handle(method, prms);
+                        JToken result = Protocol.ResultEnvelope.Stamp(
+                            Handle(method, prms, envelope), envelope.Era, method, prms);
                         if (!isNotification && result != null)
                         {
                             bool delivered = _writer.TryReply(id, result);
@@ -279,23 +337,12 @@ namespace Horizun.Server
                         else if (isNotification && method == "notifications/initialized")
                         {
                             _session.InitializedNotificationAccepted();
-                            if (_toolListMonitor == null)
-                            {
-                                // The list answers the same question a call does: a plugin
-                                // tool the loaded add-in does not register is not advertised.
-                                // Installed before the monitor, so its first snapshot is the
-                                // filtered list rather than the unfiltered one.
-                                Tools.LiveBridge = ResolveLiveBridge;
-                                try { _toolListMonitor = new ToolListMonitor(_writer.Notify); }
-                                catch (Exception ex)
-                                {
-                                    // tools/list still re-reads settings. Only the
-                                    // convenience notification is lost, so startup must
-                                    // not fail over this watcher.
-                                    Log.Warn("dynamic tool-list notifications unavailable: " + ex.Message);
-                                }
-                            }
+                            EnsureToolListMonitor();
                         }
+                    }
+                    catch (Protocol.McpDataError de)
+                    {
+                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.ErrorData);
                     }
                     catch (McpError me)
                     {
@@ -362,6 +409,7 @@ namespace Horizun.Server
                 else
                     Log.Info("all outstanding work answered in " + clock.ElapsedMilliseconds + " ms");
             }
+            Protocol.SubscriptionStream.MarkAllTermination(Protocol.SubscriptionStream.ServerTornDown);
             _inFlight.CancelAll();
             try { _toolListMonitor?.Dispose(); } catch { }
 
@@ -374,7 +422,7 @@ namespace Horizun.Server
         /// while this one waits on Revit. Every exit path answers exactly once - the writer
         /// enforces that, because a timeout and a completion can both arrive.
         /// </summary>
-        private static void DispatchToolCall(object id, JObject prms)
+        private static void DispatchToolCall(object id, JObject prms, Protocol.RequestEnvelope envelope)
         {
             string key = OutboundWriter.Key(id);
             string toolName = (string)prms?["name"] ?? "(unnamed)";
@@ -401,19 +449,47 @@ namespace Horizun.Server
             // heartbeat carries elapsed time and nothing it cannot support.
             JToken progressToken = prms?["_meta"]?["progressToken"];
 
+            // THE QUEUE CLOCK, started here rather than inside the task. One command runs
+            // at a time against Revit, so the wait before work begins is often the whole
+            // of a "slow" call - and a total that hides it measures the queue and reports
+            // the tool.
+            var queueClock = System.Diagnostics.Stopwatch.StartNew();
+            string scenario = Metrics.ScenarioOf(prms);
+            int requestBytes = prms == null ? 0 : prms.ToString(Formatting.None).Length;
+
             Task.Run(() =>
             {
+                long queuedMs = queueClock.ElapsedMilliseconds;
+                var metric = new CallMetric
+                {
+                    Scenario = scenario,
+                    Tool = toolName,
+                    Era = envelope != null && envelope.Era == Protocol.McpEra.Modern ? "modern" : "legacy",
+                    RequestId = key,
+                    QueuedMs = queuedMs,
+                    RequestBytes = requestBytes,
+                    StartedUtc = DateTime.UtcNow.ToString("o")
+                };
                 var clock = System.Diagnostics.Stopwatch.StartNew();
-                McpLogging.Emit("info", new JObject
+                var started = new JObject
                 {
                     ["event"] = "tool_started", ["tool"] = toolName, ["request_id"] = key
-                }, _writer.Notify);
+                };
+                if (envelope != null && envelope.Era == Protocol.McpEra.Modern)
+                    McpLogging.EmitForRequest("info", started, _writer.Notify, envelope.LogLevel, id);
+                else
+                    McpLogging.Emit("info", started, _writer.Notify);
                 JObject bridgeObservation=null;
+
+                // DELIBERATE SILENCE IS NOT THE BUG THE FINAL GUARD LOOKS FOR. A modern
+                // cancelled request is answered by not answering; the guard below exists
+                // for a request that fell through every path, and it must not fill this in.
+                bool silencedByCancellation = false;
                 using (var heartbeat = StartHeartbeat(progressToken, toolName, clock, cts.Token, observation:()=>Volatile.Read(ref bridgeObservation)))
                 {
                     try
                     {
-                        JToken result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status));
+                        JToken result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
                         if (cts.IsCancellationRequested)
                         {
                             // Two events race after cancellation: PipeClient may observe
@@ -421,43 +497,66 @@ namespace Horizun.Server
                             // entry and return its failure envelope first. Preserve the
                             // stronger NEVER STARTED proof in either ordering.
                             string proof = CancellationProof(result);
-                            reply.TryError(-32800, proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
-                            ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice");
+                            metric.Outcome = "cancelled";
+                            silencedByCancellation = AnswerCancellation(
+                                reply, envelope, toolName,
+                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                            ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                         }
                         else
                         {
-                            reply.TryReply(result);
+                            // A tools/call answered as a TASK carries resultType "task";
+                            // an ordinary one carries "complete". The augmentation the
+                            // caller sent is what decides, so the two can never disagree.
+                            string resultType = prms?["task"] != null
+                                ? Protocol.ResultEnvelope.Task
+                                : Protocol.ResultEnvelope.Complete;
+                            reply.TryReply(Protocol.ResultEnvelope.Stamp(
+                                result, envelope != null ? envelope.Era : Protocol.McpEra.Legacy,
+                                "tools/call", prms, resultType));
                             bool resultError = (bool?)result?["isError"] == true;
+                            metric.ResponseBytes = result == null
+                                ? 0 : result.ToString(Formatting.None).Length;
+                            // FOUR OUTCOMES. `partial` comes from what the command itself
+                            // declared, never from guessing at the payload.
+                            metric.Outcome = resultError ? "error" : PartialOrOk(result);
                             ClientToolFinished(toolName, resultError ? "error" : "ok",
-                                clock.ElapsedMilliseconds, resultError ? "warning" : "info");
+                                clock.ElapsedMilliseconds, resultError ? "warning" : "info", envelope, id);
                         }
                     }
                     catch (McpError me)
                     {
+                        metric.Outcome = "error";
                         reply.TryError(me.Code, me.Message);
-                        ClientToolFinished(toolName, "protocol_error", clock.ElapsedMilliseconds, "error");
+                        ClientToolFinished(toolName, "protocol_error", clock.ElapsedMilliseconds, "error", envelope, id);
                     }
                     catch (OperationCanceledException oce)
                     {
+                        metric.Outcome = "cancelled";
                         string exact = oce.Message;
-                        reply.TryError(-32800,
-                            IsNeverStartedProof(exact)
-                                ? exact
-                                : CancelledMessage(toolName, clock.ElapsedMilliseconds));
-                        ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice");
+                        silencedByCancellation = AnswerCancellation(
+                            reply, envelope, toolName,
+                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                        ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                     }
                     catch (Exception ex)
                     {
+                        metric.Outcome = "error";
                         Log.Error("'" + toolName + "' threw", ex);
                         reply.TryError(-32603, ex.Message);
-                        ClientToolFinished(toolName, "internal_error", clock.ElapsedMilliseconds, "error");
+                        ClientToolFinished(toolName, "internal_error", clock.ElapsedMilliseconds, "error", envelope, id);
                     }
                     finally
                     {
                         // A request that somehow reached here without answering would leave
                         // the client waiting forever. It cannot happen through the paths
                         // above, and saying so out loud costs one branch.
-                        if (!reply.Answered)
+                        metric.ExecutedMs = clock.ElapsedMilliseconds;
+                        metric.TotalMs = queueClock.ElapsedMilliseconds;
+                        metric.FinishedUtc = DateTime.UtcNow.ToString("o");
+                        Metrics.Record(metric);
+
+                        if (!reply.Answered && !silencedByCancellation)
                         {
                             Log.Error("'" + toolName + "' finished without answering; answering now", null);
                             reply.TryError(-32603,
@@ -472,13 +571,81 @@ namespace Horizun.Server
             });
         }
 
-        private static void ClientToolFinished(string tool, string outcome, long elapsedMs, string level)
+        /// <summary>
+        /// One client-visible log line, routed by the protocol the REQUEST declared.
+        ///
+        /// Modern: only if that request named a level, because its revision has no session
+        /// level and reading the legacy one would make this request's logging depend on a
+        /// call somebody else made. Legacy: the session minimum, unchanged.
+        /// </summary>
+        /// <summary>
+        /// Whether a successful reply says it did only part of the job.
+        ///
+        /// READ FROM WHAT THE COMMAND DECLARED, never inferred from the payload's shape.
+        /// Two fields carry it today: `coverage_complete`, which a read sets when it
+        /// stopped short, and the application-outcome state, which a write sets when some
+        /// rows landed and others did not. A guess here would be a measurement of this
+        /// file's opinion.
+        /// </summary>
+        private static string PartialOrOk(JToken result)
         {
-            McpLogging.Emit(level, new JObject
+            JObject structured = result as JObject;
+            if (structured == null) return "ok";
+
+            if ((bool?)structured["coverage_complete"] == false) return "partial";
+
+            string state = (string)structured["state"];
+            if (state != null && state.IndexOf("partial", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "partial";
+
+            JToken applied = structured["application_outcome"] ?? structured["applied_outcome"];
+            string declared = (string)(applied is JObject ? applied["state"] : null);
+            if (declared != null && declared.IndexOf("partial", StringComparison.OrdinalIgnoreCase) >= 0)
+                return "partial";
+
+            return "ok";
+        }
+
+        /// <summary>
+        /// Answer a cancelled request the way its protocol says to. Returns true when the
+        /// correct answer was to send NOTHING.
+        ///
+        /// Modern: silence. The revision tells servers not to respond to a cancelled
+        /// request and tells clients to ignore a response that arrives anyway, so sending
+        /// one is work that produces something the peer is instructed to discard.
+        ///
+        /// Legacy: -32800 with the message, unchanged. That is what every client installed
+        /// today has been receiving, and the message carries the fact that matters most at
+        /// that moment - that Revit work already underway cannot be stopped and the model
+        /// may still change. The sentence is logged on both paths, so it is never lost.
+        /// </summary>
+        private static bool AnswerCancellation(ReplySlot reply, Protocol.RequestEnvelope envelope,
+                                               string tool, string message)
+        {
+            bool modern = envelope != null && envelope.Era == Protocol.McpEra.Modern;
+            if (!modern)
+            {
+                reply.TryError(-32800, message);
+                return false;
+            }
+
+            Log.Warn("'" + tool + "' was cancelled and, per " + Protocol.McpRevision.Latest +
+                     ", no response is being sent for it. " + message);
+            return true;
+        }
+
+        private static void ClientToolFinished(string tool, string outcome, long elapsedMs, string level,
+                                               Protocol.RequestEnvelope envelope, object id)
+        {
+            var data = new JObject
             {
                 ["event"] = "tool_finished", ["tool"] = tool,
                 ["outcome"] = outcome, ["elapsed_ms"] = elapsedMs
-            }, _writer.Notify);
+            };
+            if (envelope != null && envelope.Era == Protocol.McpEra.Modern)
+                McpLogging.EmitForRequest(level, data, _writer.Notify, envelope.LogLevel, id);
+            else
+                McpLogging.Emit(level, data, _writer.Notify);
         }
 
         private static void DispatchTaskResult(object id, JObject prms)
@@ -521,6 +688,246 @@ namespace Horizun.Server
                     }
                 }
             });
+        }
+
+        /// <summary>
+        /// subscriptions/listen: open a stream and DO NOT ANSWER until it ends.
+        ///
+        /// 2026-07-28 models this as an ordinary request whose response is a long-lived
+        /// stream of notifications. On stdio there is one stream and everything shares
+        /// it, which is exactly why each notification carries the subscription's id. So
+        /// the request is registered, parked off the reader thread, and answered once -
+        /// when the client cancels it, or when the process is shutting down and every
+        /// in-flight request is cancelled.
+        ///
+        /// It is registered in the in-flight table with a ZERO drain deadline on purpose.
+        /// Shutdown waits for work that can still produce an answer; a subscription's
+        /// answer is "the stream ended", which shutdown itself causes. Holding the drain
+        /// open for it would mean a server that never exits while anyone is listening.
+        /// </summary>
+        private static void DispatchSubscription(object id, JObject prms, Protocol.RequestEnvelope envelope)
+        {
+            if (envelope == null || envelope.Era != Protocol.McpEra.Modern)
+            {
+                _writer.TryError(id, -32601,
+                    "subscriptions/listen is part of protocol " + Protocol.McpRevision.Latest + ", and this " +
+                    "request did not declare that revision. Under the protocol you are speaking, list changes " +
+                    "arrive as unsolicited notifications/*/list_changed and need no subscription.");
+                return;
+            }
+
+            Protocol.SubscriptionFilter requested;
+            try { requested = Protocol.SubscriptionStream.Read(prms); }
+            catch (McpError me) { _writer.TryError(id, me.Code, me.Message); return; }
+
+            string key = OutboundWriter.Key(id);
+            var cts = new CancellationTokenSource();
+            string refusal;
+            if (!_inFlight.TryStart(key, "subscriptions/listen", cts, out refusal, 0))
+            {
+                cts.Dispose();
+                _writer.TryError(id, -32600, refusal);
+                return;
+            }
+
+            ReplySlot reply = _writer.Slot(id);
+
+            // REGISTERED UNACKNOWLEDGED, then acknowledged, then the listener starts. That
+            // order is the protocol's requirement that the acknowledgement be the first
+            // message on this subscription, and it is held by SubscriptionStream's own lock
+            // rather than by the order of these three lines alone.
+            //
+            // The ID handed over is the REQUEST'S id, not `key`. `key` is this server's
+            // dedup identity ("Int64:1") and publishing it as the subscription id meant a
+            // client that sent 1 and looked for 1 matched nothing.
+            Protocol.Subscription subscription = Protocol.SubscriptionStream.Register(
+                key, id == null ? null : Newtonsoft.Json.Linq.JToken.FromObject(id), requested);
+            try
+            {
+                Protocol.SubscriptionStream.Acknowledge(subscription, _writer.Notify);
+            }
+            catch (Exception ex)
+            {
+                // NOTHING IS DELIVERED WITHOUT THE ACKNOWLEDGEMENT. A subscription that
+                // could not be acknowledged is closed here rather than left open and
+                // silent, which is the state the acknowledgement exists to rule out.
+                Protocol.SubscriptionStream.Release(key);
+                _inFlight.Finish(key);
+                cts.Dispose();
+                _writer.TryError(id, -32603,
+                    "the subscription was accepted and its acknowledgement could not be written (" + ex.Message +
+                    "), so it was closed. Nothing was delivered under it. Open another subscriptions/listen.");
+                return;
+            }
+
+            Log.Info("subscriptions/listen opened for " +
+                     subscription.Honoured.Json().ToString(Newtonsoft.Json.Formatting.None));
+
+            // A DEDICATED THREAD, not the pool. This one blocks for as long as the
+            // subscription lives - minutes, hours - and a pool thread parked that long is
+            // a pool thread the tool calls cannot have. Background, so it can never keep
+            // the process alive past shutdown.
+            var listener = new Thread(() =>
+            {
+                // THE CAUSE IS READ FROM THE SUBSCRIPTION, where whoever decided it wrote
+                // it, and BEFORE Release removes the record. Reading a process-wide flag
+                // here is what made a client cancellation look like a server teardown when
+                // the two happened milliseconds apart.
+                string cause = null;
+
+                // ASSIGNED HERE because the finally below reads it, and a variable
+                // set in a try and a catch is not definitely assigned in a finally -
+                // the project did not compile. The default is a sentence rather than
+                // null: this text reaches a client, and "the subscription ended
+                // because " followed by nothing explains nothing.
+                string reason = "the subscription ended before a cause was recorded";
+                try
+                {
+                    cts.Token.WaitHandle.WaitOne();
+                    cause = Protocol.SubscriptionStream.CauseOf(key);
+                    reason = ReasonFor(cause);
+                }
+                catch (Exception ex)
+                {
+                    cause = Protocol.SubscriptionStream.CauseOf(key);
+                    reason = "the subscription ended unexpectedly: " + ex.Message;
+                }
+                finally
+                {
+                    // Three endings, three behaviours. See the cancellation and
+                    // subscriptions pages of the revision; the rules are not symmetrical.
+                    switch (cause)
+                    {
+                        case Protocol.SubscriptionStream.ClientCancelled:
+                            // "Servers receiving cancellation notifications SHOULD ... Not
+                            // send a response for the cancelled request." The client has
+                            // stopped waiting; a response now is noise it is told to ignore.
+                            Log.Info("subscriptions/listen " + key + " cancelled by the client; no response sent");
+                            break;
+
+                        case Protocol.SubscriptionStream.TransportLost:
+                            // Nothing can be written. Recording a delivery that could not
+                            // have happened is worse than recording none.
+                            Log.Warn("subscriptions/listen " + key + " ended because the channel is gone; " +
+                                     "nothing was sent");
+                            break;
+
+                        default:
+                            // THE SERVER TORE IT DOWN. Two obligations in this order:
+                            // notifications/cancelled is a MUST, the final response a SHOULD.
+                            try
+                            {
+                                Protocol.SubscriptionStream.AnnounceTeardown(subscription, reason, _writer.Notify);
+                                reply.TryReply(Protocol.ResultEnvelope.Stamp(
+                                    Protocol.SubscriptionStream.Closed(subscription, reason),
+                                    Protocol.McpEra.Modern, "subscriptions/listen", prms));
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Warn("the graceful close of " + key + " could not be written: " + ex.Message);
+                            }
+                            break;
+                    }
+
+                    Protocol.SubscriptionStream.Release(key);
+                    _inFlight.Finish(key);
+                }
+            }) { IsBackground = true, Name = "horizun-subscription-" + key };
+            listener.Start();
+        }
+
+        /// <summary>
+        /// One way out for a change notification, serving both eras at once.
+        ///
+        /// The untagged notification goes out EXACTLY as it always has - that is what a
+        /// 2025-11-25 client is listening for, and this must not become conditional on
+        /// anybody having subscribed. Modern subscribers additionally receive their own
+        /// copy carrying the subscriptionId they can correlate it with.
+        /// </summary>
+        /// <summary>
+        /// Start watching for tool-list changes, once, whichever era asked first.
+        ///
+        /// It used to hang off notifications/initialized, which is the right moment in a
+        /// legacy session and does not exist at all in a modern one - so a 2026-07-28
+        /// client would have subscribed to toolsListChanged and then never heard about a
+        /// change, which is worse than not offering the subscription. The modern path
+        /// starts it on the first request that arrives.
+        ///
+        /// The live bridge is installed BEFORE the monitor, so the monitor's first
+        /// snapshot is the filtered list rather than the unfiltered one - otherwise its
+        /// very first comparison reports a change that never happened.
+        /// </summary>
+        private static void EnsureToolListMonitor()
+        {
+            if (_toolListMonitor != null) return;
+            Tools.LiveBridge = ResolveLiveBridge;
+
+            // THE PROCEDURE EXECUTOR DISPATCHES THROUGH THE SAME ENTRY POINT AS tools/call.
+            // Wired here rather than inside ProcedureRun so that file holds no second tool
+            // registry and no second permission check: a step is dispatched by the code
+            // that dispatches every other call, or it is not dispatched.
+            ProcedureRun.Invoker = (call, token) => CallTool(call, token);
+            try { _toolListMonitor = new ToolListMonitor(NotifyChange); }
+            catch (Exception ex)
+            {
+                // tools/list still re-reads settings on every call. Only the convenience
+                // notification is lost, so startup must not fail over this watcher.
+                Log.Warn("dynamic tool-list notifications unavailable: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// One change, routed by the protocol the peer is actually speaking.
+        ///
+        /// MODERN: delivered to the subscriptions that asked for it, each copy carrying its
+        /// own subscription id. A modern client that did not subscribe gets NOTHING, which
+        /// is the rule - a server must not send notification types the client has not
+        /// explicitly requested - and a modern client that did subscribe gets exactly one
+        /// copy, correlated.
+        ///
+        /// LEGACY: the untagged notification, unchanged, exactly as 2025-11-25 defines it -
+        /// unsolicited, uncorrelated, and the only way a client of that revision hears
+        /// about a change at all. It is emitted only when a legacy handshake happened on
+        /// this channel, which is the one fact that distinguishes the two peers.
+        ///
+        /// The previous version did both, always. A modern client received an unsolicited
+        /// notification it had no way to attribute and, if it had subscribed, a duplicate
+        /// of something it had just been sent.
+        /// </summary>
+        /// <summary>The sentence that goes with a termination cause.</summary>
+        private static string ReasonFor(string cause)
+        {
+            switch (cause)
+            {
+                case Protocol.SubscriptionStream.ClientCancelled:
+                    return "the client cancelled the subscription";
+                case Protocol.SubscriptionStream.TransportLost:
+                    return "the response channel was lost";
+                case Protocol.SubscriptionStream.ServerTornDown:
+                    return "the server is shutting down and closed this subscription. This response IS the " +
+                           "graceful close: re-send subscriptions/listen after reconnecting, because no " +
+                           "subscription state survives a stdio reconnection.";
+                default:
+                    // NOT "the client cancelled". Nobody recorded a cause, so nothing is
+                    // known about who ended it, and guessing the cheerful answer is how a
+                    // client learns to distrust the field.
+                    return "this subscription ended and nothing recorded why. Treat it as a server-side close: " +
+                           "re-send subscriptions/listen if you still want the stream.";
+            }
+        }
+
+        private static void NotifyChange(string method, JObject parameters)
+        {
+            string type = Protocol.SubscriptionStream.TypeForMethod(method);
+            if (type != null)
+            {
+                try { Protocol.SubscriptionStream.Publish(type, parameters, _writer.Notify); }
+                catch (Exception ex) { Log.Warn("subscription delivery failed: " + ex.Message); }
+            }
+
+            // The legacy broadcast. Not conditional on anybody having subscribed - a legacy
+            // client cannot subscribe - and not sent to a peer that never handshook.
+            if (_legacyHandshake) _writer.Notify(method, parameters);
         }
 
         /// <summary>
@@ -605,6 +1012,10 @@ namespace Horizun.Server
             object rid = req is JValue jv ? jv.Value : null;
             string key = OutboundWriter.Key(rid);
 
+            // RECORDED BEFORE THE TOKEN FIRES, so the listener cannot wake to a different
+            // answer. Harmless when the key names something that is not a subscription.
+            Protocol.SubscriptionStream.MarkTermination(key, Protocol.SubscriptionStream.ClientCancelled);
+
             if (_inFlight.Cancel(key))
                 Log.Warn("cancellation accepted for request " + key +
                          " (queued work will be removed when possible; running Revit work cannot be interrupted)");
@@ -612,18 +1023,46 @@ namespace Horizun.Server
                 Log.Warn("cancellation for request " + (key ?? "(no id)") + " matched nothing in flight");
         }
 
-        private static JToken Handle(string method, JObject prms)
+        private static JToken Handle(string method, JObject prms, Protocol.RequestEnvelope envelope)
         {
+            bool modern = envelope != null && envelope.Era == Protocol.McpEra.Modern;
+
             switch (method)
             {
+                // ---- 2026-07-28: the handshake's replacement -------------------------
+                // MUST be implemented, and is also the stdio backward-compatibility
+                // probe: a dual-era client sends this first and reads our answer - or our
+                // recognisably-modern error - to decide which era to speak.
+                case "server/discover":
+                    return Protocol.DiscoverHandler.Handle(envelope);
+
                 case "initialize":
                     string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
                     _negotiatedProtocol = negotiatedProtocol;
+                    // The peer speaks the handshake dialect. See _legacyHandshake.
+                    _legacyHandshake = true;
                     var capabilities = new JObject
                     {
-                        ["tools"] = new JObject { ["listChanged"] = true },
-                        ["resources"] = new JObject { ["subscribe"] = false, ["listChanged"] = false },
-                        ["prompts"] = new JObject { ["listChanged"] = false },
+                        // FROM THE SAME SET AS THE MODERN BLOCK. A legacy client reads
+                        // listChanged and decides whether to re-list on notification; a
+                        // literal here is how the two eras come to advertise different
+                        // facts about the same process.
+                        ["tools"] = new JObject
+                        {
+                            ["listChanged"] =
+                                Protocol.SubscriptionStream.Emits(Protocol.SubscriptionStream.ToolsListChanged)
+                        },
+                        ["resources"] = new JObject
+                        {
+                            ["subscribe"] = false,
+                            ["listChanged"] =
+                                Protocol.SubscriptionStream.Emits(Protocol.SubscriptionStream.ResourcesListChanged)
+                        },
+                        ["prompts"] = new JObject
+                        {
+                            ["listChanged"] =
+                                Protocol.SubscriptionStream.Emits(Protocol.SubscriptionStream.PromptsListChanged)
+                        },
                         ["completions"] = new JObject(),
                         ["logging"] = new JObject()
                     };
@@ -653,10 +1092,25 @@ namespace Horizun.Server
                     return null; // notification, no reply
 
                 case "ping":
+                    // Removed in 2026-07-28. A modern client asking for it is asking for a
+                    // method this revision does not have, and answering anyway would teach
+                    // it that the method exists here.
+                    if (modern)
+                        throw new McpError(-32601,
+                            "'ping' was removed in " + Protocol.McpRevision.Latest + ". Liveness is answered by any " +
+                            "ordinary request; for the bridge's own health call the horizun_health tool.");
                     return new JObject();
 
                 case "tools/list":
-                    return new JObject { ["tools"] = Tools.List(_negotiatedProtocol == ProtocolNegotiation.Latest) };
+                    // The task-support hint is per era: the legacy field describes the
+                    // 2025-11-25 core tasks, and the modern client learns the same thing
+                    // from the extension it declared.
+                    return new JObject
+                    {
+                        ["tools"] = Tools.List(modern
+                            ? envelope.Declares(Protocol.ExtensionRegistry.Tasks)
+                            : _negotiatedProtocol == ProtocolNegotiation.Latest)
+                    };
 
                 case "resources/list":
                     return McpResources.List(prms);
@@ -673,14 +1127,46 @@ namespace Horizun.Server
                 case "completion/complete":
                     return McpCompletions.Complete(prms);
 
+                case "resources/templates/list":
+                    // No templated resources: every horizun:// URI this server serves is
+                    // a fixed one. An empty list is the answer, and it still has to be an
+                    // ANSWER - a client that gets "method not found" for a list method the
+                    // spec requires cannot tell that apart from a broken server.
+                    return new JObject { ["resourceTemplates"] = new JArray() };
+
                 case "logging/setLevel":
+                    // Removed in 2026-07-28: the level is a per-request _meta field now, and
+                    // this server honours it - see McpLogging.EmitForRequest. The sentence
+                    // below is an instruction that works; until this build it named a field
+                    // that was parsed and never read.
+                    if (modern)
+                        throw new McpError(-32601,
+                            "'logging/setLevel' was removed in " + Protocol.McpRevision.Latest + ". Set " +
+                            "_meta['" + Protocol.RequestEnvelope.LogLevelKey + "'] on the request you want logs " +
+                            "for; this server emits none for a request that did not ask. The notifications it " +
+                            "emits for such a request carry the request id under _meta['io.horizunhub/requestId'], " +
+                            "which is a vendor key because this revision defines no correlation field for logs.");
                     return McpLogging.SetLevel(prms);
 
                 case "tasks/get":
+                    // Two spellings of one durable store. The modern one carries the
+                    // outcome, because its revision has no blocking tasks/result to
+                    // carry it; the legacy one is untouched.
+                    if (modern) return Protocol.ModernTasks.Get(prms, envelope);
                     RequireTasksProtocol();
                     return McpTasks.Get(prms);
 
+                case "tasks/update":
+                    return Protocol.ModernTasks.Update(prms, envelope);
+
+                case "tasks/cancel":
+                    return Protocol.ModernTasks.Cancel(prms, envelope);
+
                 case "tasks/list":
+                    if (modern)
+                        throw new McpError(-32601,
+                            "tasks/list does not exist in the " + Protocol.ExtensionRegistry.Tasks + " extension; " +
+                            "it was removed when tasks left the core protocol. Use the taskId you were given.");
                     RequireTasksProtocol();
                     // stdio has no requestor identity to bind persistent task metadata
                     // to. The Tasks security guidance says such receivers SHOULD NOT
@@ -690,8 +1176,22 @@ namespace Horizun.Server
                         "tasks/list is not available on this identity-less stdio transport. Use the taskId returned when the task was created.");
 
                 case "tasks/result":
+                    if (modern)
+                        throw new McpError(-32601,
+                            "tasks/result was removed when tasks became the " + Protocol.ExtensionRegistry.Tasks +
+                            " extension. Poll tasks/get: its reply carries the final result once the task is " +
+                            "completed, and the error once it has failed.");
                     throw new McpError(-32600,
                         "tasks/result was sent as a notification (no id), so there is nowhere to return its result.");
+
+                case "subscriptions/listen":
+                    // A request reaches DispatchSubscription and never gets here. Arriving
+                    // here means it came as a notification - no id, so no subscriptionId
+                    // to tag anything with and nowhere to report that the stream ended.
+                    throw new McpError(-32600,
+                        "subscriptions/listen was sent as a notification (no id). The subscription is identified " +
+                        "by the request id and the stream ends by answering it, so there is nothing to open. " +
+                        "Send it as a request with an id.");
 
                 case "tools/call":
                     // A request reaches DispatchToolCall and never gets here. Arriving here
@@ -726,9 +1226,13 @@ namespace Horizun.Server
             catch { return null; }
         }
 
-        private static JToken CallTool(JObject prms, CancellationToken ct) => CallTool(prms,ct,null);
+        private static JToken CallTool(JObject prms, CancellationToken ct) => CallTool(prms,ct,null,null);
 
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe)
+            => CallTool(prms, ct, observe, null);
+
+        private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe,
+                                       Protocol.RequestEnvelope envelope)
         {
             // -32602 is INVALID PARAMS, and each of these is a different way of being
             // invalid. They used to collapse: a missing name became "Unknown tool: ''",
@@ -766,6 +1270,11 @@ namespace Horizun.Server
 
             if (prms?["task"] != null)
             {
+                // Two spellings, one durable store. A modern client gets the extension's
+                // CreateTaskResult shape; a legacy one gets the 2025-11-25 core shape it
+                // negotiated. Neither can reach the other's field names.
+                if (envelope != null && envelope.Era == Protocol.McpEra.Modern)
+                    return Protocol.ModernTasks.CreateResult(prms, CallTool, ct, envelope);
                 RequireTasksProtocol();
                 return McpTasks.Create(prms, CallTool, ct);
             }
@@ -943,6 +1452,17 @@ namespace Horizun.Server
             if (ok)
             {
                 JToken data = reply["data"];
+
+                // BOTH HALVES, IN THE ONE ANSWER THAT EXISTS TO IDENTIFY THEM. health
+                // already reports the add-in's version, commit and assembly hash, asked
+                // of the add-in rather than guessed - and said nothing about the server
+                // that forwarded it, which is the other half of "which build is that?".
+                // Two binaries built from the same commit with different uncommitted
+                // changes are the same version and different software; this is where a
+                // support conversation, or a benchmark run, gets to tell them apart.
+                if (def.Command == "horizun_health" && data is JObject health)
+                    health["server_provenance"] = Protocol.ProvenanceStamp.Current();
+
                 return WithImageIfAny(data, reply["revit_said"],
                                       reply["fallback"] as JObject,
                                       reply["capability_gaps"] as JArray);

@@ -42,6 +42,33 @@ namespace Horizun.Core.Tests
         private static string Store() => Source("src", "Horizun.Revit", "Core", "CadProvenanceStore.cs");
         private static string Contract() => Source("src", "Horizun.Contracts", "Contract.cs");
 
+        // MEASURED (campaign 5b): in a Revit with a Spanish interface the system family is "Muro básico", and a
+        // set that says "Basic Wall: Generic - 8\"" found nothing. Wall types are also matched by their
+        // language-independent label, in the plan and in the update.
+        [Fact]
+        public void Wall_types_are_found_by_their_language_independent_label_too()
+        {
+            string names = Source("src", "Horizun.Revit", "Commands", "TypeNames.cs");
+            Assert.Contains("case WallKind.Basic: family = \"Basic Wall\"", names);
+            string plan = Source("src", "Horizun.Revit", "Commands", "PlanFromCadCommand.cs");
+            Assert.Contains("TypeNames.Canonical(t), name", plan);
+            string update = Plan();
+            Assert.Equal(2, System.Text.RegularExpressions.Regex.Matches(update, @"TypeNames\.Matches\(").Count);
+            Assert.DoesNotContain("wt.FamilyName + \": \" + wt.Name", update);
+        }
+
+        // MEASURED (campaign 5, doors on W3): a decided delete emitted AFTER the re-shape left a door with no
+        // wall under it and Revit rolled the whole update back. The delete goes before its split's set_curve.
+        [Fact]
+        public void A_decided_dependent_delete_is_emitted_before_the_reshape_of_its_split()
+        {
+            string plan = Plan();
+            int delete = plan.IndexOf("\"cad-update-dependent-delete-\"", System.StringComparison.Ordinal);
+            int move = plan.IndexOf("\"cad-update-move-\" + (n++)", System.StringComparison.Ordinal);
+            Assert.True(delete > 0 && move > 0 && delete < move, "the decided delete must be emitted before the move");
+            Assert.Single(System.Text.RegularExpressions.Regex.Matches(plan, "\"cad-update-dependent-delete-\""));
+        }
+
         [Fact]
         public void A_placed_DWG_is_sampled_by_its_total_transform_so_a_move_can_be_verified()
         {
@@ -51,6 +78,43 @@ namespace Horizun.Core.Tests
             string src = Source("src", "Horizun.Revit", "Commands", "TransformElementsCommand.cs");
             Assert.Contains("var instance = e as Instance;", src);
             Assert.Contains("instance.GetTotalTransform()", src);
+        }
+
+        [Fact]
+        public void A_hosted_instance_keeps_its_host_or_the_transform_is_rolled_back_and_a_turn_turns_it()
+        {
+            // MEASURED on a face-hosted receptacle: a 300 mm move along its wall left
+            // the face, Revit kept the device with NO host, and the point check
+            // verified the move. And a turn about an axis through the element's own
+            // point moves no point, so the point check alone verifies any turn.
+            string src = Source("src", "Horizun.Revit", "Commands", "TransformElementsCommand.cs");
+            int apply = src.IndexOf("foreach (Plan p in plans) Apply(doc, p);", StringComparison.Ordinal);
+            int guard = src.IndexOf("foreach (Plan p in plans) GuardHosts(doc, p);", StringComparison.Ordinal);
+            int commit = src.IndexOf("Guard.Commit(tx, txName);", StringComparison.Ordinal);
+            Assert.True(apply > 0 && guard > apply && commit > guard, "the host guard runs after the change and before the commit");
+            Assert.Contains("\"host_changed: \" + p.Operation", src);
+            Assert.Contains("double? off = OffItsFaceMm(element);", src);
+            Assert.Contains("private const double FaceToleranceMm = 0.5;", src);
+            Assert.Contains("if (host.HasValue) p.HostBefore[raw] = host.Value;", src);
+            Assert.Contains("if (op == \"rotate\" || op == \"mirror\") p.Axes[raw] = Axes(element);", src);
+            Assert.Contains("case \"mirror\": ElementTransformUtils.MirrorElements(doc, p.Ids, p.MirrorPlane, false); break;", src);
+            Assert.Contains("p.Rotation.OfVector(axesBefore[1]).IsAlmostEqualTo(axesAfter[1], 1e-6)", src);
+            Assert.Contains("detail[\"orientation_not_turned\"] = why;", src);
+            Assert.Contains("rolled back whole with host_changed", Contract());
+        }
+
+        [Fact]
+        public void A_procedure_can_hand_the_rehearsal_tokens_on_whole_and_an_empty_plan_writes_nothing()
+        {
+            string src = Source("src", "Horizun.Revit", "Commands", "ApplyCadPlanCommand.cs");
+            Assert.Contains("(request[\"confirmation_tokens\"] as JObject)?.Value<string>((string)action[\"key\"])", src);
+            Assert.Contains("[\"state\"] = \"nothing_to_apply\"", src);
+            Assert.Contains("[\"rehearsal\"] = new JObject { [\"tokens_by_key\"] = new JObject() }", src);
+            // The empty answer comes after the binding was re-measured, never before.
+            int drift = src.IndexOf("if (drift.Count > 0)", StringComparison.Ordinal);
+            int empty = src.IndexOf("[\"state\"] = \"nothing_to_apply\"", StringComparison.Ordinal);
+            Assert.True(drift > 0 && empty > drift);
+            Assert.Contains("\"\"confirmation_tokens\"\": { \"\"type\"\": \"\"object\"\"", Contract());
         }
 
         // ------------------------------------------------------- geometry_id
@@ -138,23 +202,33 @@ namespace Horizun.Core.Tests
         // ------------------------------------------------------- migration
 
         [Fact]
-        public void The_store_keeps_the_v1_guid_reads_it_second_and_writes_only_v2()
+        public void The_store_keeps_every_older_guid_reads_newest_first_and_writes_only_v3()
         {
             string src = Store();
             Assert.Contains("SchemaGuidV1 = new Guid(\"7b2f4c18-5d3a-4e6b-9a71-3c0f8e2d15a4\")", src);
             Assert.Contains("SchemaGuidV2 = new Guid(\"c4a7e9d2-6b18-4f3c-8e5a-2d91f07b6c43\")", src);
-            Assert.Contains("public const int CurrentVersion = 2;", src);
-            Assert.Contains("new SchemaBuilder(SchemaGuidV2)", src);
+            Assert.Contains("SchemaGuidV3 = new Guid(\"5e0d3b7a-91c4-4f26-b8e3-7a2c6d19f40e\")", src);
+            Assert.Contains("SchemaGuidV4 = new Guid(\"ff45f28f-b5b8-4ebd-bdc0-1bec2bd373f5\")", src);
+            Assert.Contains("public const int CurrentVersion = 4;", src);
+            Assert.Contains("new SchemaBuilder(SchemaGuidV4)", src);
+            Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV3)", src);
+            Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV2)", src);
             Assert.DoesNotContain("new SchemaBuilder(SchemaGuidV1)", src);
-            // Read: v2 first, v1 as the fallback, placement fields only from v2.
-            int v2 = src.IndexOf("Schema.Lookup(SchemaGuidV2);\n                if (schema != null)", StringComparison.Ordinal);
+            Assert.Contains("AllSchemaGuids = { SchemaGuidV4, SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 }", src);
+            // Read: v4, v3, v2, then v1; placement fields from v2 on, the reading from v3, the set from v4.
+            int v4 = src.IndexOf("Schema schema = Schema.Lookup(SchemaGuidV4);", StringComparison.Ordinal);
+            int v3 = src.IndexOf("(schema = Schema.Lookup(SchemaGuidV3)) != null", StringComparison.Ordinal);
+            int v2 = src.IndexOf("(schema = Schema.Lookup(SchemaGuidV2)) != null", StringComparison.Ordinal);
             int v1 = src.IndexOf("schema = Schema.Lookup(SchemaGuidV1);", StringComparison.Ordinal);
-            Assert.True(v2 > 0 && v1 > v2, "Read must look for v2 before falling back to v1");
+            Assert.True(v4 > 0 && v3 > v4 && v2 > v3 && v1 > v2, "Read must look for v4, then v3, v2, v1");
+            Assert.Contains("if (v4)\n                    p.SourceSetSha256", src);
             Assert.Contains("if (v2)\n                {\n                    p.PlacementId", src);
-            // Write: the v1 entity is removed AFTER the v2 write landed.
+            Assert.Contains("if (v3)\n                {\n                    p.InterpretationVersion", src);
+            // Write: the older entities are removed AFTER the v3 write landed.
             Assert.Contains("element.SetEntity(entity);", src);
-            Assert.True(src.IndexOf("RemoveV1(element);", StringComparison.Ordinal) >
+            Assert.True(src.IndexOf("RemoveOlder(element);", StringComparison.Ordinal) >
                         src.IndexOf("element.SetEntity(entity);", StringComparison.Ordinal));
+            Assert.Contains("foreach (Guid guid in new[] { SchemaGuidV3, SchemaGuidV2, SchemaGuidV1 })", src);
         }
 
         [Fact]
@@ -191,8 +265,81 @@ namespace Horizun.Core.Tests
             Assert.Contains("[\"migrated_from_v1\"] = migrated", apply);
 
             string plan = Plan();
-            Assert.Contains("Restamp(update, scope, move != null && acceptMove)", plan);
+            Assert.Contains("Restamp(update, scope, move != null && acceptMove, subjects, facts.FileSha256, sourceSet,", plan);
+            // the drawing is read WITH its references: the set's identity travels beside the host's
+            Assert.Contains("string sourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);", plan);
+            Assert.Contains("SourceFileSha256 = facts.FileSha256,", first);
+            Assert.Contains("SourceSetSha256 = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),", first);
+            Assert.DoesNotContain("?? facts.FileSha256", plan);
             Assert.Contains("[\"key\"] = \"cad-update-restamp\"", plan);
+            // What the update verified is carried to the new revision; a relayered
+            // match is not, or the change the review is about would disappear.
+            Assert.Contains("reason = CadPlacementRules.RestampCarried", plan);
+            Assert.Contains("a.Classification != CadChange.Relayered", plan);
+            // ...and only what the update left as it is: a held change keeps its revision.
+            Assert.Contains("else if (a.Kind == \"leave\" && a.CandidateId != null", plan);
+            Assert.Contains("if (reason == CadPlacementRules.RestampCarried || reason == CadPlacementRules.RestampAccepted)", apply);
+        }
+
+        [Fact]
+        public void An_earlier_version_of_the_same_rules_is_claimed_only_when_declared()
+        {
+            // MEASURED (revision C): a rules change - one test type mapped to another -
+            // refused as scope_unidentified, because every element named the old rules.
+            string plan = Plan();
+            Assert.Contains("request[\"supersedes_requirement_set_sha256\"]", plan);
+            Assert.Contains("rulesLineage.Contains(s.Provenance.RequirementSetSha256))", plan);
+            // another set's elements are refused, not claimed
+            Assert.Contains("rules_lineage_other_set:", plan);
+            Assert.Contains("!string.Equals(s.Provenance.RequirementSetId, set.Id, StringComparison.Ordinal)", plan);
+            Assert.Contains("reason = CadPlacementRules.RestampRulesSuperseded;", plan);
+            Assert.Contains("[\"claimed_under_earlier_rules\"] = underEarlierRules", plan);
+
+            string apply = Apply();
+            // newer rules are claimed only when every action applied
+            Assert.Contains("if (reason == CadPlacementRules.RestampRulesSuperseded && failures > 0)", apply);
+            Assert.Contains("p.RequirementSetSha256 = provenanceTemplate.Value<string>(\"requirement_set_sha256\")", apply);
+            Assert.Contains("supersedes_requirement_set_sha256", Source("src", "Horizun.Contracts", "Contract.cs"));
+        }
+
+        [Fact]
+        public void An_accepted_split_is_carried_out_whole_or_held_whole()
+        {
+            string plan = Plan();
+            // decided before its pieces are planned: width, hosted instances, occupancy
+            Assert.Contains("HoldSplit(update, a, \"kept_piece_is_another_thickness\"", plan);
+            Assert.Contains("double widthTolerance = keptRule?.WallTypeToleranceMm ?? set.ThicknessToleranceMm;", plan);
+            // another width is a retype when the set lists the type; the dependents are classified piece by piece
+            Assert.Contains("JObject retype = RetypeOperation(doc, a, interpretation, set, out noType);", plan);
+            Assert.Contains("HoldSplit(update, a, \"dependents_need_a_person\", dependentsHeld);", plan);
+            Assert.Contains("EmitSubstitution(doc, fi, host, set, target, \"cad-update-substitute-\" + sub++, actions, createIndex,", plan);
+            Assert.Contains("CadSplitRules.ApplyDecisions(pieces, deps, depCtx?.Decisions", plan);
+            Assert.Contains("Rehome(doc, update, set, target, actions, createIndex, depCtx);", plan);
+            Assert.Contains("JObject row = DecideOrphan(doc, fi, ", plan);
+            string apply = Apply();
+            Assert.Contains("CadSplitDependents.Resolve(args, cid => CreatedFor(touched, index, cid), false);", apply);
+            Assert.Contains("[\"substitutions\"] = new JArray(", apply);
+            // a re-shape puts back what its wall carried along; every action after a write is rehearsed in place
+            Assert.Contains("Dictionary<long, Tuple<XYZ, long>> before = HostedPoints(doc, args);", apply);
+            Assert.Contains("[\"hosted_kept_in_place\"] = keptInPlace", apply);
+            Assert.Contains("bool hadPlaceholder = args.ToString(Formatting.None).Contains(CadSplitDependents.CreatedFor) ||", apply);
+            Assert.Contains("wroteAlready;", apply);
+            Assert.Contains("if (failures == 0 &&", apply);
+            Assert.Contains("[\"hosted_to_substitute\"] = new JArray(", plan);
+            Assert.Contains("HoldSplit(update, a, \"kept_piece_occupied\"", plan);
+            // its pieces are measured against the element's NEW line, not the one it stands on
+            Assert.Contains("reshapedTo);", plan);
+            Assert.Contains("reshapedTo.TryGetValue(Rid.Value(w.Id), out next)",
+                            Source("src", "Horizun.Revit", "Commands", "PlanFromCadCommand.cs"));
+            // a piece that cannot be built holds the element and drops its siblings
+            Assert.Contains("HoldSplit(update, a, \"a_piece_cannot_be_built\"", plan);
+            Assert.Contains("[\"reason\"] = \"split_held_with_its_element\"", plan);
+            // the element is shortened before its pieces are built
+            Assert.Contains("if (splitApplied && firstMove > 0)", plan);
+            // a shortened wall never leaves what it hosts behind
+            Assert.Contains("a.Evidence[\"hosted_outside_the_new_line\"] = beyond;", plan);
+            // old id -> the pieces
+            Assert.Contains("[\"splits\"] = new JArray(update.Of(\"set_curve\")", plan);
         }
 
         // ------------------------------------------------------- retries

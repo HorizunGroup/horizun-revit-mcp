@@ -74,7 +74,15 @@ namespace Horizun.Core.Tests
             string ribbon = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "Ribbon.cs"));
             string text = File.ReadAllText(Path.Combine(RepoRoot(), "src", "Horizun.Revit", "RibbonText.cs"));
             int buttons = CountOf(ribbon, "new PushButtonData(");
-            Assert.Equal(4, buttons);
+            // NAMED, NOT COUNTED. The operations pane gained a button of its own - it
+            // was registered and unreachable - and it shows a pane rather than changing
+            // anything the owner controls, so it does not belong behind the menu.
+            foreach (string name in new[] { "\"HorizunBridgeStatus\"", "\"HorizunOpenHub\"",
+                                            "\"HorizunPythonPermission\"", "\"HorizunOperationsPane\"",
+                                            "\"HorizunAdvancedOptions\"" })
+                Assert.Contains(name, ribbon, StringComparison.Ordinal);
+            Assert.Equal(5, buttons);
+            Assert.Contains("typeof(Horizun.Revit.Ui.ShowOperationsPaneCommand)", ribbon, StringComparison.Ordinal);
             Assert.True(CountOf(ribbon, "RibbonText.") >= buttons, "every button reads its text from RibbonText");
             Assert.DoesNotContain("\"Modo\\nBIM\"", ribbon, StringComparison.Ordinal);
             Assert.Contains("typeof(AdvancedOptionsCommand)", ribbon, StringComparison.Ordinal);

@@ -31,6 +31,10 @@ namespace Horizun.Revit.Commands
 
             Document host = app.ActiveUIDocument?.Document;
             if (host == null) return CommandResult.Fail("No active Revit document.");
+            // A READ THAT NAMES A DOCUMENT READS THAT ONE OR NOTHING. MEASURED (campaign 4): a query
+            // naming a model just reopened answered 0 rows from another document, cleanly.
+            CommandResult wrongDocument = DocumentGate.ReadGuard(host, request, "horizun_query_model");
+            if (wrongDocument != null) return wrongDocument;
 
             bool includeLinks = request["include_links"] == null || request.Value<bool>("include_links");
             string scope = (request.Value<string>("scope") ?? "model").ToLowerInvariant();
@@ -149,9 +153,21 @@ namespace Horizun.Revit.Commands
             int unreadableTotal = 0;
             long collectionStartMs = timer.ElapsedMilliseconds;
 
+            // OPT-IN cooperative reading, parsed ONCE. Absent means today's behaviour, byte
+            // for byte: no scope is opened and no field is added to the reply. See
+            // Core/CooperativeReadOptions.cs for why a published reader may not change
+            // underneath its callers.
+            string coopFingerprint = CooperativeOptions.FingerprintOf(request, Name, host);
+            CooperativeOptions cooperative = CooperativeOptions.Read(request, coopFingerprint);
+            if (cooperative.Refusal != null)
+                return CommandResult.Fail("cooperative: " + cooperative.Refusal);
+            // ONE budget for the whole read, host and links together.
+            CooperativeRead.Scope coopScope = cooperative.Begin("query_model", 0);
+
             Collect(host, "host", host.Title, null, Transform.Identity, viewId, categories, request,
                     predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
+                    fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
+                    coopScope, cooperative);
 
             if (includeLinks)
             {
@@ -181,9 +197,11 @@ namespace Horizun.Revit.Commands
                         });
                         continue;
                     }
+                    if (coopScope != null && !coopScope.Complete) break;
                     Collect(linked, "link", linked.Title, Rid.Value(link.Id), transform, null, categories, request,
                             predicates, projected, queryBox, includeBox, coordinateScale, includeTypes, includeMep,
-                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary);
+                            fieldSet, compactRows, matched, unreadable, ref unreadableTotal, summary,
+                            coopScope, cooperative);
                 }
             }
 
@@ -253,7 +271,12 @@ namespace Horizun.Revit.Commands
             string nextCursor = nextOffset < matched.Count ? MakeCursor(nextOffset, queryHash, setHash) : null;
 
             JObject coverage = FederatedVisibility.Measure(host, includeLinks);
-            bool coverageComplete = coverage.Value<bool>("coverage_complete") && unreadableTotal == 0;
+            // AND THE READ ITSELF HAS TO HAVE FINISHED. This result is CACHED when coverage
+            // is complete; a read that stopped early and still claimed complete coverage
+            // would be stored and handed to later callers as a full answer, outliving the
+            // request that produced it.
+            bool coverageComplete = coverage.Value<bool>("coverage_complete") && unreadableTotal == 0
+                                    && (coopScope == null || coopScope.Complete);
             var queryResult = new JObject
             {
                 ["document"] = host.Title,
@@ -275,6 +298,13 @@ namespace Horizun.Revit.Commands
                 ["summary"] = Summary(matched),
                 ["rows"] = new JArray(page.Select(r => r.Json))
             };
+            // Present ONLY when the caller asked. Null is dropped rather than written, so a
+            // reply to an ordinary request is byte-identical to what it was.
+            JObject coopReport = cooperative.Report(
+                coopScope, offset + page.Count, coopFingerprint,
+                nextCursor != null || (coopScope != null && !coopScope.Complete),
+                ownCursorField: "next_cursor");
+            if (coopReport != null) queryResult["cooperative"] = coopReport;
             if (includeMep)
             {
                 // Aggregated over every MATCHED row (not only the page), because "how
@@ -327,7 +357,9 @@ namespace Horizun.Revit.Commands
                                     JArray predicates, List<string> returnParameters, Box queryBox, bool includeBox,
                                     double coordinateScale, bool includeTypes, bool includeMep, HashSet<string> fields,
                                     bool compactParameters, List<Row> rows, JArray unreadable,
-                                    ref int unreadableTotal, QuerySummaryAccumulator summary = null)
+                                    ref int unreadableTotal, QuerySummaryAccumulator summary = null,
+                                    CooperativeRead.Scope coopScope = null,
+                                    CooperativeOptions cooperative = null)
         {
             HashSet<long> categoryIds = ResolveCategories(source, categories, unreadable, ref unreadableTotal, sourceName);
             FilteredElementCollector collector = viewId == null
@@ -384,10 +416,22 @@ namespace Horizun.Revit.Commands
                     .GroupBy(e => Rid.Value(e.Id)).Select(g => g.First());
             }
 
+            // The caller's cooperative scope, when there is one. Parsed ONCE in Execute and
+            // shared across the host pass and every link pass: one budget for the whole read,
+            // because parsing it here would hand a fresh twenty seconds to each of six links.
+            //
+            // NO SKIPPING HERE. This command has its own cursor over the MATCHED set, and a
+            // second position over the EXAMINED elements would be a different number with the
+            // same name - and this method runs once per document, so resuming a federated
+            // read would skip the same count again inside every link.
             var typeCache = new Dictionary<long, Element>();
             var levelCache = new Dictionary<long, string>();
             foreach (Element element in candidates)
             {
+                // Between elements. A query that stopped early says so; one that stopped
+                // mid-element would return a row nobody could tell was incomplete.
+                if (coopScope != null && !coopScope.Continue()) break;
+                if (coopScope != null && cooperative != null && cooperative.UnitsExhausted(coopScope.Done)) break;
                 long id = Rid.Value(element.Id);
                 try
                 {
@@ -493,6 +537,22 @@ namespace Horizun.Revit.Commands
                         }
                     }
                     if (includeBox) json["bounding_box"] = BoxJson(elementBox, coordinateScale);
+                    if (request.Value<bool?>("include_cad_provenance") == true)
+                    {
+                        // WHICH DRAWING, WHICH RULES AND WHICH READING built it - the
+                        // record every CAD command writes, read back as stored.
+                        string problem;
+                        CadProvenance cad = null;
+                        try { cad = CadProvenanceStore.Read(element, out problem); }
+                        catch (Exception ex) { problem = ex.Message; }
+                        json["cad_provenance"] = cad == null ? JValue.CreateNull() : (JToken)cad.ToJson();
+                        if (problem != null) json["cad_provenance_problem"] = problem;
+                    }
+                    if (request.Value<bool?>("include_orientation") == true)
+                    {
+                        JObject placement = Placement(element, transform, coordinateScale);
+                        if (placement != null) json["placement"] = placement;
+                    }
                     if (includeMep)
                     {
                         // Connector facts, opt-in: domain, shape/size, open or connected,
@@ -841,6 +901,107 @@ namespace Horizun.Revit.Commands
             if (units == "m") { scale = 0.3048; return true; }
             if (units == "mm") { scale = 304.8; return true; }
             scale = 0; return false;
+        }
+
+        /// <summary>
+        /// WHERE AN INSTANCE STANDS AND WHICH WAY IT FACES, as Revit stores it - for
+        /// a check that must not borrow the placing code's reasoning. A family
+        /// instance gives its point, facing, hand, reflection flags and the stable
+        /// reference of the face it is hosted on; a wall its location line, width
+        /// and exterior normal. Nothing here is derived.
+        /// </summary>
+        private static JObject Placement(Element element, Transform transform, double scale)
+        {
+            Func<XYZ, JArray> P = p =>
+            {
+                XYZ q = transform == null ? p : transform.OfPoint(p);
+                return new JArray(Math.Round(q.X * scale, 3), Math.Round(q.Y * scale, 3), Math.Round(q.Z * scale, 3));
+            };
+            Func<XYZ, JArray> V = v =>
+            {
+                XYZ q = transform == null ? v : transform.OfVector(v);
+                return new JArray(Math.Round(q.X, 6), Math.Round(q.Y, 6), Math.Round(q.Z, 6));
+            };
+            try
+            {
+                var fi = element as FamilyInstance;
+                if (fi != null)
+                {
+                    var o = new JObject { ["kind"] = "family_instance" };
+                    var lp = fi.Location as LocationPoint;
+                    if (lp != null)
+                    {
+                        o["point"] = P(lp.Point);
+                        try { o["rotation_degrees"] = Math.Round(lp.Rotation * 180.0 / Math.PI, 4); } catch { }
+                    }
+                    try { o["facing"] = V(fi.FacingOrientation); } catch { }
+                    try { o["hand"] = V(fi.HandOrientation); } catch { }
+                    try
+                    {
+                        // A face-based family's facing lies in its host face; the way it
+                        // looks out of that face is its transform's Z axis.
+                        Transform t = fi.GetTotalTransform();
+                        o["transform"] = new JObject
+                        {
+                            ["origin"] = P(t.Origin),
+                            ["basis_x"] = V(t.BasisX),
+                            ["basis_y"] = V(t.BasisY),
+                            ["basis_z"] = V(t.BasisZ)
+                        };
+                    }
+                    catch { }
+                    try { o["mirrored"] = fi.Mirrored; } catch { }
+                    try { o["hand_flipped"] = fi.HandFlipped; } catch { }
+                    try { o["facing_flipped"] = fi.FacingFlipped; } catch { }
+                    try
+                    {
+                        Reference face = fi.HostFace;
+                        if (face != null)
+                        {
+                            o["host_face"] = face.ConvertToStableRepresentation(element.Document);
+                            // WHICH FACE, AND WHETHER IT IS STILL THERE. A face-hosted instance keeps its reference
+                            // after its host is edited; the reference may no longer resolve to a face, or name
+                            // another kind of face. Read, never assumed.
+                            string kind = CreateElementsPlacement.FaceKind(element.Document, fi.Host, face);
+                            o["host_face_kind"] = kind;
+                            o["host_face_resolves"] = kind != "unresolved";
+                            // ON ITS FACE, OR NOT: the instance's point measured against the face it names.
+                            try
+                            {
+                                var hf = element.Document.GetElement(face)?.GetGeometryObjectFromReference(face) as Face;
+                                XYZ at = (fi.Location as LocationPoint)?.Point;
+                                IntersectionResult pr = hf != null && at != null ? hf.Project(at) : null;
+                                if (pr != null)
+                                {
+                                    o["host_face_distance_mm"] = Math.Round(pr.Distance * 304.8, 1);
+                                    o["on_host_face"] = pr.Distance * 304.8 <= 1.0 && hf.IsInside(pr.UVPoint);
+                                }
+                                else if (hf != null) o["on_host_face"] = false;
+                            }
+                            catch { }
+                        }
+                    }
+                    catch { }
+                    return o;
+                }
+                var wall = element as Wall;
+                if (wall != null)
+                {
+                    var o = new JObject { ["kind"] = "wall" };
+                    var line = (wall.Location as LocationCurve)?.Curve;
+                    if (line != null)
+                    {
+                        o["start"] = P(line.GetEndPoint(0));
+                        o["end"] = P(line.GetEndPoint(1));
+                    }
+                    try { o["width"] = Math.Round(wall.Width * scale, 3); } catch { }
+                    try { o["exterior_normal"] = V(wall.Orientation); } catch { }
+                    try { o["flipped"] = wall.Flipped; } catch { }
+                    return o;
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static JToken BoxJson(Box b, double scale)

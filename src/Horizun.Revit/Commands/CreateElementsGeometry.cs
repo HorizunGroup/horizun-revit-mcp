@@ -13,7 +13,7 @@ namespace Horizun.Revit.Commands
         private static void NormalizePlan(Document doc, Plan p)
         {
             if (p.Input["source_reference"] != null) SourceTrace.Validate(p.Input["source_reference"] as JObject);
-            foreach (string name in new[] { "elevation", "height", "offset", "base_offset", "top_offset", "rotation_degrees", "slope_degrees", "slope_ratio" })
+            foreach (string name in new[] { "elevation", "height", "offset", "base_offset", "top_offset", "rotation_degrees", "slope_degrees", "slope_ratio", "facing_degrees", "side_dead_band_mm" })
                 if (p.Input[name] != null) GeometryInput.Number(p.Input[name], name);
             foreach (string name in new[] { "flip", "structural" })
                 if (p.Input[name] != null && p.Input[name].Type != JTokenType.Boolean) throw new ArgumentException(name + " must be boolean.");
@@ -115,7 +115,7 @@ namespace Horizun.Revit.Commands
         {
             doc.Regenerate();
             if (!(instance.Location is LocationPoint point)) throw new InvalidOperationException("Family has no point placement to verify.");
-            Parameter offset = instance.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            Parameter offset = ElevationParameter(instance);
             Level baseLevel = BaseLevelOf(doc, instance);
             bool governed = baseLevel != null && offset != null && !offset.IsReadOnly;
             XYZ delta = p.Start - point.Point;
@@ -175,7 +175,20 @@ namespace Horizun.Revit.Commands
         {
             if (!(e is FamilyInstance instance) || !(instance.Location is LocationPoint)) return null;
             Parameter level = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_PARAM);
+            if (level == null && e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM) == null)
+                level = e.get_Parameter(BuiltInParameter.FAMILY_LEVEL_PARAM);
             return level == null ? null : doc.GetElement(level.AsElementId()) as Level;
+        }
+
+        // THE PARAMETER THAT GOVERNS A POINT-PLACED INSTANCE'S HEIGHT. A column carries a
+        // base offset; a level-based or wall-based device carries "Elevation from Level".
+        // The second is used only where the first does not exist.
+        private static Parameter ElevationParameter(Element e)
+        {
+            Parameter offset = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            if (offset != null) return offset;
+            if (e is FamilyInstance fi && fi.HostFace != null) return null;
+            return e.get_Parameter(BuiltInParameter.INSTANCE_ELEVATION_PARAM);
         }
 
         // WHAT THE CALLER ASKED FOR IS A PLANE IN THE MODEL, NOT A LOCATION OBJECT.
@@ -188,6 +201,36 @@ namespace Horizun.Revit.Commands
         // verifying it against the element's OWN base constraint compares it with
         // the plane Revit builds from, and still fails when Revit moves the base or
         // rebinds the constraint to another level.
+        /// <summary>
+        /// How far a wall's end may slide ALONG its own line and still be the wall
+        /// that was asked for.
+        ///
+        /// Zero when the row disallowed joins - it asked for exactly this line and
+        /// Revit was told not to trim it. Otherwise the wall's own thickness,
+        /// which is the most a corner join can take: Revit trims back to where the
+        /// centrelines cross, and that is half the meeting wall's width.
+        /// </summary>
+        private static double JoinAllowanceFeet(Plan p)
+        {
+            if (string.Equals(p.Input.Value<string>("join_rule"), "none", StringComparison.Ordinal))
+                return 0.004;   // ~1 mm: Revit rounds, it does not move a wall it may not join
+
+            // The wall's own thickness, where it can be read: a corner trim takes
+            // the wall back to where the centrelines cross, which is at most half
+            // the meeting wall's width, and walls in one drawing are comparable.
+            try
+            {
+                var type = p.Type as WallType;
+                if (type != null && type.Width > 0) return type.Width;
+            }
+            catch { }
+            return 1.0;         // one foot, the widest corner trim this bridge accepts unmeasured
+        }
+
+        /// <summary>A direction as a comparable triple: rounded, so 0.9999999 and 1.0 are one answer.</summary>
+        private static JArray Direction(XYZ v) => v == null ? null : new JArray(
+            Math.Round(v.X, 4), Math.Round(v.Y, 4), Math.Round(v.Z, 4));
+
         private static double? GovernedBaseZ(Document doc, Element e)
         {
             if (e is Wall)
@@ -199,7 +242,7 @@ namespace Horizun.Revit.Commands
                 return null;
             }
             Level baseLevel = BaseLevelOf(doc, e);
-            Parameter instanceOffset = e.get_Parameter(BuiltInParameter.FAMILY_BASE_LEVEL_OFFSET_PARAM);
+            Parameter instanceOffset = ElevationParameter(e);
             if (baseLevel != null && instanceOffset != null) return baseLevel.ProjectElevation + instanceOffset.AsDouble();
             return null;
         }
@@ -234,7 +277,30 @@ namespace Horizun.Revit.Commands
                     foreach (Created made in created)
                     {
                         index = made.Index; var row = VerifyCreated(doc, made); rows.Add(row);
-                        if (row.Value<bool>("verified") != true) throw new InvalidOperationException("Requested properties do not match the committed element.");
+                        if (row.Value<bool>("verified") != true)
+                        {
+                            // WHICH PROPERTY, NOT JUST THAT ONE FAILED.
+                            //
+                            // This message used to say only that the committed
+                            // element disagreed with the request, and the whole
+                            // batch rolled back around it - so the one fact a
+                            // reader needs, and the only one this code has, was
+                            // thrown away. Naming the properties turns a retry
+                            // into a diagnosis.
+                            var wrong = new List<string>();
+                            foreach (JObject property in
+                                     (row["postconditions"]?["properties"] as JArray ?? new JArray()).OfType<JObject>())
+                            {
+                                if (property.Value<bool?>("matches") == true) continue;
+                                wrong.Add(property.Value<string>("property") + ": asked " +
+                                          (property["requested"]?.ToString() ?? "(none)") +
+                                          ", model has " +
+                                          (property["found_in_committed_model"]?.ToString() ?? "(unreadable)"));
+                            }
+                            throw new InvalidOperationException(
+                                "Requested properties do not match the committed element" +
+                                (wrong.Count == 0 ? "." : ": " + string.Join("; ", wrong) + "."));
+                        }
                     }
                     if (rehearsal)
                     {
@@ -411,14 +477,57 @@ namespace Horizun.Revit.Commands
                          (corners[1].DistanceTo(p.Start) <= GeometryInput.Tolerance && corners[0].DistanceTo(p.End) <= GeometryInput.Tolerance));
                 });
             }
-            if (p.Start != null && p.Kind != "wall_opening")
+            // A WALL IS CHECKED AS A LINE, NOT AS TWO POINTS.
+            //
+            // Revit may trim a wall's end back to the centreline of whatever it
+            // meets, and a row that demands the exact endpoint reports every
+            // joined corner as a failure - MEASURED at 1.6 mm ALONG the wall.
+            // What the row actually asked for is: this wall, on this line,
+            // running between these points. So it is checked as such - strictly
+            // across the line, with a stated allowance along it - and both
+            // numbers are measured and reported.
+            if (p.Kind == "wall" && p.Start != null && p.End != null && p.ArcThird == null)
+            {
+                XYZ asked0 = p.Start, asked1 = p.End;
+                XYZ direction = (asked1 - asked0).Normalize();
+                double allowanceFt = JoinAllowanceFeet(p);
+
+                Numeric("centreline_offset_mm", 0.0, () =>
+                {
+                    Curve built = ((LocationCurve)e.Location).Curve;
+                    double worst = 0;
+                    foreach (XYZ end in new[] { built.GetEndPoint(0), built.GetEndPoint(1) })
+                    {
+                        XYZ v = end - asked0;
+                        double along = v.DotProduct(direction);
+                        double across = (v - direction.Multiply(along)).GetLength();
+                        if (across > worst) worst = across;
+                    }
+                    return worst * 304.8;
+                }, 1.0);
+
+                Numeric("ends_slid_along_mm", 0.0, () =>
+                {
+                    Curve built = ((LocationCurve)e.Location).Curve;
+                    double span = (asked1 - asked0).GetLength();
+                    double worst = 0;
+                    foreach (XYZ end in new[] { built.GetEndPoint(0), built.GetEndPoint(1) })
+                    {
+                        double along = (end - asked0).DotProduct(direction);
+                        double slid = Math.Min(Math.Abs(along), Math.Abs(along - span));
+                        if (slid > worst) worst = slid;
+                    }
+                    return worst * 304.8;
+                }, allowanceFt * 304.8);
+            }
+            else if (p.Start != null && p.Kind != "wall_opening")
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.Start) : null;
                 XYZ PointNow() => elbow != null ? ReadElbowJunction(doc, made, elbow, 0) : e is Grid grid ? grid.Curve.GetEndPoint(0) : e.Location is LocationCurve curve ? curve.Curve.GetEndPoint(0) : ((LocationPoint)e.Location).Point;
                 for (int axis = 0; axis < (p.Kind == "room" ? 2 : 3); axis++)
                 { int a = axis; Numeric((elbow == null ? "start_" : "start_junction_") + "xyz"[a], p.Start[a], () => a == 2 && elbow == null ? (GovernedBaseZ(doc, e) ?? PointNow()[2]) : PointNow()[a]); }
             }
-            if (p.End != null && p.Kind != "wall_opening")
+            if (p.End != null && p.Kind != "wall_opening" && !(p.Kind == "wall" && p.ArcThird == null))
             {
                 Created elbow = e is MEPCurve ? BatchElbowAt(made, p.End) : null;
                 for (int axis = 0; axis < 3; axis++)
@@ -438,8 +547,53 @@ namespace Horizun.Revit.Commands
             }
             if (p.Kind == "family_instance" || p.Kind == "structural_column" || p.Kind == "structural_framing")
                 Exact("structural_type", p.StructuralType.ToString(), () => ((FamilyInstance)e).StructuralType.ToString());
+            if (p.Kind == "family_instance" && p.Input["flip"] != null)
+            {
+                // TWO OPERATIONS, TWO TRACES. flipHand sets HandFlipped; a
+                // reflected copy sets Mirrored and leaves HandFlipped alone.
+                // Checking the wrong one reports a reflection that did not happen.
+                bool wanted = p.Input.Value<bool?>("flip") ?? false;
+                if (p.MirrorMethod == "reflected_copy")
+                    Exact("mirrored", wanted, () => ((FamilyInstance)e).Mirrored);
+                else
+                    Exact("flip", wanted, () => ((FamilyInstance)e).HandFlipped);
+            }
             if (p.Host != null) Exact("host_id", Rid.Value(p.Host.Id), () => Rid.Value(e is Opening opening ? opening.Host.Id : ((FamilyInstance)e).Host.Id));
-            if (p.Input["rotation_degrees"] != null)
+
+            // THE FACE, NOT ONLY THE ELEMENT. A work-plane based instance can
+            // report the right host and sit on its other side, which is a device
+            // in the next room with every id matching.
+            if (p.FacePlacement != null)
+            {
+                Exact("host_face", p.FacePlacement.Face.ConvertToStableRepresentation(doc),
+                      () => ((FamilyInstance)e).HostFace?.ConvertToStableRepresentation(doc));
+                Exact("hand_direction",
+                      Direction(p.MirrorMethod == "reflected_copy"
+                                    ? p.FacePlacement.ReferenceDirection.Negate()
+                                    : p.FacePlacement.ReferenceDirection),
+                      () => Direction(((FamilyInstance)e).HandOrientation));
+            }
+            // ROTATION IS CHECKED WHERE IT MEANS WHAT THE ROW MEANT.
+            //
+            // For an instance standing on a level, LocationPoint.Rotation is the
+            // angle in plan the row asked for. For one hosted on a FACE it is
+            // measured in that face's own frame - a row asking for 180 degrees in
+            // plan came back 120 - so comparing them refuses a correct placement.
+            // The orientation of a face-hosted instance is checked by its hand
+            // direction instead, which is the thing the drawing's rotation was
+            // turned into.
+            // A wall-based instance turns with its wall; what the row's rotation meant is
+            // the side it faces, and that is what is checked.
+            if (p.HostedFacing != null)
+                Exact("facing_side", Direction(p.HostedFacing),
+                      () => Direction(((FamilyInstance)e).FacingOrientation));
+            // A REFLECTED COPY reads its rotation in a mirrored frame: MEASURED, a row asking
+            // 0 came back pi. What a reflection across the hand's plane keeps is the facing.
+            bool reflectedCopy = p.MirrorMethod == "reflected_copy" && p.FacingBeforeReflection != null;
+            if (reflectedCopy && p.FacePlacement == null && p.HostedFacing == null)
+                Exact("facing_after_reflection", Direction(p.FacingBeforeReflection),
+                      () => Direction(((FamilyInstance)e).FacingOrientation));
+            if (p.Input["rotation_degrees"] != null && p.FacePlacement == null && p.HostedFacing == null && !reflectedCopy)
                 Numeric("rotation", ((p.Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI),
                     () => ((((LocationPoint)e.Location).Rotation % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI), 1e-8);
             if (p.SystemType != null && (p.Kind == "duct" || p.Kind == "pipe"))
@@ -460,7 +614,7 @@ namespace Horizun.Revit.Commands
                     JToken actual = reads[field]();
                     if (tolerances.TryGetValue(field, out double tolerance))
                         check.Measure(field, expected[field].Value<double>(), actual.Value<double>(), tolerance,
-                            field == "rotation" ? "radians" : field == "roof_projected_area" ? "square feet" : field.StartsWith("slope_") ? "rise/run" : field.StartsWith("parameters.") ? "Revit internal" : "feet", "Revit parameter/location/sketch/face readback");
+                            field == "rotation" ? "radians" : field.EndsWith("_mm") ? "millimetres" : field == "roof_projected_area" ? "square feet" : field.StartsWith("slope_") ? "rise/run" : field.StartsWith("parameters.") ? "Revit internal" : "feet", "Revit parameter/location/sketch/face readback");
                     else check.Record(field, expected[field], actual, JToken.DeepEquals(expected[field], actual));
                 }
                 catch (Exception ex) { check.Unreadable(field, expected[field], ex.Message); }
@@ -486,6 +640,8 @@ namespace Horizun.Revit.Commands
                 ["postconditions"] = check.ToJson(),
                 ["source_comparison"] = traceComparison
             };
+            if (p.FacePlacement != null) row["placement"] = p.FacePlacement.Evidence;
+            if (p.HostedEvidence != null) row["placement"] = p.HostedEvidence;
             if (e?.Location is LocationPoint point && p.Level != null)
             {
                 row["coordinate_reference"] = "internal_origin";

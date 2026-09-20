@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // Interpretation: geometry plus a requirement set becomes CANDIDATES.
@@ -31,6 +31,8 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 
+using Newtonsoft.Json.Linq;
+
 namespace Horizun.Revit.Core
 {
     /// <summary>One named factor that moved a candidate's confidence, and what was measured.</summary>
@@ -56,12 +58,34 @@ namespace Horizun.Revit.Core
         public string GeometryId;
         /// <summary>What it is AND which layer it sits on. The identity an incremental run matches by.</summary>
         public string SemanticId;
+        /// <summary>The curve kind the identities were computed with; a piece of this candidate uses the same.</summary>
+        public CadCurveKind Kind;
+        /// <summary>
+        /// A PIECE of a drawn run cut where its section changes: the parent's semantic id and the piece's
+        /// anchor key ("end:lo", "block:&lt;label&gt;", "between:&lt;a&gt;|&lt;b&gt;"). Null for a whole run. Travels in the
+        /// provenance's source entities as "piece:&lt;parent&gt;#&lt;key&gt;" - never the enumeration order.
+        /// </summary>
+        public string PieceOf, PieceKey;
         public string ProposedKind;                         // rule.Produces
         public string RuleId;
         public string Layer;
         public string Discipline;
         public string Category;
         public string FamilyType;
+
+        /// <summary>What the rule said this is mounted on - "wall", "slab", or null.</summary>
+        public string HostedOn;
+
+        /// <summary>none | auto | butt, from the rule. Applied by the writer.</summary>
+        public string JoinRule;
+
+        /// <summary>The rule's mirror policy, and how this candidate resolved under it.</summary>
+        public string MirrorPolicy;
+        public string MirrorResolution;
+        public JObject MirrorEvidence;
+
+        /// <summary>For mirror = variant: the type the RULE says a mirrored symbol means.</summary>
+        public string MirrorEvidenceVariant;
         public string Level;
 
         /// <summary>The CAD entities this reading consumed. Provenance starts here.</summary>
@@ -141,6 +165,57 @@ namespace Horizun.Revit.Core
         public double? SillHeightMm;
         public double? HeadHeightMm;
         public double? DiameterMm;
+        /// <summary>A rectangular duct run's section, decided by CadDuctSections from the drawing's labels.</summary>
+        public double? SectionWidthMm, SectionHeightMm;
+
+        /// <summary>
+        /// The slope the rule declares for this run, when it declares one.
+        ///
+        /// It used to reach nothing: the interpretation validated the number and
+        /// then produced only a note in UnresolvedFacts, so the plan built the run
+        /// flat and the only trace was prose. The plan now reads this to decide
+        /// whether the run may be built at all before a fall walk gives it heights.
+        /// </summary>
+        public double? SlopePercent;
+
+        /// <summary>Rotation of a placed symbol, in radians, when the drawing gives one.</summary>
+        public double? RotationRadians;
+
+        /// <summary>
+        /// True when the symbol is MIRRORED - a block placed with a negative scale
+        /// on one axis and not the other.
+        ///
+        /// It is not cosmetic: a mirrored receptacle is on the other side of the
+        /// wall, and a mirrored unit layout is the apartment across the corridor.
+        /// </summary>
+        public bool Mirrored;
+
+        /// <summary>The block definition this candidate was read from, when it was read from one.</summary>
+        public string SourceBlockName;
+        /// <summary>The dynamic block behind an anonymous SourceBlockName, when there is one.</summary>
+        public string SourceEffectiveName;
+        /// <summary>The dynamic property values the source instance carried, when there were any.</summary>
+        public Dictionary<string, string> SourceDynamicProperties;
+
+        /// <summary>
+        /// Which way the device faces in plan, when the requirement set declares
+        /// it for this block: the declared block-frame direction, mirrored and
+        /// turned exactly as the insertion was. Null when undeclared - and then
+        /// the rotation is NOT read as a facing anywhere.
+        /// </summary>
+        public CadVector? Facing;
+
+        /// <summary>The block_facing pattern that declared <see cref="Facing"/>.</summary>
+        public string FacingDeclaredBy;
+
+        /// <summary>
+        /// Every attribute the instance carried, whether or not a rule mapped it.
+        ///
+        /// Reported as EVIDENCE and never written into the model on its own: a tag
+        /// nobody mapped has no parameter to go to, and inventing one is how a
+        /// model acquires data nobody can trace.
+        /// </summary>
+        public Dictionary<string, string> ObservedAttributes;
         public double? AreaMm2;
 
         public List<CadConfidenceFactor> ConfidenceFactors = new List<CadConfidenceFactor>();
@@ -166,27 +241,111 @@ namespace Horizun.Revit.Core
 
         /// <summary>Why it is not eligible, when it is not. Empty when it is.</summary>
         public List<string> IneligibleReasons = new List<string>();
+
+        /// <summary>
+        /// This candidate cut to <paramref name="geometry"/>: every decision the rule made is kept, the three
+        /// identities are those of the piece's own line (so the network and the update, which name runs by
+        /// geometry, name it the same), and the parent is remembered by its semantic id and the piece's key.
+        /// </summary>
+        public CadCandidate Piece(List<CadPoint> geometry, string key, double tolerance, string sourceHash)
+        {
+            var p = (CadCandidate)MemberwiseClone();
+            p.Geometry = new List<CadPoint>(geometry);
+            p.GeometryId = CadIdentity.GeometryId(Kind, p.Geometry, tolerance, false);
+            p.SemanticId = CadIdentity.SemanticId(Layer, "root", Kind, p.Geometry, tolerance, false);
+            p.Id = CadIdentity.RevisionId(sourceHash, p.SemanticId);
+            p.PieceOf = PieceOf ?? SemanticId;
+            p.PieceKey = key;
+            p.SourceSurrogates = new List<string>(SourceSurrogates) { p.Id, "piece:" + p.PieceOf + "#" + key };
+            p.ConfidenceFactors = new List<CadConfidenceFactor>(ConfidenceFactors);
+            p.Alternatives = new List<string>(Alternatives);
+            p.Assumptions = new List<string>(Assumptions);
+            p.UnresolvedFacts = new List<string>(UnresolvedFacts);
+            p.ExpectedVerification = new List<string>(ExpectedVerification);
+            p.IneligibleReasons = new List<string>(IneligibleReasons);
+            return p;
+        }
     }
 
     /// <summary>A piece of geometry nobody claimed, or that too many claimed.</summary>
     public sealed class CadUnclaimed
     {
         public string Layer;
-        public string Reason;       // no_rule_matched | below_min_confidence | ambiguous | geometry_not_found
+        public string Reason;       // no_rule_matched | below_min_confidence | ambiguous | geometry_not_found | closed_outline_not_a_run
         public int EntityCount;
         public List<string> RuleIds = new List<string>();
+        /// <summary>What a reviewer should read into this row, when the reason alone does not say it.</summary>
+        public string Means;
     }
 
     /// <summary>The whole reading of one drawing: proposals, refusals and coverage.</summary>
     public sealed class CadInterpretation
     {
+        /// <summary>Every closed loop this reading found, per layer, with what it read into it. Never silent.</summary>
+        public List<JObject> ClosedLoops = new List<JObject>();
+
+        /// <summary>The source hash the revision ids of this reading were made with (a piece's id needs it).</summary>
+        public string SourceHash;
         public List<CadCandidate> Candidates = new List<CadCandidate>();
+
+        /// <summary>
+        /// The drawing's wall hatches, when a rule declared solid_hatch_layers and
+        /// the caller read them. Null for a rule that declared them means the
+        /// reading was not made, and such a rule plans nothing.
+        /// </summary>
+        public CadSolidHatch SolidEvidence;
+        /// <summary>Pairs of faces the hatch showed to enclose no material.</summary>
+        public JArray SolidVetoes = new JArray();
         public List<CadUnclaimed> Unclaimed = new List<CadUnclaimed>();
         /// <summary>layer -> the rules that claimed it. The map a reviewer reads first.</summary>
         public Dictionary<string, List<string>> LayerMap =
             new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         public int SegmentsConsidered;
         public int SegmentsConsumed;
+
+        /// <summary>
+        /// Segments the declared zone excluded, and the ones it CUT.
+        ///
+        /// Two numbers rather than one, because they mean different things to
+        /// whoever reads the plan. Outside is the rest of the floor and is meant
+        /// to be absent. Crossing is a run that leaves the zone - a conduit to
+        /// the panel, a branch to the next apartment - and building the half of
+        /// it that happens to fall inside would end it in mid air at a line
+        /// nobody drew. Both are excluded; only one is a surprise.
+        /// </summary>
+        public int SegmentsOutsideExtent;
+        public int SegmentsCrossingExtent;
+
+        /// <summary>Of the crossing segments, how many the set said to keep whole.</summary>
+        public int SegmentsCrossingKept;
+        /// <summary>Lines outside the zone read only because they lie within its wall margin.</summary>
+        public int SegmentsInMargin;
+        /// <summary>
+        /// Walls paired from lines in the margin whose centreline does not reach the
+        /// zone: the neighbour's walls. Named, never built.
+        /// </summary>
+        public JArray CandidatesOutsideExtent = new JArray();
+
+        /// <summary>The zone this reading was bounded by, described, or null if it was the whole drawing.</summary>
+        public string ExtentDescription;
+
+        /// <summary>
+        /// How each double-line rule paired its lines: what it considered, what
+        /// it chose, and what it refused. A de-duplication nobody can inspect is
+        /// a de-duplication nobody can correct.
+        /// </summary>
+        public JArray DoubleLineReasoning = new JArray();
+
+        /// <summary>
+        /// Candidates that share an identity with another candidate.
+        ///
+        /// NOTHING IS DROPPED FOR THIS. Two different readings that quantise to
+        /// the same id cannot be told apart by provenance, by an audit or by an
+        /// update, so every one of them goes to review with the others named -
+        /// choosing one would be deduplicating by proximity, which is exactly
+        /// what the wall consolidation exists to avoid.
+        /// </summary>
+        public JArray IdentityCollisions = new JArray();
 
         /// <summary>
         /// What each rule's naming pass decided, keyed by rule id. Empty when no
@@ -209,6 +368,33 @@ namespace Horizun.Revit.Core
 
     public static class CadInterpretationRules
     {
+        /// <summary>
+        /// WHICH READING THIS BUILD MAKES. Bumped by hand whenever what a drawing
+        /// reads AS changes - a wall paired differently, a symbol placed
+        /// differently - and combined with the embedded extractor's own text, which
+        /// changes the reading by itself. Stamped on every element (provenance v3)
+        /// and in every plan's binding, so an update can tell a new reading of the
+        /// same bytes from a new drawing.
+        /// </summary>
+        public const string ReadingRulesRevision = "2026.09.19-dynamic-blocks";
+
+        private static string _interpretationVersion;
+
+        public static string InterpretationVersion
+        {
+            get
+            {
+                if (_interpretationVersion != null) return _interpretationVersion;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    byte[] bytes = System.Text.Encoding.UTF8.GetBytes(string.Join("\n", CadDwgScript.Forms));
+                    string hex = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+                    _interpretationVersion = "cadread:" + ReadingRulesRevision + ":" + hex.Substring(0, 12);
+                }
+                return _interpretationVersion;
+            }
+        }
+
         /// <summary>
         /// Read the segments through the requirement set.
         ///
@@ -244,10 +430,97 @@ namespace Horizun.Revit.Core
         public static CadInterpretation Interpret(IList<CadSegment> segments, CadRequirementSet set,
                                                   string sourceHash, IList<CadArcFact> arcs,
                                                   IEnumerable<string> existingNames)
+            => Interpret(segments, set, sourceHash, arcs, existingNames, null);
+
+        /// <summary>
+        /// <paramref name="solid"/> is the drawing's wall hatch, read by the caller
+        /// from the DWG because Revit's import does not carry it. Every command
+        /// that interprets a set with solid_hatch_layers passes the same reading,
+        /// so a plan, its audit and its update agree on what is a wall.
+        /// </summary>
+        /// <summary>How far outside a face an unhatched line may still be that face's finish (two boards, measured 33.4 mm).</summary>
+        private const double FinishDepthMm = 40.0;
+        /// <summary>A break in a finish line shorter than this is a symbol drawn over it, not a stretch without finish.</summary>
+        private const double FinishBreakMm = 100.0;
+
+        private static CadComposition CompositionOf(CadWallBand band, Dictionary<CadDoubleLine, CadComposition> made)
         {
-            var result = new CadInterpretation();
+            CadComposition c;
+            foreach (CadDoubleLine m in band.Members)
+                if (made.TryGetValue(m, out c) && c.IsComposite) return c;
+            return null;
+        }
+
+        private static bool CentrelineReaches(CadExtent zone, IList<CadPoint> line, double tolerance)
+        {
+            for (int i = 0; i + 1 < line.Count; i++)
+                if (zone.TouchesWithin(line[i], line[i + 1], tolerance)) return true;
+            return line.Count == 1 && zone.ContainsWithin(line[0], tolerance);
+        }
+
+        public static CadInterpretation Interpret(IList<CadSegment> segments, CadRequirementSet set,
+                                                  string sourceHash, IList<CadArcFact> arcs,
+                                                  IEnumerable<string> existingNames, CadSolidHatch solid)
+        {
+            var result = new CadInterpretation { SolidEvidence = solid, SourceHash = sourceHash };
             if (set == null) throw new ArgumentNullException(nameof(set));
             segments = segments ?? new List<CadSegment>();
+
+            // THE ZONE, BEFORE ANY RULE SEES ANYTHING.
+            //
+            // Bounding the interpretation and not the reading is deliberate: the
+            // drawing is still walked WHOLE, so a truncated read is still a
+            // refusal rather than a window that happens to fit. Coverage is then
+            // measured over the zone - the honest denominator for "did this set
+            // account for this apartment" - and the reply names the zone beside
+            // it so the fraction is never read as being about the floor.
+            if (set.ExtentMm != null)
+            {
+                var kept = new List<CadSegment>();
+                bool whole = set.ExtentMm.Crossing == CadExtent.CrossingWhole;
+                double margin = set.ExtentMm.WallMarginMm;
+                foreach (CadSegment s in segments)
+                {
+                    bool a = set.ExtentMm.Contains(s.A), b = set.ExtentMm.Contains(s.B);
+                    if (a && b) { kept.Add(s); continue; }
+                    if (!set.ExtentMm.Touches(s.A, s.B))
+                    {
+                        // Outside, but within the margin: read, so the wall it faces
+                        // keeps both faces. Whether that wall is built is decided on
+                        // its centreline below, not on this line.
+                        if (margin > 0 && set.ExtentMm.TouchesWithin(s.A, s.B, margin))
+                        {
+                            kept.Add(s);
+                            result.SegmentsInMargin++;
+                            continue;
+                        }
+                        result.SegmentsOutsideExtent++;
+                        continue;
+                    }
+                    result.SegmentsCrossingExtent++;
+                    if (whole) { kept.Add(s); result.SegmentsCrossingKept++; }
+                }
+                segments = kept;
+                if (arcs != null)
+                {
+                    var keptArcs = new List<CadArcFact>();
+                    foreach (CadArcFact arc in arcs)
+                    {
+                        int inside = (set.ExtentMm.Contains(arc.Start) ? 1 : 0) +
+                                     (set.ExtentMm.Contains(arc.End) ? 1 : 0) +
+                                     (set.ExtentMm.Contains(arc.Middle) ? 1 : 0);
+                        // An arc is judged by three of its points; one that only
+                        // grazes the zone between them is not seen, and is outside.
+                        bool near = set.ExtentMm.WallMarginMm > 0 &&
+                                    set.ExtentMm.ContainsWithin(arc.Start, set.ExtentMm.WallMarginMm) &&
+                                    set.ExtentMm.ContainsWithin(arc.End, set.ExtentMm.WallMarginMm) &&
+                                    set.ExtentMm.ContainsWithin(arc.Middle, set.ExtentMm.WallMarginMm);
+                        if (inside == 3 || (whole && inside > 0) || near) keptArcs.Add(arc);
+                    }
+                    arcs = keptArcs;
+                }
+                result.ExtentDescription = set.ExtentMm.Describe();
+            }
             result.SegmentsConsidered = segments.Count;
 
             // Which rules claim which layers, computed once and published: the
@@ -300,7 +573,7 @@ namespace Horizun.Revit.Core
                     if (string.Equals(segments[i].Layer ?? "(no layer)", layer, StringComparison.OrdinalIgnoreCase))
                         indices.Add(i);
 
-                List<CadCandidate> produced = ProduceFor(winner, set, layerSegments, indices, sourceHash,
+                List<CadCandidate> produced = ProduceFor(result, winner, set, layerSegments, indices, sourceHash,
                                                          consumed, arcs);
 
                 if (ambiguousRules)
@@ -312,6 +585,32 @@ namespace Horizun.Revit.Core
                         Ineligible(c, "more than one rule claims layer '" + layer + "' at precedence " +
                                       winner.Precedence + ": " + winner.Id + " -> " + winner.Produces +
                                       ", and " + others);
+                    }
+                }
+
+                if (set.ExtentMm != null && set.ExtentMm.WallMarginMm > 0)
+                {
+                    // THE MARGIN READS, THE ZONE DECIDES. A wall is this zone's when
+                    // its centreline reaches the zone within the point tolerance; a
+                    // demising wall drawn on the boundary does, the next flat's
+                    // partition that stops at its far face does not.
+                    var outside = produced.Where(c => c.Geometry != null && c.Geometry.Count >= 2 &&
+                                                      !CentrelineReaches(set.ExtentMm, c.Geometry,
+                                                                         set.PointToleranceMm)).ToList();
+                    foreach (CadCandidate c in outside)
+                    {
+                        produced.Remove(c);
+                        result.CandidatesOutsideExtent.Add(new JObject
+                        {
+                            ["candidate"] = c.Id,
+                            ["rule"] = c.RuleId,
+                            ["kind"] = c.ProposedKind,
+                            ["from_mm"] = new JArray(Math.Round(c.Geometry[0].X, 1), Math.Round(c.Geometry[0].Y, 1)),
+                            ["to_mm"] = new JArray(Math.Round(c.Geometry[c.Geometry.Count - 1].X, 1),
+                                                   Math.Round(c.Geometry[c.Geometry.Count - 1].Y, 1)),
+                            ["means"] = "read from lines in the wall margin; its centreline does not reach the zone, " +
+                                        "so it belongs to the neighbour and is not built here."
+                        });
                     }
                 }
 
@@ -334,6 +633,34 @@ namespace Horizun.Revit.Core
                         EntityCount = layerSegments.Count,
                         RuleIds = claiming.Select(r => r.Id).ToList()
                     });
+            }
+
+            // ONE IDENTITY, ONE CANDIDATE - or a person decides.
+            foreach (var clash in result.Candidates
+                         .Where(c => c != null && !string.IsNullOrEmpty(c.SemanticId))
+                         .GroupBy(c => c.SemanticId, StringComparer.Ordinal)
+                         .Where(grp => grp.Count() > 1))
+            {
+                List<CadCandidate> same = clash.ToList();
+                double apart = 0;
+                for (int i = 0; i < same.Count; i++)
+                    for (int j = i + 1; j < same.Count; j++)
+                    {
+                        double d = GeometryDistanceMm(same[i], same[j]);
+                        if (!double.IsNaN(d)) apart = Math.Max(apart, d);
+                    }
+                string why = same.Count + " readings share the identity " + clash.Key + " (up to " +
+                             apart.ToString("0.#", CultureInfo.InvariantCulture) + " mm apart), so provenance, audit " +
+                             "and update could not tell them apart. None was dropped; decide which is real.";
+                foreach (CadCandidate c in same) Ineligible(c, why);
+                result.IdentityCollisions.Add(new JObject
+                {
+                    ["semantic_id"] = clash.Key,
+                    ["candidates"] = new JArray(same.Select(c => c.Id)),
+                    ["rules"] = new JArray(same.Select(c => c.RuleId).Distinct()),
+                    ["max_separation_mm"] = Math.Round(apart, 1),
+                    ["means"] = why
+                });
             }
 
             // NAMES, LAST, AND PER RULE.
@@ -408,6 +735,20 @@ namespace Horizun.Revit.Core
             return result;
         }
 
+        /// <summary>The largest distance between corresponding points of two readings, either way round.</summary>
+        private static double GeometryDistanceMm(CadCandidate a, CadCandidate b)
+        {
+            if (a.Geometry.Count == 0 || a.Geometry.Count != b.Geometry.Count) return double.NaN;
+            double forward = 0, backward = 0;
+            int n = a.Geometry.Count;
+            for (int i = 0; i < n; i++)
+            {
+                forward = Math.Max(forward, a.Geometry[i].PlanDistanceTo(b.Geometry[i]));
+                backward = Math.Max(backward, a.Geometry[i].PlanDistanceTo(b.Geometry[n - 1 - i]));
+            }
+            return Math.Min(forward, backward);
+        }
+
         private static void Ineligible(CadCandidate c, string reason)
         {
             c.EligibleForAutomaticApply = false;
@@ -426,17 +767,17 @@ namespace Horizun.Revit.Core
         /// forget to overrule it is not. So the decision lives on the one path
         /// every candidate takes, and a sixth producer cannot repeat this.
         /// </summary>
-        private static List<CadCandidate> ProduceFor(CadRule rule, CadRequirementSet set,
+        private static List<CadCandidate> ProduceFor(CadInterpretation result, CadRule rule, CadRequirementSet set,
                                                      List<CadSegment> layerSegments, List<int> indices,
                                                      string sourceHash, HashSet<int> consumed,
                                                      IList<CadArcFact> arcs)
         {
-            List<CadCandidate> produced = Produce(rule, set, layerSegments, indices, sourceHash, consumed, arcs);
+            List<CadCandidate> produced = Produce(result, rule, set, layerSegments, indices, sourceHash, consumed, arcs);
             foreach (CadCandidate c in produced) Finalise(c, rule);
             return produced;
         }
 
-        private static List<CadCandidate> Produce(CadRule rule, CadRequirementSet set,
+        private static List<CadCandidate> Produce(CadInterpretation result, CadRule rule, CadRequirementSet set,
                                                   List<CadSegment> layerSegments, List<int> indices,
                                                   string sourceHash, HashSet<int> consumed,
                                                   IList<CadArcFact> arcs)
@@ -445,10 +786,10 @@ namespace Horizun.Revit.Core
             {
                 case CadGeometrySource.DoubleLines:
                     return BridgeOpenings(rule, set, sourceHash,
-                        FromDoubleLines(rule, set, layerSegments, indices, sourceHash, consumed));
+                        FromDoubleLines(result, rule, set, layerSegments, indices, sourceHash, consumed));
                 case CadGeometrySource.DoubleArcs: return FromDoubleArcs(rule, set, layerSegments, indices, sourceHash, consumed, arcs);
                 case CadGeometrySource.ClosedLoops: return FromLoops(rule, set, layerSegments, indices, sourceHash, consumed);
-                case CadGeometrySource.SingleLines: return FromSingleLines(rule, set, layerSegments, indices, sourceHash, consumed);
+                case CadGeometrySource.SingleLines: return FromSingleLines(result, rule, set, layerSegments, indices, sourceHash, consumed);
                 case CadGeometrySource.PointClusters: return FromPointClusters(rule, set, layerSegments, indices, sourceHash, consumed);
                 default: return new List<CadCandidate>();   // blocks are the harvester's business, not the segments'
             }
@@ -1003,7 +1344,21 @@ namespace Horizun.Revit.Core
         // ---------------------------------------------------------------------
         // Walls from parallel line pairs
         // ---------------------------------------------------------------------
-        private static List<CadCandidate> FromDoubleLines(CadRule rule, CadRequirementSet set,
+        /// <summary>One candidate pairing, as evidence: what it is and what made it.</summary>
+        private static JObject PairJson(CadDoubleLine p) => new JObject
+        {
+            ["thickness_mm"] = Math.Round(p.ThicknessMm, 1),
+            ["length_mm"] = Math.Round(p.LengthMm, 1),
+            ["overlap_mm"] = Math.Round(p.OverlapLengthMm, 1),
+            ["overlap_fraction"] = Math.Round(p.OverlapFraction, 3),
+            ["mutual_overlap_fraction"] = Math.Round(p.MutualOverlapFraction, 3),
+            ["angle_deviation_degrees"] = Math.Round(p.AngleDeviationDegrees, 3),
+            ["lines"] = new JArray(p.SegmentIndexA, p.SegmentIndexB),
+            ["centreline_mm"] = new JArray(Math.Round(p.Start.X, 1), Math.Round(p.Start.Y, 1),
+                                           Math.Round(p.End.X, 1), Math.Round(p.End.Y, 1))
+        };
+
+        private static List<CadCandidate> FromDoubleLines(CadInterpretation result, CadRule rule, CadRequirementSet set,
                                                           List<CadSegment> layerSegments, List<int> indices,
                                                           string sourceHash, HashSet<int> consumed)
         {
@@ -1047,38 +1402,188 @@ namespace Horizun.Revit.Core
                 }
             }
 
-            // SELECT FIRST, BUILD AFTER. A pairing can only be recognised as the
-            // inside of a wall once that wall has been accepted, so the choosing
-            // is its own pass and the candidates are built from what survived.
+            // SELECT, THEN CONSOLIDATE, THEN BUILD.
+            //
+            // The selection takes each line once. That is necessary and it is not
+            // sufficient: a wall drawn as six lines holds three disjoint pairs, and
+            // all three survive it. CadWallReadings then asks the physical
+            // question - do these readings' solids intersect? - and turns the
+            // readings that do into one wall, or refuses and sends them to review.
+            //
+            // ONCE, EXCEPT TO CONTINUE THE SAME WALL. MEASURED on a second
+            // apartment of the same drawing: a corridor wall's outer face is ONE
+            // line 13 m long, and its inner face is cut into pieces wherever a wall
+            // meets it. One-line-once paired the long line with one piece and left
+            // the rest of the corridor wall - and two more walls drawn the same
+            // way - unread. A used line is paired again only when the new pairing
+            // is the SAME wall further along it: its partner on the same side as
+            // the line's other partners, a stretch of the line no reading of it
+            // covers yet, and the same thickness within the point tolerance. The
+            // other side of a line is another wall's face or air, a covered
+            // stretch is a second reading of the same space, and another thickness
+            // is another wall - all three stay refused.
+            var usesOf = new Dictionary<int, List<CadLineUse>>();
             var chosen = new List<CadDoubleLine>();
-            var absorbed = new Dictionary<CadDoubleLine, List<CadDoubleLine>>();
-            foreach (CadDoubleLine pair in pairs.OrderByDescending(p => p.ThicknessMm)
-                                                .ThenByDescending(p => p.OverlapFraction)
+            var reasoning = new JArray();
+            var whyOf = new Dictionary<CadDoubleLine, JObject>();
+
+            // WHAT EACH BAND IS MADE OF, before any is chosen: a leaf may be read before
+            // the composite that contains it, and the line between two leaves must be
+            // known as a material boundary by then.
+            var composition = new Dictionary<CadDoubleLine, CadComposition>();
+            var materialBoundaries = new HashSet<int>();
+            if (g.SolidHatchLayers.Count > 0 && result.SolidEvidence != null && g.Composite != CadCompositePolicy.Outer)
+            {
+                foreach (CadDoubleLine p in pairs)
+                {
+                    CadComposition comp = result.SolidEvidence.Compose(p, g.SolidHatchLayers, set.CaseSensitiveLayers,
+                        layerSegments, g.MinThicknessMm.Value, Math.Min(set.PointToleranceMm, 6.0),
+                        set.AngleToleranceDegrees);
+                    composition[p] = comp;
+                    if (comp.IsComposite && g.Composite == CadCompositePolicy.Leaves)
+                        foreach (int line in comp.SharedBoundaryLines) materialBoundaries.Add(line);
+                }
+            }
+            // A COMPOSITE WHOSE LEAVES CANNOT BE READ IS NOT SKIPPED. MEASURED (revision C):
+            // a face moved out with only its board's hatch, leaving a 30.9 mm unhatched strip
+            // inside; the band was skipped for its leaves, no leaf pair was solid, and the
+            // wall vanished from the reading. It is read whole and held for a person.
+            var leavesUnreadable = new HashSet<CadDoubleLine>();
+            if (g.Composite == CadCompositePolicy.Leaves)
+                foreach (var kv in composition)
+                {
+                    if (!kv.Value.IsComposite) continue;
+                    bool readable = pairs.Any(q =>
+                    {
+                        if (ReferenceEquals(q, kv.Key) || q.ThicknessMm >= kv.Key.ThicknessMm) return false;
+                        CadComposition qc;
+                        if (composition.TryGetValue(q, out qc) && qc.IsComposite) return false;
+                        if (q.SegmentIndexA >= layerSegments.Count || q.SegmentIndexB >= layerSegments.Count) return false;
+                        if (!CadTopologyRules.IsInsideBandOf(layerSegments[q.SegmentIndexA], kv.Key,
+                                                             set.AngleToleranceDegrees, set.PointToleranceMm) ||
+                            !CadTopologyRules.IsInsideBandOf(layerSegments[q.SegmentIndexB], kv.Key,
+                                                             set.AngleToleranceDegrees, set.PointToleranceMm))
+                            return false;
+                        return !result.SolidEvidence.Judge(q, g.SolidHatchLayers, set.CaseSensitiveLayers).Void;
+                    });
+                    if (!readable) leavesUnreadable.Add(kv.Key);
+                }
+            // ORDERED BY HOW WELL THE TWO LINES MATCH, THEN BY WIDTH.
+            //
+            // MEASURED: ordering by thickness first chose a pair whose lines run
+            // alongside for 74% of their length, consumed one of them, and left a
+            // 100% pairing of the same thickness with nothing to pair with - so
+            // one wall arrived as two, seven millimetres apart. Thickness cannot
+            // tell a wall from a corner; overlap can. Among pairings that match
+            // equally well, the widest still wins, which is where that rule
+            // belongs: the outer faces are what bound a compound wall.
+            foreach (CadDoubleLine pair in pairs.OrderByDescending(p => Math.Round(p.MutualOverlapFraction, 3))
+                                                .ThenByDescending(p => p.ThicknessMm)
                                                 .ThenByDescending(p => p.OverlapLengthMm))
             {
-                if (usedFaces.Contains(pair.SegmentIndexA) || usedFaces.Contains(pair.SegmentIndexB)) continue;
-                if (g.MinLengthMm != null && pair.LengthMm < g.MinLengthMm.Value) continue;
-                if (g.MaxLengthMm != null && pair.LengthMm > g.MaxLengthMm.Value) continue;
+                JObject why = PairJson(pair);
+                reasoning.Add(why);
 
+                CadLineUse useA = CadLineUse.Of(layerSegments, pair.SegmentIndexA, pair.SegmentIndexB, pair);
+                CadLineUse useB = CadLineUse.Of(layerSegments, pair.SegmentIndexB, pair.SegmentIndexA, pair);
+                var continued = new JArray();
+                string refusedContinuation = null;
+                foreach (CadLineUse use in new[] { useA, useB })
+                {
+                    List<CadLineUse> earlier;
+                    if (!usesOf.TryGetValue(use.Line, out earlier)) continue;
+                    refusedContinuation = use.RefusalToContinue(earlier, set.PointToleranceMm,
+                                                                materialBoundaries.Contains(use.Line));
+                    if (refusedContinuation != null) break;
+                    continued.Add(use.Line);
+                }
+                if (refusedContinuation != null)
+                {
+                    why["outcome"] = "skipped_line_already_used";
+                    why["not_a_continuation"] = refusedContinuation;
+                    continue;
+                }
+
+                // THE HATCH SAYS WHICH STRIPS ARE MATERIAL. Asked before the length
+                // bounds and before the pair takes its lines, so the faces of a
+                // chase stay free for the walls on either side of it.
+                CadComposition made;
+                composition.TryGetValue(pair, out made);
+                if (made != null && made.IsComposite)
+                {
+                    why["composition"] = made.ToJson();
+                    if (g.Composite == CadCompositePolicy.Leaves && !leavesUnreadable.Contains(pair))
+                    {
+                        why["outcome"] = "skipped_composite_read_as_leaves";
+                        continue;
+                    }
+                    if (leavesUnreadable.Contains(pair))
+                        why["leaves_unreadable"] = "no pair of lines inside this band is a solid leaf of its own, " +
+                                                   "so it is read whole and held for a person";
+                }
+                if (g.SolidHatchLayers.Count > 0)
+                {
+                    if (result.SolidEvidence == null)
+                    {
+                        why["outcome"] = "skipped_no_solid_evidence";
+                        continue;
+                    }
+                    CadSolidVerdict solid = result.SolidEvidence.Judge(pair, g.SolidHatchLayers, set.CaseSensitiveLayers);
+                    why["solid"] = solid.ToJson();
+                    // A CAVITY INSIDE A COMPOSITION IS NOT A VOID. Under "composite" a band
+                    // of two hatched leaves with a gap between them is one wall.
+                    bool cavity = made != null && made.IsComposite &&
+                                  (g.Composite == CadCompositePolicy.Composite || leavesUnreadable.Contains(pair));
+                    if (solid.Void && !cavity)
+                    {
+                        why["outcome"] = "skipped_no_hatched_material_between_faces";
+                        result.SolidVetoes.Add(new JObject
+                        {
+                            ["rule"] = rule.Id,
+                            ["pair"] = PairJson(pair),
+                            ["solid"] = solid.ToJson()
+                        });
+                        continue;
+                    }
+                }
+                if (g.MinLengthMm != null && pair.LengthMm < g.MinLengthMm.Value)
+                { why["outcome"] = "skipped_too_short"; continue; }
+                if (g.MaxLengthMm != null && pair.LengthMm > g.MaxLengthMm.Value)
+                { why["outcome"] = "skipped_too_long"; continue; }
+
+                foreach (CadLineUse use in new[] { useA, useB })
+                {
+                    List<CadLineUse> list;
+                    if (!usesOf.TryGetValue(use.Line, out list)) usesOf[use.Line] = list = new List<CadLineUse>();
+                    list.Add(use);
+                }
+                if (continued.Count > 0) why["continues_lines"] = continued;
                 usedFaces.Add(pair.SegmentIndexA);
                 usedFaces.Add(pair.SegmentIndexB);
                 if (pair.SegmentIndexA < indices.Count) consumed.Add(indices[pair.SegmentIndexA]);
                 if (pair.SegmentIndexB < indices.Count) consumed.Add(indices[pair.SegmentIndexB]);
-
-                // Is this pairing simply the inside of a wall already taken? Then
-                // its two lines ARE explained - they are that wall's material
-                // layers - and proposing a second wall on top of the first is the
-                // duplicate the live chain measured.
-                CadDoubleLine host = chosen.FirstOrDefault(w =>
-                    CadTopologyRules.IsInnerBoundaryOf(pair, w, set.AngleToleranceDegrees, set.PointToleranceMm));
-                if (host != null)
-                {
-                    List<CadDoubleLine> inside;
-                    if (!absorbed.TryGetValue(host, out inside)) absorbed[host] = inside = new List<CadDoubleLine>();
-                    inside.Add(pair);
-                    continue;
-                }
+                why["outcome"] = "chosen";
+                whyOf[pair] = why;
                 chosen.Add(pair);
+            }
+
+            JArray relations;
+            List<CadWallBand> bands = CadWallReadings.Consolidate(chosen, pairs, layerSegments,
+                g.MinThicknessMm.Value, g.MaxThicknessMm.Value,
+                set.AngleToleranceDegrees, set.PointToleranceMm, set.WallOverlapMm, out relations);
+
+            var bridged = new JArray();
+            if (g.FaceBreaksMm.HasValue)
+                bands = CadWallContinuity.Bridge(bands, layerSegments, g.FaceBreaksMm.Value,
+                                                 set.AngleToleranceDegrees, bridged);
+
+            // A PIER CLOSING A WALL'S END (opt-in; the project decides whether the box is the wall's end)
+            JArray piers = null;
+            if (g.EndPiers != null)
+            {
+                piers = new JArray();
+                bands = CadWallPiers.Apply(bands, layerSegments, g.EndPiers, g.MinOverlapMm.Value,
+                                           g.MaxThicknessMm.Value, set.AngleToleranceDegrees, piers);
             }
 
             // The lines NO pairing could claim. A compound wall's innermost
@@ -1086,94 +1591,251 @@ namespace Horizun.Revit.Core
             // below any wall thickness anyone would declare - so nothing pairs
             // them, and reporting them as unaccounted-for geometry would send a
             // reviewer hunting for a wall that is already there.
-            var loose = new Dictionary<CadDoubleLine, int>();
+            var loose = new Dictionary<CadWallBand, List<int>>();
             for (int i = 0; i < layerSegments.Count; i++)
             {
                 if (usedFaces.Contains(i)) continue;
-                foreach (CadDoubleLine w in chosen)
+                foreach (CadWallBand w in bands)
                 {
-                    if (!CadTopologyRules.IsInsideBandOf(layerSegments[i], w,
-                            set.AngleToleranceDegrees, set.PointToleranceMm)) continue;
+                    if (!CadWallReadings.IsInsideBand(layerSegments[i], w, set.AngleToleranceDegrees, set.PointToleranceMm)) continue;
                     usedFaces.Add(i);
                     if (i < indices.Count) consumed.Add(indices[i]);
-                    int n;
-                    loose[w] = loose.TryGetValue(w, out n) ? n + 1 : 1;
+                    List<int> mine;
+                    if (!loose.TryGetValue(w, out mine)) loose[w] = mine = new List<int>();
+                    mine.Add(i);
                     break;
                 }
             }
 
-            foreach (CadDoubleLine pair in chosen)
+            // FINISH IN STRETCHES (geometry.finish "follow"): the bands are cut where
+            // the drawn finish starts or stops, before the widening below would
+            // spread half a wall's finish over all of it.
+            if (g.Finish == "follow")
             {
-                var c = NewCandidate(rule, set, sourceHash, pair.Layer,
-                    new List<CadPoint> { pair.Start, pair.End }, CadCurveKind.Line);
-                c.ThicknessMm = rule.ThicknessMm ?? pair.ThicknessMm;
+                var pieces = new List<CadWallBand>();
+                var pieceLoose = new Dictionary<CadWallBand, List<int>>();
+                foreach (CadWallBand w in bands)
+                {
+                    CadFinishSegments.Result split = CadFinishSegments.Split(w, layerSegments,
+                        FinishDepthMm, FinishBreakMm, set.AngleToleranceDegrees);
+                    foreach (CadWallBand p in split.Pieces)
+                    {
+                        pieces.Add(p);
+                        var mine = new List<int>(split.LinesOf.TryGetValue(p, out List<int> l) ? l : new List<int>());
+                        List<int> inside;
+                        if (loose.TryGetValue(w, out inside)) mine.AddRange(inside);
+                        pieceLoose[p] = mine.Distinct().ToList();
+                        foreach (int i in pieceLoose[p])
+                        {
+                            usedFaces.Add(i);
+                            if (i < indices.Count) consumed.Add(indices[i]);
+                        }
+                    }
+                }
+                bands = CadWallContinuity.Dedupe(pieces);
+                loose = pieceLoose;
+            }
+
+            // AN OUTER LAYER THE PAIRING LEFT OVER IS STILL A FACE. A board line
+            // 15.9 mm outside the paired stud faces, running alongside the wall,
+            // is the wall's own finish - the band is widened to it and says so.
+            foreach (var kv in g.Finish == "follow" ? new Dictionary<CadWallBand, List<int>>() : loose)
+            {
+                CadWallBand w = kv.Key;
+                double before = w.ThicknessMm;
+                foreach (int i in kv.Value)
+                {
+                    CadSegment s = layerSegments[i];
+                    double ca = s.A.X * w.Normal.X + s.A.Y * w.Normal.Y;
+                    double cb = s.B.X * w.Normal.X + s.B.Y * w.Normal.Y;
+                    double fa = s.A.X * w.Direction.X + s.A.Y * w.Direction.Y;
+                    double fb = s.B.X * w.Direction.X + s.B.Y * w.Direction.Y;
+                    double alongside = Math.Min(Math.Max(fa, fb), w.To) - Math.Max(Math.Min(fa, fb), w.From);
+                    if (alongside < 0.5 * w.LengthMm) continue;
+                    w.WidenTo(Math.Min(ca, cb), Math.Max(ca, cb));
+                }
+                if (w.ThicknessMm > before + 1e-6)
+                    w.Assumptions.Add("a line " + (w.ThicknessMm - before).ToString("0.#", CultureInfo.InvariantCulture) +
+                        " mm outside the paired faces runs alongside this wall and pairs with nothing; it was " +
+                        "taken as the wall's own outer layer, so the wall is " +
+                        w.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm and not " +
+                        before.ToString("0.#", CultureInfo.InvariantCulture) + " mm.");
+            }
+
+            var walls = new JArray();
+            for (int b = 0; b < bands.Count; b++)
+            {
+                CadWallBand band = bands[b];
+                for (int m = 0; m < band.Members.Count; m++)
+                {
+                    JObject why;
+                    if (!whyOf.TryGetValue(band.Members[m], out why)) continue;
+                    why["wall"] = b;
+                    if (m > 0) why["outcome"] = "merged_into_wall";
+                }
+                List<int> looseHere;
+                loose.TryGetValue(band, out looseHere);
+                walls.Add(new JObject
+                {
+                    ["wall"] = b,
+                    ["readings"] = band.Members.Count,
+                    ["reading_thicknesses_mm"] = new JArray(band.Members.Select(x => Math.Round(x.ThicknessMm, 1))),
+                    ["lines"] = new JArray(band.Lines),
+                    ["lines_inside_the_band"] = new JArray((IEnumerable<int>)looseHere ?? new int[0]),
+                    ["thickness_mm"] = Math.Round(band.ThicknessMm, 1),
+                    ["length_mm"] = Math.Round(band.LengthMm, 1),
+                    ["centreline_mm"] = new JArray(Math.Round(band.Start.X, 1), Math.Round(band.Start.Y, 1),
+                                                   Math.Round(band.End.X, 1), Math.Round(band.End.Y, 1)),
+                    ["end_spread_mm"] = new JArray(Math.Round(band.FromSpreadMm, 1), Math.Round(band.ToSpreadMm, 1)),
+                    ["ends"] = band.EndEvidence,
+                    ["review"] = new JArray(band.Review),
+                    ["composition"] = CompositionOf(band, composition)?.ToJson()
+                });
+            }
+
+            result.DoubleLineReasoning.Add(new JObject
+            {
+                ["rule_id"] = rule.Id,
+                ["lines_on_the_layer"] = layerSegments.Count,
+                ["pairs_considered"] = pairs.Count,
+                ["readings_chosen"] = chosen.Count,
+                ["walls"] = bands.Count,
+                ["means"] = "readings_chosen is how many line pairs survived the selection, which takes each line " +
+                            "once - or again only to continue the same wall along a stretch of it no reading covers " +
+                            "(continues_lines; not_a_continuation says why a pairing was not one); walls is how many " +
+                            "physical walls they describe. Readings whose solids intersect are one wall, and readings " +
+                            "that share a face line are one wall when the join between them holds; every merge, every " +
+                            "refusal and every contiguous or face-to-face pair is listed.",
+                ["lines"] = new JArray(layerSegments.Select((s, i) => new JObject
+                {
+                    ["line"] = i,
+                    ["from_mm"] = new JArray(Math.Round(s.A.X, 1), Math.Round(s.A.Y, 1)),
+                    ["to_mm"] = new JArray(Math.Round(s.B.X, 1), Math.Round(s.B.Y, 1))
+                })),
+                ["pairs"] = reasoning,
+                ["wall_bands"] = walls,
+                ["relations"] = relations,
+                ["bridged_face_breaks"] = bridged
+            });
+            if (piers != null)
+                ((JObject)result.DoubleLineReasoning[result.DoubleLineReasoning.Count - 1])["end_piers"] = new JObject
+                {
+                    ["mode"] = g.EndPiers,
+                    ["found"] = piers
+                };
+
+            foreach (CadWallBand band in bands)
+            {
+                CadDoubleLine pair = band.Primary;
+                var c = NewCandidate(rule, set, sourceHash, band.Layer,
+                    new List<CadPoint> { band.Start, band.End }, CadCurveKind.Line);
+                c.ThicknessMm = rule.ThicknessMm ?? band.ThicknessMm;
                 c.HeightMm = rule.HeightMm;
                 c.OffsetMm = rule.OffsetMm;
 
+                // THE LINES THIS WALL WAS READ FROM, by the same surrogate
+                // horizun_query_cad publishes for them, so a reviewer can find
+                // each one and an update can say which of them moved.
+                List<int> looseHere;
+                loose.TryGetValue(band, out looseHere);
+                foreach (int line in band.Lines.Concat((IEnumerable<int>)looseHere ?? new int[0]).Distinct().OrderBy(i => i))
+                {
+                    CadSegment s = layerSegments[line];
+                    string surrogate = "line:" + CadIdentity.SurrogateUndirected(sourceHash, s.Layer, "root",
+                        CadCurveKind.Line, new List<CadPoint> { s.A, s.B }, 1.0);
+                    if (!c.SourceSurrogates.Contains(surrogate)) c.SourceSurrogates.Add(surrogate);
+                }
+
+                double overlap = band.Members.Max(x => x.OverlapFraction);
+                double angle = band.Members.Max(x => x.AngleDeviationDegrees);
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("face_overlap", 0.40, pair.OverlapFraction,
                     pair.OverlapLengthMm.ToString("0", CultureInfo.InvariantCulture) + " mm of the shorter face runs alongside (" +
-                    (pair.OverlapFraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%)"));
+                    (pair.OverlapFraction * 100).ToString("0", CultureInfo.InvariantCulture) + "%)" +
+                    (band.Members.Count > 1
+                        ? "; best of the " + band.Members.Count + " readings " +
+                          (overlap * 100).ToString("0", CultureInfo.InvariantCulture) + "%"
+                        : "")));
                 double angleScore = set.AngleToleranceDegrees <= 0 ? 1
-                    : 1 - Math.Min(1, pair.AngleDeviationDegrees / set.AngleToleranceDegrees);
+                    : 1 - Math.Min(1, angle / set.AngleToleranceDegrees);
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("parallelism", 0.25, angleScore,
-                    pair.AngleDeviationDegrees.ToString("0.000", CultureInfo.InvariantCulture) + " degrees off parallel, tolerance " +
+                    angle.ToString("0.000", CultureInfo.InvariantCulture) + " degrees off parallel at worst, tolerance " +
                     set.AngleToleranceDegrees.ToString("0.##", CultureInfo.InvariantCulture)));
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("layer_specificity", 0.20,
-                    LayerSpecificity(rule, pair.Layer),
+                    LayerSpecificity(rule, band.Layer),
                     "matched by rule '" + rule.Id + "'"));
                 c.ConfidenceFactors.Add(new CadConfidenceFactor("length_plausibility", 0.15,
-                    pair.LengthMm >= 500 ? 1.0 : pair.LengthMm / 500.0,
-                    pair.LengthMm.ToString("0", CultureInfo.InvariantCulture) + " mm long"));
+                    band.LengthMm >= 500 ? 1.0 : band.LengthMm / 500.0,
+                    band.LengthMm.ToString("0", CultureInfo.InvariantCulture) + " mm long"));
 
-                // Every OTHER thickness this pair's faces could have made.
+                // Every OTHER thickness these faces could have made.
+                var memberSet = new HashSet<CadDoubleLine>(band.Members);
                 var rivalWidths = new List<double>();
-                foreach (int face in new[] { pair.SegmentIndexA, pair.SegmentIndexB })
-                {
-                    List<CadDoubleLine> bucket;
-                    if (!rivalsByFace.TryGetValue(face, out bucket)) continue;
-                    foreach (CadDoubleLine other in bucket)
-                        if (!ReferenceEquals(other, pair) &&
-                            !rivalWidths.Any(w => Math.Abs(w - other.ThicknessMm) < 0.5))
-                            rivalWidths.Add(other.ThicknessMm);
-                }
+                foreach (CadDoubleLine member in band.Members)
+                    foreach (int face in new[] { member.SegmentIndexA, member.SegmentIndexB })
+                    {
+                        List<CadDoubleLine> bucket;
+                        if (!rivalsByFace.TryGetValue(face, out bucket)) continue;
+                        foreach (CadDoubleLine other in bucket)
+                            if (!memberSet.Contains(other) &&
+                                Math.Abs(other.ThicknessMm - band.ThicknessMm) >= 0.5 &&
+                                !rivalWidths.Any(w => Math.Abs(w - other.ThicknessMm) < 0.5))
+                                rivalWidths.Add(other.ThicknessMm);
+                    }
                 if (rivalWidths.Count > 0)
                 {
                     string widths = string.Join(", ", rivalWidths.OrderByDescending(w => w)
                         .Select(w => w.ToString("0.#", CultureInfo.InvariantCulture) + " mm"));
-                    c.Assumptions.Add("these faces also paired at " + widths + "; the widest reading (" +
-                        pair.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm) was taken, because " +
+                    c.Assumptions.Add("these faces also paired at " + widths + "; the band the readings bound (" +
+                        band.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm) was taken, because " +
                         "the outer faces bound a wall and the narrower pairs are its material layers. Narrow the " +
                         "rule's thickness bounds to remove the choice.");
                     c.Alternatives.Add("the same faces read as a " + widths + " wall");
                 }
 
-                List<CadDoubleLine> insideThis;
-                absorbed.TryGetValue(pair, out insideThis);
-                int looseLines;
-                loose.TryGetValue(pair, out looseLines);
-                int absorbedLines = (insideThis == null ? 0 : insideThis.Count * 2) + looseLines;
-                if (absorbedLines > 0)
+                List<CadDoubleLine> inner = band.Members.Skip(1).ToList();
+                if (inner.Count > 0)
                 {
-                    c.Assumptions.Add(absorbedLines + " further line" + (absorbedLines == 1 ? "" : "s") +
-                        " on this layer lie INSIDE this wall's faces and were read as its material-layer " +
-                        "boundaries, not as separate walls" +
-                        (insideThis != null && insideThis.Count > 0
-                            ? " (" + insideThis.Count + " of them formed pairing" + (insideThis.Count == 1 ? "" : "s") +
-                              " at " + string.Join(", ", insideThis.OrderByDescending(w => w.ThicknessMm)
-                                  .Select(w => w.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) + ")"
-                            : "") +
-                        ". A compound wall exports one line per layer boundary, so this is the expected shape of " +
-                        "a Revit-authored DWG - but if the drawing really does show nested walls, put them on " +
-                        "separate layers or narrow the rule's thickness bounds.");
-                    if (insideThis != null && insideThis.Count > 0)
-                        c.Alternatives.Add("the inner pairing" + (insideThis.Count == 1 ? "" : "s") + " (" +
-                            string.Join(", ", insideThis.Select(w => w.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
-                            ") read as separate wall" + (insideThis.Count == 1 ? "" : "s") + " within this one");
+                    c.Assumptions.Add(band.Members.Count + " readings of this wall (" +
+                        string.Join(", ", band.Members.Select(x => x.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        ") overlap in space and were taken as ONE wall bounded by their outermost faces. Two walls " +
+                        "cannot occupy the same place; the ends of the readings differ by up to " +
+                        Math.Max(band.FromSpreadMm, band.ToSpreadMm).ToString("0.#", CultureInfo.InvariantCulture) +
+                        " mm and the wall spans all of them.");
+                    c.Alternatives.Add("the inner reading" + (inner.Count == 1 ? "" : "s") + " (" +
+                        string.Join(", ", inner.Select(w => w.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        ") read as separate wall" + (inner.Count == 1 ? "" : "s") + " within this one");
                 }
+                // Every line of the wall except its two outer faces is inside it.
+                int allLines = band.Lines.Count() + (looseHere == null ? 0 : looseHere.Count);
+                int insideLines = Math.Max(0, allLines - 2);
+                if (insideLines > 0)
+                    c.Assumptions.Add(insideLines + " further line" + (insideLines == 1 ? "" : "s") +
+                        " on this layer lie INSIDE this wall's faces and were read as its material-layer " +
+                        "boundaries, not as separate walls. A compound wall exports one line per layer boundary, so " +
+                        "this is the expected shape of a Revit-authored DWG - but if the drawing really does show " +
+                        "nested walls, put them on separate layers or narrow the rule's thickness bounds.");
 
-                if (rule.ThicknessMm != null && Math.Abs(rule.ThicknessMm.Value - pair.ThicknessMm) > 1.0)
+                CadComposition bandMade = CompositionOf(band, composition);
+                if (bandMade != null && bandMade.IsComposite && g.Composite == CadCompositePolicy.Leaves)
+                    Ineligible(c, "the drawing hatches " + bandMade.Leaves.Count() + " leaves (" +
+                        string.Join(" + ", bandMade.Leaves.Select(l => l.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        (bandMade.GapCount > 0 ? ", with " + bandMade.GapCount + " unhatched gap(s)" : "") +
+                        ") and no line pair inside reads as a solid leaf, so the set's policy 'leaves' cannot be " +
+                        "applied; it is read as one wall of its outer faces and waits for a person");
+                else if (bandMade != null && bandMade.IsComposite)
+                    c.Assumptions.Add("the drawing hatches " + bandMade.Leaves.Count() + " separate leaves (" +
+                        string.Join(" + ", bandMade.Leaves.Select(l => l.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) + " mm")) +
+                        (bandMade.GapCount > 0 ? ", with " + bandMade.GapCount + " unhatched gap(s)" : "") +
+                        ") inside this wall; the set's composite policy '" + g.Composite +
+                        "' builds it as one wall of its outer faces. The leaves are listed in double_line_reasoning.");
+                foreach (string assumption in band.Assumptions)
+                    if (!c.Assumptions.Contains(assumption)) c.Assumptions.Add(assumption);
+                foreach (string reason in band.Review)
+                    Ineligible(c, reason);
+
+                if (rule.ThicknessMm != null && Math.Abs(rule.ThicknessMm.Value - band.ThicknessMm) > 1.0)
                     c.Assumptions.Add("the rule declares " + rule.ThicknessMm.Value.ToString("0.#", CultureInfo.InvariantCulture) +
-                        " mm thick, but the drawing measures " + pair.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) +
+                        " mm thick, but the drawing measures " + band.ThicknessMm.ToString("0.#", CultureInfo.InvariantCulture) +
                         " mm; the rule was taken as authoritative");
                 if (rule.HeightMm == null)
                     c.UnresolvedFacts.Add("height: a plan drawing does not carry one, and the rule did not declare one");
@@ -1297,21 +1959,111 @@ namespace Horizun.Revit.Core
         // ---------------------------------------------------------------------
         // Grids, routes, single-line walls
         // ---------------------------------------------------------------------
-        private static List<CadCandidate> FromSingleLines(CadRule rule, CadRequirementSet set,
+        private static List<CadCandidate> FromSingleLines(CadInterpretation result, CadRule rule, CadRequirementSet set,
                                                           List<CadSegment> layerSegments, List<int> indices,
                                                           string sourceHash, HashSet<int> consumed)
         {
             var produced = new List<CadCandidate>();
             CadGeometryCriteria g = rule.Geometry;
-            List<CadSegment> merged = CadTopologyRules.MergeCollinear(
-                layerSegments, set.PointToleranceMm, set.AngleToleranceDegrees, out int mergedAway);
+
+            // A CLOSED OUTLINE IS NOT A RUN: a ring's edges and its chords (a line joining two of its corners
+            // through the inside) stay unclaimed - and are reported - unless the rule declares
+            // include_closed_polylines. MEASURED (M102): a square with both diagonals on the duct layer read as
+            // six duct runs.
+            // A CLOSED LOOP IS DECIDED BY WHAT THE RULE DECLARES, never by its shape. review (the default) proposes
+            // every edge and holds it; runs reads them like any other line - which grants no size and joins nothing;
+            // figures_by_rule leaves unclaimed only the loops that match the caller's own closed_figure, and holds
+            // the rest. A chord is one of the facts that rule may ask about, and never a verdict on its own.
+            var outline = new HashSet<CadSegment>();
+            var heldLoop = new HashSet<CadSegment>();
+            int rings = 0, chords = 0, ambiguous = 0;
+            var loopRows = new JArray();
+            foreach (CadRings.CadLoop loop in CadRings.Loops(layerSegments, set.PointToleranceMm))
+            {
+                JObject row = loop.ToJson();
+                if (g.ClosedLoops == CadClosedLoopPolicy.Runs)
+                {
+                    row["reading"] = "run";
+                    row["settled_by"] = "declared_runs";
+                    row["and_still"] = "declaring these loops runs gives them no size and joins nothing: each edge " +
+                                       "takes its section from the drawing like any other run, and its junctions are " +
+                                       "carried out - or refused - by horizun_cad_connect.";
+                    loopRows.Add(row);
+                    continue;
+                }
+                JObject why = null;
+                bool figure = g.ClosedLoops == CadClosedLoopPolicy.FiguresByRule &&
+                              loop.MatchesDeclaredFigure(g.ClosedFigure, out why);
+                if (figure)
+                {
+                    row["reading"] = "figure_by_declared_rule";
+                    row["settled_by"] = "declared_rule";
+                    row["declared"] = g.ClosedFigure.ToJson();
+                    row["against_the_rule"] = why;
+                    rings++;
+                    chords += loop.Chords.Count;
+                    foreach (CadSegment s in loop.All) outline.Add(s);
+                }
+                else
+                {
+                    row["reading"] = "held_for_review";
+                    row["settled_by"] = g.ClosedLoops == CadClosedLoopPolicy.FiguresByRule
+                        ? "nothing: the declared figure rule does not match this loop"
+                        : "nothing: no rule declares what a closed loop on this layer is";
+                    if (why != null) row["against_the_rule"] = why;
+                    // THE CHORDS ARE HELD WITH IT. If the loop is a figure the chord is part of it; if the loop is
+                    // a circuit the chord is a legitimate interior connection. Neither is settled, so neither is built.
+                    ambiguous++;
+                    foreach (CadSegment s in loop.All) heldLoop.Add(s);
+                }
+                loopRows.Add(row);
+            }
+            if (outline.Count > 0 && result != null)
+                result.Unclaimed.Add(new CadUnclaimed
+                {
+                    Layer = layerSegments[0].Layer ?? "(no layer)",
+                    Reason = "closed_figure_by_declared_rule",
+                    EntityCount = outline.Count,
+                    RuleIds = new List<string> { rule.Id },
+                    Means = rings + " closed loop(s) match what this rule DECLARES a figure is (" +
+                            g.ClosedFigure.Describe() + "): " + (outline.Count - chords) + " edge(s) and " + chords +
+                            " chord(s) were left unclaimed rather than read as " + rule.Produces + " runs. The rule " +
+                            "is the caller's, and every loop that does not match it is held for review, not excluded."
+                });
+            if (heldLoop.Count > 0 && result != null)
+                result.Unclaimed.Add(new CadUnclaimed
+                {
+                    Layer = layerSegments[0].Layer ?? "(no layer)",
+                    Reason = "closed_loop_held_for_review",
+                    EntityCount = heldLoop.Count,
+                    RuleIds = new List<string> { rule.Id },
+                    Means = ambiguous + " closed loop(s) on this layer that nothing settles: a " + rule.Produces +
+                            " route CAN close - a ring main does - and so can a boundary drawn on the same layer, " +
+                            "and a chord across one proves neither. They are NOT deleted and NOT built: each edge is " +
+                            "proposed and held for review. geometry.closed_loops declares what they are (review | " +
+                            "runs | figures_by_rule with closed_figure)."
+                });
+            if (result != null && loopRows.Count > 0) result.ClosedLoops.Add(new JObject
+            {
+                ["layer"] = layerSegments[0].Layer ?? "(no layer)",
+                ["rule"] = rule.Id,
+                ["loops"] = loopRows
+            });
+
+            int mergedAway = 0;
+            List<CadSegment> merged = g.MergeCollinear
+                ? CadTopologyRules.MergeCollinear(layerSegments.Where(x => x != null && !outline.Contains(x)).ToList(),
+                                                  set.PointToleranceMm, set.AngleToleranceDegrees, out mergedAway)
+                : layerSegments.Where(x => x != null && x.PlanLength > 1e-9).ToList();
 
             for (int i = 0; i < merged.Count; i++)
             {
                 CadSegment s = merged[i];
                 if (g.MinLengthMm != null && s.PlanLength < g.MinLengthMm.Value) continue;
                 if (g.MaxLengthMm != null && s.PlanLength > g.MaxLengthMm.Value) continue;
+                if (outline.Contains(s)) continue;
                 if (i < indices.Count) consumed.Add(indices[i]);
+                bool heldByLoop = heldLoop.Contains(s);
 
                 var c = NewCandidate(rule, set, sourceHash, s.Layer,
                     new List<CadPoint> { s.A, s.B }, s.SourceKind);
@@ -1333,8 +2085,49 @@ namespace Horizun.Revit.Core
                 if (rule.SlopePercent == null && (rule.Produces == "pipe"))
                     c.UnresolvedFacts.Add("slope: not declared; a plan line is horizontal unless something says otherwise");
 
+                // A DECLARED SLOPE THAT THIS READING CANNOT APPLY, said out loud.
+                //
+                // The number was parsed and validated and then dropped, so a rule
+                // declaring 1% produced a horizontal pipe. Applying it needs an
+                // UPSTREAM end, and a drawn line has a first point and a second
+                // point - which is drawing order, not hydraulics.
+                //
+                // THIS reading still cannot supply the direction: it sees one line
+                // at a time and a fall is a property of the whole network. What
+                // changed is that the plan built from this reading CAN take one -
+                // horizun_plan_from_cad with an outfall walks the network and puts
+                // the computed heights on the two ends of each run - so the note
+                // names that rather than sending the caller to a tool that reads
+                // and builds nothing.
+                if (rule.SlopePercent != null && Math.Abs(rule.SlopePercent.Value) > 1e-9 &&
+                    (rule.Produces == "pipe" || rule.Produces == "duct"))
+                    c.SlopePercent = rule.SlopePercent;
+                if (rule.SlopePercent != null && Math.Abs(rule.SlopePercent.Value) > 1e-9 &&
+                    (rule.Produces == "pipe" || rule.Produces == "duct"))
+                    c.UnresolvedFacts.Add(
+                        "slope: the rule declares " +
+                        rule.SlopePercent.Value.ToString("0.###", CultureInfo.InvariantCulture) +
+                        "% and THIS reading builds the run FLAT. A fall needs an upstream end, and a drawn " +
+                        "line has only a first point and a second point - which is drawing order. The " +
+                        "direction is a property of the network: name the OUTFALL on horizun_plan_from_cad " +
+                        "and the planned runs carry the heights this slope implies, measured along the " +
+                        "network from that point. Without one the drain is laid level, which is connected " +
+                        "and drains nowhere.");
+
                 c.ExpectedVerification.Add("the created element re-reads as category " + (rule.Category ?? "(rule declared none)"));
                 c.ExpectedVerification.Add("its endpoints match the drawn line within the point tolerance");
+                if (heldByLoop)
+                {
+                    // A CLOSED LOOP IS NOT DECIDED BY ITS SHAPE. Nothing crosses this one, so it is not a figure;
+                    // it is also not automatically a route. Proposed, held, and named in the reply.
+                    Ineligible(c, "this run is one edge of a CLOSED LOOP on its layer: a " + rule.Produces +
+                                  " route can close, and so can a boundary drawn on the same layer, and a chord " +
+                                  "across it proves neither. Nothing in the drawing settles which this is, so it is " +
+                                  "held rather than built. geometry.closed_loops declares what these loops are " +
+                                  "(review | runs | figures_by_rule with closed_figure).");
+                    c.UnresolvedFacts.Add("closed loop: whether this edge is a run or part of a figure is not " +
+                                          "said by the drawing");
+                }
                 produced.Add(c);
             }
             return produced;
@@ -1386,10 +2179,12 @@ namespace Horizun.Revit.Core
                 ProposedKind = rule.Produces,
                 RuleId = rule.Id,
                 Layer = layer,
+                Kind = kind,
                 Discipline = rule.Discipline,
                 Category = rule.Category,
                 FamilyType = rule.FamilyType,
                 Level = rule.Level,
+                JoinRule = rule.JoinRule,
                 BaseLevel = rule.BaseLevel,
                 TopLevel = rule.TopLevel,
                 Parameters = rule.Parameters,

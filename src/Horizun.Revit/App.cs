@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Revit MCP — original Horizun code.
 //
 // The Revit add-in entry point. On startup we build the dispatcher, register the
@@ -43,6 +43,25 @@ namespace Horizun.Revit
                 // reason for an add-in to not load.
                 try { Ribbon.Build(app); }
                 catch (Exception rex) { Log.Warn("the ribbon tab could not be built: " + rex.Message); }
+
+                // THE OPERATIONS PANE. Registered here because RegisterDockablePane must
+                // be called during start-up - Revit refuses it afterwards - and wrapped
+                // for the same reason the ribbon is: a panel is never a reason for an
+                // add-in to fail to load, and a session without it is a session with a
+                // fully working bridge and one fewer window.
+                try
+                {
+                    app.RegisterDockablePane(
+                        Horizun.Revit.Ui.OperationsPaneIdentity.PaneId,
+                        Horizun.Revit.Ui.OperationsPaneIdentity.Title,
+                        new Horizun.Revit.Ui.OperationsPane());
+                    Log.Info("operations pane registered");
+                }
+                catch (Exception pex)
+                {
+                    Log.Warn("the operations pane could not be registered: " + pex.Message +
+                             " The bridge is unaffected.");
+                }
 
                 _dispatcher = new Dispatcher();
                 RegisterCommands(_dispatcher);
@@ -164,6 +183,13 @@ namespace Horizun.Revit
             d.Register(new PlanStructureCommand());
             d.Register(new ManageLinksCommand());
             d.Register(new PlanMepCommand());
+            d.Register(new ConnectMepCommand());
+            d.Register(new StructuralConnectionsCommand());
+            d.Register(new ManageMaterialsCommand());
+            d.Register(new ValidateIdsCommand());
+            d.Register(new CopyBetweenDocumentsCommand());
+            d.Register(new AuditAccessCommand());
+            d.Register(new PlanFromIfcCommand());
             d.Register(new SetKeynoteCommand());
             d.Register(new FamilyApplyCommand());
             d.Register(new CreateFamilyCommand());
@@ -190,6 +216,10 @@ namespace Horizun.Revit
             d.Register(new EditDimensionsCommand());
             d.Register(new QueryDetail2DCommand());
             d.Register(new QueryCadCommand());
+            d.Register(new CadExtractCommand());
+            d.Register(new CadNetworksCommand());
+            d.Register(new CadUnitInstancesCommand());
+            d.Register(new CadSymbolsCommand());
             d.Register(new Detail2DCommand());
             d.Register(new QueryPlanimetryCommand());
             d.Register(new QueryStructureCommand());
@@ -225,9 +255,14 @@ namespace Horizun.Revit
             d.Register(new ApplyCorrectionsCommand(d.ResolveCommand));
             d.Register(new PlanFromCadCommand());
             d.Register(new ApplyCadPlanCommand(d.ResolveCommand));
+            // The IFC apply half: same shape, same delegation to create_elements,
+            // same reason - a conversion nobody read is a conversion nobody agreed to.
+            d.Register(new ApplyIfcPlanCommand(d.ResolveCommand));
             d.Register(new AuditCadModelCommand());
             d.Register(new PlanCadUpdateCommand());
             d.Register(new ApplyCadUpdateCommand(d.ResolveCommand));
+            d.Register(new CadConnectCommand(d.ResolveCommand));
+            d.Register(new CadReviewCommand());
             d.Register(new ManageCadLinksCommand());
             d.Register(new SubmitJobCommand(d.ResolveCommand, () => d.DocumentSnapshot));
             // more commands land here as they are ported.

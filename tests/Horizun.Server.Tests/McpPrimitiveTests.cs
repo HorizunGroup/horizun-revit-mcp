@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -18,10 +18,16 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            Assert.Equal(5, resources.Count);
+            // Five documents and one MCP App. The app lives under ui:// because that is
+            // the scheme the Apps extension names; it is as virtual as the rest.
+            Assert.Equal(6, resources.Count);
             foreach (JObject resource in resources)
             {
-                Assert.StartsWith("horizun://", (string)resource["uri"]);
+                string uri = (string)resource["uri"];
+                if (uri.StartsWith("ui://", System.StringComparison.Ordinal))
+                    Assert.Equal("text/html;profile=mcp-app", (string)resource["mimeType"]);
+                else
+                    Assert.StartsWith("horizun://", uri);
                 Assert.False(string.IsNullOrWhiteSpace((string)resource["mimeType"]));
                 Assert.True((int)resource["size"] > 0);
 
@@ -32,20 +38,81 @@ namespace Horizun.Server.Tests
             }
         }
 
+        /// <summary>
+        /// The catalogue is a PROCEDURE catalogue now, not a menu of tool names.
+        ///
+        /// What each row has to carry is the point of the change: a procedure with no
+        /// declared inputs, no scope, no expected errors and no acceptance criterion can
+        /// be run two different ways by two people and neither can be checked. The old
+        /// assertions - a prompt, some tools, an evidence sentence - passed happily on a
+        /// row that said none of that.
+        /// </summary>
         [Fact]
-        public void Workflow_catalog_is_a_structured_installed_resource()
+        public void Procedure_catalog_declares_what_each_procedure_takes_produces_and_proves()
         {
             JObject read = McpResources.Read(new JObject { ["uri"] = "horizun://workflows/bim-production" });
             JObject catalog = JObject.Parse((string)read["contents"][0]["text"]);
             JArray workflows = (JArray)catalog["workflows"];
-            Assert.Equal("horizun.workflow-catalog/1", (string)catalog["schema"]);
-            Assert.True(workflows.Count >= 9);
-            Assert.All(workflows.OfType<JObject>(), flow =>
+
+            Assert.Equal(McpWorkflowCatalog.Schema, (string)catalog["schema"]);
+            Assert.True(workflows.Count >= 20,
+                        "the gap asked for 20 priority procedures; there are " + workflows.Count);
+
+            // The old key still resolves to the same array, so a reader written against
+            // the first shape does not break on the day it changed.
+            Assert.Equal(workflows.Count, ((JArray)catalog["procedures"]).Count);
+
+            var ids = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
+            foreach (JObject procedure in workflows.OfType<JObject>())
             {
-                Assert.False(string.IsNullOrWhiteSpace((string)flow["prompt"]));
-                Assert.NotEmpty((JArray)flow["tools"]);
-                Assert.False(string.IsNullOrWhiteSpace((string)flow["evidence"]));
-            });
+                string id = (string)procedure["id"];
+                Assert.True(ids.Add(id), "procedure id '" + id + "' appears twice");
+
+                Assert.False(string.IsNullOrWhiteSpace((string)procedure["prompt"]));
+                Assert.NotEmpty((JArray)procedure["tools"]);
+                Assert.False(string.IsNullOrWhiteSpace((string)procedure["evidence"]));
+
+                // A procedure is versioned individually: a run recorded against version 1
+                // is not evidence for version 2.
+                Assert.True((int)procedure["version"] >= 1, id + " has no version");
+
+                Assert.NotEmpty((JArray)procedure["inputs"]);
+                Assert.NotEmpty((JArray)procedure["errors"]);
+                Assert.False(string.IsNullOrWhiteSpace((string)procedure["scope"]), id + " declares no scope");
+                Assert.False(string.IsNullOrWhiteSpace((string)procedure["output"]), id + " declares no output");
+                Assert.False(string.IsNullOrWhiteSpace((string)procedure["acceptance"]),
+                             id + " has no acceptance criterion, so nobody can say whether it worked");
+            }
+
+            // Every declared dependency names a procedure that exists. A dependency on
+            // something absent is a procedure nobody can complete.
+            foreach (JObject procedure in workflows.OfType<JObject>())
+                foreach (JToken dependency in (JArray)procedure["depends_on"])
+                    Assert.Contains((string)dependency, ids);
+        }
+
+        /// <summary>
+        /// Every procedure's `prompt` must name a prompt this server actually serves.
+        ///
+        /// The two lists live in different files and drifted the moment three procedures
+        /// were added: a catalogue entry pointing at a prompt that does not exist is an
+        /// entry a client can read, act on, and be refused by - which reads as a broken
+        /// server rather than as a catalogue nobody finished.
+        /// </summary>
+        [Fact]
+        public void Every_procedure_prompt_is_a_prompt_this_server_serves()
+        {
+            JObject read = McpResources.Read(new JObject { ["uri"] = "horizun://workflows/bim-production" });
+            JObject catalog = JObject.Parse((string)read["contents"][0]["text"]);
+
+            var served = new System.Collections.Generic.HashSet<string>(System.StringComparer.Ordinal);
+            foreach (JObject prompt in ((JArray)McpPrompts.List(null)["prompts"]).OfType<JObject>())
+                served.Add((string)prompt["name"]);
+
+            foreach (JObject procedure in ((JArray)catalog["workflows"]).OfType<JObject>())
+                Assert.True(served.Contains((string)procedure["prompt"]),
+                            "procedure '" + (string)procedure["id"] + "' names prompt '" +
+                            (string)procedure["prompt"] + "', which prompts/list does not offer");
         }
 
         [Fact]
@@ -78,7 +145,9 @@ namespace Horizun.Server.Tests
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
-            Assert.Equal(20, prompts.Count);
+            // Twenty, three procedures added with the 2026-09-15 catalogue, and the two
+            // DWG procedures that had no prompt behind them.
+            Assert.Equal(27, prompts.Count);
             foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
             {
                 Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));

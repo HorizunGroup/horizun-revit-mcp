@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP server — standard MCP Resources.
 //
 // These are intentionally virtual horizun:// resources, not file:// paths. An
@@ -42,7 +42,11 @@ namespace Horizun.Server
                         "application/json", Encoding.UTF8.GetByteCount(BuildText())),
                     Def(WorkflowsUri, "bim-production-workflows", "BIM Production Workflows",
                         "Task-oriented workflow catalog over the installed typed tool surface.",
-                        "application/json", Encoding.UTF8.GetByteCount(WorkflowText()))
+                        "application/json", Encoding.UTF8.GetByteCount(WorkflowText())),
+                    // The MCP App. It is listed like any other resource because it IS
+                    // one; what makes it an app is its mime type and the tool that
+                    // names it, not a separate listing mechanism.
+                    McpAppResources.Definition()
                 }
             };
         }
@@ -62,6 +66,8 @@ namespace Horizun.Server
                 case SecurityUri: mime = "application/json"; text = SecurityText(); break;
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
                 case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
+                case McpAppResources.ClashViewerUri:
+                    mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
             }
             return new JObject
@@ -163,9 +169,33 @@ namespace Horizun.Server
                 ["server_name"] = "horizun-mcp",
                 ["contract_hash"] = Horizun.Contracts.Contract.Hash,
                 ["bridge_protocol_version"] = Horizun.Contracts.Contract.ProtocolVersion,
-                ["supported_mcp_protocols"] = new JArray(ProtocolNegotiation.Supported),
+                // EVERY revision, not only the ones reachable through initialize.
+                // ProtocolNegotiation.Supported is the legacy half by design; a reader
+                // asking what this server speaks must be told about 2026-07-28 too.
+                ["supported_mcp_protocols"] = new JArray(Protocol.McpRevision.All),
+                ["legacy_initialize_protocols"] = new JArray(ProtocolNegotiation.Supported),
+                ["mcp_extensions"] = ExtensionRows(),
                 ["registry"] = registry
             }.ToString(Formatting.Indented);
+        }
+
+        /// <summary>
+        /// Every extension this build knows about, advertised or not, and what is missing
+        /// from the ones that are not. Withholding without explaining is its own failure:
+        /// a client that wondered why io.modelcontextprotocol/ui is absent reads it here
+        /// instead of filing a bug about a capability that was never claimed.
+        /// </summary>
+        private static JArray ExtensionRows()
+        {
+            var arr = new JArray();
+            foreach (Protocol.McpExtension e in Protocol.ExtensionRegistry.All)
+                arr.Add(new JObject
+                {
+                    ["id"] = e.Id,
+                    ["advertised"] = e.Implemented,
+                    ["pending"] = e.Pending == null ? (JToken)JValue.CreateNull() : e.Pending
+                });
+            return arr;
         }
 
         private static string WorkflowText() => McpWorkflowCatalog.Document().ToString(Formatting.Indented);

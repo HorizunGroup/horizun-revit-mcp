@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun MCP — original Horizun code.
 //
 // The document that says what a DWG MEANS, and the refusals that keep it honest.
@@ -197,6 +197,17 @@ namespace Horizun.Revit.Core
         /// </summary>
         public bool Required = true;
 
+        /// <summary>
+        /// The block ATTRIBUTE TAG this value is read from, when it is read from
+        /// the drawing rather than declared.
+        ///
+        /// It is how a circuit number or a panel name gets from the symbol the
+        /// electrician annotated into the parameter the schedule reads, without
+        /// anybody retyping it - and without this bridge inventing a value when
+        /// the tag is not there.
+        /// </summary>
+        public string FromBlockAttribute;
+
         public JObject ToJson() => new JObject
         {
             ["parameter"] = Parameter,
@@ -204,6 +215,51 @@ namespace Horizun.Revit.Core
             ["scope"] = Scope,
             ["required"] = Required
         };
+    }
+
+    /// <summary>What a rule does with a closed loop of its own line work. Declared; never inferred from shape.</summary>
+    public enum CadClosedLoopPolicy { Review, Runs, FiguresByRule }
+
+    /// <summary>
+    /// WHAT A FIGURE LOOKS LIKE IN THIS DRAWING, declared by the caller and never by this bridge. Every named
+    /// threshold must hold for a loop to be left unclaimed; a loop that fails any of them is held for review,
+    /// not built. MEASURED (M102): a 24 x 24 in box with both diagonals and nothing else attached to it, on a
+    /// layer whose runs are 1.8 to 14 m long.
+    /// </summary>
+    public sealed class CadClosedFigureRule
+    {
+        public double? MaxPerimeterMm;
+        public int? MinChords;
+        public int? MaxEdges;
+        /// <summary>No other line of the layer touches the loop: a route that closes usually carries something.</summary>
+        public bool NothingElseAttached;
+        /// <summary>Only a loop drawn as ONE closed polyline (or only one that is not), when the caller says so.</summary>
+        public bool? OneClosedPolyline;
+
+        public bool Declares => MaxPerimeterMm.HasValue || MinChords.HasValue || MaxEdges.HasValue ||
+                                NothingElseAttached || OneClosedPolyline.HasValue;
+
+        public JObject ToJson()
+        {
+            var o = new JObject();
+            if (MaxPerimeterMm.HasValue) o["max_perimeter_mm"] = MaxPerimeterMm.Value;
+            if (MinChords.HasValue) o["min_chords"] = MinChords.Value;
+            if (MaxEdges.HasValue) o["max_edges"] = MaxEdges.Value;
+            if (NothingElseAttached) o["nothing_else_attached"] = true;
+            if (OneClosedPolyline.HasValue) o["one_closed_polyline"] = OneClosedPolyline.Value;
+            return o;
+        }
+
+        public string Describe()
+        {
+            var parts = new List<string>();
+            if (MaxPerimeterMm.HasValue) parts.Add("perimeter at most " + MaxPerimeterMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm");
+            if (MinChords.HasValue) parts.Add("at least " + MinChords.Value + " chord(s)");
+            if (MaxEdges.HasValue) parts.Add("at most " + MaxEdges.Value + " edge(s)");
+            if (NothingElseAttached) parts.Add("nothing else attached to it");
+            if (OneClosedPolyline.HasValue) parts.Add(OneClosedPolyline.Value ? "drawn as one closed polyline" : "not drawn as one closed polyline");
+            return string.Join(", ", parts);
+        }
     }
 
     public sealed class CadGeometryCriteria
@@ -214,10 +270,125 @@ namespace Horizun.Revit.Core
         public double? MinOverlapMm;
         public double? MinOverlapFraction;
         public double? MinLengthMm;
+        /// <summary>
+        /// For from:"single_lines": whether collinear drawn pieces are merged into one run
+        /// (the default). False keeps every drawn piece a run of its own - which is how a
+        /// plan that marks a size change at a vertex of a straight line keeps the change.
+        /// The network reading honours the same flag, or the two would name runs differently.
+        /// </summary>
+        public bool MergeCollinear = true;
+        /// <summary>single_lines: read the edges of a CLOSED polyline as runs too. Alias of closed_loops = "runs".</summary>
+        public bool IncludeClosedPolylines;
+
+        /// <summary>
+        /// What this rule does with a CLOSED LOOP of its own line work. MEASURED (campaign 7): a chord across a
+        /// loop is a property of the LINE WORK, not a statement about what it means - a closed circuit with an
+        /// interior connection has one too - so nothing here is decided by shape alone. review (the default)
+        /// proposes every edge and holds it; runs reads them as runs like any other line; figures_by_rule leaves
+        /// unclaimed the loops that match closed_figure, and holds the rest.
+        /// </summary>
+        public CadClosedLoopPolicy ClosedLoops = CadClosedLoopPolicy.Review;
+
+        /// <summary>What a FIGURE looks like in this project's drawings, declared. Null unless the caller says.</summary>
+        public CadClosedFigureRule ClosedFigure;
         public double? MaxLengthMm;
         public double? MinAreaMm2;
         public double? MaxAreaMm2;
         public double? ClusterRadiusMm;
+
+        /// <summary>
+        /// For from:"blocks" - which block DEFINITION names this rule claims, as
+        /// globs. Empty means "every block on the layers this rule claims", which
+        /// is a legitimate reading for a drawing that keeps one symbol per layer
+        /// and a dangerous one for a drawing that does not.
+        ///
+        /// A block name is the closest thing a DWG has to a statement of what
+        /// something IS: its author typed it. Matching on it is how a symbol
+        /// becomes a family type without anybody writing a row by hand.
+        /// </summary>
+        public List<string> BlockPatterns = new List<string>();
+
+        /// <summary>
+        /// For from:"blocks" - patterns matched against the EFFECTIVE name of a dynamic block
+        /// instance ("OUT2" behind the anonymous "*U11"), never against the reference name.
+        /// Kept apart from <see cref="BlockPatterns"/> on purpose: a set that names "EM" meant
+        /// the block called EM; claiming the dynamic variants of it is a separate statement the
+        /// set has to make, because one effective name can cover several devices.
+        /// </summary>
+        public List<string> EffectiveBlockPatterns = new List<string>();
+
+        /// <summary>
+        /// For from:"blocks" - dynamic property values an instance must carry, name to value
+        /// ("Visibility1": "WALL"). Compared as numbers when both sides parse as numbers, else
+        /// as text (case-insensitive). A property the instance never set is ABSENT, and an
+        /// absent property does not match a stated value: the definition's default is not read.
+        /// </summary>
+        public Dictionary<string, string> DynamicProperties =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+
+        /// <summary>
+        /// For from:"blocks" - attribute tags an instance must carry ("present") or
+        /// must not carry ("absent"). An anonymous dynamic block ("*U32") says what it
+        /// is only through its attributes; a smoke detector and a smoke/CO detector of
+        /// one drawing differ by one tag. Tags compare case-insensitively.
+        /// </summary>
+        public Dictionary<string, bool> BlockAttributes =
+            new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// For from:"blocks" - which way each block's DEVICE faces, in the block's
+        /// own frame: "+x", "-x", "+y" or "-y", keyed by block-name glob.
+        ///
+        /// MEASURED on the electrical plan: a switch's symbol runs from the wall
+        /// into the room along its +y, a receptacle's along its +x, and a symbol
+        /// drawn over a wall's hatch says which face it belongs to ONLY through
+        /// that direction. Nothing in the block says which end is the room - the
+        /// switch's far end is the room and the receptacle's far end is too, on
+        /// different axes - so it is declared, never inferred. Undeclared, a
+        /// symbol inside the wall is placed by the side of the centreline it is
+        /// drawn on, or not at all.
+        /// </summary>
+        public List<KeyValuePair<string, CadVector>> BlockFacing = new List<KeyValuePair<string, CadVector>>();
+
+        /// <summary>
+        /// For from:"double_lines" - the layers the drawing HATCHES wall material
+        /// on, as globs. When declared, a pair of faces with no such hatch between
+        /// them at any station is not a wall (a chase, a joint, a gap between two
+        /// masses), and the plan reads the DWG to know. Empty: lines alone decide.
+        /// </summary>
+        public List<string> SolidHatchLayers = new List<string>();
+
+        /// <summary>
+        /// What a band of several hatched leaves becomes (needs solid_hatch_layers):
+        /// "outer" (the default, the reading of its outer faces as one generic wall),
+        /// "leaves" (each leaf its own wall; a drawn line between two leaves bounds
+        /// both), or "composite" (one wall of the outer faces, even with a cavity
+        /// inside, its leaves recorded). A test-model experiment until a project
+        /// chooses; the choice is the set's, never the bridge's.
+        /// </summary>
+        public string Composite = CadCompositePolicy.Outer;
+
+        /// <summary>
+        /// Unhatched finish lines outside a band's faces: "widen" (the default - a line
+        /// alongside half the wall widens all of it) or "follow" (the wall is cut where
+        /// the finish starts or stops, and each piece carries only its own finish).
+        /// </summary>
+        public string Finish = "widen";
+
+        /// <summary>
+        /// Breaks in ONE face of a wall no longer than this are bridged while the other
+        /// face runs on (a meeting wall interrupts a face for its width). Null: every
+        /// break ends the reading, as before.
+        /// </summary>
+        public double? FaceBreaksMm;
+
+        /// <summary>
+        /// A short, thicker box closing a wall's end (a pier, measured in case 159C4): null ignores
+        /// it as before; "report" lists every one found; "extend" carries the wall through it to its
+        /// end cap at the wall's own thickness. Whether such a box IS the wall's end is the project's
+        /// decision, which is why nothing reads it unless asked. See CadWallPiers.
+        /// </summary>
+        public string EndPiers;
         public bool SameLayerOnly = true;
 
         /// <summary>
@@ -241,6 +412,193 @@ namespace Horizun.Revit.Core
     }
 
     /// <summary>One mapping: WHICH layers, WHAT they become, and on what evidence.</summary>
+    /// <summary>
+    /// THE PART OF THE DRAWING THIS SET IS ABOUT, in millimetres, in the
+    /// drawing's own coordinates.
+    ///
+    /// A layer is drawing-wide and a floor plan holds every apartment on the
+    /// storey, so without this a set for receptacles claims all of them. The
+    /// bound is on the INTERPRETATION, never on the reading: the drawing is
+    /// still read whole, so coverage, the layer map and every "no rule matched"
+    /// verdict still describe the real file rather than a window onto it.
+    /// </summary>
+    public static class CadCompositePolicy
+    {
+        public const string Outer = "outer";
+        public const string Leaves = "leaves";
+        public const string Composite = "composite";
+        public static readonly string[] All = { Outer, Leaves, Composite };
+    }
+
+    public sealed class CadExtent
+    {
+        public const string CrossingExclude = "exclude";
+        public const string CrossingWhole = "whole";
+
+        public double MinX, MinY, MaxX, MaxY;
+
+        /// <summary>
+        /// WHAT HAPPENS TO AN ENTITY THE ZONE CUTS: "exclude" (the default) or
+        /// "whole".
+        ///
+        /// Excluding is right for a run that leaves the apartment - half a conduit
+        /// ends in mid air. It is wrong for the walls that BOUND the apartment:
+        /// a corridor wall or a party wall is drawn as lines that run past the
+        /// zone on both sides, so excluding them removes exactly the walls the
+        /// unit's devices are mounted on (MEASURED: six of eight unhosted devices
+        /// in one apartment). "whole" keeps such an entity entire - it is not
+        /// clipped, because a wall cut at an invisible line is a wall nobody drew.
+        /// The set declares it; the zone itself does not change.
+        /// </summary>
+        public string Crossing = CrossingExclude;
+
+        /// <summary>
+        /// THE UNIT'S FOOTPRINT, when a rectangle is not it. Vertices in drawing
+        /// millimetres, in order, not repeated at the end; concave allowed. The box
+        /// above is then the polygon's envelope and only a quick reject. A point on
+        /// an edge is inside: a boundary drawn on a wall's centreline must not lose
+        /// what stands on that line.
+        /// </summary>
+        public List<CadPoint> Polygon;
+
+        /// <summary>
+        /// HOW FAR OUTSIDE THE ZONE WALL LINES ARE STILL READ. MEASURED (units 915F
+        /// and 914): a zone bounded on the centreline of its demising walls, its
+        /// facade and its corridor wall dropped the outer face of every one of them,
+        /// so those walls were never read and 18 devices drawn on them had no host.
+        /// Lines within this distance are paired as if inside; afterwards a wall
+        /// whose centreline does not reach the zone (within the point tolerance) is
+        /// dropped by name, so the neighbour's walls are read and not built.
+        /// </summary>
+        public double WallMarginMm;
+
+        /// <summary>
+        /// A symbol no further than this from the zone's boundary belongs to neither side
+        /// until a person says so: it is left out of the zone and listed by name. Zero (the
+        /// default) keeps the inclusive edge.
+        /// </summary>
+        public double SymbolsOnBoundaryMm;
+
+        /// <summary>True when the point is inside and not held on the boundary.</summary>
+        public bool ContainsSymbol(CadPoint p) =>
+            Contains(p) && !(SymbolsOnBoundaryMm > 0 && DistanceToBoundary(p) <= SymbolsOnBoundaryMm);
+
+        /// <summary>True when the point is held on the boundary (near it, inside or outside).</summary>
+        public bool HoldsOnBoundary(CadPoint p) =>
+            SymbolsOnBoundaryMm > 0 && DistanceToBoundary(p) <= SymbolsOnBoundaryMm;
+
+        public bool Contains(CadPoint p)
+        {
+            if (p.X < MinX || p.X > MaxX || p.Y < MinY || p.Y > MaxY) return false;
+            if (Polygon == null) return true;
+            if (DistanceToBoundary(p) <= 1e-6) return true;
+            bool c = false;
+            for (int i = 0, j = Polygon.Count - 1; i < Polygon.Count; j = i++)
+            {
+                CadPoint pi = Polygon[i], pj = Polygon[j];
+                if ((pi.Y > p.Y) != (pj.Y > p.Y) &&
+                    p.X < (pj.X - pi.X) * (p.Y - pi.Y) / (pj.Y - pi.Y) + pi.X)
+                    c = !c;
+            }
+            return c;
+        }
+
+        /// <summary>Inside, or no further than <paramref name="margin"/> from the boundary.</summary>
+        public bool ContainsWithin(CadPoint p, double margin) =>
+            Contains(p) || (margin > 0 && DistanceToBoundary(p) <= margin);
+
+        /// <summary>The segment reaches the zone, or passes within <paramref name="margin"/> of it.</summary>
+        public bool TouchesWithin(CadPoint a, CadPoint b, double margin)
+        {
+            if (Touches(a, b)) return true;
+            if (margin <= 0) return false;
+            foreach (CadSegment edge in Edges())
+                if (SegmentDistance(a, b, edge.A, edge.B) <= margin) return true;
+            return false;
+        }
+
+        public double DistanceToBoundary(CadPoint p)
+        {
+            double best = double.MaxValue;
+            foreach (CadSegment edge in Edges())
+                best = Math.Min(best, PointSegment(p, edge.A, edge.B));
+            return best;
+        }
+
+        private IEnumerable<CadSegment> Edges()
+        {
+            List<CadPoint> ring = Polygon ?? new List<CadPoint>
+            {
+                new CadPoint(MinX, MinY), new CadPoint(MaxX, MinY), new CadPoint(MaxX, MaxY), new CadPoint(MinX, MaxY)
+            };
+            for (int i = 0; i < ring.Count; i++)
+                yield return new CadSegment(ring[i], ring[(i + 1) % ring.Count], null, CadCurveKind.Line, 0);
+        }
+
+        private static double PointSegment(CadPoint p, CadPoint a, CadPoint b)
+        {
+            double dx = b.X - a.X, dy = b.Y - a.Y, l2 = dx * dx + dy * dy;
+            double t = l2 <= 0 ? 0 : Math.Max(0, Math.Min(1, ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2));
+            double x = a.X + t * dx - p.X, y = a.Y + t * dy - p.Y;
+            return Math.Sqrt(x * x + y * y);
+        }
+
+        private static bool Cross(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            double Orient(CadPoint p, CadPoint q, CadPoint r) => (q.X - p.X) * (r.Y - p.Y) - (q.Y - p.Y) * (r.X - p.X);
+            double o1 = Orient(a, b, c), o2 = Orient(a, b, d), o3 = Orient(c, d, a), o4 = Orient(c, d, b);
+            return ((o1 > 0) != (o2 > 0)) && ((o3 > 0) != (o4 > 0));
+        }
+
+        private static double SegmentDistance(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            if (Cross(a, b, c, d)) return 0;
+            return Math.Min(Math.Min(PointSegment(a, c, d), PointSegment(b, c, d)),
+                            Math.Min(PointSegment(c, a, b), PointSegment(d, a, b)));
+        }
+
+        /// <summary>
+        /// Does the segment reach the zone at all - an end inside it, or passing
+        /// straight through? A line through the zone with both ends outside it
+        /// crosses it; it is not "outside".
+        /// </summary>
+        public bool Touches(CadPoint a, CadPoint b)
+        {
+            if (Contains(a) || Contains(b)) return true;
+            if (Polygon != null)
+            {
+                foreach (CadSegment edge in Edges())
+                    if (Cross(a, b, edge.A, edge.B) || PointSegment(edge.A, a, b) <= 1e-6) return true;
+                return false;
+            }
+            // Liang-Barsky against the box, in plan.
+            double t0 = 0, t1 = 1, dx = b.X - a.X, dy = b.Y - a.Y;
+            double[] p = { -dx, dx, -dy, dy };
+            double[] q = { a.X - MinX, MaxX - a.X, a.Y - MinY, MaxY - a.Y };
+            for (int i = 0; i < 4; i++)
+            {
+                if (p[i] == 0) { if (q[i] < 0) return false; continue; }
+                double r = q[i] / p[i];
+                if (p[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; }
+                else { if (r < t0) return false; if (r < t1) t1 = r; }
+            }
+            return t0 <= t1;
+        }
+
+        public string Describe() =>
+            (Polygon != null ? "polygon of " + Polygon.Count + " vertices within " : "") +
+            MinX.ToString("0.#", CultureInfo.InvariantCulture) + "," +
+            MinY.ToString("0.#", CultureInfo.InvariantCulture) + " to " +
+            MaxX.ToString("0.#", CultureInfo.InvariantCulture) + "," +
+            MaxY.ToString("0.#", CultureInfo.InvariantCulture) + " mm" +
+            (Crossing == CrossingWhole ? ", entities it cuts kept whole" : "") +
+            (WallMarginMm > 0
+                ? ", wall lines read up to " + WallMarginMm.ToString("0.#", CultureInfo.InvariantCulture) +
+                  " mm outside it"
+                : "");
+    }
+
+
     public sealed class CadRule
     {
         public string Id;
@@ -273,8 +631,66 @@ namespace Horizun.Revit.Core
         public double? OffsetMm;
         public double? ThicknessMm;                  // when the rule DECLARES it rather than measuring it
         public double? DiameterMm;
+        /// <summary>For a duct rule: where each run's rectangular section is written (labels). Null: none.</summary>
+        public CadSectionRule Section;
         public double? SlopePercent;
         public string JoinRule;                      // none | auto | butt - passed through, applied by the writer
+
+        /// <summary>
+        /// WHAT THIS RULE'S SYMBOLS ARE MOUNTED ON: "wall", "slab", or null for
+        /// an element that stands on its own.
+        ///
+        /// A door is hosted because of what a door IS; a receptacle is hosted
+        /// because somebody decided this symbol means a wall outlet rather than a
+        /// floor box, and the drawing shows both as a mark. So it is the set's
+        /// statement, and the host is still resolved against the model per
+        /// instance: the drawing has no element ids to name one with.
+        /// </summary>
+        public string HostedOn;
+
+        /// <summary>
+        /// The layers this rule's HOSTS are drawn on, as globs. Optional. When
+        /// given, a symbol whose nearest line on these layers is not one of its
+        /// chosen host's faces is withdrawn: the drawing shows it against a wall
+        /// the model does not have.
+        /// </summary>
+        public List<string> HostLayers = new List<string>();
+
+        /// <summary>
+        /// Which faces of a wall a hosted symbol may stand on: "side" (the default) and, when the
+        /// set says so, "end" - the wall's terminal face, taken only where no side face carries the
+        /// point, never at a joined end, and never where the drawing shows a different end (a pier
+        /// the model does not have) or the same wall resuming beyond it (a jamb).
+        /// </summary>
+        public List<string> HostFaces;
+
+        /// <summary>
+        /// For a wall rule: the wall types a reading may be built as, BY THICKNESS.
+        /// The plan reads each type's width from the model and builds each wall
+        /// with the one whose width is nearest the drawn thickness, within
+        /// <see cref="WallTypeToleranceMm"/>. Null means the rule's single
+        /// family_type, whatever the drawing says - the behaviour that built every
+        /// wall 152.4 mm thick.
+        /// </summary>
+        public List<string> WallTypes;
+        public double? WallTypeToleranceMm;
+        /// <summary>"withdraw" (default): a wall no listed type fits is not built. "family_type": it is built as family_type and the audit says so.</summary>
+        public string WallTypeOtherwise = "withdraw";
+
+        /// <summary>
+        /// WHAT A MIRRORED INSERTION MEANS FOR THIS RULE'S SYMBOLS:
+        /// preserve (the default), symmetric, variant, or pending.
+        ///
+        /// A drawing reflects a block with a negative scale factor, and whether
+        /// that is a fact about the device or about the draughtsman is not
+        /// something geometry can decide on its own - so the set decides, and
+        /// "symmetric" is checked against the block's own geometry before it is
+        /// believed.
+        /// </summary>
+        public string Mirror;
+
+        /// <summary>For mirror = variant: the family type a mirrored symbol means instead.</summary>
+        public string MirrorVariantType;
 
         /// <summary>
         /// Whether what this rule produces bears load.
@@ -437,6 +853,66 @@ namespace Horizun.Revit.Core
         /// <summary>SHA-256 over the canonical form. Stamped on everything produced.</summary>
         public string Sha256;
 
+        /// <summary>
+        /// The zone this set converts, or null for the whole drawing.
+        ///
+        /// It is part of the set, so it is part of the set's hash, so a plan made
+        /// for one apartment cannot be applied as if it were the floor: the
+        /// fingerprint an apply re-measures changes with it.
+        /// </summary>
+        public CadExtent ExtentMm;
+
+        /// <summary>
+        /// How far a reflected symbol may move and still be the same symbol, in mm.
+        ///
+        /// Its own number, small by default. MEASURED: borrowing point_mm
+        /// accredited a symbol as symmetric whose reflection moved its geometry
+        /// 152 mm, because point_mm had been raised to 250 for a different job -
+        /// finding the wall a device is drawn beside. A receptacle symbol is
+        /// barely 300 mm across, so 250 mm of slack accredits anything.
+        /// </summary>
+        public double SymmetryToleranceMm = 1.0;
+
+        /// <summary>
+        /// How far from a wall a symbol may be drawn and still belong to it.
+        ///
+        /// A SEARCH tolerance, not an acceptance one: it decides which wall a
+        /// device is hosted on and says nothing about whether the built element
+        /// ended up where it was asked for. Defaults to point_mm, which is what
+        /// it used to borrow.
+        /// </summary>
+        public double HostSearchMm;
+
+        /// <summary>
+        /// How far a symbol may sit from the FACE it is placed on, once its host
+        /// is known. The point is projected onto the face and the distance is
+        /// reported; beyond this the row refuses rather than reaching.
+        /// </summary>
+        public double FaceProjectionMm = 300.0;
+
+        /// <summary>
+        /// How far a built element may be from where THIS revision of the drawing
+        /// puts it before an audit calls it moved. Defaults to point_mm.
+        /// </summary>
+        public double RevisionCompareMm;
+
+        /// <summary>
+        /// How far two wall readings' SOLIDS may overlap and still be two walls.
+        /// Drafting leaves touching walls a hair into each other; anything more is
+        /// one wall read twice, or a pairing that crossed from one wall into the
+        /// next. Not point_mm: that is how close two endpoints are, and at 25 mm
+        /// it would call a 10 mm overlap "touching".
+        /// </summary>
+        public double WallOverlapMm = 1.0;
+
+        /// <summary>
+        /// How far a built element's width may differ from the thickness the
+        /// drawing gives it - for choosing a wall type and for auditing. Its own
+        /// number: the 25 mm a set allows for comparing revisions let a 146 mm
+        /// wall pass as a 152.4 mm one.
+        /// </summary>
+        public double ThicknessToleranceMm = 3.2;
+
         /// <summary>The closed vocabulary of things a rule may produce. A typo here is a refusal.</summary>
         public static readonly string[] KnownProduces =
         {
@@ -457,17 +933,19 @@ namespace Horizun.Revit.Core
         /// as a floor plan, which is the whole failure that key exists to prevent.
         /// </summary>
         private static readonly HashSet<string> SourceKeys = new HashSet<string>(StringComparer.Ordinal)
-        { "units", "case_sensitive_layers", "role" };
+        { "units", "case_sensitive_layers", "role", "extent_mm" };
 
         private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal)
         {
-            "id", "precedence", "discipline", "layers", "exclude_layers", "produces", "category",
+            "id", "precedence", "discipline", "layers", "exclude_layers", "produces", "category", "hosted_on",
+            "host_layers", "host_faces", "wall_types",
+            "mirror", "mirror_variant_type",
             "family_type", "system_type", "level", "base_level", "top_level", "phase",
             "design_option", "geometry",
             "height_mm", "offset_mm", "sill_height_mm", "head_height_mm",
             "thickness_mm", "diameter_mm", "slope_percent", "join_rule", "min_confidence", "structural",
             "allow_structural",
-            "naming",
+            "naming", "section",
             "on_ambiguous", "on_manual_divergence", "parameters"
         };
 
@@ -475,7 +953,8 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm"
+            "same_layer_only", "bridge_openings_mm", "merge_collinear", "include_closed_polylines",
+            "closed_loops", "closed_figure", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -559,6 +1038,87 @@ namespace Horizun.Revit.Core
                 set.SourceRole = role;
             }
 
+            // ---- extent: which part of the drawing, when not all of it -----------
+            JObject extent = source["extent_mm"] as JObject;
+            if (source["extent_mm"] != null && extent == null)
+                throw new CadRequirementSetException(
+                    "source.extent_mm must be an object with min_x, min_y, max_x and max_y in millimetres, " +
+                    "in the drawing's own coordinates. NOTHING was read from it.");
+            if (extent != null)
+            {
+                foreach (JProperty prop in extent.Properties())
+                    if (prop.Name != "min_x" && prop.Name != "min_y" && prop.Name != "max_x" && prop.Name != "max_y" &&
+                        prop.Name != "crossing" && prop.Name != "polygon" && prop.Name != "wall_margin_mm" &&
+                        prop.Name != "symbols_on_boundary_mm")
+                        throw new CadRequirementSetException(
+                            "Unknown key '" + prop.Name + "' in source.extent_mm. Known: crossing, max_x, max_y, min_x, " +
+                            "min_y, polygon, symbols_on_boundary_mm, wall_margin_mm. A misspelt bound would be ignored and the zone would " +
+                            "silently become the whole drawing.");
+
+                CadExtent box;
+                if (extent["polygon"] != null)
+                {
+                    if (extent["min_x"] != null || extent["min_y"] != null || extent["max_x"] != null ||
+                        extent["max_y"] != null)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm has both a polygon and box bounds. Give one: two zones that disagree " +
+                            "would leave the choice between them to this bridge.");
+                    box = PolygonExtent(extent["polygon"]);
+                }
+                else
+                {
+                    box = new CadExtent
+                    {
+                        MinX = RequireNumber(extent, "min_x"),
+                        MinY = RequireNumber(extent, "min_y"),
+                        MaxX = RequireNumber(extent, "max_x"),
+                        MaxY = RequireNumber(extent, "max_y")
+                    };
+                }
+                JToken margin = extent["wall_margin_mm"];
+                if (margin != null)
+                {
+                    double? m = margin.Type == JTokenType.Integer || margin.Type == JTokenType.Float
+                        ? (double?)margin.Value<double>() : null;
+                    if (m == null || m < 0 || m > 2000)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.wall_margin_mm must be a number of millimetres between 0 and 2000; it " +
+                            "reads " + margin.ToString(Newtonsoft.Json.Formatting.None) + ". It is how far outside " +
+                            "the zone wall LINES are still read, so the walls on its boundary keep both faces.");
+                    box.WallMarginMm = m.Value;
+                }
+                JToken held = extent["symbols_on_boundary_mm"];
+                if (held != null)
+                {
+                    double? h = held.Type == JTokenType.Integer || held.Type == JTokenType.Float
+                        ? (double?)held.Value<double>() : null;
+                    if (h == null || h < 0 || h > 1000)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.symbols_on_boundary_mm must be a number of millimetres between 0 and " +
+                            "1000; it reads " + held.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                    box.SymbolsOnBoundaryMm = h.Value;
+                }
+                if (box.MaxX <= box.MinX || box.MaxY <= box.MinY)
+                    throw new CadRequirementSetException(
+                        "source.extent_mm is empty or inverted (" + box.Describe() + "): max must exceed min on " +
+                        "both axes. An inverted box contains nothing, and a set that converts nothing is not a " +
+                        "set somebody meant to write.");
+
+                JToken crossing = extent["crossing"];
+                if (crossing != null)
+                {
+                    string c = crossing.Type == JTokenType.String ? ((string)crossing ?? "").Trim() : null;
+                    if (c != CadExtent.CrossingExclude && c != CadExtent.CrossingWhole)
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.crossing must be 'exclude' or 'whole'; it reads " +
+                            crossing.ToString(Newtonsoft.Json.Formatting.None) + ". It decides what happens to an " +
+                            "entity the zone cuts, and a guess would either drop the walls that bound the zone or " +
+                            "pull in the runs that leave it.");
+                    box.Crossing = c;
+                }
+                set.ExtentMm = box;
+            }
+
             // ---- tolerances: all four, all declared ------------------------------
             JObject tol = doc["tolerances"] as JObject;
             if (tol == null)
@@ -569,6 +1129,37 @@ namespace Horizun.Revit.Core
             set.GapToleranceMm = RequirePositive(tol, "gap_mm", "the largest opening that may be snapped shut to close a loop");
             set.AngleToleranceDegrees = RequirePositive(tol, "angle_degrees", "how far from parallel two wall faces may be");
             set.ArcSagittaMm = RequirePositive(tol, "arc_sagitta_mm", "how far a chord may depart from the arc it replaces");
+
+            // SYMMETRY HAS ITS OWN TOLERANCE, and it is small unless a set says
+            // otherwise. One number cannot answer both "are these two endpoints
+            // the same node" and "is this mark its own mirror image".
+            set.SymmetryToleranceMm = tol.Value<double?>("symmetry_mm") ?? 1.0;
+
+            // EACH QUESTION ITS OWN NUMBER, defaulting to what it used to borrow
+            // so that re-reading an existing set changes nothing.
+            set.HostSearchMm = tol.Value<double?>("host_search_mm") ?? set.PointToleranceMm;
+            set.FaceProjectionMm = tol.Value<double?>("face_projection_mm") ?? 300.0;
+            set.RevisionCompareMm = tol.Value<double?>("revision_compare_mm") ?? set.PointToleranceMm;
+            set.WallOverlapMm = tol.Value<double?>("wall_overlap_mm") ?? 1.0;
+            set.ThicknessToleranceMm = tol.Value<double?>("thickness_mm") ?? 3.2;
+            if (set.ThicknessToleranceMm <= 0)
+                throw new CadRequirementSetException(
+                    "tolerances.thickness_mm must be positive: it is how far a built width may be from the drawn one.");
+            if (set.WallOverlapMm < 0)
+                throw new CadRequirementSetException(
+                    "tolerances.wall_overlap_mm cannot be negative: it is how far two walls may overlap and still be two.");
+            foreach (string name in new[] { "host_search_mm", "face_projection_mm", "revision_compare_mm" })
+            {
+                double? v = tol.Value<double?>(name);
+                if (v.HasValue && v.Value <= 0)
+                    throw new CadRequirementSetException(
+                        "tolerances." + name + " must be positive when declared; it is a distance, and zero " +
+                        "would mean a question nothing can answer.");
+            }
+            if (set.SymmetryToleranceMm <= 0)
+                throw new CadRequirementSetException(
+                    "tolerances.symmetry_mm must be positive: it is how far a reflected symbol may move and " +
+                    "still be called the same symbol.");
             if (set.GapToleranceMm < set.PointToleranceMm)
                 throw new CadRequirementSetException(
                     "tolerances.gap_mm (" + set.GapToleranceMm.ToString(CultureInfo.InvariantCulture) +
@@ -596,6 +1187,23 @@ namespace Horizun.Revit.Core
                 {
                     CadRule a = set.Rules[i], b = set.Rules[j];
                     if (a.Precedence != b.Precedence) continue;
+
+                    // A BLOCK RULE DISCRIMINATES BY NAME, NOT BY LAYER.
+                    //
+                    // Every electrical symbol in a real drawing sits on a handful
+                    // of layers - E-PWR, E-LTS - and a mapping names the SYMBOLS:
+                    // one rule for receptacles, one for panels, one for vanity
+                    // lights, all of them claiming E-*. Judging those by layer
+                    // alone made every realistic electrical mapping impossible to
+                    // load, which is a tie that does not exist. Two block rules
+                    // collide only when they claim the same NAMES as well.
+                    if (a.Geometry != null && b.Geometry != null &&
+                        a.Geometry.Source == CadGeometrySource.Blocks &&
+                        b.Geometry.Source == CadGeometrySource.Blocks &&
+                        (!SamePatterns(a.Geometry.BlockPatterns, b.Geometry.BlockPatterns) ||
+                         !SameAttributes(a.Geometry.BlockAttributes, b.Geometry.BlockAttributes)))
+                        continue;
+
                     if (!string.Equals(a.Produces, b.Produces, StringComparison.Ordinal) &&
                         SamePatterns(a.LayerPatterns, b.LayerPatterns))
                         throw new CadRequirementSetException(
@@ -682,6 +1290,102 @@ namespace Horizun.Revit.Core
 
             rule.Category = r.Value<string>("category");
             rule.FamilyType = r.Value<string>("family_type");
+
+            // THE MIRROR, and what this rule says it means.
+            string mirror = r.Value<string>("mirror");
+            if (mirror != null)
+            {
+                if (mirror != "preserve" && mirror != "symmetric" && mirror != "variant" && mirror != "pending")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' says mirror '" + mirror + "'. Known: pending, preserve, " +
+                        "symmetric, variant. There is deliberately no 'ignore': a reflection that is dropped " +
+                        "without a reason is a device built the wrong way round.");
+                rule.Mirror = mirror;
+            }
+            rule.MirrorVariantType = r.Value<string>("mirror_variant_type");
+            if (rule.Mirror == "variant" && string.IsNullOrWhiteSpace(rule.MirrorVariantType))
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "' says mirror 'variant' and names no mirror_variant_type. A variant " +
+                    "nobody named is not a variant.");
+            if (rule.Mirror != "variant" && !string.IsNullOrWhiteSpace(rule.MirrorVariantType))
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "' names a mirror_variant_type and its mirror policy is '" +
+                    (rule.Mirror ?? "preserve") + "'. The type would be read by nothing.");
+
+            // THE HOST, when the rule declares one. Two words only: a typo here
+            // would otherwise mean "not hosted", and a wall outlet placed on the
+            // level is a receptacle lying on the floor.
+            string hostedOn = r.Value<string>("hosted_on");
+            if (hostedOn != null)
+            {
+                if (hostedOn != "wall" && hostedOn != "slab")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' says hosted_on '" + hostedOn + "'. Known: slab, wall. " +
+                        "A host this bridge cannot resolve is refused rather than ignored, because ignoring " +
+                        "it places a wall-mounted symbol on the floor.");
+                rule.HostedOn = hostedOn;
+            }
+            JToken hostLayers = r["host_layers"];
+            if (hostLayers != null)
+            {
+                var list = hostLayers as JArray;
+                if (list == null || list.Count == 0 || list.Any(x => x.Type != JTokenType.String ||
+                                                                    string.IsNullOrWhiteSpace((string)x)))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_layers, which must be a non-empty array of layer " +
+                        "globs. An empty list would check the host against nothing and say it passed.");
+                if (rule.HostedOn != "wall")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_layers and is not hosted_on 'wall'. The layers " +
+                        "would be read by nothing.");
+                rule.HostLayers = list.Select(x => ((string)x).Trim()).ToList();
+            }
+            JToken hostFaces = r["host_faces"];
+            if (hostFaces != null)
+            {
+                var list = hostFaces as JArray;
+                if (list == null || list.Count == 0 ||
+                    list.Any(x => x.Type != JTokenType.String || ((string)x != "side" && (string)x != "end")))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_faces, which must be a non-empty array of 'side' and/or " +
+                        "'end'.");
+                if (rule.HostedOn != "wall")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares host_faces and is not hosted_on 'wall': only a wall has " +
+                        "side and end faces to choose between.");
+                rule.HostFaces = list.Select(x => (string)x).Distinct().ToList();
+            }
+            JToken wallTypes = r["wall_types"];
+            if (wallTypes != null)
+            {
+                var wt = wallTypes as JObject;
+                var names = wt?["types"] as JArray;
+                if (wt == null || names == null || names.Count == 0 ||
+                    names.Any(x => x.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)x)))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares wall_types, which must be an object with a non-empty 'types' " +
+                        "array of wall type names (\"Family: Type\"). The widths are read from the model, not declared.");
+                foreach (JProperty p in wt.Properties())
+                    if (p.Name != "types" && p.Name != "tolerance_mm" && p.Name != "otherwise")
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': wall_types has no key '" + p.Name + "' (types, tolerance_mm, otherwise).");
+                if (!string.Equals(r.Value<string>("produces"), "wall", StringComparison.Ordinal))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "' declares wall_types and does not produce walls; nothing would read them.");
+                rule.WallTypes = names.Select(x => ((string)x).Trim()).ToList();
+                rule.WallTypeToleranceMm = wt.Value<double?>("tolerance_mm");
+                if (rule.WallTypeToleranceMm.HasValue && rule.WallTypeToleranceMm.Value <= 0)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.tolerance_mm must be positive.");
+                string otherwise = wt.Value<string>("otherwise") ?? "withdraw";
+                if (otherwise != "withdraw" && otherwise != "family_type")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.otherwise must be 'withdraw' or 'family_type'.");
+                if (otherwise == "family_type" && string.IsNullOrWhiteSpace(r.Value<string>("family_type")))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': wall_types.otherwise is 'family_type' and the rule names none.");
+                rule.WallTypeOtherwise = otherwise;
+            }
             rule.Level = r.Value<string>("level");
             rule.Phase = r.Value<string>("phase");
             rule.DesignOption = r.Value<string>("design_option");
@@ -689,6 +1393,9 @@ namespace Horizun.Revit.Core
             rule.OffsetMm = r.Value<double?>("offset_mm");
             rule.ThicknessMm = r.Value<double?>("thickness_mm");
             rule.DiameterMm = r.Value<double?>("diameter_mm");
+            JToken sectionToken = r["section"];
+            if (sectionToken != null && sectionToken.Type != JTokenType.Null)
+                rule.Section = CadDuctSections.Parse(rule.Id, sectionToken as JObject, r.Value<string>("produces"), rule.DiameterMm);
             rule.SlopePercent = r.Value<double?>("slope_percent");
             rule.SystemType = r.Value<string>("system_type");
             rule.Structural = r.Value<bool?>("structural");
@@ -979,7 +1686,7 @@ namespace Horizun.Revit.Core
         }
 
         private static readonly HashSet<string> ParameterKeys = new HashSet<string>(StringComparer.Ordinal)
-        { "value", "scope", "required" };
+        { "value", "scope", "required", "from_block_attribute" };
 
         /// <summary>
         /// One entry of the rule's `parameters` map. The short form is a bare
@@ -1011,10 +1718,35 @@ namespace Horizun.Revit.Core
                         "'. Known: " + string.Join(", ", ParameterKeys.OrderBy(x => x, StringComparer.Ordinal)) +
                         ".");
 
+            // A VALUE READ FROM THE DRAWING IS STILL A VALUE.
+            //
+            // from_block_attribute says "take it from the symbol's own attribute",
+            // which is the whole point of reading a DWG properly: the circuit the
+            // electrician typed on the outlet goes into the parameter the schedule
+            // reads, and nobody retypes three hundred of them. It stands in for
+            // "value" and refuses to be combined with it - two sources for one
+            // number, with the later one silently winning, is what this codebase
+            // refuses everywhere else.
+            string fromAttribute = asObject.Value<string>("from_block_attribute");
+            if (!string.IsNullOrWhiteSpace(fromAttribute))
+            {
+                if (asObject["value"] != null)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': parameter '" + name + "' declares BOTH a value and a " +
+                        "from_block_attribute. One of them would be ignored and nothing here can say which " +
+                        "the author meant.");
+                write.FromBlockAttribute = fromAttribute.Trim();
+                write.Scope = asObject.Value<string>("scope") ?? write.Scope;
+                bool? req = asObject.Value<bool?>("required");
+                if (req.HasValue) write.Required = req.Value;
+                return write;
+            }
+
             if (asObject["value"] == null)
                 throw new CadRequirementSetException(
-                    "rule '" + rule.Id + "': parameter '" + name + "' declares no value. Omit the parameter " +
-                    "rather than declaring one with nothing to write.");
+                    "rule '" + rule.Id + "': parameter '" + name + "' declares no value, and no " +
+                    "from_block_attribute to read one from. Omit the parameter rather than declaring one " +
+                    "with nothing to write.");
             write.Value = asObject["value"];
 
             string scope = asObject.Value<string>("scope");
@@ -1072,11 +1804,258 @@ namespace Horizun.Revit.Core
                     "blocks or point_clusters; got '" + (from ?? "(absent)") + "'.");
             }
 
+            JToken blocksToken = g["blocks"];
+            if (blocksToken is JArray)
+                foreach (JToken b2 in (JArray)blocksToken)
+                {
+                    string pattern = b2 == null ? null : b2.ToString();
+                    if (!string.IsNullOrWhiteSpace(pattern)) c.BlockPatterns.Add(pattern.Trim());
+                }
+            else if (blocksToken != null && blocksToken.Type != JTokenType.Null)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.blocks must be a list of block-name patterns.");
+
+            JToken effToken = g["effective_blocks"];
+            if (effToken is JArray)
+                foreach (JToken b3 in (JArray)effToken)
+                {
+                    string pattern = b3 == null ? null : b3.ToString();
+                    if (!string.IsNullOrWhiteSpace(pattern)) c.EffectiveBlockPatterns.Add(pattern.Trim());
+                }
+            else if (effToken != null && effToken.Type != JTokenType.Null)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.effective_blocks must be a list of dynamic-block name patterns.");
+            if (c.EffectiveBlockPatterns.Count > 0 && c.Source != CadGeometrySource.Blocks)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.effective_blocks only means something with from:\"blocks\".");
+
+            JToken dynToken = g["dynamic_properties"];
+            if (dynToken != null && dynToken.Type != JTokenType.Null)
+            {
+                var dyn = dynToken as JObject;
+                if (dyn == null || !dyn.HasValues)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.dynamic_properties must be a non-empty object of property " +
+                        "name -> value.");
+                if (c.Source != CadGeometrySource.Blocks)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.dynamic_properties only means something with from:\"blocks\".");
+                foreach (JProperty dp in dyn.Properties())
+                {
+                    if (string.IsNullOrWhiteSpace(dp.Name) || dp.Value == null || dp.Value.Type == JTokenType.Null ||
+                        dp.Value.Type == JTokenType.Object || dp.Value.Type == JTokenType.Array)
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.dynamic_properties['" + dp.Name + "'] must be a text or " +
+                            "number value.");
+                    c.DynamicProperties[dp.Name.Trim()] = dp.Value.Type == JTokenType.String
+                        ? (string)dp.Value
+                        : dp.Value.ToString(Newtonsoft.Json.Formatting.None);
+                }
+            }
+
+            JToken facingToken = g["block_facing"];
+            if (facingToken != null && facingToken.Type != JTokenType.Null)
+            {
+                var facing = facingToken as JObject;
+                if (facing == null || facing.Count == 0)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_facing must be an object mapping block-name patterns " +
+                        "to \"+x\", \"-x\", \"+y\" or \"-y\".");
+                if (c.Source != CadGeometrySource.Blocks)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_facing only means something with from:\"blocks\".");
+                foreach (JProperty f in facing.Properties())
+                {
+                    string axis = f.Value.Type == JTokenType.String ? (string)f.Value : null;
+                    CadVector v;
+                    switch (axis)
+                    {
+                        case "+x": v = new CadVector(1, 0); break;
+                        case "-x": v = new CadVector(-1, 0); break;
+                        case "+y": v = new CadVector(0, 1); break;
+                        case "-y": v = new CadVector(0, -1); break;
+                        default: throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.block_facing['" + f.Name + "'] must be \"+x\", \"-x\", " +
+                            "\"+y\" or \"-y\" - the direction the device faces in the block's own frame; got " +
+                            f.Value.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                    }
+                    if (string.IsNullOrWhiteSpace(f.Name))
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.block_facing has an empty block-name pattern.");
+                    c.BlockFacing.Add(new KeyValuePair<string, CadVector>(f.Name.Trim(), v));
+                }
+            }
+
+            if (c.Source != CadGeometrySource.Blocks && c.BlockPatterns.Count > 0)
+                throw new CadRequirementSetException(
+                    "rule '" + rule.Id + "': geometry.blocks only means something with from:\"blocks\". A rule " +
+                    "that names blocks and reads line work would silently ignore the names.");
+
+            JToken solidToken = g["solid_hatch_layers"];
+            if (solidToken != null)
+            {
+                var solidArray = solidToken as JArray;
+                if (solidArray == null || solidArray.Count == 0 ||
+                    solidArray.Any(t => t.Type != JTokenType.String || string.IsNullOrWhiteSpace((string)t)))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.solid_hatch_layers must be a non-empty array of layer " +
+                        "patterns - the layers the drawing hatches wall material on.");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.solid_hatch_layers only means something with " +
+                        "from:\"double_lines\" - it decides which pairs of faces enclose material.");
+                foreach (JToken t in solidArray) c.SolidHatchLayers.Add(((string)t).Trim());
+            }
+
+            JToken attrToken = g["block_attributes"];
+            if (attrToken != null)
+            {
+                var attrs = attrToken as JObject;
+                if (attrs == null || !attrs.HasValues)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_attributes must be a non-empty object of attribute " +
+                        "tag -> \"present\" or \"absent\".");
+                if (c.Source != CadGeometrySource.Blocks)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.block_attributes only means something with from:\"blocks\".");
+                foreach (JProperty a in attrs.Properties())
+                {
+                    string v = a.Value.Type == JTokenType.String ? ((string)a.Value).Trim() : null;
+                    if (string.IsNullOrWhiteSpace(a.Name) || (v != "present" && v != "absent"))
+                        throw new CadRequirementSetException(
+                            "rule '" + rule.Id + "': geometry.block_attributes['" + a.Name + "'] must be \"present\" " +
+                            "or \"absent\"; it reads " + a.Value.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                    c.BlockAttributes[a.Name.Trim()] = v == "present";
+                }
+            }
+
+            JToken compositeToken = g["composite"];
+            if (compositeToken != null)
+            {
+                string policy = compositeToken.Type == JTokenType.String ? ((string)compositeToken).Trim() : null;
+                if (policy == null || !CadCompositePolicy.All.Contains(policy))
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.composite must be one of " +
+                        string.Join(", ", CadCompositePolicy.All) + "; it reads " +
+                        compositeToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.SolidHatchLayers.Count == 0 && policy != CadCompositePolicy.Outer)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.composite '" + policy + "' needs solid_hatch_layers - " +
+                        "the leaves of a wall are read from its hatch, and without it there is nothing to read.");
+                c.Composite = policy;
+            }
+
+            JToken finishToken = g["finish"];
+            if (finishToken != null)
+            {
+                string finish = finishToken.Type == JTokenType.String ? ((string)finishToken).Trim() : null;
+                if (finish != "widen" && finish != "follow")
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.finish must be 'widen' or 'follow'; it reads " +
+                        finishToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.finish only means something with from:\"double_lines\".");
+                c.Finish = finish;
+            }
+
+            JToken breaksToken = g["face_breaks_mm"];
+            if (breaksToken != null)
+            {
+                double? mm = breaksToken.Type == JTokenType.Integer || breaksToken.Type == JTokenType.Float
+                    ? (double?)breaksToken.Value<double>() : null;
+                if (mm == null || mm <= 0 || mm > 500)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.face_breaks_mm must be a length in millimetres between 0 " +
+                        "and 500; it reads " + breaksToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.face_breaks_mm only means something with from:\"double_lines\".");
+                c.FaceBreaksMm = mm;
+            }
+
+            JToken piersToken = g["end_piers"];
+            if (piersToken != null)
+            {
+                string piers = piersToken.Type == JTokenType.String ? (string)piersToken : null;
+                if (piers != CadWallPiers.Report && piers != CadWallPiers.Extend)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers must be \"report\" or \"extend\"; it reads " +
+                        piersToken.ToString(Newtonsoft.Json.Formatting.None) + ".");
+                if (c.Source != CadGeometrySource.DoubleLines)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers only means something with from:\"double_lines\".");
+                double? overlap = g.Value<double?>("min_overlap_mm");
+                if (overlap == null || overlap <= 0)
+                    throw new CadRequirementSetException(
+                        "rule '" + rule.Id + "': geometry.end_piers reads the stretches too short for the pairing, " +
+                        "which min_overlap_mm defines; without it there are none to read.");
+                c.EndPiers = piers;
+            }
+
             c.MinThicknessMm = g.Value<double?>("min_thickness_mm");
             c.MaxThicknessMm = g.Value<double?>("max_thickness_mm");
             c.MinOverlapMm = g.Value<double?>("min_overlap_mm");
             c.MinOverlapFraction = g.Value<double?>("min_overlap_fraction");
             c.MinLengthMm = g.Value<double?>("min_length_mm");
+            JToken mergeToken = g["merge_collinear"];
+            if (mergeToken != null && mergeToken.Type != JTokenType.Null)
+            {
+                if (mergeToken.Type != JTokenType.Boolean)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.merge_collinear must be true or false.");
+                c.MergeCollinear = (bool)mergeToken;
+            }
+            c.IncludeClosedPolylines = g.Value<bool?>("include_closed_polylines") ?? false;
+            if (c.IncludeClosedPolylines) c.ClosedLoops = CadClosedLoopPolicy.Runs;
+            string loops = g.Value<string>("closed_loops");
+            if (!string.IsNullOrWhiteSpace(loops))
+            {
+                switch (loops)
+                {
+                    case "review": c.ClosedLoops = CadClosedLoopPolicy.Review; break;
+                    case "runs": c.ClosedLoops = CadClosedLoopPolicy.Runs; break;
+                    case "figures_by_rule": c.ClosedLoops = CadClosedLoopPolicy.FiguresByRule; break;
+                    default:
+                        throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_loops must be " +
+                            "\"review\" (propose every edge and hold it), \"runs\" or \"figures_by_rule\".");
+                }
+                if (c.IncludeClosedPolylines && c.ClosedLoops != CadClosedLoopPolicy.Runs)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.include_closed_polylines " +
+                        "says these loops ARE runs and geometry.closed_loops says otherwise; declare one.");
+            }
+            if (g["closed_figure"] is JObject figure)
+            {
+                if (c.ClosedLoops != CadClosedLoopPolicy.FiguresByRule)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure only means " +
+                        "something with geometry.closed_loops = \"figures_by_rule\"; without it nothing is excluded.");
+                var known = new HashSet<string>(StringComparer.Ordinal)
+                    { "max_perimeter_mm", "min_chords", "nothing_else_attached", "one_closed_polyline", "max_edges" };
+                foreach (JProperty pr in figure.Properties())
+                    if (!known.Contains(pr.Name))
+                        throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure has no key '" + pr.Name + "'.");
+                var f = new CadClosedFigureRule
+                {
+                    MaxPerimeterMm = figure.Value<double?>("max_perimeter_mm"),
+                    MinChords = figure.Value<int?>("min_chords"),
+                    MaxEdges = figure.Value<int?>("max_edges"),
+                    NothingElseAttached = figure.Value<bool?>("nothing_else_attached") ?? false,
+                    OneClosedPolyline = figure.Value<bool?>("one_closed_polyline")
+                };
+                if (f.MaxPerimeterMm.HasValue && f.MaxPerimeterMm.Value <= 0)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.max_perimeter_mm must be positive.");
+                if (f.MinChords.HasValue && f.MinChords.Value < 0)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.min_chords cannot be negative.");
+                if (f.MaxEdges.HasValue && f.MaxEdges.Value < 3)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.max_edges must be at least 3.");
+                if (!f.Declares)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure declares nothing, " +
+                        "so it would exclude every closed loop. Name at least one of max_perimeter_mm, min_chords, " +
+                        "max_edges, nothing_else_attached or one_closed_polyline.");
+                c.ClosedFigure = f;
+            }
+            else if (c.ClosedLoops == CadClosedLoopPolicy.FiguresByRule)
+                throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_loops = " +
+                    "\"figures_by_rule\" needs geometry.closed_figure to say what a figure looks like in this drawing.");
             c.MaxLengthMm = g.Value<double?>("max_length_mm");
             c.MinAreaMm2 = g.Value<double?>("min_area_mm2");
             c.MaxAreaMm2 = g.Value<double?>("max_area_mm2");
@@ -1133,6 +2112,82 @@ namespace Horizun.Revit.Core
         /// a reformatted file is the same requirement set and a changed number is
         /// not.
         /// </summary>
+        /// <summary>A number the set must state. Absent and unreadable are the same refusal.</summary>
+        private static double RequireNumber(JObject o, string key)
+        {
+            JToken t = o[key];
+            if (t == null || t.Type == JTokenType.Null)
+                throw new CadRequirementSetException(
+                    "source.extent_mm." + key + " is required. Three bounds and a guess is not a zone.");
+            double? v = t.Type == JTokenType.Integer || t.Type == JTokenType.Float ? (double?)t.Value<double>() : null;
+            if (v == null)
+                throw new CadRequirementSetException(
+                    "source.extent_mm." + key + " must be a number in millimetres; it reads '" +
+                    t.ToString(Newtonsoft.Json.Formatting.None) + "'.");
+            return v.Value;
+        }
+
+        private static bool SameAttributes(Dictionary<string, bool> a, Dictionary<string, bool> b)
+        {
+            if (a.Count != b.Count) return false;
+            foreach (var kv in a)
+            {
+                bool v;
+                if (!b.TryGetValue(kv.Key, out v) || v != kv.Value) return false;
+            }
+            return true;
+        }
+
+        private static CadExtent PolygonExtent(JToken token)
+        {
+            var arr = token as JArray;
+            if (arr == null || arr.Count < 3)
+                throw new CadRequirementSetException(
+                    "source.extent_mm.polygon must be an array of at least three [x, y] vertices in millimetres, " +
+                    "in order and not repeated at the end.");
+            var pts = new List<CadPoint>();
+            foreach (JToken v in arr)
+            {
+                var xy = v as JArray;
+                if (xy == null || xy.Count != 2 ||
+                    xy.Any(n => n.Type != JTokenType.Integer && n.Type != JTokenType.Float))
+                    throw new CadRequirementSetException(
+                        "source.extent_mm.polygon vertex " + v.ToString(Newtonsoft.Json.Formatting.None) +
+                        " is not an [x, y] pair of numbers in millimetres.");
+                pts.Add(new CadPoint(xy[0].Value<double>(), xy[1].Value<double>()));
+            }
+            double area = 0;
+            for (int i = 0, j = pts.Count - 1; i < pts.Count; j = i++)
+                area += (pts[j].X * pts[i].Y) - (pts[i].X * pts[j].Y);
+            if (Math.Abs(area) / 2 < 1.0)
+                throw new CadRequirementSetException(
+                    "source.extent_mm.polygon encloses no area. A zone that contains nothing is not one somebody " +
+                    "meant to write.");
+            for (int i = 0; i < pts.Count; i++)
+                for (int j = i + 1; j < pts.Count; j++)
+                {
+                    int i2 = (i + 1) % pts.Count, j2 = (j + 1) % pts.Count;
+                    if (i2 == j || j2 == i) continue;
+                    if (ProperCross(pts[i], pts[i2], pts[j], pts[j2]))
+                        throw new CadRequirementSetException(
+                            "source.extent_mm.polygon crosses itself (edges " + i + " and " + j + "). Inside and " +
+                            "outside are undefined for such a ring.");
+                }
+            return new CadExtent
+            {
+                Polygon = pts,
+                MinX = pts.Min(p => p.X), MinY = pts.Min(p => p.Y),
+                MaxX = pts.Max(p => p.X), MaxY = pts.Max(p => p.Y)
+            };
+        }
+
+        private static bool ProperCross(CadPoint a, CadPoint b, CadPoint c, CadPoint d)
+        {
+            double O(CadPoint p, CadPoint q, CadPoint r) => (q.X - p.X) * (r.Y - p.Y) - (q.Y - p.Y) * (r.X - p.X);
+            double o1 = O(a, b, c), o2 = O(a, b, d), o3 = O(c, d, a), o4 = O(c, d, b);
+            return o1 * o2 < 0 && o3 * o4 < 0;
+        }
+
         public static string CanonicalHash(JToken doc)
         {
             var sb = new StringBuilder();

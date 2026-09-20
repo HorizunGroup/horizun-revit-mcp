@@ -68,8 +68,45 @@ namespace Horizun.Revit.Core
         /// </summary>
         public double? WidthMm;
 
+        /// <summary>
+        /// The ends of a duct or pipe that are joined to a FITTING, in mm. A connection trims or
+        /// extends a run along its own line to meet the fitting - which is not a person moving it.
+        /// </summary>
+        public List<CadPoint> FittedEnds = new List<CadPoint>();
+
+        /// <summary>
+        /// Where each fitting on those ends is ANCHORED, in mm: its insertion point and its connectors.
+        /// A connection leaves the fitting at the drawing's junction; a person who later stretches the run
+        /// drags the fitting away from it. Empty when not read (then a trim is never attributed).
+        /// </summary>
+        public List<CadPoint> FittingAnchors = new List<CadPoint>();
+
+        /// <summary>A RECTANGULAR duct's height, in mm; null for anything else (a round duct included).</summary>
+        public double? HeightMm;
+
         /// <summary>What the element lives IN, when it lives in anything. Null for a free-standing thing.</summary>
         public long? HostElementId;
+
+        /// <summary>The host wall's location line, in mm, when the host is a wall. Empty otherwise.</summary>
+        public List<CadPoint> HostLine = new List<CadPoint>();
+
+        /// <summary>The host wall's width in mm, or null when it could not be read.</summary>
+        public double? HostWidthMm;
+
+        /// <summary>
+        /// Standing on its host wall's END face (read from the face it is hosted on). Its projection from
+        /// the drawn point is ALONG the wall, and which side of the wall line it is on is not a question.
+        /// </summary>
+        public bool OnHostEnd;
+
+        /// <summary>
+        /// The instance's hand and facing directions in plan, and whether Revit
+        /// says it is reflected. Null where the element is not an instance or
+        /// Revit would not say - which is unmeasured, not "not mirrored".
+        /// </summary>
+        public CadVector? HandPlan;
+        public CadVector? FacingPlan;
+        public bool? IsMirrored;
 
         /// <summary>
         /// What the element is CALLED, for the kinds that carry an identity of
@@ -129,6 +166,15 @@ namespace Horizun.Revit.Core
         /// <summary>How far the ends differ ALONG the line. A wall join accounts for most of this.</summary>
         public double? ExtentMm;
 
+        /// <summary>
+        /// The codes of every non-informational finding about THIS element for
+        /// THIS candidate. Empty means the element agrees with the drawing in
+        /// everything the audit measured; a match is never "built" and silent.
+        /// </summary>
+        public List<string> Differences = new List<string>();
+
+        public string State => Differences.Count == 0 ? "agrees" : "differs";
+
         public JObject ToJson()
         {
             var o = new JObject
@@ -140,6 +186,8 @@ namespace Horizun.Revit.Core
             };
             if (OffsetMm.HasValue) o["offset_mm"] = Math.Round(OffsetMm.Value, 3);
             if (ExtentMm.HasValue) o["extent_mm"] = Math.Round(ExtentMm.Value, 3);
+            o["state"] = State;
+            o["differences"] = new JArray(Differences);
             return o;
         }
     }
@@ -188,9 +236,17 @@ namespace Horizun.Revit.Core
         public const string BuiltNotInDrawing = "built_not_in_drawing";
         public const string DuplicateInModel = "duplicate_in_model";
         public const string Unhosted = "unhosted";
+        /// <summary>Hosted on a wall, and on the other side of it from where the drawing puts it.</summary>
+        public const string HostSideDiffers = "host_side_differs";
 
         // They agree about the thing and not about its history or its substance.
         public const string Moved = "moved";
+        /// <summary>The element is no longer where this bridge built it.</summary>
+        public const string MovedSinceBuilt = "moved_since_built";
+        /// <summary>The hand direction is not the one the drawing's rotation asks for.</summary>
+        public const string OrientationDiffers = "orientation_differs";
+        /// <summary>Reflected where the drawing is not, or the other way round.</summary>
+        public const string MirrorDiffers = "mirror_differs";
         public const string ExtentDiffers = "extent_differs";
         public const string Relayered = "relayered";
         public const string TypeDiffers = "type_differs";
@@ -215,8 +271,9 @@ namespace Horizun.Revit.Core
 
         public static readonly string[] All =
         {
-            DrawingNotBuilt, BuiltNotInDrawing, DuplicateInModel, Unhosted,
-            Moved, ExtentDiffers, Relayered, TypeDiffers, SizeDiffers,
+            DrawingNotBuilt, BuiltNotInDrawing, DuplicateInModel, Unhosted, HostSideDiffers,
+            Moved, MovedSinceBuilt, OrientationDiffers, MirrorDiffers,
+            ExtentDiffers, Relayered, TypeDiffers, SizeDiffers,
             GridNameDiffers, RoomNameDiffers, RoomNumberDiffers,
             ParameterDiffers, ParameterMissing, ParameterUnreadable,
             BuiltByAnotherRequirementSet, BuiltFromAnotherDrawing, ProvenanceUnreadable,
@@ -249,7 +306,11 @@ namespace Horizun.Revit.Core
             audit.CandidatesRead = candidates.Count;
             audit.SubjectsExamined = subjects.Count;
 
-            double tolerance = Math.Max(set != null ? set.PointToleranceMm : 1.0, 0.001);
+            // WHETHER SOMETHING MOVED is its own question with its own number:
+            // revision_compare_mm, which defaults to point_mm so an existing set
+            // means what it meant.
+            double tolerance = Math.Max(set != null ? set.RevisionCompareMm : 1.0, 0.001);
+            if (set != null && set.RevisionCompareMm <= 0) tolerance = Math.Max(set.PointToleranceMm, 0.001);
             // Position matching needs a real bound, not the point tolerance: a
             // wall built by hand from the same drawing lands within millimetres,
             // not within one. Ten times the point tolerance, floored at 25 mm,
@@ -312,14 +373,14 @@ namespace Horizun.Revit.Core
                 CadAuditSubject hit = FirstFree(byCandidate, c.Id, claimed);
                 if (hit != null)
                 {
-                    Record(audit, c, hit, "revision", claimed, tolerance);
+                    Record(audit, c, hit, "revision", claimed, tolerance, set);
                     continue;
                 }
 
                 hit = FirstFree(bySemantic, c.SemanticId, claimed, sourceFileSha256);
                 if (hit != null)
                 {
-                    Record(audit, c, hit, "semantic", claimed, tolerance);
+                    Record(audit, c, hit, "semantic", claimed, tolerance, set);
                     audit.Findings.Add(new CadFinding
                     {
                         Code = "reissued",
@@ -344,7 +405,7 @@ namespace Horizun.Revit.Core
                 hit = FirstFree(byGeometry, c.GeometryId, claimed, sourceFileSha256);
                 if (hit != null)
                 {
-                    Record(audit, c, hit, "geometry", claimed, tolerance);
+                    Record(audit, c, hit, "geometry", claimed, tolerance, set);
                     audit.Findings.Add(new CadFinding
                     {
                         Code = "relayered",
@@ -453,6 +514,30 @@ namespace Horizun.Revit.Core
 
                 if (!sameSet)
                 {
+                    // ANOTHER SET'S JURISDICTION IS NOT A DISAGREEMENT. Only when
+                    // this set claims the element's layer do the two sets say
+                    // different things about the same lines.
+                    bool layerIsOurs = set != null && !string.IsNullOrEmpty(p.Layer) && set.RulesFor(p.Layer).Count > 0;
+                    if (!layerIsOurs)
+                    {
+                        audit.Findings.Add(new CadFinding
+                        {
+                            Code = "built_by_another_requirement_set",
+                            Severity = Informational,
+                            SemanticId = p.SemanticId,
+                            ElementId = s.ElementId,
+                            Says = "this element came from the same drawing under another requirement set (" +
+                                   (p.RequirementSetId ?? "?") + "@" + (p.RequirementSetVersion ?? "?") + "), on a " +
+                                   "layer this set has no rule for. It is that set's to audit; nothing here disagrees.",
+                            Evidence = new JObject
+                            {
+                                ["built_under"] = (p.RequirementSetId ?? "?") + "@" + (p.RequirementSetVersion ?? "?"),
+                                ["layer"] = p.Layer,
+                                ["this_set_claims_the_layer"] = false
+                            }
+                        });
+                        continue;
+                    }
                     audit.Findings.Add(new CadFinding
                     {
                         Code = "built_by_another_requirement_set",
@@ -493,6 +578,13 @@ namespace Horizun.Revit.Core
                 });
             }
 
+            foreach (CadMatch m in audit.Matches)
+            {
+                m.Differences = audit.Findings
+                    .Where(f => f.ElementId == m.ElementId && f.CandidateId == m.CandidateId &&
+                                f.Severity != Informational)
+                    .Select(f => f.Code).Distinct().OrderBy(x => x, StringComparer.Ordinal).ToList();
+            }
             return audit;
         }
 
@@ -507,9 +599,10 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>Which produced kinds Revit will not place without a host wall.</summary>
-        private static bool NeedsWallHost(string produces)
+        private static bool NeedsWallHost(CadCandidate c)
         {
-            return produces == "door" || produces == "window";
+            return c.ProposedKind == "door" || c.ProposedKind == "window" ||
+                   string.Equals(c.HostedOn, "wall", StringComparison.OrdinalIgnoreCase);
         }
 
         /// <summary>
@@ -521,14 +614,15 @@ namespace Horizun.Revit.Core
         /// type, and an element whose width cannot be read is not the wrong
         /// width - it is unmeasured, which is a different sentence.
         /// </summary>
-        private static void AuditSubstance(CadAudit audit, CadCandidate c, CadAuditSubject hit, double tolerance)
+        private static void AuditSubstance(CadAudit audit, CadCandidate c, CadAuditSubject hit, double tolerance,
+                                           CadRequirementSet set)
         {
             // UNHOSTED. A door that is in the right place and hosted in nothing
             // schedules, tags and renders exactly like one that is not - and cuts
             // no opening. It is the failure the hosting path exists to prevent,
             // so the audit names it rather than leaving it to be noticed in a
             // section drawing three weeks later.
-            if (NeedsWallHost(c.ProposedKind) && !hit.HostElementId.HasValue)
+            if (NeedsWallHost(c) && !hit.HostElementId.HasValue)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "unhosted",
@@ -546,8 +640,13 @@ namespace Horizun.Revit.Core
             // THE WRONG TYPE. Only when the rule named one: substituting silently
             // is what this whole path exists to prevent, and so is complaining
             // about a substitution nobody asked for.
+            // A rule that chooses walls BY THICKNESS asks for any of its listed
+            // types; whether the one chosen is the right width is the size check's.
+            CadRule typeRule = set == null ? null : set.Rules.FirstOrDefault(r => r.Id == c.RuleId);
+            bool listed = typeRule != null && typeRule.WallTypes != null && hit.TypeName != null &&
+                          typeRule.WallTypes.Any(t => SameTypeName(t, hit.TypeName));
             if (!string.IsNullOrWhiteSpace(c.FamilyType) && !string.IsNullOrWhiteSpace(hit.TypeName) &&
-                !SameTypeName(c.FamilyType, hit.TypeName))
+                !SameTypeName(c.FamilyType, hit.TypeName) && !listed)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "type_differs",
@@ -674,8 +773,9 @@ namespace Horizun.Revit.Core
             // THE WRONG SIZE. Null width is unmeasured, never zero: an element
             // nobody can measure is not an element of the wrong thickness.
             double? asked = c.ThicknessMm ?? c.DiameterMm;
+            double sizeTolerance = set != null ? set.ThicknessToleranceMm : Math.Max(tolerance, 1.0);
             if (asked.HasValue && hit.WidthMm.HasValue &&
-                Math.Abs(asked.Value - hit.WidthMm.Value) > Math.Max(tolerance, 1.0))
+                Math.Abs(asked.Value - hit.WidthMm.Value) > sizeTolerance)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "size_differs",
@@ -691,9 +791,169 @@ namespace Horizun.Revit.Core
                     {
                         ["drawing_says_mm"] = Math.Round(asked.Value, 3),
                         ["element_measures_mm"] = Math.Round(hit.WidthMm.Value, 3),
-                        ["tolerance_mm"] = tolerance
+                        ["tolerance_mm"] = sizeTolerance
                     }
                 });
+        }
+
+        /// <summary>
+        /// Split the difference between a drawn and a built point into along and
+        /// across the host wall. False when the host line is not known.
+        /// </summary>
+        public static bool SplitAlongHost(CadPoint drawn, CadPoint built, List<CadPoint> hostLine,
+                                          out double alongMm, out double acrossMm)
+        {
+            alongMm = acrossMm = 0;
+            if (hostLine == null || hostLine.Count < 2) return false;
+            CadPoint a = hostLine[0], b = hostLine[hostLine.Count - 1];
+            double dx = b.X - a.X, dy = b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= 1e-9) return false;
+            double ux = dx / len, uy = dy / len;
+            double ex = built.X - drawn.X, ey = built.Y - drawn.Y;
+            alongMm = Math.Abs(ex * ux + ey * uy);
+            acrossMm = Math.Abs(-ex * uy + ey * ux);
+            return true;
+        }
+
+        /// <summary>
+        /// How far the element now is from where it was built: the largest
+        /// distance between corresponding points, either way round. Null when
+        /// either side is unknown - unmeasured is not unmoved.
+        /// </summary>
+        public static double? ShiftSinceBuilt(List<CadPoint> built, List<CadPoint> now)
+        {
+            if (built == null || now == null || built.Count == 0 || built.Count != now.Count) return null;
+            double forward = 0, backward = 0;
+            int n = built.Count;
+            for (int i = 0; i < n; i++)
+            {
+                forward = Math.Max(forward, built[i].PlanDistanceTo(now[i]));
+                backward = Math.Max(backward, built[i].PlanDistanceTo(now[n - 1 - i]));
+            }
+            return Math.Min(forward, backward);
+        }
+
+        /// <summary>
+        /// WHAT A HOSTED DEVICE IS MOUNTED ON, AND WHICH WAY ROUND.
+        ///
+        /// Each check runs only when both sides can be measured:
+        ///   side        the element and the drawn symbol are on the same side of
+        ///               the host wall's line;
+        ///   hand        the hand direction is the drawn rotation projected onto
+        ///               the wall - reversed for a reflection that was built;
+        ///   reflection  Revit's mirrored flag matches what the drawing asked for.
+        /// </summary>
+        private static void AuditHosting(CadAudit audit, CadCandidate c, CadAuditSubject hit, CadRequirementSet set)
+        {
+            if (!hit.HostElementId.HasValue || hit.HostLine == null || hit.HostLine.Count < 2) return;
+            if (c.Geometry.Count != 1 || hit.Geometry.Count != 1) return;
+            // an END-face device has no side of the wall line to be on
+            if (hit.OnHostEnd) return;
+            double angleTol = set != null ? set.AngleToleranceDegrees : 1.0;
+            double tol = set != null ? set.RevisionCompareMm : 1.0;
+
+            CadPoint a = hit.HostLine[0], b = hit.HostLine[hit.HostLine.Count - 1];
+            double dx = b.X - a.X, dy = b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= 1e-9) return;
+            var u = new CadVector(dx / len, dy / len);
+            CadVector n = u.PerpendicularLeft();
+
+            Func<CadPoint, double> side = p => (p.X - a.X) * n.X + (p.Y - a.Y) * n.Y;
+            double drawnSide = side(c.Geometry[0]), builtSide = side(hit.Geometry[0]);
+
+            // WHICH SIDE THE DRAWING MEANS - the plan's and the placement's rule,
+            // CadDeviceSide, and NOT the rotation: measured, a symbol's rotation is
+            // not the way it faces, and an audit that shared that assumption agreed
+            // with three devices built in the next room. With no width to measure
+            // against, only a declared facing is trusted.
+            double? half = hit.HostWidthMm.HasValue ? hit.HostWidthMm.Value / 2.0 : (double?)null;
+            string sideFrom;
+            int expectedSide = CadDeviceSide.Expected(drawnSide, half, c.Facing, n,
+                set != null ? set.PointToleranceMm : 1.0, out sideFrom);
+            if (expectedSide != 0 && Math.Abs(builtSide) > tol && Math.Sign(builtSide) != expectedSide)
+                audit.Findings.Add(new CadFinding
+                {
+                    Code = CadFindingCode.HostSideDiffers,
+                    Severity = Blocking,
+                    CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = hit.ElementId,
+                    Says = "this device is on the OTHER side of wall " + hit.HostElementId.Value + " from where the " +
+                           "drawing puts it - it serves the room next door. The side was read from " + sideFrom + ".",
+                    Evidence = new JObject
+                    {
+                        ["drawn_offset_from_wall_line_mm"] = Math.Round(drawnSide, 1),
+                        ["built_offset_from_wall_line_mm"] = Math.Round(builtSide, 1),
+                        ["host_width_mm"] = hit.HostWidthMm.HasValue ? (JToken)Math.Round(hit.HostWidthMm.Value, 1) : JValue.CreateNull(),
+                        ["side_read_from"] = sideFrom
+                    }
+                });
+
+            bool builtReflected = string.Equals(c.MirrorResolution, "preserve_requested", StringComparison.Ordinal);
+            if (hit.IsMirrored.HasValue && c.MirrorResolution != null &&
+                (c.MirrorResolution == "preserve_requested" || c.MirrorResolution == "not_mirrored") &&
+                hit.IsMirrored.Value != builtReflected)
+                audit.Findings.Add(new CadFinding
+                {
+                    Code = CadFindingCode.MirrorDiffers,
+                    Severity = Review,
+                    CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = hit.ElementId,
+                    Says = builtReflected
+                        ? "the drawing reflects this symbol and the element is NOT reflected."
+                        : "the drawing does not reflect this symbol and the element IS reflected.",
+                    Evidence = new JObject
+                    {
+                        ["mirror_resolution"] = c.MirrorResolution,
+                        ["element_mirrored"] = hit.IsMirrored.Value
+                    }
+                });
+
+            JObject turned;
+            double? handOff = HandOffDegrees(c, hit, angleTol, out turned);
+            if (handOff.HasValue && handOff.Value > angleTol)
+                audit.Findings.Add(new CadFinding
+                {
+                    Code = CadFindingCode.OrientationDiffers,
+                    Severity = Review,
+                    CandidateId = c.Id, SemanticId = c.SemanticId, ElementId = hit.ElementId,
+                    Says = "this device's hand direction is " + handOff.Value.ToString("0.#", CultureInfo.InvariantCulture) +
+                           " degrees from the one the drawing's rotation asks for along its wall.",
+                    Evidence = turned
+                });
+        }
+
+        /// <summary>
+        /// How far a wall-hosted device's hand is from the one the drawn rotation
+        /// asks for: the rotation projected onto the host wall, reversed for a
+        /// reflection that was built. Null when it cannot be judged - no rotation,
+        /// no hand, no host line, or a symbol pointing straight into its wall,
+        /// which says nothing about its hand. Shared by the audit and the update,
+        /// so the two can never disagree about which way a device faces.
+        /// </summary>
+        public static double? HandOffDegrees(CadCandidate c, CadAuditSubject hit, double angleToleranceDegrees,
+                                             out JObject evidence)
+        {
+            evidence = new JObject();
+            if (c == null || hit == null || !c.RotationRadians.HasValue || !hit.HandPlan.HasValue) return null;
+            if (hit.HostLine == null || hit.HostLine.Count < 2) return null;
+            CadPoint a = hit.HostLine[0], b = hit.HostLine[hit.HostLine.Count - 1];
+            double dx = b.X - a.X, dy = b.Y - a.Y, len = Math.Sqrt(dx * dx + dy * dy);
+            if (len <= 1e-9) return null;
+            var u = new CadVector(dx / len, dy / len);
+            var drawn = new CadVector(Math.Cos(c.RotationRadians.Value), Math.Sin(c.RotationRadians.Value));
+            double along = drawn.Dot(u);
+            if (Math.Abs(along) <= Math.Sin(angleToleranceDegrees * Math.PI / 180.0)) return null;
+
+            bool builtReflected = string.Equals(c.MirrorResolution, "preserve_requested", StringComparison.Ordinal);
+            var expected = along > 0 ? u : new CadVector(-u.X, -u.Y);
+            if (builtReflected) expected = new CadVector(-expected.X, -expected.Y);
+            CadVector hand = hit.HandPlan.Value;
+            double dot = Math.Max(-1, Math.Min(1, hand.Dot(expected)));
+            double off = Math.Acos(dot) * 180.0 / Math.PI;
+            evidence["expected_hand"] = new JArray(Math.Round(expected.X, 4), Math.Round(expected.Y, 4));
+            evidence["element_hand"] = new JArray(Math.Round(hand.X, 4), Math.Round(hand.Y, 4));
+            evidence["drawn_rotation_degrees"] = Math.Round(c.RotationRadians.Value * 180.0 / Math.PI, 3);
+            evidence["reflection_built"] = builtReflected;
+            evidence["hand_off_degrees"] = Math.Round(off, 2);
+            return off;
         }
 
         /// <summary>
@@ -752,7 +1012,7 @@ namespace Horizun.Revit.Core
         }
 
         private static void Record(CadAudit audit, CadCandidate c, CadAuditSubject hit, string rung,
-                                   HashSet<long> claimed, double tolerance)
+                                   HashSet<long> claimed, double tolerance, CadRequirementSet set)
         {
             claimed.Add(hit.ElementId);
             CadDeviation d = Deviation(c, hit);
@@ -766,7 +1026,52 @@ namespace Horizun.Revit.Core
             // A match is not agreement. The element may be the right one and
             // still be in the wrong PLACE - somebody nudged it, or the drawing
             // moved and the provenance did not.
-            if (d.Offset.HasValue && d.Offset.Value > tolerance)
+            //
+            // A HOSTED POINT IS PROJECTED ONTO ITS WALL. The drawing puts the
+            // symbol where a draughtsman can read it, and the device goes on the
+            // face: that distance is the projection, bounded by face_projection_mm,
+            // and it is NOT a move. What would be a move is a difference ALONG the
+            // wall, which the projection never introduces.
+            bool hostedPoint = NeedsWallHost(c) && c.Geometry.Count == 1 && hit.Geometry.Count == 1;
+            double faceAllowance = set != null ? set.FaceProjectionMm : tolerance;
+            if (hostedPoint)
+            {
+                double along, across;
+                bool split = SplitAlongHost(c.Geometry[0], hit.Geometry[0], hit.HostLine, out along, out across);
+                // ON THE END FACE the projection runs ALONG the wall and a move would be ACROSS it.
+                // MEASURED (campaign 5, synthetic unit): a device placed on a free end 101.6 mm from its
+                // drawn point read as "moved 101.6 mm along its wall".
+                if (split && hit.OnHostEnd) { double t = along; along = across; across = t; }
+                double sideways = split ? along : 0;
+                double outwards = split ? across : d.Offset ?? 0;
+                if (sideways > tolerance || outwards > faceAllowance)
+                    audit.Findings.Add(new CadFinding
+                    {
+                        Code = "moved",
+                        Severity = Review,
+                        CandidateId = c.Id,
+                        SemanticId = c.SemanticId,
+                        ElementId = hit.ElementId,
+                        Says = "this IS the device the drawing means - matched on " + rung + " - and it is not " +
+                               "where the drawing puts it: " +
+                               (sideways > tolerance
+                                   ? sideways.ToString("0.#", CultureInfo.InvariantCulture) + " mm ALONG its wall " +
+                                     "(tolerance " + tolerance.ToString("0.###", CultureInfo.InvariantCulture) + " mm)"
+                                   : outwards.ToString("0.#", CultureInfo.InvariantCulture) + " mm from the drawn " +
+                                     "point, more than the " + faceAllowance.ToString("0.#", CultureInfo.InvariantCulture) +
+                                     " mm a projection onto the wall face may account for") +
+                               ". Somebody moved one of the two, and only they know which is right.",
+                        Evidence = new JObject
+                        {
+                            ["along_wall_mm"] = split ? (JToken)Math.Round(along, 3) : JValue.CreateNull(),
+                            ["across_wall_mm"] = Math.Round(outwards, 3),
+                            ["revision_compare_mm"] = tolerance,
+                            ["face_projection_mm"] = faceAllowance,
+                            ["host_line_known"] = split
+                        }
+                    });
+            }
+            else if (d.Offset.HasValue && d.Offset.Value > tolerance)
                 audit.Findings.Add(new CadFinding
                 {
                     Code = "moved",
@@ -786,6 +1091,33 @@ namespace Horizun.Revit.Core
                     }
                 });
 
+            // SINCE IT WAS BUILT. Provenance recorded where the element was put;
+            // an element that has left that place was moved in the model, whatever
+            // the drawing says.
+            List<CadPoint> asBuilt = CadUpdateRules.AsBuiltOf(hit.Provenance);
+            double? shift = ShiftSinceBuilt(asBuilt, hit.Geometry);
+            if (shift.HasValue && shift.Value > tolerance)
+                audit.Findings.Add(new CadFinding
+                {
+                    Code = CadFindingCode.MovedSinceBuilt,
+                    Severity = Review,
+                    CandidateId = c.Id,
+                    SemanticId = c.SemanticId,
+                    ElementId = hit.ElementId,
+                    Says = "this element is " + shift.Value.ToString("0.#", CultureInfo.InvariantCulture) +
+                           " mm from where it was built (tolerance " +
+                           tolerance.ToString("0.###", CultureInfo.InvariantCulture) + " mm). It was moved IN THE " +
+                           "MODEL after it was built from the drawing, and an update from the drawing would put it back.",
+                    Evidence = new JObject
+                    {
+                        ["shift_mm"] = Math.Round(shift.Value, 3),
+                        ["built_at_mm"] = hit.Provenance?.BuiltGeometry,
+                        ["now_at_mm"] = CadUpdateRules.Encode(hit.Geometry)
+                    }
+                });
+
+            if (NeedsWallHost(c)) AuditHosting(audit, c, hit, set);
+
             // WHAT THE ELEMENT IS, not only where it is.
             //
             // Everything above compares POSITION, and a model can agree with a
@@ -801,7 +1133,7 @@ namespace Horizun.Revit.Core
             //
             // Each is reported only where the rule actually SAID something. A set
             // that names no type is not disagreeing about the type.
-            AuditSubstance(audit, c, hit, tolerance);
+            AuditSubstance(audit, c, hit, tolerance, set);
 
             // A difference ALONG the line is a different thing, and usually not a
             // fault at all: Revit joins walls that meet and pulls each location
