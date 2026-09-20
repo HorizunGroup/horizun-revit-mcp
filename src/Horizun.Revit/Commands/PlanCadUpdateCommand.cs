@@ -1031,8 +1031,17 @@ namespace Horizun.Revit.Commands
                         {
                             ["operation"] = "set_curve",
                             ["element_ids"] = new JArray(a.ElementId.Value),
-                            ["start"] = Pt(a.Geometry[0]),
-                            ["end"] = Pt(a.Geometry[a.Geometry.Count - 1])
+                            // AT THE HEIGHT IT ALREADY HAS. A plan drawing carries no height: the
+                            // candidate's Z is the drawing's, which is zero. The CREATE path resolves the
+                            // rule's offset against the storey before building (campaign 6 found every duct
+                            // of a flat plan built IN the floor and fixed it there) - and the re-shape never
+                            // did. MEASURED on the fixture: every run an update re-shaped dropped to the
+                            // level plane, which looks perfect in plan, puts the duct on the floor in
+                            // section, and leaves the network unconnectable - the ends it must meet are
+                            // 2 743 mm above it. A re-shape follows the drawing in PLAN; the height is the
+                            // element's own, per end, paired by proximity so a sloped run keeps its fall.
+                            ["start"] = PtAtHeightOf(doc, a.ElementId.Value, a.Geometry[0]),
+                            ["end"] = PtAtHeightOf(doc, a.ElementId.Value, a.Geometry[a.Geometry.Count - 1])
                         })
                     }
                 });
@@ -2193,6 +2202,32 @@ namespace Horizun.Revit.Commands
             }
             catch { }
             return subjects.OrderBy(s => s.ElementId).ToList();
+        }
+
+        /// <summary>
+        /// The drawing's X and Y, and the element's OWN Z at the end nearest this point. A drawing has no
+        /// height; the element has the one its rule gave it when it was built, and a re-shape must not
+        /// quietly take it away. Falls back to the point's own Z when the element cannot be read.
+        /// </summary>
+        private static JArray PtAtHeightOf(Document doc, long elementId, CadPoint p)
+        {
+            double z = p.Z;
+            try
+            {
+                Element e = !Rid.CanRepresent(elementId) ? null : doc.GetElement(Rid.Make(elementId));
+                var lc = e?.Location as LocationCurve;
+                if (lc?.Curve != null)
+                {
+                    XYZ a = lc.Curve.GetEndPoint(0), b = lc.Curve.GetEndPoint(1);
+                    double da = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(a.X) - p.X, 2) + Math.Pow(CadUnits.FeetToMm(a.Y) - p.Y, 2));
+                    double db = Math.Sqrt(Math.Pow(CadUnits.FeetToMm(b.X) - p.X, 2) + Math.Pow(CadUnits.FeetToMm(b.Y) - p.Y, 2));
+                    z = CadUnits.FeetToMm(da <= db ? a.Z : b.Z);
+                }
+            }
+            catch { }
+            return new JArray(Math.Round(p.X, 4, MidpointRounding.AwayFromZero),
+                              Math.Round(p.Y, 4, MidpointRounding.AwayFromZero),
+                              Math.Round(z, 4, MidpointRounding.AwayFromZero));
         }
 
         private static JArray Pt(CadPoint p) => new JArray(
