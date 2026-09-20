@@ -523,6 +523,14 @@ namespace Horizun.Revit.Commands
                     "in 'a person decides' - and a reader with only the kind cannot tell them apart. The " +
                     "vocabulary is closed and every name is reported with its count, including the zeros: a " +
                     "key that simply disappeared would read as 'not measured' rather than 'none found'.",
+                // EVERY DIVISION IN ONE PLACE. See Core/CadRevisionShapes.cs: what survives, what is
+                // created, what a decision would remove, which fittings and joins are in the way, and
+                // the line before against the lines after. Assembled from the same actions, never
+                // deciding anything they do not.
+                ["divisions"] = CadRevisionShapes.Describe(doc, update, subjects),
+                ["divisions_mean"] = "one row per split or merge, held or accepted. An id in 'keeps' is an id " +
+                                     "this operation does not have to give up; 'id_substitutions' is where an " +
+                                     "operation that must replace an element says so, and it is empty here.",
                 ["actions"] = actions,
                 ["rows_in_actions"] = actions.OfType<JObject>().Sum(a =>
                     ((a["arguments"] as JObject)?["elements"] as JArray)?.Count ??
