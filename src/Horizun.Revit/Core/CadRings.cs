@@ -69,20 +69,21 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// The segments of these (one layer's) that are a closed FIGURE: a loop whose corners are joined through
-        /// its inside, and those chords. MEASURED (M102): a square with both diagonals on the duct layer. A loop
-        /// with NOTHING crossing it is not a figure - a route can close - and is returned separately by
-        /// <see cref="Loops"/> for the caller to hold rather than to delete.
+        /// The segments of these (one layer's) that a DECLARED figure rule leaves unclaimed: the loops that match
+        /// it, with their chords. Without a rule nothing is a figure - a loop is then held for review, which is
+        /// <see cref="Loops"/>'s business and the caller's, not this method's.
         /// </summary>
         public static HashSet<CadSegment> Figure(IList<CadSegment> segments, double toleranceMm,
-                                                 out int rings, out int chords)
+                                                 CadClosedFigureRule rule, out int rings, out int chords)
         {
             var figure = new HashSet<CadSegment>();
             rings = 0;
             chords = 0;
+            if (rule == null || !rule.Declares) return figure;
             foreach (CadLoop loop in Loops(segments, toleranceMm))
             {
-                if (!loop.IsFigure) continue;
+                JObject why;
+                if (!loop.MatchesDeclaredFigure(rule, out why)) continue;
                 rings++;
                 chords += loop.Chords.Count;
                 foreach (CadSegment s in loop.All) figure.Add(s);
@@ -102,35 +103,78 @@ namespace Horizun.Revit.Core
             /// <summary>True when the whole loop came from one closed polyline, which is how a box is usually drawn.</summary>
             public bool OneClosedPolyline;
             public double PerimeterMm => Boundary.Sum(s => s.PlanLength);
+            /// <summary>How many segments of the same layer touch this loop without being part of it or its chords.</summary>
+            public int AttachedRuns;
+
             /// <summary>
-            /// THIS READING'S INFERENCE, and it is geometric, not semantic: a loop whose corners are joined through
-            /// its inside is treated as a figure. A chord is a PROPERTY OF THE LINE WORK - a closed circuit with a
-            /// legitimate interior connection has one too - so this settles nothing about what the drawing MEANS,
-            /// and it is what the reply must say. Until a rule can declare the meaning, or other evidence carries
-            /// it, a caller that needs these edges built says so with geometry.include_closed_polylines.
+            /// A CHORD IS NOT A MEANING. It is a property of the line work - a closed circuit with an interior
+            /// connection has one too - so it never decides anything by itself. It is one of the facts a DECLARED
+            /// rule may ask about (<see cref="MatchesDeclaredFigure"/>); nothing else in this class judges.
             /// </summary>
-            public bool IsFigure => Chords.Count > 0;
+            public bool HasChords => Chords.Count > 0;
+
+            /// <summary>
+            /// Whether this loop matches what the CALLER declared a figure looks like. Every named threshold must
+            /// hold; the reply says which ones did. No rule, no match: a loop is then held, never excluded.
+            /// </summary>
+            public bool MatchesDeclaredFigure(CadClosedFigureRule rule, out JObject why)
+            {
+                why = new JObject();
+                if (rule == null || !rule.Declares) return false;
+                bool ok = true;
+                if (rule.MaxPerimeterMm.HasValue)
+                {
+                    bool hit = PerimeterMm <= rule.MaxPerimeterMm.Value;
+                    why["perimeter_mm"] = Math.Round(PerimeterMm, 1);
+                    why["perimeter_within"] = hit;
+                    ok &= hit;
+                }
+                if (rule.MinChords.HasValue)
+                {
+                    bool hit = Chords.Count >= rule.MinChords.Value;
+                    why["chords"] = Chords.Count;
+                    why["chords_enough"] = hit;
+                    ok &= hit;
+                }
+                if (rule.MaxEdges.HasValue)
+                {
+                    bool hit = Boundary.Count <= rule.MaxEdges.Value;
+                    why["edges"] = Boundary.Count;
+                    why["edges_within"] = hit;
+                    ok &= hit;
+                }
+                if (rule.NothingElseAttached)
+                {
+                    bool hit = AttachedRuns == 0;
+                    why["attached_runs"] = AttachedRuns;
+                    why["nothing_else_attached"] = hit;
+                    ok &= hit;
+                }
+                if (rule.OneClosedPolyline.HasValue)
+                {
+                    bool hit = OneClosedPolyline == rule.OneClosedPolyline.Value;
+                    why["one_closed_polyline"] = OneClosedPolyline;
+                    why["polyline_as_declared"] = hit;
+                    ok &= hit;
+                }
+                why["matches"] = ok;
+                return ok;
+            }
 
             public JObject ToJson() => new JObject
             {
                 ["edges"] = Boundary.Count,
                 ["chords"] = Chords.Count,
+                ["attached_runs"] = AttachedRuns,
                 ["perimeter_mm"] = Math.Round(PerimeterMm, 1),
                 ["one_closed_polyline"] = OneClosedPolyline,
                 ["at_mm"] = Boundary.Count > 0
                     ? new JArray(Math.Round(Boundary[0].A.X, 1), Math.Round(Boundary[0].A.Y, 1))
                     : new JArray(),
-                ["reading"] = IsFigure ? "figure" : "closed_loop",
-                ["settled_by"] = "geometry_only",
-                ["means"] = IsFigure
-                    ? "a closed loop whose corners are joined through its inside. THIS READING TREATS IT AS A FIGURE " +
-                      "and leaves its edges and chords unclaimed - but that is an inference from the LINE WORK, not " +
-                      "something the drawing says: a closed circuit with a legitimate interior connection has a chord " +
-                      "too. Nothing here distinguishes the two. geometry.include_closed_polylines declares that such " +
-                      "loops are runs, and then they are built"
-                    : "a closed loop with nothing crossing it. A route CAN close - a ring main does - and so can a " +
-                      "boundary drawn on this layer: this is read as neither, and not built. Its edges are held for " +
-                      "review unless the rule declares geometry.include_closed_polylines"
+                ["means"] = "a closed loop of this layer's line work, with the facts a declared rule can judge it " +
+                            "by. Nothing here is a meaning: a chord, a perimeter or a polyline say what was DRAWN, " +
+                            "and only geometry.closed_loops (review | runs | figures_by_rule + closed_figure) says " +
+                            "what this reading does with it."
             };
         }
 
@@ -199,7 +243,17 @@ namespace Horizun.Revit.Core
                 }
                 if (component.Count < 3 || component.Count > maxEdges) continue;
                 CadLoop loop = Walk(component, edges, ends, nodes);
-                if (loop != null) found.Add(loop);
+                if (loop == null) continue;
+                // WHAT ELSE TOUCHES IT. A box fed by a duct and a ring main with branches both have this; it is a
+                // fact a declared rule may ask about, and never a verdict of its own.
+                var own = new HashSet<CadSegment>(loop.All);
+                foreach (CadSegment other in edges)
+                {
+                    if (own.Contains(other)) continue;
+                    if (loop.Boundary.Any(e => Touches(e, other.A, tol) || Touches(e, other.B, tol)))
+                        loop.AttachedRuns++;
+                }
+                found.Add(loop);
             }
             return found;
         }
@@ -280,15 +334,27 @@ namespace Horizun.Revit.Core
             foreach (var layer in segments.GroupBy(s => s.Layer ?? "(no layer)", StringComparer.OrdinalIgnoreCase))
             {
                 CadRule rule = set.RulesFor(layer.Key).FirstOrDefault();
-                if (rule?.Geometry == null || rule.Geometry.Source != CadGeometrySource.SingleLines ||
-                    rule.Geometry.IncludeClosedPolylines) continue;
+                if (rule?.Geometry == null || rule.Geometry.Source != CadGeometrySource.SingleLines) continue;
+                if (rule.Geometry.ClosedLoops != CadClosedLoopPolicy.FiguresByRule) continue;
                 int r, c;
-                foreach (CadSegment s in Figure(layer.ToList(), set.PointToleranceMm, out r, out c)) drop.Add(s);
+                foreach (CadSegment s in Figure(layer.ToList(), set.PointToleranceMm, rule.Geometry.ClosedFigure, out r, out c))
+                    drop.Add(s);
                 rings += r;
                 chords += c;
             }
             leftOut = drop.Count;
             return drop.Count == 0 ? segments : segments.Where(s => !drop.Contains(s)).ToList();
+        }
+
+        /// <summary>Whether a point lies on a segment (its ends included), within the tolerance.</summary>
+        private static bool Touches(CadSegment s, CadPoint p, double tol)
+        {
+            double dx = s.B.X - s.A.X, dy = s.B.Y - s.A.Y;
+            double len2 = dx * dx + dy * dy;
+            if (len2 <= 1e-12) return s.A.PlanDistanceTo(p) <= tol;
+            double t = Math.Max(0, Math.Min(1, ((p.X - s.A.X) * dx + (p.Y - s.A.Y) * dy) / len2));
+            double qx = s.A.X + t * dx, qy = s.A.Y + t * dy;
+            return Math.Sqrt((p.X - qx) * (p.X - qx) + (p.Y - qy) * (p.Y - qy)) <= tol;
         }
 
         private static int CornerAt(List<CadPoint> corners, CadPoint p, double tol)

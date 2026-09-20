@@ -217,6 +217,51 @@ namespace Horizun.Revit.Core
         };
     }
 
+    /// <summary>What a rule does with a closed loop of its own line work. Declared; never inferred from shape.</summary>
+    public enum CadClosedLoopPolicy { Review, Runs, FiguresByRule }
+
+    /// <summary>
+    /// WHAT A FIGURE LOOKS LIKE IN THIS DRAWING, declared by the caller and never by this bridge. Every named
+    /// threshold must hold for a loop to be left unclaimed; a loop that fails any of them is held for review,
+    /// not built. MEASURED (M102): a 24 x 24 in box with both diagonals and nothing else attached to it, on a
+    /// layer whose runs are 1.8 to 14 m long.
+    /// </summary>
+    public sealed class CadClosedFigureRule
+    {
+        public double? MaxPerimeterMm;
+        public int? MinChords;
+        public int? MaxEdges;
+        /// <summary>No other line of the layer touches the loop: a route that closes usually carries something.</summary>
+        public bool NothingElseAttached;
+        /// <summary>Only a loop drawn as ONE closed polyline (or only one that is not), when the caller says so.</summary>
+        public bool? OneClosedPolyline;
+
+        public bool Declares => MaxPerimeterMm.HasValue || MinChords.HasValue || MaxEdges.HasValue ||
+                                NothingElseAttached || OneClosedPolyline.HasValue;
+
+        public JObject ToJson()
+        {
+            var o = new JObject();
+            if (MaxPerimeterMm.HasValue) o["max_perimeter_mm"] = MaxPerimeterMm.Value;
+            if (MinChords.HasValue) o["min_chords"] = MinChords.Value;
+            if (MaxEdges.HasValue) o["max_edges"] = MaxEdges.Value;
+            if (NothingElseAttached) o["nothing_else_attached"] = true;
+            if (OneClosedPolyline.HasValue) o["one_closed_polyline"] = OneClosedPolyline.Value;
+            return o;
+        }
+
+        public string Describe()
+        {
+            var parts = new List<string>();
+            if (MaxPerimeterMm.HasValue) parts.Add("perimeter at most " + MaxPerimeterMm.Value.ToString("0.#", CultureInfo.InvariantCulture) + " mm");
+            if (MinChords.HasValue) parts.Add("at least " + MinChords.Value + " chord(s)");
+            if (MaxEdges.HasValue) parts.Add("at most " + MaxEdges.Value + " edge(s)");
+            if (NothingElseAttached) parts.Add("nothing else attached to it");
+            if (OneClosedPolyline.HasValue) parts.Add(OneClosedPolyline.Value ? "drawn as one closed polyline" : "not drawn as one closed polyline");
+            return string.Join(", ", parts);
+        }
+    }
+
     public sealed class CadGeometryCriteria
     {
         public CadGeometrySource Source;
@@ -232,8 +277,20 @@ namespace Horizun.Revit.Core
         /// The network reading honours the same flag, or the two would name runs differently.
         /// </summary>
         public bool MergeCollinear = true;
-        /// <summary>single_lines: read the edges of a CLOSED polyline as runs too. Off: a closed ring is a boundary, not a route.</summary>
+        /// <summary>single_lines: read the edges of a CLOSED polyline as runs too. Alias of closed_loops = "runs".</summary>
         public bool IncludeClosedPolylines;
+
+        /// <summary>
+        /// What this rule does with a CLOSED LOOP of its own line work. MEASURED (campaign 7): a chord across a
+        /// loop is a property of the LINE WORK, not a statement about what it means - a closed circuit with an
+        /// interior connection has one too - so nothing here is decided by shape alone. review (the default)
+        /// proposes every edge and holds it; runs reads them as runs like any other line; figures_by_rule leaves
+        /// unclaimed the loops that match closed_figure, and holds the rest.
+        /// </summary>
+        public CadClosedLoopPolicy ClosedLoops = CadClosedLoopPolicy.Review;
+
+        /// <summary>What a FIGURE looks like in this project's drawings, declared. Null unless the caller says.</summary>
+        public CadClosedFigureRule ClosedFigure;
         public double? MaxLengthMm;
         public double? MinAreaMm2;
         public double? MaxAreaMm2;
@@ -896,7 +953,8 @@ namespace Horizun.Revit.Core
         {
             "from", "min_thickness_mm", "max_thickness_mm", "min_overlap_mm", "min_overlap_fraction",
             "min_length_mm", "max_length_mm", "min_area_mm2", "max_area_mm2", "cluster_radius_mm",
-            "same_layer_only", "bridge_openings_mm", "merge_collinear", "include_closed_polylines", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
+            "same_layer_only", "bridge_openings_mm", "merge_collinear", "include_closed_polylines",
+            "closed_loops", "closed_figure", "blocks", "effective_blocks", "dynamic_properties", "block_facing", "solid_hatch_layers", "composite", "finish", "face_breaks_mm", "end_piers", "block_attributes"
         };
 
         /// <summary>
@@ -1948,6 +2006,56 @@ namespace Horizun.Revit.Core
                 c.MergeCollinear = (bool)mergeToken;
             }
             c.IncludeClosedPolylines = g.Value<bool?>("include_closed_polylines") ?? false;
+            if (c.IncludeClosedPolylines) c.ClosedLoops = CadClosedLoopPolicy.Runs;
+            string loops = g.Value<string>("closed_loops");
+            if (!string.IsNullOrWhiteSpace(loops))
+            {
+                switch (loops)
+                {
+                    case "review": c.ClosedLoops = CadClosedLoopPolicy.Review; break;
+                    case "runs": c.ClosedLoops = CadClosedLoopPolicy.Runs; break;
+                    case "figures_by_rule": c.ClosedLoops = CadClosedLoopPolicy.FiguresByRule; break;
+                    default:
+                        throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_loops must be " +
+                            "\"review\" (propose every edge and hold it), \"runs\" or \"figures_by_rule\".");
+                }
+                if (c.IncludeClosedPolylines && c.ClosedLoops != CadClosedLoopPolicy.Runs)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.include_closed_polylines " +
+                        "says these loops ARE runs and geometry.closed_loops says otherwise; declare one.");
+            }
+            if (g["closed_figure"] is JObject figure)
+            {
+                if (c.ClosedLoops != CadClosedLoopPolicy.FiguresByRule)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure only means " +
+                        "something with geometry.closed_loops = \"figures_by_rule\"; without it nothing is excluded.");
+                var known = new HashSet<string>(StringComparer.Ordinal)
+                    { "max_perimeter_mm", "min_chords", "nothing_else_attached", "one_closed_polyline", "max_edges" };
+                foreach (JProperty pr in figure.Properties())
+                    if (!known.Contains(pr.Name))
+                        throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure has no key '" + pr.Name + "'.");
+                var f = new CadClosedFigureRule
+                {
+                    MaxPerimeterMm = figure.Value<double?>("max_perimeter_mm"),
+                    MinChords = figure.Value<int?>("min_chords"),
+                    MaxEdges = figure.Value<int?>("max_edges"),
+                    NothingElseAttached = figure.Value<bool?>("nothing_else_attached") ?? false,
+                    OneClosedPolyline = figure.Value<bool?>("one_closed_polyline")
+                };
+                if (f.MaxPerimeterMm.HasValue && f.MaxPerimeterMm.Value <= 0)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.max_perimeter_mm must be positive.");
+                if (f.MinChords.HasValue && f.MinChords.Value < 0)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.min_chords cannot be negative.");
+                if (f.MaxEdges.HasValue && f.MaxEdges.Value < 3)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure.max_edges must be at least 3.");
+                if (!f.Declares)
+                    throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_figure declares nothing, " +
+                        "so it would exclude every closed loop. Name at least one of max_perimeter_mm, min_chords, " +
+                        "max_edges, nothing_else_attached or one_closed_polyline.");
+                c.ClosedFigure = f;
+            }
+            else if (c.ClosedLoops == CadClosedLoopPolicy.FiguresByRule)
+                throw new CadRequirementSetException("rule '" + rule.Id + "': geometry.closed_loops = " +
+                    "\"figures_by_rule\" needs geometry.closed_figure to say what a figure looks like in this drawing.");
             c.MaxLengthMm = g.Value<double?>("max_length_mm");
             c.MinAreaMm2 = g.Value<double?>("min_area_mm2");
             c.MaxAreaMm2 = g.Value<double?>("max_area_mm2");

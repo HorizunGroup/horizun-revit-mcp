@@ -1970,39 +1970,65 @@ namespace Horizun.Revit.Core
             // through the inside) stay unclaimed - and are reported - unless the rule declares
             // include_closed_polylines. MEASURED (M102): a square with both diagonals on the duct layer read as
             // six duct runs.
+            // A CLOSED LOOP IS DECIDED BY WHAT THE RULE DECLARES, never by its shape. review (the default) proposes
+            // every edge and holds it; runs reads them like any other line - which grants no size and joins nothing;
+            // figures_by_rule leaves unclaimed only the loops that match the caller's own closed_figure, and holds
+            // the rest. A chord is one of the facts that rule may ask about, and never a verdict on its own.
             var outline = new HashSet<CadSegment>();
             var heldLoop = new HashSet<CadSegment>();
             int rings = 0, chords = 0, ambiguous = 0;
             var loopRows = new JArray();
-            if (!g.IncludeClosedPolylines)
-                foreach (CadRings.CadLoop loop in CadRings.Loops(layerSegments, set.PointToleranceMm))
+            foreach (CadRings.CadLoop loop in CadRings.Loops(layerSegments, set.PointToleranceMm))
+            {
+                JObject row = loop.ToJson();
+                if (g.ClosedLoops == CadClosedLoopPolicy.Runs)
                 {
-                    loopRows.Add(loop.ToJson());
-                    if (loop.IsFigure)
-                    {
-                        rings++;
-                        chords += loop.Chords.Count;
-                        foreach (CadSegment s in loop.All) outline.Add(s);
-                    }
-                    else
-                    {
-                        ambiguous++;
-                        foreach (CadSegment s in loop.Boundary) heldLoop.Add(s);
-                    }
+                    row["reading"] = "run";
+                    row["settled_by"] = "declared_runs";
+                    row["and_still"] = "declaring these loops runs gives them no size and joins nothing: each edge " +
+                                       "takes its section from the drawing like any other run, and its junctions are " +
+                                       "carried out - or refused - by horizun_cad_connect.";
+                    loopRows.Add(row);
+                    continue;
                 }
+                JObject why = null;
+                bool figure = g.ClosedLoops == CadClosedLoopPolicy.FiguresByRule &&
+                              loop.MatchesDeclaredFigure(g.ClosedFigure, out why);
+                if (figure)
+                {
+                    row["reading"] = "figure_by_declared_rule";
+                    row["settled_by"] = "declared_rule";
+                    row["declared"] = g.ClosedFigure.ToJson();
+                    row["against_the_rule"] = why;
+                    rings++;
+                    chords += loop.Chords.Count;
+                    foreach (CadSegment s in loop.All) outline.Add(s);
+                }
+                else
+                {
+                    row["reading"] = "held_for_review";
+                    row["settled_by"] = g.ClosedLoops == CadClosedLoopPolicy.FiguresByRule
+                        ? "nothing: the declared figure rule does not match this loop"
+                        : "nothing: no rule declares what a closed loop on this layer is";
+                    if (why != null) row["against_the_rule"] = why;
+                    // THE CHORDS ARE HELD WITH IT. If the loop is a figure the chord is part of it; if the loop is
+                    // a circuit the chord is a legitimate interior connection. Neither is settled, so neither is built.
+                    ambiguous++;
+                    foreach (CadSegment s in loop.All) heldLoop.Add(s);
+                }
+                loopRows.Add(row);
+            }
             if (outline.Count > 0 && result != null)
                 result.Unclaimed.Add(new CadUnclaimed
                 {
                     Layer = layerSegments[0].Layer ?? "(no layer)",
-                    Reason = "closed_outline_not_a_run",
+                    Reason = "closed_figure_by_declared_rule",
                     EntityCount = outline.Count,
                     RuleIds = new List<string> { rule.Id },
-                    Means = rings + " closed figure(s) drawn on this layer - " + (outline.Count - chords) +
-                            " edge(s), and " + chords + " chord(s) joining their corners THROUGH the inside - were " +
-                            "left unclaimed rather than read as " + rule.Produces + " runs. THAT IS AN INFERENCE " +
-                            "FROM THE LINE WORK, not something the drawing says: a closed circuit with a legitimate " +
-                            "interior connection has a chord too, and this reading cannot tell the two apart. A rule " +
-                            "whose runs ARE drawn as closed loops says so with geometry.include_closed_polylines."
+                    Means = rings + " closed loop(s) match what this rule DECLARES a figure is (" +
+                            g.ClosedFigure.Describe() + "): " + (outline.Count - chords) + " edge(s) and " + chords +
+                            " chord(s) were left unclaimed rather than read as " + rule.Produces + " runs. The rule " +
+                            "is the caller's, and every loop that does not match it is held for review, not excluded."
                 });
             if (heldLoop.Count > 0 && result != null)
                 result.Unclaimed.Add(new CadUnclaimed
@@ -2011,10 +2037,11 @@ namespace Horizun.Revit.Core
                     Reason = "closed_loop_held_for_review",
                     EntityCount = heldLoop.Count,
                     RuleIds = new List<string> { rule.Id },
-                    Means = ambiguous + " closed loop(s) with nothing crossing them: a " + rule.Produces + " route " +
-                            "CAN close, and a boundary drawn on this layer closes too. They are NOT deleted and NOT " +
-                            "built: each edge is proposed and held for review. Declaring " +
-                            "geometry.include_closed_polylines reads them as runs."
+                    Means = ambiguous + " closed loop(s) on this layer that nothing settles: a " + rule.Produces +
+                            " route CAN close - a ring main does - and so can a boundary drawn on the same layer, " +
+                            "and a chord across one proves neither. They are NOT deleted and NOT built: each edge is " +
+                            "proposed and held for review. geometry.closed_loops declares what they are (review | " +
+                            "runs | figures_by_rule with closed_figure)."
                 });
             if (result != null && loopRows.Count > 0) result.ClosedLoops.Add(new JObject
             {
@@ -2093,11 +2120,12 @@ namespace Horizun.Revit.Core
                 {
                     // A CLOSED LOOP IS NOT DECIDED BY ITS SHAPE. Nothing crosses this one, so it is not a figure;
                     // it is also not automatically a route. Proposed, held, and named in the reply.
-                    Ineligible(c, "this run is one edge of a CLOSED LOOP on its layer, with nothing crossing it: a " +
-                                  rule.Produces + " route can close, and so can a boundary drawn on the same layer. " +
-                                  "Nothing in the drawing settles which this is, so it is held rather than built. " +
-                                  "geometry.include_closed_polylines declares that such loops are runs.");
-                    c.UnresolvedFacts.Add("closed loop: whether this edge is a run or part of an outline is not " +
+                    Ineligible(c, "this run is one edge of a CLOSED LOOP on its layer: a " + rule.Produces +
+                                  " route can close, and so can a boundary drawn on the same layer, and a chord " +
+                                  "across it proves neither. Nothing in the drawing settles which this is, so it is " +
+                                  "held rather than built. geometry.closed_loops declares what these loops are " +
+                                  "(review | runs | figures_by_rule with closed_figure).");
+                    c.UnresolvedFacts.Add("closed loop: whether this edge is a run or part of a figure is not " +
                                           "said by the drawing");
                 }
                 produced.Add(c);
