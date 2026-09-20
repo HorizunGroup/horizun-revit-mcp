@@ -171,7 +171,7 @@ namespace Horizun.Revit.Commands
             // way to notice that the geometry it was handed belongs to an earlier issue.
             ["source_set_sha256"] = r.Facts != null
                 ? CadDwgCache.SourceSetSha256(r.Facts.ExternalPath, r.Facts.FileSha256) : null,
-            ["geometry_source"] = GeometrySource(r),
+            ["geometry_source"] = GeometrySource(r.Facts != null ? r.Facts.ExternalPath : null),
             ["ir_fingerprint"] = r.Ir.Fingerprint(),
             ["ir_schema_version"] = r.Ir.SchemaVersion,
             ["reader"] = r.Ir.Reader.ToJson(),
@@ -194,10 +194,10 @@ namespace Horizun.Revit.Commands
         /// as naming nothing this reading can see; the cause, that the geometry was older than the label,
         /// was nowhere in the reply. After horizun_manage_cad_links reload the same call returned thirty-one.
         /// </summary>
-        public static JObject GeometrySource(CadReading r) => new JObject
+        public static JObject GeometrySource(string externalPath) => new JObject
         {
             ["is"] = "the CAD link as Revit loaded it",
-            ["file"] = r.Facts != null ? r.Facts.ExternalPath : null,
+            ["file"] = externalPath,
             ["means"] = "the geometry here is the link's, not the file's. Revit does not say when it loaded " +
                         "it, so a reference edited since then is invisible in the geometry while the text " +
                         "reader sees it at once. When source_set_sha256 differs from the one recorded with " +

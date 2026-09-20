@@ -427,7 +427,11 @@ namespace Horizun.Revit.Commands
                 ["declared_units"] = declared,
                 ["transform_fingerprint"] = facts.TransformFingerprint,
                 ["units_agree_with_requirement_set"] = unitsAgree,
-                ["unit_mismatch_accepted"] = !unitsAgree
+                ["unit_mismatch_accepted"] = !unitsAgree,
+                // WHICH HALF CAME FROM WHERE. source_set_sha256 above already moves when a reference does;
+                // this says why that matters here - the geometry is the link's, the labels are the file's,
+                // and a plan can be made of one issue's runs and the next issue's sizes without a word.
+                ["geometry_source"] = CadReadingHelper.GeometrySource(facts.ExternalPath)
             };
             report["harvest_coverage"] = harvest.CoverageJson(set.ArcSagittaMm);
 
