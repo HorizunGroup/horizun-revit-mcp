@@ -478,6 +478,15 @@ namespace Horizun.Revit.Commands
             if (blocksReport != null) report["blocks"] = blocksReport;
             if (sectionsReport != null) report["sections"] = sectionsReport;
             if (alreadyBuiltReport != null) report["already_built"] = alreadyBuiltReport;
+            if (interpretation.ClosedLoops.Count > 0)
+            {
+                report["closed_loops"] = new JArray(interpretation.ClosedLoops);
+                report["closed_loops_means"] =
+                    "every closed loop these rules met, and what was read into it. A loop whose corners are joined " +
+                    "THROUGH its inside is a figure - a route does not cross itself - and its edges are not runs. A " +
+                    "loop with nothing crossing it is not decided by its shape: its edges are proposed and HELD for " +
+                    "review, because a ring main closes and so does a boundary drawn on the same layer.";
+            }
             if (alreadyBuiltProblem != null) report["already_built_unreadable"] = alreadyBuiltProblem;
             if (interpretation.DoubleLineReasoning.Count > 0)
                 report["double_line_reasoning"] = interpretation.DoubleLineReasoning;

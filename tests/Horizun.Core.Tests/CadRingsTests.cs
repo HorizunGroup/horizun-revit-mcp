@@ -90,25 +90,28 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_line_that_only_touches_a_corner_or_doubles_an_edge_is_not_a_chord()
+        public void A_line_that_only_touches_a_corner_or_doubles_an_edge_or_joins_two_loops_is_not_a_chord()
         {
             var layer = CadRings.PolylineSegments(new[] { TL, TR, BR, BL, TL }, "M-DUCT", 0);
-            var fromCorner = new CadSegment(TR, new CadPoint(45000, 35000), "M-DUCT");   // leaves the ring outward
+            var fromCorner = new CadSegment(TR, new CadPoint(45000, 35000), "M-DUCT");   // leaves the loop outward
             var alongEdge = new CadSegment(TL, TR, "M-DUCT");                            // an edge drawn twice
             var otherRing = CadRings.PolylineSegments(new[]
             {
                 new CadPoint(60000, 0), new CadPoint(61000, 0), new CadPoint(61000, 1000), new CadPoint(60000, 1000), new CadPoint(60000, 0)
             }, "M-DUCT", 10);
-            var betweenRings = new CadSegment(BR, new CadPoint(60000, 1000), "M-DUCT");  // corner to corner of two rings
+            var betweenRings = new CadSegment(BR, new CadPoint(60000, 1000), "M-DUCT");  // corner to corner of two loops
             layer.AddRange(new[] { fromCorner, alongEdge, betweenRings });
             layer.AddRange(otherRing);
             int rings, chords;
             HashSet<CadSegment> figure = CadRings.Figure(layer, 25.4, out rings, out chords);
-            Assert.Equal(2, rings);
+            Assert.Equal(0, rings);          // NOTHING crosses either loop's inside: neither is a figure
             Assert.Equal(0, chords);
-            Assert.DoesNotContain(fromCorner, figure);
-            Assert.DoesNotContain(alongEdge, figure);
-            Assert.DoesNotContain(betweenRings, figure);
+            Assert.Empty(figure);
+            Assert.All(CadRings.Loops(layer, 25.4), l => Assert.Empty(l.Chords));
+            // and the line that leaves the loop is a run, while the loops themselves are only held
+            CadInterpretation read = CadInterpretationRules.Interpret(layer, Set(), "h");
+            Assert.Contains(read.Candidates, c => c.ProposedKind == "duct" && c.EligibleForAutomaticApply);
+            Assert.Contains(read.Unclaimed, u => u.Reason == "closed_loop_held_for_review");
         }
 
         [Fact]
@@ -121,7 +124,7 @@ namespace Horizun.Core.Tests
             CadUnclaimed row = Assert.Single(read.Unclaimed, u => u.Reason == "closed_outline_not_a_run");
             Assert.Equal(6, row.EntityCount);
             Assert.Equal("M-DUCT", row.Layer);
-            Assert.Contains("1 closed outline(s)", row.Means);
+            Assert.Contains("1 closed figure(s)", row.Means);
             Assert.Contains("4 edge(s), and 2 chord(s)", row.Means);
             Assert.Contains("include_closed_polylines", row.Means);
 
@@ -129,6 +132,89 @@ namespace Horizun.Core.Tests
             CadInterpretation all = CadInterpretationRules.Interpret(M102(), Set(includeClosed: true), "h");
             Assert.Equal(7, all.Candidates.Count(c => c.ProposedKind == "duct"));
             Assert.DoesNotContain(all.Unclaimed, u => u.Reason == "closed_outline_not_a_run");
+        }
+
+        /// <summary>A rectangle drawn as four loose lines, of the given size, at the given corner.</summary>
+        private static List<CadSegment> LooseLoop(double x, double y, double w, double h, string layer = "M-DUCT")
+        {
+            var a = new CadPoint(x, y); var b = new CadPoint(x + w, y);
+            var c = new CadPoint(x + w, y + h); var d = new CadPoint(x, y + h);
+            return new List<CadSegment>
+            {
+                new CadSegment(a, b, layer), new CadSegment(b, c, layer),
+                new CadSegment(c, d, layer), new CadSegment(d, a, layer)
+            };
+        }
+
+        private static List<CadCandidate> Ducts(CadInterpretation r) =>
+            r.Candidates.Where(c => c.ProposedKind == "duct").ToList();
+
+        [Fact]
+        public void A_closed_loop_with_nothing_crossing_it_is_held_for_review_and_never_deleted()
+        {
+            // a ring main: a route CAN close, so the shape alone settles nothing
+            List<CadSegment> loop = LooseLoop(0, 0, 12000, 8000);
+            CadInterpretation read = CadInterpretationRules.Interpret(loop, Set(), "h");
+            List<CadCandidate> ducts = Ducts(read);
+            Assert.Equal(4, ducts.Count);                                   // proposed, not deleted
+            Assert.All(ducts, c => Assert.False(c.EligibleForAutomaticApply));   // and not built
+            Assert.All(ducts, c => Assert.Contains("CLOSED LOOP", string.Join(" ", c.IneligibleReasons)));
+            CadUnclaimed row = Assert.Single(read.Unclaimed, u => u.Reason == "closed_loop_held_for_review");
+            Assert.Equal(4, row.EntityCount);
+            Assert.DoesNotContain(read.Unclaimed, u => u.Reason == "closed_outline_not_a_run");
+            // and the caller that says these loops ARE runs gets runs
+            Assert.All(Ducts(CadInterpretationRules.Interpret(loop, Set(includeClosed: true), "h")),
+                       c => Assert.True(c.EligibleForAutomaticApply));
+        }
+
+        [Fact]
+        public void The_same_figure_reads_the_same_drawn_as_loose_lines_or_as_one_polyline()
+        {
+            var loose = LooseLoop(0, 0, 610, 610);
+            loose.Add(new CadSegment(new CadPoint(0, 0), new CadPoint(610, 610), "M-DUCT"));      // its diagonals
+            loose.Add(new CadSegment(new CadPoint(0, 610), new CadPoint(610, 0), "M-DUCT"));
+            var drawn = CadRings.PolylineSegments(new[]
+            {
+                new CadPoint(0, 0), new CadPoint(610, 0), new CadPoint(610, 610), new CadPoint(0, 610), new CadPoint(0, 0)
+            }, "M-DUCT", 0);
+            drawn.Add(new CadSegment(new CadPoint(0, 0), new CadPoint(610, 610), "M-DUCT"));
+            drawn.Add(new CadSegment(new CadPoint(0, 610), new CadPoint(610, 0), "M-DUCT"));
+            foreach (var layer in new[] { loose, drawn })
+            {
+                CadRings.CadLoop loop = Assert.Single(CadRings.Loops(layer, 25.4));
+                Assert.True(loop.IsFigure);
+                Assert.Equal(4, loop.Boundary.Count);
+                Assert.Equal(2, loop.Chords.Count);
+                Assert.Empty(Ducts(CadInterpretationRules.Interpret(layer, Set(), "h")));
+            }
+            Assert.True(CadRings.Loops(drawn, 25.4)[0].OneClosedPolyline);
+            Assert.False(CadRings.Loops(loose, 25.4)[0].OneClosedPolyline);   // the same reading, said honestly
+        }
+
+        [Fact]
+        public void Branches_off_a_closed_circuit_stay_runs_and_only_the_loop_is_held()
+        {
+            List<CadSegment> layer = LooseLoop(0, 0, 12000, 8000);
+            layer.Add(new CadSegment(new CadPoint(12000, 0), new CadPoint(18000, 0), "M-DUCT"));      // a branch
+            layer.Add(new CadSegment(new CadPoint(0, 8000), new CadPoint(0, 14000), "M-DUCT"));       // another
+            CadInterpretation read = CadInterpretationRules.Interpret(layer, Set(), "h");
+            List<CadCandidate> ducts = Ducts(read);
+            Assert.Equal(6, ducts.Count);
+            Assert.Equal(2, ducts.Count(c => c.EligibleForAutomaticApply));                          // the branches
+            Assert.Equal(4, ducts.Count(c => !c.EligibleForAutomaticApply));                         // the circuit
+        }
+
+        [Fact]
+        public void A_line_crossing_a_loop_from_outside_is_not_a_chord_and_the_loop_is_still_only_ambiguous()
+        {
+            List<CadSegment> layer = LooseLoop(0, 0, 12000, 8000);
+            layer.Add(new CadSegment(new CadPoint(-4000, 4000), new CadPoint(16000, 4000), "M-DUCT"));  // crosses through
+            CadRings.CadLoop loop = Assert.Single(CadRings.Loops(layer, 25.4));
+            Assert.False(loop.IsFigure);
+            Assert.Empty(loop.Chords);
+            CadInterpretation read = CadInterpretationRules.Interpret(layer, Set(), "h");
+            Assert.Equal(1, Ducts(read).Count(c => c.EligibleForAutomaticApply));                    // the crossing line
+            Assert.Equal(4, Ducts(read).Count(c => !c.EligibleForAutomaticApply));
         }
 
         [Fact]

@@ -281,6 +281,9 @@ namespace Horizun.Revit.Core
     /// <summary>The whole reading of one drawing: proposals, refusals and coverage.</summary>
     public sealed class CadInterpretation
     {
+        /// <summary>Every closed loop this reading found, per layer, with what it read into it. Never silent.</summary>
+        public List<JObject> ClosedLoops = new List<JObject>();
+
         /// <summary>The source hash the revision ids of this reading were made with (a piece's id needs it).</summary>
         public string SourceHash;
         public List<CadCandidate> Candidates = new List<CadCandidate>();
@@ -1967,10 +1970,26 @@ namespace Horizun.Revit.Core
             // through the inside) stay unclaimed - and are reported - unless the rule declares
             // include_closed_polylines. MEASURED (M102): a square with both diagonals on the duct layer read as
             // six duct runs.
-            int rings = 0, chords = 0;
-            HashSet<CadSegment> outline = g.IncludeClosedPolylines
-                ? new HashSet<CadSegment>()
-                : CadRings.Figure(layerSegments, set.PointToleranceMm, out rings, out chords);
+            var outline = new HashSet<CadSegment>();
+            var heldLoop = new HashSet<CadSegment>();
+            int rings = 0, chords = 0, ambiguous = 0;
+            var loopRows = new JArray();
+            if (!g.IncludeClosedPolylines)
+                foreach (CadRings.CadLoop loop in CadRings.Loops(layerSegments, set.PointToleranceMm))
+                {
+                    loopRows.Add(loop.ToJson());
+                    if (loop.IsFigure)
+                    {
+                        rings++;
+                        chords += loop.Chords.Count;
+                        foreach (CadSegment s in loop.All) outline.Add(s);
+                    }
+                    else
+                    {
+                        ambiguous++;
+                        foreach (CadSegment s in loop.Boundary) heldLoop.Add(s);
+                    }
+                }
             if (outline.Count > 0 && result != null)
                 result.Unclaimed.Add(new CadUnclaimed
                 {
@@ -1978,11 +1997,30 @@ namespace Horizun.Revit.Core
                     Reason = "closed_outline_not_a_run",
                     EntityCount = outline.Count,
                     RuleIds = new List<string> { rule.Id },
-                    Means = rings + " closed outline(s) drawn on this layer - " + (outline.Count - chords) +
-                            " edge(s), and " + chords + " chord(s) joining their corners - were read as " +
-                            "outlines, not as " + rule.Produces + " runs. A rule whose runs ARE drawn as closed " +
-                            "loops says so with geometry.include_closed_polylines."
+                    Means = rings + " closed figure(s) drawn on this layer - " + (outline.Count - chords) +
+                            " edge(s), and " + chords + " chord(s) joining their corners THROUGH the inside - were " +
+                            "read as figures, not as " + rule.Produces + " runs: a route does not cross itself " +
+                            "corner to corner. A rule whose runs ARE drawn as closed loops says so with " +
+                            "geometry.include_closed_polylines."
                 });
+            if (heldLoop.Count > 0 && result != null)
+                result.Unclaimed.Add(new CadUnclaimed
+                {
+                    Layer = layerSegments[0].Layer ?? "(no layer)",
+                    Reason = "closed_loop_held_for_review",
+                    EntityCount = heldLoop.Count,
+                    RuleIds = new List<string> { rule.Id },
+                    Means = ambiguous + " closed loop(s) with nothing crossing them: a " + rule.Produces + " route " +
+                            "CAN close, and a boundary drawn on this layer closes too. They are NOT deleted and NOT " +
+                            "built: each edge is proposed and held for review. Declaring " +
+                            "geometry.include_closed_polylines reads them as runs."
+                });
+            if (result != null && loopRows.Count > 0) result.ClosedLoops.Add(new JObject
+            {
+                ["layer"] = layerSegments[0].Layer ?? "(no layer)",
+                ["rule"] = rule.Id,
+                ["loops"] = loopRows
+            });
 
             int mergedAway = 0;
             List<CadSegment> merged = g.MergeCollinear
@@ -1997,6 +2035,7 @@ namespace Horizun.Revit.Core
                 if (g.MaxLengthMm != null && s.PlanLength > g.MaxLengthMm.Value) continue;
                 if (outline.Contains(s)) continue;
                 if (i < indices.Count) consumed.Add(indices[i]);
+                bool heldByLoop = heldLoop.Contains(s);
 
                 var c = NewCandidate(rule, set, sourceHash, s.Layer,
                     new List<CadPoint> { s.A, s.B }, s.SourceKind);
@@ -2049,6 +2088,17 @@ namespace Horizun.Revit.Core
 
                 c.ExpectedVerification.Add("the created element re-reads as category " + (rule.Category ?? "(rule declared none)"));
                 c.ExpectedVerification.Add("its endpoints match the drawn line within the point tolerance");
+                if (heldByLoop)
+                {
+                    // A CLOSED LOOP IS NOT DECIDED BY ITS SHAPE. Nothing crosses this one, so it is not a figure;
+                    // it is also not automatically a route. Proposed, held, and named in the reply.
+                    Ineligible(c, "this run is one edge of a CLOSED LOOP on its layer, with nothing crossing it: a " +
+                                  rule.Produces + " route can close, and so can a boundary drawn on the same layer. " +
+                                  "Nothing in the drawing settles which this is, so it is held rather than built. " +
+                                  "geometry.include_closed_polylines declares that such loops are runs.");
+                    c.UnresolvedFacts.Add("closed loop: whether this edge is a run or part of an outline is not " +
+                                          "said by the drawing");
+                }
                 produced.Add(c);
             }
             return produced;

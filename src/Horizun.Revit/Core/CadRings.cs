@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using Newtonsoft.Json.Linq;
 
 namespace Horizun.Revit.Core
 {
@@ -68,10 +69,10 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// The segments of these (one layer's) that are a closed outline's FIGURE: the ring edges, and every
-        /// other segment joining two different corners of one ring through its inside - a chord. MEASURED
-        /// (M102): the square's diagonals, one appended to the ring's PolyLine and one a separate Line. A
-        /// segment that only touches a corner, or runs along an edge, is not a chord and is left alone.
+        /// The segments of these (one layer's) that are a closed FIGURE: a loop whose corners are joined through
+        /// its inside, and those chords. MEASURED (M102): a square with both diagonals on the duct layer. A loop
+        /// with NOTHING crossing it is not a figure - a route can close - and is returned separately by
+        /// <see cref="Loops"/> for the caller to hold rather than to delete.
         /// </summary>
         public static HashSet<CadSegment> Figure(IList<CadSegment> segments, double toleranceMm,
                                                  out int rings, out int chords)
@@ -79,31 +80,178 @@ namespace Horizun.Revit.Core
             var figure = new HashSet<CadSegment>();
             rings = 0;
             chords = 0;
-            if (segments == null) return figure;
-            var ringGroups = segments.Where(s => s != null && s.ClosedRing && s.SourceCurveId != null)
-                                     .GroupBy(s => s.SourceCurveId, StringComparer.Ordinal)
-                                     .Select(g => g.OrderBy(s => s.SourceIndex).ToList())
-                                     .Where(g => g.Count >= 3).ToList();
-            rings = ringGroups.Count;
-            foreach (List<CadSegment> ring in ringGroups)
-                foreach (CadSegment s in ring) figure.Add(s);
-            if (rings == 0) return figure;
-            double tol = Math.Max(toleranceMm, VertexToleranceMm);
-            foreach (CadSegment s in segments)
+            foreach (CadLoop loop in Loops(segments, toleranceMm))
             {
-                if (s == null || figure.Contains(s)) continue;
-                foreach (List<CadSegment> ring in ringGroups)
-                {
-                    List<CadPoint> corners = ring.Select(e => e.A).ToList();
-                    int a = CornerAt(corners, s.A, tol), b = CornerAt(corners, s.B, tol);
-                    if (a < 0 || b < 0 || a == b) continue;
-                    if (!Inside(corners, s.Midpoint)) continue;
-                    figure.Add(s);
-                    chords++;
-                    break;
-                }
+                if (!loop.IsFigure) continue;
+                rings++;
+                chords += loop.Chords.Count;
+                foreach (CadSegment s in loop.All) figure.Add(s);
             }
             return figure;
+        }
+
+        /// <summary>One closed loop of a layer's line work, and what the drawing says about what it MEANS.</summary>
+        public sealed class CadLoop
+        {
+            /// <summary>The loop itself, in walk order.</summary>
+            public List<CadSegment> Boundary = new List<CadSegment>();
+            /// <summary>Segments joining two of its nodes THROUGH its inside - a route does not cross itself.</summary>
+            public List<CadSegment> Chords = new List<CadSegment>();
+            /// <summary>Every segment of the loop and its chords.</summary>
+            public IEnumerable<CadSegment> All => Boundary.Concat(Chords);
+            /// <summary>True when the whole loop came from one closed polyline, which is how a box is usually drawn.</summary>
+            public bool OneClosedPolyline;
+            public double PerimeterMm => Boundary.Sum(s => s.PlanLength);
+            /// <summary>A figure has chords: that is drawn evidence of a symbol, not of a route.</summary>
+            public bool IsFigure => Chords.Count > 0;
+
+            public JObject ToJson() => new JObject
+            {
+                ["edges"] = Boundary.Count,
+                ["chords"] = Chords.Count,
+                ["perimeter_mm"] = Math.Round(PerimeterMm, 1),
+                ["one_closed_polyline"] = OneClosedPolyline,
+                ["at_mm"] = Boundary.Count > 0
+                    ? new JArray(Math.Round(Boundary[0].A.X, 1), Math.Round(Boundary[0].A.Y, 1))
+                    : new JArray(),
+                ["reading"] = IsFigure ? "figure" : "closed_loop",
+                ["means"] = IsFigure
+                    ? "a closed loop whose corners are joined through its inside: drawn evidence of a symbol (a box " +
+                      "with its diagonals), not of a route, so its edges and chords are not runs"
+                    : "a closed loop with nothing crossing it. A route CAN close - a ring main does - so this is not " +
+                      "read as a symbol and not built either: it is held for review unless the rule declares " +
+                      "geometry.include_closed_polylines"
+            };
+        }
+
+        /// <summary>
+        /// The closed loops of one layer's segments, from the segments THEMSELVES - so the same figure drawn as one
+        /// closed polyline or as four separate lines reads the same. Leaves (branches) are stripped first: what
+        /// remains carries every cycle. Bounded: a component with more than <paramref name="maxEdges"/> segments is
+        /// left alone and reported by the caller rather than walked.
+        /// </summary>
+        public static List<CadLoop> Loops(IList<CadSegment> segments, double toleranceMm, int maxEdges = 64)
+        {
+            var found = new List<CadLoop>();
+            if (segments == null) return found;
+            List<CadSegment> edges = segments.Where(s => s != null && s.PlanLength > 1e-9).ToList();
+            if (edges.Count < 3) return found;
+            double tol = Math.Max(toleranceMm, VertexToleranceMm);
+
+            var nodes = new List<CadPoint>();
+            Func<CadPoint, int> nodeOf = p =>
+            {
+                for (int i = 0; i < nodes.Count; i++) if (nodes[i].PlanDistanceTo(p) <= tol) return i;
+                nodes.Add(p);
+                return nodes.Count - 1;
+            };
+            var ends = edges.Select(s => Tuple.Create(nodeOf(s.A), nodeOf(s.B))).ToList();
+            var alive = Enumerable.Repeat(true, edges.Count).ToArray();
+            for (int i = 0; i < edges.Count; i++) if (ends[i].Item1 == ends[i].Item2) alive[i] = false;
+
+            // strip leaves until every remaining node has two or more edges: what is left is where cycles are
+            bool stripped = true;
+            while (stripped)
+            {
+                stripped = false;
+                var degree = new int[nodes.Count];
+                for (int i = 0; i < edges.Count; i++)
+                    if (alive[i]) { degree[ends[i].Item1]++; degree[ends[i].Item2]++; }
+                for (int i = 0; i < edges.Count; i++)
+                {
+                    if (!alive[i]) continue;
+                    if (degree[ends[i].Item1] <= 1 || degree[ends[i].Item2] <= 1) { alive[i] = false; stripped = true; }
+                }
+            }
+            var core = Enumerable.Range(0, edges.Count).Where(i => alive[i]).ToList();
+            if (core.Count < 3) return found;
+
+            // components of what is left
+            var seen = new HashSet<int>();
+            foreach (int start in core)
+            {
+                if (seen.Contains(start)) continue;
+                var component = new List<int>();
+                var queue = new Queue<int>();
+                queue.Enqueue(start);
+                seen.Add(start);
+                while (queue.Count > 0)
+                {
+                    int e = queue.Dequeue();
+                    component.Add(e);
+                    foreach (int other in core)
+                    {
+                        if (seen.Contains(other)) continue;
+                        if (ends[other].Item1 == ends[e].Item1 || ends[other].Item1 == ends[e].Item2 ||
+                            ends[other].Item2 == ends[e].Item1 || ends[other].Item2 == ends[e].Item2)
+                        { seen.Add(other); queue.Enqueue(other); }
+                    }
+                }
+                if (component.Count < 3 || component.Count > maxEdges) continue;
+                CadLoop loop = Walk(component, edges, ends, nodes);
+                if (loop != null) found.Add(loop);
+            }
+            return found;
+        }
+
+        /// <summary>The outer boundary of one component, walked by always taking the sharpest right turn, and its chords.</summary>
+        private static CadLoop Walk(List<int> component, List<CadSegment> edges, List<Tuple<int, int>> ends, List<CadPoint> nodes)
+        {
+            int startNode = component.SelectMany(e => new[] { ends[e].Item1, ends[e].Item2 }).Distinct()
+                .OrderBy(n => nodes[n].X).ThenBy(n => nodes[n].Y).First();
+            var boundary = new List<int>();
+            int node = startNode, previous = -1, guard = component.Count * 2 + 4;
+            // the walk turns clockwise from the REVERSED incoming direction, which is what keeps it on the outer
+            // boundary; the first step pretends it arrived from below, so it starts looking downwards
+            double heading = -Math.PI / 2;
+            while (guard-- > 0)
+            {
+                int bestEdge = -1, bestNode = -1;
+                double bestTurn = double.MaxValue;
+                foreach (int e in component)
+                {
+                    if (e == previous) continue;
+                    int a = ends[e].Item1, b = ends[e].Item2;
+                    if (a != node && b != node) continue;
+                    int other = a == node ? b : a;
+                    double dir = Math.Atan2(nodes[other].Y - nodes[node].Y, nodes[other].X - nodes[node].X);
+                    double turn = heading - dir;
+                    while (turn <= 0) turn += 2 * Math.PI;
+                    while (turn > 2 * Math.PI) turn -= 2 * Math.PI;
+                    if (turn < bestTurn) { bestTurn = turn; bestEdge = e; bestNode = other; }
+                }
+                if (bestEdge < 0) return null;
+                boundary.Add(bestEdge);
+                heading = Math.Atan2(nodes[node].Y - nodes[bestNode].Y, nodes[node].X - nodes[bestNode].X);
+                previous = bestEdge;
+                node = bestNode;
+                if (node == startNode) break;
+            }
+            if (boundary.Count < 3 || node != startNode) return null;
+            var loop = new CadLoop();
+            loop.Boundary.AddRange(boundary.Select(i => edges[i]));
+            var ring = boundary.Select(i => edges[i]).ToList();
+            List<CadPoint> corners = BoundaryPoints(boundary, ends, nodes);
+            foreach (int e in component)
+            {
+                if (boundary.Contains(e)) continue;
+                if (Inside(corners, edges[e].Midpoint)) loop.Chords.Add(edges[e]);
+            }
+            loop.OneClosedPolyline = ring.All(s => s.ClosedRing && s.SourceCurveId != null) &&
+                                     ring.Select(s => s.SourceCurveId).Distinct(StringComparer.Ordinal).Count() == 1;
+            return loop;
+        }
+
+        private static List<CadPoint> BoundaryPoints(List<int> boundary, List<Tuple<int, int>> ends, List<CadPoint> nodes)
+        {
+            var pts = new List<CadPoint>();
+            for (int i = 0; i < boundary.Count; i++)
+            {
+                int e = boundary[i], next = boundary[(i + 1) % boundary.Count];
+                int shared = (ends[e].Item1 == ends[next].Item1 || ends[e].Item1 == ends[next].Item2) ? ends[e].Item1 : ends[e].Item2;
+                pts.Add(nodes[shared]);
+            }
+            return pts;
         }
 
         /// <summary>

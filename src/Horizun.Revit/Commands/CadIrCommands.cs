@@ -357,15 +357,16 @@ namespace Horizun.Revit.Commands
             long cacheEpoch = CadNetworkCache.Kept.Epoch;
             string cacheKey = early != null && QueryCacheLifecycle.Ready ? NetworkCacheKey(app, early) : null;
             string expectedEarly = early?.Value<string>("expect_analysis_fingerprint");
+            bool mustBeCurrent = early != null && (early.Value<bool?>("require_current_sources") ?? false);
             JObject cachedFull;
-            if (cacheKey != null && !string.IsNullOrWhiteSpace(expectedEarly) &&
+            if (cacheKey != null && !mustBeCurrent && !string.IsNullOrWhiteSpace(expectedEarly) &&
                 CadNetworkCache.Kept.TryGet(cacheKey, cacheEpoch, out cachedFull) &&
                 string.Equals(CadNetworkPaging.Fingerprint(cachedFull), expectedEarly, StringComparison.Ordinal))
             {
                 var onlyCached = (early["lists"] as JArray)?.Select(t => (string)t).Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
                 CadNetworkPaging.Page(cachedFull, onlyCached, Math.Max(0, early.Value<int?>("page_offset") ?? 0),
                                       early.Value<int?>("page_limit") ?? CadNetworkPaging.DefaultLimit);
-                cachedFull["analysis_cache"] = CadNetworkCache.HitBlock(cacheKey);
+                cachedFull["analysis_cache"] = CadNetworkCache.HitBlock(cacheKey, cachedFull.Value<string>("analysis_taken_utc"));
                 return CommandResult.Ok(cachedFull);
             }
 
@@ -742,14 +743,22 @@ namespace Horizun.Revit.Commands
 
             if (r.Request["layers"] == null && r.Request["layer"] == null && set == null)
                 reply["scope_proposal"] = CadNetworkPaging.ScopeProposal(segments);
+            reply["analysis_taken_utc"] = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
             if (cacheKey != null)
             {
+                bool kept = !mustBeCurrent && CadNetworkCache.Kept.Store(cacheKey, cacheEpoch, reply);
                 reply["analysis_cache"] = new JObject
                 {
-                    ["state"] = CadNetworkCache.Kept.Store(cacheKey, cacheEpoch, reply) ? "read_and_kept" : "read_not_kept",
+                    ["state"] = mustBeCurrent ? "read_now_not_kept" : (kept ? "read_and_kept" : "read_not_kept"),
                     ["key"] = cacheKey,
-                    ["means"] = "this reading was made now. A later page that names its analysis_fingerprint is cut from it " +
-                                "while no document changes (10 minutes at most)."
+                    ["sources_checked"] = true,
+                    ["contract"] = mustBeCurrent ? "current_sources" : "read_now",
+                    ["means"] = "this reading was made now, from the drawing: the CAD instance's file was hashed and the " +
+                                "text reader checked its own dependencies. " +
+                                (mustBeCurrent
+                                    ? "require_current_sources was declared, so it was neither taken from a snapshot nor kept as one."
+                                    : "A later page that names its analysis_fingerprint CONTINUES this snapshot without re-reading " +
+                                      "anything (10 minutes at most, and any document change drops it).")
                 };
             }
 

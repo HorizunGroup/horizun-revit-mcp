@@ -198,14 +198,18 @@ namespace Horizun.Core.Tests
             ring.Add(new CadSegment(new CadPoint(2000, 0), new CadPoint(7000, 0), "M-DUCT"));
             CadRequirementSet set = Set(Good.Replace('\'', '"'));
             var ducts = CadInterpretationRules.Interpret(ring, set, "h").Candidates.Where(c => c.ProposedKind == "duct").ToList();
-            Assert.Single(ducts);                                   // the open line only
+            // NOTHING crosses this loop, so it is not read as a figure and not built either: its four edges are
+            // proposed and HELD, and only the open line is a run a conversion would build (CadRingsTests).
+            Assert.Single(ducts.Where(c => c.EligibleForAutomaticApply));
+            Assert.Equal(4, ducts.Count(c => !c.EligibleForAutomaticApply));
             CadRequirementSet include = CadRequirementSet.Load(JObject.Parse((@"{ 'schema': 'horizun.cad-requirements/1',
               'requirement_set': { 'id': 's', 'version': '1.0.0', 'title': 't' }, 'source': { 'units': 'millimeter' },
               'tolerances': { 'point_mm': 25.4, 'gap_mm': 25.4, 'angle_degrees': 2.0, 'arc_sagitta_mm': 5.0 },
               'rules': [ { 'id': 'd', 'precedence': 10, 'layers': ['M-DUCT'], 'produces': 'duct', 'family_type': 'Rectangular Duct: X',
                  'system_type': 'Supply Air', 'level': 'Level 1', 'offset_mm': 2743.2,
                  'geometry': { 'from': 'single_lines', 'merge_collinear': false, 'include_closed_polylines': true } } ] }").Replace('\'', '"')));
-            Assert.Equal(5, CadInterpretationRules.Interpret(ring, include, "h").Candidates.Count(c => c.ProposedKind == "duct"));
+            Assert.Equal(5, CadInterpretationRules.Interpret(ring, include, "h").Candidates
+                .Count(c => c.ProposedKind == "duct" && c.EligibleForAutomaticApply));
         }
 
         [Fact]

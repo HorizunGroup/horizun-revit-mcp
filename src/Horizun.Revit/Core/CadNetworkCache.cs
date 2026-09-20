@@ -48,14 +48,27 @@ namespace Horizun.Revit.Core
             }
         }
 
-        /// <summary>What a reply served from an earlier analysis says about itself.</summary>
-        public static JObject HitBlock(string key) => new JObject
+        /// <summary>
+        /// What a reply served from an earlier analysis says about itself. THE CONTRACT IS ONE OF TWO, never a
+        /// mixture: a page that names a fingerprint CONTINUES THAT SNAPSHOT, and a page that does not is read from
+        /// the sources. Continuing says so - sources_checked is false and it names when the snapshot was taken -
+        /// because the only files this cache watches are the model (any change drops every snapshot) and the CAD
+        /// instance's own file; an external reference edited on disk under an unchanged host is NOT seen by it.
+        /// A caller that needs the sources re-read asks for it: require_current_sources, or simply no fingerprint.
+        /// </summary>
+        public static JObject HitBlock(string key, string takenUtc) => new JObject
         {
-            ["state"] = "hit",
+            ["state"] = "continued_snapshot",
             ["key"] = key,
-            ["means"] = "this page was cut from the analysis whose fingerprint the request named - the same reading, not " +
-                        "a new one. A model change of any kind drops it; a page without expect_analysis_fingerprint is " +
-                        "always read afresh."
+            ["snapshot_taken_utc"] = takenUtc,
+            ["sources_checked"] = false,
+            ["contract"] = "continue_the_named_snapshot",
+            ["means"] = "this page was CUT FROM the analysis whose fingerprint the request named, so the pages fit " +
+                        "together. Nothing was re-read for it: no file was hashed and no external reference was " +
+                        "checked. Any change to any document drops the snapshot, as does a change to the CAD " +
+                        "instance's own file; an xref edited on disk while the host and the model stay as they are " +
+                        "does not. Ask without expect_analysis_fingerprint - or with require_current_sources true - " +
+                        "and the drawing is read again."
         };
     }
 }
