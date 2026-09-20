@@ -1840,6 +1840,8 @@ namespace Horizun.Contracts
       }, ""additionalProperties"": false } },
     ""refit"": { ""type"": ""array"",
       ""description"": ""Instead of junctions: fittings to rebuild at a new section. Each {fitting_id, runs: [every run the fitting joins], width_mm, height_mm}. The fitting is deleted, the runs resized and a fitting of the same kind placed between them - each step by its typed command - inside one group kept only when the new fitting joins every run at the new section and every other connection is unchanged; otherwise rolled back, naming the step."" },
+    ""transition_types"": { ""type"": ""array"", ""maxItems"": 12, ""items"": { ""type"": [""string"", ""integer""] },
+      ""description"": ""Declared duct-fitting types to TRY on a drawn transition, in order, when the one Revit's routing preference builds does not fill the drawn piece. Each is applied to the fitting and MEASURED against the drawing; the first whose ends land within transition_fit_tolerance_mm is kept, every attempt is reported with the length it produced, and a name that names no loaded type is reported with the loaded ones rather than substituted. Nothing is invented: the types are the caller's."" },
     ""transition_fit_tolerance_mm"": { ""type"": ""number"", ""default"": 25.4, ""minimum"": 0.001,
       ""description"": ""How far a drawn transition's built ends may sit from the drawn piece's ends. Beyond it the fitting is undone and reported with its length and offsets - the network is never moved to make it fit."" },
     ""connector_tolerance_mm"": { ""type"": ""number"", ""default"": 25.0, ""minimum"": 0.001,

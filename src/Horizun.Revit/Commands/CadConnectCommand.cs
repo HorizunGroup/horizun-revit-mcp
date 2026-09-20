@@ -95,6 +95,11 @@ namespace Horizun.Revit.Commands
             double tolerance = request.Value<double?>("connector_tolerance_mm") ?? 25.0;
             // how far a drawn transition's ends may sit from where the drawing put them (mm)
             double fitTolerance = request.Value<double?>("transition_fit_tolerance_mm") ?? 25.4;
+            // THE TRANSITION TYPES THE CALLER DECLARES, in order. Revit builds a drawn transition with whatever its
+            // routing preference says - one family, one angle, one length - and a drawn piece is usually longer than
+            // that. Each declared type is TRIED on the fitting and MEASURED against the drawing; the first that fits
+            // is kept. Nothing is invented: the types are the caller's, and a type that does not fit is not used.
+            JArray declaredTypes = request["transition_types"] as JArray;
             if (tolerance <= 0)
                 return CommandResult.Fail(
                     "connector_tolerance_mm must be positive: it is how far a connector may sit from the point " +
@@ -288,6 +293,7 @@ namespace Horizun.Revit.Commands
                 if (j.Fitting == "transition" && j.Drawn != null && writeNow)
                 {
                     JObject trow;
+                    JObject membersBefore = MemberEnds(j);
                     using (var checkedGroup = new CheckedWriteGroup(doc, "Horizun: drawn transition"))
                     {
                         // A FITTING JOINS CONNECTORS THAT MEET. The drawn piece leaves its two runs one piece
@@ -306,7 +312,19 @@ namespace Horizun.Revit.Commands
                         if (ts == "created" || ts == "would_create")
                         {
                             JObject check = TransitionCheck(j, trow, fitTolerance);
+                            if (!check.Value<bool>("fits") && declaredTypes != null && declaredTypes.Count > 0)
+                            {
+                                JArray tried;
+                                JObject better = FitByDeclaredType(doc, j, trow, declaredTypes, fitTolerance, out tried);
+                                trow["transition_types_tried"] = tried;
+                                if (better != null)
+                                {
+                                    check = better;
+                                    check["length_taken_from"] = "a declared transition type whose fitting fills the drawn piece";
+                                }
+                            }
                             trow["transition_check"] = check;
+                            trow["members_after"] = MemberEnds(j);
                             if (check.Value<bool>("fits")) checkedGroup.Keep();
                             else
                             {
@@ -320,6 +338,8 @@ namespace Horizun.Revit.Commands
                         else checkedGroup.Undo();
                     }
                     trow["transition_origin"] = "drawn";
+                    trow["members_before"] = membersBefore;
+                    trow["members_moved_mm"] = MemberMovement(membersBefore, trow["members_after"] as JObject);
                     trow["drawn"] = j.Drawn;
                     rows.Add(trow);
                     string tstate = trow.Value<string>("state");
@@ -868,6 +888,189 @@ namespace Horizun.Revit.Commands
                                           " mm from where the drawing ends the " + j.Drawn["length_mm"] + " mm piece (tolerance " + fitTolerance + " mm); " : "") +
                   "it was undone rather than moving the network to make it fit";
             return o;
+        }
+
+        /// <summary>
+        /// From the fitting's own centre to the centre of the drawn piece, in feet: what would put a fitting of
+        /// this length where the drawing draws it. Null when the fitting does not have two readable connectors.
+        /// </summary>
+        private static XYZ CentringOffset(FamilyInstance fitting, Junction j)
+        {
+            var cs = fitting?.MEPModel?.ConnectorManager?.Connectors?.Cast<Connector>().ToList();
+            var from = j.Drawn?["from_mm"] as JArray;
+            var to = j.Drawn?["to_mm"] as JArray;
+            if (cs == null || cs.Count != 2 || from == null || to == null) return null;
+            XYZ mid = (cs[0].Origin + cs[1].Origin) / 2.0;
+            var drawn = new XYZ((from[0].Value<double>() + to[0].Value<double>()) / 2.0 / 304.8,
+                                (from[1].Value<double>() + to[1].Value<double>()) / 2.0 / 304.8,
+                                mid.Z);
+            return drawn - mid;
+        }
+
+        /// <summary>Where each member's curve ends are now, so what a fitting did to them can be MEASURED, not assumed.</summary>
+        private static JObject MemberEnds(Junction j)
+        {
+            var o = new JObject();
+            foreach (Element e in j.Elements)
+            {
+                var lc = e?.Location as LocationCurve;
+                if (lc?.Curve == null) continue;
+                XYZ a = lc.Curve.GetEndPoint(0), b = lc.Curve.GetEndPoint(1);
+                o[Rid.Value(e.Id).ToString(CultureInfo.InvariantCulture)] = new JArray(
+                    new JArray(Math.Round(a.X * 304.8, 2), Math.Round(a.Y * 304.8, 2), Math.Round(a.Z * 304.8, 2)),
+                    new JArray(Math.Round(b.X * 304.8, 2), Math.Round(b.Y * 304.8, 2), Math.Round(b.Z * 304.8, 2)));
+            }
+            return o;
+        }
+
+        /// <summary>How far each end of each member moved between two readings of it.</summary>
+        private static JObject MemberMovement(JObject before, JObject after)
+        {
+            var o = new JObject();
+            if (before == null || after == null) return o;
+            foreach (JProperty p in before.Properties())
+            {
+                var was = p.Value as JArray;
+                var now = after[p.Name] as JArray;
+                if (was == null || now == null) { o[p.Name] = "not_re_read"; continue; }
+                // ENDS ARE PAIRED BY PROXIMITY, not by index: Revit hands back a curve it rebuilt with its ends
+                // the other way round, and comparing index to index read a 124 mm trim as a 1318 mm move.
+                Func<int, int, double> gap = (i, k) =>
+                {
+                    var w = was[i] as JArray; var n = now[k] as JArray;
+                    return Math.Sqrt(Math.Pow(w[0].Value<double>() - n[0].Value<double>(), 2) +
+                                     Math.Pow(w[1].Value<double>() - n[1].Value<double>(), 2) +
+                                     Math.Pow(w[2].Value<double>() - n[2].Value<double>(), 2));
+                };
+                bool straight = gap(0, 0) + gap(1, 1) <= gap(0, 1) + gap(1, 0);
+                var moved = new JArray(Math.Round(straight ? gap(0, 0) : gap(0, 1), 2),
+                                       Math.Round(straight ? gap(1, 1) : gap(1, 0), 2));
+                o[p.Name] = moved;
+            }
+            return o;
+        }
+
+        /// <summary>
+        /// The declared transition types, tried in order ON the fitting Revit built and MEASURED against the drawing.
+        /// Returns the check of the first that fits, or null when none does; every attempt is reported with the
+        /// length it produced. A name that names no loaded type is reported as such - never substituted.
+        /// </summary>
+        private static JObject FitByDeclaredType(Document doc, Junction j, JObject trow, JArray declared,
+                                                 double fitTolerance, out JArray attempts)
+        {
+            attempts = new JArray();
+            JObject best = null;
+            FamilySymbol bestSymbol = null;
+            long? fid = (trow["reread"] as JObject)?.Value<long?>("fitting_id");
+            var fitting = fid.HasValue ? doc.GetElement(Rid.Make(fid.Value)) as FamilyInstance : null;
+            if (fitting == null)
+            {
+                attempts.Add(new JObject { ["means"] = "the fitting could not be re-read, so no declared type was tried" });
+                return null;
+            }
+            List<FamilySymbol> loaded = new FilteredElementCollector(doc).OfClass(typeof(FamilySymbol))
+                .Cast<FamilySymbol>().Where(s => s.Category != null &&
+                    (BuiltInCategory)(int)Rid.Value(s.Category.Id) == BuiltInCategory.OST_DuctFitting).ToList();
+            foreach (JToken t in declared)
+            {
+                string want = t.Type == JTokenType.Integer ? null : (t.ToString() ?? "").Trim();
+                long id = t.Type == JTokenType.Integer ? t.Value<long>() : -1;
+                FamilySymbol sym = loaded.FirstOrDefault(s =>
+                    (id >= 0 && Rid.Value(s.Id) == id) ||
+                    (want != null && (string.Equals(s.FamilyName + ": " + s.Name, want, StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(s.Name, want, StringComparison.OrdinalIgnoreCase))));
+                if (sym == null)
+                {
+                    attempts.Add(new JObject
+                    {
+                        ["declared"] = t.ToString(),
+                        ["resolved"] = false,
+                        ["means"] = "no duct-fitting type of this model is named that; " +
+                                    CadCatalogCheck.LoadedOfFamily(want ?? "(by id)",
+                                        loaded.Where(s => string.Equals(s.FamilyName, CadCatalogCheck.FamilyOf(want ?? ""), StringComparison.OrdinalIgnoreCase))
+                                              .Select(s => s.FamilyName + ": " + s.Name).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+                                        "duct fitting",
+                                        loaded.Select(s => s.FamilyName + ": " + s.Name).Distinct(StringComparer.Ordinal)
+                                              .OrderBy(x => x, StringComparer.Ordinal).Take(25).ToList())
+                    });
+                    continue;
+                }
+                string words = null;
+                double centred = 0;
+                try
+                {
+                    using (var tx = new Transaction(doc, "Horizun: declared transition type"))
+                    {
+                        tx.Start();
+                        if (!sym.IsActive) sym.Activate();
+                        fitting.ChangeTypeId(sym.Id);
+                        doc.Regenerate();
+                        // THE FITTING GOES WHERE THE DRAWING PUT THE PIECE. Both runs were brought to the drawn
+                        // midpoint so Revit could create it, so it grows from there and one end stays ON the
+                        // midpoint - 124 mm from the drawn end on M106, whatever its length. Centring it on the
+                        // drawn piece is not moving the network for convenience: it is the position the drawing
+                        // gives, the ducts follow, and every end is measured again below.
+                        XYZ delta = CentringOffset(fitting, j);
+                        if (delta != null && delta.GetLength() > 0.1 / 304.8)
+                        {
+                            ElementTransformUtils.MoveElement(doc, fitting.Id, delta);
+                            doc.Regenerate();
+                            centred = Math.Round(delta.GetLength() * 304.8, 2);
+                        }
+                        tx.Commit();
+                    }
+                }
+                catch (Exception ex) { words = ex.Message; }
+                JObject check = words == null ? TransitionCheck(j, trow, fitTolerance) : null;
+                attempts.Add(new JObject
+                {
+                    ["declared"] = t.ToString(),
+                    ["resolved"] = true,
+                    ["type"] = sym.FamilyName + ": " + sym.Name,
+                    ["type_id"] = Rid.Value(sym.Id),
+                    ["revit_said"] = words,
+                    ["centred_on_the_drawn_piece_mm"] = centred,
+                    ["fitting_length_mm"] = check?["fitting_length_mm"],
+                    ["worst_end_offset_mm"] = check?["worst_end_offset_mm"],
+                    ["sizes_match_members"] = check?["sizes_match_members"],
+                    ["fits"] = check?["fits"] ?? false
+                });
+                if (check != null && check.Value<bool>("fits") &&
+                    (best == null || check.Value<double>("worst_end_offset_mm") < best.Value<double>("worst_end_offset_mm")))
+                {
+                    best = check;
+                    bestSymbol = sym;
+                }
+            }
+            // THE BEST MEASURED FIT, not the first declared one: the order a caller writes its types in is not a
+            // fact about the drawing. The winner is applied again so the model ends as the reply says.
+            if (best != null && bestSymbol != null)
+            {
+                try
+                {
+                    using (var tx = new Transaction(doc, "Horizun: best declared transition type"))
+                    {
+                        tx.Start();
+                        fitting.ChangeTypeId(bestSymbol.Id);
+                        doc.Regenerate();
+                        XYZ delta = CentringOffset(fitting, j);
+                        if (delta != null && delta.GetLength() > 0.1 / 304.8)
+                        {
+                            ElementTransformUtils.MoveElement(doc, fitting.Id, delta);
+                            doc.Regenerate();
+                        }
+                        tx.Commit();
+                    }
+                    best = TransitionCheck(j, trow, fitTolerance);
+                    best["chosen_among"] = attempts.Count;
+                }
+                catch (Exception ex)
+                {
+                    attempts.Add(new JObject { ["re_applying_the_best"] = bestSymbol.Name, ["revit_said"] = ex.Message });
+                    return null;
+                }
+            }
+            return best != null && best.Value<bool>("fits") ? best : null;
         }
 
         private JObject DelegateDirect(UIApplication app, string title, Junction j,
