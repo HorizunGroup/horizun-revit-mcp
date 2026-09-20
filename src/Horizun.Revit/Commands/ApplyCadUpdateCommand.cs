@@ -492,7 +492,7 @@ namespace Horizun.Revit.Commands
                 // re-read". The operation was held against work IT had done, one layer down from the
                 // first time this happened. The tool name was never the right question: what matters is
                 // which of the elements this action acted on are GONE now.
-                var actedOn = new List<long>(TargetIds(args));
+                var actedOn = new List<long>(NamedElements(args));
                 var goneNow = new List<long>();
                 if (r.Success)
                     foreach (long id in actedOn.Distinct())
@@ -1085,6 +1085,33 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>The elements a transform aimed at: a set_curve re-shapes one that already exists.</summary>
+        /// <summary>
+        /// Every element id an action NAMES, whatever shape its arguments take.
+        ///
+        /// This is not TargetIds. TargetIds answers "which elements should be re-stamped", and a deleted
+        /// element must not be in that answer - which is why it never learned to read `ids`, the field a
+        /// delete uses. MEASURED twice, one layer apart: first the record keyed off the TOOL NAME and
+        /// missed a fittings release; then it read TargetIds and missed it again, because the release IS
+        /// horizun_delete_verified and its ids live in `ids`. Asking "what did this action name" is a
+        /// different question from "what should carry provenance", and it needed its own answer.
+        /// </summary>
+        private static IEnumerable<long> NamedElements(JObject args)
+        {
+            var seen = new HashSet<long>();
+            foreach (JToken t in args["ids"] as JArray ?? new JArray())
+            {
+                long v;
+                if (long.TryParse(t.ToString(), out v) && seen.Add(v)) yield return v;
+            }
+            foreach (JObject e in (args["elements"] as JArray ?? new JArray()).OfType<JObject>())
+            {
+                long v = e.Value<long?>("element_id") ?? -1;
+                if (v >= 0 && seen.Add(v)) yield return v;
+            }
+            foreach (long v in TargetIds(args))
+                if (seen.Add(v)) yield return v;
+        }
+
         private static IEnumerable<long> TargetIds(JObject args)
         {
             // A RESOLVED SECTION is written as parameters: the duct it resized is re-stamped too.
