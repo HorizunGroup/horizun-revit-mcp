@@ -534,6 +534,9 @@ namespace Horizun.Revit.Commands
                                   "compared with the path that was asked for.",
                 ["api_limits"] = ApiLimits()
             };
+            // A REPOINT IS A LOAD TOO - of a different file, which is exactly how a revision arrives. Without
+            // this the coherence of every plan after a repoint would read as unknown.
+            if (arrived) result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links repoint");
             if (!arrived)
                 result["disagreement"] = new JObject
                 {
