@@ -393,6 +393,12 @@ namespace Horizun.Revit.Commands
                                                               move != null && acceptMove, sourceSet);
             // WHAT A PERSON DECIDED about the changes held for them.
             List<string> decisionErrors = CadDecisions.Apply(update, decisions);
+
+            // AND ASK THE OCCUPANCY QUESTION AGAIN. A decision taken here can free the ground a
+            // create was held on - deciding the standing element away is exactly the answer the
+            // hold asks for - and a hold that outlived its reason leaves the revision short.
+            CadUpdateRules.HoldCreatesOnOccupiedGround(update, set, set.PointToleranceMm);
+
             if (decisionErrors.Count > 0)
                 return CommandResult.Fail("resolve_refused: " + string.Join("; ", decisionErrors) +
                                           ". Nothing was planned: a decision that cannot stand is not skipped.");

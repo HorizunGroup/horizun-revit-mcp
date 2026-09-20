@@ -64,6 +64,31 @@ namespace Horizun.Revit.Core
                              a.Evidence.Value<string>("paired_on")));
             }
 
+            // ---- a re-shape a fitting stands in the way of --------------------------
+            //
+            // Not a division, and it belongs here for the same reason: it is a change to a run whose
+            // ends are joined, the ids it costs are not the run's own, and a reader needs all of that
+            // in one row rather than reconstructed from evidence keys.
+            foreach (CadUpdateAction a in update.Actions)
+            {
+                var inTheWay = a.Evidence["fittings_in_the_way"] as JArray;
+                if (inTheWay == null || inTheWay.Count == 0) continue;
+                bool released = a.Evidence["fittings_released"] != null;
+                long id = a.ElementId ?? -1;
+                var row = Row(doc, update, subjectOf(id), "reshape", id,
+                              a.CandidateId == null ? new List<string>() : new List<string> { a.CandidateId },
+                              released, a.Evidence.Value<string>("held_because"));
+                row["fittings_affected"] = inTheWay;
+                row["id_substitutions"] = a.Evidence["id_substitutions"] ?? new JArray();
+                row["id_substitutions_mean"] = released
+                    ? "these fittings are deleted before the re-shape and rebuilt from the drawing by " +
+                      "horizun_cad_connect; the ids do not survive, which is what this lists."
+                    : "these fittings would have to be released for the re-shape to happen at all. Their ids " +
+                      "do not survive it, so the operation is held until a caller names them.";
+                row["removes"] = new JArray(inTheWay.OfType<JObject>().Select(x => x["element_id"]));
+                rows.Add(row);
+            }
+
             // ---- merges: the create is the origin of the description, and the
             //      elements it covers are the parts ---------------------------------
             foreach (CadUpdateAction a in update.Actions)

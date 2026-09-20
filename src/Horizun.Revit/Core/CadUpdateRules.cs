@@ -1627,11 +1627,33 @@ namespace Horizun.Revit.Core
         /// now? If there is, the create waits for a person - who can accept a pairing, decide the element
         /// away, or say the two really do belong side by side.
         /// </summary>
-        private static void HoldCreatesOnOccupiedGround(CadUpdate update, CadRequirementSet set, double tolerance)
+        public static void HoldCreatesOnOccupiedGround(CadUpdate update, CadRequirementSet set, double tolerance)
         {
             List<CadUpdateAction> standing = update.Of("orphan")
                 .Where(o => o.ElementId.HasValue && o.AsBuiltGeometry != null && o.AsBuiltGeometry.Count >= 2)
                 .ToList();
+
+            // GROUND THAT HAS SINCE BEEN FREED. A hold is not a verdict about the drawing; it is about
+            // what is standing in the model right now. When a person decides the element away - the
+            // decision this hold exists to ask for - the ground is free and the piece may be built.
+            // Measured on the fixture: without this the delete was carried out and the piece it was
+            // blocking stayed held, so the revision ended one run short with nothing left to decide.
+            foreach (CadUpdateAction create in update.Of("create").ToList())
+            {
+                long? on = create.Evidence.Value<long?>("stands_there");
+                if (!on.HasValue) continue;
+                if (standing.Any(o => o.ElementId == on.Value)) continue;
+                create.Evidence.Remove("stands_there");
+                create.Evidence.Remove("overlap_mm");
+                if (create.Evidence.Value<string>("held_because") == "occupied_by_a_standing_element")
+                    create.Evidence.Remove("held_because");
+                if (create.Evidence["may_be_element"] == null && create.Evidence["split_of"] == null)
+                {
+                    create.Automatic = true;
+                    create.Says += " The element that stood on this line is no longer standing: it was decided " +
+                                   "away in this same plan, so the ground is free and this piece is built.";
+                }
+            }
             if (standing.Count == 0) return;
             double reach = Math.Max(tolerance, 25.0);
             double angleLimit = Math.Max(set?.AngleToleranceDegrees ?? 2.0, 5.0);
