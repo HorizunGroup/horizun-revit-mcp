@@ -112,6 +112,23 @@ absence of Revit as evidence that the year's manifest was restored.
   model has a single loose end is invisible to it by construction; that is what the
   drawing-aware acceptance is for.
 
+### Also in this release — documentation and distribution metadata
+
+- Correct Claude Desktop's required in-app extension step and installed recovery
+  paths; align English, Spanish and agent instructions with Setup.
+- Separate stable, source and installed versions, historical benchmark scores and
+  release evidence. Document current protocol support without changing it.
+- Keep checked-in registry identity aligned with the product version. Publish the
+  existing extension as an additional release asset with verified metadata and
+  an explicit prerequisite: install the Windows product first.
+- Generate readable release notes and check publication documentation in CI.
+- Publish the complete bilingual tool catalog, named suboperations, the PDF-to-Revit
+  video and versioned live-test evidence directly in the README. Explain the
+  measured 70/79/80-tool permission profiles and the core-only subset.
+- Deduplicate repeated schema branches in the suboperation counter: 208 distinct
+  tool/selector/value choices replace 213 schema occurrences, with no tool removed.
+
+
 ## v1.3.3 — 2026-09-14
 
 **Claude Desktop is installed by the person using it, and Setup now hands the

@@ -113,6 +113,10 @@ jobs:
       - name: Test - contract drift, wire protocol, multi-instance discovery
         run: dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=server.trx" --results-directory artifacts/tests
 
+      - name: Validate release metadata on the registry platform
+        shell: pwsh
+        run: pwsh scripts/release-metadata.tests.ps1
+
       - name: Audit dependencies for known vulnerabilities
         # The audit includes the Revit project. It does not build Revit on this
         # Linux runner, but MSBuild must be allowed to evaluate its Windows TFM.
@@ -195,6 +199,8 @@ jobs:
             'scripts/scan-sensitive.tests.ps1'
             'scripts/server-update.tests.ps1'
             'scripts/public-consistency.tests.ps1'
+            'scripts/publication-docs.tests.ps1'
+            'scripts/release-metadata.tests.ps1'
             'scripts/python-permission.tests.ps1'
             'scripts/python-stdlib-audit.tests.ps1'
             'scripts/inventory.tests.ps1'
@@ -472,11 +478,17 @@ jobs:
           pwsh scripts/version-consistency.tests.ps1 -RequireStage -RequireInstaller
           if ($LASTEXITCODE -ne 0) { throw "final version consistency failed ($LASTEXITCODE)" }
 
+      - name: Export the verified extension and readable release metadata
+        shell: pwsh
+        run: pwsh scripts/prepare-release-metadata.ps1 -Dist dist
+
       - name: Generate exact checksums and package identity
         shell: pwsh
         run: |
           $setup = @(Get-ChildItem dist -Filter '*setup.exe' -File)
-          $releaseFiles = @($setup[0], (Get-Item dist/sbom.json),
+          $extension = @(Get-ChildItem dist -Filter '*.mcpb' -File)
+          if ($extension.Count -ne 1) { throw 'expected one exported extension' }
+          $releaseFiles = @($setup[0], $extension[0], (Get-Item dist/server.json), (Get-Item dist/sbom.json),
             (Get-Item dist/python-stdlib-audit.json), (Get-Item dist/python-stdlib-audit.sarif),
             (Get-Item dist/stage/manifest.json))
           $releaseFiles | ForEach-Object {
@@ -484,6 +496,7 @@ jobs:
           } | Out-File dist/SHA256SUMS.txt -Encoding ascii
           $files = @{
             installer = $setup[0].FullName; 'sbom.json' = 'dist/sbom.json'
+            extension = $extension[0].FullName; 'server.json' = 'dist/server.json'
             'manifest.json' = 'dist/stage/manifest.json'; 'stage.zip' = 'dist/stage.zip'
             'SHA256SUMS.txt' = 'dist/SHA256SUMS.txt'
           }
@@ -508,6 +521,8 @@ jobs:
         with:
           subject-path: |
             dist/*setup.exe
+            dist/*.mcpb
+            dist/server.json
             dist/stage/manifest.json
 
       - name: Attest final CycloneDX SBOM
@@ -523,6 +538,9 @@ jobs:
           name: horizun-mcp-package
           path: |
             dist/*setup.exe
+            dist/*.mcpb
+            dist/server.json
+            dist/release-notes.md
             dist/sbom.json
             dist/python-stdlib-audit.json
             dist/python-stdlib-audit.sarif
@@ -564,6 +582,12 @@ jobs:
             $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName
             if ($sig.Status -ne 'NotSigned') { throw "unexpected signature state $($sig.Status): $($file.FullName)" }
           }
+          $extension = @(Get-ChildItem dist -Filter '*.mcpb' -File)
+          if ($extension.Count -ne 1) { throw 'missing exported extension' }
+          pwsh scripts/generate-mcp-manifest.ps1 -OutFile dist/server.json -PackagePath $extension[0].FullName -RequirePackage -Check
+          if ($LASTEXITCODE -ne 0) { throw 'published extension metadata differs from its bytes' }
+          $stagedExtension = Join-Path 'dist/stage/server/integrations/claude-desktop' $extension[0].Name
+          if ((Get-FileHash $stagedExtension).Hash -ne (Get-FileHash $extension[0].FullName).Hash) { throw 'extension differs from the installed payload' }
           pwsh scripts/verify-release.ps1 -AllowUnsigned
           if ($LASTEXITCODE -ne 0) { throw "unsigned release-chain verification failed ($LASTEXITCODE)" }
 
@@ -836,9 +860,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(release/*setup.exe release/SHA256SUMS.txt release/sbom.json release/python-stdlib-audit.json release/python-stdlib-audit.sarif release/package-hashes.json release/stage/manifest.json release/live/live-*.json)
-          if [ "${#files[@]}" -ne 12 ]; then
-            printf 'Expected installer + 6 metadata files + 5 live reports; found %s\n' "${#files[@]}" >&2
+          files=(release/*setup.exe release/*.mcpb release/server.json release/SHA256SUMS.txt release/sbom.json release/python-stdlib-audit.json release/python-stdlib-audit.sarif release/package-hashes.json release/stage/manifest.json release/live/live-*.json)
+          if [ "${#files[@]}" -ne 14 ]; then
+            printf 'Expected installer + extension + 7 metadata files + 5 live reports; found %s\n' "${#files[@]}" >&2
             printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
@@ -851,9 +875,9 @@ jobs:
               exit 1
             fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false
+            gh release edit "$GITHUB_REF_NAME" --latest --prerelease=false --draft=false --notes-file release/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --notes-file release/release-notes.md --latest --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
           actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
           if [ "$actual" != "$expected" ]; then
@@ -883,9 +907,9 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(release/*setup.exe release/SHA256SUMS.txt release/sbom.json release/python-stdlib-audit.json release/python-stdlib-audit.sarif release/package-hashes.json release/stage/manifest.json)
-          if [ "${#files[@]}" -ne 7 ]; then
-            printf 'Expected preview installer + 6 metadata files; found %s\n' "${#files[@]}" >&2
+          files=(release/*setup.exe release/*.mcpb release/server.json release/SHA256SUMS.txt release/sbom.json release/python-stdlib-audit.json release/python-stdlib-audit.sarif release/package-hashes.json release/stage/manifest.json)
+          if [ "${#files[@]}" -ne 9 ]; then
+            printf 'Expected preview installer + extension + 7 metadata files; found %s\n' "${#files[@]}" >&2
             exit 1
           fi
           expected=$(printf '%s\n' "${files[@]##*/}" | sort)
@@ -897,9 +921,9 @@ jobs:
               exit 1
             fi
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --prerelease --latest=false --draft=false
+            gh release edit "$GITHUB_REF_NAME" --prerelease --latest=false --draft=false --notes-file release/release-notes.md
           else
-            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --generate-notes --prerelease --title "Horizun Revit MCP $GITHUB_REF_NAME"
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --verify-tag --notes-file release/release-notes.md --prerelease --title "Horizun Revit MCP $GITHUB_REF_NAME"
           fi
           actual=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' | sort)
           if [ "$actual" != "$expected" ]; then
@@ -940,7 +964,7 @@ jobs:
 
   publish-mcp-registry:
     if: startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') && github.repository == 'HorizunGroup/horizun-revit-mcp'
-    needs: publish-stable-release
+    needs: [publish-stable-release, package]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -950,9 +974,21 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Generate registry metadata from the canonical version
+      - name: Download the published metadata and extension from this run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
+          path: registry-package
+          merge-multiple: true
+
+      - name: Verify registry metadata against the exact published extension
         shell: pwsh
-        run: pwsh scripts/generate-mcp-manifest.ps1 -OutFile .mcp/server.json
+        run: |
+          $extension = @(Get-ChildItem registry-package -Filter '*.mcpb' -File)
+          if ($extension.Count -ne 1) { throw 'expected one published extension' }
+          pwsh scripts/generate-mcp-manifest.ps1 -OutFile registry-package/server.json -PackagePath $extension[0].FullName -RequirePackage -Check
+          if ($LASTEXITCODE -ne 0) { throw 'registry metadata does not match the release' }
+          Copy-Item registry-package/server.json .mcp/server.json -Force
 
       - name: Install the pinned official MCP publisher
         shell: bash

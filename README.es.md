@@ -1,476 +1,488 @@
-# Horizun Revit MCP — un servidor MCP para Autodesk Revit
+# Horizun Revit MCP — modela, documenta, coordina y entrega en Revit
+
+**Hecho en Colombia 🇨🇴 por Horizun Group.**
+
+Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
+abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
+**80 herramientas** <!--inventory:tools--> con **208 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
+CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
+
+Trabaja con objetivos en lenguaje natural desde tu cliente MCP para crear
+contenido BIM nuevo, consultar modelos y ejecutar flujos de producción de varios
+pasos. Los cambios tipados incluyen ensayo, objetivos explícitos y verificación
+posterior al commit; Python habilitado por el propietario amplía el puente a
+automatizaciones específicas de la API de Revit. El instalador de Windows incluye
+el runtime del servidor y los add-ins.
 
 **[English](README.md)** · **Español**
 
-**[Descargar el instalador de Windows](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** — instalador público de Windows con el servidor y los add-ins de Revit incluidos. **No hace falta Git, Visual Studio ni el SDK de .NET.** Requiere Windows x64 y Revit 2023–2027; cierra Revit antes de instalar. [Preguntas frecuentes de descarga e instalación](docs/INSTALL.md). Las versiones públicas van sin firmar; mira las [instrucciones de verificación y primer arranque](#instalar).
+[![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#instalar) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE) [![GitHub stars](https://img.shields.io/github/stars/HorizunGroup/horizun-revit-mcp?label=GitHub%20stars)](https://github.com/HorizunGroup/horizun-revit-mcp/stargazers)
 
-[![ci](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/ci.yml?branch=main&label=ci&logo=githubactions&logoColor=white)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/ci.yml) [![codeql](https://img.shields.io/github/actions/workflow/status/HorizunGroup/horizun-revit-mcp/codeql.yml?branch=main&label=codeql&logo=github)](https://github.com/HorizunGroup/horizun-revit-mcp/actions/workflows/codeql.yml) [![release](https://img.shields.io/github/v/release/HorizunGroup/horizun-revit-mcp?label=release&color=0696D7)](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest) [![Revit 2023–2027](https://img.shields.io/badge/Revit-2023%E2%80%932027-0696D7)](#instalar) [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.HorizunGroup%2Fhorizun--revit--mcp-6E56CF)](https://registry.modelcontextprotocol.io/) [![license Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+**[Descargar](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)** ·
+**[Ver demostración](https://www.youtube.com/watch?v=tlFs5p3EM4M)** ·
+[Instalar con Claude Desktop Free](#video-de-instalación-claude-desktop-free) ·
+[Todas las herramientas](#catálogo-completo-de-herramientas) ·
+[Suboperaciones](#suboperaciones-y-modos) · [Pruebas](#probado-en-revit-evidencia-publicada) · [Instalar](#instalar)
 
-**Hecho en Colombia 🇨🇴 — ingeniería desde Latinoamérica, para equipos AEC de cualquier parte.**
+## El producto en cifras
 
-Apunta Claude —o Codex, Cursor, Cline, Windsurf, cualquier cliente MCP— a un
-Autodesk Revit abierto y deja que lea y escriba el modelo, bajo un solo contrato:
+| Superficie | Qué ofrece | Dónde comprobarlo |
+|---|---|---|
+| Entradas MCP | **80 herramientas** <!--inventory:tools-->, incluidas **32 de solo lectura** <!--inventory:reads--> y **48 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Acciones internas | **208 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
+| Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
+| Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
+| Formatos de exportación | PDF, DWG, IFC, NWC, FBX, imágenes y CSV de tablas | `horizun_export` |
+| Ejemplo de release verificada | 1.230 ejecuciones de pruebas aprobadas entre cinco años de Revit en **v1.3.3** | [Informes publicados](#probado-en-revit-evidencia-publicada) |
+| Instalación | Setup de Windows con runtime incluido; sin Git, Visual Studio ni SDK de .NET para el usuario | [Pasos finales por cliente](docs/CLIENTS.md) |
 
-> **Ningún comando reporta trabajo que no verificó.**
+Los recuentos describen la superficie completa del producto. El perfil de
+permisos y los paquetes elegidos determinan qué herramientas anuncia una sesión;
+más abajo se explican los perfiles medidos de 70, 79 y 80 herramientas.
 
-Toda escritura tipada se relee del modelo después del commit, así que un
-rollback silencioso sale como error en vez de como un éxito falso, y los conteos
-salen de releer el modelo y no de llamadas que no lanzaron excepción. **Libre y
-de código abierto, Apache-2.0.** Parte del ecosistema
-[Horizun Hub](https://horizunhub.com).
+## Demostración: de un PDF de planos a un modelo Revit
 
-**Qué es esto.** El puente: transporte, guardas de seguridad y una superficie
-genérica de herramientas sobre la API de Revit, para Revit 2023 a 2027. Neutral
-por diseño: no lleva dentro los estándares, catálogos ni reglas de nomenclatura
-de ninguna organización; donde un comando necesita uno, entra como dato en la
-llamada.
+[![Ver la demostración de Horizun: de planos PDF a un modelo Revit con IA](https://i.ytimg.com/vi/tlFs5p3EM4M/hqdefault.jpg)](https://www.youtube.com/watch?v=tlFs5p3EM4M)
 
-**Qué no es.** Una metodología. Los estándares, los criterios de auditoría y los
-reportes que convierten estos comandos en flujos de entrega viven en
-[Horizun Hub](https://horizunhub.com). Este repositorio es el enchufe; el Hub es
-lo que se conecta a él.
+**[Planos PDF → modelo Revit con IA — ver en YouTube](https://www.youtube.com/watch?v=tlFs5p3EM4M)**
+es una demostración publicada en español por el canal Horizun Hub. Presenta un
+flujo de PDF a Revit dirigido por un cliente de IA. La interpretación del PDF
+corresponde al cliente/modelo; Horizun aporta las operaciones ejecutadas en
+Revit. El flujo tipado DWG descrito más abajo consulta geometría CAD y reglas
+versionadas.
 
-Para una explicación de producto pensada para equipos BIM y para quien decide,
-mira **[Horizun Revit MCP — Product overview](docs/PRODUCT-OVERVIEW.md)** (en
-inglés).
+## Qué puedes crear y entregar
 
-## Modo Producción BIM
+### Modelado arquitectónico, estructural y MEP
 
-Horizun Revit MCP es además una superficie práctica de producción BIM: una forma
-auditable de inspeccionar, preparar y cambiar un modelo real de Revit. Empieza
-por un flujo de trabajo, no por el nombre de una herramienta. Cada flujo declara
-su alcance, si escribe, el nivel de permiso que necesita y la evidencia que
-devuelve.
+`horizun_create_elements` admite lotes con dependencias de niveles, ejes, muros,
+suelos, cielos, cubiertas, habitaciones, instancias de familia, vigas y columnas,
+sistemas de vigas, cimentaciones de muro, conductos, tuberías, conduit,
+bandejas, accesorios, sistemas MEP, aperturas, huecos verticales, separadores de
+habitación, muros por perfil, conjuntos de desplazamiento y escaleras soportadas.
 
-- **[Empezar en cinco pasos](docs/QUICK-START-BIM.md)** — conectar un modelo y
-  correr una primera auditoría de solo lectura.
-- **[¿Qué puede hacer Horizun hoy?](docs/WHAT-CAN-HORIZUN-DO.md)** —
-  capacidades, permisos y evidencia por tarea BIM.
-- **[Flujos de producción](docs/WORKFLOWS.md)** — prompts listos para copiar,
-  para modelo, planos, familias, cuartos, cantidades y trabajo de DWG a BIM.
-- **[BIM Standards Pack](standards/README.md)** — perfiles base opcionales,
-  genéricos y editables. Son datos, no reglas incrustadas en el add-in.
-- **[Código abierto y Horizun Hub](docs/HORIZUN-HUB.md)** — qué es capacidad
-  pública y genérica del puente, y qué pertenece a flujos de entrega gobernados.
+El desglose lista las 26 clases de creación y cinco opciones de accesorios MEP.
+`horizun_transform_elements` permite mover, copiar, rotar, gestionar uniones de
+muros, cambiar tipos/curvas y ajustar etiquetas. `horizun_manage_system_types`
+gestiona estructuras de capas de materiales y preferencias de unión MEP.
+Los planificadores estructural y MEP generan peticiones para esos mismos creadores.
 
-El puente sigue siendo neutral: un pack que se suministra es un punto de
-partida, no la afirmación de que todo proyecto deba usar la misma nomenclatura,
-los mismos límites o los mismos parámetros. Las reglas de proyecto y de empresa
-hay que revisarlas, versionarlas y suministrarlas explícitamente.
+### Familias paramétricas nuevas con conectores MEP
 
-![Flujo de Producción BIM: identificar el modelo, auditar, ensayar, aplicar un cambio tipado verificado y conservar evidencia](docs/assets/bim-production-workflow.es.svg)
+`horizun_create_family` crea un `.rfa` nuevo desde una plantilla `.rft` instalada:
+parámetros, fórmulas, tipos, sólidos/vacíos por extrusión, mezcla, revolución,
+barrido y mezcla barrida; planos de referencia y cotas etiquetadas; familias
+anidadas soportadas; y conectores de tubería, conducto, electricidad, conduit o
+bandeja. Verifica el guardado y la carga opcional al proyecto.
+`horizun_family_apply` modifica datos de familias existentes controlando que su
+geometría no cambie. [Ejemplos RFA y alcance de plantillas](docs/FAMILY-AUTHORING.md).
 
-## Qué le puedes pedir
+### Planos, anotación automática y producción de láminas
 
-Lenguaje corriente a la izquierda; lo que el puente hace de verdad a la derecha.
-Nada de esto está guionizado de antemano: las herramientas las elige el cliente.
+Crea plantas arquitectónicas/de cielos/estructurales/de áreas, secciones,
+elevaciones, llamadas, vistas de dibujo y 3D. Gestiona plantillas, fases,
+recortes, rangos y cajas de referencia; crea, duplica y llena láminas; coloca
+tablas y alinea ventanas gráficas. Anota textos, etiquetas, cotas lineales,
+angulares, radiales, diametrales o de arco y cotas de elevación, coordenadas o
+pendiente.
 
-| Le pides | Qué pasa |
-| --- | --- |
-| *«¿Con qué Revit estás hablando y qué documento está abierto?»* | `horizun_health` responde con el año y el build de Revit, la versión y el commit del add-in, y el documento activo — o un «ninguno está activo» explícito, nunca un título en blanco. |
-| *«¿Cuántos muros hay en el Nivel 2, con tipo y área, incluyendo los vínculos?»* | `horizun_query_model` recorre el anfitrión y cada vínculo cargado, proyecta los parámetros que nombraste, y reporta la cobertura más de qué vínculo salió cada fila. Los vínculos descargados se listan, no se omiten en silencio. |
-| *«Pon el keynote de estos 40 tipos en D021-A2-A14.»* | `horizun_set_keynote` primero reporta el radio de impacto —a cuántas instancias afecta ese cambio de tipo—, luego escribe, luego relee todas. |
-| *«Agrega el Nivel 3 a 7,20 m, un plano de planta para él, y ponlo en una hoja nueva.»* | `horizun_create_elements` y `horizun_manage_views` se componen en un solo grupo de transacción ordenado; un fallo en cualquier punto revierte el grafo entero. |
-| *«Divide estos muros multicapa en un muro por capa de material.»* | `horizun_split_multilayer_walls` rehospeda puertas y ventanas en la capa estructural — y **rechaza los muros curvos en vez de enderezarlos**. |
-| *«Exporta las plantas a PDF y el modelo a IFC.»* | `horizun_export` hace primero un ensayo y después atribuye únicamente los archivos cambiados, no vacíos, que corresponden a lo que pediste. |
-| *«Créame un RFA paramétrico a partir de este perfil.»* | `horizun_create_family` compila una familia cargable desde un RFT —parámetros, fórmulas, tipos, planos de referencia, cotas, sólidos y vacíos— y luego verifica tanto el archivo como la familia cargada en el proyecto. |
-| *«Haz X — y no hay herramienta para X.»* | La llamada tipada fallida devuelve `fallback.allowed: true` solo cuando no se escribió nada. El cliente escribe entonces el Python de Revit mínimo para `horizun_execute_python`, cuyos resultados se etiquetan **autorreportados, nunca verificados por el host**. |
+Planea cotas y etiquetas con criterios explícitos, consulta referencias
+geométricas, crea detalles 2D, audita planimetría, corrige hallazgos y distribuye
+zonas de láminas. `horizun_plan_views` y el prompt `deliverable-production`
+coordinan etapas de entrega y estados de aprobación.
+[Flujos de planos](docs/PLANIMETRY-PRODUCTION.md).
 
-El noventa por ciento del diseño está en el «no». Una losa cuyas familias
-hospedadas no se pueden reponer revierte sola; un conteo de interferencias en
-cero es un cero del que te puedes fiar; una petición ambigua se rechaza con un
-motivo en vez de resolverse adivinando.
+### DWG a BIM con seguimiento de revisiones
 
-```jsonc
-// horizun_health, abreviado
-{
-  "status": "healthy",
-  "horizun_version": "1.0.0",
-  "horizun_commit": "ced1aa1",
-  "built_from_clean_tree": true,
-  "revit_version": "2026",
-  "revit_build": "20250406_1515(x64)",
-  "no_active_document": false,
-  "active_document": { "title": "TORRE-A-EST.rvt", "is_workshared": true },
-  "open_document_count": 3
-}
-```
+Consulta instancias DWG, capas y curvas. Proporciona un conjunto versionado de
+requisitos para convertir el contenido del dibujo en un plan BIM ordenado.
+Ensaya y aplica el plan con herramientas tipadas, registrando huellas del origen
+y procedencia en los elementos creados. Audita el modelo contra el dibujo;
+planea y aplica revisiones posteriores del DWG identificando los cambios
+manuales del modelo que requieren revisión.
+Son siete herramientas CAD dedicadas, listadas individualmente más abajo.
+[Ejemplos DWG a BIM](docs/DWG-TO-BIM.md).
+
+### Auditoría, coordinación, cantidades e intercambio de datos
+
+Consulta anfitrión y vínculos cargados por categoría, familia/tipo, nivel,
+parámetros y límites espaciales. Diagnostica salud del modelo, audita requisitos
+proporcionados y corrige parámetros con verificación. Coordina interferencias
+con hallazgos persistentes, asignaciones, decisiones y resolución medida en el
+modelo. Planea refuerzo, aplica las peticiones soportadas y audita el resultado.
+
+Obtén cómputos de materiales, compáralos con una base presupuestal Excel,
+lee o añade filas XLSX sin Excel/COM, envía datos aprobados a Power BI y exporta
+entregables verificados. [Cantidades](docs/QUANTITIES-AND-BUDGET.md),
+[Power BI](docs/POWER-BI.md), [primera auditoría](docs/QUICK-START-BIM.md).
+
+### Transformaciones especializadas y terreno
+
+Separa capas de muros o losas, divide suelos por bucles, rectangulariza geometría
+de muros soportada, desagrupa conservando el origen y reagrupa por parámetro.
+Transfiere elevaciones entre losas, integra suelos en sólidos topográficos y
+conforma terreno con líneas de quiebre y taludes definidos. La descomposición de
+muros conserva la identidad del muro del núcleo y sus elementos hospedados.
+Las recetas incluidas usan Python distribuido para geometría bajo control del
+host para ensayo, transacciones y sus comprobaciones declaradas; el Python
+arbitrario generado por el cliente tiene un contrato de permisos/evidencia aparte.
 
 ## Instalar
 
-Windows, al menos un Revit 2023–2027, y **Revit cerrado**. Todo lo demás lo
-comprueba el instalador por ti, y no cambia nada cuando se niega.
+**[Descargar el instalador de Windows](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest)**
 
-### 1 · Consigue el instalador y verifícalo
+- Requiere **Windows x64, Revit 2023–2027 y un cliente MCP**.
+- Setup incluye el runtime del servidor y los add-ins de Revit.
+  **No necesitas Git, Visual Studio ni el SDK de .NET.**
+- Cierra Revit antes de instalar.
+- Las releases públicas **no tienen firma de editor**. El SHA-256 verifica los
+  bytes descargados; no autentica al editor de Windows. Windows y Revit pueden
+  mostrar un aviso. Consulta la [política de firma](CODE-SIGNING-POLICY.md).
 
-Descarga `horizun-mcp-<versión>-setup.exe` y `SHA256SUMS.txt` de la
-[última versión](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest),
-y comprueba el hash antes de ejecutar nada:
+1. Abre la release del enlace y descarga `horizun-mcp-<version>-setup.exe` y
+   `SHA256SUMS.txt` desde **Assets**. El ZIP de código fuente es para desarrollo.
+2. Comprueba el hash con la [guía de instalación](docs/INSTALL.md) y ejecuta Setup.
+3. Completa la conexión de tu cliente:
 
-```powershell
-Get-FileHash .\horizun-mcp-<versión>-setup.exe -Algorithm SHA256
-Select-String -Path .\SHA256SUMS.txt -Pattern 'setup.exe'
-```
+| Cliente | Paso final de conexión |
+|---|---|
+| **Codex / Claude Code** | Deja que el asistente registre el MCP cuando cierres el cliente; después vuelve a abrirlo. |
+| **Claude Desktop** | Instala el `.mcpb` entregado en **Documentos\Horizun-Revit-MCP** desde **Settings → Extensions** y reinicia Claude Desktop. |
+| **ChatGPT Work** | Completa la configuración de Secure MCP Tunnel para el servidor instalado. |
+| **Otros clientes stdio** | Registra el ejecutable instalado mediante su ruta completa. |
 
-Toda versión instalable lleva un `manifest.json` de su contenido,
-`package-hashes.json` y un [SBOM](https://cyclonedx.org/). Las versiones
-estables llevan además un informe de verificación en vivo por cada año de Revit
-soportado.
+4. Abre Revit y un documento, y pide al cliente que llame a `horizun_health`.
+   Confirma el documento activo y la versión cargada.
 
-> **Lee esto antes de ejecutarlo.** Las versiones de Windows de Horizun van
-> **sin firmar a propósito**. El SHA-256, el manifiesto del contenido, el SBOM y
-> la atestación de procedencia verifican los bytes publicados; no autentican a
-> un editor de Windows. Por eso el arranque exige el reconocimiento explícito
-> `-AllowUnsigned` que se ve abajo, y Windows o Revit pueden mostrar un aviso de
-> editor desconocido. Los artefactos públicos inválidos o autofirmados se
-> rechazan. Mira la [política de versiones sin firmar](CODE-SIGNING-POLICY.md).
+**Claude Desktop requiere instalar la extensión dentro de la aplicación.** Setup
+entrega el paquete y las instrucciones ilustradas en la carpeta de Documentos.
+Arrastra el archivo a Extensions o usa **Advanced settings → Install extension**.
+La extensión conecta con el servidor instalado; no sustituye a Setup.
+Consulta las [instrucciones por cliente y recuperación](docs/CLIENTS.md).
 
-Si prefieres que el script haga esas mismas comprobaciones, una sola línea
-verifica el SHA-256 completo contra esa misma versión de GitHub, instala en
-silencio y termina el registro de clientes:
+### Video de instalación: Claude Desktop Free
+
+[![Instalar Horizun Revit MCP con Claude Desktop Free](https://i.ytimg.com/vi/3kp-we7MIvk/hqdefault.jpg)](https://www.youtube.com/watch?v=3kp-we7MIvk)
+
+**[Conectar Revit con Claude Desktop Free — ver tutorial de instalación](https://www.youtube.com/watch?v=3kp-we7MIvk)**
+es una guía en español publicada por Horizun Hub para instalar y conectar
+Horizun Revit MCP con el plan gratuito de Claude Desktop. Sigue los pasos de
+Setup y del `.mcpb` indicados arriba; la [guía del cliente](docs/CLIENTS.md#claude-desktop)
+incluye las instrucciones escritas.
+
+### Bootstrap opcional de PowerShell
+
+Descarga el instalador publicado, comprueba su hash y ejecuta Setup en silencio.
+`-AllowUnsigned` reconoce la ausencia de firma indicada arriba. Los pasos finales
+por cliente siguen siendo necesarios; usa `-Interactive` para ver el asistente.
 
 ```powershell
 $s = irm https://raw.githubusercontent.com/HorizunGroup/horizun-revit-mcp/main/install-release.ps1; & ([scriptblock]::Create($s)) -AllowUnsigned
 ```
 
-Descárgalo primero y pasa `-Version <tag>` para fijar una versión, o
-`-Interactive` para el asistente. Silencioso, última versión y finalización
-automática de clientes son los valores por defecto.
+El script se descarga de `main`; su verificación de hash corresponde al Setup
+descargado. Puedes descargar y revisar el script antes de ejecutarlo.
+[Opciones de instalación](docs/INSTALL.md).
 
-### 2 · Deja que configure tu cliente MCP
+## Catálogo completo de herramientas
 
-El mismo instalador sirve a todos los clientes soportados, y todos ejecutan el
-mismo `horizun-mcp.exe` instalado:
+Aquí aparece cada herramienta MCP, agrupada por el trabajo que realiza. Estos
+grupos facilitan la lectura; los **paquetes de sesión** configurables están
+implementados en [ToolPacks.cs](src/Horizun.Revit/Core/ToolPacks.cs). Las
+descripciones se mantienen en el [catálogo bilingüe](docs/readme-catalog.json);
+los recuentos y los nombres se comprueban contra el
+[inventario generado por el servidor](docs/inventory.json).
+La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 
-| Cliente | Qué hace el instalador | Último paso |
+<!-- BEGIN TOOL CATALOG -->
+### Conexión, documentos y trabajos en segundo plano
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_health` | Consultar estado del puente, documento activo, año de Revit, versión y commit cargados. |
+| `horizun_target` | Seleccionar la instancia de Revit cuando hay varias sesiones o versiones abiertas. |
+| `get_document_info` | Consultar identidad y cantidades de elementos del documento abierto. |
+| `horizun_document_session` | Inspeccionar, abrir, guardar, guardar como y cerrar documentos mediante operaciones explícitas. |
+| `horizun_open_document` | Abrir modelos comprobando actualización de versión y archivos centrales compartidos. |
+| `horizun_save_document` | Guardar y comprobar fecha y tamaño del archivo resultante. |
+| `horizun_relinquish_all` | Liberar elementos prestados y reportar los que siguen perteneciendo al usuario. |
+| `horizun_file_info` | Leer cabeceras RVT/RFA, versión y datos de trabajo compartido sin abrirlos ni actualizarlos. |
+| `horizun_submit_job` | Enviar operaciones largas de Revit con un identificador de trabajo persistente. |
+| `horizun_job_status` | Consultar progreso y estado de recuperación mientras Revit está ocupado o después de reiniciar un proceso. |
+
+### Consultas, auditoría y corrección de modelos
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_list_elements` | Listar y paginar elementos del anfitrión y vínculos cargados, identificando su modelo. |
+| `horizun_query_model` | Filtrar por categoría, tipo, nivel, parámetros y límites espaciales; seleccionar campos y obtener resúmenes agrupados o compactos. |
+| `horizun_navigate` | Seleccionar elementos, limpiar la selección, encuadrar y abrir vistas. |
+| `horizun_capture_view` | Exportar una vista como imagen para que el cliente pueda revisarla visualmente. |
+| `horizun_model_scan` | Medir salud del modelo, advertencias, worksets, vínculos, familias, vistas y candidatos de limpieza. |
+| `horizun_audit_model` | Evaluar requisitos proporcionados del modelo con hallazgos, cobertura y evidencia de controles previos. |
+| `horizun_apply_corrections` | Ensayar y aplicar correcciones de auditoría soportadas, verificando sus resultados. |
+| `horizun_delete_verified` | Eliminar IDs explícitos o purgar contenido sin uso; anticipar dependencias y verificar eliminaciones. |
+
+### Creación de modelos, parámetros y familias
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_create_elements` | Crear niveles, ejes, muros, losas, cubiertas, habitaciones, instancias, estructura, redes MEP, aperturas y escaleras en lotes tipados. |
+| `horizun_transform_elements` | Mover, copiar, rotar, fijar, cambiar tipos o curvas y ajustar etiquetas sobre elementos explícitos. |
+| `horizun_manage_system_types` | Duplicar tipos de sistema; editar parámetros, capas de muros/losas/cubiertas/cielos y preferencias de unión MEP. |
+| `horizun_write_params_verified` | Escribir parámetros por lotes y releer cada valor solicitado. |
+| `horizun_bind_shared_param` | Vincular parámetros compartidos a categorías y comprobar su comportamiento entre grupos. |
+| `horizun_set_keynote` | Asignar notas clave con alcance explícito sobre instancias y tipos. |
+| `horizun_create_family` | Crear archivos RFA paramétricos nuevos: sólidos/vacíos, parámetros, fórmulas, tipos, familias anidadas y conectores MEP; cargarlos opcionalmente. |
+| `horizun_family_apply` | Aplicar cambios de familia en una transacción con control de geometría y reversión ante desviaciones. |
+
+### Planos, cotas, láminas y tablas
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_manage_views` | Crear y configurar plantas, secciones, elevaciones, llamadas, vistas 3D, láminas, ventanas gráficas y ubicación de tablas. |
+| `horizun_plan_views` | Planear vistas por habitación y conjuntos de entrega; seguir estados, aprobaciones e invalidaciones. |
+| `horizun_query_planimetry` | Consultar láminas, vistas, ubicaciones, anotaciones y referencias de planos con geometría y cobertura. |
+| `horizun_audit_planimetry` | Auditar requisitos de planos y devolver hallazgos con evidencia para corregirlos. |
+| `horizun_fix_planimetry` | Corregir hallazgos de vistas, láminas, rótulos, ventanas gráficas, tablas y recortes. |
+| `horizun_pack_sheets` | Distribuir vistas y tablas en zonas definidas de las láminas y comprobar su ubicación. |
+| `horizun_plan_annotations` | Planear etiquetas y cotas automáticas para ejes, niveles, muros cortina y aperturas con criterios explícitos. |
+| `horizun_annotate` | Crear textos, etiquetas, cotas lineales/angulares/radiales/diametrales/de arco y cotas de elevación, coordenadas o pendiente. |
+| `horizun_get_dimension_references` | Descubrir referencias geométricas utilizables para acotación. |
+| `horizun_query_dimensions` | Consultar cotas existentes, segmentos, referencias y valores medidos. |
+| `horizun_edit_dimensions` | Aplicar cambios soportados a cotas y verificar su estado resultante. |
+| `horizun_query_detail_2d` | Leer geometría de detalle, estilos de línea, tipos de región y símbolos colocables de una vista. |
+| `horizun_detail_2d` | Crear líneas/arcos/polilíneas de detalle, regiones rellenas/de máscara y componentes en lotes atómicos verificados. |
+| `horizun_manage_revisions` | Crear y actualizar registros de revisión de planos. |
+| `horizun_create_schedule` | Crear una tabla nativa con campos, ordenación y elementos vinculados opcionales. |
+| `horizun_manage_schedules` | Crear, duplicar y configurar tablas, cómputos de materiales, listas de planos/vistas, revisiones y leyendas de notas clave. |
+| `horizun_list_schedules` | Listar tablas y consultar campos, configuración de vínculos y dimensiones mostradas. |
+| `horizun_get_schedule_data` | Leer celdas mostradas en tablas con límites explícitos de filas/columnas e información de truncamiento. |
+
+### CAD / DWG a BIM y actualizaciones de revisión
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_query_cad` | Consultar instancias DWG, capas, curvas, perfiles y cobertura legible. |
+| `horizun_manage_cad_links` | Listar, añadir, recargar y cambiar rutas de vínculos CAD con estado medido. |
+| `horizun_plan_from_cad` | Interpretar un DWG con reglas versionadas proporcionadas y producir un plan BIM ordenado con omisiones y procedencia. |
+| `horizun_apply_cad_plan` | Construir el plan mediante comandos tipados; comprobar hashes de origen y registrar procedencia CAD en los elementos. |
+| `horizun_audit_cad_model` | Comparar dibujo y modelo mediante procedencia, geometría y diferencias medidas. |
+| `horizun_plan_cad_update` | Planear cambios entre revisiones DWG e identificar modificaciones manuales del modelo que requieren revisión. |
+| `horizun_apply_cad_update` | Aplicar cambios de revisión soportados y conservar la procedencia para la siguiente actualización. |
+
+### Estructura, refuerzo, MEP y coordinación
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_plan_structure` | Planear columnas en intersecciones de ejes y vigas entre cruces consecutivos. |
+| `horizun_query_structure` | Consultar miembros, anfitriones, recubrimientos, barras, sistemas de refuerzo, conexiones y cantidades. |
+| `horizun_plan_reinforcement` | Planear refuerzo a partir de anfitriones y requisitos proporcionados. |
+| `horizun_apply_reinforcement` | Aplicar planes de refuerzo soportados mediante comprobaciones tipadas y verificación. |
+| `horizun_audit_reinforcement` | Auditar refuerzo contra requisitos proporcionados y reportar cobertura. |
+| `horizun_plan_mep` | Planear rutas y accesorios de tuberías/conductos; consultar redes mediante conectividad real de conectores. |
+| `horizun_clash` | Detectar interferencias en un alcance definido, planear penetraciones soportadas y registrar hallazgos. |
+| `horizun_coordination` | Seguir hallazgos, asignaciones, decisiones, evidencia y resolución o reaparición medida en el modelo. |
+| `horizun_manage_links` | Añadir y gestionar vínculos/instancias de Revit, rutas, carga y fijación. |
+| `horizun_acc_upload_status` | Leer evidencia de los registros de Desktop Connector sobre asignación de archivos locales a carpetas ACC. |
+
+### Capas, grupos y terreno
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_split_floor_loops` | Separar un suelo por bucles de boceto conservando desfases de altura. |
+| `horizun_split_multilayer_walls` | Separar capas de muros conservando la identidad del muro original del núcleo y sus elementos hospedados. |
+| `horizun_split_multilayer_slabs` | Separar capas de materiales de suelos/cielos, conservando perfiles y con reversión por losa. |
+| `horizun_rectangularize_walls` | Descomponer geometría ortogonal soportada de muros en fragmentos rectangulares. |
+| `horizun_ungroup_and_mark` | Desagrupar grupos del modelo registrando el grupo original de cada miembro. |
+| `horizun_regroup_by_param` | Reconstruir grupos del modelo mediante un parámetro de agrupación. |
+| `horizun_copy_slab_elevations` | Transferir la superficie de un suelo modificado a suelos destino explícitos. |
+| `horizun_embed_floors_in_toposolid` | Integrar contornos y elevaciones de suelos en un sólido topográfico. |
+| `horizun_grade_toposolid_around_floors` | Conformar terreno alrededor de suelos con desfases, líneas de quiebre y taludes definidos. |
+
+### Cantidades, Excel, Power BI y entregables
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_quantities` | Medir volúmenes y cómputos de materiales con unidades, agrupación y procedencia del modelo. |
+| `horizun_budget_compare` | Comparar cantidades del modelo con una base Excel; escribir salidas aprobadas a Excel/Power BI de forma opcional. |
+| `horizun_catalog_lookup` | Resolver elementos de un catálogo proporcionado con estado de hoja y hash del archivo de origen. |
+| `horizun_excel_read_rows` | Leer filas XLSX, tipos y valores de fórmulas en caché sin Excel ni COM. |
+| `horizun_excel_write_rows` | Añadir filas XLSX, crear respaldo y releer las celdas escritas sin Excel ni COM. |
+| `horizun_power_bi_push` | Enviar filas a una tabla de un modelo semántico push de Power BI con protección frente a reintentos y recibos de destino. |
+| `horizun_export` | Exportar PDF, DWG, IFC, NWC, FBX, imágenes y CSV de tablas verificando los archivos resultantes. |
+
+### Flujos componibles y automatización personalizada de la API
+
+| Herramienta | Capacidad |
+|---|---|
+| `horizun_execute_plan` | Componer hasta 100 acciones tipadas con dependencias, referencias a resultados previos y reversión del grupo de transacciones. |
+| `horizun_request_python_access` | Mostrar en Revit una solicitud de aprobación al propietario para ejecutar Python personalizado. |
+| `horizun_execute_python` | Ejecutar Python generado por el cliente contra la API de Revit, con preflight y evidencia del script; requiere habilitación del propietario. |
+
+<!-- END TOOL CATALOG -->
+
+## Suboperaciones y modos
+
+Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
+y una escalera son opciones de `horizun_create_elements`; crear una sección y
+colocar una tabla son acciones diferentes de `horizun_manage_views`.
+
+La tabla contiene **208 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
+propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
+del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
+acción: estas cifras describen el vocabulario operativo expuesto, no 208
+herramientas MCP adicionales de primer nivel.
+
+<!-- BEGIN SUBOPERATIONS -->
+| Herramienta | Selector | Suboperaciones y modos nombrados |
 |---|---|---|
-| **Codex** | Registra `horizun-revit` junto a los demás servidores MCP. | Reiniciar Codex. |
-| **Claude Code** | Registra `horizun-revit` con alcance de usuario. | Reiniciar Claude Code. |
-| **Claude Desktop** | Escribe su entrada `mcpServers`, y además deja preparado el `.mcpb`. | Abrir Claude Desktop. |
-| **ChatGPT Work** | Instala su ayudante de Secure MCP Tunnel. | Crear/arrancar el túnel y añadirlo en ChatGPT Work. |
+| `horizun_document_session` | `operation` | `open`, `save`, `save_as`, `close`, `inspect` |
+| `horizun_navigate` | `operation` | `select`, `clear_selection`, `zoom`, `select_and_zoom`, `open_view` |
+| `horizun_audit_model` | `operation` | `save`, `save_as`, `sync_with_central`, `export`, `publish`, `close_with_save`, `batch_open_close` |
+| `horizun_delete_verified` | `mode` | `ids`, `purge_unused` |
+| `horizun_create_elements` | `kind` | `level`, `grid`, `wall`, `floor`, `ceiling`, `roof`, `room`, `family_instance`, `structural_framing`, `structural_column`, `duct`, `pipe`, `conduit`, `cable_tray`, `fitting`, `wall_opening`, `slab_opening`, `beam_system`, `wall_foundation`, `accessory_inline`, `mep_system`, `shaft`, `room_separator`, `wall_profile`, `displacement`, `stairs` |
+| `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff` |
+| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `pin`, `unpin`, `change_type`, `set_curve`, `move_tag_head`, `set_tag_leader` |
+| `horizun_create_family` | `kind` | `extrusion`, `blend`, `revolution`, `sweep`, `swept_blend`, `pipe`, `duct`, `electrical`, `conduit`, `cable_tray`, `symbolic`, `model` |
+| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports` |
+| `horizun_manage_views` | `mode` | `center`, `center_x`, `center_y`, `left`, `right`, `top`, `bottom` |
+| `horizun_plan_views` | `operation` | `room_views`, `deliverable_set`, `delivery_open`, `delivery_status`, `delivery_record`, `delivery_approve`, `delivery_invalidate` |
+| `horizun_query_planimetry` | `mode` | `inventory`, `sheets`, `views`, `placements`, `annotations`, `references` |
+| `horizun_fix_planimetry` | `operation` | `set_view_template`, `set_view_scale`, `rename_view`, `rename_sheet`, `place_title_block`, `move_viewport`, `move_schedule`, `clear_element_override`, `set_crop` |
+| `horizun_plan_annotations` | `operation` | `auto_tags`, `intent_dimension`, `dimension_set`, `auto_dimension_grids`, `auto_dimension_levels`, `auto_dimension_curtain_walls`, `auto_dimension_openings` |
+| `horizun_annotate` | `operation` | `text`, `tag`, `dimension`, `angular_dimension`, `radial_dimension`, `diameter_dimension`, `arc_length_dimension`, `spot_elevation`, `spot_coordinate`, `spot_slope` |
+| `horizun_query_detail_2d` | `mode` | `resources`, `elements` |
+| `horizun_detail_2d` | `operation` | `create_detail_line`, `create_detail_arc`, `create_detail_polyline`, `create_filled_region`, `create_masking_region`, `place_detail_component`, `place_symbol`, `set_line_style` |
+| `horizun_manage_revisions` | `operation` | `create_revision`, `update_revision` |
+| `horizun_manage_schedules` | `operation` | `create`, `duplicate`, `rename`, `add_fields`, `remove_fields`, `set_field`, `set_filters`, `set_sorting`, `set_options` |
+| `horizun_manage_schedules` | `kind` | `material_takeoff`, `sheet_list`, `view_list`, `revision_schedule`, `keynote_legend` |
+| `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile` |
+| `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
+| `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
+| `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
+| `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
+| `horizun_plan_mep` | `kind` | `pipe`, `duct` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `evidence` |
+| `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
+| `horizun_quantities` | `mode` | `volume`, `takeoff` |
+| `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
+<!-- END SUBOPERATIONS -->
 
-**Cierra Revit y Claude Desktop antes de ejecutar el instalador.** Ese es todo
-el procedimiento para Claude Desktop: ciérralos, ejecuta el instalador, abre
-Claude Desktop. Nada que instalar dentro de la app y ningún archivo que buscar.
+Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
+`pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
+registra **1091 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
+por lo que esa cifra no se utiliza como número de herramientas.
 
-El que enreda a la gente es Claude Desktop. Reescribe su propia configuración de
-memoria al cerrarse, así que un cambio hecho por debajo de la app abierta se
-pierde en silencio y el único síntoma es que las herramientas nunca aparecen.
-Por eso el instalador **se niega** a escribir mientras está abierta, en vez de
-escribir con esperanza — y si estaba abierta, no hay nada roto ni hay que
-reinstalar: ciérrala y ejecuta **Horizun → Conectar Horizun con Claude Desktop**
-desde el menú Inicio.
+## Extensibilidad, permisos y descubrimiento de herramientas
 
-El instalador espera a que Claude Code o Codex se cierren antes de editar su
-configuración, hace copias con marca de tiempo, conserva todas las demás
-entradas MCP y verifica lo que escribió. El estado durable vive en
-`%LOCALAPPDATA%\Horizun\install-status.json`. El procedimiento exacto por
-cliente está en **[docs/CLIENTS.md](docs/CLIENTS.md)** (en inglés).
+**Componer flujos nuevos:** `horizun_execute_plan` conecta hasta 100 acciones
+tipadas con resultados previos y dependencias nombradas, con reversión del grupo
+de transacciones. Los estándares, catálogos y reglas CAD del proyecto se reciben
+como entradas. **Ampliar a trabajo personalizado de la API:** el propietario
+puede habilitar `horizun_execute_python` para Python generado por el cliente,
+incluida la biblioteca estándar, preflight y evidencia estructurada del script.
+La concesión Python ON/OFF persiste hasta revocarla. Los resultados Python son
+autorreportados y mantienen `host_verified: false`.
 
-<details>
-<summary>Registro manual, por si alguna vez hace falta</summary>
+Estos perfiles se midieron contra el mismo binario **1.3.3**, con configuraciones
+aisladas y llamadas MCP reales a `tools/list`:
 
-Usa la **ruta exacta que imprimió el instalador**. Ya viene expandida para tu
-máquina, y eso importa: `%LOCALAPPDATA%` la expande `cmd.exe` y **no** la
-expande PowerShell, así que una configuración escrita con la variable apunta a
-ninguna parte sin decirlo.
+| Perfil y paquetes | Herramientas anunciadas | Motivo |
+|---|---:|---|
+| `safe_write`, todos los paquetes, Python apagado | 70 | Trabajo habitual dentro del modelo; filtra herramientas de efectos externos |
+| `full_write`, todos los paquetes, Python apagado | 79 | Añade operaciones de archivos, exportación, documentos y otros efectos externos |
+| `unsafe_code`, todos los paquetes, Python habilitado | 80 | Catálogo completo, incluido Python personalizado |
+| `safe_write`, solo `core` | 4 | Selección mínima deliberada de conexión y gestión de trabajos |
 
-```powershell
-# con Claude Code cerrado — el alcance de usuario lo deja disponible en todos los proyectos
-claude mcp add --scope user horizun-revit -- "C:\Users\<TÚ>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
+Una sesión con menos herramientas puede estar correctamente configurada para un
+trabajo concreto. Consulta `horizun_health` y el recurso
+`horizun://security/current-profile` antes de comparar una sesión con el catálogo
+completo. Los propietarios controlan los permisos; un evaluador puede leer este
+catálogo sin habilitar ejecución arbitraria de código.
 
-# con Codex cerrado
-codex mcp add horizun-revit -- "C:\Users\<TÚ>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe"
-```
+En clientes compatibles, el servidor también ofrece MCP Resources, Prompts,
+Completions, logging y Tasks durables. Los recursos exponen el contrato compilado,
+identidad del build, perfil efectivo y guía de flujos BIM. Los prompts nombrados
+cubren recetas de familias, documentación de habitaciones, auditorías y entregas.
+Estas funciones del protocolo y sus prompts son adicionales al recuento de herramientas.
 
-```toml
-# timeouts de Codex — %USERPROFILE%\.codex\config.toml
-[mcp_servers.horizun-revit]
-command = 'C:\Users\<TÚ>\AppData\Local\Programs\Horizun\MCP\server\horizun-mcp.exe'
-args = []
-startup_timeout_sec = 120
-tool_timeout_sec = 600
-```
+Los paquetes de herramientas, consultas compactas/resumidas, selección de campos
+y trabajos durables permiten gestionar contexto y operaciones largas. Las
+llamadas usan una cola FIFO acotada de 16 plazas; se pueden cancelar antes de
+ejecutarse. Las operaciones largas exponen un ID persistente y estado consultable.
+[Arquitectura](docs/ARCHITECTURE.md).
 
-```json
-// Cursor, Cline, Windsurf y otros clientes MCP
-{
-  "mcpServers": {
-    "horizun-revit": {
-      "command": "C:\\Users\\<TÚ>\\AppData\\Local\\Programs\\Horizun\\MCP\\server\\horizun-mcp.exe"
-    }
-  }
-}
-```
+## Probado en Revit: evidencia publicada
 
-**Claude Desktop no necesita Claude Code.** Con la app cerrada, un solo comando
-lo conecta y termina; `-Extension` entrega en su lugar el `.mcpb` real y
-pregunta dónde dejarlo:
+**v1.3.3**, publicada el **2026-09-15**, incluye informes de la validación de
+release sobre el servidor instalado y los cinco años de Revit soportados.
+Suman **1.230 ejecuciones de pruebas aprobadas**: 246 por año, con cero pruebas
+fallidas, sin verificar o sin cubrir en esa suite. Cada informe identifica
+commit, hashes de binarios y harness.
+[Archivos de la release](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v1.3.3).
 
-```powershell
-pwsh -File scripts/install-claude-desktop-extension.ps1              # conectarlo, de principio a fin
-pwsh -File scripts/install-claude-desktop-extension.ps1 -Extension   # entregar el .mcpb
-pwsh -File scripts/install-claude-desktop-extension.ps1 -Diagnose    # qué hay puesto de verdad
-pwsh -File scripts/diagnose-integrations.ps1                         # Codex, Claude Code, Claude Desktop y ChatGPT Work
-```
+| Revit | Aprobadas | Fallidas | Sin verificar | Sin cubrir en esta suite | Informe |
+|---|---:|---:|---:|---:|---|
+| 2023 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2023.json) |
+| 2024 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2024.json) |
+| 2025 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2025.json) |
+| 2026 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2026.json) |
+| 2027 | 246 | 0 | 0 | 0 | [JSON](https://github.com/HorizunGroup/horizun-revit-mcp/releases/download/v1.3.3/live-2027.json) |
 
-**ChatGPT Work no necesita Codex ni Claude Code.** Llega al mismo servidor
-instalado a través del Secure MCP Tunnel de OpenAI. Ejecuta
-`scripts/chatgpt-tunnel.ps1 -Status` o usa **Configurar ChatGPT Work** en el
-menú Inicio. Esto se verificó en la interfaz de escritorio de Work con una
-cuenta gratuita el 2026-09-04; los controles de cuenta y de espacio de trabajo
-pueden variar.
+Es una suite de release ejecutada en cinco versiones de Revit. Es evidencia del
+mantenedor para esos casos; no son 1.230 funciones diferentes ni una comparación
+contra otro producto. El [índice legible por máquina](docs/release-evidence.json)
+registra enlaces y hashes de origen. GitHub CI comprueba continuamente el núcleo
+y servidor, instalación Windows, consistencia del inventario/documentación y CodeQL.
 
-Las cadenas literales de TOML (comillas simples) aceptan las rutas de Windows
-tal cual; en JSON hay que doblar cada barra invertida. **Sube el tool timeout**
-de tu cliente si lo tiene: un escaneo de modelo o una apertura por lotes ocupa
-el hilo de UI de Revit durante minutos, y un límite de 60 segundos abandona
-trabajo que sigue corriendo — el puente parece roto cuando solo está ocupado.
+El historial público comienza con
+[v0.5.0 del 2026-08-02](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v0.5.0),
+incluye [v1.0.0 del 2026-08-26](https://github.com/HorizunGroup/horizun-revit-mcp/releases/tag/v1.0.0)
+y contiene **16 releases públicas sin marca de prerelease al 2026-09-15**.
+La insignia de estrellas de GitHub muestra el recuento actual de la comunidad;
+el [historial de releases](https://github.com/HorizunGroup/horizun-revit-mcp/releases)
+y el [historial de commits](https://github.com/HorizunGroup/horizun-revit-mcp/commits/main/)
+permiten comprobar el mantenimiento directamente.
 
-</details>
+## Versión y compatibilidad
 
-### 3 · Arranca Revit y comprueba
+| Pregunta | Fuente autorizada |
+|---|---|
+| Última descarga estable | [Release más reciente](https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest), con fecha y archivos |
+| Versión de este código fuente | [Directory.Build.props](Directory.Build.props) |
+| Versión realmente cargada | `horizun_health`: versión, commit, año de Revit y documento activo |
+| Protocolo MCP implementado | **2025-11-25**; revisiones anteriores en [ProtocolNegotiation.cs](src/Horizun.Server/ProtocolNegotiation.cs) |
+| Metadatos publicados del registro | [Registro oficial](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.HorizunGroup%2Fhorizun-revit-mcp/versions/latest) |
 
-Dos cosas que esperar en el primer arranque, y ninguna es un fallo:
+La compatibilidad con MCP 2026-07-28 está pendiente. Una release reciente del
+producto no implica soporte de esa revisión. Los buscadores y directorios pueden
+mostrar capturas antiguas: consulta la release antes de elegir versión. Para
+actualizar una instalación publicada, ejecuta el nuevo Setup con Revit cerrado.
 
-- Revit puede mostrar un diálogo de **Security** cuando el editor no es ya de
-  confianza — tras verificar el build, elige **Always Load**. Puede abrirse **en
-  un monitor que no estás mirando**: un Revit que parece atascado arrancando con
-  la CPU quieta suele ser este diálogo escondido.
-- Con un documento abierto aparece la pestaña **Horizun Hub** en la cinta. Su
-  botón *Estado del puente* responde «¿esto funciona, y qué versión es?» sin
-  salir de Revit.
+## Alcance y referencias
 
-Desde tu cliente MCP, `horizun_health` responde lo mismo incluyendo el commit.
-Un *contract hash mismatch* significa que una mitad se quedó en un build
-anterior: cierra Revit e instala otra vez.
+Los resultados tipados identifican verificación, resultados parciales y
+cobertura. Los vínculos descargados y los casos no soportados por API, plantilla
+o exportador se reportan explícitamente. Consulta [TOOLS.md](docs/TOOLS.md) y el
+[alcance de familias](docs/FAMILY-AUTHORING.md) para los límites de cada operación.
+La [metodología de benchmark](docs/BENCHMARK.md) distingue la puntuación histórica
+de diseño de la evidencia de ejecución real.
 
-### Compilar desde el código, si lo prefieres
+[Compilar desde fuente](docs/BUILDING.md) · [Contribuir](CONTRIBUTING.md) ·
+[Instrucciones para agentes](AGENTS.md) · [Resumen para LLM](llms.txt) ·
+[Seguridad](docs/security-model.md) · [Privacidad](docs/PRIVACY.md) ·
+[Política de releases](docs/RELEASE-POLICY.md)
 
-No se descarga ni se ejecuta nada precompilado: todo se compila en tu máquina
-contra el Revit que ya tienes instalado. Necesitas el
-[SDK de .NET 10.0.400](https://dotnet.microsoft.com/download), fijado por
-`global.json` para que los bytes publicados no dependan del último parche
-instalado. Los add-ins resultantes siguen apuntando al runtime que hospeda cada
-año de Revit: .NET Framework 4.8 para 2023–2024, .NET 8 para 2025–2026 y .NET 10
-para 2027.
+Hecho en Colombia 🇨🇴 y mantenido por Horizun Group como parte de
+[Horizun Hub](https://horizunhub.com). El puente es neutral respecto a
+organizaciones: los estándares y catálogos del proyecto son entradas. El
+[paquete de estándares](standards/README.md) opcional ofrece ejemplos editables.
 
-```powershell
-git clone https://github.com/HorizunGroup/horizun-revit-mcp
-cd horizun-revit-mcp
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-Encuentra cada Revit por su propio `RevitAPI.dll`, compila el add-in para cada
-uno de esos años y el servidor MCP, instala ambos, y relee cada binario
-instalado para probar que llegó — commit estampado más SHA-256 contra lo
-preparado. Un fallo de compilación no cambia nada; un fallo posterior revierte
-con su libro de deshacer y te dice el estado exacto en el que estás. Para
-actualizar: `git pull`, cierra Revit, ejecútalo otra vez.
-
-Para una instalación normal a través de un agente, usa el instalador publicado.
-Compilar desde el código es para desarrollo. Pega esto en tu agente:
-
-```
-Install the latest stable Windows release of Horizun Revit MCP from
-https://github.com/HorizunGroup/horizun-revit-mcp/releases/latest. Read
-https://github.com/HorizunGroup/horizun-revit-mcp/blob/main/docs/INSTALL.md first.
-Use the published installer, verify its hash and explain its unsigned publisher
-status. Do not clone or compile the source or install a development SDK.
-Preserve other MCP entries and report pending client connection/restart steps.
-```
-
-Ambos recogen [AGENTS.md](AGENTS.md) automáticamente en cuanto están dentro del
-repositorio. Ese archivo lleva los requisitos, los modos de fallo y las dos
-sorpresas que conviene conocer antes del primer arranque de Revit, y está en
-inglés y español.
-
-## Arquitectura
-
-![Arquitectura de Horizun Revit MCP: un cliente MCP habla stdio con el servidor Horizun, que reenvía por un named pipe autenticado por token al add-in de Revit, que despacha al hilo de UI de Revit](docs/assets/architecture.es.svg)
-
-- **`Horizun.Revit`** — el add-in. `App` (IExternalApplication) levanta un
-  servidor de named pipe y publica un archivo de descubrimiento; `Dispatcher`
-  cruza cada petición al hilo de UI de Revit vía `ExternalEvent`; `Guard` y
-  `Reconcile` son el contrato de commit que «no puede mentir»; los comandos
-  viven bajo `Commands/`.
-- **`Horizun.Server`** — el servidor MCP. El formato de cable está escrito a
-  mano desde la especificación abierta de MCP, sin SDK de terceros: descubre el
-  pipe, habla MCP sobre stdio y reenvía al plugin. Los esquemas y los efectos de
-  comportamiento viven en un solo contrato compartido, así que `tools/list`
-  responde con Revit cerrado sin desviarse del add-in. Negocia MCP hasta
-  2025-11-25; expone Tools, Resources, Prompts, Completions, Logging opcional y
-  Tasks durables; y devuelve tanto texto compatible como `structuredContent`.
-  Cinco herramientas son **residentes en el host**: responden dentro del
-  servidor y nunca tocan Revit.
-- **Un comando a la vez.** Las llamadas concurrentes esperan en una cola FIFO
-  acotada de 16 puestos; una cola llena aplica backpressure explícita en vez de
-  descartar trabajo. Cada respuesta lleva lo que Revit levantó mientras el
-  comando corría —avisos, errores y diálogos modales— tanto si salió bien como
-  si falló.
-
-## Capacidades
-
-Agrupadas por lo que realmente estarías haciendo. La referencia completa —cada
-herramienta, y qué rechaza cada una— está en
-**[docs/TOOLS.md](docs/TOOLS.md)** (en inglés).
-
-| Grupo | Qué cubre |
-| --- | --- |
-| **Sesión** | Salud y selección de destino entre dos versiones de Revit abiertas, abrir/guardar/liberar documento, inspección de sesión, captura de vista como imagen. |
-| **Consulta** | Consultas componibles e inventario paginado sobre anfitrión y vínculos cargados, censo del modelo, cantidades, interferencias, lectura de tablas de planificación nativas. |
-| **Escritura** | Escritura de parámetros, keynotes, borrado con la cascada contada, transformaciones, creación atómica de niveles, ejes, muros, losas, cubiertas, cuartos, redes MEP y estructura. |
-| **Vistas y planos** | Plantas conscientes de dependencias, secciones, alzados, vistas 3D y de dibujo, plantillas, hojas, viewports, tablas y anotación. |
-| **Detalle 2D** | Descubrimiento semántico de recursos por vista (estilos de línea, tipos de región con `IsMasking` real, símbolos colocables — siempre por id, nunca por nombre), y dibujo atómico, ensayado y revertido por completo: líneas, arcos, polilíneas, regiones rellenas/de máscara con bucles validados de forma pura, componentes y símbolos de detalle, edición de estilos de línea. |
-| **Cotas** | Descubrimiento semántico de referencias (caras, centerlines, ejes, niveles, aristas — con huellas y ambigüedad estructurada en vez de adivinanzas), acotado lineal/angular/radial/diámetro/longitud de arco/elevación ensayado por creación, con rollback total y rechazo por deriva `stale_plan`, lecturas completas de cotas y ediciones verificadas. El flujo completo con ejemplos está en **[docs/DIMENSIONS.md](docs/DIMENSIONS.md)**. |
-| **Planimetría** | Documentación de principio a fin directamente en Revit, sin un lazo de control por PDF: consultar y auditar hojas/vistas/colocaciones/anotaciones; corregir hallazgos citados; empaquetar vistas y tablas ordenadas automáticamente alrededor de obstáculos fijos; planear etiquetas conscientes de colisión y cadenas de cotas semánticas; aplicarlas por el escritor de anotación ensayado; crear revisiones, asignaciones a hoja y nubes verificadas; y después capturar y revisar visualmente cada hoja real por el prompt MCP `planimetry-review`. El trabajo ilegible, truncado, ambiguo o no capturado queda como desconocido o rechazado, nunca como limpio. Mira **[docs/PLANIMETRY-AUDIT.md](docs/PLANIMETRY-AUDIT.md)** y **[docs/PLANIMETRY-PRODUCTION.md](docs/PLANIMETRY-PRODUCTION.md)**. |
-| **Familias** | Compilación RFT → RFA con parámetros, fórmulas, tipos, cotas, instancias anidadas, formas sólidas y de vacío y conectores MEP; duplicación de tipos de sistema con estructuras compuestas completas. |
-| **Interoperabilidad** | PDF, DWG, IFC configurable, Navisworks NWC, FBX multivista, imágenes, tablas, `.xlsx` escrito sobre el paquete OPC, e ingesta directa por push a Power BI. |
-| **Cantidades → presupuesto** | Un cómputo de las cantidades que TÚ nombras (parámetro, volumen/área de geometría, longitud, conteo) por elemento y por código de presupuesto, atravesando los vínculos cargados con procedencia, donde un cero es una medición y ausente / vacío / ilegible / inválido son cuatro respuestas distintas; y luego una comparación contra una línea base leída de Excel — añadido / eliminado / modificado / sin cambio / no comparable por código, con las diferencias de cantidad, clasificación y precio separadas, sin convertir ninguna unidad ni inventar ningún precio — escrita a Excel y Power BI reportando cada destino por separado. Mira **[docs/QUANTITIES-AND-BUDGET.md](docs/QUANTITIES-AND-BUDGET.md)**. |
-| **DWG → BIM** | Convertir un dibujo vinculado en modelo a través de un conjunto de requisitos VERSIONADO que es tuyo en vez de venir compilado: vincular y recargar de forma tipada, leer la geometría con un bloque de cobertura explícito que nombra lo que no se puede leer, planear, ensayar, aplicar, y estampar cada elemento creado con la entidad CAD de la que salió. Muros rectos y curvos, losas con huecos, cuartos colocados por un punto genuinamente dentro de ellos, puertas y ventanas hospedadas en el muro que el dibujo implica, columnas, ejes, y muros y losas portantes verificados releyendo el propio parámetro de Revit. Y después AUDITAR el resultado contra el dibujo, y planear una segunda revisión contra la primera nombrando lo que cambió desde un vocabulario cerrado: sin cambio, añadido, eliminado, movido, reformado, retipificado, recapado, redimensionado, rehospedado, divergido manualmente, ambiguo, conflicto. Nunca se borra nada automáticamente y nunca se toma un juicio en silencio. El flujo, el esquema del conjunto de requisitos y lo que un dibujo no te puede decir están en **[docs/DWG-TO-BIM.md](docs/DWG-TO-BIM.md)**; **[docs/ADR-001-direct-dwg-reader.md](docs/ADR-001-direct-dwg-reader.md)** registra lo que deliberadamente no lee, y por qué. |
-| **Cirugía de modelo** | División por capas, división de bucles de losa, desagrupar/reagrupar por parámetro, copia de cotas de losa, embebido y explanación de toposolid, rectangularización de muros. |
-| **Orquestación** | Hasta 100 escrituras tipadas en un solo plan ordenado con referencias `${key.path}`, más trabajos durables en segundo plano consultados sin tocar Revit. |
-
-<details>
-<summary>Conexión directa con Power BI</summary>
-
-`horizun_power_bi_push` usa el endpoint REST de modelo semántico push de
-Microsoft; no automatiza Power BI Desktop. Las credenciales se configuran en el
-entorno del servidor MCP, nunca en una llamada de herramienta:
-
-```powershell
-# Opción A: token de acceso OAuth de vida corta
-$env:HORIZUN_POWER_BI_ACCESS_TOKEN = '<token con Dataset.ReadWrite.All>'
-
-# Opción B: service principal de Entra; Horizun obtiene el token de acceso
-$env:HORIZUN_POWER_BI_TENANT_ID = '<tenant-guid>'
-$env:HORIZUN_POWER_BI_CLIENT_ID = '<application-guid>'
-$env:HORIZUN_POWER_BI_CLIENT_SECRET = '<secreto>'
-```
-
-El destino está fijado a `api.powerbi.com`; los ids de dataset y de workspace
-tienen que ser GUID; los valores son solo JSON primitivo; la unión se limita a
-75 columnas, las cadenas a 4.000 caracteres y cada llamada a 10.000 filas,
-siguiendo las
-[limitaciones de modelos semánticos push](https://learn.microsoft.com/power-bi/developer/embedded/push-datasets-limitations)
-de Microsoft. Ejecuta con el `dry_run: true` por defecto, y luego aplica con un
-`idempotency_key` nuevo. Un reintento idéntico repite la respuesta guardada; una
-pérdida de conexión después de subir se reporta como `in_doubt` y nunca se
-reenvía automáticamente.
-
-</details>
-
-## Estado y evidencia
-
-Funcionando y en uso productivo. La promoción a estable la gobierna evidencia
-publicada y acotada a la versión, no una afirmación local de éxito.
-
-- **Las suites sin Revit se exigen en CI**, y solo esas. Un runner hospedado no
-  tiene `RevitAPI.dll`, así que compilar allí el add-in sería mentira; la mitad
-  atada a Revit se verifica en vivo con `scripts/verify-live.ps1` y se publica
-  por versión. Un trabajo omitido que dice por qué vale más que un visto bueno
-  que cubrió menos de lo que aparentaba.
-- **Compilado para cinco años de Revit** — de 2023 a 2027, cada uno contra su
-  propia API. El servidor y el add-in comparten el hash de un contrato y viajan
-  juntos; no hay despliegue parcial.
-- **La evidencia viva está acotada a la versión.** Promover a estable exige un
-  informe publicado por cada año soportado. Si falta un artefacto, no se
-  sustituye por experiencia local ni por una DLL compilada. Mira la
-  [política de versiones](docs/RELEASE-POLICY.md).
-- **Límites conocidos, declarados**: `excel_write_rows` añade debajo de una
-  Tabla de Excel sin expandir el rango de la tabla (se reporta en cada llamada);
-  un catálogo que no es ni UTF-8 ni Latin-1 se decodifica como Latin-1 y lo
-  dice; cancelar una petición la evita solo mientras sigue en cola — una vez
-  Revit empieza el comando, cancelar deja de hacerte esperar pero no puede
-  interrumpir la API de Revit en su hilo de UI. La creación general de familias
-  in-place no existe en la API pública de Revit, así que Horizun crea familias
-  RFA cargables y tipos de sistema residentes en el proyecto en vez de manejar
-  el editor de familias modal por automatización de UI.
-
-La comparación pública se hace por tarea y no por número de herramientas: una
-capacidad puntúa solo si su esquema es tipado, si la entrada inválida se rechaza
-antes de mutar, y si el resultado afirmado se mide después de la operación. Los
-casos, las reglas de puntuación y los resultados actuales están en
-[docs/BENCHMARK.md](docs/BENCHMARK.md).
-
-```bash
-dotnet build src/Horizun.Revit -c Release -p:RevitYear=2026   # un año a la vez
-dotnet build src/Horizun.Server -c Release                    # el servidor MCP (sin Revit)
-dotnet test tests/Horizun.Core.Tests
-dotnet test tests/Horizun.Server.Tests
-pwsh scripts/verify-live.ps1 -Year 2026 -OldFile <un modelo guardado en otro Revit>
-```
-
-## Seguridad
-
-`horizun_execute_python` ejecuta Python arbitrario dentro de Revit con los
-derechos del usuario que inició sesión, y viene **deshabilitado por defecto**.
-Una instalación nueva se lee como `permission_profile: "safe_write"`: las
-ediciones tipadas verificadas dentro del modelo activo están disponibles,
-mientras que el código arbitrario, los cambios de sesión de documento y las
-escrituras externas exigen una decisión explícita del dueño.
-
-Una elección **explícita** en `%USERPROFILE%\.horizun\settings.json` se respeta
-siempre — `read_only`, `safe_write`, `full_write` o
-`enable_execute_python: false` mantienen el código arbitrario apagado,
-`allowed_tools` y `denied_tools` estrechan cualquier perfil, y un archivo de
-ajustes que existe pero no se puede interpretar cae **cerrado** (`read_only`,
-Python apagado) para que una restricción corrupta nunca se lea como
-consentimiento. Un cliente puede llamar `horizun_request_python_access` para
-poner la pregunta de forma visible en Revit, pero no puede responderla. El dueño
-de la máquina puede usar el botón **Python ON/OFF** para conceder acceso
-persistente hasta que ese mismo usuario lo revoque; pulsarlo otra vez revoca el
-permiso de inmediato. `scripts/enable-execute-python.ps1` sigue siendo la vía
-administrativa explícita y se revierte con `-Disable`. El servidor emite
-`notifications/tools/list_changed` cuando cambia el permiso efectivo, así que
-los clientes compatibles se actualizan solos; los que ignoran la notificación
-necesitan un reinicio.
-
-**No hay ningún listener de red entrante**: los named pipes no se alcanzan por
-red, y el servidor habla stdio con quien lo haya lanzado. El opcional
-`horizun_power_bi_push` hace llamadas HTTPS salientes acotadas únicamente a
-endpoints fijos de Microsoft Entra y `api.powerbi.com`, y no acepta ninguna URL
-ni credencial en los argumentos de la herramienta. No hay telemetría ni
-recolección de datos operada por quien mantiene el proyecto.
-
-El modelo de amenazas completo —qué se defiende, y qué deliberadamente no— está
-en [docs/security-model.md](docs/security-model.md), y está escrito para que se
-discuta. El estado local y las operaciones de red pedidas por el usuario se
-describen en la [política de privacidad](docs/PRIVACY.md). Para reportar una
-vulnerabilidad, mira [SECURITY.md](SECURITY.md). La línea exacta entre evidencia
-de candidato desde código y certificación externa se mantiene en
-[production readiness](docs/production-readiness.md).
-
-## Horizun Hub
-
-[Horizun Hub](https://horizunhub.com) es el ecosistema de producto al que
-pertenece este puente: PowerBIM Exporter para Revit y Civil 3D, PowerBIM Online,
-BuildMotion, CopyToExcel y Family Browser; formación en PowerBIM + IA;
-plantillas de cuantificación 4D/5D; tableros de Power BI y plantillas `.pbit`;
-agentes y flujos MCP para estandarizar familias y auditar modelos; y extracción
-de APS a Power BI.
-
-El MCP sigue siendo neutral: los estándares de empresa, los catálogos y las
-reglas de auditoría los suministran esos flujos o quien llama, nunca vienen
-compilados dentro del puente. [docs/HORIZUN-HUB.md](docs/HORIZUN-HUB.md) traza
-la línea completa entre la pasarela de código abierto y el Hub.
-
-## Contribuir
-
-Los issues y los pull requests son bienvenidos — reportes de fallos, hallazgos
-de compatibilidad por año de Revit y propuestas de capacidad tienen cada uno su
-formulario. Empieza por [CONTRIBUTING.md](CONTRIBUTING.md) y el
-[código de conducta](CODE_OF_CONDUCT.md); [AGENTS.md](AGENTS.md) es la versión
-legible por máquina de esas mismas reglas, y [llms.txt](llms.txt) es el resumen
-de descubrimiento para indexadores y sistemas de IA.
-
-## Licencia
-
-**Apache License 2.0** — mira [LICENSE](LICENSE) y [NOTICE](NOTICE). Los
-componentes de terceros siguen bajo sus propias licencias, listados con sus
-versiones en [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-
-La API de Autodesk Revit se referencia en tiempo de compilación y nunca se
-redistribuye. Revit, Autodesk y Autodesk Docs son marcas de Autodesk, Inc. Este
-proyecto no está afiliado a Autodesk, Inc., ni cuenta con su respaldo o
-patrocinio.
+**Apache-2.0:** [LICENSE](LICENSE), [NOTICE](NOTICE), [avisos de terceros](THIRD-PARTY-NOTICES.md).
+La API de Revit no se redistribuye. Autodesk y Revit son marcas de Autodesk;
+este proyecto no está afiliado, avalado ni patrocinado por Autodesk.

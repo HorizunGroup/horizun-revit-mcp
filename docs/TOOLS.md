@@ -5,7 +5,7 @@ The [README](../README.md) has the short version; this page is the complete
 surface.
 
 This surface is **80 tools** <!--inventory:tools--> - **32** <!--inventory:reads--> of them
-read-only - dispatching **213 operations** <!--inventory:operations--> across
+read-only - dispatching **208 distinct suboperations and modes** <!--inventory:operations--> across
 **1091 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
@@ -14,6 +14,12 @@ asks the built server for `tools/list` - the same call a client makes - and writ
 any marked number drifts from it. An enumerated value is an ARGUMENT, not a proven
 behaviour: what actually works is counted by the live harness artifact, never by a
 schema.
+
+Dispatch choices are counted once per tool, selector property and value. A
+selector repeated in a `oneOf` branch is not a second suboperation. This removes
+five duplicate fitting choices from the former 213-occurrence count; it does not
+remove any capability. The README lists all counted choices inline, plus the
+seven export formats that are outside this dispatch-selector counter.
 
 Local optimization behavior and verification are documented in
 [Internal MCP optimization](OPTIMIZATION-PLAN.md): query response modes,
@@ -49,7 +55,7 @@ and it is labelled as such everywhere it appears.
 | `horizun_model_scan` | The census, under the honesty contract. |
 | `horizun_write_params_verified` | Parameter writes, each re-read after commit. |
 | `horizun_delete_verified` | Deletion with the cascade counted, `dry_run` first. `mode` is mandatory: omitting it is refused and can never select `purge_unused`. |
-| `horizun_document_session` | Read-only session and version inspection. |
+| `horizun_document_session` | Inspect, open, save, save-as or close a document through explicit session operations; file/document operations require the applicable permission profile. |
 | `horizun_audit_model` | Model checks with per-check pass/fail. |
 | `horizun_quantities` | Quantities, with input rejected rather than guessed. |
 | `horizun_clash` | Clash, where zero is a trustworthy zero. `plan_penetrations` turns each pipe-crossing into a wall-opening plan with per-row named refusals (structural hosts need the explicit opt-in); `record_findings` folds the run into the durable coordination ledger. |

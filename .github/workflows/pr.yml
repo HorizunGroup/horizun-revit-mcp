@@ -43,6 +43,10 @@ jobs:
       - name: Test server protocol
         run: dotnet test tests/Horizun.Server.Tests/Horizun.Server.Tests.csproj -c Release --no-restore --logger "trx;LogFileName=server.trx" --results-directory artifacts/tests
 
+      - name: Validate release metadata on the registry platform
+        shell: pwsh
+        run: pwsh scripts/release-metadata.tests.ps1
+
       - name: Audit dependencies for known vulnerabilities
         env:
           EnableWindowsTargeting: true
@@ -91,6 +95,8 @@ jobs:
             'scripts/scan-sensitive.tests.ps1'
             'scripts/server-update.tests.ps1'
             'scripts/public-consistency.tests.ps1'
+            'scripts/publication-docs.tests.ps1'
+            'scripts/release-metadata.tests.ps1'
             'scripts/python-permission.tests.ps1'
             'scripts/python-stdlib-audit.tests.ps1'
             'scripts/install-status.tests.ps1'
