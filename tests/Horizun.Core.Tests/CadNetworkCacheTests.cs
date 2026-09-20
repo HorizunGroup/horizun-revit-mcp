@@ -55,7 +55,13 @@ namespace Horizun.Core.Tests
             Assert.Null(Key(Req(), sha: null));
             Assert.Null(Key(Req(), transform: null));
             Assert.Null(CadNetworkCache.Key(@"C:\m.rvt", "HZ", 1, "t", "s", null));
-            Assert.Equal("hit", CadNetworkCache.HitBlock("netc:x").Value<string>("state"));
+            // a continued snapshot says exactly that, and says it did NOT re-read the sources
+            JObject hit = CadNetworkCache.HitBlock("netc:x", "2026-09-20T00:00:00Z");
+            Assert.Equal("continued_snapshot", hit.Value<string>("state"));
+            Assert.False(hit.Value<bool>("sources_checked"));
+            Assert.Equal("continue_the_named_snapshot", hit.Value<string>("contract"));
+            Assert.Equal("2026-09-20T00:00:00Z", hit.Value<string>("snapshot_taken_utc"));
+            Assert.Contains("no external reference was checked", hit.Value<string>("means"));
         }
     }
 }

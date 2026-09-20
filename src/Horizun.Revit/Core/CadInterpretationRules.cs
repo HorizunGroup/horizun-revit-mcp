@@ -1999,9 +1999,10 @@ namespace Horizun.Revit.Core
                     RuleIds = new List<string> { rule.Id },
                     Means = rings + " closed figure(s) drawn on this layer - " + (outline.Count - chords) +
                             " edge(s), and " + chords + " chord(s) joining their corners THROUGH the inside - were " +
-                            "read as figures, not as " + rule.Produces + " runs: a route does not cross itself " +
-                            "corner to corner. A rule whose runs ARE drawn as closed loops says so with " +
-                            "geometry.include_closed_polylines."
+                            "left unclaimed rather than read as " + rule.Produces + " runs. THAT IS AN INFERENCE " +
+                            "FROM THE LINE WORK, not something the drawing says: a closed circuit with a legitimate " +
+                            "interior connection has a chord too, and this reading cannot tell the two apart. A rule " +
+                            "whose runs ARE drawn as closed loops says so with geometry.include_closed_polylines."
                 });
             if (heldLoop.Count > 0 && result != null)
                 result.Unclaimed.Add(new CadUnclaimed

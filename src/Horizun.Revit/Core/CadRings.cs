@@ -95,14 +95,20 @@ namespace Horizun.Revit.Core
         {
             /// <summary>The loop itself, in walk order.</summary>
             public List<CadSegment> Boundary = new List<CadSegment>();
-            /// <summary>Segments joining two of its nodes THROUGH its inside - a route does not cross itself.</summary>
+            /// <summary>Segments joining two of its nodes THROUGH its inside.</summary>
             public List<CadSegment> Chords = new List<CadSegment>();
             /// <summary>Every segment of the loop and its chords.</summary>
             public IEnumerable<CadSegment> All => Boundary.Concat(Chords);
             /// <summary>True when the whole loop came from one closed polyline, which is how a box is usually drawn.</summary>
             public bool OneClosedPolyline;
             public double PerimeterMm => Boundary.Sum(s => s.PlanLength);
-            /// <summary>A figure has chords: that is drawn evidence of a symbol, not of a route.</summary>
+            /// <summary>
+            /// THIS READING'S INFERENCE, and it is geometric, not semantic: a loop whose corners are joined through
+            /// its inside is treated as a figure. A chord is a PROPERTY OF THE LINE WORK - a closed circuit with a
+            /// legitimate interior connection has one too - so this settles nothing about what the drawing MEANS,
+            /// and it is what the reply must say. Until a rule can declare the meaning, or other evidence carries
+            /// it, a caller that needs these edges built says so with geometry.include_closed_polylines.
+            /// </summary>
             public bool IsFigure => Chords.Count > 0;
 
             public JObject ToJson() => new JObject
@@ -115,12 +121,16 @@ namespace Horizun.Revit.Core
                     ? new JArray(Math.Round(Boundary[0].A.X, 1), Math.Round(Boundary[0].A.Y, 1))
                     : new JArray(),
                 ["reading"] = IsFigure ? "figure" : "closed_loop",
+                ["settled_by"] = "geometry_only",
                 ["means"] = IsFigure
-                    ? "a closed loop whose corners are joined through its inside: drawn evidence of a symbol (a box " +
-                      "with its diagonals), not of a route, so its edges and chords are not runs"
-                    : "a closed loop with nothing crossing it. A route CAN close - a ring main does - so this is not " +
-                      "read as a symbol and not built either: it is held for review unless the rule declares " +
-                      "geometry.include_closed_polylines"
+                    ? "a closed loop whose corners are joined through its inside. THIS READING TREATS IT AS A FIGURE " +
+                      "and leaves its edges and chords unclaimed - but that is an inference from the LINE WORK, not " +
+                      "something the drawing says: a closed circuit with a legitimate interior connection has a chord " +
+                      "too. Nothing here distinguishes the two. geometry.include_closed_polylines declares that such " +
+                      "loops are runs, and then they are built"
+                    : "a closed loop with nothing crossing it. A route CAN close - a ring main does - and so can a " +
+                      "boundary drawn on this layer: this is read as neither, and not built. Its edges are held for " +
+                      "review unless the rule declares geometry.include_closed_polylines"
             };
         }
 
