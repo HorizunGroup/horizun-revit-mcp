@@ -3,6 +3,115 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.0.0 — 2026-09-20
+
+**A revision update now re-measures the world it was planned against, can be
+continued after a failure, and never claims a network it did not build.** This is
+a major version because two calls that used to succeed now fail: see *Breaking*
+below before upgrading.
+
+### An apply that checks the plan is still about this model
+
+`horizun_apply_cad_update` accepted an `apply_binding` and **never read it**. A plan
+made against one issue of a drawing could be applied to a model whose drawing,
+references, link geometry, rules or elements had all moved since, and the command
+would carry it out and report success.
+
+Both CAD applies now go through the same check (`CadApplyGuard`), which names what
+moved before anything is written. Measured live on seven situations: a label edited
+after planning, geometry edited after planning, a nested reference revised, a source
+missing, the link reloaded, an element edited by hand, and a plan made while the
+sources and the link could not be shown to be the same issue. All seven refuse
+before any write, and the model's element and connector census is identical either
+side of the refusal.
+
+### An update that stops half-way can be continued
+
+Three different things get called a retry, and the product now tells them apart:
+
+| | |
+|---|---|
+| **repeat** | the same key over finished work replays that reply and runs nothing |
+| **continue** | `continue_operation` carries out only what is still pending, under the decisions the first call was given |
+| **a new plan** | the world moved; the old decisions do not carry, and the guard refuses |
+
+The operation record is durable on the machine, so **save the model, close Revit,
+open a new session and continue** works — measured across two sessions. The reply
+carries `operation` with what is confirmed, what is still to do, what each action
+created or removed, and the decisions that were authorised. Finished records are
+swept after 30 days; an unfinished one is never swept, at any age.
+
+A caller whose apply committed and whose answer was lost gets
+`already_applied_under_this_key`, naming what is left and how to continue, instead
+of being told the drawing had changed — what had changed was what their own call
+did.
+
+### It says what it leaves unjoined, and refuses what it cannot rebuild
+
+An update writes **geometry**. Joining is `horizun_cad_connect`'s consented step, and
+it always was — but nothing said so, and a division built by an update left two ends
+at the same point holding nothing while every count reported the model correct.
+
+- the reply carries `verdict`: `geometry` applied, `network: not_asserted`;
+- `ends_that_meet_and_are_not_joined` names the ends left loose at the points the
+  call worked at;
+- a plan that **releases fittings** is refused before any write unless the caller
+  sends `accept_connections_not_rebuilt`. Consenting to lose a fitting is not
+  consenting to lose the junction it served.
+
+### A fitting remembers where it came from
+
+Every fitting this bridge places is stamped with its junction, its members, its type
+and a print of how it was left, and reads back as `made_here`, `made_here_modified`
+or `origin_unknown`. A fitting the bridge placed and a person then moved is **their**
+work: releasing it needs `release_protected_fittings`, the same second consent as a
+fitting nobody here placed. A model from before this record is never claimed
+retrospectively.
+
+*(The stamping had never worked: it looked for a connector within 50 mm of the drawn
+junction, and inserting an elbow trims both runs ~380 mm back, so every fitting read
+as `origin_unknown`. The fitting that serves a junction is the one element, not a
+member, that **both** members hold.)*
+
+### Every held row of an update plan says why
+
+`held_rows` collects each row the plan will not carry out on its own with the reason
+in the same place, including what it is waiting for. A row whose `held_because` is
+null is a gap in the planner and is labelled as one.
+
+### Isolated Revit sessions report what is true
+
+`scripts/dwg-bim/session.ps1 status` asked the state file and answered from it, so a
+session whose Revit had gone still read *running*. It now reports three separate
+things — the record, the process (`alive` / `exited` / `not_ours` / `never_started`)
+and the environment verified against files and hashes — and **never** takes the
+absence of Revit as evidence that the year's manifest was restored.
+
+### Breaking
+
+- **`apply_binding` is now a required argument of `horizun_apply_cad_update`.** It
+  was neither declared nor read before. Any caller following the documented flow
+  already has it: copy the `apply_binding` block from the `horizun_plan_cad_update`
+  reply verbatim.
+- **A plan that releases fittings is refused** unless `accept_connections_not_rebuilt`
+  is `true`. A call that used to apply geometry and silently leave the network broken
+  now writes nothing until the caller says it accepts that.
+- `state: applied` never meant the network was built. It still does not; the new
+  `verdict` block says so explicitly rather than leaving it to be assumed.
+
+### Limits of this release
+
+- The live evidence for these changes is **Revit 2026**. The add-in compiles for
+  2023–2027 and the release gate runs the matrix; the DWG→BIM revision work above was
+  measured on one year.
+- `horizun_plan_cad_update` takes no outfall, so a revision that re-shapes a run on a
+  layer with a declared fall **holds it** rather than laying it level. Building a
+  falling run is `horizun_plan_from_cad` with an outfall, and pipes only — a duct has
+  no bore to turn an invert into a centreline, and asking for one is refused.
+- The unjoined-end report covers ends that coincide. A declared junction where the
+  model has a single loose end is invisible to it by construction; that is what the
+  drawing-aware acceptance is for.
+
 ## v1.3.3 — 2026-09-14
 
 **Claude Desktop is installed by the person using it, and Setup now hands the

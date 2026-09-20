@@ -1573,13 +1573,17 @@ namespace Horizun.Contracts
                     "update reads them as things the drawing asks for and nothing has built, and creates them " +
                     "again. Measured live: two walls where the drawing shows one. Actions commit separately and " +
                     "the run STOPS at the first failure rather than carrying on into a model that matches " +
-                    "neither revision.",
+                    "neither revision. IT WRITES GEOMETRY AND NOT A NETWORK: joining is horizun_cad_connect's consented " +
+                    "step, the reply's verdict says `network: not_asserted`, and a plan that releases fittings " +
+                    "is refused unless the caller accepts that those junctions will not be rebuilt.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""target_document"", ""actions"", ""provenance""],
+  ""required"": [""target_document"", ""actions"", ""provenance"", ""apply_binding""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Must be the ACTIVE document."" },
     ""actions"": { ""type"": ""array"", ""description"": ""The actions horizun_plan_cad_update emitted, unchanged. May be EMPTY when the plan still carries re-stamps in candidate_index - a revision with no geometry change still carries every verified element to the new drawing; an apply with neither is refused."" },
+    ""apply_binding"": { ""type"": ""object"",
+      ""description"": ""REQUIRED. The apply_binding block from the horizun_plan_cad_update reply, copied VERBATIM. It is the world the plan was made against - the drawing, its references, the link's geometry, the rules, the reading, the target document, the Revit build and a print of every element the actions touch - and this command re-measures all of it before writing. Anything that moved is named and NOTHING is written. Before 2.0 this argument was neither declared nor read, so an apply could carry out a plan aimed at a drawing that had since changed."" },
     ""provenance"": { ""type"": ""object"", ""description"": ""The provenance block from the same reply: which drawing, which rules, which plan. Without it the elements this creates remember nothing."" },
     ""candidate_index"": { ""type"": ""array"", ""description"": ""The candidate_index from the same reply: WHICH drawing entity each element stands for. An action with no entry leaves its elements ANONYMOUS, and the reply says so per element."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Default TRUE. Rehearses every action, writes nothing, and returns a token per action key."" },
@@ -1587,6 +1591,8 @@ namespace Horizun.Contracts
       ""description"": ""Required TRUE when the plan was re-derived under a placement that MOVED (its provenance.placement_move_accepted is true): applying it re-shapes elements to follow the drawing, and the write is where that consent is said again."" },
     ""idempotency_key"": { ""type"": ""string"",
       ""description"": ""The same key with the SAME actions replays the recorded reply (replayed: true) and runs nothing; the same key with different actions is refused. Per Revit session, bounded."" },
+    ""accept_connections_not_rebuilt"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""Required TRUE when the plan RELEASES fittings. This command writes GEOMETRY: it does not build or restore a network, and a junction whose fitting is released to let a run be re-shaped does not come back. MEASURED: one of four declared joins survived such an update, open ends went from six to eleven, and every count of elements, sizes and positions reported the model as correct. Consenting to lose a FITTING - release_fittings, on the plan - is not consenting to lose the JUNCTION it served, so the second consequence needs its own word. Without it the whole plan is refused BEFORE anything is written. Say it only if you will run horizun_cad_connect over the result and accept ITS verdict."" },
     ""continue_operation"": { ""type"": ""string"",
       ""description"": ""CARRY OUT WHAT AN EARLIER CALL LEFT PENDING - the operation_id from its reply. Three different things get called a retry and this names the middle one: the SAME key over FINISHED work replays that reply and runs nothing; THIS continues work that stopped part-way, running only the actions still pending and skipping the ones already confirmed; and when the drawing or the model has MOVED since, neither applies - the guard refuses and you plan again, because the decisions in that plan were answers to a question that has changed. The record is durable on this machine, so save, close, open a NEW session and continue is a case this supports; an id this machine does not hold is refused rather than guessed."" }
   },

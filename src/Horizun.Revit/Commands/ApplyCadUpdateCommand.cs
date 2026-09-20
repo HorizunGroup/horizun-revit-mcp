@@ -382,6 +382,47 @@ namespace Horizun.Revit.Commands
                     "model matches neither revision.", rehearsed);
             }
 
+            // ---- WHAT THIS OPERATION DOES NOT DO ----------------------------------
+            //
+            // MEASURED, and it is why this refusal exists: a revision that re-shapes a run held by
+            // fittings has to release one to do it. The geometry then applies perfectly - state
+            // applied, no failed actions, every count right - and the JUNCTION never comes back. One
+            // of four declared joins survived, open ends went from six to eleven, and the reply said
+            // so only after the model had been written.
+            //
+            // This command writes GEOMETRY. It does not build or restore a network: joining is its own
+            // consented step (horizun_cad_connect). Consenting to lose a fitting - which is what
+            // release_fittings on the plan means - is NOT consenting to lose the junction it served,
+            // and the caller who wrote the first had no way to know the second followed. So the second
+            // consequence gets its own word, and without it nothing is written at all.
+            var releases = actions.OfType<JObject>()
+                .Where(a => (a.Value<string>("key") ?? "").StartsWith("cad-update-release-", StringComparison.Ordinal))
+                .ToList();
+            if (releases.Count > 0 && !(request.Value<bool?>("accept_connections_not_rebuilt") ?? false))
+            {
+                var fittings = new JArray(releases
+                    .SelectMany(a => (a["arguments"] as JObject)?["ids"] as JArray ?? new JArray())
+                    .Distinct());
+                return CommandResult.FailWithDetail(
+                    "connections_would_not_be_rebuilt: " + releases.Count + " action(s) of this plan RELEASE " +
+                    "fittings (" + string.Join(", ", fittings.Select(x => x.ToString())) + ") so a run can be " +
+                    "re-shaped, and this command does not put a junction back. It writes geometry; joining is " +
+                    "its own consented step. The result would be a model whose ducts are all in the right " +
+                    "place and whose network is broken, which every count of elements, sizes and positions " +
+                    "reports as correct. NOTHING was written. Either drop the pairing that needs the release " +
+                    "and re-plan, or - if you will run horizun_cad_connect over the result yourself - send " +
+                    "accept_connections_not_rebuilt: true, which says you accept losing those junctions.",
+                    new JObject
+                    {
+                        ["refused"] = "connections_would_not_be_rebuilt",
+                        ["releases"] = new JArray(releases.Select(a => a["key"])),
+                        ["fittings"] = fittings,
+                        ["what_this_command_does"] = "geometry",
+                        ["what_rebuilds_a_network"] = "horizun_cad_connect",
+                        ["means"] = "the refusal is BEFORE any write, so the model is exactly as it was."
+                    });
+            }
+
             // ---------------------------------------------------------- apply
             // OPENED BEFORE THE FIRST WRITE, so a process that dies mid-update leaves a record naming
             // what was confirmed and what was not. Opening an id that exists returns it as it stands.
@@ -822,6 +863,18 @@ namespace Horizun.Revit.Commands
                 // geometry, joining is its own consented step, and a division built by an update leaves
                 // two ends at the same point holding nothing. Every count of elements, sizes and
                 // positions calls that correct.
+                // TWO VERDICTS, AND ONLY ONE OF THEM IS THIS COMMAND'S TO GIVE.
+                ["verdict"] = new JObject
+                {
+                    ["geometry"] = failures == 0 ? "applied" : "partial",
+                    ["network"] = "not_asserted",
+                    ["means"] = "every typed write above was re-read from the model, so the GEOMETRY is " +
+                                "verified. The NETWORK is not: this command does not build or restore " +
+                                "connections, and a model can have every duct in the right place and no " +
+                                "network at all. Run horizun_cad_connect and accept its result before " +
+                                "calling this revision built.",
+                    ["connections_released_and_not_rebuilt"] = releases.Count > 0
+                },
                 ["ends_that_meet_and_are_not_joined"] = openJunctions,
                 ["ends_that_meet_and_are_not_joined_means"] = CadOpenJunctions.Means(openJunctions),
                 ["operation"] = CadUpdateOperations.Describe(CadUpdateOperations.Read(operationId), operationShape),

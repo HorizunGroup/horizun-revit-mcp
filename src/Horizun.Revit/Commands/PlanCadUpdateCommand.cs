@@ -1070,6 +1070,16 @@ namespace Horizun.Revit.Commands
                         a.Automatic = false;
                         a.Evidence["held_because"] = "fittings_must_be_released_first";
                         a.Evidence["release_fittings_to_proceed"] = new JArray(release);
+                        // SAID HERE, NOT DISCOVERED AFTER THE WRITE. Releasing these lets the re-shape
+                        // happen; it does not bring the junction back, because building a network is
+                        // horizun_cad_connect's job and not this update's. A caller reading only
+                        // "release_fittings_to_proceed" would reasonably assume the opposite.
+                        a.Evidence["connections_will_not_be_rebuilt"] = true;
+                        a.Evidence["and_that_means"] =
+                            "the update writes geometry. After applying it, the ends these fittings " +
+                            "joined hold nothing until horizun_cad_connect is run over them, and " +
+                            "horizun_apply_cad_update refuses the whole plan unless the caller says " +
+                            "accept_connections_not_rebuilt.";
                         if (protectedIds.Count > 0)
                         {
                             a.Evidence["also_release_protected_fittings"] = new JArray(protectedIds);
