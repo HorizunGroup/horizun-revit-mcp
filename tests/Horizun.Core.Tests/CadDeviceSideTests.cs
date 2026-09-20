@@ -180,7 +180,7 @@ namespace Horizun.Core.Tests
             var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
             Assert.NotNull(d);
-            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             string plan = read(@"src\Horizun.Revit\Commands\PlanFromCadCommand.cs");
             string create = read(@"src\Horizun.Revit\Commands\CreateElementsCommand.cs");
             string place = read(@"src\Horizun.Revit\Commands\CreateElementsPlacement.cs");
@@ -203,7 +203,7 @@ namespace Horizun.Core.Tests
             var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
             Assert.NotNull(d);
-            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             string create = read(@"src\Horizun.Revit\Commands\CreateElementsCommand.cs");
             string geometry = read(@"src\Horizun.Revit\Commands\CreateElementsGeometry.cs");
 

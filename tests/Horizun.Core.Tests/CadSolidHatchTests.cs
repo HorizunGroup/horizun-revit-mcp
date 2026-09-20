@@ -266,7 +266,7 @@ namespace Horizun.Core.Tests
             var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
             Assert.NotNull(d);
-            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             foreach (string cmd in new[] { "PlanFromCadCommand.cs", "AuditCadModelCommand.cs", "PlanCadUpdateCommand.cs" })
             {
                 string src = read(@"src\Horizun.Revit\Commands\" + cmd);

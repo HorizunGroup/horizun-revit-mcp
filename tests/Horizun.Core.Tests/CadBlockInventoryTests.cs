@@ -204,7 +204,7 @@ namespace Horizun.Core.Tests
             var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
             Assert.NotNull(d);
-            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             string query = read(@"src\Horizun.Revit\Commands\QueryCadCommand.cs");
             string source = read(@"src\Horizun.Revit\Commands\CadBlockSource.cs");
             string contract = read(@"src\Horizun.Contracts\Contract.cs");
@@ -221,7 +221,7 @@ namespace Horizun.Core.Tests
             var d = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !System.IO.Directory.Exists(System.IO.Path.Combine(d.FullName, "src"))) d = d.Parent;
             Assert.NotNull(d);
-            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel));
+            Func<string, string> read = rel => System.IO.File.ReadAllText(System.IO.Path.Combine(d.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             string query = read(@"src\Horizun.Revit\Commands\QueryModelCommand.cs");
             string contract = read(@"src\Horizun.Contracts\Contract.cs");
             Assert.Contains("request.Value<bool?>(\"include_orientation\") == true", query);

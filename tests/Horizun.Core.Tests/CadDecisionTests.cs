@@ -111,7 +111,7 @@ namespace Horizun.Core.Tests
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             Assert.NotNull(dir);
-            Func<string, string> read = rel => File.ReadAllText(Path.Combine(dir.FullName, rel));
+            Func<string, string> read = rel => File.ReadAllText(Path.Combine(dir.FullName, rel.Replace('\\', System.IO.Path.DirectorySeparatorChar)));
             string plan = read(@"src\Horizun.Revit\Commands\PlanCadUpdateCommand.cs");
             string apply = read(@"src\Horizun.Revit\Commands\ApplyCadUpdateCommand.cs");
             string contract = read(@"src\Horizun.Contracts\Contract.cs");
