@@ -163,12 +163,48 @@ namespace Horizun.Revit.Commands
             ["instance_id"] = r.Facts != null ? (JToken)r.Facts.ElementId : Rid.Value(r.Instance.Id),
             ["instance_name"] = r.Facts != null ? r.Facts.Name : null,
             ["source_sha256"] = r.Facts != null ? r.Facts.FileSha256 : null,
+            // THE HOST'S HASH DOES NOT SEE A REVISION OF WHAT THE HOST REFERENCES, and on a sheet whose
+            // ductwork all lives in an xref that is the only revision there is (MEASURED, campaign 8: every
+            // run of this drawing carries the xref's layer name). The set identity - host plus every
+            // reference resolved from beside it - is what changes when the drawing changes, and the update
+            // path has compared it since campaign 4. A READING that did not publish it left a caller with no
+            // way to notice that the geometry it was handed belongs to an earlier issue.
+            ["source_set_sha256"] = r.Facts != null
+                ? CadDwgCache.SourceSetSha256(r.Facts.ExternalPath, r.Facts.FileSha256) : null,
+            ["geometry_source"] = GeometrySource(r),
             ["ir_fingerprint"] = r.Ir.Fingerprint(),
             ["ir_schema_version"] = r.Ir.SchemaVersion,
             ["reader"] = r.Ir.Reader.ToJson(),
             ["counts_mean"] = r.Ir.CountsCaveat(),
             ["harvest_coverage"] = r.Harvest.CoverageJson(sagittaMm),
             ["read_only"] = true
+        };
+
+        /// <summary>
+        /// WHERE THE GEOMETRY IN THIS REPLY COMES FROM, said once and plainly.
+        ///
+        /// It is the CAD link as Revit loaded it - not the file as it is now. Revit records no moment for
+        /// that load, so this bridge cannot tell how old it is; what it CAN do is publish the identity of
+        /// the file set now, so a caller comparing two readings, or a reading against what was stamped on
+        /// the elements, sees that the sources moved while the geometry did not.
+        ///
+        /// MEASURED, campaign 8: an xref was edited with the host untouched. require_current_sources
+        /// re-read the texts and re-hashed the host, reported sources_checked true - and returned the same
+        /// thirty runs, because the link still held the previous issue. The new label was read and reported
+        /// as naming nothing this reading can see; the cause, that the geometry was older than the label,
+        /// was nowhere in the reply. After horizun_manage_cad_links reload the same call returned thirty-one.
+        /// </summary>
+        public static JObject GeometrySource(CadReading r) => new JObject
+        {
+            ["is"] = "the CAD link as Revit loaded it",
+            ["file"] = r.Facts != null ? r.Facts.ExternalPath : null,
+            ["means"] = "the geometry here is the link's, not the file's. Revit does not say when it loaded " +
+                        "it, so a reference edited since then is invisible in the geometry while the text " +
+                        "reader sees it at once. When source_set_sha256 differs from the one recorded with " +
+                        "the elements, or from an earlier reading, reload the link with " +
+                        "horizun_manage_cad_links before trusting these runs.",
+            ["texts_come_from"] = "the drawing file itself, read through its own extractor - a different " +
+                                  "half of the answer, and the one that changes first"
         };
 
         public static double Sagitta(JObject request) => request.Value<double?>("arc_sagitta_mm") ?? 5.0;
@@ -753,8 +789,13 @@ namespace Horizun.Revit.Commands
                     ["key"] = cacheKey,
                     ["sources_checked"] = true,
                     ["contract"] = mustBeCurrent ? "current_sources" : "read_now",
-                    ["means"] = "this reading was made now, from the drawing: the CAD instance's file was hashed and the " +
-                                "text reader checked its own dependencies. " +
+                    // WHAT WAS ACTUALLY RE-READ. This used to say "made now, from the drawing", which is true
+                    // of the texts and NOT of the geometry: that comes from the link, as Revit loaded it.
+                    // See GeometrySource - and source_set_sha256, which is what moves when a reference does.
+                    ["geometry_was_re_read"] = false,
+                    ["means"] = "the texts were read now, from the drawing: the CAD instance's file was hashed and the " +
+                                "text reader checked its own dependencies. The GEOMETRY is the link's, as Revit loaded " +
+                                "it - see geometry_source. " +
                                 (mustBeCurrent
                                     ? "require_current_sources was declared, so it was neither taken from a snapshot nor kept as one."
                                     : "A later page that names its analysis_fingerprint CONTINUES this snapshot without re-reading " +
