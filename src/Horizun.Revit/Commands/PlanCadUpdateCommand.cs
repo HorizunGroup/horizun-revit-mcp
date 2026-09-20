@@ -674,6 +674,43 @@ namespace Horizun.Revit.Commands
         }
 
         /// <summary>
+        /// <summary>
+        /// Every fitting joined to an end of this element, by id and type. A run with none of these can
+        /// be re-shaped where it stands; a run with any cannot, until they are released.
+        /// </summary>
+        private static JArray FittingsOnEndsOf(Document doc, long elementId)
+        {
+            var found = new JArray();
+            var seen = new HashSet<long>();
+            try
+            {
+                Element e = !Rid.CanRepresent(elementId) ? null : doc.GetElement(Rid.Make(elementId));
+                if (e == null) return found;
+                foreach (Connector c in MepConnect.ConnectorsOf(e))
+                {
+                    bool connected;
+                    try { connected = c.IsConnected; } catch { continue; }
+                    if (!connected) continue;
+                    foreach (Connector r in c.AllRefs)
+                    {
+                        if (r?.Owner == null || r.Owner.Id == e.Id) continue;
+                        long id = Rid.Value(r.Owner.Id);
+                        if (!seen.Add(id)) continue;
+                        var sym = doc.GetElement(r.Owner.GetTypeId()) as ElementType;
+                        found.Add(new JObject
+                        {
+                            ["element_id"] = id,
+                            ["what"] = sym == null ? r.Owner.Name : sym.FamilyName + ": " + sym.Name,
+                            ["joins_at_mm"] = new JArray(Math.Round(CadUnits.FeetToMm(c.Origin.X), 1),
+                                                         Math.Round(CadUnits.FeetToMm(c.Origin.Y), 1))
+                        });
+                    }
+                }
+            }
+            catch { }
+            return found;
+        }
+
         /// The executable half: creates through horizun_create_elements, moves
         /// through horizun_transform_elements set_curve. Everything a person must
         /// decide is deliberately absent.
@@ -689,6 +726,10 @@ namespace Horizun.Revit.Commands
             withdrawn = new JArray();
             resolved = new JArray();
             var actions = new JArray();
+            // THE FITTINGS A CALLER HAS AGREED TO LOSE, by id. Nothing else is ever released: see the
+            // hold below, and the ids it publishes with what they will be replaced by.
+            var releaseFittings = new HashSet<long>((request["release_fittings"] as JArray ?? new JArray())
+                .Select(x => (long?)x).Where(x => x.HasValue).Select(x => x.Value));
 
             // THE CREATES, BUILT AS THE PLAN ROUTE BUILDS THEM. The candidates are
             // the drawing's own, looked up by id; the conversion rules turn them
@@ -917,6 +958,57 @@ namespace Horizun.Revit.Commands
                                 ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray((long)gone["element_id"])
                             }
                         });
+                // A RUN JOINED TO A FITTING CANNOT BE RE-SHAPED WHILE THE JOIN STANDS. Revit answers a
+                // LocationCurve set on a connected MEP curve with "the family is connected in a network
+                // and can no longer keep the connectivity" - a modal question, cancelled, and the whole
+                // update rolls back (MEASURED on the fixture: the revision that re-cuts a piece with an
+                // elbow at each end). The fittings have to be released first, and a fitting cannot be
+                // released and put back: Revit rebuilds it where the new ends meet, with a new id.
+                //
+                // So this is NEVER automatic. A fitting may be one somebody placed and tuned, and the
+                // bridge cannot tell that from one it placed itself - nothing stamps a fitting. The
+                // division is HELD, the fittings are named with the ids they will lose, and a caller who
+                // wants it releases exactly those by id. Then the delete goes in first, as a verified
+                // delete of those elements, and the re-shape follows.
+                JArray joined = FittingsOnEndsOf(doc, a.ElementId.Value);
+                if (joined.Count > 0)
+                {
+                    var release = joined.OfType<JObject>().Select(x => x.Value<long>("element_id")).ToList();
+                    bool allReleased = release.All(releaseFittings.Contains);
+                    a.Evidence["fittings_in_the_way"] = joined;
+                    if (!allReleased)
+                    {
+                        a.Automatic = false;
+                        a.Evidence["held_because"] = "fittings_must_be_released_first";
+                        a.Evidence["release_fittings_to_proceed"] = new JArray(release);
+                        a.Evidence["id_substitutions"] = new JArray(joined.OfType<JObject>().Select(x =>
+                            (JToken)new JObject
+                            {
+                                ["element_id"] = x["element_id"],
+                                ["what"] = x["what"],
+                                ["keeps_its_id"] = false,
+                                ["why"] = "a fitting cannot be released and put back: re-connecting builds " +
+                                          "a new one where the new ends meet",
+                                ["rebuilt_by"] = "horizun_cad_connect, after this update is applied"
+                            }));
+                        a.Says += " HELD: " + release.Count + " fitting(s) join this run and Revit will not " +
+                                  "re-shape a run whose ends are in a network. Release them by id in " +
+                                  "release_fittings and they are deleted before the re-shape, then " +
+                                  "horizun_cad_connect rebuilds the junctions from the drawing - with new " +
+                                  "ids, which is why this is a decision and not an automatic step.";
+                        continue;
+                    }
+                    actions.Add(new JObject
+                    {
+                        ["key"] = "cad-update-release-" + a.ElementId.Value,
+                        ["tool"] = "horizun_delete_verified",
+                        ["arguments"] = new JObject
+                        {
+                            ["target_document"] = target, ["mode"] = "ids", ["ids"] = new JArray(release.Select(x => (JToken)x))
+                        }
+                    });
+                    a.Evidence["fittings_released"] = new JArray(release);
+                }
                 actions.Add(new JObject
                 {
                     ["key"] = "cad-update-move-" + (n++),
