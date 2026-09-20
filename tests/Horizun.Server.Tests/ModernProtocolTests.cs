@@ -89,10 +89,10 @@ namespace Horizun.Server.Tests
                 RequestEnvelope.Read("tools/list", ModernMeta("1900-01-01")));
 
             Assert.Equal(McpErrorCodes.UnsupportedProtocolVersion, error.Code);
-            Assert.Equal("1900-01-01", (string)error.Data["requested"]);
+            Assert.Equal("1900-01-01", (string)error.ErrorData["requested"]);
 
             var supported = new List<string>();
-            foreach (JToken t in (JArray)error.Data["supported"]) supported.Add((string)t);
+            foreach (JToken t in (JArray)error.ErrorData["supported"]) supported.Add((string)t);
             Assert.Contains("2026-07-28", supported);
             Assert.Contains("2025-11-25", supported);
         }
@@ -116,7 +116,7 @@ namespace Horizun.Server.Tests
             // nothing has defeated the probe.
             var error = Assert.Throws<McpDataError>(() => RequestEnvelope.Read("server/discover", new JObject()));
             Assert.Equal(McpErrorCodes.InvalidParams, error.Code);
-            Assert.NotNull(error.Data["supported"]);
+            Assert.NotNull(error.ErrorData["supported"]);
         }
 
         [Fact]
@@ -144,7 +144,7 @@ namespace Horizun.Server.Tests
 
             Assert.Equal(McpErrorCodes.MissingRequiredClientCapability, error.Code);
 
-            var required = error.Data["requiredCapabilities"] as JObject;
+            var required = error.ErrorData["requiredCapabilities"] as JObject;
             Assert.NotNull(required);
 
             var extensions = required["extensions"] as JObject;
@@ -179,8 +179,8 @@ namespace Horizun.Server.Tests
             };
             var error = Assert.Throws<McpDataError>(() => RequestEnvelope.Read("tools/list", prms));
             Assert.Equal(McpErrorCodes.InvalidParams, error.Code);
-            Assert.Null(error.Data["requiredCapabilities"]);
-            Assert.Equal(RequestEnvelope.ClientCapabilitiesKey, (string)error.Data["field"]);
+            Assert.Null(error.ErrorData["requiredCapabilities"]);
+            Assert.Equal(RequestEnvelope.ClientCapabilitiesKey, (string)error.ErrorData["field"]);
         }
 
         // ---- the property that matters most ----------------------------------------

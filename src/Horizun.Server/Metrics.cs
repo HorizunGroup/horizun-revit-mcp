@@ -58,7 +58,6 @@ namespace Horizun.Server
         public int ResponseBytes;
 
         public int Attempts = 1;
-        public int Retries;
 
         /// <summary>ok | error | cancelled | partial</summary>
         public string Outcome = "ok";
@@ -81,7 +80,6 @@ namespace Horizun.Server
             ["request_bytes"] = RequestBytes,
             ["response_bytes"] = ResponseBytes,
             ["attempts"] = Attempts,
-            ["retries"] = Retries,
             ["outcome"] = Outcome,
             ["started_utc"] = StartedUtc,
             ["finished_utc"] = FinishedUtc,

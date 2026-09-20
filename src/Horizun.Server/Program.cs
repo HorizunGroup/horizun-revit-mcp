@@ -269,7 +269,7 @@ namespace Horizun.Server
                     catch (Protocol.McpDataError de)
                     {
                         Log.Warn("protocol metadata refused: " + de.Message);
-                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.Data);
+                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.ErrorData);
                         continue;
                     }
 
@@ -342,7 +342,7 @@ namespace Horizun.Server
                     }
                     catch (Protocol.McpDataError de)
                     {
-                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.Data);
+                        if (!isNotification) _writer.TryError(id, de.Code, de.Message, de.ErrorData);
                     }
                     catch (McpError me)
                     {

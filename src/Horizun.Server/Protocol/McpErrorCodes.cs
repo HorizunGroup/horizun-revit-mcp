@@ -146,12 +146,20 @@ namespace Horizun.Server.Protocol
     internal sealed class McpDataError : System.Exception
     {
         public int Code { get; }
-        public JObject Data { get; }
+
+        /// <summary>
+        /// The JSON-RPC `data` member. NOT called Data: System.Exception already has a Data
+        /// property - an IDictionary for arbitrary annotations - and a second member of the same
+        /// name on a subclass reads as the same thing at every call site while being a different
+        /// one. The compiler says so (CS0114) and it is right; `new` would silence the warning and
+        /// keep the hazard.
+        /// </summary>
+        public JObject ErrorData { get; }
 
         public McpDataError(int code, string message, JObject data) : base(message)
         {
             Code = code;
-            Data = data;
+            ErrorData = data;
         }
     }
 }
