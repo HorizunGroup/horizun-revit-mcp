@@ -446,8 +446,16 @@ namespace Horizun.Revit.Core
             // Null means "this machine has not read THIS set", which the coherence rules report as
             // unknown with a remedy: read the drawing once and ask again. A number computed from another
             // folder's reference list is worse than no number, because it looks like one.
-            JObject valid = sides.FirstOrDefault(x => (x["dependencies"] as JArray)?.Count > 0 &&
-                                                      ChangedDependencies(x, here).Count == 0);
+            // THE FULLEST READING THAT STILL DESCRIBES THIS FOLDER. A drawing with no external
+            // references has a perfectly good set identity - itself - and demanding a dependency list
+            // left every such drawing permanently unidentifiable, which measured as "nothing can ever be
+            // applied" on the first synthetic fixture that had no xrefs. But an EMPTY list also
+            // validates trivially against a folder that does have references, so the empty reading must
+            // never win over one that lists them: the most dependencies, among the readings that all
+            // still hash as recorded from here.
+            JObject valid = sides.Where(x => ChangedDependencies(x, here).Count == 0)
+                                 .OrderByDescending(x => (x["dependencies"] as JArray)?.Count ?? 0)
+                                 .FirstOrDefault();
             foreach (JObject side in valid != null ? new[] { valid } : new JObject[0])
             {
                 var parts = new List<string>();
@@ -463,7 +471,10 @@ namespace Horizun.Revit.Core
                     parts.Add(((string)dep["name"] ?? "").ToLowerInvariant() + "=" +
                               (path == null ? "(absent)" : Sha256(path) ?? "(unreadable)"));
                 }
-                if (parts.Count == 0) return null;
+                // A drawing that references nothing IS its own set, and says so distinctly: the marker
+                // keeps "read, and it has no references" apart from "never read", which is null.
+                if (parts.Count == 0)
+                    return "set:" + Hash(hostSha.ToLowerInvariant() + "|(no external references)");
                 parts.Sort(StringComparer.Ordinal);
                 return "set:" + Hash(hostSha.ToLowerInvariant() + "|" + string.Join("|", parts));
             }
