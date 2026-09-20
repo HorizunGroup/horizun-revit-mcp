@@ -105,10 +105,12 @@ $lock = Enter-HzOwnedLock -Year $Year
 try {
     switch ($Operation) {
         'status' {
-            $s = Read-HzOwnedState $Year
-            if (-not $s) { "no Revit $Year session is recorded"; break }
-            [ordered]@{ phase = $s.phase; pid = $s.identity.pid; started = $s.started_utc
-                        registered = @($s.ledger.documents | ForEach-Object { $_.title }) } | ConvertTo-Json -Depth 5
+            # WHAT IS TRUE NOW, not what the last command wrote down. The recorded phase says what
+            # somebody intended; the process and the environment are asked of the machine, and an
+            # absent Revit is never taken as proof that the year was put back.
+            $sit = Get-HzOwnedSituation -Probes $probes -Year $Year
+            if (-not $sit.recorded) { $sit.why; break }
+            $sit | ConvertTo-Json -Depth 6
         }
         'wait' {
             # Resume a recorded session whose start was interrupted before the bridge answered.

@@ -223,6 +223,87 @@ try {
     $extra = @($sent | Where-Object { $_ -notin $allowed } | Sort-Object -Unique)
     Check 'the close the module sends uses only keys the contract accepts for close' ($m.Success -and $sent.Count -gt 0 -and $extra.Count -eq 0) ("not accepted: " + ($extra -join ', '))
 
+    # ---------------------------------------------------------------------------------------------
+    # INTERRUPTION. Everything above assumes the commands ran to the end. These do not.
+    #
+    # A start has stages - snapshot the year, enable the development manifest, start Revit, record
+    # WHICH process that is, wait for the bridge - and a session can be interrupted between any two
+    # of them: the machine restarts, the shell is closed, the process is killed. What must hold is
+    # that the record says which stage was reached, that "the Revit is gone" is DETECTED rather than
+    # assumed, that putting the year back is idempotent and verified against files and hashes, and
+    # that none of it ever touches somebody else's Revit.
+    # ---------------------------------------------------------------------------------------------
+
+    # 14. Interrupted between 'enabled' and 'running': the manifest is in place and no Revit was recorded.
+    Reset-State
+    $f = New-Fake
+    $snap = Get-HzYearStateAtStart -Probes $f.probes -Year '2099'
+    $null = & $f.probes.Enable '2099'
+    Save-HzOwnedState '2099' ([ordered]@{ schema = 'horizun.owned-session/1'; year = '2099'; dir = $root
+                                          phase = 'enabled'; started_utc = (Get-Date).ToUniversalTime().ToString('o')
+                                          server_exe = 'x'; fail_action = ''; state_at_start = $snap
+                                          identity = $null; ledger = $null })
+    $sit = Get-HzOwnedSituation -Probes $f.probes -Year '2099'
+    Check 'an interrupted start is reported as never_started, not as running' ($sit.recorded.phase -eq 'enabled' -and $sit.process.state -eq 'never_started')
+    Check 'and it says the development manifest is still in place' ($sit.environment.development_manifest_still_in_place)
+    Check 'and it names what has to happen next' (@($sit.needs).Count -ge 1 -and ($sit.needs -join ' ') -match 'run stop')
+    $r = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'stop restores a session that never started Revit, and closes nothing' ($r.ok -and ($r.restore.state -eq 'restored') -and ($f.state.closeCalls.Count -eq 0))
+    Check 'and the state is gone afterwards' (-not (Test-Path -LiteralPath (Get-HzOwnedStatePath '2099')))
+
+    # 15. Stop is idempotent: running it again touches nothing and says so.
+    $again = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'a second stop is a no-op that reports no_session' ($again.ok -and ($again.state -eq 'no_session') -and ($f.state.restoreCalls -eq 1))
+
+    # 16. OUR OWN PROCESS VANISHED. The session is recorded as running; the Revit it started is gone.
+    Reset-State
+    $f = New-Fake
+    $s = StartFake $f
+    $f.state.helper.Kill(); $f.state.helper.WaitForExit(5000) | Out-Null
+    $sit = Get-HzOwnedSituation -Probes $f.probes -Year '2099'
+    Check 'a vanished own process is DETECTED rather than reported as running' (($sit.recorded.phase -eq 'running') -and ($sit.process.state -eq 'exited'))
+    Check 'the environment is reported separately from the process' ($sit.environment.development_manifest_still_in_place -and ($sit.environment.PSObject.Properties.Name -contains 'installation_matches_start' -or $sit.environment.ContainsKey('installation_matches_start')))
+    $r = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'stop over a vanished process restores the year and clears the record' ($r.ok -and ($r.close.state -eq 'already_exited') -and ($r.restore.state -eq 'restored'))
+    Stop-Helpers
+
+    # 17. A RESTORE IS NEVER MADE UNDER SOMEBODY ELSE'S REVIT - not even when ours is the one that died.
+    #     This is the case the rule exists for: our process is gone, so it is tempting to conclude the
+    #     year is free. It is not: a personal Revit of that year is running, and putting a manifest back
+    #     under it changes what THAT session would load.
+    Reset-State
+    $f = New-Fake
+    $s = StartFake $f
+    $f.state.helper.Kill(); $f.state.helper.WaitForExit(5000) | Out-Null
+    $f.state.revit = @([pscustomobject]@{ Id = 999001; ProcessName = 'Revit'; Path = 'C:\Program Files\Autodesk\Revit 2099\Revit.exe' })
+    $r = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'a foreign Revit of the year defers the restore' ((-not $r.ok) -and ($r.restore.state -like 'deferred_revit*'))
+    Check 'nothing was restored while it runs' ($f.state.restoreCalls -eq 0 -and $f.state.manifest.dev_present)
+    Check 'the record is kept as restore_pending with recovery written' (((Read-HzOwnedState '2099').phase -eq 'restore_pending') -and $r.recovery_pending -and (Test-Path -LiteralPath $r.recovery_pending))
+    $sit = Get-HzOwnedSituation -Probes $f.probes -Year '2099'
+    Check 'and status shows the pending recovery rather than a clean machine' ($sit.recovery_pending -and $sit.environment.development_manifest_still_in_place)
+    # and once it is gone, the SAME stop finishes the job - idempotent, not a special repair path
+    $f.state.revit = @()
+    $r2 = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'the same stop completes once the foreign Revit is gone' ($r2.ok -and ($r2.restore.state -eq 'restored') -and (-not (Test-Path -LiteralPath $r.recovery_pending)))
+    Stop-Helpers
+
+    # 18. AN ABSENT REVIT IS NOT EVIDENCE THAT THE YEAR WAS PUT BACK. Nothing is running and the
+    #     installed DLL is NOT the one the snapshot recorded; a status that answered from the absence
+    #     of a process would call this restored.
+    Reset-State
+    $f = New-Fake
+    $s = StartFake $f
+    $f.state.helper.Kill(); $f.state.helper.WaitForExit(5000) | Out-Null
+    $f.probes.InstalledDllState = { param($Year) return @{ present = $true; sha256 = 'something-else'; error = $null; path = 'C:\nowhere\x.dll' } }.GetNewClosure()
+    $sit = Get-HzOwnedSituation -Probes $f.probes -Year '2099'
+    Check 'the installation is checked by hash, not by the absence of Revit' (-not $sit.environment.installation_matches_start)
+    Check 'and the difference is named' (($sit.needs -join ' ') -match 'not as it was at start')
+    $r = Stop-HzOwnedSession -Probes $f.probes -Year '2099' -ExitTimeoutSec 20
+    Check 'a restore that cannot be verified against the snapshot is not claimed' (-not $r.ok)
+    Check 'and it leaves the record standing for a person' ((Read-HzOwnedState '2099') -and ((Read-HzOwnedState '2099').phase -eq 'restore_pending'))
+    Stop-Helpers
+
     # 12. The migrated scripts: no name-based kill, no MCP server termination, no discard of what is not registered.
     $scripts = [ordered]@{
         'live-cycle.ps1'               = Join-Path (Split-Path -Parent $PSScriptRoot) 'live-cycle.ps1'

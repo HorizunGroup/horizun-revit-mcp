@@ -929,7 +929,15 @@ namespace Horizun.Revit.Commands
         private static bool FaultInjected(string key)
         {
             string named = Environment.GetEnvironmentVariable("HORIZUN_TEST_FAIL_ACTION");
-            return !string.IsNullOrWhiteSpace(named) && string.Equals(named.Trim(), key, StringComparison.Ordinal);
+            if (string.IsNullOrWhiteSpace(named)) return false;
+            named = named.Trim();
+            // A TRAILING * MATCHES A PREFIX. The seam is armed when Revit STARTS and an action's key
+            // carries the stage number the plan happened to emit - which a harness cannot know before
+            // it has planned. Naming "cad-update-create*" is how a test says "the create, whichever
+            // stage it lands in" without guessing, and an exact name still means exactly that name.
+            if (named.EndsWith("*", StringComparison.Ordinal))
+                return key != null && key.StartsWith(named.Substring(0, named.Length - 1), StringComparison.Ordinal);
+            return string.Equals(named, key, StringComparison.Ordinal);
         }
 
         /// <summary>The element this apply created for a candidate, through the candidate index.</summary>

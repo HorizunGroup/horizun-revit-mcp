@@ -746,29 +746,56 @@ namespace Horizun.Revit.Commands
                     Element fitting = null;
                     var memberIds = new List<long>();
                     foreach (Element e in j.Elements) memberIds.Add(Rid.Value(e.Id));
+                    // FOUND THROUGH THE MEMBERS, NOT AT THE DRAWN POINT.
+                    //
+                    // MEASURED: this searched for a member connector within 50 mm of the junction the
+                    // drawing draws, and found none - because inserting an elbow TRIMS both runs back by
+                    // its own radius. The ends are then 380 mm from the corner, the search came up empty
+                    // every time, and every fitting this bridge placed went unstamped and read back as
+                    // origin_unknown. Nothing was wrong with the stamping; the lookup was asking the
+                    // wrong question.
+                    //
+                    // The right question is about the network, not about geometry: the fitting that
+                    // serves this junction is the one element, not itself a member, that BOTH members
+                    // hold. A fitting holding only one member is a candidate of last resort - that is
+                    // what a chain looks like from here - and it is only taken when nothing holds both.
+                    var heldByBoth = new Dictionary<long, Element>();
+                    var heldByOne = new Dictionary<long, Element>();
+                    var seenPerMember = new Dictionary<long, HashSet<long>>();
                     foreach (Element e in j.Elements)
                     {
-                        MepConnectorPick pick = MepConnect.Nearest(e, j.At, Math.Max(tolerance, 50.0));
-                        if (!pick.Found || pick.Connector == null) continue;
-                        try
+                        long me = Rid.Value(e.Id);
+                        ConnectorManager cm = MepFacts.ManagerOf(e);
+                        if (cm == null) continue;
+                        foreach (Connector c in cm.Connectors)
                         {
-                            foreach (Connector r in pick.Connector.AllRefs)
+                            try
                             {
-                                if (r?.Owner == null || memberIds.Contains(Rid.Value(r.Owner.Id))) continue;
-                                fitting = r.Owner;
-                                break;
+                                if (!c.IsConnected) continue;
+                                foreach (Connector r in c.AllRefs)
+                                {
+                                    if (r?.Owner == null) continue;
+                                    long other = Rid.Value(r.Owner.Id);
+                                    if (other == me || memberIds.Contains(other)) continue;
+                                    HashSet<long> by;
+                                    if (!seenPerMember.TryGetValue(other, out by))
+                                        seenPerMember[other] = by = new HashSet<long>();
+                                    by.Add(me);
+                                    if (by.Count >= 2) heldByBoth[other] = r.Owner;
+                                    else heldByOne[other] = r.Owner;
+                                }
                             }
+                            catch { }
                         }
-                        catch { }
-                        if (fitting != null) break;
                     }
+                    fitting = heldByBoth.Values.FirstOrDefault() ?? heldByOne.Values.FirstOrDefault();
                     if (fitting == null)
                     {
                         rows.Add(new JObject
                         {
                             ["junction"] = j.Id, ["stamped"] = false,
-                            ["means"] = "no fitting was found joined to these members at the drawn point, so " +
-                                        "there was nothing to stamp. What the junction row says stands."
+                            ["means"] = "no element outside the members is held by either of them, so there " +
+                                        "is no fitting here to stamp. What the junction row says stands."
                         });
                         continue;
                     }

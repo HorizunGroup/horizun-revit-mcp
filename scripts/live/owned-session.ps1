@@ -202,6 +202,78 @@ function Register-HzOwnedDocument {
     return $r
 }
 
+function Get-HzOwnedSituation {
+    <#
+    .SYNOPSIS
+      What is ACTUALLY true right now about a recorded session, as opposed to what
+      the last command managed to write down before it was interrupted. Changes
+      nothing.
+
+      MEASURED: 'status' printed the recorded phase and nothing else, so a session
+      whose Revit had gone - closed by hand, crashed, or killed by a restart -
+      still read 'running'. A record is what somebody INTENDED; this asks the
+      machine. It reports three separate things and does not merge them:
+
+        recorded    the phase the state file holds
+        process     alive | exited | not_ours | never_started, asked of the pid
+        environment whether the year's manifest is back as the snapshot found it,
+                    verified against files and hashes - NEVER inferred from the
+                    absence of a Revit, which is the check this exists to refuse
+
+      Returns @{ recorded; process; environment; recovery_pending; needs }.
+    #>
+    param([Parameter(Mandatory)]$Probes, [Parameter(Mandatory)][string]$Year)
+    $state = Read-HzOwnedState $Year
+    if (-not $state) { return @{ recorded = $null; why = "no Revit $Year session is recorded" } }
+
+    # PROJECTED TO WHAT A READER NEEDS. Get-HzSessionIdentityState hands back the live Process object
+    # with it, and printing that buries the one word this exists to say under a page of handles.
+    $process = if (-not $state.identity) { @{ state = 'never_started'
+                                              why = 'the session was interrupted before Revit was started or recorded' } }
+               else {
+                   $id = Get-HzSessionIdentityState -Probes $Probes -Identity $state.identity
+                   # Get-HzField, not dot access: strict mode makes a missing property THROW, and an
+                   # identity state that carries no 'why' (an alive process has nothing to explain) is
+                   # the ordinary case, not an error.
+                   @{ state = [string](Get-HzField $id 'state'); why = [string](Get-HzField $id 'why')
+                      pid = [int]$state.identity.pid; exe = [string]$state.identity.exe
+                      started = [string]$state.identity.start_time }
+               }
+
+    # THE ENVIRONMENT, BY FILES AND HASHES. Test-HzInstallationMatchesStart compares
+    # the installed manifest and its DLL against the snapshot taken before anything
+    # was enabled; an absent Revit proves nothing about either.
+    $now = @{} + (& $Probes.ManifestState $Year)
+    $now['installed_dll_state'] = (& $Probes.InstalledDllState $Year)
+    $matches = if ($state.state_at_start) { Test-HzInstallationMatchesStart -StateAtStart $state.state_at_start -Now $now }
+               else { @{ ok = $false; state = 'restore_unverifiable'
+                         why = 'no start snapshot was captured; nothing can be verified against it' } }
+    $devLeft = ((Get-HzField $now 'dev_present') -or (Get-HzField $now 'aside_present'))
+    $environment = @{ development_manifest_still_in_place = [bool]$devLeft
+                      installation_matches_start = [bool]$matches.ok
+                      state = [string]$matches.state; why = [string]$matches.why }
+
+    $pendingPath = Join-Path (Get-HzOwnedRoot) "recovery-pending-$Year.json"
+    $pending = if (Test-Path -LiteralPath $pendingPath) { Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json } else { $null }
+
+    $needs = @()
+    if ($process.state -eq 'exited' -or $process.state -eq 'never_started') {
+        if ($devLeft) { $needs += 'the Revit this session started is gone and the development manifest is still in place: run stop, which restores it' }
+        else { $needs += 'the Revit this session started is gone and the year is already restored: run stop to clear the record' }
+    }
+    if ($process.state -eq 'not_ours') { $needs += 'the recorded pid is NOT the process this session started; stop will not touch it' }
+    # A LIVE SESSION IS SUPPOSED TO HAVE THE DEVELOPMENT MANIFEST IN PLACE. Saying so as a "need"
+    # every time would train a reader to skip the list, which is the one place a real difference shows.
+    if ((-not $environment.installation_matches_start) -and ($process.state -ne 'alive')) {
+        $needs += ('the installation is not as it was at start: ' + $environment.state)
+    }
+
+    return @{ recorded = @{ phase = [string]$state.phase; started_utc = [string]$state.started_utc
+                            pid = if ($state.identity) { [int]$state.identity.pid } else { $null }
+                            documents = @(if ($state.ledger) { $state.ledger.documents | ForEach-Object { $_.title } }) }
+              process = $process; environment = $environment; recovery_pending = $pending; needs = @($needs) }
+}
+
 function Stop-HzOwnedSession {
     <#
     .SYNOPSIS
