@@ -542,6 +542,35 @@ namespace Horizun.Revit.Commands
                 // created, what a decision would remove, which fittings and joins are in the way, and
                 // the line before against the lines after. Assembled from the same actions, never
                 // deciding anything they do not.
+                // WHY EACH HELD ROW IS HELD, IN ITS OWN SENTENCE.
+                //
+                // MEASURED: a revision that divided a run on a layer whose rule declares a FALL came
+                // back with two rows not automatic and needs_a_person: 2, and their `says` read exactly
+                // like the four automatic ones beside them. The reason was there - in unresolved_facts,
+                // and in geometry_is saying the run would be built FLAT - but a reader scanning holds
+                // never reaches it. The product was right and unreadable, which for a person deciding
+                // is the same as silent.
+                ["held_rows"] = new JArray(update.Actions.Where(a => !a.Automatic && a.Kind != "leave")
+                    .Select(a => (JToken)new JObject
+                    {
+                        ["kind"] = a.Kind,
+                        ["element_id"] = a.ElementId,
+                        ["candidate_id"] = a.CandidateId,
+                        ["layer"] = a.Evidence?["layer"],
+                        ["held_because"] = a.Evidence?["held_because"] ??
+                                           (a.Evidence?["split_held"] as JObject)?["reason"] ??
+                                           ((a.Evidence?["unresolved_facts"] as JArray)?.Count > 0
+                                                ? (JToken)"unresolved_facts" : null) ??
+                                           (a.Evidence?["withdrawn"] != null ? (JToken)"withdrawn" : null) ??
+                                           (a.Evidence?["occupied_by"] != null ? (JToken)"occupied_by" : null),
+                        ["what_it_is_waiting_for"] = a.Evidence?["unresolved_facts"] ??
+                                                     (a.Evidence?["split_held"] as JObject)?["detail"] ??
+                                                     a.Evidence?["withdrawn"],
+                        ["geometry_is"] = a.Evidence?["geometry_is"]
+                    })),
+                ["held_rows_mean"] = "every row this plan will NOT carry out on its own, with the reason in " +
+                                     "the same place. A row whose held_because is null is a gap in this " +
+                                     "planner, not a row without a reason - report it.",
                 ["divisions"] = CadRevisionShapes.Describe(doc, update, subjects),
                 ["divisions_mean"] = "one row per split or merge, held or accepted. An id in 'keeps' is an id " +
                                      "this operation does not have to give up; 'id_substitutions' is where an " +
