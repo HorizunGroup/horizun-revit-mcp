@@ -174,7 +174,7 @@ namespace Horizun.Revit.Commands
             ["geometry_source"] = GeometrySource(r.Facts != null ? r.Facts.ExternalPath : null),
             // THE SAME QUESTION THE PLAN ASKS, asked here too: horizun_cad_connect acts on what this
             // reading says, and a network read from an older issue joins runs that the drawing has moved.
-            ["coherence"] = CadSourceCoherence.Evaluate(r.Document, r.Instance, r.Facts, r.Harvest, false),
+            ["coherence"] = CadSourceCoherence.Evaluate(r.Document, r.Instance, r.Facts, false),
             ["ir_fingerprint"] = r.Ir.Fingerprint(),
             ["ir_schema_version"] = r.Ir.SchemaVersion,
             ["reader"] = r.Ir.Reader.ToJson(),

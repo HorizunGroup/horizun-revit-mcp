@@ -439,7 +439,7 @@ namespace Horizun.Revit.Commands
             // the sizes are the file read now. Publishing both identities made a mismatch observable; it did
             // not make building from one safe. See Core/CadSourceCoherence.cs - only a state this bridge can
             // DEMONSTRATE grants applicable, and everything else keeps the diagnosis and withholds it.
-            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, harvest, false);
+            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, false);
             report["coherence"] = coherence;
             bool applicable = coherence.Value<bool?>("applicable") ?? false;
             report["applicable"] = applicable;

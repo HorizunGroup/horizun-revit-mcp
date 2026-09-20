@@ -791,7 +791,11 @@ namespace Horizun.Revit.Commands
             {
                 Element e = doc.GetElement(Rid.Make(instanceId));
                 string uid = e?.UniqueId;
-                string print = knownFingerprint ?? Fingerprint(doc, instanceId);
+                // THE CANONICAL ONE, not the reload's own: the reload fingerprints with its own parameters
+                // to answer "did the geometry change", and a record written from that number could not be
+                // compared with what a plan computes later. Measured: that mismatch read as "somebody
+                // reloaded this link elsewhere" on a link nobody had touched.
+                string print = CadSourceCoherence.GeometryFingerprint(doc, e);
                 string path = verified?.Value<string>("external_path");
                 string sha = verified?.Value<string>("file_sha256");
                 CadLinkLoads.Record(doc, uid, instanceId, path, sha, print, by);

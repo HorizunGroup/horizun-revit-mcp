@@ -268,7 +268,7 @@ namespace Horizun.Revit.Commands
             // trust. See Core/CadSourceCoherence.cs.
             Element instanceElement = null;
             try { instanceElement = doc.GetElement(Rid.Make(instanceId)); } catch { }
-            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, null, false);
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, false);
             string statePlanned = binding.Value<string>("coherence_state");
             bool applicableNow = coherenceNow.Value<bool?>("applicable") ?? false;
             if (!applicableNow)

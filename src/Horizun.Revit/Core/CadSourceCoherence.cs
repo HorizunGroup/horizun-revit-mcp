@@ -56,25 +56,25 @@ namespace Horizun.Revit.Core
         public const string Snapshot = "continued_snapshot";
 
         /// <summary>
-        /// The same surrogates horizun_query_cad publishes, so a fingerprint taken here and one taken by
-        /// horizun_manage_cad_links across a reload are the same number and can be compared.
+        /// ONE HARVEST, ALWAYS THE SAME ONE. The fingerprint only means anything when the two sides were
+        /// taken the same way, and the first thing the live cases caught was that they were not: the record
+        /// was written from a harvest capped at 20 000 primitives with a 5 mm sagitta, and the plan compared
+        /// it against ITS harvest, taken with the requirement set's sagitta and the plan's own cap. A link
+        /// nobody had touched came back as "changed after this bridge recorded it" - a false alarm, in the
+        /// direction that withholds permission, which is how it was found rather than believed.
+        ///
+        /// So the caller's harvest is never used here, however convenient: this takes its own, with the
+        /// constants below, and horizun_manage_cad_links records it with the same call.
         /// </summary>
+        public const double SagittaMm = 5.0;
+        public const int MaxPrimitives = 20000;
+
         public static string GeometryFingerprint(Document doc, Element instance)
         {
             try
             {
                 if (doc == null || instance == null) return null;
-                CadHarvest harvest = CadGeometryHarvest.Harvest(doc, instance, 5.0, 20000);
-                return GeometryFingerprint(harvest);
-            }
-            catch { return null; }
-        }
-
-        public static string GeometryFingerprint(CadHarvest harvest)
-        {
-            try
-            {
-                if (harvest == null) return null;
+                CadHarvest harvest = CadGeometryHarvest.Harvest(doc, instance, SagittaMm, MaxPrimitives);
                 return CadIdentity.SetFingerprint(harvest.Segments.Select(seg =>
                     CadIdentity.SurrogateUndirected(null, seg.Layer, "root", seg.SourceKind,
                         new List<CadPoint> { seg.A, seg.B }, 1.0)));
@@ -83,12 +83,10 @@ namespace Horizun.Revit.Core
         }
 
         /// <summary>
-        /// Judge one CAD instance. <paramref name="harvest"/> may be the one the caller already took -
-        /// re-harvesting a 42 000 segment drawing to answer a question the reading has already paid for
-        /// would double the cost of every plan.
+        /// Judge one CAD instance. It takes its own harvest on purpose - see GeometryFingerprint.
         /// </summary>
         public static JObject Evaluate(Document doc, Element instance, CadInstanceFacts facts,
-                                       CadHarvest harvest, bool fromSnapshot)
+                                       bool fromSnapshot)
         {
             var o = new JObject();
             string uid = null;
@@ -139,7 +137,7 @@ namespace Horizun.Revit.Core
                 ["source_set_sha256"] = record["source_set_sha256"]
             };
 
-            string printNow = GeometryFingerprint(harvest) ?? GeometryFingerprint(doc, instance);
+            string printNow = GeometryFingerprint(doc, instance);
             string printThen = record.Value<string>("geometry_fingerprint");
             o["geometry_fingerprint"] = new JObject { ["when_loaded"] = printThen, ["now"] = printNow };
             if (string.IsNullOrWhiteSpace(printThen) || string.IsNullOrWhiteSpace(printNow) ||
