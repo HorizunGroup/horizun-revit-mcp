@@ -115,17 +115,27 @@ namespace Horizun.Revit.Core
             {
                 o["state"] = NotAligned;
                 o["applicable"] = false;
-                o["why"] = "a_reference_of_the_drawing_changed";
+                bool missing = (setState["absent"] as JArray)?.Count > 0 &&
+                               (setState["changed"] as JArray)?.Count == 0;
+                o["why"] = missing ? "a_reference_of_the_drawing_is_missing" : "a_reference_of_the_drawing_changed";
                 o["differs"] = new JObject
                 {
                     ["source_set_when_loaded"] = record["source_set_sha256"],
                     ["source_set_now"] = "(not computable until the drawing is read again)",
-                    ["references_that_changed"] = setState["changed"]
+                    ["references_that_changed"] = setState["changed"],
+                    ["references_that_are_missing"] = setState["absent"]
                 };
-                o["means"] = "the drawing was revised through its references after this link was loaded: " +
-                             setState["changed"].ToString(Newtonsoft.Json.Formatting.None) + " no longer " +
-                             "hashes as it did. The geometry here is the older issue.";
-                o["remedy"] = "horizun_manage_cad_links operation=reload on this instance, then plan again.";
+                o["means"] = missing
+                    ? "a reference this drawing needs no longer resolves from beside it: " +
+                      setState["absent"].ToString(Newtonsoft.Json.Formatting.None) + ". Nothing can be read " +
+                      "from a set with a file missing, and the geometry here is whatever was loaded before."
+                    : "the drawing was revised through its references after this link was loaded: " +
+                      setState["changed"].ToString(Newtonsoft.Json.Formatting.None) + " no longer hashes as " +
+                      "it did. The geometry here is the older issue.";
+                o["remedy"] = missing
+                    ? "put the missing reference back where the drawing looks for it, then reload the link " +
+                      "with horizun_manage_cad_links and plan again."
+                    : "horizun_manage_cad_links operation=reload on this instance, then plan again.";
                 return o;
             }
 

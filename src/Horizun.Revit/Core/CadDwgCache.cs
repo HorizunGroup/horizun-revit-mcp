@@ -449,15 +449,26 @@ namespace Horizun.Revit.Core
                 if (ChangedDependencies(side, here).Count == 0) { o["state"] = "known"; return o; }
 
             var names = new JArray();
+            var absent = new JArray();
             foreach (JObject side in sides.Take(1))
                 foreach (JObject dep in ChangedDependencies(side, here).OfType<JObject>())
-                    names.Add(dep["name"] ?? dep["path"] ?? "(unnamed)");
+                {
+                    JToken name = dep["name"] ?? dep["path"] ?? "(unnamed)";
+                    // REVISED AND GONE ARE DIFFERENT NEWS. A file that no longer resolves from beside the
+                    // host is not a new issue of the drawing; it is a reference somebody has to find, and
+                    // saying "no longer hashes as it did" sends them to look for a revision instead.
+                    if (string.Equals((string)dep["now"], "(absent)", StringComparison.Ordinal)) absent.Add(name);
+                    else names.Add(name);
+                }
             o["state"] = "changed";
             o["changed"] = names;
-            o["means"] = "a reading of these host bytes exists here and at least one file it recorded no " +
-                         "longer hashes as it did. The drawing has been revised through its references; " +
-                         "the identity of the set now is not computable until it is read again, and what " +
-                         "moved is named above.";
+            o["absent"] = absent;
+            o["means"] = absent.Count > 0 && names.Count == 0
+                ? "a reading of these host bytes exists here and at least one file it recorded no longer " +
+                  "resolves from beside the host. The reference is missing, not revised."
+                : "a reading of these host bytes exists here and at least one file it recorded no longer " +
+                  "hashes as it did. The drawing has been revised through its references; the identity of " +
+                  "the set now is not computable until it is read again, and what moved is named above.";
             return o;
         }
 
