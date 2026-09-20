@@ -313,6 +313,10 @@ namespace Horizun.Revit.Commands
             };
             JObject drift = ComparePathAndHash(fileFacts, verified);
             if (drift != null) result["disagreement"] = drift;
+            // WHAT THIS LINK WAS LOADED FROM. Revit records no moment for the load, so the one chance to
+            // know which issue of the drawing is in the model is to write it down while doing the loading.
+            // See Core/CadLinkLoads.cs; a plan asks this question of every instance it reads.
+            result["load_recorded"] = RecordLoad(doc, Rid.Value(created), verified, "horizun_manage_cad_links add");
             ApplicationOutcome.StampApplied(result, "Committed", 1, 1, 1, 0, 0, 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
@@ -425,6 +429,7 @@ namespace Horizun.Revit.Commands
                                       "implying work happened.",
                 ["api_limits"] = ApiLimits()
             };
+            result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links reload", afterPrint);
             ApplicationOutcome.StampApplied(result, "Committed", 1, 1, 1, 0, 0, 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
@@ -773,6 +778,44 @@ namespace Horizun.Revit.Commands
         /// A fingerprint over the geometry Revit hands back for this instance -
         /// the only post-condition a CAD reload actually has.
         /// </summary>
+        /// <summary>
+        /// Write down which issue of the drawing this link now holds: the file it resolved to, the identity
+        /// of the whole source set, and a fingerprint of the geometry Revit handed back. The fingerprint is
+        /// what keeps the record honest later - a link reloaded outside this bridge no longer matches it, and
+        /// the answer becomes "unknown" rather than a disagreement nobody measured.
+        /// </summary>
+        private static JObject RecordLoad(Document doc, long instanceId, JObject verified, string by,
+                                          string knownFingerprint = null)
+        {
+            try
+            {
+                Element e = doc.GetElement(Rid.Make(instanceId));
+                string uid = e?.UniqueId;
+                string print = knownFingerprint ?? Fingerprint(doc, instanceId);
+                string path = verified?.Value<string>("external_path");
+                string sha = verified?.Value<string>("file_sha256");
+                CadLinkLoads.Record(doc, uid, instanceId, path, sha, print, by);
+                JObject back = CadLinkLoads.Read(doc, uid);
+                return new JObject
+                {
+                    ["recorded"] = back != null,
+                    ["source_set_sha256"] = back?["source_set_sha256"],
+                    ["geometry_fingerprint"] = print,
+                    ["means"] = back != null
+                        ? "what this link was loaded from, kept by this bridge on this machine so a later plan " +
+                          "can say whether the geometry and the files are the same issue. It does not travel " +
+                          "with the model: elsewhere the answer is unknown, which withholds 'ready to apply' " +
+                          "rather than granting it."
+                        : "the record could not be written; a plan against this link will report its coherence " +
+                          "as unknown, which is the safe direction."
+                };
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["recorded"] = false, ["error"] = ex.Message };
+            }
+        }
+
         private static string Fingerprint(Document doc, long instanceId)
         {
             try

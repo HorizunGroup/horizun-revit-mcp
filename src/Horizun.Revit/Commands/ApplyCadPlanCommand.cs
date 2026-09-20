@@ -130,6 +130,24 @@ namespace Horizun.Revit.Commands
                     ["means"] = "the rules that decided what this drawing means are not the rules the plan used."
                 });
 
+            // THE ISSUE OF THE DRAWING. The source fingerprint above covers the HOST file; it cannot see a
+            // revision of something the host references, and on a sheet whose geometry all lives in an xref
+            // that is the only revision there is. The set identity moves when any of them does, so a set that
+            // changed between the plan and this apply is drift - this is the case of a drawing revised while
+            // the plan was being read.
+            string expectedSourceSet = binding.Value<string>("source_set_sha256");
+            string nowSourceSet = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256);
+            if (!string.IsNullOrWhiteSpace(expectedSourceSet) &&
+                !string.Equals(expectedSourceSet, nowSourceSet, StringComparison.Ordinal))
+                drift.Add(new JObject
+                {
+                    ["what"] = "the drawing's references",
+                    ["planned_against"] = expectedSourceSet,
+                    ["now"] = nowSourceSet ?? "(the set could not be identified now)",
+                    ["means"] = "the drawing or one of its external references was revised after this plan was " +
+                                "made. The host file alone may be untouched; the set is not. NOTHING was written."
+                });
+
             // THE RESOLVED IDS. A fingerprint over the actions cannot see this
             // one: the same number can point at a different thing. Between a plan
             // and its apply somebody can delete the level the plan resolved and
@@ -240,6 +258,49 @@ namespace Horizun.Revit.Commands
                     " moved between the plan and this apply. NOTHING WAS WRITTEN. Re-run horizun_plan_from_cad " +
                     "and review the new plan; a plan aimed at a drawing that has since changed is a plan aimed " +
                     "at a different building. Drift: " + drift.ToString(Formatting.None));
+
+            // MAY THIS BE BUILT AT ALL? Drift is "something moved since the plan"; this is the prior
+            // question - whether the geometry the plan is made of and the files its sizes were read from
+            // can be shown to be the same issue of the drawing. A plan made while that could not be shown
+            // is not applied because the model looked unchanged; it is not applied because nobody measured
+            // the correspondence. Re-evaluated HERE, because a link can be reloaded between the two calls
+            // (which is the remedy) and because a plan carried from another session must not be taken on
+            // trust. See Core/CadSourceCoherence.cs.
+            Element instanceElement = null;
+            try { instanceElement = doc.GetElement(Rid.Make(instanceId)); } catch { }
+            JObject coherenceNow = CadSourceCoherence.Evaluate(doc, instanceElement, facts, null, false);
+            string statePlanned = binding.Value<string>("coherence_state");
+            bool applicableNow = coherenceNow.Value<bool?>("applicable") ?? false;
+            if (!applicableNow)
+                return CommandResult.FailWithDetail(
+                    "plan_not_applicable: " + coherenceNow.Value<string>("state") + ". " +
+                    coherenceNow.Value<string>("means") + " NOTHING WAS WRITTEN. " +
+                    coherenceNow.Value<string>("remedy"),
+                    new JObject
+                    {
+                        ["refused"] = "plan_not_applicable",
+                        ["coherence_now"] = coherenceNow,
+                        ["coherence_when_planned"] = statePlanned,
+                        ["means"] = "a plan is applied only when this bridge can SHOW that the geometry it was " +
+                                    "made of and the files its sizes came from are the same issue of the " +
+                                    "drawing. Warning and writing anyway would put one issue's runs in the " +
+                                    "model with another issue's sizes, and the model would look finished."
+                    });
+            if (!string.IsNullOrWhiteSpace(statePlanned) &&
+                !string.Equals(statePlanned, CadSourceCoherence.Aligned, StringComparison.Ordinal))
+                return CommandResult.FailWithDetail(
+                    "plan_not_applicable: this plan was made while the coherence of its sources was '" +
+                    statePlanned + "', so its actions were read from a state nobody could vouch for. The link " +
+                    "is coherent NOW - plan again against it and apply that plan. NOTHING WAS WRITTEN.",
+                    new JObject
+                    {
+                        ["refused"] = "plan_not_applicable",
+                        ["coherence_when_planned"] = statePlanned,
+                        ["coherence_now"] = coherenceNow,
+                        ["means"] = "the remedy was applied after the plan was made, which fixes the model's " +
+                                    "state and not the plan: the actions still describe what was read earlier."
+                    });
+
 
             // ---- the actions, exactly as the plan produced them -------------------
             JArray actions = submitted;

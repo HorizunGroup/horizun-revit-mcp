@@ -172,6 +172,9 @@ namespace Horizun.Revit.Commands
             ["source_set_sha256"] = r.Facts != null
                 ? CadDwgCache.SourceSetSha256(r.Facts.ExternalPath, r.Facts.FileSha256) : null,
             ["geometry_source"] = GeometrySource(r.Facts != null ? r.Facts.ExternalPath : null),
+            // THE SAME QUESTION THE PLAN ASKS, asked here too: horizun_cad_connect acts on what this
+            // reading says, and a network read from an older issue joins runs that the drawing has moved.
+            ["coherence"] = CadSourceCoherence.Evaluate(r.Document, r.Instance, r.Facts, r.Harvest, false),
             ["ir_fingerprint"] = r.Ir.Fingerprint(),
             ["ir_schema_version"] = r.Ir.SchemaVersion,
             ["reader"] = r.Ir.Reader.ToJson(),
@@ -403,6 +406,20 @@ namespace Horizun.Revit.Commands
                 CadNetworkPaging.Page(cachedFull, onlyCached, Math.Max(0, early.Value<int?>("page_offset") ?? 0),
                                       early.Value<int?>("page_limit") ?? CadNetworkPaging.DefaultLimit);
                 cachedFull["analysis_cache"] = CadNetworkCache.HitBlock(cacheKey, cachedFull.Value<string>("analysis_taken_utc"));
+                // THE COHERENCE STORED WITH THE SNAPSHOT DESCRIBED THE MOMENT IT WAS TAKEN. Repeating it on
+                // a page served minutes later would be a claim about now, made by a call that deliberately
+                // looked at nothing. What the snapshot found is kept beside it, clearly labelled as then.
+                var wasCoherent = cachedFull["coherence"] as JObject;
+                cachedFull["coherence"] = new JObject
+                {
+                    ["state"] = CadSourceCoherence.Snapshot,
+                    ["applicable"] = false,
+                    ["when_the_snapshot_was_taken"] = wasCoherent,
+                    ["means"] = "this page was cut from a snapshot and nothing was re-read for it, so nothing " +
+                                "here speaks for the sources as they are now. The state at the moment the " +
+                                "snapshot was taken is kept above.",
+                    ["remedy"] = "read again without expect_analysis_fingerprint, or with require_current_sources."
+                };
                 return CommandResult.Ok(cachedFull);
             }
 

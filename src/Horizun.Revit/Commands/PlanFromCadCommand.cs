@@ -435,6 +435,21 @@ namespace Horizun.Revit.Commands
             };
             report["harvest_coverage"] = harvest.CoverageJson(set.ArcSagittaMm);
 
+            // MAY THIS PLAN BE APPLIED? Two halves, two places: the geometry is the link as Revit loaded it,
+            // the sizes are the file read now. Publishing both identities made a mismatch observable; it did
+            // not make building from one safe. See Core/CadSourceCoherence.cs - only a state this bridge can
+            // DEMONSTRATE grants applicable, and everything else keeps the diagnosis and withholds it.
+            JObject coherence = CadSourceCoherence.Evaluate(doc, element, facts, harvest, false);
+            report["coherence"] = coherence;
+            bool applicable = coherence.Value<bool?>("applicable") ?? false;
+            report["applicable"] = applicable;
+            report["applicable_means"] = applicable
+                ? "the link and the files are the same issue of the drawing, so horizun_apply_cad_plan will " +
+                  "accept this plan - it re-checks the same thing before writing."
+                : "this plan is NOT ready to apply: " + coherence.Value<string>("means") + " The actions are " +
+                  "still here to read and to reason about; horizun_apply_cad_plan will refuse them while the " +
+                  "state is " + coherence.Value<string>("state") + ". " + coherence.Value<string>("remedy");
+
             // THE ZONE, NAMED BESIDE EVERY NUMBER IT CHANGED.
             //
             // Coverage, the layer map and "no rule matched" all describe the zone
@@ -754,6 +769,11 @@ namespace Horizun.Revit.Commands
                 ["source_fingerprint"] = sourceFingerprint,
                 ["requirement_set_sha256"] = set.Sha256,
                 ["interpretation_version"] = CadInterpretationRules.InterpretationVersion,
+                // THE ISSUE OF THE DRAWING THIS PLAN WAS MADE OF, and whether that could be demonstrated.
+                // The apply re-measures both: a set that moved between the plan and the apply is drift like
+                // any other, and a plan made while the coherence could not be shown is not applied at all.
+                ["source_set_sha256"] = CadDwgCache.SourceSetSha256(facts.ExternalPath, facts.FileSha256),
+                ["coherence_state"] = coherence.Value<string>("state"),
                 ["target_document"] = target,
                 ["revit_version"] = SafeVersion(app),
                 ["means"] = "horizun_apply_cad_plan re-measures every one of these before writing and refuses " +
