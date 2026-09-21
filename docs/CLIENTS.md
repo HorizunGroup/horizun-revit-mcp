@@ -79,18 +79,65 @@ path and allow enough time for long Revit scans.
 
 ## ChatGPT Work
 
-The integration uses OpenAI's Secure MCP Tunnel for the installed stdio server.
-It does not depend on Codex or Claude Code. Setup installs the helper; inspect
-its status and follow the reported connection steps:
+ChatGPT reaches the installed stdio server through OpenAI's Secure MCP Tunnel.
+Setup installs the helper; **it does not connect ChatGPT**. That needs objects in
+your OpenAI account (a tunnel, a runtime API key, a developer-mode app) and
+OpenAI's own `tunnel-client`, which Horizun never downloads for you.
+
+**1. Get the right package.** On
+[OpenAI's tunnel-client releases](https://github.com/openai/tunnel-client/releases/latest)
+download the **full client** for your machine:
+
+| Windows | Download | Not these |
+|---|---|---|
+| x64 | `tunnel-client-v<version>-windows-amd64.zip` | `tunnel-client-runtime-…`, `tunnel-client-runtime-cloudflared-…` |
+| ARM64 | `tunnel-client-v<version>-windows-arm64.zip` | `tunnel-client-runtime-…`, `tunnel-client-runtime-cloudflared-…` |
+
+Extract the whole ZIP into one folder and keep its files together:
+`tunnel-client.exe` runs the `cloudflared.exe` beside it. The *runtime* packages
+only contain `run` - no `init`, `doctor` or `--mcp-command` - and renaming one
+to `tunnel-client.exe` does not change that; the helper detects the variant from
+the executable's own answers and says so.
+
+**2. Run the helper**, pointing it at that executable once; it is remembered
+after it has been proven compatible:
 
 ```powershell
 $clientTools = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\client-tools'
-& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -Status
+& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -Status -TunnelClientPath 'C:\path\to\tunnel-client.exe'
+& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -SetApiKey          # runtime key, read without echo, DPAPI
+& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -Init -TunnelId tunnel_...
+& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -Doctor
+& (Join-Path $clientTools 'chatgpt-tunnel.ps1') -Start -IUnderstandTrafficLeavesThisMachine
 ```
 
-Account and workspace controls can vary. Do not publish credentials or equate a
-locally installed helper with a connected tunnel. See the helper's documented
-options for configuration and the [privacy policy](PRIVACY.md).
+Each step refuses, and says why, when something it needs is missing; nothing
+after a failed step runs. The profile is written to
+`%LOCALAPPDATA%\Horizun\integrations\chatgpt\profiles\horizun-revit.yaml` and
+every step uses that directory. `-Stop` stops only the tunnel this helper started
+(verified by process id, start time and executable); `-Revoke` also forgets the
+key and that profile. A `horizun-revit` profile left in tunnel-client's default
+directory by an earlier version is reported and left untouched.
+
+**3. Connect ChatGPT**: create the developer-mode app with *Tunnel* as its
+connection, then make one tool call.
+
+**Reading `-Status`.** Four facts are reported separately, because they are
+different facts:
+
+| Layer | Evidence |
+|---|---|
+| process | the tunnel-client this helper started is running (verified identity) |
+| local health | its loopback `/readyz` answers 2xx |
+| contact with OpenAI | `commands_poll_last_successful_timestamp_seconds` on its loopback `/metrics` is less than **90 s** old |
+| ChatGPT -> Revit | **never verified locally** - only a real tool call from ChatGPT proves it |
+
+`/readyz` stays green while every poll fails, so the state is *configured* only
+when the last successful poll is recent. 90 s is three default poll cycles.
+
+MCP requests and replies travel through OpenAI-hosted infrastructure while the
+tunnel runs; see the [privacy policy](PRIVACY.md). Account and workspace
+controls vary by organisation.
 
 ## Diagnose or recover an installed integration
 

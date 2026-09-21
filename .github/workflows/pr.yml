@@ -116,3 +116,15 @@ jobs:
           }
           pwsh -NoProfile -File scripts/audit-dependencies.ps1
           if ($LASTEXITCODE -ne 0) { throw "dependency audit failed with exit code $LASTEXITCODE" }
+
+      - name: ChatGPT tunnel helper under Windows PowerShell 5.1 and PowerShell 7
+        shell: pwsh
+        run: |
+          # The helper declares 5.1 and ships to machines that may only have it,
+          # so it is exercised under both hosts. The suite runs the helper under
+          # the same host that runs the suite.
+          foreach ($ps in @('powershell.exe', 'pwsh')) {
+            Write-Host "==> scripts/chatgpt-tunnel.tests.ps1 under $ps"
+            & $ps -NoProfile -ExecutionPolicy Bypass -File scripts/chatgpt-tunnel.tests.ps1
+            if ($LASTEXITCODE -ne 0) { throw "chatgpt-tunnel.tests.ps1 failed under $ps with exit code $LASTEXITCODE" }
+          }

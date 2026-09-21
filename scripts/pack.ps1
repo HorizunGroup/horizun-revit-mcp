@@ -176,7 +176,7 @@ foreach ($tool in @(
     'integration-status.lib.ps1')) {
     Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
 }
-foreach ($tool in @('chatgpt-tunnel.ps1', 'chatgpt-secret.lib.ps1')) {
+foreach ($tool in @('chatgpt-tunnel.ps1', 'chatgpt-tunnel.lib.ps1', 'chatgpt-secret.lib.ps1', 'process.lib.ps1')) {
     Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
 }
 Step '  staged safe Codex/Claude registration, deferred completion and verification helpers'

@@ -997,14 +997,20 @@ begin
       if HandedOver then
         MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
                  'Reinicia Revit para cargarlo.' + #13#10#13#10 +
-                 'Claude Code, Codex y ChatGPT Work quedaron configurados solos. No tienes que ejecutar nada.' + #13#10#13#10 +
+                 'Claude Code y Codex quedaron configurados solos. No tienes que ejecutar nada para ellos.' + #13#10#13#10 +
+                 'ChatGPT Work NO queda conectado con esta instalacion: necesita un tunel, una clave y una app en tu cuenta de OpenAI, ' +
+                 'y el cliente completo de OpenAI (tunnel-client-v<version>-windows-amd64.zip, o -arm64.zip en equipos ARM, sin "runtime" en el nombre). ' +
+                 'El asistente client-tools\chatgpt-tunnel.ps1 -Status te dice cada paso.' + #13#10#13#10 +
                  'Falta un paso, y es solo para Claude Desktop: su extension se instala desde dentro de la propia app.' + #13#10#13#10 +
                  'Acabo de abrirte esta carpeta con el archivo y las instrucciones en PDF:' + #13#10 +
                  '      ' + HandoverFolder + #13#10#13#10 +
                  'Abre el PDF y sigue los seis pasos. Son tres minutos.',
                  'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
                  'Restart Revit to load it.' + #13#10#13#10 +
-                 'Claude Code, Codex and ChatGPT Work were configured for you. There is nothing to run.' + #13#10#13#10 +
+                 'Claude Code and Codex were configured for you. There is nothing to run for them.' + #13#10#13#10 +
+                 'ChatGPT Work is NOT connected by this installation: it needs a tunnel, a key and an app in your OpenAI account, ' +
+                 'and OpenAI''s full client (tunnel-client-v<version>-windows-amd64.zip, or -arm64.zip on ARM machines, with no "runtime" in the name). ' +
+                 'The helper client-tools\chatgpt-tunnel.ps1 -Status names every step.' + #13#10#13#10 +
                  'One step is left, and only for Claude Desktop: its extension is installed from inside the app itself.' + #13#10#13#10 +
                  'This folder is now open, with the file and the instructions as a PDF:' + #13#10 +
                  '      ' + HandoverFolder + #13#10#13#10 +
@@ -1013,13 +1019,19 @@ begin
       else
         MsgBox(L('Complemento instalado para Revit: ' + InstalledYears + #13#10#13#10 +
                  'Reinicia Revit para cargarlo.' + #13#10#13#10 +
-                 'Claude Code, Codex y ChatGPT Work quedaron configurados solos.' + #13#10#13#10 +
+                 'Claude Code y Codex quedaron configurados solos.' + #13#10#13#10 +
+                 'ChatGPT Work NO queda conectado con esta instalacion: necesita un tunel, una clave y una app en tu cuenta de OpenAI, ' +
+                 'y el cliente completo de OpenAI (tunnel-client-v<version>-windows-amd64.zip, o -arm64.zip en equipos ARM, sin "runtime" en el nombre). ' +
+                 'El asistente client-tools\chatgpt-tunnel.ps1 -Status te dice cada paso.' + #13#10#13#10 +
                  'NO pude dejarte la extension de Claude Desktop en Documentos. La tienes aqui:' + #13#10 +
                  '      ' + ExpandConstant('{app}\server\integrations\claude-desktop') + #13#10#13#10 +
                  'Esa carpeta esta oculta para el Explorador: copiala a Documentos antes de instalarla en Claude Desktop.',
                  'Add-in deployed for Revit: ' + InstalledYears + #13#10#13#10 +
                  'Restart Revit to load it.' + #13#10#13#10 +
-                 'Claude Code, Codex and ChatGPT Work were configured for you.' + #13#10#13#10 +
+                 'Claude Code and Codex were configured for you.' + #13#10#13#10 +
+                 'ChatGPT Work is NOT connected by this installation: it needs a tunnel, a key and an app in your OpenAI account, ' +
+                 'and OpenAI''s full client (tunnel-client-v<version>-windows-amd64.zip, or -arm64.zip on ARM machines, with no "runtime" in the name). ' +
+                 'The helper client-tools\chatgpt-tunnel.ps1 -Status names every step.' + #13#10#13#10 +
                  'The Claude Desktop extension could NOT be placed in Documents. It is here:' + #13#10 +
                  '      ' + ExpandConstant('{app}\server\integrations\claude-desktop') + #13#10#13#10 +
                  'Explorer hides that folder: copy the file out to Documents before installing it in Claude Desktop.'),

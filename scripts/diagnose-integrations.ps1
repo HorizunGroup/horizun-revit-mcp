@@ -12,11 +12,12 @@
   Exit codes: 0 at least one client is configured   3 none is, and the steps are named
 #>
 [CmdletBinding()]
-param([string]$Json, [string]$ServerPath, [string]$StatusPath)
+param([string]$Json, [string]$ServerPath, [string]$StatusPath, [string]$ChatGptStateRoot)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'mcp-clients.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcp-stdio.lib.ps1')
 . (Join-Path $PSScriptRoot 'integration-status.lib.ps1')
+. (Join-Path $PSScriptRoot 'chatgpt-tunnel.lib.ps1')
 
 if (-not $ServerPath) { $ServerPath = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 
@@ -83,18 +84,27 @@ else {
 }
 
 # --- ChatGPT Work -------------------------------------------------------------
-$tunnel = Get-HorizunTunnelClient
-$integrations = Get-HorizunIntegrationStatus -StatusPath $StatusPath
-$workState = $null
-if ($integrations) { $workState = $integrations.PSObject.Properties['chatgpt'] }
-if (-not $tunnel.installed) {
-    Row 'chatgpt-work' $false $false "OpenAI tunnel-client is not installed" `
-        'scripts/chatgpt-tunnel.ps1 -Status'
-}
-else {
-    $st = if ($workState) { $workState.Value.state } else { 'unknown' }
-    Row 'chatgpt-work' $true ($st -eq 'configured') "tunnel-client present; recorded state: $st" `
-        $(if ($st -ne 'configured') { 'scripts/chatgpt-tunnel.ps1 -Status' } else { $null })
+# MEASURED NOW, not read back from a recorded state. A "configured" written by an
+# earlier run says nothing about whether the tunnel is running, or still talking
+# to OpenAI, at this moment.
+$gptRoot = Get-HorizunTunnelStateRoot $ChatGptStateRoot
+$tunnel = Get-HorizunTunnelClient -StateRoot $gptRoot
+$gptRuntime = Get-HorizunTunnelRuntime -StateRoot $gptRoot
+$gptConn = Get-HorizunTunnelConnection -StateRoot $gptRoot -Runtime $gptRuntime
+$gptNext = "client-tools\chatgpt-tunnel.ps1 -Status"
+switch ($tunnel.status) {
+    'absent' { Row 'chatgpt-work' $false $false "OpenAI's full tunnel-client is not installed" $gptNext }
+    { $_ -in @('wrong_variant', 'explicit_missing') } { Row 'chatgpt-work' $false $false $tunnel.problem $gptNext }
+    'compatible' {
+        if ($gptConn.connected) {
+            Row 'chatgpt-work' $true $true ("tunnel running; last successful poll of OpenAI {0} s ago (a ChatGPT call to Revit is not verified here)" -f $gptConn.control_plane.age_seconds) $null
+        }
+        elseif ($gptRuntime.state -eq 'running') {
+            Row 'chatgpt-work' $true $false ("tunnel running but NOT connected: {0}" -f $gptConn.control_plane.detail) $gptNext
+        }
+        else { Row 'chatgpt-work' $true $false ("tunnel-client {0} present; tunnel not running ({1})" -f $tunnel.version, $gptRuntime.state) $gptNext }
+    }
+    default { Row 'chatgpt-work' $true $false ("tunnel-client could not be used: " + $tunnel.problem) $gptNext }
 }
 
 # --- permission boundary --------------------------------------------------------

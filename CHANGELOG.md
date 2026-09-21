@@ -3,6 +3,58 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased
+
+### ChatGPT Work through OpenAI's Secure MCP Tunnel: the helper now works on Windows
+
+Reported from the field: a user on Revit 2026 with 2.0.1 could not connect
+ChatGPT. Every cause below was reproduced against OpenAI's official
+`tunnel-client` 0.0.14 (SHA-256 checked against its `SHA256SUMS`, SLSA
+attestation verified) before it was fixed.
+
+- **The server path never reached tunnel-client intact.** `--mcp-command` is
+  parsed twice - by Windows, then by tunnel-client's own shell-like parser, where
+  `\` escapes and `'` opens a quote. `C:\Windows\System32\cmd.exe` arrived as
+  `C:WindowsSystem32cmd.exe`, so `init` refused every Windows machine, and a path
+  with an apostrophe did not parse at all. The helper now passes forward slashes
+  inside literal double quotes, proves the value parses back to the same path
+  before handing it over, and was verified with the official `init` on a path
+  containing a space, an apostrophe and accented letters.
+- **The right package is named, and the wrong one is recognised.** OpenAI
+  publishes runtime-only variants with no `init`, `doctor` or `--mcp-command`.
+  The helper names the exact ZIP (`tunnel-client-v<version>-windows-amd64|arm64.zip`)
+  and detects a runtime build from its own answers, even renamed to
+  `tunnel-client.exe`.
+- **Detection keeps the evidence.** Exit codes, stdout/stderr and timeouts are
+  kept apart; `--version` replaces the `version` command that does not exist; an
+  error that mentions `--mcp-command` is no longer read as support. An explicitly
+  chosen executable that does not exist is reported, never silently replaced; a
+  proven one is remembered.
+- **One profile directory** (`%LOCALAPPDATA%\Horizun\integrations\chatgpt\profiles`)
+  for init, doctor, run and revoke. A `horizun-revit` profile left in
+  tunnel-client's default directory by an earlier version is reported and left
+  untouched.
+- **The tunnel survives the window that started it, and holds none of its
+  handles.** It used to die when that console closed, and it now runs in a hidden
+  window of its own; a caller capturing the helper's output is released at once.
+  The process is recorded by pid, start time and executable, so a reused pid is
+  never stopped, and `-Stop`/`-Revoke` say "not verified" rather than "stopped"
+  when they cannot see it exit.
+- **Windows PowerShell 5.1.** `ProcessStartInfo.ArgumentList`, absent there, is
+  gone from the helper and the MCP probe.
+- **"Connected" is measured.** `/readyz` stays 200 while every poll of OpenAI
+  fails, so the helper reads `commands_poll_last_successful_timestamp_seconds`
+  from the client's loopback `/metrics` (published through `--health.url-file`)
+  and reports *configured* only when the last successful poll is under 90 s old.
+  A call from ChatGPT reaching Revit is never claimed by this machine.
+- **Prerequisites block what depends on them**; a JSON report and the durable
+  state are written on every path, including early failures; the general
+  diagnosis measures the tunnel instead of trusting a recorded state.
+- **Setup no longer says ChatGPT Work was configured for you.** It is not: it
+  needs account-side objects and OpenAI's client.
+- The tunnel tests now run in pull requests and CI under both Windows
+  PowerShell 5.1 and PowerShell 7.
+
 ## v2.0.1 — 2026-09-21
 
 > **The first published 2.0 release.** `v2.0.0` was tagged and built, and its

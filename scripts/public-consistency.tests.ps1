@@ -473,7 +473,7 @@ if ($failures.Count -eq $universalFailures) {
 
 # ---- supported ChatGPT Work route and neutral product vocabulary -------------
 $integrationFailures = $failures.Count
-foreach ($required in @('scripts\chatgpt-tunnel.ps1', 'scripts\chatgpt-secret.lib.ps1')) {
+foreach ($required in @('scripts\chatgpt-tunnel.ps1', 'scripts\chatgpt-tunnel.lib.ps1', 'scripts\chatgpt-secret.lib.ps1', 'scripts\process.lib.ps1')) {
     if (-not (Test-Path -LiteralPath (Join-Path $repo $required))) { Fail "$required is missing." }
 }
 foreach ($doc in @('README.md', 'docs\CLIENTS.md', 'installer\horizun-mcp.iss',
