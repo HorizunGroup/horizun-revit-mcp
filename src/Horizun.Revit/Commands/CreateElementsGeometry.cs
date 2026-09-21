@@ -488,7 +488,16 @@ namespace Horizun.Revit.Commands
             // numbers are measured and reported.
             if (p.Kind == "wall" && p.Start != null && p.End != null && p.ArcThird == null)
             {
-                XYZ asked0 = p.Start, asked1 = p.End;
+                // IN PLAN. A wall's line is where it stands; its height is a separate
+                // question with a separate ruler. MEASURED (Revit 2023, a project base
+                // point 94.17 mm off the internal origin): the LocationCurve sits at the
+                // level's INTERNAL Z while the asked point's height is in PROJECT
+                // elevation, so a 3D distance reported a wall built exactly on its line
+                // as 94.17 mm off it - and 3800 mm on Level 2 - and refused every wall
+                // in such a model. The height is not this check's question: level_id,
+                // level_elevation and offset verify it, on the level's own ruler.
+                Func<XYZ, XYZ> flat = v => new XYZ(v.X, v.Y, 0);
+                XYZ asked0 = flat(p.Start), asked1 = flat(p.End);
                 XYZ direction = (asked1 - asked0).Normalize();
                 double allowanceFt = JoinAllowanceFeet(p);
 
@@ -498,7 +507,7 @@ namespace Horizun.Revit.Commands
                     double worst = 0;
                     foreach (XYZ end in new[] { built.GetEndPoint(0), built.GetEndPoint(1) })
                     {
-                        XYZ v = end - asked0;
+                        XYZ v = flat(end) - asked0;
                         double along = v.DotProduct(direction);
                         double across = (v - direction.Multiply(along)).GetLength();
                         if (across > worst) worst = across;
@@ -513,7 +522,7 @@ namespace Horizun.Revit.Commands
                     double worst = 0;
                     foreach (XYZ end in new[] { built.GetEndPoint(0), built.GetEndPoint(1) })
                     {
-                        double along = (end - asked0).DotProduct(direction);
+                        double along = (flat(end) - asked0).DotProduct(direction);
                         double slid = Math.Min(Math.Abs(along), Math.Abs(along - span));
                         if (slid > worst) worst = slid;
                     }
