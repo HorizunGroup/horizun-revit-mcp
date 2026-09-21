@@ -3,7 +3,29 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## v2.0.0 — 2026-09-20
+## v2.0.1 — 2026-09-21
+
+> **The first published 2.0 release.** `v2.0.0` was tagged and built, and its
+> Revit 2023 live gate found the defect below before anything was published. Tags
+> are never moved, so that tag has no release; everything described in this
+> section ships in 2.0.1.
+
+### Fixed since the v2.0.0 tag
+
+- **A wall built exactly on its line was refused in models whose project base
+  point is not at the internal origin's height.** The line check introduced in 2.0
+  measured the distance ACROSS the wall's line in three dimensions, so it compared
+  the height of Revit's location line (internal coordinates) with the height of the
+  asked point (project elevation). MEASURED in Revit 2023 on a model whose project
+  base point sits 94.17 mm off the internal origin: every wall was refused as
+  94.17 mm off its line, and 3800 mm on Level 2, and the batch rolled back — the
+  refusal was safe, nothing wrong was written, but no wall could be created. The
+  distance across and along the line is now measured in plan; the height stays
+  verified by `level_id`, `level_elevation` and `offset`, on the level's own
+  ruler. Re-measured live in Revit 2023 on the same model: the walls that were
+  refused on Level 1 and Level 2 now commit and verify.
+
+### The 2.0 release
 
 **A revision update now re-measures the world it was planned against, can be
 continued after a failure, and never claims a network it did not build.** This is
@@ -164,6 +186,12 @@ staying ad-hoc code.
 - Deduplicate repeated schema branches in the suboperation counter: 208 distinct
   tool/selector/value choices replace 213 schema occurrences, with no tool removed.
 
+
+
+## v2.0.0 — 2026-09-20 (tagged, not released)
+
+Built and put through the release gate, and withdrawn before publication by the
+wall defect described under v2.0.1. Its content ships in v2.0.1.
 
 ## v1.3.3 — 2026-09-14
 
