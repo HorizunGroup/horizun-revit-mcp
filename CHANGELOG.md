@@ -3,6 +3,10 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.0.5 — 2026-09-22
+
+- Release hygiene correction: removes trailing blank lines that blocked the v2.0.4 CI run before package installation or live Revit verification.
+
 ## v2.0.4 — 2026-09-22
 
 - **Reliable English release runner.** Live release verification launches Revit with /language ENU and requires horizun_health to report English before it accepts evidence, so Revit 2023 cannot silently run its localized UI path.
@@ -2673,4 +2677,3 @@ work it did not verify.
 History squashed to a single commit before the repository ever had a remote — the
 development history carried client-specific strings, and rewriting the files alone
 would have left them reachable.
-
