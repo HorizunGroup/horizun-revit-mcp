@@ -3,7 +3,18 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
-## Unreleased
+## v2.0.2 — 2026-09-22
+
+### Fixed after independent review
+
+- The loopback check now fails closed when Windows cannot inspect the tunnel
+  process and its direct children, and verifies that the URL published by the
+  client belongs to a loopback listener it owns. An empty inspection result no
+  longer becomes a positive connection result.
+- The startup grace now uses the actual first-poll timeout of tunnel-client
+  v0.0.14. A configured 60-second poll receives an 85-second grace; the previous
+  fictional `CONTROL_PLANE_INITIAL_POLL_TIMEOUT` left it at 55 seconds and could
+  report a healthy client as failed before its first allowed poll completed.
 
 ### ChatGPT Work through OpenAI's Secure MCP Tunnel: the helper now works on Windows
 

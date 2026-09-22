@@ -366,12 +366,19 @@ try {
     Set-Content -LiteralPath (Join-Path $root 'exposed.url') -Value 'http://127.0.0.1:1' -Encoding ASCII
     $fakeRuntime = [pscustomobject]@{ state = 'running'; process = (Get-Process -Id $PID)
                                      record = [pscustomobject]@{ pid = $PID; health_url_file = (Join-Path $root 'exposed.url') } }
-    function Get-HorizunTunnelListeners { param([int]$ProcessId) return ,@([pscustomobject]@{ pid = $ProcessId; address = '0.0.0.0'; port = 8080; loopback = $false }) }
+    function Get-HorizunTunnelListeners { param([int]$ProcessId) return [pscustomobject]@{ state = 'complete'; listeners = @([pscustomobject]@{ pid = $ProcessId; address = '0.0.0.0'; port = 8080; loopback = $false }); errors = @() } }
     $c = Get-HorizunTunnelConnection -StateRoot $exRoot -Runtime $fakeRuntime
     Assert 'a listener on 0.0.0.0 fails local health and is named' ((-not $c.local_health.ok) -and $c.local_health.detail -match 'NON-loopback.*0\.0\.0\.0:8080' -and -not $c.connected) $c.local_health.detail
     Remove-Item Function:\Get-HorizunTunnelListeners
     . (Join-Path $PSScriptRoot 'chatgpt-tunnel.lib.ps1')
     try { [void]$exProc.WaitForExit(15000) } catch { }
+
+    function Get-HorizunTunnelListeners { param([int]$ProcessId) return [pscustomobject]@{ state = 'incomplete'; listeners = @(); errors = @('access denied') } }
+    $c = Get-HorizunTunnelConnection -StateRoot $exRoot -Runtime $fakeRuntime
+    Assert 'an unavailable port inspection is not treated as a verified loopback surface' `
+        ((-not $c.local_health.ok) -and $c.local_health.detail -match 'could not verify' -and -not $c.connected) $c.local_health.detail
+    Remove-Item Function:\Get-HorizunTunnelListeners
+    . (Join-Path $PSScriptRoot 'chatgpt-tunnel.lib.ps1')
 
     # The freshness window, derived from the effective poll settings.
     Assert 'Go durations parse the way the client writes them' `
@@ -380,7 +387,8 @@ try {
     Assert 'defaults (30 s poll, 5 s guardrail) give 90 s and a 55 s startup grace' ($def.fresh_seconds -eq 90 -and $def.startup_grace_seconds -eq 55) ($def | ConvertTo-Json -Compress)
     $env:CONTROL_PLANE_POLL_TIMEOUT = '60s'
     try { $slow = Get-HorizunTunnelFreshness -Settings (Get-HorizunTunnelPollSettings) } finally { Remove-Item Env:\CONTROL_PLANE_POLL_TIMEOUT }
-    Assert 'a longer poll (environment, as the client reads it) widens the window instead of producing false failures' ($slow.fresh_seconds -eq 150) ($slow | ConvertTo-Json -Compress)
+    Assert 'a longer poll widens both the freshness window and first-poll grace instead of producing false failures' `
+        ($slow.fresh_seconds -eq 150 -and $slow.startup_grace_seconds -eq 85) ($slow | ConvertTo-Json -Compress)
     $yamlProfile = Join-Path $root 'poll.yaml'
     Set-Content -LiteralPath $yamlProfile -Value "control_plane:`n  poll_timeout: 10000ms`n  poll_deadline_guardrail: 1000ms" -Encoding ASCII
     $fast = Get-HorizunTunnelFreshness -Settings (Get-HorizunTunnelPollSettings -ProfilePath $yamlProfile)

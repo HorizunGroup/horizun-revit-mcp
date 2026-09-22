@@ -404,8 +404,6 @@ function Get-HorizunTunnelPollSettings {
 
         poll_timeout             default 30 s  (CONTROL_PLANE_POLL_TIMEOUT / poll_timeout)
         poll_deadline_guardrail  default 5 s   (CONTROL_PLANE_POLL_DEADLINE_GUARDRAIL / poll_deadline_guardrail)
-        initial_poll_timeout     default 30 s  (CONTROL_PLANE_INITIAL_POLL_TIMEOUT / initial_poll_timeout)
-
       A healthy idle client completes one empty poll within
       poll_timeout + poll_deadline_guardrail (OpenAI's configuration reference),
       and the timestamp of a successful poll is recorded when it completes.
@@ -425,11 +423,9 @@ function Get-HorizunTunnelPollSettings {
     }
     $pt = & $pick 'CONTROL_PLANE_POLL_TIMEOUT' 'poll_timeout' 30
     $gr = & $pick 'CONTROL_PLANE_POLL_DEADLINE_GUARDRAIL' 'poll_deadline_guardrail' 5
-    $ip = & $pick 'CONTROL_PLANE_INITIAL_POLL_TIMEOUT' 'initial_poll_timeout' 30
     return [pscustomobject]@{
         poll_timeout_seconds         = $pt[0]; poll_timeout_source = $pt[1]
         poll_deadline_guardrail_seconds = $gr[0]; poll_deadline_guardrail_source = $gr[1]
-        initial_poll_timeout_seconds = $ip[0]; initial_poll_timeout_source = $ip[1]
     }
 }
 
@@ -444,8 +440,10 @@ function Get-HorizunTunnelFreshness {
                          With the defaults, 2 x (30 + 5) + 20 = 90 s.
         startup_grace    before its first successful poll, a new process is
                          "connecting", not "failed", for the first poll's worst
-                         case (min(initial, poll_timeout) + guardrail) plus the same
-                         margin: 55 s with the defaults.
+                         case (poll_timeout + guardrail) plus the same margin: 55 s
+                         with the defaults. tunnel-client v0.0.14 uses this same
+                         timeout for its first poll; it has no separate initial-poll
+                         setting.
 
       These are derived from the client's documented behaviour and measured only
       against a LOCAL stand-in for the control plane - not against OpenAI.
@@ -453,7 +451,7 @@ function Get-HorizunTunnelFreshness {
     param($Settings)
     if (-not $Settings) { $Settings = Get-HorizunTunnelPollSettings }
     $cycle = [double]$Settings.poll_timeout_seconds + [double]$Settings.poll_deadline_guardrail_seconds
-    $first = [Math]::Min([double]$Settings.initial_poll_timeout_seconds, [double]$Settings.poll_timeout_seconds) + [double]$Settings.poll_deadline_guardrail_seconds
+    $first = [double]$Settings.poll_timeout_seconds + [double]$Settings.poll_deadline_guardrail_seconds
     return [pscustomobject]@{
         fresh_seconds         = [int][Math]::Ceiling(2 * $cycle + 20)
         startup_grace_seconds = [int][Math]::Ceiling($first + 20)
@@ -515,19 +513,27 @@ function Get-HorizunTunnelListeners {
     #>
     param([Parameter(Mandatory = $true)][int]$ProcessId)
     $ids = @($ProcessId)
-    try { $ids += @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction Stop | ForEach-Object { [int]$_.ProcessId }) } catch { }
+    $errors = New-Object System.Collections.Generic.List[string]
+    try { $ids += @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction Stop | ForEach-Object { [int]$_.ProcessId }) }
+    catch { $errors.Add("could not enumerate tunnel-client child processes: $($_.Exception.Message)") | Out-Null }
     $out = @()
-    foreach ($id in $ids) {
-        try {
-            foreach ($c in @(Get-NetTCPConnection -OwningProcess $id -State Listen -ErrorAction Stop)) {
+    $connections = $null
+    try { $connections = @(Get-NetTCPConnection -State Listen -ErrorAction Stop) }
+    catch { $errors.Add("could not inspect listening TCP ports: $($_.Exception.Message)") | Out-Null }
+    if ($null -ne $connections) {
+        foreach ($id in $ids) {
+            foreach ($c in @($connections | Where-Object { [int]$_.OwningProcess -eq $id })) {
                 $addr = [string]$c.LocalAddress
                 $out += [pscustomobject]@{ pid = $id; address = $addr; port = [int]$c.LocalPort
                                            loopback = ($addr -eq '127.0.0.1' -or $addr -eq '::1') }
             }
         }
-        catch { }
     }
-    return ,$out
+    return [pscustomobject]@{
+        state = if ($errors.Count -eq 0) { 'complete' } else { 'incomplete' }
+        listeners = @($out)
+        errors = @($errors)
+    }
 }
 
 function Get-HorizunTunnelRuntimePath {
@@ -717,11 +723,23 @@ function Get-HorizunTunnelConnection {
     }
     # WHERE IT REALLY LISTENS. The profile asks for 127.0.0.1:0 and run repeats it
     # as a flag; this reads the answer from the operating system.
-    $res.listeners = Get-HorizunTunnelListeners -ProcessId ([int]$Runtime.record.pid)
+    $inspection = Get-HorizunTunnelListeners -ProcessId ([int]$Runtime.record.pid)
+    $res.listeners = @($inspection.listeners)
+    if ($inspection.state -ne 'complete') {
+        $res.local_health.detail = 'could not verify the tunnel-client listening surface: ' + ($inspection.errors -join ' | ')
+        $res.control_plane.detail = 'not evaluated: the local listening surface could not be verified'
+        return [pscustomobject]$res
+    }
     $exposed = @($res.listeners | Where-Object { -not $_.loopback })
     if ($exposed.Count -gt 0) {
         $res.local_health.detail = "the tunnel-client listens on a NON-loopback address: " + (($exposed | ForEach-Object { "$($_.address):$($_.port)" }) -join ', ')
         $res.control_plane.detail = 'not evaluated: the local surface is exposed'
+        return [pscustomobject]$res
+    }
+    $healthListener = @($res.listeners | Where-Object { $_.loopback -and $_.port -eq [int]$uri.Port })
+    if ($healthListener.Count -eq 0) {
+        $res.local_health.detail = "the health URL port $($uri.Port) is not a loopback listener owned by tunnel-client or its direct child"
+        $res.control_plane.detail = 'not evaluated: the health URL could not be attributed to tunnel-client'
         return [pscustomobject]$res
     }
     $res.local_health.url = $base.TrimEnd('/') + '/readyz'
