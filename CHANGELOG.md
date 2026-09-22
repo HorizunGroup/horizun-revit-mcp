@@ -45,8 +45,19 @@ attestation verified) before it was fixed.
 - **"Connected" is measured.** `/readyz` stays 200 while every poll of OpenAI
   fails, so the helper reads `commands_poll_last_successful_timestamp_seconds`
   from the client's loopback `/metrics` (published through `--health.url-file`)
-  and reports *configured* only when the last successful poll is under 90 s old.
-  A call from ChatGPT reaching Revit is never claimed by this machine.
+  and reports *configured* only when the last successful poll is recent. The
+  window is derived from the poll settings the tunnel runs with (two
+  `poll_timeout + guardrail` cycles plus 20 s: 90 s with OpenAI's defaults), and a
+  new process is *connecting* rather than failed during its first poll. Measured
+  against a local stand-in, not against OpenAI. A call from ChatGPT reaching Revit
+  is never claimed by this machine.
+- **Loopback, checked.** The health listener is requested as `127.0.0.1:0` in the
+  profile and as a flag on `run`, and the addresses the process really listens on
+  are read from the operating system; anything else fails local health.
+- **The key during start.** It is placed in the helper's own process environment
+  only for the instant ShellExecute copies it, and the previous value (or its
+  absence) is restored even when the start fails - under PowerShell 7 that needs
+  `[NullString]::Value`, since `$null` would leave the variable defined and empty.
 - **Prerequisites block what depends on them**; a JSON report and the durable
   state are written on every path, including early failures; the general
   diagnosis measures the tunnel instead of trusting a recorded state.

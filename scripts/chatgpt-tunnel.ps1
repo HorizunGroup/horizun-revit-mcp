@@ -57,8 +57,10 @@ param(
     [string]$StatusPath,
     [string]$ControlPlaneBaseUrl,
     [int]$StartWaitSec = 20,
-    [int]$ConnectWaitSec = 45,
-    [int]$FreshSec = 90,
+    # 0 = derive from the tunnel's effective poll settings (Get-HorizunTunnelFreshness).
+    [int]$ConnectWaitSec = 0,
+    [int]$FreshSec = 0,
+    [int]$StartupGraceSec = -1,
     [int]$ProbeTimeoutSec = 15
 )
 $ErrorActionPreference = 'Stop'
@@ -277,8 +279,13 @@ try {
             $evidence.init = [ordered]@{ exit_code = $r.exit_code; timed_out = $r.timed_out; output = $r.output }
             $written = Test-Path -LiteralPath $profilePath -PathType Leaf
             $forward = $ServerPath.Replace([char]92, [char]47)
-            $holdsCommand = $written -and ((Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8).Contains($forward))
-            if ($r.exit_code -eq 0 -and $written -and $holdsCommand) { Act "tunnel-client init wrote $profilePath for $ServerPath" $true $null }
+            $yamlText = if ($written) { Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 } else { '' }
+            $holdsCommand = $written -and $yamlText.Contains($forward)
+            $loopbackOnly = $yamlText -match 'listen_addr:\s*"?127\.0\.0\.1:0"?'
+            if ($r.exit_code -eq 0 -and $written -and $holdsCommand -and -not $loopbackOnly) {
+                Act 'tunnel-client init' $false "the profile at $profilePath does not bind its health listener to 127.0.0.1:0"; $chainBroken = $true
+            }
+            elseif ($r.exit_code -eq 0 -and $written -and $holdsCommand) { Act "tunnel-client init wrote $profilePath for $ServerPath (health on 127.0.0.1:0)" $true $null }
             elseif ($r.exit_code -eq 0) { Act 'tunnel-client init' $false "it reported success but $profilePath does not hold the server command"; $chainBroken = $true }
             else { Act 'tunnel-client init' $false ("exit {0}{1}: {2}" -f $r.exit_code, $(if ($r.timed_out) { ' (timed out)' } else { '' }), $r.output); $chainBroken = $true }
         }
@@ -339,32 +346,20 @@ try {
             Ensure-Dir (Split-Path -Parent $logFile)
             Remove-Item -LiteralPath $healthUrlFile -Force -ErrorAction SilentlyContinue
             $secret = Get-HorizunChatGptSecret -StateRoot $StateRoot
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $tunnel.path
-            $psi.Arguments = Join-HorizunWindowsArguments @('run', '--profile', $PROFILE_NAME, '--profile-dir', $profileDir,
-                                                            '--health.url-file', $healthUrlFile, '--log.file', $logFile)
-            # DETACHED FROM EVERYTHING THIS SCRIPT HOLDS. Two measured failures shaped
-            # this: a child that shares the helper's console dies when that window is
-            # closed (CTRL_CLOSE_EVENT), and a child started with inherited handles
-            # keeps the caller's stdout pipe open for as long as it lives, so anything
-            # capturing this script's output - Setup, a scheduler, a test - waits for
-            # ever. ShellExecute with a hidden window of its own inherits no handles
-            # and no console. Its output goes to --log.file.
-            $psi.UseShellExecute = $true
-            $psi.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-            $psi.WorkingDirectory = $StateRoot
-            # THE KEY: ShellExecute gives the child a copy of THIS process's
-            # environment, so the key is placed there for the instant of the start and
-            # removed at once. It is never an argument and never written anywhere.
+            # The timing this process will poll with, recorded so every later
+            # -Status judges it by the same numbers.
+            $pollSettings = Get-HorizunTunnelPollSettings -ProfilePath $profilePath
+            # --health.listen-addr repeats the profile's 127.0.0.1:0 as a flag, which
+            # outranks the profile: the admin surface is loopback even if someone
+            # edits the YAML. Get-HorizunTunnelConnection then checks where it REALLY
+            # listens. Start-HorizunTunnelProcess documents how the key is delivered.
             $p = $null
             try {
-                [Environment]::SetEnvironmentVariable('CONTROL_PLANE_API_KEY', $secret, 'Process')
-                $p = [Diagnostics.Process]::Start($psi)
+                $p = Start-HorizunTunnelProcess -Executable $tunnel.path -WorkingDirectory $StateRoot -Secret $secret -Arguments @(
+                    'run', '--profile', $PROFILE_NAME, '--profile-dir', $profileDir,
+                    '--health.listen-addr', '127.0.0.1:0', '--health.url-file', $healthUrlFile, '--log.file', $logFile)
             }
-            finally {
-                [Environment]::SetEnvironmentVariable('CONTROL_PLANE_API_KEY', $null, 'Process')
-                $secret = $null
-            }
+            finally { $secret = $null }
             $deadline = (Get-Date).AddSeconds([Math]::Max(1, $StartWaitSec))
             while ((Get-Date) -lt $deadline -and -not $p.HasExited -and -not (Test-Path -LiteralPath $healthUrlFile -PathType Leaf)) { Start-Sleep -Milliseconds 250 }
             if ($p.HasExited) {
@@ -374,13 +369,15 @@ try {
                 $chainBroken = $true
             }
             else {
-                Save-HorizunTunnelRuntime -StateRoot $StateRoot -Process $p -Executable $tunnel.path -HealthUrlFile $healthUrlFile -LogFile $logFile | Out-Null
+                Save-HorizunTunnelRuntime -StateRoot $StateRoot -Process $p -Executable $tunnel.path -HealthUrlFile $healthUrlFile -LogFile $logFile -PollSettings $pollSettings | Out-Null
                 Act ("started tunnel-client, pid {0}, detached from this console; log: {1}" -f $p.Id, $logFile) $true $null
-                # Give its first long poll the chance to complete before judging.
-                $until = (Get-Date).AddSeconds([Math]::Max(0, $ConnectWaitSec))
+                # Give its first long poll the chance to complete before judging - for
+                # the startup grace its own settings give, unless told otherwise.
+                $wait = if ($ConnectWaitSec -gt 0) { $ConnectWaitSec } else { (Get-HorizunTunnelFreshness -Settings $pollSettings).startup_grace_seconds }
+                $until = (Get-Date).AddSeconds($wait)
                 do {
-                    $c = Get-HorizunTunnelConnection -StateRoot $StateRoot -FreshSec $FreshSec
-                    if ($c.connected -or $c.process -ne 'running') { break }
+                    $c = Get-HorizunTunnelConnection -StateRoot $StateRoot -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec
+                    if ($c.connected -or $c.process -ne 'running' -or $c.control_plane.state -eq 'stale') { break }
                     Start-Sleep -Seconds 2
                 } while ((Get-Date) -lt $until)
             }
@@ -389,7 +386,7 @@ try {
 
     # ---- what is true now ----------------------------------------------------------
     $runtime = Get-HorizunTunnelRuntime -StateRoot $StateRoot
-    $conn = Get-HorizunTunnelConnection -StateRoot $StateRoot -Runtime $runtime -FreshSec $FreshSec
+    $conn = Get-HorizunTunnelConnection -StateRoot $StateRoot -Runtime $runtime -FreshSec $FreshSec -StartupGraceSec $StartupGraceSec
     $evidence.runtime_state = $runtime.state
     $evidence.connection = $conn
     $evidence.execute_python_granted_by_this = $false
@@ -409,6 +406,10 @@ try {
     if ($runtime.state -eq 'running') {
         if ($conn.connected) {
             Finish 'configured' ("tunnel-client is running, its loopback health is ok and its last successful poll of OpenAI was {0} s ago. This is the local half; a tool call from ChatGPT that reaches Revit has not been verified by this machine." -f $conn.control_plane.age_seconds) $null 0
+        }
+        if ($conn.control_plane.state -eq 'connecting' -and $conn.local_health.ok) {
+            Finish 'pending_user_action' ("tunnel-client is running and still inside its startup grace: {0}" -f $conn.control_plane.detail) `
+                'Wait a minute and run chatgpt-tunnel.ps1 -Status again.' 3
         }
         Finish 'failed' ("tunnel-client is running but is NOT connected: local health: {0}; contact with OpenAI: {1} ({2}). Check the key, the tunnel id and the network, then -Stop and -Start. Log: {3}" -f $conn.local_health.detail, $conn.control_plane.state, $conn.control_plane.detail, $logFile) $null 1
     }

@@ -128,12 +128,32 @@ different facts:
 | Layer | Evidence |
 |---|---|
 | process | the tunnel-client this helper started is running (verified identity) |
-| local health | its loopback `/readyz` answers 2xx |
-| contact with OpenAI | `commands_poll_last_successful_timestamp_seconds` on its loopback `/metrics` is less than **90 s** old |
+| local health | its `/readyz` answers 2xx, and the operating system shows it listening on loopback only |
+| contact with OpenAI | `commands_poll_last_successful_timestamp_seconds` on its loopback `/metrics` is recent (below) |
 | ChatGPT -> Revit | **never verified locally** - only a real tool call from ChatGPT proves it |
 
 `/readyz` stays green while every poll fails, so the state is *configured* only
-when the last successful poll is recent. 90 s is three default poll cycles.
+when the last successful poll is recent. "Recent" is derived from the poll
+settings the tunnel actually runs with - `poll_timeout` and
+`poll_deadline_guardrail`, resolved as tunnel-client resolves them (environment,
+then profile, then its defaults of 30 s and 5 s). A healthy idle client completes
+one empty poll per `poll_timeout + guardrail`; the window is two such cycles plus
+20 s, **90 s with the defaults**, so one slow cycle is not a failure. A new process
+is *connecting*, not failed, until its first poll could have completed
+(`min(initial_poll_timeout, poll_timeout) + guardrail + 20 s`, 55 s by default).
+These numbers come from OpenAI's configuration reference and were measured against
+a local stand-in for the control plane; they have not been validated against
+OpenAI's service.
+
+The health listener is requested as `127.0.0.1:0` in the profile and again as a
+flag on `run`, and `-Status` reads the addresses the process really listens on.
+
+The runtime key reaches tunnel-client through its environment block. The tunnel
+is started with ShellExecute (so it outlives the window that started it and holds
+none of its handles), which copies the helper's own environment; the key is
+placed there, in process scope only, for the instant of the start, and the
+variable's previous value - or its absence - is restored whether the start
+succeeds or fails. Nothing is written to the user or machine environment.
 
 MCP requests and replies travel through OpenAI-hosted infrastructure while the
 tunnel runs; see the [privacy policy](PRIVACY.md). Account and workspace

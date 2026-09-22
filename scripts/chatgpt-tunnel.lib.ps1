@@ -34,10 +34,8 @@
 
 $script:HorizunTunnelProfileName = 'horizun-revit'
 $script:HorizunTunnelReleases = 'https://github.com/openai/tunnel-client/releases/latest'
-# A successful long poll lasts up to the client's poll timeout (30 s by default)
-# and the timestamp is written when it completes. Three poll cycles without a
-# success is a lost connection, not a slow one.
-$script:HorizunTunnelFreshSeconds = 90
+# How recent a successful poll must be is DERIVED from the client's effective
+# poll settings (Get-HorizunTunnelFreshness); 90 s is what the defaults give.
 
 # ---------------------------------------------------------------------------
 # The package
@@ -378,6 +376,160 @@ function Get-HorizunTunnelClient {
 # The running process: identity, not a bare pid
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# How often a healthy tunnel polls: the EFFECTIVE configuration
+# ---------------------------------------------------------------------------
+
+function ConvertFrom-HorizunGoDuration {
+    <# A Go duration ("30000ms", "30s", "1m30s", "2h") in seconds; $null if not one. #>
+    param([string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+    $t = $Text.Trim().Trim('"', "'")
+    if ($t -match '^\d+(\.\d+)?$') { return [double]::Parse($t, [Globalization.CultureInfo]::InvariantCulture) }   # bare number: seconds
+    $total = 0.0; $rest = $t
+    while ($rest.Length -gt 0) {
+        if ($rest -notmatch '^(\d+(?:\.\d+)?)(ms|s|m|h)') { return $null }
+        $n = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+        switch ($Matches[2]) { 'ms' { $total += $n / 1000 } 's' { $total += $n } 'm' { $total += $n * 60 } 'h' { $total += $n * 3600 } }
+        $rest = $rest.Substring($Matches[0].Length)
+    }
+    return $total
+}
+
+function Get-HorizunTunnelPollSettings {
+    <#
+      The poll timing the tunnel-client WILL use, resolved the way it resolves it:
+      flag > environment > profile YAML > default. This helper passes no poll flag,
+      so the environment it hands the child (its own) and the profile decide.
+
+        poll_timeout             default 30 s  (CONTROL_PLANE_POLL_TIMEOUT / poll_timeout)
+        poll_deadline_guardrail  default 5 s   (CONTROL_PLANE_POLL_DEADLINE_GUARDRAIL / poll_deadline_guardrail)
+        initial_poll_timeout     default 30 s  (CONTROL_PLANE_INITIAL_POLL_TIMEOUT / initial_poll_timeout)
+
+      A healthy idle client completes one empty poll within
+      poll_timeout + poll_deadline_guardrail (OpenAI's configuration reference),
+      and the timestamp of a successful poll is recorded when it completes.
+    #>
+    param([string]$ProfilePath)
+    $yaml = if ($ProfilePath -and (Test-Path -LiteralPath $ProfilePath -PathType Leaf)) { Get-Content -LiteralPath $ProfilePath -Raw -Encoding UTF8 } else { '' }
+    $pick = {
+        param([string]$envName, [string]$yamlKey, [double]$default)
+        $e = [Environment]::GetEnvironmentVariable($envName, 'Process')
+        $v = ConvertFrom-HorizunGoDuration $e
+        if ($null -ne $v -and $v -gt 0) { return @($v, "environment $envName") }
+        if ($yaml -match ("(?m)^\s*" + [regex]::Escape($yamlKey) + ":\s*(\S+)")) {
+            $v = ConvertFrom-HorizunGoDuration $Matches[1]
+            if ($null -ne $v -and $v -gt 0) { return @($v, "profile $yamlKey") }
+        }
+        return @($default, 'tunnel-client default')
+    }
+    $pt = & $pick 'CONTROL_PLANE_POLL_TIMEOUT' 'poll_timeout' 30
+    $gr = & $pick 'CONTROL_PLANE_POLL_DEADLINE_GUARDRAIL' 'poll_deadline_guardrail' 5
+    $ip = & $pick 'CONTROL_PLANE_INITIAL_POLL_TIMEOUT' 'initial_poll_timeout' 30
+    return [pscustomobject]@{
+        poll_timeout_seconds         = $pt[0]; poll_timeout_source = $pt[1]
+        poll_deadline_guardrail_seconds = $gr[0]; poll_deadline_guardrail_source = $gr[1]
+        initial_poll_timeout_seconds = $ip[0]; initial_poll_timeout_source = $ip[1]
+    }
+}
+
+function Get-HorizunTunnelFreshness {
+    <#
+      From the effective poll settings, two numbers:
+
+        fresh_seconds    the last successful poll must be younger than this:
+                         TWO full poll cycles (poll_timeout + guardrail each) plus a
+                         20 s margin for backoff and scheduling. One slow or lost
+                         cycle is tolerated; two in a row is a lost connection.
+                         With the defaults, 2 x (30 + 5) + 20 = 90 s.
+        startup_grace    before its first successful poll, a new process is
+                         "connecting", not "failed", for the first poll's worst
+                         case (min(initial, poll_timeout) + guardrail) plus the same
+                         margin: 55 s with the defaults.
+
+      These are derived from the client's documented behaviour and measured only
+      against a LOCAL stand-in for the control plane - not against OpenAI.
+    #>
+    param($Settings)
+    if (-not $Settings) { $Settings = Get-HorizunTunnelPollSettings }
+    $cycle = [double]$Settings.poll_timeout_seconds + [double]$Settings.poll_deadline_guardrail_seconds
+    $first = [Math]::Min([double]$Settings.initial_poll_timeout_seconds, [double]$Settings.poll_timeout_seconds) + [double]$Settings.poll_deadline_guardrail_seconds
+    return [pscustomobject]@{
+        fresh_seconds         = [int][Math]::Ceiling(2 * $cycle + 20)
+        startup_grace_seconds = [int][Math]::Ceiling($first + 20)
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Starting it
+# ---------------------------------------------------------------------------
+
+function Start-HorizunTunnelProcess {
+    <#
+      Start tunnel-client DETACHED, with the key reaching it and nobody else.
+
+      ShellExecute with a hidden window of its own: measured, a child sharing the
+      helper's console dies when that window is closed, and a child that inherits
+      the helper's handles keeps a caller's captured stdout open for as long as it
+      lives. ShellExecute inherits neither - but it also ignores
+      ProcessStartInfo.EnvironmentVariables and gives the child a copy of THIS
+      process's environment block.
+
+      So the key is placed in this process's environment - PROCESS scope only,
+      which is memory, never the registry - for the instant of the start, and the
+      variable's PREVIOUS value (or its absence) is put back in `finally`, whether
+      the start succeeded or threw. User- and Machine-scope variables are never
+      read or written here. The key is never an argument.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string]$Secret
+    )
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $Executable
+    $psi.Arguments = Join-HorizunWindowsArguments $Arguments
+    $psi.UseShellExecute = $true
+    $psi.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $psi.WorkingDirectory = $WorkingDirectory
+    $name = 'CONTROL_PLANE_API_KEY'
+    $previous = [Environment]::GetEnvironmentVariable($name, 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable($name, $Secret, 'Process')
+        return [Diagnostics.Process]::Start($psi)
+    }
+    finally {
+        # [NullString]::Value, not $null: PowerShell turns $null into "" for a .NET
+        # string parameter, and .NET 8 then leaves the variable DEFINED and empty
+        # (.NET Framework deletes it). Measured under PowerShell 7.
+        if ($null -eq $previous) { [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process') }
+        else { [Environment]::SetEnvironmentVariable($name, $previous, 'Process') }
+    }
+}
+
+function Get-HorizunTunnelListeners {
+    <#
+      Every TCP address the tunnel-client process and its direct children are
+      LISTENING on, as the operating system reports it - not as configured.
+    #>
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+    $ids = @($ProcessId)
+    try { $ids += @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ProcessId" -ErrorAction Stop | ForEach-Object { [int]$_.ProcessId }) } catch { }
+    $out = @()
+    foreach ($id in $ids) {
+        try {
+            foreach ($c in @(Get-NetTCPConnection -OwningProcess $id -State Listen -ErrorAction Stop)) {
+                $addr = [string]$c.LocalAddress
+                $out += [pscustomobject]@{ pid = $id; address = $addr; port = [int]$c.LocalPort
+                                           loopback = ($addr -eq '127.0.0.1' -or $addr -eq '::1') }
+            }
+        }
+        catch { }
+    }
+    return ,$out
+}
+
 function Get-HorizunTunnelRuntimePath {
     param([Parameter(Mandatory = $true)][string]$StateRoot)
     return (Join-Path $StateRoot 'tunnel-runtime.json')
@@ -389,7 +541,8 @@ function Save-HorizunTunnelRuntime {
         [Parameter(Mandatory = $true)]$Process,
         [Parameter(Mandatory = $true)][string]$Executable,
         [Parameter(Mandatory = $true)][string]$HealthUrlFile,
-        [Parameter(Mandatory = $true)][string]$LogFile
+        [Parameter(Mandatory = $true)][string]$LogFile,
+        $PollSettings
     )
     $doc = [pscustomobject]@{
         schema            = 1
@@ -401,6 +554,7 @@ function Save-HorizunTunnelRuntime {
         health_url_file   = $HealthUrlFile
         log_file          = $LogFile
         started_utc       = (Get-Date).ToUniversalTime().ToString('o')
+        poll_settings     = $PollSettings
     }
     $path = Get-HorizunTunnelRuntimePath -StateRoot $StateRoot
     $tmp = "$path.tmp-$([guid]::NewGuid().ToString('N'))"
@@ -509,20 +663,36 @@ function Get-HorizunTunnelConnection {
       process        the verified tunnel-client is running
       local_health   its loopback /readyz answers 2xx
       control_plane  its last SUCCESSFUL poll of OpenAI is recent
-                     (commands_poll_last_successful_timestamp_seconds < FreshSec old)
+                     (commands_poll_last_successful_timestamp_seconds younger than
+                     the threshold derived from the poll settings it started with);
+                     'connecting' while a new process is inside its startup grace
+      listeners      what the process actually LISTENS on, from the OS; anything
+                     not loopback makes local health fail
       chatgpt_call   never verified here: it takes a real call from ChatGPT
+
+      -FreshSec 0 (the default) derives the threshold; a positive value overrides it.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$StateRoot,
         $Runtime,
-        [int]$FreshSec = $script:HorizunTunnelFreshSeconds,
+        [int]$FreshSec = 0,
+        # -1 derives it; 0 or more overrides it (a test seam).
+        [int]$StartupGraceSec = -1,
         [int]$TimeoutSec = 5
     )
     if (-not $Runtime) { $Runtime = Get-HorizunTunnelRuntime -StateRoot $StateRoot }
+    $settings = $null
+    if ($Runtime.record -and $Runtime.record.PSObject.Properties['poll_settings'] -and $Runtime.record.poll_settings) { $settings = $Runtime.record.poll_settings }
+    if (-not $settings) { $settings = Get-HorizunTunnelPollSettings -ProfilePath (Get-HorizunTunnelProfilePath -StateRoot $StateRoot) }
+    $fresh = Get-HorizunTunnelFreshness -Settings $settings
+    $threshold = if ($FreshSec -gt 0) { $FreshSec } else { $fresh.fresh_seconds }
+    if ($StartupGraceSec -ge 0) { $fresh.startup_grace_seconds = $StartupGraceSec }
     $res = [ordered]@{
         process       = $Runtime.state
         local_health  = [ordered]@{ checked = $false; ok = $false; url = $null; detail = $null }
-        control_plane = [ordered]@{ state = 'unknown'; last_success_utc = $null; age_seconds = $null; threshold_seconds = $FreshSec; detail = $null }
+        listeners     = @()
+        control_plane = [ordered]@{ state = 'unknown'; last_success_utc = $null; age_seconds = $null; threshold_seconds = $threshold
+                                    startup_grace_seconds = $fresh.startup_grace_seconds; poll_settings = $settings; detail = $null }
         chatgpt_call  = [ordered]@{ verified = $false; detail = 'Not verifiable from this machine: it takes a real tool call from ChatGPT, through the tunnel, reaching Revit.' }
         connected     = $false
     }
@@ -543,6 +713,15 @@ function Get-HorizunTunnelConnection {
     if (-not $uri -or $uri.Host -notin @('127.0.0.1', 'localhost', '::1', '[::1]')) {
         $res.local_health.detail = "refusing to probe a non-loopback health address: $base"
         $res.control_plane.detail = $res.local_health.detail
+        return [pscustomobject]$res
+    }
+    # WHERE IT REALLY LISTENS. The profile asks for 127.0.0.1:0 and run repeats it
+    # as a flag; this reads the answer from the operating system.
+    $res.listeners = Get-HorizunTunnelListeners -ProcessId ([int]$Runtime.record.pid)
+    $exposed = @($res.listeners | Where-Object { -not $_.loopback })
+    if ($exposed.Count -gt 0) {
+        $res.local_health.detail = "the tunnel-client listens on a NON-loopback address: " + (($exposed | ForEach-Object { "$($_.address):$($_.port)" }) -join ', ')
+        $res.control_plane.detail = 'not evaluated: the local surface is exposed'
         return [pscustomobject]$res
     }
     $res.local_health.url = $base.TrimEnd('/') + '/readyz'
@@ -578,19 +757,27 @@ function Get-HorizunTunnelConnection {
                 $age = [int]([DateTimeOffset]::UtcNow - $when).TotalSeconds
                 $res.control_plane.last_success_utc = $when.UtcDateTime.ToString('o')
                 $res.control_plane.age_seconds = $age
-                if ($age -le $FreshSec) {
+                if ($age -le $threshold) {
                     $res.control_plane.state = 'fresh'
-                    $res.control_plane.detail = "last successful poll $age s ago (fresh within $FreshSec s)"
+                    $res.control_plane.detail = "last successful poll $age s ago (fresh within $threshold s)"
                 }
                 else {
                     $res.control_plane.state = 'stale'
-                    $res.control_plane.detail = "last successful poll $age s ago, older than $FreshSec s: the connection to OpenAI is not currently working"
+                    $res.control_plane.detail = "last successful poll $age s ago, older than $threshold s: the connection to OpenAI is not currently working"
                 }
             }
         }
     }
     catch { $res.control_plane.detail = "the metrics endpoint did not answer: $($_.Exception.Message)" }
 
+    if ($res.control_plane.state -in @('never', 'unknown')) {
+        $age = $null
+        try { $age = ([DateTime]::UtcNow - $Runtime.process.StartTime.ToUniversalTime()).TotalSeconds } catch { }
+        if ($null -ne $age -and $age -lt $fresh.startup_grace_seconds) {
+            $res.control_plane.state = 'connecting'
+            $res.control_plane.detail = ("started {0} s ago; its first poll can take up to {1} s. " -f [int]$age, $fresh.startup_grace_seconds) + $res.control_plane.detail
+        }
+    }
     $res.connected = ($res.local_health.ok -and $res.control_plane.state -eq 'fresh')
     return [pscustomobject]$res
 }

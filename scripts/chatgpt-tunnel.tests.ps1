@@ -242,7 +242,7 @@ try {
     $life = Join-Path $root ("life " + [char]0x00E9)
     $lifeStatus = Join-Path $root 'life-status.json'
     New-Item -ItemType Directory -Path $life -Force | Out-Null
-    $common = @('-StateRoot', $life, '-StatusPath', $lifeStatus, '-ServerPath', $server, '-ConnectWaitSec', '5', '-StartWaitSec', '15')
+    $common = @('-StateRoot', $life, '-StatusPath', $lifeStatus, '-ServerPath', $server, '-ConnectWaitSec', '5', '-StartWaitSec', '15', '-StartupGraceSec', '0')
     $profileFile = Join-Path $life 'profiles\horizun-revit.yaml'
     $tunnelId = 'tunnel_' + ('0123456789abcdef' * 2)
 
@@ -259,6 +259,7 @@ try {
     $yaml = if (Test-Path -LiteralPath $profileFile) { Get-Content -LiteralPath $profileFile -Raw -Encoding UTF8 } else { '' }
     Assert 'and the stored command is the server path, surviving the space, the apostrophe and the accents' `
         ($yaml.Contains($server.Replace('\', '/'))) $yaml
+    Assert 'the profile binds the health listener to 127.0.0.1:0, not a bare :0' ($yaml -match 'listen_addr:\s*"127\.0\.0\.1:0"') $yaml
     Assert 'init passed --profile-dir and a LOOPBACK ephemeral health address' `
         (@(Get-FakeArgv $full | Where-Object { $_ -match '^init ' -and $_ -match '--profile-dir' -and $_ -match '--health-listen-addr 127\.0\.0\.1:0' }).Count -eq 1) ((Get-FakeArgv $full) -join "`n")
 
@@ -279,6 +280,13 @@ try {
     $rec = Get-Content -LiteralPath (Join-Path $life 'tunnel-runtime.json') -Raw | ConvertFrom-Json
     $tp = Get-Process -Id $rec.pid -ErrorAction SilentlyContinue
     Assert 'the running tunnel is recorded by pid, start time and executable' ($tp -and $rec.process_start_utc -and $rec.executable -eq $full) ($rec | ConvertTo-Json -Compress)
+    Assert 'run repeats 127.0.0.1:0 as a flag, which outranks the profile' `
+        (@(Get-FakeArgv $full | Where-Object { $_ -match '^run ' -and $_ -match '--health\.listen-addr 127\.0\.0\.1:0' }).Count -eq 1) ((Get-FakeArgv $full) -join "`n")
+    $ls = @($rep.evidence.connection.listeners)
+    Assert 'where it REALLY listens, read from the OS, is loopback only' `
+        ($ls.Count -ge 1 -and @($ls | Where-Object { -not $_.loopback }).Count -eq 0 -and @($ls | Where-Object { $_.address -eq '127.0.0.1' }).Count -ge 1) ($ls | ConvertTo-Json -Compress)
+    Assert 'and the threshold is derived from the poll settings it started with (defaults: 90 s)' `
+        ($rep.evidence.connection.control_plane.threshold_seconds -eq 90 -and $rec.poll_settings.poll_timeout_seconds -eq 30) ($rep.evidence.connection.control_plane | ConvertTo-Json -Compress -Depth 5)
     Assert 'run used the same profile directory, the health URL file and a log file' `
         (@(Get-FakeArgv $full | Where-Object { $_ -match '^run ' -and $_.Contains((Join-Path $life 'profiles')) -and $_ -match '--health\.url-file' -and $_ -match '--log\.file' }).Count -eq 1) ((Get-FakeArgv $full) -join "`n")
 
@@ -294,6 +302,10 @@ try {
     $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-never.json')) + $common); $rep = Read-Report (Join-Path $root 'r-never.json')
     Assert 'process alive, /readyz green, NO successful poll ever: not connected' `
         ($rep.state -eq 'failed' -and $rep.evidence.connection.control_plane.state -eq 'never') "$($rep.state) $($rep.evidence.connection.control_plane.state)"
+    $connArgs = @('-StateRoot', $life, '-StatusPath', $lifeStatus, '-ServerPath', $server)
+    $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-connecting.json')) + $connArgs); $rep = Read-Report (Join-Path $root 'r-connecting.json')
+    Assert 'a young process with no successful poll YET is "connecting", a pending step - not a failure' `
+        ($rep.state -eq 'pending_user_action' -and $rep.evidence.connection.control_plane.state -eq 'connecting' -and $r.exit_code -eq 3) "$($rep.state) $($rep.evidence.connection.control_plane.state) exit=$($r.exit_code)"
     Set-FakePoll $full 'absent'
     $rep = $null; $r = Invoke-Helper (@('-Status', '-Json', (Join-Path $root 'r-absent.json')) + $common); $rep = Read-Report (Join-Path $root 'r-absent.json')
     Assert 'no poll metric at all: contact with OpenAI unknown, not assumed' `
@@ -316,6 +328,63 @@ try {
     Assert 'revoke deletes the profile from the SAME directory init wrote it to' (-not (Test-Path -LiteralPath $profileFile)) $r.text
     Assert 'and forgets the key' (-not (Test-HorizunChatGptSecret -StateRoot $life)) $null
     Assert 'and names the OpenAI-side objects only the user can delete' ($r.text -match 'settings/organization/tunnels') $r.text
+
+    # ======================================================================
+    Write-Host ""
+    Write-Host "The key during start, the loopback surface, the freshness window" -ForegroundColor Cyan
+
+    # The key: in THIS process's environment only for the instant of the start,
+    # and the previous value put back - after success AND after a failed start.
+    $keyName = 'CONTROL_PLANE_API_KEY'
+    $userBefore = [Environment]::GetEnvironmentVariable($keyName, 'User')
+    $machineBefore = [Environment]::GetEnvironmentVariable($keyName, 'Machine')
+    $envDir = Join-Path $root 'envcheck'; New-Item -ItemType Directory -Path $envDir -Force | Out-Null
+    [Environment]::SetEnvironmentVariable($keyName, 'value-that-was-already-here', 'Process')
+    try {
+        $p = Start-HorizunTunnelProcess -Executable $full -WorkingDirectory $envDir -Secret $secret -Arguments @('doctor', '--profile-dir', $envDir, '--profile', 'none')
+        try { [void]$p.WaitForExit(15000) } catch { }
+        Assert 'after a successful start the previous value is back' ([Environment]::GetEnvironmentVariable($keyName, 'Process') -ceq 'value-that-was-already-here') $null
+        Assert 'and the child really received the key (it ran with KEY=present)' `
+            (@(Get-FakeArgv $full | Where-Object { $_ -match '^doctor --profile-dir' -and $_ -match 'KEY=present' }).Count -eq 1) ((Get-FakeArgv $full) -join "`n")
+        $threw = $false
+        try { Start-HorizunTunnelProcess -Executable (Join-Path $root 'nope\tunnel-client.exe') -WorkingDirectory $envDir -Secret $secret -Arguments @('run') | Out-Null } catch { $threw = $true }
+        Assert 'a start that FAILS still restores the previous value' ($threw -and [Environment]::GetEnvironmentVariable($keyName, 'Process') -ceq 'value-that-was-already-here') "threw=$threw"
+        [Environment]::SetEnvironmentVariable($keyName, [NullString]::Value, 'Process')
+        $p = Start-HorizunTunnelProcess -Executable $full -WorkingDirectory $envDir -Secret $secret -Arguments @('doctor', '--profile-dir', $envDir, '--profile', 'none2')
+        try { [void]$p.WaitForExit(15000) } catch { }
+        Assert 'with no previous value, none is left behind' ($null -eq [Environment]::GetEnvironmentVariable($keyName, 'Process')) $null
+    }
+    finally { [Environment]::SetEnvironmentVariable($keyName, [NullString]::Value, 'Process') }
+    Assert 'the User and Machine environments (the registry) are untouched' `
+        (([Environment]::GetEnvironmentVariable($keyName, 'User') -ceq $userBefore) -and ([Environment]::GetEnvironmentVariable($keyName, 'Machine') -ceq $machineBefore)) $null
+
+    # The loopback surface: a listener that is NOT loopback fails local health,
+    # whatever the health URL says. The real function, with the OS answer replaced.
+    $exRoot = Join-Path $root 'exposed'
+    $exExe = New-Fake (Join-Path $root 'client\exposed') 'tunnel-client.exe'
+    $exProc = Start-HorizunTunnelProcess -Executable $exExe -WorkingDirectory $root -Secret $secret -Arguments @('doctor', '--profile-dir', $root, '--profile', 'x')
+    Set-Content -LiteralPath (Join-Path $root 'exposed.url') -Value 'http://127.0.0.1:1' -Encoding ASCII
+    $fakeRuntime = [pscustomobject]@{ state = 'running'; process = (Get-Process -Id $PID)
+                                     record = [pscustomobject]@{ pid = $PID; health_url_file = (Join-Path $root 'exposed.url') } }
+    function Get-HorizunTunnelListeners { param([int]$ProcessId) return ,@([pscustomobject]@{ pid = $ProcessId; address = '0.0.0.0'; port = 8080; loopback = $false }) }
+    $c = Get-HorizunTunnelConnection -StateRoot $exRoot -Runtime $fakeRuntime
+    Assert 'a listener on 0.0.0.0 fails local health and is named' ((-not $c.local_health.ok) -and $c.local_health.detail -match 'NON-loopback.*0\.0\.0\.0:8080' -and -not $c.connected) $c.local_health.detail
+    Remove-Item Function:\Get-HorizunTunnelListeners
+    . (Join-Path $PSScriptRoot 'chatgpt-tunnel.lib.ps1')
+    try { [void]$exProc.WaitForExit(15000) } catch { }
+
+    # The freshness window, derived from the effective poll settings.
+    Assert 'Go durations parse the way the client writes them' `
+        ((ConvertFrom-HorizunGoDuration '30000ms') -eq 30 -and (ConvertFrom-HorizunGoDuration '1m30s') -eq 90 -and (ConvertFrom-HorizunGoDuration '5s') -eq 5 -and $null -eq (ConvertFrom-HorizunGoDuration 'soon')) $null
+    $def = Get-HorizunTunnelFreshness -Settings (Get-HorizunTunnelPollSettings)
+    Assert 'defaults (30 s poll, 5 s guardrail) give 90 s and a 55 s startup grace' ($def.fresh_seconds -eq 90 -and $def.startup_grace_seconds -eq 55) ($def | ConvertTo-Json -Compress)
+    $env:CONTROL_PLANE_POLL_TIMEOUT = '60s'
+    try { $slow = Get-HorizunTunnelFreshness -Settings (Get-HorizunTunnelPollSettings) } finally { Remove-Item Env:\CONTROL_PLANE_POLL_TIMEOUT }
+    Assert 'a longer poll (environment, as the client reads it) widens the window instead of producing false failures' ($slow.fresh_seconds -eq 150) ($slow | ConvertTo-Json -Compress)
+    $yamlProfile = Join-Path $root 'poll.yaml'
+    Set-Content -LiteralPath $yamlProfile -Value "control_plane:`n  poll_timeout: 10000ms`n  poll_deadline_guardrail: 1000ms" -Encoding ASCII
+    $fast = Get-HorizunTunnelFreshness -Settings (Get-HorizunTunnelPollSettings -ProfilePath $yamlProfile)
+    Assert 'and a shorter one in the profile narrows it' ($fast.fresh_seconds -eq 42) ($fast | ConvertTo-Json -Compress)
 
     # ======================================================================
     Write-Host ""
