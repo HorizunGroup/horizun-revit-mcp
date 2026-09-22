@@ -105,6 +105,12 @@ if ($runnerGate -match 'OpenAndActivateDocument' -or
 }
 if ($ci -notmatch 'scan-sensitive\.tests\.ps1') { Fail 'CI no longer tests the narrow public-governance scanner exception' }
 if ($ci -notmatch 'run-release-live-gate\.ps1') { Fail 'CI no longer invokes the owned Revit release lifecycle' }
+if ($runnerGate -notlike "*[ValidateSet('ENU')]*" -or
+    $runnerGate -notlike "*ArgumentList @('/language', `$Language)*" -or
+    $runnerGate -notlike '*revit_language*' -or
+    $runnerGate -notlike "*'^English'*") {
+    Fail 'the owned Revit release lifecycle no longer forces and verifies English (ENU)'
+}
 if ($ci -notmatch '(?s)revit-integration:.*?max-parallel:\s*1.*?matrix:') { Fail 'the single interactive Revit integration matrix is no longer serialized' }
 if ($ci -notmatch "'stage\.zip'\s*=\s*'dist/stage\.zip'") { Fail 'the package record no longer hashes the complete staged payload archive' }
 if ($ci -notmatch '(?s)install-package:.*?Restore the complete staged payload and its build timestamps.*?Expand-Archive') { Fail 'the package install no longer restores the timestamp-preserving stage archive' }

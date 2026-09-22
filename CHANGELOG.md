@@ -3,6 +3,11 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.0.4 — 2026-09-22
+
+- **Reliable English release runner.** Live release verification launches Revit with /language ENU and requires horizun_health to report English before it accepts evidence, so Revit 2023 cannot silently run its localized UI path.
+- **Installer false-positive repair.** A clean Addins directory that Inno Setup reports as ERROR_SUCCESS while finding no *.addin files is accepted; access and I/O failures still block the installation.
+
 ## v2.0.3 — 2026-09-22
 
 ### Revit 2023 Spanish release-gate fixes
@@ -2668,3 +2673,4 @@ work it did not verify.
 History squashed to a single commit before the repository ever had a remote — the
 development history carried client-specific strings, and rewriting the files alone
 would have left them reachable.
+

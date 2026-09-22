@@ -189,7 +189,7 @@ Check 'Inno distinguishes no matching manifests from enumeration failure' `
     ($installer -match 'YearRootAttributes := Win32GetFileAttributes\(YearRoot\)' -and
      $installer -match '\(EnumerationError = 2\) or \(EnumerationError = 3\) then Result := False' -and
      $installer -match 'EnumerationError := Win32GetLastError\(\)' -and
-     $installer -match '\(EnumerationError <> 2\) and \(EnumerationError <> 18\) then exit' -and
+     $installer -match '\(EnumerationError <> 0\) and \(EnumerationError <> 2\) and \(EnumerationError <> 18\) then exit' -and
      $installer -match 'EnumerationCompleted := EnumerationError = 18' -and
      $installer -match 'if not EnumerationCompleted then exit') `
     'directory probing or FindFirst can still turn access denied or an I/O error into a false absence'

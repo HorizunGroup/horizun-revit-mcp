@@ -1,9 +1,10 @@
-﻿<Project>
+<Project>
   <PropertyGroup>
     <!-- One product, one release number. The server and every Revit payload
          inherit this value and are packaged/deployed as an inseparable pair. -->
-    <Version>2.0.3</Version>
+    <Version>2.0.4</Version>
     <!-- Published tags never move. Server and add-ins share this version. -->
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>
+
