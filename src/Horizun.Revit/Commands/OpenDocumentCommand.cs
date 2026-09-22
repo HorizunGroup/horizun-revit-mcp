@@ -289,7 +289,8 @@ namespace Horizun.Revit.Commands
             try { expected = Path.GetFileNameWithoutExtension(requestedPath); }
             catch { return false; }
             return string.Equals(title, expected, StringComparison.OrdinalIgnoreCase) ||
-                   string.Equals(title, expected + "_detached", StringComparison.OrdinalIgnoreCase);
+                   string.Equals(title, expected + "_detached", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(title, expected + "_desenlazado", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool TryReadCloudIdentity(Document doc, out Guid project, out Guid model, out string error)

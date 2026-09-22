@@ -937,7 +937,14 @@ namespace Horizun.Revit.Commands
                 {
                     string candidateName;
                     try { candidateName = candidate.GetName(schedule.Document); } catch { candidateName = null; }
-                    if (string.Equals(candidateName, name, StringComparison.OrdinalIgnoreCase)) matches.Add(candidate);
+                    // Revit localizes the display name of built-in fields.  The MCP
+                    // contract accepts the stable English API name too, so a sheet
+                    // list created on Spanish Revit 2023 can receive "Sheet Number"
+                    // instead of forcing a caller to know its UI language.
+                    bool invariantSheetNumber = string.Equals(name, "Sheet Number", StringComparison.OrdinalIgnoreCase)
+                        && Rid.Value(candidate.ParameterId) == (long)BuiltInParameter.SHEET_NUMBER;
+                    if (string.Equals(candidateName, name, StringComparison.OrdinalIgnoreCase) || invariantSheetNumber)
+                        matches.Add(candidate);
                 }
             }
             if (matches.Count == 1) { resolved = matches[0]; return null; }

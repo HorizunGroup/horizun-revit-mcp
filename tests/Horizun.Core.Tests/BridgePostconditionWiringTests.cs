@@ -43,6 +43,17 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void Detached_open_identity_recognises_the_exact_spanish_revit_title()
+        {
+            string open = Source("src/Horizun.Revit/Commands/OpenDocumentCommand.cs");
+            string session = Source("src/Horizun.Revit/Commands/DocumentSessionCommand.cs");
+
+            Assert.Contains("_desenlazado", open);
+            Assert.Contains("baseName + \"_desenlazado\"", session);
+            Assert.DoesNotContain("StartsWith(title", session);
+        }
+
+        [Fact]
         public void Relinquish_verifies_element_checkouts_and_does_not_claim_true_on_unknown()
         {
             string src = Source("src/Horizun.Revit/Commands/RelinquishAllCommand.cs");
