@@ -29,6 +29,11 @@ param(
     [string]$Json,
     [int]$StartupTimeoutSec = 600,
     [int]$OpenTimeoutSec = 900,
+    # Release evidence has to be repeatable. Revit exposes the supported UI
+    # language through this switch; ENU also prevents its localized display
+    # labels from turning a passing result into a machine-locale accident.
+    [ValidateSet('ENU')]
+    [string]$Language = 'ENU',
     [switch]$ValidateFixturesOnly,
     [switch]$OptimizationOnly
 )
@@ -216,13 +221,17 @@ $launched = $null
 $ownedPid = $null
 
 try {
-    Stage "starting Revit $Year in this interactive Windows session"
-    $launched = Start-Process -FilePath $revitExe -PassThru -WindowStyle Hidden
+    Stage "starting Revit $Year in $Language in this interactive Windows session"
+    $launched = Start-Process -FilePath $revitExe -ArgumentList @('/language', $Language) -PassThru -WindowStyle Hidden
     $ownedPid = $launched.Id
 
     $health = Wait-ForHealth (Get-Date).AddSeconds($StartupTimeoutSec)
     if ([int]$health.process_id -ne $ownedPid) {
         throw "The bridge answered from pid $($health.process_id), but this gate launched pid $ownedPid. Refusing to guess."
+    }
+    $reportedLanguage = [string]$health.revit_language
+    if ($reportedLanguage -notmatch '^English') {
+        throw "Revit $Year did not accept /language $Language. Horizun reported '$reportedLanguage'; install the ENU language resources on this runner before collecting release evidence."
     }
     Stage "bridge healthy on pid $ownedPid; opening the inactive fixture first"
 

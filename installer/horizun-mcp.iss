@@ -401,10 +401,13 @@ begin
   if not FoundManifest then
   begin
     { FindFirst returns False both for an empty match and for access/I/O errors.
-      Read Win32's reason immediately: only the two documented no-match results
-      prove absence. ACL denial, sharing errors and every unknown failure remain
-      the initial conflict=True and stop Setup before it writes anything. }
-    if (EnumerationError <> 2) and (EnumerationError <> 18) then exit;
+      Inno Setup's wrapper also reports ERROR_SUCCESS (0) for a clean directory
+      with no matching *.addin files on some Windows 10 systems. That is not an
+      enumeration failure: treating it as one caused the false "manifest already
+      exists" block reported in discussion #37. Keep access, sharing and every
+      unknown non-success error fail-closed, but accept 0 and the documented
+      no-match results as a clean directory. }
+    if (EnumerationError <> 0) and (EnumerationError <> 2) and (EnumerationError <> 18) then exit;
   end;
   Result := False;
 end;
