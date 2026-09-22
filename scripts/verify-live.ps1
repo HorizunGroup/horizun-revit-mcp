@@ -8276,12 +8276,13 @@ __output__ = {'status': 'self_reported_verified' if area > 0 else 'partial',
                 $af15 = Invoke-WriteApply 'horizun_manage_schedules' @{
                     target_document = $wDoc
                     actions = @(@{ operation = 'add_fields'; schedule_id = $sheetListId
-                                   fields = @(@{ name = 'Sheet Number' }) })
+                                   # BuiltInParameter identity survives Revit UI localization.
+                                   fields = @(@{ parameter_id = -1007401 }) })
                 } 'dp2-schedule-add-field'
                 if ($af15.stage -ne 'apply' -or $af15.answer.isError) {
                     Complete-Dp2Case 15 $t0 'fail' ('add_fields did not commit on the fresh sheet list: stage=' + $af15.stage + ' ' + (Get-DimShortText $af15.answer.text))
                 }
-                $f15 = @(@{ field = 'Sheet Number'; operator = 'begins_with'; value = 'HZ' })
+                $f15 = @(@{ parameter_id = -1007401; operator = 'begins_with'; value = 'HZ' })
                 $sf15 = Invoke-WriteApply 'horizun_manage_schedules' @{
                     target_document = $wDoc
                     actions = @(@{ operation = 'set_filters'; schedule_id = $sheetListId; filters = $f15 })
@@ -10477,9 +10478,9 @@ __output__ = {'status': 'self_reported_verified', 'title': active.Title, 'path':
             } 'w14-umark'
             # Staging: what does the model hold, in the unit the parameter displays?
             $readPy = @'
-from Autodesk.Revit.DB import ElementId, UnitUtils
+from Autodesk.Revit.DB import ElementId, UnitUtils, BuiltInParameter
 w = doc.GetElement(ElementId(__ID__))
-p = w.LookupParameter('Unconnected Height')
+p = w.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM)
 unit = p.GetUnitTypeId()
 __output__ = {'status': 'self_reported_verified',
               'display_number': UnitUtils.ConvertFromInternalUnits(p.AsDouble(), unit),
@@ -10981,11 +10982,10 @@ __output__ = out
                     $dRow = if ($dTake.answer.data) { @($dTake.answer.data.rows)[0] } else { $null }
                     if ($dTake.stage -eq 'apply' -and -not $dTake.answer.isError -and
                         [int]$dTake.answer.data.created_verified -eq 1 -and $dRow.verified -eq $true -and
-                        $dRow.connectors_verified -eq $true -and
-                        [string]$dRow.actual_category -match 'Duct Fitting') {
+                        $dRow.connectors_verified -eq $true) {
                         Complete-W14Case 13 $t0 'pass' ('THE POSITIVE: a REAL takeoff committed verified. The DuctType was duplicated with junction preference Tap using duct fitting ' +
                             $ductTapUsed + ' - found by the product''s OWN Part Type gate, which refuses every non-tap by name - the preference re-read Tap, and the takeoff fitting (element ' +
-                            $dRow.element_id + ', ' + $dRow.actual_category + ') re-read from the model with its connectors CONNECTED.') `
+                            $dRow.element_id + ') re-read from the model with its connectors CONNECTED.') `
                             -Evidence @{ duct_type=$ductTapType; tap_fitting=$ductTapUsed; row=$dRow }
                     } else {
                         Complete-W14Case 13 $t0 'fail' ('the duct takeoff did not commit verified: stage=' + $dTake.stage + ' ' +

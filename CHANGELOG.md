@@ -3,6 +3,23 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## v2.0.3 — 2026-09-22
+
+### Revit 2023 Spanish release-gate fixes
+
+- The verified parameter writer resolves stable English contract names for Mark,
+  Diameter, Rebar Cover - Exterior Face, Unconnected Height and Structural through
+  their `BuiltInParameter` identities. Client requests and CSV imports no longer
+  depend on the Revit display language.
+- Detached local opens recognise Revit's exact Spanish `_desenlazado` title as
+  well as `_detached`, while preserving exact title matching. A correctly opened,
+  active detached model is no longer rejected solely because Revit localized its
+  synthetic filename.
+- The live verifier now uses stable parameter ids where it is testing schedule
+  fields and API identities where it reads wall height. Its duct-takeoff assertion
+  relies on the command's connector verification instead of an English category
+  display string.
+
 ## v2.0.2 — 2026-09-22
 
 ### Fixed after independent review

@@ -1046,6 +1046,15 @@ namespace Horizun.Revit.Commands
             // A BuiltInParameter lookup that THREW did not come back empty. Keep the reason
             // so the final error cannot claim we looked and found nothing.
             string bipError = null;
+            // English contract aliases for built-in parameters stay usable on
+            // localized Revit installations.  They resolve by the API identity,
+            // never by translating a display name and hoping it is unique.
+            foreach (BuiltInParameter alias in InvariantBuiltInAliases(spec))
+            {
+                Parameter p = null;
+                try { p = e.get_Parameter(alias); } catch (Exception ex) { bipError = ex.Message; }
+                if (p != null) { matchedBy = "builtin_alias"; return p; }
+            }
             if (spec.Length > 0 && char.IsLetter(spec[0]))
             {
                 BuiltInParameter bip;
@@ -1120,6 +1129,21 @@ namespace Horizun.Revit.Commands
                       ? "This is a TYPE — instance-only parameters do not exist here."
                       : "If this parameter lives on the type, pass the type's id as target_id.");
             return null;
+        }
+
+        private static IEnumerable<BuiltInParameter> InvariantBuiltInAliases(string spec)
+        {
+            if (string.Equals(spec, "Mark", StringComparison.OrdinalIgnoreCase))
+                return new[] { BuiltInParameter.ALL_MODEL_MARK };
+            if (string.Equals(spec, "Diameter", StringComparison.OrdinalIgnoreCase))
+                return new[] { BuiltInParameter.RBS_PIPE_DIAMETER_PARAM, BuiltInParameter.RBS_CURVE_DIAMETER_PARAM };
+            if (string.Equals(spec, "Rebar Cover - Exterior Face", StringComparison.OrdinalIgnoreCase))
+                return new[] { BuiltInParameter.CLEAR_COVER_EXTERIOR };
+            if (string.Equals(spec, "Unconnected Height", StringComparison.OrdinalIgnoreCase))
+                return new[] { BuiltInParameter.WALL_USER_HEIGHT_PARAM };
+            if (string.Equals(spec, "Structural", StringComparison.OrdinalIgnoreCase))
+                return new[] { BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT };
+            return Enumerable.Empty<BuiltInParameter>();
         }
 
         // ---- Coercion. A value that cannot be coerced names the storage type. ----
@@ -1669,7 +1693,7 @@ namespace Horizun.Revit.Commands
             {
                 try
                 {
-                    Parameter parameter = element.LookupParameter(parameterName);
+                    Parameter parameter = ResolveParameter(element, parameterName, out string _, out string _);
                     double cellNumber;
                     if (parameter != null && parameter.HasValue &&
                         TabularRules.TryParseCell(cell, decimalSeparator, out cellNumber))
@@ -1702,7 +1726,7 @@ namespace Horizun.Revit.Commands
         {
             try
             {
-                Parameter parameter = element.LookupParameter(parameterName);
+                Parameter parameter = ResolveParameter(element, parameterName, out string _, out string _);
                 if (parameter == null) return null;
                 if (parameter.StorageType == StorageType.String) return parameter.AsString();
                 return parameter.AsValueString() ?? (parameter.HasValue ? parameter.AsElementId().ToString() : null);

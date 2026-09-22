@@ -1777,13 +1777,16 @@ namespace Horizun.Revit.Commands
             var ext = Path.GetExtension(requestedPath) ?? "";
 
             // Revit titles a detached document after the file it detached from, with or
-            // without the extension, and some versions append '_detached'. Nothing else.
+            // without the extension. The suffix is localized by the Revit UI language;
+            // these are exact suffixes Revit itself uses, never a permissive prefix.
             var candidates = new List<string>
             {
                 baseName,
                 fileName,
                 baseName + "_detached",
-                baseName + "_detached" + ext
+                baseName + "_detached" + ext,
+                baseName + "_desenlazado",
+                baseName + "_desenlazado" + ext
             };
             foreach (var c in candidates)
                 if (string.Equals(title, c, StringComparison.OrdinalIgnoreCase)) return true;
