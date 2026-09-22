@@ -21,6 +21,8 @@
   a verifier that dies on it reports a broken script instead of a broken bridge.
 #>
 
+. (Join-Path $PSScriptRoot 'process.lib.ps1')
+
 function Invoke-HorizunMcpProbe {
     [CmdletBinding()]
     param(
@@ -69,7 +71,9 @@ function Invoke-HorizunMcpProbe {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Command
-    foreach ($a in $ArgumentList) { $null = $psi.ArgumentList.Add($a) }
+    # ProcessStartInfo.ArgumentList does not exist in Windows PowerShell 5.1; the
+    # one Arguments string, quoted by the Windows rules, works in both.
+    $psi.Arguments = Join-HorizunWindowsArguments $ArgumentList
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
@@ -91,7 +95,7 @@ function Invoke-HorizunMcpProbe {
         # A SECRET PASSED THIS WAY IS NOT ON A COMMAND LINE. Anything in
         # ArgumentList is visible to every process on the machine through the
         # command line of this one; the environment block of a child is not.
-        foreach ($k in $Environment.Keys) { $psi.Environment[$k] = [string]$Environment[$k] }
+        foreach ($k in $Environment.Keys) { $psi.EnvironmentVariables[[string]$k] = [string]$Environment[$k] }
     }
 
     $clock = [Diagnostics.Stopwatch]::StartNew()

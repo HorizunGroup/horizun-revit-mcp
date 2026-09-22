@@ -20,6 +20,8 @@
   (CONTROL_PLANE_API_KEY).
 #>
 
+. (Join-Path $PSScriptRoot 'process.lib.ps1')
+
 function Get-HorizunChatGptSecretPath {
     param([Parameter(Mandatory = $true)][string]$StateRoot)
     return (Join-Path $StateRoot 'control-plane-api-key.dpapi')
@@ -100,99 +102,29 @@ function Remove-HorizunChatGptSecret {
     return $true
 }
 
-function Test-HorizunTunnelReady {
-    <#
-      Is the tunnel actually CONNECTED, or merely running?
-
-      Those are different, and the difference is invisible from a process list. A
-      tunnel-client that has lost its outbound path keeps running; every ChatGPT
-      tool call then fails while nothing on this machine looks wrong. OpenAI
-      documents `/healthz`, `/readyz`, `/metrics` and a `/ui` on the client's
-      LOOPBACK-ONLY admin surface, so readiness is a question that can be asked.
-
-      This never exposes that surface and never changes its binding - it only
-      reads it, on localhost, if the client published where it is listening.
-
-      Returns .checked=$false when the address is unknown, which is an honest
-      "cannot tell" rather than a guess in either direction.
-    #>
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string]$StateRoot, [int]$TimeoutSec = 5)
-
-    $result = [ordered]@{ checked = $false; ready = $false; endpoint = $null; detail = $null }
-
-    # The admin address is whatever the client was configured with. Only a value
-    # this integration recorded is used; nothing is scanned for and no port is
-    # guessed, because probing arbitrary local ports is not diagnosis.
-    $addrFile = Join-Path $StateRoot 'admin-endpoint.txt'
-    $endpoint = $null
-    if (Test-Path -LiteralPath $addrFile -PathType Leaf) {
-        $endpoint = (Get-Content -LiteralPath $addrFile -Raw).Trim()
-    }
-    elseif ($env:HORIZUN_TUNNEL_ADMIN_URL) { $endpoint = $env:HORIZUN_TUNNEL_ADMIN_URL.Trim() }
-    if (-not $endpoint) {
-        $result.detail = 'no admin endpoint is recorded for this profile, so readiness cannot be read'
-        return [pscustomobject]$result
-    }
-
-    # Loopback only. An admin surface reachable from elsewhere is not something
-    # this script will interrogate, let alone encourage.
-    try { $uri = [uri]$endpoint } catch { $result.detail = "not a URL: $endpoint"; return [pscustomobject]$result }
-    if ($uri.Host -notin @('localhost', '127.0.0.1', '::1', '[::1]')) {
-        $result.detail = "refusing to probe a non-loopback admin endpoint ($($uri.Host))"
-        return [pscustomobject]$result
-    }
-
-    $result.endpoint = $endpoint.TrimEnd('/') + '/readyz'
-    try {
-        $r = Invoke-WebRequest -Uri $result.endpoint -TimeoutSec $TimeoutSec -UseBasicParsing -ErrorAction Stop
-        $result.checked = $true
-        $result.ready = ($r.StatusCode -ge 200 -and $r.StatusCode -lt 300)
-        $result.detail = "HTTP $($r.StatusCode)"
-    }
-    catch {
-        $result.checked = $true
-        $result.ready = $false
-        $result.detail = $_.Exception.Message
-    }
-    return [pscustomobject]$result
-}
-
 function Invoke-HorizunTunnelClient {
     <#
-      Run a tunnel-client subcommand with the key in the ENVIRONMENT, capture its
-      output, and return it. The key is never an argument, and the returned output
-      is scrubbed of anything that looks like one before any caller can print it.
+      Run a tunnel-client subcommand with the key in the ENVIRONMENT, and return
+      what happened with nothing merged away: started, exit code, timeout, and the
+      output scrubbed of anything that looks like the key before any caller can
+      print it. The key is never an argument.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [Parameter(Mandatory = $true)][string]$StateRoot,
-        [int]$TimeoutSec = 120
+        [int]$TimeoutSec = 120,
+        [switch]$WithoutKey
     )
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $Path
-    # ProcessStartInfo.ArgumentList is unavailable in Windows PowerShell 5.1.
-    # Quote with the Windows command-line escaping rules; secrets never enter it.
-    $psi.Arguments = (($Arguments | ForEach-Object {
-        if ($_ -notmatch '[\s"]') { $_ }
-        else { '"' + ([regex]::Replace($_, '(\\*)"', '$1$1\"') -replace '(\\+)$', '$1$1') + '"' }
-    }) -join ' ')
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.WorkingDirectory = $StateRoot
+    $envVars = @{}
     $secret = $null
-    if (Test-HorizunChatGptSecret -StateRoot $StateRoot) {
+    if (-not $WithoutKey -and (Test-HorizunChatGptSecret -StateRoot $StateRoot)) {
         $secret = Get-HorizunChatGptSecret -StateRoot $StateRoot
-        $psi.EnvironmentVariables['CONTROL_PLANE_API_KEY'] = $secret
+        $envVars['CONTROL_PLANE_API_KEY'] = $secret
     }
-    $p = [Diagnostics.Process]::Start($psi)
-    $out = $p.StandardOutput.ReadToEndAsync()
-    $err = $p.StandardError.ReadToEndAsync()
-    if (-not $p.WaitForExit($TimeoutSec * 1000)) { try { $p.Kill() } catch { } }
-    $text = (($out.Result + "`n" + $err.Result)).Trim()
+    $r = Invoke-HorizunProcess -Path $Path -Arguments $Arguments -TimeoutSec $TimeoutSec -Environment $envVars -WorkingDirectory $StateRoot
+    $text = (($r.stdout + "`n" + $r.stderr)).Trim()
     if ($secret) {
         # A client that echoes its own configuration must not turn a diagnostic
         # into a place the key is written down.
@@ -200,5 +132,11 @@ function Invoke-HorizunTunnelClient {
         $secret = $null
     }
     $text = [regex]::Replace($text, 'sk-[A-Za-z0-9_\-]{8,}', '<redacted>')
-    return [pscustomobject]@{ exit_code = $p.ExitCode; output = $text }
+    return [pscustomobject]@{
+        started   = $r.started
+        exit_code = $r.exit_code
+        timed_out = $r.timed_out
+        error     = $r.error
+        output    = $text
+    }
 }
