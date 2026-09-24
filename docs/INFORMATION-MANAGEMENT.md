@@ -410,3 +410,196 @@ estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
+
+## LOIN to IDS
+
+A project context may carry a **structured level of information need** in the
+optional `loin` block (`schema_version` stays `1`; the block is additive, and
+`documents.loin` still points at the LOIN document itself). The concepts are
+those of **ISO 7817-1:2024** *Building information modelling — Level of
+information need — Part 1: Concepts and principles*, which superseded
+**EN 17412-1:2020**
+([ISO catalogue](https://www.iso.org/standard/82914.html);
+[openBIM knowledge base, LOIN step](https://openbim-knowledgebase.org/en/docs/level-of-information-need-basics/chapter-9-step-2-level-of-information-need/)):
+
+- **prerequisites** — the *purpose* of the information, the *information delivery
+  milestone*, and the *actors* who provide and receive it;
+- **geometrical information** — *detail*, *dimensionality* (0D point, 1D line,
+  2D surface, 3D volume), *location* (absolute, or relative to another object),
+  *appearance* and *parametric behaviour*;
+- **alphanumerical information** — how the object is *identified* and which
+  *information content* it carries;
+- **documentation** — documents that must accompany the objects.
+
+The standard leaves the object breakdown open; here `applies_to` names an IFC
+entity (and predefined type), a classification (system + code, optional bSDD URI)
+and/or a Revit category.
+
+```json
+"loin": {
+  "source": "EIR rev 2",
+  "requirements": [{
+    "id": "W-01", "purpose": "Fire safety review", "milestone": "Stage 4",
+    "actors": { "provider": "Architect", "receiver": "Fire engineer" },
+    "applies_to": { "ifc_entity": "IfcWall", "revit_category": "OST_Walls" },
+    "occurrence": "optional",
+    "ifc_versions": ["IFC4"],
+    "geometry": { "detail": "simplified envelope", "dimensionality": "3D", "location": "absolute" },
+    "alphanumeric": {
+      "attributes": [{ "name": "Name", "pattern": "W-[0-9]{3}" }],
+      "properties": [
+        { "property_set": "Pset_WallCommon", "name": "FireRating", "data_type": "IfcLabel",
+          "allowed_values": ["EI60", "EI90"] },
+        { "property_set": "Qto_WallBaseQuantities", "name": "Width", "data_type": "IfcLengthMeasure",
+          "min_inclusive": 0.1, "max_inclusive": 0.5, "unit": "m" }
+      ]
+    },
+    "documentation": [{ "name": "Fire test certificate", "format": "pdf" }]
+  }]
+}
+```
+
+### `validate` and the loin block
+
+The schema checks the shape (enums for dimensionality, location, occurrence,
+cardinality and IFC versions; `data_type` letters only; patterns must compile).
+Coherence adds rules, reported like every other finding:
+
+| Rule | Severity | Meaning |
+|---|---|---|
+| `loin_duplicate_requirement_id` | error | Two requirements share an id (it becomes the IDS specification identifier). |
+| `loin_property_type_conflict` | error | The same `property_set` + `name` is declared with two data types, anywhere in the block. |
+| `loin_unknown_ifc_entity` | error | `ifc_entity` is not an entity of the schema(s) the requirement targets (its `ifc_versions`, else `delivery.ifc.version`, else IFC4 **and** IFC4X3_ADD2). The message says where the name does exist. |
+| `loin_entity_version_specific` | warning | No version declared and the entity exists in only one of IFC4 / IFC4X3_ADD2. |
+| `loin_bounds_conflict`, `loin_bounds_inverted`, `loin_bounds_on_non_numeric` | error | Bounds that cannot be written or cannot be satisfied. |
+| `loin_unit_not_ids_default` | warning | Bounds in a unit other than the IFC default (SI); they will not be translated. |
+| `loin_pattern_anchor` | warning | An XML Schema pattern always matches the whole value; `^` and `$` are literal characters there. |
+| `loin_property_repeated`, `loin_applies_to_empty` | warning | Redundant or unanchored requirements. |
+
+The entity lists are embedded (`schemas/ids/ifc-entities.txt`): 653 names for
+IFC2X3 and 776 for IFC4 (the `ENTITY` declarations of buildingSMART's
+`IFC2X3_TC1.exp` and `IFC4_ADD2_TC1.exp`) and 876 for IFC4X3_ADD2.
+
+### `ids_from_loin`
+
+`horizun_project_context operation=ids_from_loin path=<project-context.json>`
+translates the alphanumerical part into an **IDS 1.0** file (namespace
+`http://standards.buildingsmart.org/IDS`):
+
+| LOIN | IDS |
+|---|---|
+| requirement | one `<specification>`: `identifier` = id, `name` = id + purpose, `description` = purpose, milestone and actors as text, `ifcVersion` from `ifc_versions` or `delivery.ifc.version` (IFC2X3 / IFC4 / IFC4X3_ADD2) |
+| `applies_to.ifc_entity` / `predefined_type` | applicability `<entity>` (upper case) |
+| `applies_to.classification` | applicability `<classification>` (system, value) |
+| `occurrence` | applicability `minOccurs`/`maxOccurs`: required 1..unbounded, optional 0..unbounded (default), prohibited 0..0 |
+| `alphanumeric.attributes` | requirement `<attribute>` with cardinality and value |
+| `alphanumeric.properties` | requirement `<property>` with `dataType` (upper case), cardinality, `uri`, and a value: one allowed value → `simpleValue`; several → `xs:enumeration`; `pattern` → `xs:pattern`; bounds → `xs:minInclusive` … on `xs:double`/`xs:integer` |
+| single common purpose / milestone | `<info><purpose>` / `<milestone>` |
+
+**Never invented.** Everything IDS cannot express is returned in `not_translated`,
+one line per item with `handling` (`omitted` or `description_text`) and why:
+every geometry aspect, every documentation item, the actors (carried only as
+description text), a Revit category, free-text identification and notes, a
+classification URI in applicability, bounds in a non-default unit (IDS values are
+in the IFC default unit and this bridge does not convert), and whole requirements
+that cannot become a checkable specification (no IFC version, no entity or
+classification, or nothing alphanumerical with an optional occurrence).
+
+**Proved before it is reported.** The generated XML is validated against the
+published **ids.xsd 1.0.0**, embedded verbatim (`schemas/ids/ids-1.0.xsd`); the
+two XML Schema definitions it imports (`xs:restriction`, `xs:occurs`) are supplied
+from `schemas/ids/xmlschema-subset.xsd`, so validation never touches the network.
+It is then parsed by `IdsReader`, the reader `horizun_validate_ids` and
+`horizun_deliver_ifc` use; any file problem, undecidable specification or
+unsupported facet makes the proof fail. A file that fails either proof is never
+written.
+
+**Writing.** `dry_run` defaults to `true` and returns the XML (`ids_xml`), the
+proof and `would_refuse`. With `dry_run=false` and `output_path` (a `.ids` in an
+existing folder) it writes atomically, never replaces a file without
+`overwrite=true`, needs the `full_write` profile, and then re-reads the bytes,
+compares SHA-256, re-validates against the XSD and re-reads with `IdsReader`
+before reporting `written: true`. Optional `requirement_ids`, `milestone` and
+`info` (`title`, `author` — an e-mail, as ids.xsd requires — `version`, `date`).
+A loin block with `loin_*` errors, or an invalid context, is refused.
+
+### Resumen en español
+
+El bloque opcional `loin` de `project-context.json` recoge el **nivel de
+información necesario** según **ISO 7817-1:2024** (antes EN 17412-1:2020):
+requisitos previos (propósito, hito de entrega, actores), información geométrica
+(detalle, dimensionalidad, ubicación, apariencia, comportamiento paramétrico),
+alfanumérica (identificación y propiedades) y documentación. `validate` reporta
+sus incoherencias (propiedad con dos tipos, entidad IFC inexistente en IFC4 /
+IFC4X3_ADD2, ids repetidos, límites imposibles). `ids_from_loin` traduce la parte
+alfanumérica a **IDS 1.0** y **lista, sin inventar**, lo que IDS no puede
+expresar (geometría, documentación, actores, categoría de Revit, límites en otra
+unidad). El archivo se valida contra el `ids.xsd` 1.0 embebido y con el lector
+IDS del propio puente; ensaya por defecto y, al escribir, relee y vuelve a validar.
+
+## bSDD lookup
+
+The [buildingSMART Data Dictionary](https://github.com/buildingSMART/bSDD) (bSDD)
+publishes classification systems (Uniclass 2015, the IFC schema itself, national
+dictionaries) as classes with properties, allowed values, units and relations,
+each with a stable URI. Two uses here: **mapping the project's classification
+outward** (find the published class, its URI and relations) and **feeding the
+LOIN / IDS with standard properties**.
+
+To keep `tools/list` within its size budget this is not a new tool: it is five
+read-only operations of **`horizun_catalog_lookup`** (host-resident, no Revit).
+Without `operation`, or with `operation=leaf`, that tool is the catalogue leaf
+check exactly as before.
+
+| operation | bSDD endpoint | arguments |
+|---|---|---|
+| `bsdd_search` | `GET /api/TextSearch/v2` | `text` (2–200 chars), `dictionary_uris`, `offset`, `limit` (≤100) |
+| `bsdd_search_dictionary` | `GET /api/SearchInDictionary/v1` | `uri` (the dictionary), `text`, `related_ifc_entity`, `language_code`, `offset`, `limit` |
+| `bsdd_class` | `GET /api/Class/v1` (with properties, relations, child classes) | `uri`, `language_code` |
+| `bsdd_property` | `GET /api/Property/v5` | `uri`, `language_code` |
+| `bsdd_dictionaries` | `GET /api/Dictionary/v1` | `uri` (optional), `offset`, `limit` |
+
+Endpoints and parameter names are those of buildingSMART's published OpenAPI
+description ([`bSDD OpenAPI.yaml`](https://github.com/buildingSMART/bSDD/blob/master/Documentation/bSDD%20OpenAPI.yaml),
+read 2026-09-24; `Property/v4` is deprecated there, hence v5). They are public
+GETs on `https://api.bsdd.buildingsmart.org`; nothing authenticates and nothing is
+written to bSDD. The host is a constant: URIs travel only as query parameters.
+Example dictionary URI: `https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1`.
+
+**Toward the LOIN.** `bsdd_class` returns, beside the class's properties,
+`loin_property_suggestions`: each a `loin_property` built only from what bSDD
+published (`property_set`, `name` = property code, `allowed_values`, `pattern`,
+bounds, a single `unit`, `uri`), with `complete` and `still_needed`. `data_type`
+is **never** filled from bSDD's `dataType`: `String`/`Real`/`Integer` are not IFC
+defined types, and choosing `IfcLengthMeasure` over `IfcPositiveRatioMeasure` is
+a person's decision. A suggestion without a property set is marked incomplete.
+
+**Cache and cap.** Every successful answer is cached in
+`%USERPROFILE%\.horizun\bsdd-cache` (one JSON file per request URL, written
+atomically) and reused for `max_age_hours` (default 168, i.e. 7 days) unless
+`refresh=true`. Network calls are capped at 30 per minute and 500 per server
+process; a cached answer costs nothing. Responses above 8 MB are refused.
+
+**Without network** the reply is an error that says bSDD could not be reached and
+that nothing is assumed ("an unreachable dictionary is not an empty one"). Only
+when an **expired** cached copy exists is it returned, with `source: stale_cache`,
+its age and a warning. HTTP 404 is an answer (`found: false`); other 4xx are
+errors carrying bSDD's message; 429 and 5xx are named as such.
+
+The replies carry dictionary text published by third parties; the tool is
+already marked as returning external content, so it passes through the same
+content safety as model text.
+
+### Resumen en español
+
+La consulta al **bSDD** (diccionario de datos de buildingSMART) vive en
+`horizun_catalog_lookup` como cinco operaciones de solo lectura (`bsdd_search`,
+`bsdd_search_dictionary`, `bsdd_class`, `bsdd_property`, `bsdd_dictionaries`),
+para no agrandar `tools/list`. Sirve para mapear la clasificación del proyecto
+hacia afuera y para alimentar el LOIN/IDS con propiedades estándar: `bsdd_class`
+devuelve sugerencias `loin_property` sin inventar nunca el tipo de dato IFC. Usa
+la API pública (`/api/TextSearch/v2`, `/api/SearchInDictionary/v1`,
+`/api/Class/v1`, `/api/Property/v5`, `/api/Dictionary/v1`), guarda caché 7 días
+en `%USERPROFILE%\.horizun\bsdd-cache`, limita las llamadas (30/min, 500 por
+proceso) y, sin red, lo dice claramente; solo entrega una copia caducada si
+existe, marcada `stale_cache`.

@@ -105,6 +105,11 @@
          reads, from outside, exactly like a server with nothing wrong. -->
     <Compile Include="..\Horizun.Revit\Core\ScriptInvocation.cs" />
     <Compile Include="..\Horizun.Revit\Core\ScriptPromotion.cs" />
+    <!-- The IDS reader horizun_validate_ids and horizun_deliver_ifc use. Linked so that
+         ids_from_loin proves the file it generates with the SAME reader that will later
+         read it, not with a second parser that could disagree. Revit-free. -->
+    <Compile Include="..\Horizun.Revit\Core\IdsDocument.cs" />
+    <Compile Include="..\Horizun.Revit\Core\IdsRestriction.cs" />
   </ItemGroup>
 
   <ItemGroup>
@@ -112,6 +117,13 @@
          embedded so an installed server validates against exactly the schema it was
          built with, with no source checkout on the machine. -->
     <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
+    <!-- LOIN -> IDS. buildingSMART's ids.xsd 1.0, verbatim (CC BY-ND 4.0, see
+         THIRD-PARTY-NOTICES.md); the part of the XML Schema vocabulary it imports, so
+         validation never needs the network; and the IFC entity names per schema that
+         validate checks a LOIN's applies_to against. -->
+    <EmbeddedResource Include="..\..\schemas\ids\ids-1.0.xsd" LogicalName="Horizun.Schemas.ids-1.0.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\xmlschema-subset.xsd" LogicalName="Horizun.Schemas.xmlschema-subset.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\ifc-entities.txt" LogicalName="Horizun.Schemas.ifc-entities.txt" />
   </ItemGroup>
 
   <ItemGroup>

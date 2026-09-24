@@ -11,7 +11,7 @@
 // here keeps the bridge organisation-neutral: every code, pattern, path and name
 // inside a project context is the PROJECT's data.
 //
-// Four operations:
+// Five operations:
 //
 //   schema     the JSON Schema, byte for byte what is embedded.
 //   validate   a file against it. THREE different verdicts are kept apart, because
@@ -23,6 +23,9 @@
 //   questions  the ORDERED intake questions for what is still missing, each with
 //              the JSON pointer its answer lands on, its type, its options and why
 //              it matters, in Spanish and English.
+//   ids_from_loin  the structured LOIN block (ISO 7817-1) translated to an IDS 1.0
+//              file, proved against ids.xsd and the bridge's own IDS reader; what
+//              IDS cannot express is listed, never approximated (LoinIds.cs).
 //   draft      answers {pointer: value} applied onto the existing file (or onto an
 //              empty context), validated, and returned. dry_run defaults to true.
 //              With dry_run=false it writes, then READS THE FILE BACK and compares
@@ -104,11 +107,12 @@ namespace Horizun.Server
                 case "validate": return ValidateOperation(args, ct);
                 case "questions": return QuestionsOperation(args, ct);
                 case "draft": return DraftOperation(args, ct);
+                case "ids_from_loin": return LoinIds.Operation(args, ct);
                 case null:
-                    throw new ToolRefusal("operation is required: schema, validate, questions or draft. Nothing was read.");
+                    throw new ToolRefusal("operation is required: schema, validate, questions, draft or ids_from_loin. Nothing was read.");
                 default:
-                    throw new ToolRefusal("Unknown operation '" + operation + "'. Use schema, validate, questions or draft. " +
-                                          "Nothing was read.");
+                    throw new ToolRefusal("Unknown operation '" + operation + "'. Use schema, validate, questions, draft or " +
+                                          "ids_from_loin. Nothing was read.");
             }
         }
 
@@ -584,6 +588,9 @@ namespace Horizun.Server
                         findings.Add(Finding("/intake/missing/" + i, "stale_intake_missing", "warning",
                             "intake.missing lists '" + (string)mv + "' but that topic is answered in the file."));
             }
+
+            // The structured LOIN (ISO 7817-1): its own contradictions, by rule.
+            findings.AddRange(LoinIds.Coherence(doc));
 
             return findings;
         }
@@ -1278,7 +1285,7 @@ namespace Horizun.Server
 
         // ---- small helpers -------------------------------------------------------------
 
-        private static bool TryParse(byte[] bytes, out JToken parsed, out string error)
+        internal static bool TryParse(byte[] bytes, out JToken parsed, out string error)
         {
             parsed = null;
             error = null;
@@ -1306,7 +1313,7 @@ namespace Horizun.Server
             return path;
         }
 
-        private static string OptionalPath(JObject args)
+        internal static string OptionalPath(JObject args)
         {
             JToken t = args["path"];
             if (t == null || t.Type == JTokenType.Null) return null;

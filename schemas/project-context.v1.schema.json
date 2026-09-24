@@ -191,6 +191,15 @@
       },
       "additionalProperties": false
     },
+    "loin": {
+      "type": "object",
+      "description": "Structured level of information need (ISO 7817-1:2024, which superseded EN 17412-1:2020). Optional and additive: documents.loin still points at the LOIN document; this block states its content in machine-readable form. Each requirement names its prerequisites (purpose, information delivery milestone, actors), the objects it applies to, and the three kinds of information need: geometrical, alphanumerical and documentation. horizun_project_context operation=ids_from_loin translates the alphanumerical part to IDS 1.0 and lists everything IDS cannot express.",
+      "properties": {
+        "source": { "type": "string", "description": "Where these requirements come from, e.g. the EIR or LOIN document and its revision." },
+        "requirements": { "type": "array", "items": { "$ref": "#/$defs/loin_requirement" } }
+      },
+      "additionalProperties": false
+    },
     "software": {
       "type": "object",
       "properties": {
@@ -261,6 +270,117 @@
         "status": { "$ref": "#/$defs/document_status" },
         "version": { "type": "string" },
         "date": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "loin_requirement": {
+      "type": "object",
+      "description": "One level-of-information-need requirement: for this purpose, at this milestone, between these actors, these objects need this information.",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Unique within loin.requirements; becomes the IDS specification identifier." },
+        "purpose": { "type": "string", "description": "Prerequisite: why the information is needed (e.g. cost estimation, fire safety review)." },
+        "milestone": { "type": "string", "description": "Prerequisite: the information delivery milestone." },
+        "actors": {
+          "type": "object",
+          "description": "Prerequisite: who provides and who receives the information.",
+          "properties": {
+            "provider": { "type": "string" },
+            "receiver": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "applies_to": { "$ref": "#/$defs/loin_applies_to" },
+        "occurrence": { "type": "string", "enum": ["required", "optional", "prohibited"], "description": "Must at least one such object exist (required), may it (optional, the default), or must none (prohibited)? Becomes the IDS applicability minOccurs/maxOccurs." },
+        "ifc_versions": { "type": "array", "items": { "type": "string", "enum": ["IFC2X3", "IFC4", "IFC4X3_ADD2"] }, "description": "IFC schemas this requirement targets. When absent, delivery.ifc.version is used." },
+        "geometry": {
+          "type": "object",
+          "description": "Geometrical information need, by the five aspects ISO 7817-1 names.",
+          "properties": {
+            "detail": { "type": "string", "description": "Complexity of the representation, in words (e.g. simplified envelope, detailed with connections)." },
+            "dimensionality": { "type": "string", "enum": ["0D", "1D", "2D", "3D"], "description": "0D point, 1D line/path, 2D surface, 3D volume." },
+            "location": { "type": "string", "enum": ["absolute", "relative"], "description": "Absolute (global reference) or relative to another object." },
+            "location_reference": { "type": "string", "description": "What a relative location is relative to, or which reference an absolute one uses." },
+            "appearance": { "type": "string", "description": "Visual and surface qualities, independent of detail." },
+            "parametric_behaviour": { "type": "string", "description": "Whether and how the geometry must behave parametrically." }
+          },
+          "additionalProperties": false
+        },
+        "alphanumeric": {
+          "type": "object",
+          "description": "Alphanumerical information need: how the object is identified and which information content it carries.",
+          "properties": {
+            "identification": { "type": "string", "description": "How the object is identified (name, type, classification), in words." },
+            "attributes": { "type": "array", "items": { "$ref": "#/$defs/loin_attribute" } },
+            "properties": { "type": "array", "items": { "$ref": "#/$defs/loin_property" } }
+          },
+          "additionalProperties": false
+        },
+        "documentation": { "type": "array", "items": { "$ref": "#/$defs/loin_document" }, "description": "Documents that must accompany the objects." },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "loin_applies_to": {
+      "type": "object",
+      "description": "Which objects the requirement is about. An IFC entity and/or a classification can become IDS applicability; a Revit category cannot.",
+      "properties": {
+        "ifc_entity": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$", "description": "IFC entity name, any case (e.g. IfcWall); written upper case in IDS." },
+        "predefined_type": { "type": "string", "minLength": 1 },
+        "revit_category": { "type": "string", "minLength": 1, "description": "Revit category (e.g. OST_Walls or Walls), for authoring; not expressible in IDS." },
+        "classification": {
+          "type": "object",
+          "required": ["system"],
+          "properties": {
+            "system": { "type": "string", "minLength": 1, "description": "Classification system name as it appears in the IFC (e.g. Uniclass 2015)." },
+            "code": { "type": "string", "minLength": 1 },
+            "uri": { "type": "string", "description": "bSDD class URI, when known." }
+          },
+          "additionalProperties": false
+        },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "loin_property": {
+      "type": "object",
+      "required": ["property_set", "name"],
+      "properties": {
+        "property_set": { "type": "string", "minLength": 1, "description": "Property set name, e.g. Pset_WallCommon." },
+        "name": { "type": "string", "minLength": 1, "description": "Property base name as stored in the IFC (e.g. FireRating)." },
+        "data_type": { "type": "string", "pattern": "^[A-Za-z]+$", "description": "IFC defined type (e.g. IfcLabel, IfcBoolean, IfcLengthMeasure); written upper case in IDS." },
+        "cardinality": { "type": "string", "enum": ["required", "optional", "prohibited"], "description": "Default required." },
+        "allowed_values": { "type": "array", "items": { "type": "string" } },
+        "pattern": { "type": "string", "format": "regex", "description": "XML Schema regular expression; it always matches the WHOLE value, and ^ and $ are literal characters there." },
+        "min_inclusive": { "type": "number" },
+        "max_inclusive": { "type": "number" },
+        "min_exclusive": { "type": "number" },
+        "max_exclusive": { "type": "number" },
+        "unit": { "type": "string", "description": "Unit of the bounds. IDS values are in the IFC default (SI) unit; bounds in another unit are not translated." },
+        "uri": { "type": "string", "description": "bSDD property URI, when known." },
+        "instructions": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "loin_attribute": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$", "description": "IFC attribute name, e.g. Name, Description, Tag, ObjectType." },
+        "cardinality": { "type": "string", "enum": ["required", "optional", "prohibited"] },
+        "allowed_values": { "type": "array", "items": { "type": "string" } },
+        "pattern": { "type": "string", "format": "regex" },
+        "instructions": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "loin_document": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "format": { "type": "string" },
+        "description": { "type": "string" }
       },
       "additionalProperties": false
     },

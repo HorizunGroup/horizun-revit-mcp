@@ -67,6 +67,13 @@ powershell -ExecutionPolicy Bypass -File scripts/audit-python-stdlib.ps1 `
 | Newtonsoft.Json | 13.0.3 | MIT |
 | Microsoft .NET runtime and native host (`win-x64`, self-contained publish) | 8.x, exact files and hashes in `sbom.json` | MIT |
 
+Embedded in the server binary as resources:
+
+| Component | Version | Licence | Why it ships |
+| --- | --- | --- | --- |
+| buildingSMART IDS schema, `ids.xsd` (`schemas/ids/ids-1.0.xsd`) | 1.0.0 | CC BY-ND 4.0, © buildingSMART International Ltd. ([source](https://github.com/buildingSMART/IDS/blob/development/Schema/ids.xsd)) | Validates the IDS files `horizun_project_context operation=ids_from_loin` generates. Redistributed **unmodified**; the two W3C XML Schema definitions it imports are supplied by a separate file of our own (`schemas/ids/xmlschema-subset.xsd`, Apache-2.0), not by editing it. |
+| IFC entity names (`schemas/ids/ifc-entities.txt`) | IFC2X3 TC1, IFC4 ADD2 TC1, IFC4X3 ADD2 | names only, extracted from buildingSMART's published EXPRESS schemas (IFC4X3_ADD2 via IfcOpenShell v0.8.0's generated header) | Lets `validate` tell whether a LOIN names an entity the targeted schema has. No definitions or documentation text are copied. |
+
 The server is self-contained so a release installation does not depend on an
 already-installed .NET runtime. `sbom.json` is generated from `dist/stage` as a
 CycloneDX 1.6 document and inventories every runtime/app/file byte separately.
