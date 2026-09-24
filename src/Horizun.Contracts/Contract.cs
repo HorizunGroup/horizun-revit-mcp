@@ -5372,27 +5372,24 @@ namespace Horizun.Contracts
                     "why it matters, in Spanish and English. draft applies {pointer: value} answers onto the existing " +
                     "file or an empty context and validates it; dry_run defaults to true, dry_run=false writes and then " +
                     "re-reads the file, never replaces one without overwrite=true, and never writes an invalid context " +
-                    "or a credential. elicit asks the open questions THROUGH THE CLIENT (MCP elicitation), one short " +
-                    "form per topic, and applies the answers like draft; a client that did not declare elicitation gets " +
-                    "code elicitation_unsupported - then ask in the chat. Nothing is inferred to fill a gap.",
+                    "or a credential. elicit asks them via MCP elicitation forms (else code elicitation_unsupported: " +
+                    "ask in chat). Nothing is inferred to fill a gap.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
     ""operation"": { ""type"": ""string"", ""enum"": [""schema"", ""validate"", ""questions"", ""draft"", ""elicit""],
-      ""description"": ""schema: the JSON Schema. validate: check a file (path required). questions: the ordered intake questions still open (path optional; without it, all of them). draft: build a context from answers (path optional; required with dry_run=false). elicit: ask the open questions through the client's elicitation forms and apply the answers like draft; declined, cancelled, blank and list/table questions stay unanswered and are listed."" },
+      ""description"": ""schema: the JSON Schema. validate: check a file (path required). questions: the ordered intake questions still open (path optional; without it, all of them). draft: build a context from answers (path optional; required with dry_run=false). elicit: ask them via the client's forms, apply like draft."" },
     ""path"": { ""type"": ""string"",
       ""description"": ""Absolute path of the project-context.json. draft builds ON TOP of an existing file, so a second intake round fills gaps instead of erasing the first."" },
     ""answers"": { ""type"": ""object"", ""additionalProperties"": true,
-      ""description"": ""draft, and elicit to continue an earlier round (its 'answers'): {\""<JSON pointer>\"": value}, e.g. {\""/project/code\"": \""P01\"", \""/cde/states/wip\"": \""01_WIP\""}. Pointers come from operation=questions. A pointer that cannot be placed refuses the whole call. intake.missing is derived from what is still unanswered unless you set it."" },
+      ""description"": ""draft (elicit: earlier answers): {\""<JSON pointer>\"": value}, e.g. {\""/project/code\"": \""P01\"", \""/cde/states/wip\"": \""01_WIP\""}. Pointers come from operation=questions. A pointer that cannot be placed refuses the whole call. intake.missing is derived from what is still unanswered unless you set it."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true,
       ""description"": ""draft/elicit: true (default) returns the drafted document and its validation without writing. false writes it (full_write or unsafe_code profile) and re-reads it before reporting it written."" },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false,
       ""description"": ""draft/elicit with dry_run=false: required to replace an existing file. Without it an existing file is never touched."" },
-    ""language"": { ""type"": ""string"", ""enum"": [""es"", ""en""], ""default"": ""en"",
-      ""description"": ""elicit: the language of the form texts."" },
-    ""timeout_seconds"": { ""type"": ""integer"", ""minimum"": 10, ""maximum"": 540, ""default"": 300,
-      ""description"": ""elicit: how long each form waits for the person; the whole call stays under 540 s."" },
+    ""language"": { ""type"": ""string"", ""enum"": [""es"", ""en""], ""default"": ""en"" },
+    ""timeout_seconds"": { ""type"": ""integer"", ""minimum"": 10, ""maximum"": 540, ""default"": 300 },
     ""include_answered"": { ""type"": ""boolean"", ""default"": false,
       ""description"": ""questions: also list the answered and not-applicable questions, with their current values."" }
   },
