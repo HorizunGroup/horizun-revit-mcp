@@ -48,12 +48,46 @@ namespace Horizun.Server
         public const string AppMimeType = "text/html;profile=mcp-app";
 
         /// <summary>
-        /// The resource descriptor for resources/list.
+        /// `_meta` for the resource, on the listing AND on the resources/read content item.
         ///
-        /// `_meta.ui.csp` is deliberately the most restrictive thing that still renders:
-        /// no external origins at all. This app has no reason to reach the network, and a
+        /// `_meta.ui.csp` in the 2026-01-26 spelling (connectDomains, resourceDomains,
+        /// frameDomains, baseUriDomains - ext-apps specification/2026-01-26/apps.mdx,
+        /// UIResourceMeta / McpUiResourceCsp), all empty: deliberately the most restrictive
+        /// thing that still renders. This app has no reason to reach the network, and a
         /// policy that allows one is a policy somebody will eventually use.
+        ///
+        /// The pre-spec block under "io.modelcontextprotocol/ui" (CSP-directive names) is
+        /// kept only for hosts built against that draft. It allows nothing either, so a
+        /// host that reads it gets the same closed policy - which is why keeping it is
+        /// harmless. A spec host ignores it.
         /// </summary>
+        public static JObject ResourceMeta() => new JObject
+        {
+            ["ui"] = new JObject
+            {
+                ["csp"] = new JObject
+                {
+                    ["connectDomains"] = new JArray(),
+                    ["resourceDomains"] = new JArray(),
+                    ["frameDomains"] = new JArray(),
+                    ["baseUriDomains"] = new JArray()
+                },
+                ["prefersBorder"] = true
+            },
+            ["io.modelcontextprotocol/ui"] = new JObject
+            {
+                ["csp"] = new JObject
+                {
+                    ["connect-src"] = new JArray(),
+                    ["img-src"] = new JArray(),
+                    ["style-src"] = new JArray(),
+                    ["script-src"] = new JArray()
+                },
+                ["permissions"] = new JArray()
+            }
+        };
+
+        /// <summary>The resource descriptor for resources/list.</summary>
         public static JObject Definition() => new JObject
         {
             ["uri"] = ClashViewerUri,
@@ -69,20 +103,7 @@ namespace Horizun.Server
                 ["audience"] = new JArray("user"),
                 ["priority"] = 0.6
             },
-            ["_meta"] = new JObject
-            {
-                ["io.modelcontextprotocol/ui"] = new JObject
-                {
-                    ["csp"] = new JObject
-                    {
-                        ["connect-src"] = new JArray(),
-                        ["img-src"] = new JArray(),
-                        ["style-src"] = new JArray(),
-                        ["script-src"] = new JArray()
-                    },
-                    ["permissions"] = new JArray()
-                }
-            }
+            ["_meta"] = ResourceMeta()
         };
 
         /// <summary>The `_meta.ui` block a tool carries to declare its app.</summary>
@@ -244,7 +265,10 @@ namespace Horizun.Server
   // Without it a refused selection and an honoured one look identical: the
   // coordinator clicks, Revit does nothing visible, and they conclude the element
   // is gone.
-  var state = { payload: null, selected: -1, canCall: false, pending: {}, status: null };
+  // `initialized` gates everything the app SENDS after ui/initialize: the 2026-01-26
+  // lifecycle is ui/initialize -> host reply -> ui/notifications/initialized, and
+  // nothing else goes out before that notification.
+  var state = { payload: null, selected: -1, canCall: false, pending: {}, status: null, initialized: false };
   var nextId = 1;
 
   function setStatus(kind, text) {
@@ -397,6 +421,14 @@ namespace Horizun.Server
     }
     if (!selections.length) return;
 
+    // Before the handshake completes the app sends nothing: the host has not said
+    // what it grants, and the lifecycle puts ui/notifications/initialized first.
+    if (!state.initialized) {
+      setStatus('waiting', 'The host has not finished connecting, so Revit was not asked to select ' +
+                           'anything yet. The ids are in the row.');
+      return;
+    }
+
     // A REQUEST, not a guarantee. The host may refuse it, and the row still shows
     // the ids - the finding is never behind a button.
     if (state.canCall) {
@@ -404,7 +436,7 @@ namespace Horizun.Server
       post('tools/call', {
         name: 'horizun_navigate',
         arguments: { operation: 'select', selections: selections }
-      }, 'select ' + described.join(' and '));
+      }, { kind: 'tool', what: 'select ' + described.join(' and ') });
     } else {
       // NOT AN ERROR, AND NOT SILENCE. A host that grants no tool calls is a host
       // where selection is unavailable, and saying so beats a click that appears
@@ -412,30 +444,57 @@ namespace Horizun.Server
       setStatus('waiting', 'This host has not granted tool calls, so Revit was not asked to select ' +
                            'anything. The ids are in the row.');
     }
-    notify('ui/context-update', {
-      text: 'The clash viewer selected clash ' + (index + 1) + ' of ' + list.length +
-            ' (' + described.join(' and ') + ').'
-    });
+    // ui/update-model-context is the 2026-01-26 name (a request with content blocks);
+    // the draft's ui/context-update does not exist in the spec.
+    post('ui/update-model-context', {
+      content: [{ type: 'text', text: 'The clash viewer selected clash ' + (index + 1) + ' of ' + list.length +
+                                      ' (' + described.join(' and ') + ').' }]
+    }, { kind: 'context' });
+  }
+
+  // WHAT THE HOST GRANTS, read from where the 2026-01-26 spec puts it:
+  // McpUiInitializeResult.hostCapabilities.serverTools (the host can proxy tool calls to
+  // the MCP server). A reply that carries hostCapabilities is judged by that alone - a
+  // `capabilities.tools` beside it grants nothing. Only a pre-spec host that sends no
+  // hostCapabilities at all is read the old way; the worst that costs is a refused call,
+  // which the status line names.
+  function grantsTools(result) {
+    if (!result || typeof result !== 'object') return false;
+    if (result.hostCapabilities && typeof result.hostCapabilities === 'object') {
+      return !!result.hostCapabilities.serverTools;
+    }
+    var legacy = result.capabilities;
+    return !!(legacy && (legacy.tools || legacy.toolCall));
+  }
+
+  function showPayload(payload) {
+    if (payload) { state.payload = payload; render(); }
   }
 
   window.addEventListener('message', function (event) {
     var message = event.data;
     if (!message || typeof message !== 'object') return;
 
-    // The host hands the app its capabilities and then the tool result. Both
-    // shapes are read defensively: a host that names them differently must not
-    // leave the viewer blank with no explanation.
-    var result = message.result || message.params || {};
-    if (result.capabilities) state.canCall = !!(result.capabilities.tools || result.capabilities.toolCall);
-
     // A REPLY TO SOMETHING THIS APP ASKED FOR. Attributed by id, so a failure names
     // what failed instead of appearing as a click that did nothing.
-    if (message.id !== undefined && state.pending[message.id]) {
-      var what = state.pending[message.id];
+    if (message.id !== undefined && message.method === undefined) {
+      var pending = state.pending[message.id];
+      if (!pending) return;
       delete state.pending[message.id];
-      if (message.error) {
-        setStatus('failed', 'Revit refused: ' + what + '. ' +
-                            (message.error.message || 'No reason was given.') +
+      if (pending.kind === 'init') {
+        var init = message.result || {};
+        state.canCall = grantsTools(init);
+        // FIRST, before anything else leaves the app: the host MUST NOT send the
+        // View anything until it receives this notification.
+        state.initialized = true;
+        notify('ui/notifications/initialized', {});
+        render();
+        return;
+      }
+      if (pending.kind === 'context') return; // the host took (or refused) the context; nothing to show
+      if (message.error || (message.result && message.result.isError === true)) {
+        setStatus('failed', 'Revit refused: ' + pending.what + '. ' +
+                            ((message.error && message.error.message) || 'No reason was given.') +
                             ' The ids are still in the row; clicking again retries.');
       } else {
         setStatus('hidden', '');
@@ -443,15 +502,41 @@ namespace Horizun.Server
       return;
     }
 
-    var payload = result.structuredContent || result.toolResult || result.data ||
-                  (result.result && result.result.structuredContent);
-    if (payload) { state.payload = payload; render(); }
+    var params = message.params || {};
+    switch (message.method) {
+      case 'ui/notifications/tool-result':
+        // params IS the CallToolResult.
+        showPayload(params.structuredContent);
+        return;
+      case 'ui/notifications/tool-input':
+      case 'ui/notifications/tool-input-partial':
+      case 'ui/notifications/host-context-changed':
+        return;
+      case 'ui/notifications/tool-cancelled':
+        setStatus('waiting', 'The clash run was cancelled; there is no result to show.');
+        return;
+      case 'ui/resource-teardown':
+        if (message.id !== undefined) parent.postMessage({ jsonrpc: '2.0', id: message.id, result: {} }, '*');
+        return;
+    }
+    if (message.id !== undefined) {
+      // A request this view does not implement gets an answer, not silence.
+      parent.postMessage({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } }, '*');
+      return;
+    }
+
+    // A pre-spec host that pushes the result in another envelope. Read defensively:
+    // a host that names it differently must not leave the viewer blank.
+    var result = message.result || params;
+    showPayload(result.structuredContent || result.toolResult || result.data ||
+                (result.result && result.result.structuredContent));
   });
 
   post('ui/initialize', {
     protocolVersion: '2026-01-26',
-    appInfo: { name: 'horizun-clash-viewer', version: '1' }
-  });
+    appInfo: { name: 'horizun-clash-viewer', version: '1' },
+    appCapabilities: {}
+  }, { kind: 'init' });
 
   render();
 })();

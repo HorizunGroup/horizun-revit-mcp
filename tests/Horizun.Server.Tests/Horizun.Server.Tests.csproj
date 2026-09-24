@@ -59,6 +59,7 @@
     <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-adapter.js" LogicalName="Horizun.Apps.impact-preview-adapter.js" />
     <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-view.js" LogicalName="Horizun.Apps.impact-preview-view.js" />
     <None Include="ImpactPreview\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="McpApps\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="..\..\src\Horizun.Server\McpWorkflowCatalog.cs" Link="McpWorkflowCatalog.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
