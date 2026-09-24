@@ -105,6 +105,10 @@
          tested by starting two Revits, so the directory and the liveness probe are
          injectable and this proves the rules against a temp folder. -->
     <Compile Include="..\..\src\Horizun.Server\PipeClient.cs" Link="PipeClient.cs" />
+    <!-- What an identical retry does after a cancellation or timeout, and the
+         masked diagnosis a -32700 carries. Pure, so tested directly. -->
+    <Compile Include="..\..\src\Horizun.Server\CancellationAdvice.cs" Link="CancellationAdvice.cs" />
+    <Compile Include="..\..\src\Horizun.Server\Protocol\ParseErrorDiagnosis.cs" Link="Protocol\ParseErrorDiagnosis.cs" />
     <!-- PipeClient asks this where the discovery files are. Linked so the server side
          of the shared-root property is under test with the same source the add-in
          compiles. -->
