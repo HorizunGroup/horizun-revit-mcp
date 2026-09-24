@@ -12,7 +12,7 @@ $script:HzProbeModules += [pscustomobject]@{
     Catalog = @(
         @{ Name = 'groups: create a model group from elements and re-read its members'; Tool = 'horizun_manage_groups' }
     )
-    # $Ctx: Year, Document (write document), ScratchRoot, RunId, WriteGate (bool),
+    # $Ctx: Year, Document (write document), ScratchRoot, RunId, WriteGate (bool: TRUE = the write tier is BLOCKED; verify-live's $writeGate holds the reason),
     #       Call  = { param($tool, $arguments) }            -> reply object (.isError, .data, .text)
     #       Apply = { param($tool, $arguments, $key) }      -> rehearse + apply with token, returns
     #                                                          @{ stage; answer } like Invoke-WriteApply
