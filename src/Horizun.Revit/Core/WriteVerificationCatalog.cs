@@ -108,6 +108,13 @@ namespace Horizun.Revit.Core
             Row("horizun_transform_elements", VerificationMechanism.PostconditionChecklist, E("operations_verified", "postconditions", "application"), F(C + "TransformElementsCommand.cs"),
                 "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag operations carry a PostconditionCheck."),
 
+            Row("horizun_manage_groups", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
+                F(C + "ManageGroupsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
+                "ManageGroupsCommand.cs add/remove_members: a swapped instance is checked by (category, type, bounding box) signatures, not by member identity - the API gives no correspondence between an instance's old and new members."),
+            Row("horizun_manage_worksets", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
+                F(C + "ManageWorksetsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
+                "ManageWorksetsCommand.cs set_default: the dry run is a measured preview, not a provisional change - the active workset is a session setting."),
+
             // ---- typed model writes: per-row re-reads -------------------------------------
             Row("horizun_write_params_verified", VerificationMechanism.PerRowReread, E("verification", "application"), F(C + "WriteParamsCommand.cs")),
             Row("horizun_set_keynote", VerificationMechanism.PerRowReread, E("writes_verified_after_commit", "verification", "application"), F(C + "SetKeynoteCommand.cs")),

@@ -270,6 +270,8 @@ namespace Horizun.Contracts
             Row("horizun_manage_materials", "model"),
             Row("horizun_ungroup_and_mark", "model"),
             Row("horizun_regroup_by_param", "model"),
+            Row("horizun_manage_groups", "model"),
+            Row("horizun_manage_worksets", "model", "administration"),
             Row("horizun_set_keynote", "model", "family"),
             Row("horizun_bind_shared_param", "model", "family"),
             Row("horizun_manage_phases", "model", "documentation"),
@@ -3108,6 +3110,54 @@ namespace Horizun.Contracts
     ""scale"": { ""type"": ""number"", ""minimum"": 1, ""maximum"": 24000, ""default"": 50, ""description"": ""Marker scale for created elevations."" },
     ""template_view_id"": { ""type"": ""integer"", ""description"": ""A view template applied to every planned view via apply_template actions."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_groups",
+                Command = "horizun_manage_groups",
+                Description =
+                    "Model/detail groups: list types, instances, members, nesting and attached detail groups; create from " +
+                    "element_ids; add_members/remove_members (ungroup+regroup - Revit has no edit-group API; with other " +
+                    "instances scope is required); rename_type, duplicate_type, swap_type, ungroup. convert_to_link is " +
+                    "refused: no API. Dry run rehearses; apply needs the token; members and instance counts are re-read.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""create"", ""add_members"", ""remove_members"", ""rename_type"", ""duplicate_type"", ""swap_type"", ""ungroup"", ""convert_to_link""] },
+    ""group_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""type_id"": { ""type"": ""integer"" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""name"": { ""type"": ""string"" },
+    ""scope"": { ""type"": ""string"", ""enum"": [""all_instances"", ""this_instance""] },
+    ""max_rows"": { ""type"": ""integer"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_worksets",
+                Command = "horizun_manage_worksets",
+                Description =
+                    "User worksets on a workshared model (otherwise refused, code not_workshared): list (open, editable, " +
+                    "owner, element count), create, rename, move_elements (element_ids or category; borrowed elements are " +
+                    "reported, never forced), set_default (active workset), visibility per view. Dry run rehearses; apply " +
+                    "needs the token; WorksetId and the table are re-read.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""create"", ""rename"", ""move_elements"", ""set_default"", ""visibility""] },
+    ""workset_id"": { ""type"": ""integer"" },
+    ""name"": { ""type"": ""string"" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""category"": { ""type"": ""string"" },
+    ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""visibility"": { ""type"": ""string"", ""enum"": [""visible"", ""hidden"", ""use_global""] },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
             },
@@ -6050,6 +6100,7 @@ namespace Horizun.Contracts
                 "horizun_pack_sheets",
                 "horizun_manage_revisions",
                 "horizun_manage_phases", "horizun_manage_assemblies_parts",
+                "horizun_manage_groups", "horizun_manage_worksets",
                 "horizun_connect_mep",
                 "horizun_structural_connections",
                 "horizun_manage_materials",
@@ -6140,6 +6191,9 @@ namespace Horizun.Contracts
                 // nothing. The original becomes the core wall and keeps its
                 // ElementId, and its reply says originals_deleted is 0 by design.
                 "horizun_split_multilayer_slabs", "horizun_split_floor_loops", "horizun_ungroup_and_mark",
+                // Redefining a type deletes the old type and, with scope=all_instances, the
+                // removed members of every other instance; ungroup destroys the grouping.
+                "horizun_manage_groups",
                 // AND TWO MORE THAT NO REVIEWER NAMED. Both erase toposolid vertices -
                 // "existing toposolid points within 60cm of each outline are deleted first",
                 // "existing toposolid points inside the graded footprint are deleted first" -
