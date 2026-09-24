@@ -11254,6 +11254,47 @@ catch {
 }
 # </iso19650-section>
 
+# ---------------------------------------------------------------------------
+# PROBE MODULES (scripts/live-probes/*.probes.ps1, see its README). Each one
+# registers itself in $script:HzProbeModules with a Catalog and a Run block;
+# a module that throws records every catalogued case UNVERIFIED, never passed.
+# ---------------------------------------------------------------------------
+# <probe-modules-section>
+$script:HzProbeModules = @()
+$probeModuleDir = if ($env:HORIZUN_PROBE_MODULE_DIR) { $env:HORIZUN_PROBE_MODULE_DIR } else { Join-Path $PSScriptRoot 'live-probes' }
+if (Test-Path -LiteralPath $probeModuleDir) {
+    foreach ($probeModuleFile in (Get-ChildItem -LiteralPath $probeModuleDir -Filter '*.probes.ps1' | Sort-Object Name)) {
+        try { . $probeModuleFile.FullName }
+        catch { Add-Write ('probe module ' + $probeModuleFile.Name + ' loads') 'harness' 'unverified' ('HARNESS: ' + $_.Exception.Message) }
+    }
+}
+$probeModuleCtx = [pscustomobject]@{
+    Year = $Year; Document = $WriteDocument; ScratchRoot = $scratchDir; RunId = $probeRun; WriteGate = [bool]$writeGate
+    Call = { param($tool, $arguments) Invoke-Write $tool $arguments }
+    Apply = { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
+}
+foreach ($probeModule in $script:HzProbeModules) {
+    $probeCases = $null
+    try { $probeCases = @(& $probeModule.Run $probeModuleCtx) }
+    catch {
+        $probeWhy = 'HARNESS: probe module ' + $probeModule.Name + ' threw: ' + $_.Exception.Message
+        foreach ($probeEntry in @($probeModule.Catalog)) { Add-Write $probeEntry.Name $probeEntry.Tool 'unverified' $probeWhy }
+        continue
+    }
+    $probeSeen = @{}
+    foreach ($probeCase in $probeCases) {
+        if ($null -eq $probeCase) { continue }
+        $probeSeen[[string]$probeCase.Name] = $true
+        Add-Write $probeCase.Name $probeCase.Tool $probeCase.Outcome $probeCase.Detail
+    }
+    foreach ($probeEntry in @($probeModule.Catalog)) {
+        if (-not $probeSeen.ContainsKey([string]$probeEntry.Name)) {
+            Add-Write $probeEntry.Name $probeEntry.Tool 'unverified' ('HARNESS: probe module ' + $probeModule.Name + ' did not report this case')
+        }
+    }
+}
+# </probe-modules-section>
+
 $proc.StandardInput.Close()
 if (-not $proc.WaitForExit(130000)) { $proc.Kill() }
 
