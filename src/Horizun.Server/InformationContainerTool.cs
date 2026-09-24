@@ -62,14 +62,6 @@ namespace Horizun.Server
             "outcome", "comments", "reviewed_by", "reviewer_organization", "reviewed_on", "since", "until"
         };
 
-        // Kinds are listed in the order findings are sorted, most consequential first.
-        private static readonly string[] FindingOrder =
-        {
-            "deliverable_overdue", "deliverable_missing", "deliverable_insufficient_state", "hash_mismatch",
-            "same_revision_different_content", "sidecar_inconsistent", "state_status_mismatch", "revision_incoherent",
-            "orphan_sidecar", "missing_sidecar", "name_noncompliant", "deliverable_not_assessable"
-        };
-
         internal static JObject Handle(JObject args, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -200,12 +192,6 @@ namespace Horizun.Server
 
         // ---- inspect -------------------------------------------------------------------
 
-        private sealed class Record
-        {
-            public string State, Path, Relative, Name, Status, Revision, Sha256, Extension;
-            public bool HasSidecar;
-        }
-
         internal static JObject Inspect(JObject args, CancellationToken ct, DateTime nowUtc)
         {
             JObject context = LoadContext(args);
@@ -220,7 +206,7 @@ namespace Horizun.Server
                 throw new ToolRefusal("as_of must be YYYY-MM-DD. Nothing was read.");
 
             var findings = new List<JObject>();
-            var records = new List<Record>();
+            var records = new List<ContainerRecord>();
             var perState = new JObject();
             var coverage = new JArray();
             int walked = 0;
@@ -252,17 +238,8 @@ namespace Horizun.Server
                     walked++;
                     if (InformationContainer.IsSidecar(path)) { sidecars++; sidecarPaths.Add(path); continue; }
                     files++;
-                    var rec = new Record { State = state, Path = path, Relative = rel, Extension = Path.GetExtension(path) };
-                    ContainerSpec parsed;
-                    ContainerValidation nameCheck = InformationContainer.CheckStem(naming, Path.GetFileNameWithoutExtension(path), out parsed);
-                    if (nameCheck.Valid)
-                    {
-                        compliant++;
-                        rec.Name = nameCheck.Name;
-                        rec.Status = parsed?.Status;
-                        rec.Revision = parsed?.Revision;
-                    }
-                    else findings.Add(Finding("name_noncompliant", state, path, new JObject { ["problems"] = nameCheck.Problems }));
+                    var rec = new ContainerRecord { State = state, Path = path, Relative = rel, Extension = Path.GetExtension(path) };
+                    if (ContainerInspection.CheckName(naming, rec, Path.GetFileNameWithoutExtension(path), findings)) compliant++;
 
                     if (File.Exists(InformationContainer.SidecarPath(path)))
                     {
@@ -279,32 +256,32 @@ namespace Horizun.Server
                             rec.Sha256 = verdict == "modified" ? null : (string)sc["sha256"];
                             string statusState = InformationContainer.StateOfStatus(rec.Status);
                             if (statusState != null && state != InformationContainer.StateArchived && statusState != state)
-                                findings.Add(Finding("state_status_mismatch", state, path, new JObject
+                                findings.Add(ContainerInspection.Finding("state_status_mismatch", state, path, new JObject
                                 {
                                     ["status"] = rec.Status, ["status_belongs_to"] = statusState,
                                     ["reason"] = "the sidecar's status belongs to the " + statusState + " state, the file sits in " + state
                                 }));
                         }
                         if (verdict == "modified")
-                            findings.Add(Finding("hash_mismatch", state, path, new JObject
+                            findings.Add(ContainerInspection.Finding("hash_mismatch", state, path, new JObject
                             {
                                 ["mismatches"] = check["mismatches"],
                                 ["reason"] = "the file's bytes changed after it was sealed"
                             }));
                         else if (verdict != "match")
-                            findings.Add(Finding("sidecar_inconsistent", state, path, new JObject
+                            findings.Add(ContainerInspection.Finding("sidecar_inconsistent", state, path, new JObject
                             {
                                 ["verdict"] = verdict, ["mismatches"] = check["mismatches"], ["reason"] = check["reason"]
                             }));
                     }
-                    else findings.Add(Finding("missing_sidecar", state, path, null));
+                    else findings.Add(ContainerInspection.Finding("missing_sidecar", state, path, null));
                     records.Add(rec);
                 }
                 foreach (string sc in sidecarPaths)
                 {
                     string target = sc.Substring(0, sc.Length - InformationContainer.SidecarSuffix.Length);
                     if (!File.Exists(target))
-                        findings.Add(Finding("orphan_sidecar", state, sc, new JObject { ["expected_file"] = target }));
+                        findings.Add(ContainerInspection.Finding("orphan_sidecar", state, sc, new JObject { ["expected_file"] = target }));
                 }
                 perState[state] = new JObject
                 {
@@ -316,23 +293,11 @@ namespace Horizun.Server
                 if (truncatedWalk) break;
             }
 
-            CrossStates(records, findings);
-            JArray deliverables = Deliverables(args, context, records, naming, asOf, findings);
+            ContainerInspection.CrossStates(records, findings);
+            JArray deliverables = ContainerInspection.Deliverables(
+                args["deliverables"] as JArray ?? context?["deliverables"] as JArray, records, naming, asOf, findings);
 
-            List<JObject> ordered = findings
-                .OrderBy(f => Array.IndexOf(FindingOrder, (string)f["kind"]))
-                .ThenBy(f => (string)f["state"] ?? "", StringComparer.Ordinal)
-                .ThenBy(f => (string)f["path"] ?? (string)f["container"] ?? "", StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var counts = new JObject();
-            foreach (string kind in FindingOrder)
-            {
-                int c = ordered.Count(f => (string)f["kind"] == kind);
-                if (c > 0) counts[kind] = c;
-            }
-            List<JObject> page = ordered.Skip(offset).Take(limit).ToList();
-            bool more = offset + page.Count < ordered.Count;
-            return new JObject
+            var result = new JObject
             {
                 ["operation"] = "inspect",
                 ["root"] = cde.Root,
@@ -341,17 +306,12 @@ namespace Horizun.Server
                 ["states"] = perState,
                 ["coverage"] = coverage,
                 ["coverage_complete"] = !truncatedWalk && coverage.All(c => (bool)c["covered"]),
-                ["files_walked"] = walked,
-                ["finding_counts"] = counts,
-                ["total_findings"] = ordered.Count,
-                ["offset"] = offset,
-                ["limit"] = limit,
-                ["findings"] = new JArray(page),
-                ["truncated"] = more,
-                ["next_offset"] = more ? (JToken)(offset + page.Count) : JValue.CreateNull(),
-                ["deliverables"] = deliverables,
-                ["note"] = "Read-only: nothing was written. 'covered=false' is a folder that was not read, never an empty one."
+                ["files_walked"] = walked
             };
+            ContainerInspection.Page(findings, offset, limit, result);
+            result["deliverables"] = deliverables;
+            result["note"] = "Read-only: nothing was written. 'covered=false' is a folder that was not read, never an empty one.";
+            return result;
         }
 
         private static bool Ignored(string relative)
@@ -363,143 +323,6 @@ namespace Horizun.Server
                    name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(name, "desktop.ini", StringComparison.OrdinalIgnoreCase) ||
                    string.Equals(name, "Thumbs.db", StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// The same container across states. Two rules, both about the sealed record and
-        /// never about dates: one revision code carrying two different contents, and a
-        /// published copy whose newest revision is BELOW the newest shared one of the same
-        /// kind (a P02 published while P03 is the latest shared - somebody published a
-        /// superseded copy, or the shared one was never taken forward). Revisions of
-        /// different kinds (P vs C) are not ordered, so they never produce the second.
-        /// </summary>
-        private static void CrossStates(List<Record> records, List<JObject> findings)
-        {
-            foreach (IGrouping<string, Record> g in records.Where(r => r.Name != null).GroupBy(r => r.Name, StringComparer.Ordinal))
-            {
-                foreach (IGrouping<string, Record> sameRev in g.Where(r => r.Revision != null && r.Sha256 != null)
-                                                               .GroupBy(r => r.Revision + "|" + r.Extension.ToLowerInvariant(), StringComparer.Ordinal))
-                {
-                    if (sameRev.Select(r => r.Sha256).Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1)
-                        findings.Add(new JObject
-                        {
-                            ["kind"] = "same_revision_different_content", ["severity"] = "error", ["container"] = g.Key,
-                            ["revision"] = sameRev.First().Revision, ["state"] = null,
-                            ["copies"] = new JArray(sameRev.Select(r => new JObject { ["state"] = r.State, ["path"] = r.Path, ["sha256"] = r.Sha256 })),
-                            ["reason"] = "one revision code seals two different contents"
-                        });
-                }
-
-                string sharedMax = MaxRevision(g.Where(r => r.State == InformationContainer.StateShared));
-                string publishedMax = MaxRevision(g.Where(r => r.State == InformationContainer.StatePublished));
-                if (sharedMax != null && publishedMax != null)
-                {
-                    int? cmp = InformationContainer.CompareRevisions(publishedMax, sharedMax);
-                    if (cmp.HasValue && cmp.Value < 0)
-                        findings.Add(new JObject
-                        {
-                            ["kind"] = "revision_incoherent", ["severity"] = "warning", ["container"] = g.Key,
-                            ["state"] = InformationContainer.StatePublished,
-                            ["published_revision"] = publishedMax, ["shared_revision"] = sharedMax,
-                            ["reason"] = "the newest published revision is lower than the newest shared revision of the same kind"
-                        });
-                }
-            }
-        }
-
-        private static string MaxRevision(IEnumerable<Record> records)
-        {
-            string best = null;
-            foreach (Record r in records)
-            {
-                if (r.Revision == null) continue;
-                if (best == null) { best = r.Revision; continue; }
-                int? cmp = InformationContainer.CompareRevisions(r.Revision, best);
-                if (cmp.HasValue && cmp.Value > 0) best = r.Revision;
-            }
-            return best;
-        }
-
-        /// <summary>
-        /// The MIDP cross. A deliverable is SATISFIED when a copy in wip/shared/published
-        /// carries a status at least as advanced as the required one (by position in the
-        /// declared status list; by CDE state when either code is unknown to that list).
-        /// Archived copies do not satisfy: archived is superseded. Not satisfied and due
-        /// before as_of is overdue; a pair nobody can order is not_assessable, never a pass.
-        /// </summary>
-        private static JArray Deliverables(JObject args, JObject context, List<Record> records, ContainerNaming naming,
-                                           DateTime asOf, List<JObject> findings)
-        {
-            JArray list = args["deliverables"] as JArray ?? context?["deliverables"] as JArray;
-            var result = new JArray();
-            if (list == null) return result;
-            foreach (JToken d in list)
-            {
-                string container = (string)d?["container"];
-                if (string.IsNullOrEmpty(container))
-                    throw new ToolRefusal("Every deliverable needs a 'container' name. Nothing was read.");
-                string required = (string)d["required_status"];
-                string format = (string)d["format"];
-                string dueText = (string)d["due"];
-                DateTime due = DateTime.MaxValue;
-                bool hasDue = dueText != null && DateTime.TryParseExact(dueText, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out due);
-                if (!hasDue) due = DateTime.MaxValue;
-
-                List<Record> copies = records.Where(r => r.Name == container && r.State != InformationContainer.StateArchived &&
-                    (format == null || string.Equals(r.Extension.TrimStart('.'), format, StringComparison.OrdinalIgnoreCase))).ToList();
-                Record best = null; string verdict;
-                bool? satisfied = null;
-                if (copies.Count == 0) { verdict = "missing"; satisfied = false; }
-                else if (required == null) { verdict = "present"; satisfied = true; best = copies[0]; }
-                else
-                {
-                    foreach (Record c in copies)
-                    {
-                        bool? ok = Reaches(naming, c.Status, c.State, required);
-                        if (ok == true) { satisfied = true; best = c; break; }
-                        if (ok == false && satisfied == null) satisfied = false;
-                        best = best ?? c;
-                    }
-                    verdict = satisfied == true ? "satisfied" : satisfied == false ? "insufficient_state" : "not_assessable";
-                }
-                bool overdue = satisfied != true && hasDue && due < asOf;
-                if (overdue) verdict = "overdue";
-
-                var row = new JObject
-                {
-                    ["container"] = container, ["title"] = d["title"], ["task_team"] = d["task_team"], ["due"] = dueText,
-                    ["required_status"] = required, ["format"] = format, ["verdict"] = verdict,
-                    ["copies"] = new JArray(copies.Select(c => new JObject { ["state"] = c.State, ["path"] = c.Path, ["status"] = c.Status, ["revision"] = c.Revision }))
-                };
-                result.Add(row);
-                string kind = verdict == "overdue" ? "deliverable_overdue" : verdict == "missing" ? "deliverable_missing" :
-                              verdict == "insufficient_state" ? "deliverable_insufficient_state" :
-                              verdict == "not_assessable" ? "deliverable_not_assessable" : null;
-                if (kind != null)
-                    findings.Add(new JObject
-                    {
-                        ["kind"] = kind, ["severity"] = kind == "deliverable_not_assessable" ? "warning" : "error",
-                        ["container"] = container, ["state"] = best?.State, ["due"] = dueText, ["required_status"] = required,
-                        ["reached_status"] = best?.Status,
-                        ["reason"] = kind == "deliverable_overdue"
-                            ? "due " + dueText + " and " + (copies.Count == 0 ? "no copy exists" : "no copy has reached " + required)
-                            : kind == "deliverable_missing" ? "no copy exists in wip, shared or published"
-                            : kind == "deliverable_insufficient_state" ? "no copy has reached " + required
-                            : "the reached and required statuses cannot be ordered (custom codes without a CDE state)"
-                    });
-            }
-            return result;
-        }
-
-        private static bool? Reaches(ContainerNaming naming, string status, string folderState, string required)
-        {
-            if (status == null) return null;
-            int have = InformationContainer.StatusRank(naming, status), need = InformationContainer.StatusRank(naming, required);
-            if (have >= 0 && need >= 0) return have >= need;
-            string hs = InformationContainer.StateOfStatus(status) ?? folderState;
-            string ns = InformationContainer.StateOfStatus(required);
-            if (hs == null || ns == null) return null;
-            return InformationContainer.StateRank(hs) >= InformationContainer.StateRank(ns);
         }
 
         // ---- transition ----------------------------------------------------------------
@@ -723,7 +546,7 @@ namespace Horizun.Server
             public Dictionary<string, string> States = new Dictionary<string, string>(StringComparer.Ordinal);
         }
 
-        private static JObject LoadContext(JObject args)
+        internal static JObject LoadContext(JObject args)
         {
             string path = OptionalString(args, "project_context_path");
             if (path == null) return null;
@@ -784,7 +607,7 @@ namespace Horizun.Server
         }
 
         /// <summary>naming argument, else information_container's rules, else the context's naming, else null.</summary>
-        private static ContainerNaming OptionalRules(JObject args, JObject context)
+        internal static ContainerNaming OptionalRules(JObject args, JObject context)
         {
             if (args["naming"] is JObject naming) return InformationContainer.ParseNaming(naming, null);
             if (args["information_container"] is JObject container)
@@ -806,20 +629,6 @@ namespace Horizun.Server
             if (!Settings.AllowsExternalSideEffect(out refusal))
                 throw new ToolRefusal(op + " with dry_run=false writes files outside the model, and that needs the profile: " + refusal +
                                       " The rehearsal (dry_run=true) and the read-only operations stay available.");
-        }
-
-        private static JObject Finding(string kind, string state, string path, JObject detail)
-        {
-            var f = new JObject
-            {
-                ["kind"] = kind,
-                ["severity"] = kind == "name_noncompliant" || kind == "missing_sidecar" || kind == "orphan_sidecar" ||
-                               kind == "state_status_mismatch" ? "warning" : "error",
-                ["state"] = state,
-                ["path"] = path
-            };
-            if (detail != null) foreach (JProperty p in detail.Properties()) f[p.Name] = p.Value;
-            return f;
         }
 
         private static string Describe(JArray problems) =>

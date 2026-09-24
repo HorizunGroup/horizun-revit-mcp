@@ -358,6 +358,7 @@ namespace Horizun.Contracts
             // context every coordination task starts from; core stays at its four.
             Row("horizun_project_context", "read", "coordination", "interoperability"),
             Row("horizun_information_container", "coordination", "interoperability"),
+            Row("horizun_cde_cloud", "coordination", "interoperability"),
             Row("horizun_deliver_ifc", "coordination", "interoperability"),
             Row("horizun_excel_write_rows", "interoperability", "powerbi"),
             Row("horizun_power_bi_push", "powerbi"),
@@ -5461,6 +5462,38 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_cde_cloud",
+                Command = null,           // host-resident: fixed provider endpoints, never forwarded to Revit
+                // Deliberately terse: tools/list has a byte budget. The detail is in
+                // docs/INFORMATION-MANAGEMENT.md, "Cloud CDE reader".
+                Description =
+                    "READ-ONLY cloud CDE reader, acc (APS) or opencde. list_states: folders to ISO 19650 states; inspect: " +
+                    "files, naming, MIDP cross; versions: history. Env-var credentials only. Unread parts: coverage_complete=false.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation"", ""provider""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_states"", ""inspect"", ""versions""] },
+    ""provider"": { ""type"": ""string"", ""enum"": [""acc"", ""opencde""] },
+    ""project_context_path"": { ""type"": ""string"" },
+    ""hub_id"": { ""type"": ""string"" },
+    ""project_id"": { ""type"": ""string"" },
+    ""states"": { ""type"": ""object"" },
+    ""naming"": { ""type"": ""object"" },
+    ""deliverables"": { ""type"": ""array"" },
+    ""as_of"": { ""type"": ""string"" },
+    ""offset"": { ""type"": ""integer"" },
+    ""limit"": { ""type"": ""integer"" },
+    ""max_calls"": { ""type"": ""integer"" },
+    ""item_id"": { ""type"": ""string"" },
+    ""server_url"": { ""type"": ""string"" },
+    ""document_ids"": { ""type"": ""array"" },
+    ""document_id"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_excel_read_rows",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
@@ -6031,7 +6064,10 @@ namespace Horizun.Contracts
             var openWorld = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_open_document", "horizun_export", "horizun_deliver_ifc", "horizun_create_family",
-                "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup"
+                "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup",
+                // Reads a cloud CDE over HTTPS. ReadOnly by effect - it changes nothing anywhere -
+                // and open-world by nature.
+                "horizun_cde_cloud"
             };
 
             // A name in one of those sets that matches no contract is a rename nobody
@@ -6182,7 +6218,9 @@ namespace Horizun.Contracts
                 "horizun_project_context", "horizun_information_container",
                 "horizun_job_status", "horizun_excel_read_rows", "horizun_budget_compare",
                 "horizun_catalog_lookup", "horizun_selection_exchange", "horizun_power_bi_push",
-                "horizun_run_procedure", "horizun_excel_write_rows"
+                "horizun_run_procedure", "horizun_excel_write_rows",
+                // File, folder and document names read from a cloud CDE, written by people.
+                "horizun_cde_cloud"
             };
             foreach (string n in hostExternalContent)
                 if (!known.Contains(n))

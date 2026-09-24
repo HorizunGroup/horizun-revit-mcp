@@ -49,10 +49,11 @@ namespace Horizun.Server.Tests
                 // are the rest. The golden had seven and four tools had been added
                 // since - a drift this test exists to make loud, which it could not
                 // do while the project it lives in would not compile. TWELVE since
-                // horizun_project_context (the ISO 19650 project context) joined them.
+                // horizun_project_context (the ISO 19650 project context) joined them,
+                // and horizun_cde_cloud (the read-only cloud CDE reader) after it.
                 new[]
                 {
-                    "horizun_budget_compare", "horizun_catalog_lookup", "horizun_excel_read_rows",
+                    "horizun_budget_compare", "horizun_catalog_lookup", "horizun_cde_cloud", "horizun_excel_read_rows",
                     "horizun_excel_write_rows", "horizun_information_container", "horizun_job_status", "horizun_power_bi_push",
                     "horizun_project_context", "horizun_promote_script", "horizun_repair_memory", "horizun_run_procedure",
                     "horizun_selection_exchange", "horizun_target"
