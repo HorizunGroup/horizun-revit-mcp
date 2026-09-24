@@ -29,5 +29,14 @@ namespace Horizun.Server
     internal sealed class ToolRefusal : Exception
     {
         public ToolRefusal(string message) : base(message) { }
+
+        /// <summary>
+        /// A refusal a client has to BRANCH on, not read: the fields are spread into the
+        /// result's structuredContent (e.g. code=elicitation_unsupported), beside the prose.
+        /// </summary>
+        public ToolRefusal(string message, Newtonsoft.Json.Linq.JObject detail) : base(message) { Detail = detail; }
+
+        /// <summary>Machine-readable detail, or null for an ordinary text refusal.</summary>
+        public Newtonsoft.Json.Linq.JObject Detail { get; }
     }
 }

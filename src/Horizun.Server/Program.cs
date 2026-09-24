@@ -81,6 +81,13 @@ namespace Horizun.Server
         private static ToolListMonitor _toolListMonitor;
 
         /// <summary>
+        /// Requests this server sends TO the client (elicitation/create), and what the
+        /// client declared it can answer. See McpClientRequests.cs.
+        /// </summary>
+        private static McpClientRequests _clientRequests;
+        private static ClientElicitationSupport _elicitation = ClientElicitationSupport.NotInitialized();
+
+        /// <summary>
         /// Set once the response channel has failed. The read loop stops on it, so no
         /// further request - least of all a mutation - is accepted after the point where
         /// its answer could no longer be delivered.
@@ -108,9 +115,12 @@ namespace Horizun.Server
                           "shutting down. Nothing further will be accepted: results could not be delivered, " +
                           "and a mutation whose outcome cannot be reported must not be started.", null);
                 Volatile.Write(ref _responseChannelLost, 1);
+                _clientRequests?.FailAll("the response channel was lost (" + reason + ")");
                 Protocol.SubscriptionStream.MarkAllTermination(Protocol.SubscriptionStream.TransportLost);
                 try { _inFlight.CancelAll(); } catch (Exception ex) { Log.Warn("cancel-all after channel loss: " + ex.Message); }
             });
+
+            _clientRequests = new McpClientRequests(_writer.Write);
 
             Log.Start();
 
@@ -205,6 +215,17 @@ namespace Horizun.Server
                             line.Length + " characters. Nothing was run, and no id could be read from it, so this " +
                             "reply carries id null - it cannot be matched to your request. The content is not " +
                             "echoed back because a line that failed to parse can still contain a path or a token.");
+                        continue;
+                    }
+
+                    // A RESPONSE TO ONE OF OUR REQUESTS (elicitation/create), recognised
+                    // by shape before anything else: it reuses an id WE chose, so the
+                    // lifetime rule for the client's request ids below does not apply
+                    // to it, and it is never answered. Handing it over never blocks -
+                    // the tool waiting for it runs on its own thread.
+                    if (McpClientRequests.IsResponse(msg))
+                    {
+                        _clientRequests.TryDeliver(msg);
                         continue;
                     }
 
@@ -380,6 +401,12 @@ namespace Horizun.Server
             // host-resident call that answered in 3 ms, and too SHORT for a scan of a
             // 200k-element model which is entitled to ten minutes - so the arbitrary
             // number could discard the very answer the drain was added to protect.
+            //
+            // A tool waiting for the CLIENT (elicitation) can never be answered now -
+            // the answer would arrive on the stdin that just closed - so those waits end
+            // first, and the tool reports the question as unanswered instead of holding
+            // the drain for its full timeout.
+            _clientRequests.FailAll("the client closed stdin, so no answer can arrive");
             if (_inFlight.Count > 0)
             {
                 DateTime? deadline = _inFlight.DrainDeadlineUtc();
@@ -489,7 +516,17 @@ namespace Horizun.Server
                 {
                     try
                     {
-                        JToken result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
+                        JToken result;
+                        // What THIS call may ask the client. It flows with the call into
+                        // the host handler's own task. A modern request cannot receive a
+                        // server-to-client request, and a task-augmented one outlives the
+                        // request that could carry a form.
+                        ClientElicitationSupport elicitation =
+                            envelope != null && envelope.Era == Protocol.McpEra.Modern
+                                ? ClientElicitationSupport.Modern(envelope.DeclaredVersion)
+                                : prms?["task"] != null ? _elicitation.ForTask() : _elicitation;
+                        using (ClientContext.Enter(new ClientContext(_clientRequests, elicitation)))
+                            result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
                         if (cts.IsCancellationRequested)
                         {
                             // Two events race after cancellation: PipeClient may observe
@@ -1041,6 +1078,10 @@ namespace Horizun.Server
                     _negotiatedProtocol = negotiatedProtocol;
                     // The peer speaks the handshake dialect. See _legacyHandshake.
                     _legacyHandshake = true;
+                    // What the client may be asked, from what IT declared and the
+                    // revision agreed - never from what a client "usually" supports.
+                    _elicitation = ClientElicitationSupport.FromInitialize(
+                        negotiatedProtocol, prms?["capabilities"] as JObject);
                     var capabilities = new JObject
                     {
                         // FROM THE SAME SET AS THE MODERN BLOCK. A legacy client reads
@@ -1326,7 +1367,9 @@ namespace Horizun.Server
                     // faults that are: a log full of expected refusals is a log nobody reads
                     // on the day something actually breaks.
                     Log.Warn(name + " (host) refused: " + refusal.Message);
-                    return TextResult("Error: " + refusal.Message, true);
+                    return refusal.Detail == null
+                        ? TextResult("Error: " + refusal.Message, true)
+                        : ErrorResult("Error: " + refusal.Message, null, null, refusal.Detail);
                 }
                 catch (Exception ex)
                 {

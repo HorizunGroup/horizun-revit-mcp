@@ -11,7 +11,7 @@
 // here keeps the bridge organisation-neutral: every code, pattern, path and name
 // inside a project context is the PROJECT's data.
 //
-// Four operations:
+// Five operations:
 //
 //   schema     the JSON Schema, byte for byte what is embedded.
 //   validate   a file against it. THREE different verdicts are kept apart, because
@@ -29,6 +29,12 @@
 //              bytes and content, because a write that was not re-read is a claim.
 //              It never replaces an existing file without overwrite=true, and it
 //              never writes a context that is invalid or carries a credential.
+//   elicit     the same questions asked THROUGH THE CLIENT (MCP elicitation), one
+//              short form per thematic block, then applied exactly as draft applies
+//              answers. Only when the client declared the capability; otherwise it
+//              refuses with code elicitation_unsupported and the agent asks in chat.
+//              A declined or cancelled form, a blank field and a question that is
+//              not a flat primitive all stay unanswered - and are listed as such.
 //
 // Writing is the only thing here that reaches outside this process, and only when a
 // call asks for it: the contract classifies the tool ExternalSideEffectOnRequest, so
@@ -104,11 +110,12 @@ namespace Horizun.Server
                 case "validate": return ValidateOperation(args, ct);
                 case "questions": return QuestionsOperation(args, ct);
                 case "draft": return DraftOperation(args, ct);
+                case "elicit": return ElicitOperation(args, ct);
                 case null:
-                    throw new ToolRefusal("operation is required: schema, validate, questions or draft. Nothing was read.");
+                    throw new ToolRefusal("operation is required: schema, validate, questions, draft or elicit. Nothing was read.");
                 default:
-                    throw new ToolRefusal("Unknown operation '" + operation + "'. Use schema, validate, questions or draft. " +
-                                          "Nothing was read.");
+                    throw new ToolRefusal("Unknown operation '" + operation + "'. Use schema, validate, questions, draft or " +
+                                          "elicit. Nothing was read.");
             }
         }
 
@@ -340,6 +347,444 @@ namespace Horizun.Server
             };
             result.Remove("would_refuse");
             return result;
+        }
+
+        // ---- elicit: the same intake, asked through the client ---------------------------
+
+        /// <summary>The most fields one form carries. A short form gets answered; a long one gets cancelled.</summary>
+        internal const int MaxFieldsPerForm = 6;
+
+        internal const int DefaultElicitTimeoutSeconds = 300;
+        internal const int MinElicitTimeoutSeconds = 10;
+        internal const int MaxElicitTimeoutSeconds = 540;
+
+        /// <summary>
+        /// The whole elicit call, every form included, stays under the host-resident
+        /// deadline (600 s) with room left to draft, write and re-read. A form that could
+        /// not finish inside it is not sent; the questions it would have carried are
+        /// listed, and a second elicit with the collected answers continues from there.
+        /// </summary>
+        internal static int ElicitBudgetMs = 540000;
+
+        /// <summary>Flat primitives only: that is all a form-mode requestedSchema may hold.</summary>
+        private static bool IsElicitable(Question q)
+            => q.Type == "string" || q.Type == "path" || q.Type == "enum" || q.Type == "integer";
+
+        private static readonly Dictionary<string, string[]> SectionTitles = new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["project"] = new[] { "Proyecto", "Project" },
+            ["appointment"] = new[] { "Designación (rol y equipos)", "Appointment (role and teams)" },
+            ["stage"] = new[] { "Fase", "Stage" },
+            ["eir"] = new[] { "EIR", "EIR" },
+            ["bep"] = new[] { "BEP", "BEP" },
+            ["midp_tidp"] = new[] { "MIDP y TIDP", "MIDP and TIDP" },
+            ["responsibility_matrix"] = new[] { "Matriz de responsabilidades", "Responsibility matrix" },
+            ["cde"] = new[] { "Entorno común de datos (CDE)", "Common data environment (CDE)" },
+            ["naming"] = new[] { "Nomenclatura", "Naming" },
+            ["classification"] = new[] { "Clasificación", "Classification" },
+            ["loin_ids"] = new[] { "LOIN e IDS", "LOIN and IDS" },
+            ["georeference"] = new[] { "Georreferenciación", "Georeference" },
+            ["ifc"] = new[] { "Entrega IFC", "IFC delivery" },
+            ["software"] = new[] { "Software", "Software" }
+        };
+
+        private static string SectionTitle(string section, string language)
+            => SectionTitles.TryGetValue(section, out string[] t) ? t[language == "es" ? 0 : 1] : section;
+
+        /// <summary>
+        /// elicit: ask the pending intake questions THROUGH THE CLIENT, one short form per
+        /// thematic block, and apply the answers exactly as draft does.
+        ///
+        /// Nothing here chooses for the person. A blank field, a declined form and a
+        /// cancelled one leave their questions unanswered and LISTED; a value that is not
+        /// one of a question's options is rejected, not coerced; and a question that is
+        /// not a flat primitive (a list of task teams, a table of status codes) is never
+        /// squeezed into a form - it is listed as not_elicitable, for the chat.
+        /// </summary>
+        private static JObject ElicitOperation(JObject args, CancellationToken ct)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+
+            string language = args["language"] == null || args["language"].Type == JTokenType.Null ? "en" : (string)args["language"];
+            if (language != "es" && language != "en")
+                throw new ToolRefusal("language must be 'es' or 'en'. Nothing was asked.");
+            bool dryRun = (bool?)args["dry_run"] ?? true;
+            bool overwrite = (bool?)args["overwrite"] ?? false;
+            string path = OptionalPath(args);
+
+            int timeoutSeconds = DefaultElicitTimeoutSeconds;
+            JToken timeoutToken = args["timeout_seconds"];
+            if (timeoutToken != null && timeoutToken.Type != JTokenType.Null)
+            {
+                if (timeoutToken.Type != JTokenType.Integer)
+                    throw new ToolRefusal("timeout_seconds must be an integer. Nothing was asked.");
+                timeoutSeconds = (int)timeoutToken;
+                if (timeoutSeconds < MinElicitTimeoutSeconds || timeoutSeconds > MaxElicitTimeoutSeconds)
+                    throw new ToolRefusal("timeout_seconds must be between " + MinElicitTimeoutSeconds + " and " +
+                                          MaxElicitTimeoutSeconds + ". Nothing was asked.");
+            }
+
+            JToken priorToken = args["answers"];
+            if (priorToken != null && priorToken.Type != JTokenType.Null && priorToken.Type != JTokenType.Object)
+                throw new ToolRefusal("answers must be an object of {\"<JSON pointer>\": value} - the 'answers' of an earlier " +
+                                      "elicit or draft. Nothing was asked.");
+            JObject prior = priorToken as JObject ?? new JObject();
+
+            // THE CAPABILITY FIRST. A server must not send elicitation/create to a client
+            // that did not declare it; the refusal is structured so the agent branches on
+            // the code and asks in the chat, instead of parsing this sentence.
+            ClientContext client = ClientContext.Current;
+            ClientElicitationSupport support = client?.Elicitation ?? ClientElicitationSupport.NotInitialized();
+            if (!support.CanElicitForm || client?.Channel == null)
+                throw new ToolRefusal(
+                    "elicitation_unsupported: " + support.Explain("en") + " Nothing was asked and nothing was written. Ask " +
+                    "the person in the chat instead: operation=questions lists every pending question with its options, and " +
+                    "operation=draft applies the answers.",
+                    new JObject
+                    {
+                        ["code"] = ClientElicitationSupport.CodeUnsupported,
+                        ["reason"] = support.UnsupportedReason ?? "no_client_channel",
+                        ["explanation"] = new JObject { ["es"] = support.Explain("es"), ["en"] = support.Explain("en") },
+                        ["client_elicitation"] = support.ToJson(),
+                        ["fallback"] = "ask_in_chat",
+                        ["next"] = "operation=questions, then operation=draft with the answers the person gave in the chat"
+                    });
+
+            // A WRITE THAT WOULD BE REFUSED IS REFUSED BEFORE THE FIRST FORM. Asking a
+            // person fifteen questions and then declining to save them for a reason known
+            // at the start wastes exactly what this operation exists to save.
+            if (!dryRun)
+            {
+                if (path == null)
+                    throw new ToolRefusal("dry_run=false needs 'path': where the project-context.json is written. Nothing was asked.");
+                if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    throw new ToolRefusal("path must name a .json file; '" + path + "' does not. Nothing was asked.");
+                if (File.Exists(path) && !overwrite)
+                    throw new ToolRefusal("'" + path + "' already exists and overwrite is false, so the answers could not be " +
+                                          "saved. Send overwrite=true (the answers are applied ON TOP of the file), or " +
+                                          "dry_run=true. Nothing was asked.");
+                string dir = Path.GetDirectoryName(path);
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+                    throw new ToolRefusal("the folder '" + dir + "' does not exist. This tool does not create project folders. " +
+                                          "Nothing was asked.");
+                string profileRefusal;
+                if (!Settings.AllowsExternalSideEffect(out profileRefusal))
+                    throw new ToolRefusal("Writing the project context needs the profile: " + profileRefusal + " Send dry_run=true " +
+                                          "to ask the questions and get the drafted document back. Nothing was asked.");
+            }
+
+            // THE BASE: the file (a second intake fills gaps), then earlier answers.
+            JObject working = new JObject();
+            if (path != null && File.Exists(path))
+            {
+                JToken parsed;
+                string parseError;
+                if (!TryParse(File.ReadAllBytes(path), out parsed, out parseError) || !(parsed is JObject))
+                    throw new ToolRefusal("'" + path + "' exists and is not a JSON object (" +
+                                          (parseError ?? "top level is not an object") + "). Run operation=validate. Nothing was asked.");
+                working = (JObject)parsed;
+            }
+            var collected = new JObject();
+            foreach (JProperty p in prior.Properties())
+            {
+                string why = CheckPointer(p.Name) ?? SetPointer(working, p.Name, p.Value.DeepClone());
+                if (why != null)
+                    throw new ToolRefusal("The earlier answer for '" + p.Name + "' cannot be placed: " + why + ". Nothing was asked.");
+                collected[p.Name] = p.Value.DeepClone();
+            }
+            ct.ThrowIfCancellationRequested();
+
+            var rounds = new JArray();
+            var outcome = new Dictionary<string, string>(StringComparer.Ordinal);   // question id -> why it stayed unanswered
+            var asked = new HashSet<string>(StringComparer.Ordinal);
+            string stopped = null;
+            int timeoutMs = timeoutSeconds * 1000;
+
+            var sections = new List<string>();
+            foreach (Question q in Questions) if (!sections.Contains(q.Section)) sections.Add(q.Section);
+
+            foreach (string section in sections)
+            {
+                while (stopped == null)
+                {
+                    List<Question> pending = Questions
+                        .Where(q => q.Section == section && IsElicitable(q) && !asked.Contains(q.Id) &&
+                                    StateOf(q, working) == "pending")
+                        .ToList();
+                    // A question that depends on another one still open in this block waits
+                    // for its answer: "where is the EIR?" is not asked beside "does it exist?".
+                    List<Question> ready = pending
+                        .Where(q => q.DependsOnPointer == null || !pending.Any(o => o.Pointer == q.DependsOnPointer))
+                        .Take(MaxFieldsPerForm)
+                        .ToList();
+                    if (ready.Count == 0) break;
+
+                    long remaining = ElicitBudgetMs - clock.ElapsedMilliseconds;
+                    if (remaining < MinElicitTimeoutSeconds * 1000L)
+                    {
+                        stopped = "time_budget";
+                        break;
+                    }
+                    int roundTimeout = (int)Math.Min(timeoutMs, remaining);
+
+                    foreach (Question q in ready) asked.Add(q.Id);
+                    var round = new JObject
+                    {
+                        ["round"] = rounds.Count + 1,
+                        ["section"] = section,
+                        ["asked"] = new JArray(ready.Select(q => q.Id))
+                    };
+                    rounds.Add(round);
+
+                    ClientReply reply = client.ElicitForm(FormMessage(section, rounds.Count, language),
+                                                          FormSchema(ready, language, support.ProtocolVersion),
+                                                          roundTimeout, ct);
+                    round["elapsed_ms"] = reply.ElapsedMs;
+
+                    if (reply.Outcome == ClientReplyOutcome.Cancelled)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        throw new OperationCanceledException("The elicit call was cancelled while a form was open.");
+                    }
+                    if (reply.Outcome != ClientReplyOutcome.Result)
+                    {
+                        string state = reply.Outcome == ClientReplyOutcome.TimedOut ? "timed_out"
+                            : reply.Outcome == ClientReplyOutcome.ChannelLost ? "channel_lost" : "client_error";
+                        round["action"] = state;
+                        if (reply.ErrorMessage != null) round["error"] = reply.ErrorMessage;
+                        if (reply.Outcome == ClientReplyOutcome.Error) round["error_code"] = reply.ErrorCode;
+                        foreach (Question q in ready) outcome[q.Id] = state;
+                        stopped = state;
+                        break;
+                    }
+
+                    string action = reply.Result?["action"] is JValue av && av.Type == JTokenType.String ? (string)av : null;
+                    round["action"] = action;
+                    if (action == "decline" || action == "cancel")
+                    {
+                        // Respected, never retried. A declined block leaves its questions
+                        // open and the intake moves on to the next topic; a cancelled form
+                        // (dismissed without a choice) ends the whole intake for now.
+                        string state = action == "decline" ? "declined" : "cancelled";
+                        foreach (Question q in ready) outcome[q.Id] = state;
+                        if (action == "cancel") stopped = "cancelled";
+                        break;
+                    }
+                    if (action != "accept")
+                    {
+                        round["action"] = "client_error";
+                        round["error"] = "the client answered with action '" + (action ?? "(none)") +
+                                         "'; only accept, decline and cancel exist";
+                        foreach (Question q in ready) outcome[q.Id] = "client_error";
+                        stopped = "client_error";
+                        break;
+                    }
+
+                    JObject content = reply.Result["content"] as JObject ?? new JObject();
+                    var answeredIds = new JArray();
+                    var blank = new JArray();
+                    var rejected = new JArray();
+                    foreach (Question q in ready)
+                    {
+                        JToken value;
+                        string reason;
+                        if (!TryReadAnswer(q, content[q.Id], out value, out reason))
+                        {
+                            outcome[q.Id] = reason;
+                            if (reason == "left_blank") blank.Add(q.Id);
+                            else rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = reason });
+                            continue;
+                        }
+                        string why = SetPointer(working, q.Pointer, value.DeepClone());
+                        if (why != null)
+                        {
+                            // The FILE already holds something at this path that is not an
+                            // object; the answer cannot be placed and is said so.
+                            outcome[q.Id] = "cannot_be_placed";
+                            rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = "cannot_be_placed: " + why });
+                            continue;
+                        }
+                        collected[q.Pointer] = value.DeepClone();
+                        answeredIds.Add(q.Id);
+                    }
+                    var ignored = new JArray(content.Properties().Select(p => p.Name).Where(n => ready.All(q => q.Id != n)));
+                    round["answered"] = answeredIds;
+                    round["left_blank"] = blank;
+                    round["rejected"] = rejected;
+                    if (ignored.Count > 0) round["ignored_fields"] = ignored;
+                }
+                if (stopped != null) break;
+            }
+
+            // WHAT IS STILL OPEN, AND WHY - every question, not only the ones asked.
+            var unanswered = new JArray();
+            foreach (Question q in Questions)
+            {
+                if (StateOf(q, working) != "pending") continue;
+                string reason;
+                if (!outcome.TryGetValue(q.Id, out reason))
+                {
+                    JToken dep = q.DependsOnPointer == null ? null : Resolve(working, q.DependsOnPointer);
+                    if (!IsElicitable(q)) reason = "not_elicitable";
+                    else if (q.DependsOnPointer != null && !IsAnswered(dep)) reason = "depends_on_unanswered";
+                    else reason = stopped != null ? "not_asked_" + stopped : "not_asked";
+                }
+                unanswered.Add(new JObject
+                {
+                    ["id"] = q.Id,
+                    ["section"] = q.Section,
+                    ["pointer"] = q.Pointer,
+                    ["type"] = q.Type,
+                    ["reason"] = reason
+                });
+            }
+
+            var result = new JObject
+            {
+                ["operation"] = "elicit",
+                ["language"] = language,
+                ["dry_run"] = dryRun,
+                ["path"] = path,
+                ["client_elicitation"] = support.ToJson(),
+                ["rounds"] = rounds,
+                ["stopped"] = stopped,
+                ["answers"] = collected.DeepClone(),
+                ["answered_count"] = rounds.Sum(r => r["answered"] is JArray a ? a.Count : 0),
+                ["unanswered"] = unanswered,
+                ["reasons_mean"] = new JObject
+                {
+                    ["declined"] = "the person declined that form; ask again only if they want to",
+                    ["cancelled"] = "the person closed a form without choosing; the intake stopped there",
+                    ["left_blank"] = "the field was left empty: unknown, and kept out of the file",
+                    ["not_an_option"] = "the value was not one of the question's options; nothing was applied",
+                    ["not_elicitable"] = "a list or table, not a flat field: ask it in the chat",
+                    ["depends_on_unanswered"] = "only askable once the question it depends on has an answer",
+                    ["timed_out"] = "no answer within timeout_seconds",
+                    ["not_asked_time_budget"] = "the call ran out of time; elicit again with these answers to continue"
+                }
+            };
+
+            if (collected.Count == 0)
+            {
+                result["written"] = false;
+                result["draft"] = null;
+                result["next"] = "Nothing was answered, so nothing was drafted or written. Ask the open questions in the chat " +
+                                 "(operation=questions lists them with their options).";
+                return result;
+            }
+
+            // THE SAME PATH AS draft - no second way of applying answers.
+            var draftArgs = new JObject
+            {
+                ["operation"] = "draft", ["answers"] = collected.DeepClone(), ["dry_run"] = dryRun, ["overwrite"] = overwrite
+            };
+            if (path != null) draftArgs["path"] = path;
+            try
+            {
+                JObject draft = DraftOperation(draftArgs, ct);
+                result["draft"] = draft;
+                result["written"] = (bool)draft["written"];
+            }
+            catch (ToolRefusal refusal) when (!dryRun)
+            {
+                // The answers are the person's time: a refused write must not lose them.
+                result["draft"] = null;
+                result["written"] = false;
+                result["write_refused"] = refusal.Message;
+            }
+            result["next"] = dryRun
+                ? "Rehearsal: nothing was written. Show the person 'draft' (state and coherence findings), ask the " +
+                  "not_elicitable questions in the chat, then send 'answers' (plus any from the chat) to operation=draft " +
+                  "with dry_run=false."
+                : (bool)result["written"]
+                    ? "Written and re-read. Ask the not_elicitable questions in the chat and finish with operation=validate."
+                    : "Not written (see write_refused). The answers are in 'answers'; fix the cause and send them to operation=draft.";
+            return result;
+        }
+
+        private static string FormMessage(string section, int round, string language)
+            => language == "es"
+                ? "Arranque ISO 19650 del proyecto: " + SectionTitle(section, language) + " (formulario " + round + "). " +
+                  "Responde lo que sepas y deja vacío lo que no: nada se rellena por suposición y lo vacío queda como pendiente."
+                : "ISO 19650 project intake: " + SectionTitle(section, language) + " (form " + round + "). " +
+                  "Answer what you know and leave the rest empty: nothing is filled in by guessing, and anything empty stays " +
+                  "listed as missing.";
+
+        /// <summary>
+        /// A flat requestedSchema: one primitive property per question, keyed by the
+        /// question id, none required - a person may always leave an unknown empty.
+        /// Options without free text become a typed enum: `oneOf` const/title under
+        /// 2025-11-25, `enum` + `enumNames` under 2025-06-18, as each revision defines.
+        /// </summary>
+        internal static JObject FormSchema(IEnumerable<Question> questions, string language, string protocolVersion)
+        {
+            bool es = language == "es";
+            var properties = new JObject();
+            foreach (Question q in questions)
+            {
+                var field = new JObject
+                {
+                    ["title"] = es ? q.TextEs : q.TextEn,
+                    ["description"] = es ? q.WhyEs : q.WhyEn
+                };
+                if (q.Type == "enum" && q.Options.Length > 0 && !q.AllowOther)
+                {
+                    field["type"] = "string";
+                    if (protocolVersion == "2025-11-25")
+                        field["oneOf"] = new JArray(q.Options.Select(o => new JObject
+                        {
+                            ["const"] = o.Value, ["title"] = es ? o.Es : o.En
+                        }));
+                    else
+                    {
+                        field["enum"] = new JArray(q.Options.Select(o => o.Value));
+                        field["enumNames"] = new JArray(q.Options.Select(o => es ? o.Es : o.En));
+                    }
+                }
+                else
+                {
+                    field["type"] = q.Type == "integer" ? "integer" : "string";
+                    if (q.Type != "integer") field["minLength"] = 1;
+                    if (q.Options.Length > 0)
+                        field["description"] = (string)field["description"] + (es ? " Valores habituales: " : " Common values: ") +
+                            string.Join(", ", q.Options.Select(o => o.Value)) +
+                            (q.AllowOther ? (es ? " (u otro)." : " (or another).") : ".");
+                }
+                properties[q.Id] = field;
+            }
+            return new JObject { ["type"] = "object", ["properties"] = properties };
+        }
+
+        /// <summary>One field of an accepted form, checked against its question. Never coerced into an option.</summary>
+        internal static bool TryReadAnswer(Question q, JToken raw, out JToken value, out string reason)
+        {
+            value = null;
+            reason = null;
+            if (raw == null || raw.Type == JTokenType.Null) { reason = "left_blank"; return false; }
+
+            if (q.Type == "integer")
+            {
+                if (raw.Type == JTokenType.Integer) { value = raw.DeepClone(); return true; }
+                if (raw.Type == JTokenType.Float)
+                {
+                    double d = (double)raw;
+                    if (Math.Abs(d - Math.Round(d)) < 1e-9 && Math.Abs(d) < int.MaxValue) { value = (int)Math.Round(d); return true; }
+                }
+                reason = "not_an_integer";
+                return false;
+            }
+
+            if (raw.Type != JTokenType.String) { reason = "not_a_string"; return false; }
+            string text = ((string)raw).Trim();
+            if (text.Length == 0) { reason = "left_blank"; return false; }
+
+            if (q.Type == "enum" && q.Options.Length > 0 && !q.AllowOther && q.Options.All(o => o.Value != text))
+            {
+                reason = "not_an_option";
+                return false;
+            }
+            value = text;
+            return true;
         }
 
         private static string WriteRefusal(JObject evaluation, string path, bool exists, bool overwrite)
