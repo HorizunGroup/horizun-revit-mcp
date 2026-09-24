@@ -1,0 +1,35 @@
+{
+  "tool": "horizun_write_params_verified",
+  "provenance": "Shape of the WriteParamsCommand dry run + DocumentGate.StampConfirmation + PlanPreview.Describe at 038f882. Synthetic: no live capture existed; ids, names and document anonymised.",
+  "arguments": {
+    "target_document": "HZ_WRITE",
+    "writes": [
+      { "target_id": 1001, "parameter": "Comments", "value": "A" },
+      { "target_id": 1002, "parameter": "Comments", "value": "B" },
+      { "target_id": 2001, "parameter": "Mark", "value": "T-1" }
+    ]
+  },
+  "result": {
+    "mode": "dry_run", "on_failure_if_run": "atomic", "transaction_status": "not_started",
+    "document": "HZ_WRITE", "requested": 3, "writes_planned": 3, "unresolved": 0,
+    "elements_that_would_change": 5, "collateral_elements": 2, "census_unreadable_elements": 0, "blast_radius_is_lower_bound": false,
+    "rows_total": 3, "rows_shown": 3, "rows_truncated": false,
+    "rows": [
+      { "index": 0, "target_kind": "instance", "target_id": "1001", "target_name": "Generic - 200mm", "parameter": "Comments", "before": "\"\"", "requested": "A", "error": null },
+      { "index": 1, "target_kind": "instance", "target_id": "1002", "target_name": "Generic - 200mm", "parameter": "Comments", "before": "\"old\"", "requested": "B", "error": null },
+      { "index": 2, "target_kind": "type", "target_id": "2001", "target_name": "Generic - 200mm", "parameter": "Mark", "before": null, "requested": "T-1", "error": null, "elements_affected": 3 }
+    ],
+    "application": { "state": "rehearsed", "requested": 3, "unresolved": 0, "state_means": "rehearsed: nothing was written." },
+    "change_preview": {
+      "fingerprint": "f00d", "total": 3, "shown": 3, "truncated": false, "expected_cascade": 2,
+      "rows": [
+        { "unique_id": "u-1001", "element_id": 1001, "action": "modify", "category": "Walls", "type": "Generic - 200mm", "captured_state": { "Comments": "\"\"" }, "proposed_values": { "Comments": "\"A\"" }, "values_truncated": false },
+        { "unique_id": "u-1002", "element_id": 1002, "action": "modify", "category": "Walls", "type": "Generic - 200mm", "captured_state": { "Comments": "\"old\"" }, "proposed_values": { "Comments": "\"B\"" }, "values_truncated": false },
+        { "unique_id": "u-2001", "element_id": 2001, "action": "modify", "category": "Walls", "type": "Generic - 200mm", "captured_state": { "Mark": null }, "proposed_values": { "Mark": "\"T-1\"" }, "values_truncated": false }
+      ],
+      "note": "bounded sample"
+    },
+    "plan_resolved": { "elements": 3, "create": 0, "modify": 3, "delete": 0, "expected_cascade": 2, "fingerprint": "f00d" },
+    "confirmation_token": "tok-write-1", "confirmation_expires_utc": "2026-09-24 12:00:00Z"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "tool": "horizun_delete_verified",
+  "provenance": "Shape of the DeleteCommand ids-mode dry run and DeletePlan at 038f882. Synthetic, anonymised.",
+  "arguments": { "target_document": "HZ_WRITE", "mode": "ids", "ids": [5001, 5002] },
+  "result": {
+    "mode": "ids", "dry_run": true, "transaction_state": "RolledBack (deliberate: dry run)", "requested_total": 2, "would_delete_total": 2,
+    "application": { "state": "rehearsed", "requested": 2, "unresolved": 0, "state_means": "rehearsed" },
+    "change_preview": {
+      "fingerprint": "d1", "total": 3, "shown": 3, "truncated": false, "expected_cascade": 1,
+      "rows": [
+        { "unique_id": "u-5001", "element_id": null, "action": "delete", "category": "Floors", "type": "Generic 150mm", "captured_state": { "role": "requested", "raw_id": "5001", "verdict": "deleted", "reason": "", "cascaded_by": "" }, "proposed_values": null, "values_truncated": false },
+        { "unique_id": "u-5002", "element_id": null, "action": "delete", "category": "Walls", "type": "Generic - 200mm", "captured_state": { "role": "requested", "raw_id": "5002", "verdict": "deleted", "reason": "", "cascaded_by": "" }, "proposed_values": null, "values_truncated": false },
+        { "unique_id": "u-5003", "element_id": null, "action": "delete", "category": "Doors", "type": "Single-Flush", "captured_state": { "role": "cascade", "raw_id": "5003", "parent_raw_id": "5002", "confirmed_in_preview": "True", "note": "" }, "proposed_values": null, "values_truncated": false }
+      ]
+    },
+    "plan_resolved": { "elements": 3, "create": 0, "modify": 0, "delete": 3, "expected_cascade": 1, "fingerprint": "d1" },
+    "confirmation_token": "tok-del-1", "confirmation_expires_utc": "2026-09-24 12:00:00Z"
+  }
+}

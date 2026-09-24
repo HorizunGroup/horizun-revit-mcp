@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Impact preview</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --hz-bg: var(--color-background-primary, #ffffff);
+    --hz-bg-2: var(--color-background-secondary, #f4f5f7);
+    --hz-fg: var(--color-text-primary, #1b1d21);
+    --hz-muted: var(--color-text-secondary, #5b606a);
+    --hz-line: var(--color-border-primary, #d5d8de);
+    --hz-accent: #1f5fd1;
+    --hz-accent-fg: #ffffff;
+    --hz-warn-bg: #fff4dc;
+    --hz-warn-fg: #6b4400;
+    --hz-bad-bg: #fde7e7;
+    --hz-bad-fg: #8a1c1c;
+    --hz-ok-bg: #e3f5e8;
+    --hz-ok-fg: #185c2c;
+    --hz-radius: var(--border-radius-md, 6px);
+    --hz-font: var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
+  }
+  :root[data-theme="dark"] {
+    --hz-bg: var(--color-background-primary, #17191d);
+    --hz-bg-2: var(--color-background-secondary, #22252b);
+    --hz-fg: var(--color-text-primary, #e8eaee);
+    --hz-muted: var(--color-text-secondary, #a4a9b3);
+    --hz-line: var(--color-border-primary, #3a3e46);
+    --hz-accent: #6d9cff;
+    --hz-accent-fg: #0d1420;
+    --hz-warn-bg: #3a2f14;
+    --hz-warn-fg: #ffd98a;
+    --hz-bad-bg: #3d1a1a;
+    --hz-bad-fg: #ffb0b0;
+    --hz-ok-bg: #173222;
+    --hz-ok-fg: #a8e6bb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --hz-bg: var(--color-background-primary, #17191d);
+      --hz-bg-2: var(--color-background-secondary, #22252b);
+      --hz-fg: var(--color-text-primary, #e8eaee);
+      --hz-muted: var(--color-text-secondary, #a4a9b3);
+      --hz-line: var(--color-border-primary, #3a3e46);
+      --hz-accent: #6d9cff;
+      --hz-accent-fg: #0d1420;
+      --hz-warn-bg: #3a2f14;
+      --hz-warn-fg: #ffd98a;
+      --hz-bad-bg: #3d1a1a;
+      --hz-bad-fg: #ffb0b0;
+      --hz-ok-bg: #173222;
+      --hz-ok-fg: #a8e6bb;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--hz-bg); color: var(--hz-fg); font: 13px/1.45 var(--hz-font); }
+  header { padding: 10px 12px; border-bottom: 1px solid var(--hz-line); }
+  h1 { margin: 0; font-size: 15px; font-weight: 600; }
+  h2 { margin: 0 0 4px; font-size: 13px; font-weight: 600; }
+  .sub { color: var(--hz-muted); margin-top: 2px; overflow-wrap: anywhere; }
+  .summary { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px 12px; }
+  .card { background: var(--hz-bg-2); border-radius: var(--hz-radius); padding: 8px 10px; min-width: 140px; flex: 1 1 160px; }
+  .card ul { margin: 0; padding-left: 16px; }
+  .big { font-size: 20px; font-weight: 600; }
+  .warnings { margin: 0 12px 8px; padding: 8px 10px 8px 26px; background: var(--hz-warn-bg); color: var(--hz-warn-fg); border-radius: var(--hz-radius); }
+  .warnings:empty { display: none; }
+  .status { margin: 0 12px 8px; padding: 8px 10px; border-radius: var(--hz-radius); background: var(--hz-bg-2); }
+  .status[data-kind="failed"] { background: var(--hz-bad-bg); color: var(--hz-bad-fg); }
+  .status[data-kind="done"] { background: var(--hz-ok-bg); color: var(--hz-ok-fg); }
+  .status[data-kind="warn"] { background: var(--hz-warn-bg); color: var(--hz-warn-fg); }
+  .status:empty { display: none; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; }
+  caption { text-align: left; padding: 6px 12px; color: var(--hz-muted); }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--hz-line); vertical-align: top; }
+  th { font-weight: 600; color: var(--hz-muted); }
+  td.num { white-space: nowrap; }
+  tr.excluded td { text-decoration: line-through; opacity: .6; }
+  tr.excluded td:first-child { text-decoration: none; opacity: 1; }
+  .arrow { color: var(--hz-muted); padding: 0 4px; }
+  .note { color: var(--hz-muted); }
+  .tag { display: inline-block; padding: 0 6px; border-radius: 10px; background: var(--hz-bg-2); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--hz-line); position: sticky; bottom: 0; background: var(--hz-bg); }
+  button { font: inherit; padding: 6px 14px; border-radius: var(--hz-radius); border: 1px solid var(--hz-line); background: var(--hz-bg-2); color: var(--hz-fg); cursor: pointer; }
+  button.primary { background: var(--hz-accent); color: var(--hz-accent-fg); border-color: var(--hz-accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--hz-accent); outline-offset: 2px; }
+  input[type="checkbox"] { width: 16px; height: 16px; }
+  .hint { color: var(--hz-muted); flex: 1 1 220px; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Impact preview</h1>
+  <div class="sub" id="subtitle">Waiting for a rehearsal (dry_run) result.</div>
+</header>
+<main>
+  <section class="summary" id="summary" aria-label="Summary"></section>
+  <ul class="warnings" id="warnings" aria-label="Warnings"></ul>
+  <div class="status" id="status" role="status" aria-live="polite"></div>
+  <div class="tablewrap" id="table"></div>
+</main>
+<div class="actions" id="actions">
+  <button type="button" id="apply" class="primary" disabled>Apply</button>
+  <button type="button" id="clear" disabled>Include all</button>
+  <span class="hint" id="hint"></span>
+</div>
+<script>
+/*@ADAPTER@*/
+</script>
+<script>
+/*@VIEW@*/
+</script>
+</body>
+</html>

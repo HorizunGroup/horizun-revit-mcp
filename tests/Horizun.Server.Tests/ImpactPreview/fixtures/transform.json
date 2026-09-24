@@ -1,0 +1,21 @@
+{
+  "tool": "horizun_transform_elements",
+  "provenance": "Shape of the TransformElementsCommand dry run at 038f882. Synthetic, anonymised.",
+  "arguments": { "target_document": "HZ_WRITE", "units": "mm", "operations": [
+    { "operation": "move", "element_ids": [6001, 6002], "vector": [100, 0, 0] },
+    { "operation": "change_type", "element_ids": [6003], "type_id": 7001 } ] },
+  "result": {
+    "dry_run": true, "transaction_status": "not_started", "operations": 2, "targets": 3, "valid_operations": 2, "invalid_operations": 0, "errors": [],
+    "application": { "state": "rehearsed", "requested": 2, "unresolved": 0, "state_means": "rehearsed" },
+    "change_preview": {
+      "fingerprint": "t1", "total": 3, "shown": 3, "truncated": false, "expected_cascade": 0,
+      "rows": [
+        { "unique_id": "u-6001", "element_id": 6001, "action": "modify", "category": "Furniture", "type": "Desk", "captured_state": { "operation": "move", "type_id": "8001", "pinned": "False", "wall_join_allowed": "" }, "proposed_values": { "operation": "move", "specification": "{}" }, "values_truncated": false },
+        { "unique_id": "u-6002", "element_id": 6002, "action": "modify", "category": "Furniture", "type": "Desk", "captured_state": { "operation": "move", "type_id": "8001", "pinned": "False", "wall_join_allowed": "" }, "proposed_values": { "operation": "move", "specification": "{}" }, "values_truncated": false },
+        { "unique_id": "u-6003", "element_id": 6003, "action": "modify", "category": "Doors", "type": "Door A", "captured_state": { "operation": "change_type", "type_id": "7000", "pinned": "False", "wall_join_allowed": "" }, "proposed_values": { "operation": "change_type", "specification": "{}", "type_id": "7001" }, "values_truncated": false }
+      ]
+    },
+    "plan_resolved": { "elements": 3, "create": 0, "modify": 3, "delete": 0, "expected_cascade": 0, "fingerprint": "t1" },
+    "confirmation_token": "tok-tr-1", "confirmation_expires_utc": "2026-09-24 12:00:00Z"
+  }
+}

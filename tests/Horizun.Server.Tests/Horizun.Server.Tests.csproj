@@ -52,6 +52,13 @@
          property that matters - that the app and the text render the same payload from
          the same fields - is only assertable against the shipped source. -->
     <Compile Include="..\..\src\Horizun.Server\McpAppResources.cs" Link="McpAppResources.cs" />
+    <!-- The impact preview, with its three files under the server's logical names so
+         the page the tests read is the page the server serves. -->
+    <Compile Include="..\..\src\Horizun.Server\ImpactPreviewApp.cs" Link="ImpactPreviewApp.cs" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview.html" LogicalName="Horizun.Apps.impact-preview.html" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-adapter.js" LogicalName="Horizun.Apps.impact-preview-adapter.js" />
+    <EmbeddedResource Include="..\..\src\Horizun.Server\Apps\impact-preview-view.js" LogicalName="Horizun.Apps.impact-preview-view.js" />
+    <None Include="ImpactPreview\**\*" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="..\..\src\Horizun.Server\McpWorkflowCatalog.cs" Link="McpWorkflowCatalog.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpPrompts.cs" Link="McpPrompts.cs" />
     <Compile Include="..\..\src\Horizun.Server\McpCompletions.cs" Link="McpCompletions.cs" />
