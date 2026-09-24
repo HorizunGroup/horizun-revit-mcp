@@ -301,6 +301,12 @@ namespace Horizun.Revit.Commands
                 bool? valid = null;
                 try { valid = p.IsValidType(type.Id); } catch { }
                 revitSays[id.ToString(System.Globalization.CultureInfo.InvariantCulture)] = valid.HasValue ? (JToken)valid.Value : JValue.CreateNull();
+                // MEASURED 2026-09-24 on Revit 2026: where IsValidType said false, ChangeTypeId
+                // then threw "The type typeId is not valid for this element". Revit's answer
+                // for THIS panel decides; the refusal names the types it does accept.
+                if (valid == false)
+                    throw new ArgumentException("type " + typeId + " (" + DescribeType(type) + ") is not valid for panel " + id +
+                        " in this Revit. Valid types for it: " + ValidTypesText(doc, p) + ".");
                 edit.Planned.Add(ModelEditRunner.Planned(p, PlannedAction.Modify, r));
             }
             edit.Summary["type_kind"] = DescribeType(type);
@@ -337,6 +343,23 @@ namespace Horizun.Revit.Commands
         }
 
         // ---- geometry ----------------------------------------------------------------------
+
+        private static string ValidTypesText(Document doc, Element panel)
+        {
+            try
+            {
+                var ids = panel.GetValidTypes();
+                var parts = new List<string>();
+                foreach (ElementId vid in ids)
+                {
+                    if (parts.Count >= 15) { parts.Add("... " + (ids.Count - 15) + " more"); break; }
+                    Element t = doc.GetElement(vid);
+                    parts.Add(Rid.Value(vid) + " (" + (t == null ? "?" : t.Name) + ")");
+                }
+                return parts.Count == 0 ? "none reported" : string.Join(", ", parts);
+            }
+            catch (Exception ex) { return "could not be listed: " + ex.Message; }
+        }
 
         private static List<long> LineIds(CurtainGrid g, bool isU) => (isU ? g.GetUGridLineIds() : g.GetVGridLineIds()).Select(Rid.Value).ToList();
 

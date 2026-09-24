@@ -445,8 +445,13 @@ namespace Horizun.Revit.Commands
                     // Ungroup deletes the instance BY DESIGN: nothing is read through it. Members come from
                     // UngroupMembers' own answer (read-before only as fallback) and are re-read one by one.
                     var c = new PostconditionCheck("groups_removed", "members_released", "type_kept");
-                    var still = p.GroupIds.Where(id => { Element e = doc.GetElement(id); return e is Group && e.IsValidObject; }).Select(Rid.Value).ToList();
-                    c.Record("groups_removed", p.GroupIds.Count, new JArray(still), still.Count == 0);
+                    // MEASURED 2026-09-24 (Revit 2026, inside the rehearsal transaction): after
+                    // UngroupMembers the Group element is still there, EMPTY, until the
+                    // transaction ends. An instance with no members holds nothing and is
+                    // counted as dissolved; an instance that still HAS members is the failure.
+                    var still = p.GroupIds.Where(id => { Element e = doc.GetElement(id); return e is Group g && e.IsValidObject && MemberCount(g) > 0; }).Select(Rid.Value).ToList();
+                    var emptyShells = p.GroupIds.Where(id => { Element e = doc.GetElement(id); return e is Group g && e.IsValidObject && MemberCount(g) == 0; }).Select(Rid.Value).ToList();
+                    c.Record("groups_removed", p.GroupIds.Count, new JObject { ["still_holding_members"] = new JArray(still), ["empty_until_commit"] = new JArray(emptyShells) }, still.Count == 0);
                     var evidence = new JArray(); bool released = true; int checkedMembers = 0;
                     foreach (ElementId gid in p.GroupIds)
                     {
@@ -470,7 +475,7 @@ namespace Horizun.Revit.Commands
                     foreach (var kv in p.UngroupTypes)
                     {
                         GroupType t = doc.GetElement(kv.Key) as GroupType;
-                        int after = t == null ? 0 : GroupsOf(t).Count;
+                        int after = t == null ? 0 : GroupsOf(t).Count(g => MemberCount(g) > 0);
                         string expectation;
                         bool held = UngroupRules.TypeHeld(kv.Value[0], kv.Value[1], t != null, after, out expectation);
                         typesHeld &= held;
@@ -552,6 +557,11 @@ namespace Horizun.Revit.Commands
                 list.Add(s);
             }
             return list;
+        }
+
+        private static int MemberCount(Group g)
+        {
+            try { return g.GetMemberIds().Count; } catch { return 0; }
         }
 
         private static List<Group> GroupsOf(GroupType t)

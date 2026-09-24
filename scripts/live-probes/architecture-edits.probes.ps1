@@ -111,6 +111,18 @@ $script:HzProbeModules += [pscustomobject]@{
             if (-not $panel -or -not $panelType) { Case $catalog[3] 'horizun_manage_curtain' 'not_covered' 'no panel, or no second panel type or basic wall type, to change to' }
             else {
                 $pt = & $Ctx.Apply 'horizun_manage_curtain' @{ target_document = $doc; operation = 'set_panel_type'; element_id = $cwId; panel_ids = @([long]$panel.id); type_id = $panelType.element_id } 'arch-cw-panel'
+                # Revit decides which types a given panel accepts (measured 2026-09-24: a
+                # guessed type was refused by ChangeTypeId). The refusal lists them; take the
+                # first listed type that is not the panel's current one and try once more.
+                $ptText = [string]$pt.answer.text
+                if (-not (Verified $pt) -and $ptText -match 'Valid types for it: ([^\r\n]+)') {
+                    $alt = @([regex]::Matches($Matches[1], '(\d+) \(') | ForEach-Object { [long]$_.Groups[1].Value } | Where-Object { $_ -ne [long]$panel.type_id -and $_ -ne [long]$panelType.element_id }) | Select-Object -First 1
+                    if ($alt) {
+                        $panelKind = 'type Revit lists as valid'
+                        $panelType = [pscustomobject]@{ element_id = $alt }
+                        $pt = & $Ctx.Apply 'horizun_manage_curtain' @{ target_document = $doc; operation = 'set_panel_type'; element_id = $cwId; panel_ids = @([long]$panel.id); type_id = $alt } 'arch-cw-panel-valid'
+                    }
+                }
                 if (Verified $pt) { Case $catalog[3] 'horizun_manage_curtain' 'pass' ("panel " + $panel.id + " -> $panelKind " + $panelType.element_id) } else { Case $catalog[3] 'horizun_manage_curtain' 'fail' ("$panelKind " + $panelType.element_id + ': ' + (Why $pt)) }
             }
 
