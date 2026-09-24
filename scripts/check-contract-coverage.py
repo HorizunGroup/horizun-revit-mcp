@@ -41,6 +41,9 @@ ANSWERS = {
     "horizun_connect_mep": ["src/Horizun.Revit/Commands/ConnectMepCommand.cs"],
     "horizun_structural_connections": ["src/Horizun.Revit/Commands/StructuralConnectionsCommand.cs"],
     "horizun_manage_materials": ["src/Horizun.Revit/Commands/ManageMaterialsCommand.cs"],
+    "horizun_manage_styles": ["src/Horizun.Revit/Commands/ManageStylesCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
+    "horizun_manage_units": ["src/Horizun.Revit/Commands/ManageUnitsCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
+    "horizun_electrical": ["src/Horizun.Revit/Commands/ElectricalCommand.cs", "src/Horizun.Revit/Commands/VerifiedModelEdit.cs"],
     "horizun_validate_ids": [
         "src/Horizun.Revit/Commands/ValidateIdsCommand.cs",
         "src/Horizun.Revit/Core/IdsDocument.cs",

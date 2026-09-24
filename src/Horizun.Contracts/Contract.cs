@@ -268,6 +268,8 @@ namespace Horizun.Contracts
             Row("horizun_execute_plan", "model"),
             Row("horizun_copy_between_documents", "model"),
             Row("horizun_manage_materials", "model"),
+            Row("horizun_manage_styles", "model", "documentation"),
+            Row("horizun_manage_units", "model", "coordination"),
             Row("horizun_ungroup_and_mark", "model"),
             Row("horizun_regroup_by_param", "model"),
             Row("horizun_manage_groups", "model"),
@@ -296,6 +298,7 @@ namespace Horizun.Contracts
 
             // ---- mep --------------------------------------------------------------------
             Row("horizun_manage_system_types", "mep"),
+            Row("horizun_electrical", "mep"),
             Row("horizun_plan_mep", "mep"),
             Row("horizun_connect_mep", "mep"),
             Row("horizun_mep_routing", "mep"),
@@ -4884,6 +4887,91 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_manage_styles",
+                Command = "horizun_manage_styles",
+                Description =
+                    "Object styles, subcategories, line styles, line and fill patterns. list_* read; " +
+                    "set_object_style and create_* " +
+                    "rehearse, then re-read every value after commit. " +
+                    "Deleting: horizun_delete_verified.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_object_styles"", ""set_object_style"", ""create_subcategory"", ""list_line_styles"", ""create_line_style"", ""list_line_patterns"", ""create_line_pattern"", ""list_fill_patterns"", ""create_fill_pattern""] },
+    ""target_document"": { ""type"": ""string"" },
+    ""category"": { ""type"": ""string"", ""description"": ""OST_ name, id or name. Parent for create_subcategory."" },
+    ""subcategory"": { ""type"": ""string"" },
+    ""name"": { ""type"": ""string"" },
+    ""projection_weight"": { ""type"": ""integer"" }, ""cut_weight"": { ""type"": ""integer"" },
+    ""color"": { ""type"": ""string"", ""description"": ""#RRGGBB"" },
+    ""line_pattern"": { ""type"": ""string"", ""description"": ""Name, or Solid."" },
+    ""material"": { ""type"": ""string"" },
+    ""segments"": { ""type"": ""array"", ""items"": { ""type"": ""object"" }, ""description"": ""[{type: dash|space|dot, length}]"" },
+    ""target"": { ""type"": ""string"", ""enum"": [""drafting"", ""model""] },
+    ""fill"": { ""type"": ""string"", ""enum"": [""solid"", ""hatch"", ""crosshatch""] },
+    ""angle"": { ""type"": ""number"", ""description"": ""Degrees."" }, ""spacing"": { ""type"": ""number"" }, ""spacing2"": { ""type"": ""number"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_units",
+                Command = "horizun_manage_units",
+                Description =
+                    "Project units and project data. read: FormatOptions per spec (unit, accuracy, symbol, zero " +
+                    "suppression) and decimal/grouping symbols; set writes them. " +
+                    "project_information: without values reads every parameter; with values writes text/integer ones. " +
+                    "base_points: reads both points and the angle to true north; project_position RE-SPECIFIES SHARED " +
+                    "COORDINATES (links and coordinate exports follow) and also needs confirm_shared_coordinates=true. " +
+                    "Writes rehearse and re-read after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set"", ""project_information"", ""base_points""] },
+    ""target_document"": { ""type"": ""string"" },
+    ""specs"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } }, ""all"": { ""type"": ""boolean"" },
+    ""spec"": { ""type"": ""string"", ""description"": ""length, area, slope... or a full spec id."" },
+    ""unit"": { ""type"": ""string"" }, ""accuracy"": { ""type"": ""number"" }, ""symbol"": { ""type"": ""string"" },
+    ""suppress_trailing_zeros"": { ""type"": ""boolean"" }, ""suppress_leading_zeros"": { ""type"": ""boolean"" },
+    ""suppress_spaces"": { ""type"": ""boolean"" }, ""use_digit_grouping"": { ""type"": ""boolean"" },
+    ""decimal_symbol"": { ""type"": ""string"" }, ""digit_grouping_symbol"": { ""type"": ""string"" },
+    ""values"": { ""type"": ""object"", ""description"": ""name, number, client, address, status, issue_date, author... or any parameter name."" },
+    ""project_position"": { ""type"": ""object"", ""description"": ""east_west, north_south, elevation (units), angle_to_true_north (deg)."" },
+    ""confirm_shared_coordinates"": { ""type"": ""boolean"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_electrical",
+                Command = "horizun_electrical",
+                Description =
+                    "Electrical panels and circuits. list_panels, list_circuits (panel, number, members, loads, length, " +
+                    "voltage drop where the API gives it) read. create_circuit (element_ids, optional panel_id), " +
+                    "assign_panel, add_to_circuit, remove_from_circuit and panel_schedule rehearse the real Revit call, " +
+                    "then re-read the circuit, its members and its panel after commit.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_panels"", ""list_circuits"", ""create_circuit"", ""assign_panel"", ""add_to_circuit"", ""remove_from_circuit"", ""panel_schedule""] },
+    ""target_document"": { ""type"": ""string"" },
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
+    ""circuit_id"": { ""type"": ""integer"" }, ""panel_id"": { ""type"": ""integer"" },
+    ""system_type"": { ""type"": ""string"", ""default"": ""PowerCircuit"" },
+    ""template_id"": { ""type"": ""integer"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_structural_connections",
                 Command = "horizun_structural_connections",
                 Description =
@@ -6143,6 +6231,7 @@ namespace Horizun.Contracts
                 "horizun_mep_routing",
                 "horizun_structural_connections",
                 "horizun_manage_materials",
+                "horizun_manage_styles", "horizun_manage_units", "horizun_electrical",
                 "horizun_copy_between_documents",
                 "horizun_execute_plan",
                 "horizun_apply_corrections",
