@@ -184,12 +184,29 @@ namespace Horizun.Server.Protocol
             JToken infoToken = meta[ClientInfoKey];
             if (infoToken != null && infoToken.Type == JTokenType.Object) env.ClientInfo = (JObject)infoToken;
 
+            // A level this server does not know is refused, not ignored: "the server SHOULD
+            // reject that request" with -32602 (server/utilities/logging, Error Handling).
+            // Ignoring it would answer a request that asked for logs with silence it never
+            // chose.
             JToken levelToken = meta[LogLevelKey];
-            if (levelToken != null && levelToken.Type == JTokenType.String) env.LogLevel = (string)levelToken;
+            if (levelToken != null && levelToken.Type != JTokenType.Null)
+            {
+                string level = levelToken.Type == JTokenType.String ? (string)levelToken : null;
+                if (level == null || Array.IndexOf(LogLevels, level) < 0)
+                    throw new McpDataError(McpErrorCodes.InvalidParams,
+                        "Invalid params: '" + LogLevelKey + "' must be one of " + string.Join(", ", LogLevels) +
+                        ". Nothing was done.",
+                        McpErrorCodes.MalformedMetadata(LogLevelKey, "an RFC 5424 level: " + string.Join(", ", LogLevels)));
+                env.LogLevel = level;
+            }
 
             env.ClientExtensions = ReadExtensions(env.ClientCapabilities);
             return env;
         }
+
+        /// <summary>The syslog severities the logging utility defines, lowest first.</summary>
+        private static readonly string[] LogLevels =
+            { "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency" };
 
         private static IReadOnlyCollection<string> ReadExtensions(JObject capabilities)
         {

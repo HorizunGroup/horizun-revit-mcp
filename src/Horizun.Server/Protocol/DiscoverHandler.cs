@@ -81,11 +81,15 @@ namespace Horizun.Server.Protocol
                 ["completions"] = new JObject()
             };
 
-            if (era == McpEra.Legacy)
-            {
-                capabilities["logging"] = new JObject();
-                return capabilities;
-            }
+            // LOGGING IN BOTH ERAS. 2026-07-28 removed logging/setLevel but not the feature:
+            // a request asks for logs with _meta['io.modelcontextprotocol/logLevel'], and
+            // "Servers that emit log message notifications MUST declare the logging
+            // capability" (server/utilities/logging, 2026-07-28). This server does emit
+            // them for such a request, so the modern block declares it too. The feature is
+            // DEPRECATED there (SEP-2577) - wire behaviour unchanged for at least twelve
+            // months, capabilities still declared - and McpLogging says so on stderr.
+            capabilities["logging"] = new JObject();
+            if (era == McpEra.Legacy) return capabilities;
 
             capabilities["extensions"] = ExtensionRegistry.Advertised();
             return capabilities;

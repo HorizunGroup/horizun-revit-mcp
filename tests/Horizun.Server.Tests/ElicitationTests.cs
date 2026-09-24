@@ -231,9 +231,10 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void Modern_and_task_augmented_calls_are_told_why_they_cannot_elicit()
+        public void Modern_calls_round_trip_and_task_augmented_calls_are_told_why_they_cannot_elicit()
         {
-            Assert.Equal("input_required_result_not_implemented", ClientElicitationSupport.Modern("2026-07-28").UnsupportedReason);
+            // 2026-07-28 elicits through InputRequiredResult (see MrtrElicitationTests), never a request.
+            Assert.True(ClientElicitationSupport.FromModernRequest("2026-07-28", new JObject { ["elicitation"] = new JObject() }).Mrtr);
             ClientElicitationSupport ok = ClientElicitationSupport.FromInitialize("2025-11-25", new JObject { ["elicitation"] = new JObject() });
             Assert.Equal("task_augmented_call", ok.ForTask().UnsupportedReason);
             Assert.False(ok.ForTask().CanElicitForm);

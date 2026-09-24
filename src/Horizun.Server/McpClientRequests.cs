@@ -38,8 +38,11 @@
 //
 // The 2026-07-28 revision does not send elicitation/create as a request at all: it
 // returns an InputRequiredResult and the client retries the call with the answers
-// (multi round-trip requests). This server does not implement that pattern yet, so
-// a modern request is told elicitation is unsupported, with that reason.
+// (multi round-trip requests, SEP-2322). None of the machinery above is used for
+// it. What a modern request may be asked is read from ITS OWN
+// _meta clientCapabilities (FromModernRequest), and the answers it brings back
+// travel on the ClientContext (InputResponses, RequestState) to the one tool that
+// uses them - see ProjectContext's elicit and MrtrRequestState.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Concurrent;
@@ -288,6 +291,12 @@ namespace Horizun.Server
 
         public bool CanElicitForm => UnsupportedReason == null && Form;
 
+        /// <summary>
+        /// True for a 2026-07-28 request: elicitation is an InputRequiredResult returned to
+        /// the client (multi round-trip), never an elicitation/create request sent to it.
+        /// </summary>
+        public bool Mrtr { get; private set; }
+
         /// <summary>The revisions in which elicitation/create is a server-to-client request.</summary>
         public static bool RevisionHasElicitationRequests(string version)
             => version == "2025-06-18" || version == "2025-11-25";
@@ -329,18 +338,46 @@ namespace Horizun.Server
             UnsupportedReason = "no_handshake"
         };
 
-        /// <summary>A 2026-07-28 request: elicitation there is an InputRequiredResult, not a request.</summary>
-        public static ClientElicitationSupport Modern(string declaredVersion) => new ClientElicitationSupport
+        /// <summary>
+        /// A 2026-07-28 request. There is no handshake: the capabilities are the ones THIS
+        /// request declared in _meta['io.modelcontextprotocol/clientCapabilities']. The
+        /// modes read exactly as in 2025-11-25 - `form`, `url`, and an EMPTY object meaning
+        /// form only (client/elicitation, "Capabilities"). Elicitation is then carried by
+        /// an InputRequiredResult (<see cref="Mrtr"/>), so no channel is needed.
+        /// </summary>
+        public static ClientElicitationSupport FromModernRequest(string declaredVersion, JObject clientCapabilities)
         {
-            ProtocolVersion = declaredVersion,
-            UnsupportedReason = "input_required_result_not_implemented"
-        };
+            var s = new ClientElicitationSupport { ProtocolVersion = declaredVersion, Mrtr = true };
+            JToken declared = clientCapabilities?["elicitation"];
+            s.Declared = declared?.DeepClone();
+            if (!(declared is JObject obj))
+            {
+                s.UnsupportedReason = "client_did_not_declare";
+                return s;
+            }
+            bool hasForm = obj["form"] is JObject, hasUrl = obj["url"] is JObject;
+            s.Form = (obj["form"] == null && obj["url"] == null) || hasForm;
+            s.Url = hasUrl;
+            if (!s.Form) s.UnsupportedReason = "form_mode_not_declared";
+            return s;
+        }
 
         /// <summary>A task-augmented call runs detached from the request that could carry a form.</summary>
         public ClientElicitationSupport ForTask() => new ClientElicitationSupport
         {
-            ProtocolVersion = ProtocolVersion, Declared = Declared?.DeepClone(), Form = Form, Url = Url,
+            ProtocolVersion = ProtocolVersion, Declared = Declared?.DeepClone(), Form = Form, Url = Url, Mrtr = Mrtr,
             UnsupportedReason = "task_augmented_call"
+        };
+
+        /// <summary>
+        /// The input_required answer belongs to the tools/call the client sent. A tool run
+        /// INSIDE another one (a procedure step) cannot hand it back: the client would retry
+        /// the outer call with a state bound to the inner one.
+        /// </summary>
+        public ClientElicitationSupport ForNestedCall() => new ClientElicitationSupport
+        {
+            ProtocolVersion = ProtocolVersion, Declared = Declared?.DeepClone(), Form = Form, Url = Url, Mrtr = Mrtr,
+            UnsupportedReason = "nested_call"
         };
 
         public string Explain(string language)
@@ -354,6 +391,10 @@ namespace Horizun.Server
                         ? "La versión de protocolo negociada (" + ProtocolVersion + ") no tiene elicitation; existe desde 2025-06-18."
                         : "The negotiated protocol version (" + ProtocolVersion + ") has no elicitation; it exists from 2025-06-18.";
                 case "client_did_not_declare":
+                    if (Mrtr)
+                        return es
+                            ? "La petición no declaró 'elicitation' en _meta['io.modelcontextprotocol/clientCapabilities'], y un servidor no puede pedírsela."
+                            : "The request did not declare 'elicitation' in _meta['io.modelcontextprotocol/clientCapabilities'], and a server must not ask it for one.";
                     return es
                         ? "El cliente no declaró la capacidad 'elicitation' en initialize, y un servidor no puede enviársela."
                         : "The client did not declare the 'elicitation' capability at initialize, and a server must not send it one.";
@@ -361,10 +402,10 @@ namespace Horizun.Server
                     return es
                         ? "El cliente declaró elicitation solo en modo URL; estas preguntas necesitan el modo formulario."
                         : "The client declared elicitation in URL mode only; these questions need form mode.";
-                case "input_required_result_not_implemented":
+                case "nested_call":
                     return es
-                        ? "En la revisión 2026-07-28 la elicitation viaja como InputRequiredResult y este servidor aún no lo implementa."
-                        : "In revision 2026-07-28 elicitation travels as an InputRequiredResult, which this server does not implement yet.";
+                        ? "La herramienta corre dentro de otra llamada (un paso de procedimiento) y no puede devolver input_required; llámala directamente."
+                        : "The tool is running inside another call (a procedure step) and cannot return input_required; call it directly.";
                 case "task_augmented_call":
                     return es
                         ? "Una llamada ejecutada como tarea no puede abrir formularios; llámala sin 'task'."
@@ -385,6 +426,7 @@ namespace Horizun.Server
                 ["url"] = Url,
                 ["supported"] = CanElicitForm
             };
+            if (Mrtr) o["exchange"] = "input_required_result";
             if (UnsupportedReason != null) o["reason"] = UnsupportedReason;
             return o;
         }
@@ -405,10 +447,33 @@ namespace Horizun.Server
         public McpClientRequests Channel { get; }
         public ClientElicitationSupport Elicitation { get; }
 
+        /// <summary>2026-07-28 only: the name of the tool the client called (what a requestState is bound to).</summary>
+        public string ToolName { get; }
+
+        /// <summary>2026-07-28 only: params.inputResponses of the retried call, or null.</summary>
+        public JObject InputResponses { get; }
+
+        /// <summary>2026-07-28 only: params.requestState echoed back, or null. Attacker-controlled.</summary>
+        public string RequestState { get; }
+
+        /// <summary>2026-07-28 only: who the request says it is (clientInfo.name), part of the state binding.</summary>
+        public string Principal { get; }
+
         public ClientContext(McpClientRequests channel, ClientElicitationSupport elicitation)
         {
             Channel = channel;
             Elicitation = elicitation ?? ClientElicitationSupport.NotInitialized();
+        }
+
+        /// <summary>A 2026-07-28 tools/call: no channel, the round-trip data instead.</summary>
+        public ClientContext(ClientElicitationSupport elicitation, string toolName, JObject inputResponses,
+                             string requestState, string principal)
+        {
+            Elicitation = elicitation ?? ClientElicitationSupport.NotInitialized();
+            ToolName = toolName;
+            InputResponses = inputResponses;
+            RequestState = requestState;
+            Principal = principal;
         }
 
         /// <summary>Install for the current flow; dispose restores what was there.</summary>

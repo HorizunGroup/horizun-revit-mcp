@@ -95,12 +95,13 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void Logging_is_advertised_to_legacy_and_not_to_modern()
+        public void Logging_is_advertised_in_both_eras()
         {
-            // logging/setLevel was removed in 2026-07-28. A server still claiming the
-            // capability would be claiming a method it answers with -32601.
+            // logging/setLevel was removed in 2026-07-28, but per-request logLevel was not,
+            // and "Servers that emit log message notifications MUST declare the logging
+            // capability" (server/utilities/logging). The capability is not the method.
             Assert.NotNull(DiscoverHandler.Capabilities(McpEra.Legacy)["logging"]);
-            Assert.Null(DiscoverHandler.Capabilities(McpEra.Modern)["logging"]);
+            Assert.NotNull(DiscoverHandler.Capabilities(McpEra.Modern)["logging"]);
         }
 
         // ---- modern and legacy are separated -----------------------------------------

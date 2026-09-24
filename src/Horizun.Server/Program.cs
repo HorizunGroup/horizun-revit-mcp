@@ -518,14 +518,13 @@ namespace Horizun.Server
                     {
                         JToken result;
                         // What THIS call may ask the client. It flows with the call into
-                        // the host handler's own task. A modern request cannot receive a
-                        // server-to-client request, and a task-augmented one outlives the
-                        // request that could carry a form.
-                        ClientElicitationSupport elicitation =
-                            envelope != null && envelope.Era == Protocol.McpEra.Modern
-                                ? ClientElicitationSupport.Modern(envelope.DeclaredVersion)
-                                : prms?["task"] != null ? _elicitation.ForTask() : _elicitation;
-                        using (ClientContext.Enter(new ClientContext(_clientRequests, elicitation)))
+                        // the host handler's own task. A modern request is never SENT a
+                        // server-to-client request: it is answered with an
+                        // InputRequiredResult and retried (MRTR), so its context carries
+                        // what the retry brought back instead of a channel. A
+                        // task-augmented call outlives the request that could carry a form.
+                        ClientContext context = ClientContextFor(prms, envelope);
+                        using (ClientContext.Enter(context))
                             result = CallTool(prms, cts.Token, progressToken==null ? (Action<JObject>)null : status=>Volatile.Write(ref bridgeObservation,status), envelope);
                         if (cts.IsCancellationRequested)
                         {
@@ -560,6 +559,18 @@ namespace Horizun.Server
                             ClientToolFinished(toolName, resultError ? "error" : "ok",
                                 clock.ElapsedMilliseconds, resultError ? "warning" : "info", envelope, id);
                         }
+                    }
+                    catch (InputRequiredException ir) when (envelope != null && envelope.Era == Protocol.McpEra.Modern &&
+                                                            !cts.IsCancellationRequested)
+                    {
+                        // Not an error and not the end: the tool needs the person's input.
+                        // The tools/call is answered with the InputRequiredResult itself -
+                        // resultType "input_required", no content, no cache hints - and the
+                        // client calls again with inputResponses and the requestState.
+                        metric.Outcome = "input_required";
+                        reply.TryReply(Protocol.ResultEnvelope.Stamp(
+                            ir.Result, Protocol.McpEra.Modern, "tools/call", prms, Protocol.ResultEnvelope.InputRequired));
+                        ClientToolFinished(toolName, "input_required", clock.ElapsedMilliseconds, "info", envelope, id);
                     }
                     catch (McpError me)
                     {
@@ -606,6 +617,37 @@ namespace Horizun.Server
                     }
                 }
             });
+        }
+
+        /// <summary>
+        /// What one tools/call may ask its client, and - under 2026-07-28 - what it brought
+        /// back from the previous round. Legacy: the handshake's answer, unchanged. Modern:
+        /// THIS request's declared capabilities; params.inputResponses and
+        /// params.requestState (SEP-2322 InputResponseRequestParams) are checked for shape
+        /// here, because a malformed one is a protocol error (-32602), not a tool refusal.
+        /// </summary>
+        private static ClientContext ClientContextFor(JObject prms, Protocol.RequestEnvelope envelope)
+        {
+            bool task = prms?["task"] != null;
+            if (envelope == null || envelope.Era != Protocol.McpEra.Modern)
+                return new ClientContext(_clientRequests, task ? _elicitation.ForTask() : _elicitation);
+
+            JToken responses = prms?["inputResponses"];
+            if (responses != null && responses.Type != JTokenType.Object && responses.Type != JTokenType.Null)
+                throw new McpError(-32602, "Invalid params: 'inputResponses' must be an object keyed by the inputRequests " +
+                                           "keys, not " + responses.Type + ". Nothing was run.");
+            JToken state = prms?["requestState"];
+            if (state != null && state.Type != JTokenType.String && state.Type != JTokenType.Null)
+                throw new McpError(-32602, "Invalid params: 'requestState' must be the string this server returned, " +
+                                           "echoed unchanged, not " + state.Type + ". Nothing was run.");
+
+            ClientElicitationSupport support =
+                ClientElicitationSupport.FromModernRequest(envelope.DeclaredVersion, envelope.ClientCapabilities);
+            if (task) support = support.ForTask();
+            JToken principal = envelope.ClientInfo?["name"];
+            return new ClientContext(support, (string)prms?["name"], responses as JObject,
+                                     state != null && state.Type == JTokenType.String ? (string)state : null,
+                                     principal != null && principal.Type == JTokenType.String ? (string)principal : null);
         }
 
         /// <summary>
@@ -1359,6 +1401,12 @@ namespace Horizun.Server
                         ContentSafety.Attach(data, safety);
                     }
                     return StructuredResult(data);
+                }
+                catch (InputRequiredException)
+                {
+                    // Not a result of this tool call: the dispatcher answers it as an
+                    // InputRequiredResult. Only a 2026-07-28 call can raise it.
+                    throw;
                 }
                 catch (ToolRefusal refusal)
                 {
