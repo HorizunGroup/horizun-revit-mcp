@@ -590,6 +590,35 @@ try {
         ($c.why -match 'DURING the close sequence'))
     Stop-Helpers
 
+    # 6f. An OWN LINKED model is not closed on its own (document_session refuses a
+    #     link by path - measured 2026-09-24 on w12-linkcopy2): its host is closed,
+    #     and the link unloads with the process. The session still ends 'closed'.
+    $h = Start-Helper
+    $linked = [ordered]@{ title = 'w12-linkcopy2'; path = 'C:\hz-live\w12-linkcopy2.rvt'; is_active = $false; is_linked = $true }
+    $t = New-TestProbes -Manifest (Manifest -Dev $true) -Docs @((Doc 'HZ24_BASE' 'C:\hz-live\HZ24_BASE.rvt' $true), $linked)
+    $t.state.healthPid = $h.Id
+    $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+    $L = Ledger; BindLedger $L $id.pid
+    $null = Add-HzRehearsalDocument -Ledger $L -Title 'HZ24_BASE' -Path 'C:\hz-live\HZ24_BASE.rvt'
+    $null = Add-HzRehearsalDocument -Ledger $L -Title 'w12-linkcopy2' -Path 'C:\hz-live\w12-linkcopy2.rvt'
+    $c = Close-HzRehearsalSession -Probes $t.probes -Identity $id -Ledger $L -Year '2024' -Dir $tmp -ExitTimeoutSec 20
+    Check 'an own linked model is left to unload with its host and the session closes' (
+        ($c.state -eq 'closed') -and $h.HasExited -and ($t.state.closeCalls.Count -eq 1) -and
+        ($t.state.closeCalls[0] -eq 'C:\hz-live\HZ24_BASE.rvt') -and (@($c.unloaded_with_host) -contains 'w12-linkcopy2')) ("state=$($c.state) why=$($c.why) calls=$($t.state.closeCalls -join ',')")
+    Stop-Helpers
+
+    # 6g. A linked model nobody registered is still foreign: links are not a loophole.
+    $h = Start-Helper
+    $strange = [ordered]@{ title = 'SOMEONES_LINK'; path = 'C:\proyectos\SOMEONES_LINK.rvt'; is_active = $false; is_linked = $true }
+    $t = New-TestProbes -Manifest (Manifest -Dev $true) -Docs @((Doc 'HZ24_BASE' 'C:\hz-live\HZ24_BASE.rvt' $true), $strange)
+    $t.state.healthPid = $h.Id
+    $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+    $L = Ledger; BindLedger $L $id.pid
+    $null = Add-HzRehearsalDocument -Ledger $L -Title 'HZ24_BASE' -Path 'C:\hz-live\HZ24_BASE.rvt'
+    $c = Close-HzRehearsalSession -Probes $t.probes -Identity $id -Ledger $L -Year '2024' -Dir $tmp -ExitTimeoutSec 5
+    Check 'an unregistered linked model keeps the session running' (($c.state -eq 'left_running_foreign_document') -and (-not $h.HasExited))
+    Stop-Helpers
+
     # 6e. The bridge says closed and the document is still open.
     $h = Start-Helper
     $t = New-TestProbes -Manifest (Manifest -Dev $true) -Docs @((Doc 'HZ24_BASE' 'C:\hz-live\HZ24_BASE.rvt' $true))

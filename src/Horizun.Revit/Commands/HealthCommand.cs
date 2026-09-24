@@ -78,6 +78,10 @@ namespace Horizun.Revit.Commands
                     path = string.IsNullOrEmpty(d.PathName) ? null : d.PathName,
                     is_family_document = d.IsFamilyDocument,
                     is_workshared = d.IsWorkshared,
+                    // A LINKED model is listed among the open documents but cannot be closed
+                    // on its own - it unloads with its host. Callers that close what they
+                    // opened need to tell the two apart (measured 2026-09-24).
+                    is_linked = SafeIsLinked(d),
                     // true / false / null. null means two or more open documents share this
                     // identity and which is active cannot be determined - never a bare false.
                     is_active = isActive
@@ -401,6 +405,11 @@ namespace Horizun.Revit.Commands
                     return p == null ? null : p.GetModelGUID().ToString();
                 })
             };
+        }
+
+        private static bool? SafeIsLinked(Document d)
+        {
+            try { return d.IsLinked; } catch { return null; }
         }
 
         private static string SafeTitle(Document d)

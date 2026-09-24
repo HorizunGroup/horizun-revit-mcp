@@ -217,6 +217,7 @@ function ConvertFrom-HzHealthReply {
             title = [string](Get-HzField $d 'title')
             path = [string](Get-HzField $d 'path')
             is_active = (Get-HzField $d 'is_active')
+            is_linked = ((Get-HzField $d 'is_linked') -eq $true)
         }
     }
     $count = Get-HzField $result 'open_document_count'
@@ -966,7 +967,7 @@ function Test-HzOnlyRehearsalDocuments {
         $title = [string](Get-HzField $d 'title')
         $path = [string](Get-HzField $d 'path')
         $np = Get-HzNormalizedPath $path
-        $row = [ordered]@{ title = $title; path = $path; path_normalized = $np; verdict = $null; why = $null; target = $null }
+        $row = [ordered]@{ title = $title; path = $path; path_normalized = $np; verdict = $null; why = $null; target = $null; is_linked = ((Get-HzField $d 'is_linked') -eq $true) }
         if (-not $title -and -not $np) {
             $row.verdict = 'foreign'; $row.why = 'the bridge published neither a title nor a path for this document'
             $foreign += $row; continue
@@ -1149,8 +1150,12 @@ function Close-HzRehearsalSession {
                            (($now.foreign | ForEach-Object { "'" + $_.title + "' (" + $_.why + ")" }) -join '; '))
             return $record
         }
-        if (@($now.own).Count -eq 0) { break }
-        $doc = @($now.own)[0]
+        # A LINKED model cannot be closed on its own: it unloads with its host, and
+        # document_session refuses it by path (measured 2026-09-24 on
+        # w12-linkcopy2). Own links are left to the process exit below.
+        $closable = @(@($now.own) | Where-Object { -not $_.is_linked })
+        if ($closable.Count -eq 0) { break }
+        $doc = $closable[0]
         $target = if ($doc.target) { $doc.target } else { $doc.title }
         $r = & $Probes.CloseDocument ([ordered]@{
             year = $Year; dir = $Dir; target = $target
@@ -1206,11 +1211,14 @@ function Close-HzRehearsalSession {
                        (($lastCheck.foreign | ForEach-Object { "'" + $_.title + "' (" + $_.why + ")" }) -join '; '))
         return $record
     }
-    if (@($lastCheck.own).Count -gt 0) {
+    $ownLinks = @(@($lastCheck.own) | Where-Object { $_.is_linked })
+    if ($ownLinks.Count -gt 0) { $record.unloaded_with_host = @($ownLinks | ForEach-Object { $_.title }) }
+    $ownOpen = @(@($lastCheck.own) | Where-Object { -not $_.is_linked })
+    if ($ownOpen.Count -gt 0) {
         $record.state = 'left_running_close_unverified'
-        $record.left_open = @($lastCheck.own | ForEach-Object { $_.title })
+        $record.left_open = @($ownOpen | ForEach-Object { $_.title })
         $record.why = ("documents this run opened are still open after the close sequence: {0}. Left running." -f
-                       ((@($lastCheck.own) | ForEach-Object { $_.title }) -join ', '))
+                       (($ownOpen | ForEach-Object { $_.title }) -join ', '))
         return $record
     }
     $asked = & $Probes.CloseMainWindow $id.process
