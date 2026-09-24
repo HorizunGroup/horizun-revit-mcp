@@ -5398,44 +5398,60 @@ namespace Horizun.Contracts
                 Name = "horizun_information_container",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
-                    "ISO 19650 information containers and CDE states over LOCAL or SYNCED folders - never a cloud API. " +
-                    "name: compose a container name from ordered fields and validate every field, the suitability " +
-                    "status and the revision (ISO 19650-2 defaults when no rules are passed, reported as defaults). " +
-                    "stamp: write '<file>.container.json' (name, fields, status, revision, bytes, SHA-256) for an " +
-                    "existing file whose name matches the container; read back exactly and the file re-hashed. " +
-                    "verify: does the file still match its sidecar - a changed hash means modified after sealing. " +
-                    "inspect: walk the wip/shared/published/archived folders (or a project-context.json) and report, " +
-                    "paginated, non-compliant names, files without sidecar, orphan sidecars, hash mismatches, one " +
-                    "revision with two contents, published revisions below shared ones, and MIDP deliverables that are " +
-                    "missing, in an insufficient status or overdue. transition: COPY a sealed container to the next " +
-                    "state (wip->shared->published->archived), rename, stamp, verify by SHA-256 and append to " +
-                    "<root>/.horizun/cde-transitions.jsonl; shared->published requires approved_by. It never moves, " +
-                    "deletes or overwrites. stamp and transition rehearse by default (dry_run=true); writing needs " +
-                    "full_write. Organisation-neutral: every concrete code and folder is an argument.",
+                    "ISO 19650 information containers, CDE states, transmittals and approvals over LOCAL or SYNCED " +
+                    "folders - never a cloud API. name: compose and validate a container name (ISO 19650-2 defaults " +
+                    "unless rules are passed, reported as defaults). stamp: write '<file>.container.json' (name, status, " +
+                    "revision, bytes, SHA-256), read back. verify: does the file still match its sidecar. inspect: " +
+                    "paginated audit of the wip/shared/published/archived folders and the MIDP deliverables. transition: " +
+                    "COPY a sealed container to the next state, stamp, verify, log; shared->published needs approved_by. " +
+                    "transmittal: issue <project>-TR-0001 (json + md + csv) for sealed containers in one state, each " +
+                    "SHA-256 re-measured against its sidecar; the number is safe under concurrency. record_review: " +
+                    "append accepted / accepted_with_comments / rejected to reviews.jsonl; it changes no state. " +
+                    "register: approval history per container (transitions, transmittals, reviews) with incoherences. " +
+                    "Writes rehearse by default (dry_run=true) and need full_write; nothing is moved, deleted or " +
+                    "overwritten. Every concrete code, rule and folder is an argument. inspect names non-compliant names, " +
+                    "missing and orphan sidecars, hash mismatches, one revision with two contents and published " +
+                    "revisions below shared ones; register names transmittals whose file changed after issue, reviews " +
+                    "of unknown containers or transmittals and publications logged without approved_by.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""name"", ""stamp"", ""verify"", ""inspect"", ""transition""] },
-    ""information_container"": { ""type"": ""object"", ""description"": ""name/stamp: { fields: {field: code}, field_order: [..] (optional only for the seven ISO fields project, originator, volume, level, type, role, number), separator ('-'), field_patterns: {field: regex} (full match; merged over the ISO defaults), status, revision, title, status_codes: {code: description} (ordered; replaces the ISO list), revision_patterns: {kind: regex} (replaces preliminary/contractual), file_name: 'name' | 'name_status_revision' }. Unknown keys are refused."" },
-    ""naming"": { ""type"": ""object"", ""description"": ""verify/inspect/transition: the rules only - the same keys as information_container without fields/status/revision/title. Omitted: the project context's naming, else the ISO 19650-2 defaults."" },
-    ""file_path"": { ""type"": ""string"", ""description"": ""stamp/verify: the container file. transition: the SOURCE file, inside the from_state folder and already stamped."" },
-    ""root"": { ""type"": ""string"", ""description"": ""Absolute CDE root that relative state folders resolve against; also where .horizun/cde-transitions.jsonl lives."" },
-    ""states"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""{ wip, shared, published, archived }: folder per ISO 19650 state, absolute or relative to root. State folders are never created."" },
-    ""project_context_path"": { ""type"": ""string"", ""description"": ""Absolute path to a project-context.json (schema_version 1): cde.root, cde.states, cde.approvals, naming and deliverables are read from it. Explicit arguments win."" },
-    ""deliverables"": { ""type"": ""array"", ""items"": { ""type"": ""object"", ""required"": [""container""], ""properties"": { ""container"": { ""type"": ""string"" }, ""title"": { ""type"": ""string"" }, ""task_team"": { ""type"": ""string"" }, ""due"": { ""type"": ""string"" }, ""required_status"": { ""type"": ""string"" }, ""format"": { ""type"": ""string"" }, ""milestone"": { ""type"": ""string"" } } }, ""description"": ""inspect: MIDP rows to cross; overrides the project context's deliverables."" },
-    ""as_of"": { ""type"": ""string"", ""description"": ""inspect: YYYY-MM-DD used to judge 'overdue'. Default: today (UTC)."" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""name"", ""stamp"", ""verify"", ""inspect"", ""transition"", ""transmittal"", ""record_review"", ""register""] },
+    ""information_container"": { ""type"": ""object"", ""description"": ""name/stamp: { fields: {field: code}, field_order (optional only for the 7 ISO fields), separator, field_patterns: {field: regex} (merged over ISO), status, revision, title, status_codes: {code: text} (ordered, replaces ISO), revision_patterns: {kind: regex}, file_name: name | name_status_revision }. Unknown keys are refused."" },
+    ""naming"": { ""type"": ""object"", ""description"": ""The rules only (information_container without fields/status/revision/title). Default: the project context's naming, else ISO 19650-2."" },
+    ""file_path"": { ""type"": ""string"", ""description"": ""stamp/verify: the container file. transition: the sealed source inside from_state."" },
+    ""root"": { ""type"": ""string"", ""description"": ""Absolute CDE root: relative states resolve against it; its .horizun/ holds the transition log, transmittals and reviews."" },
+    ""states"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""{ wip, shared, published, archived }: folders, absolute or relative to root. Never created."" },
+    ""project_context_path"": { ""type"": ""string"", ""description"": ""Absolute project-context.json (schema_version 1): cde, naming, deliverables, project.code. Explicit arguments win."" },
+    ""deliverables"": { ""type"": ""array"", ""items"": { ""type"": ""object"", ""required"": [""container""] }, ""description"": ""inspect: MIDP rows {container, title, task_team, due, required_status, format, milestone}."" },
+    ""as_of"": { ""type"": ""string"", ""description"": ""inspect: YYYY-MM-DD that judges overdue. Default today (UTC)."" },
     ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
     ""limit"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 },
-    ""max_files"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200000, ""default"": 20000, ""description"": ""inspect: files walked before stopping; a stopped walk reports coverage_complete=false."" },
+    ""max_files"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200000, ""default"": 20000 },
     ""from_state"": { ""type"": ""string"", ""enum"": [""wip"", ""shared"", ""published""] },
     ""to_state"": { ""type"": ""string"", ""enum"": [""shared"", ""published"", ""archived""] },
-    ""status"": { ""type"": ""string"", ""description"": ""transition: the status in the destination state (default: the source's). Must belong to to_state (S* shared, A*/B*/CR published)."" },
-    ""revision"": { ""type"": ""string"", ""description"": ""transition: the revision in the destination (default: the source's)."" },
-    ""approved_by"": { ""type"": ""string"", ""description"": ""transition: who authorised it. REQUIRED for shared->published; recorded in the sidecar and the log."" },
+    ""status"": { ""type"": ""string"", ""description"": ""transition: status in to_state (default the source's)."" },
+    ""revision"": { ""type"": ""string"", ""description"": ""transition: destination revision. record_review: the revision reviewed."" },
+    ""approved_by"": { ""type"": ""string"", ""description"": ""Required for shared->published, and for a published transmittal unless the sidecars carry it."" },
     ""note"": { ""type"": ""string"" },
-    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""stamp/transition: true rehearses every check and writes nothing."" },
-    ""source_document"": { ""type"": ""string"", ""description"": ""stamp: provenance recorded in the sidecar."" },
-    ""revit_year"": { ""type"": ""string"", ""description"": ""stamp: provenance recorded in the sidecar."" }
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""source_document"": { ""type"": ""string"" },
+    ""revit_year"": { ""type"": ""string"" },
+    ""project"": { ""type"": ""string"", ""description"": ""transmittal: number prefix (default project.code)."" },
+    ""state"": { ""type"": ""string"", ""enum"": [""wip"", ""shared"", ""published"", ""archived""] },
+    ""file_paths"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""sender"": { ""type"": ""object"", ""description"": ""{name, organization, role}"" },
+    ""recipients"": { ""type"": ""array"", ""items"": { ""type"": ""object"" } },
+    ""purpose"": { ""type"": ""string"", ""description"": ""A status code, e.g. S3."" },
+    ""transmittal_id"": { ""type"": ""string"" },
+    ""container"": { ""type"": ""string"" },
+    ""outcome"": { ""type"": ""string"", ""enum"": [""accepted"", ""accepted_with_comments"", ""rejected""] },
+    ""comments"": { ""type"": ""string"" },
+    ""reviewed_by"": { ""type"": ""string"" },
+    ""reviewer_organization"": { ""type"": ""string"" },
+    ""reviewed_on"": { ""type"": ""string"" },
+    ""since"": { ""type"": ""string"" },
+    ""until"": { ""type"": ""string"" }
   },
   ""additionalProperties"": false
 }")

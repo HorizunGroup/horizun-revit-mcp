@@ -290,6 +290,117 @@ nunca llama APIs de nube.
   escribir el número de revisión ni tiene campo de estado: ninguno de los dos recibe el
   contenedor.
 
+## Transmittals and approval register
+
+A transition moves information between CDE states; ISO 19650-2 (§5.6-5.7) also
+needs a record of **what was issued to whom, for what purpose**, and of **what the
+receiving party said about it**. Three more operations of
+`horizun_information_container` keep that record beside the CDE, in
+`<root>/.horizun/`. None of them moves, renames or deletes a container.
+
+| operation | what it does | writes |
+|---|---|---|
+| `transmittal` | issue a numbered transmittal for sealed containers in one state | `transmittals/<id>.json` + `.md` + `.csv`, only with `dry_run=false` |
+| `record_review` | record the receiving party's outcome for a transmittal or a container | one line in `reviews.jsonl`, only with `dry_run=false` |
+| `register` | the approval register: history per container, with incoherences | never |
+
+**transmittal** takes `root` + `states` (or a `project_context_path`), the `state`
+the containers sit in (`shared`, `published` or `archived`; WIP is never issued),
+`file_paths`, `sender` and `recipients` (`{name, organization, role}`, name and
+organization required), `purpose` (a status code such as `S3`; its meaning comes
+from the status codes in force - `naming`, the project context, else the ISO
+19650-2 defaults - and an unknown code is refused), optional `note` and
+`approved_by`.
+
+- Every file must be inside the state folder and **match its sidecar now**: the
+  SHA-256 is re-measured when the transmittal is prepared and again immediately
+  before the record is written. One mismatch refuses the whole transmittal and
+  nothing is written.
+- The number is `<project>-TR-0001` (`project` or the context's `project.code`), one
+  sequence per project in `transmittals/<project>.sequence.json`. The sequence file
+  is opened with an **exclusive handle** for the whole issue, so concurrent calls
+  queue and never share a number; the handle dies with the process, so a crash
+  leaves no stale lock. The next number is also above every existing
+  `<project>-TR-NNNN.*` file, so a number never reuses a file even if the sequence
+  was lost. A corrupt sequence file refuses rather than guessing a number.
+- `state=published` needs `approved_by`, unless every container's sidecar already
+  carries the approval its transition recorded.
+- The record `<id>.json` (`schema: horizun.transmittal/v1`) holds id, sequence,
+  `issued_utc`, sender, recipients, purpose (code, description and where the
+  description came from), state, and per container: name, title, status, revision,
+  state, file, path relative to the root, bytes, SHA-256, `approved_by` and
+  `transition_id`. `<id>.md` is a readable render; `<id>.csv` (UTF-8 with BOM, one
+  row per container) opens in a spreadsheet, and a cell that would read as a formula
+  is prefixed with `'`. All three are written without overwriting and read back;
+  afterwards every container is re-hashed against the record (`postcheck`).
+- A status that differs from the purpose is a warning (`status_differs_from_purpose`).
+- The same containers (same bytes) issued again to the same recipients for the same
+  purpose answer `already_issued` with the existing number. To issue them again on
+  purpose, say why in `note`.
+- The rehearsal (`dry_run=true`, the default) shows `next_id_preview`; the number is
+  not reserved until the transmittal is issued.
+
+**record_review** takes `outcome` (`accepted`, `accepted_with_comments`,
+`rejected`), `reviewed_by` (required), `reviewer_organization`, `comments`
+(required unless `accepted`), `reviewed_on` (YYYY-MM-DD, default today, never in the
+future) and what was reviewed: `transmittal_id` (must exist; add `container` to
+review one of its containers) or a `container` sealed in a declared state folder
+(`revision` when there are several). One line (`schema: horizun.review/v1`) is
+appended to `reviews.jsonl` and found again on re-read; the same review sent twice
+answers `already_recorded`. **A rejection changes no state and moves no file**: it is
+a record; the originator revises and issues again.
+
+**register** (read-only) joins `cde-transitions.jsonl`, `transmittals/*.json` and
+`reviews.jsonl` per container: `states_reached`, `last_transition_to`, `present_in`
+(the state folders holding a sealed copy, when `states` are declared), `approvals`
+(who approved each transition), `transmittals`, `latest_review` and the `history`
+ordered in time. Filters: `container`, `state` (containers that reached it), `since`
+/ `until` (event dates); `offset`/`limit` page over containers. It reports these
+incoherences, most consequential first:
+
+| kind | meaning |
+|---|---|
+| `transmittal_hash_changed` | an issued file's bytes changed after the transmittal (the recipients hold different bytes) |
+| `transmittal_file_missing` | an issued file is no longer where it was issued from |
+| `transmittal_path_outside_root` | a transmittal cites a path that does not resolve under the root |
+| `publication_without_approval` | a `-> published` transition logged without `approved_by` (old or edited logs) |
+| `review_unknown_transmittal` | a review cites a transmittal that does not exist |
+| `review_unknown_container` | a review cites a container with no transition, transmittal or sealed copy |
+| `review_container_not_in_transmittal` | a review cites a container its transmittal did not carry |
+| `transmittal_unreadable`, `log_line_unreadable` | a record that could not be read, with its line number - never skipped silently |
+
+`sources` says which records exist and how many were read: a register with no logs
+yet is reported as such, never as an empty history.
+
+**Permission.** As for `stamp` and `transition`: `transmittal` and `record_review`
+with `dry_run=false` need `full_write` (or `unsafe_code`), checked per call;
+rehearsals and `register` work at every profile.
+
+### Resumen en español
+
+Tres operaciones nuevas de `horizun_information_container` llevan el registro de
+emisiones y aprobaciones de ISO 19650-2 (§5.6-5.7) en `<root>/.horizun/`, sin mover
+ni borrar ningún contenedor:
+
+- `transmittal` emite un transmittal numerado (`<proyecto>-TR-0001`, secuencia por
+  proyecto bajo un bloqueo exclusivo, a prueba de concurrencia y sin reutilizar nunca
+  un número) de contenedores sellados de un estado: de/para (nombre, organización,
+  rol), propósito (código de estado y su significado), contenedores con nombre,
+  título, estado, revisión, archivo, bytes y SHA-256 **re-medido** (si no coincide con
+  el sidecar, se niega entero). Escribe `<id>.json`, `<id>.md` y `<id>.csv` sin
+  sobrescribir y los relee. Lo publicado exige `approved_by` salvo que ya conste en
+  los sidecars. Ensaya por defecto.
+- `record_review` registra el resultado de revisión de la parte receptora
+  (`accepted`, `accepted_with_comments`, `rejected`, con comentarios, quién y cuándo)
+  en `reviews.jsonl`, solo añadiendo. Un rechazo no cambia estados ni mueve archivos.
+- `register` (solo lectura, paginado) une transiciones, transmittals y revisiones por
+  contenedor (cuándo pasó a cada estado, quién aprobó, en qué transmittal viajó, qué
+  dijo la revisión), con filtros por contenedor, estado y fecha, y detecta
+  incoherencias: archivo cambiado después de emitido, revisión de un contenedor o
+  transmittal inexistente, publicación sin `approved_by` en logs viejos.
+
+Escribir exige `full_write`, igual que `stamp` y `transition`.
+
 ## Verified IFC delivery
 
 `horizun_deliver_ifc` turns "export an IFC and hope" into one call whose verdict
