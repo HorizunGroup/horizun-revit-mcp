@@ -143,6 +143,8 @@ namespace Horizun.Revit.Core
             Row("horizun_pack_sheets", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "PackSheetsCommand.cs")),
             Row("horizun_apply_reinforcement", VerificationMechanism.PerRowReread, E("created_verified", "cover_verified", "application"), F(C + "ApplyReinforcementCommand.cs")),
             Row("horizun_connect_mep", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "ConnectMepCommand.cs")),
+            Row("horizun_mep_routing", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "MepRoutingCommand.cs"),
+                "MepRoutingCommand.cs resize: fittings Revit replaced, retyped or inserted are reported, not verified against an intent - the request names runs, not fittings."),
             Row("horizun_structural_connections", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "StructuralConnectionsCommand.cs"),
                 "StructuralConnectionsCommand.cs ~l.580: the per-row verified field uses a count (connected >= members), not containment; the verdict itself uses containment."),
             Row("horizun_copy_between_documents", VerificationMechanism.PerRowReread, E("host_verified", "application"), F(C + "CopyBetweenDocumentsCommand.cs"),

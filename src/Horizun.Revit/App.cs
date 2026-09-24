@@ -184,6 +184,7 @@ namespace Horizun.Revit
             d.Register(new ManageLinksCommand());
             d.Register(new PlanMepCommand());
             d.Register(new ConnectMepCommand());
+            d.Register(new MepRoutingCommand());
             d.Register(new StructuralConnectionsCommand());
             d.Register(new ManageMaterialsCommand());
             d.Register(new ValidateIdsCommand());

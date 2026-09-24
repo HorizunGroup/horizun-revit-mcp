@@ -294,6 +294,7 @@ namespace Horizun.Contracts
             Row("horizun_manage_system_types", "mep"),
             Row("horizun_plan_mep", "mep"),
             Row("horizun_connect_mep", "mep"),
+            Row("horizun_mep_routing", "mep"),
 
             // ---- cad (dwg -> bim) ---------------------------------------------------------
             Row("horizun_plan_from_cad", "read", "cad"),
@@ -4798,6 +4799,43 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_mep_routing",
+                Command = "horizun_mep_routing",
+                Description =
+                    "MEP routing preferences and size catalogs. read: a pipe/duct type's rules per group (part, size ranges), " +
+                    "segments (material, schedule, nominal/inner/outer sizes), duct, conduit and cable-tray catalogs. " +
+                    "set_rules, add_sizes, remove_sizes and resize: dry_run, then confirmation_token; apply re-reads rules, " +
+                    "catalog or sizes and rolls back on mismatch. resize takes catalog sizes only and reports fittings Revit " +
+                    "replaced or added. size_by_flow proposes sizes by velocity limit; writes nothing.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""set_rules"", ""add_sizes"", ""remove_sizes"", ""resize"", ""size_by_flow""] },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""in"", ""feet""], ""default"": ""mm"" },
+    ""type_id"": { ""type"": ""integer"" }, ""segment_id"": { ""type"": ""integer"" },
+    ""rules"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""group"", ""action""], ""properties"": {
+      ""group"": { ""type"": ""string"", ""description"": ""RoutingPreferenceRuleGroupType: Segments, Elbows, Junctions, Crosses, Transitions, Unions, Caps..."" },
+      ""action"": { ""type"": ""string"", ""enum"": [""add"", ""remove"", ""move""] },
+      ""index"": { ""type"": ""integer"" }, ""to_index"": { ""type"": ""integer"" }, ""part_id"": { ""type"": ""integer"" },
+      ""min_size"": { ""type"": ""number"" }, ""max_size"": { ""type"": ""number"" }, ""description"": { ""type"": ""string"" }
+    }, ""additionalProperties"": false } },
+    ""junction"": { ""type"": ""string"", ""enum"": [""Tee"", ""Tap""] },
+    ""catalog"": { ""type"": ""string"", ""enum"": [""segment"", ""conduit"", ""duct_round"", ""duct_rectangular"", ""duct_oval"", ""cable_tray""] },
+    ""conduit_standard"": { ""type"": ""string"" },
+    ""sizes"": { ""type"": ""array"", ""maxItems"": 100, ""items"": { ""type"": ""object"", ""required"": [""nominal""], ""properties"": {
+      ""nominal"": { ""type"": ""number"" }, ""inner"": { ""type"": ""number"" }, ""outer"": { ""type"": ""number"" }, ""bend_radius"": { ""type"": ""number"" }
+    }, ""additionalProperties"": false } },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""system_id"": { ""type"": ""integer"" },
+    ""diameter"": { ""type"": ""number"" }, ""width"": { ""type"": ""number"" }, ""height"": { ""type"": ""number"" },
+    ""max_velocity"": { ""type"": ""number"", ""description"": ""m/s"" }, ""flow"": { ""type"": ""number"", ""description"": ""L/s; default: the element's flow"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_connect_mep",
                 Command = "horizun_connect_mep",
                 Description =
@@ -5982,6 +6020,7 @@ namespace Horizun.Contracts
                 "horizun_pack_sheets",
                 "horizun_manage_revisions",
                 "horizun_connect_mep",
+                "horizun_mep_routing",
                 "horizun_structural_connections",
                 "horizun_manage_materials",
                 "horizun_copy_between_documents",

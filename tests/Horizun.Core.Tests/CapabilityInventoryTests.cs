@@ -276,6 +276,13 @@ namespace Horizun.Core.Tests
                       "stays an ArgumentException because Python faces the same absent setter." },
 
             new Entry {
+                File = "MepRoutingCommand.cs", Fragment = "flex runs are unsupported by resize",
+                Classification = Kind.StructuralGranted,
+                Why = "resize types pipes, ducts, conduits and cable trays; a flex pipe or flex duct is sized " +
+                      "through parameters this command does not type. Judged while planning, per element, " +
+                      "before any transaction, and handed to FallbackDecision over the whole batch." },
+
+            new Entry {
                 File = "EditDimensionsCommand.cs", Fragment = "not supported by the Revit API itself",
                 Classification = Kind.Argument,
                 Why = "replace_references and its aliases. Dimension.References has no setter in ANY Revit " +
