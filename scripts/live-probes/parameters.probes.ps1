@@ -90,7 +90,17 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # 6. keynote table
         $kn = & $Ctx.Call $Q @{ operation = 'keynote_table'; target_document = $doc; max_rows = 50 }
-        Case 'classification: keynote_table reports its source and entries' $Q (-not $kn.isError -and $null -ne $kn.data.source -and $null -ne $kn.data.table_entries -and $kn.data.read_only -eq $true) ("entries=" + $kn.data.table_entries + " path=" + $kn.data.source.path)
+        # Measured 2026-09-24: in 2024/2025 this case failed with an empty detail - the
+        # reply's own text was dropped. The detail now carries it, and a model whose
+        # keynote table is not present is not_covered with the reason, never a pass.
+        $knText = [string]$kn.text
+        if ($knText.Length -gt 400) { $knText = $knText.Substring(0, 400) }
+        if (-not $kn.isError -and $kn.data -and $kn.data.source -and $kn.data.source.present -eq $false) {
+            Skip 'classification: keynote_table reports its source and entries' $Q 'this fixture has no keynote table element (source.present=false)'
+        }
+        else {
+            Case 'classification: keynote_table reports its source and entries' $Q (-not $kn.isError -and $null -ne $kn.data.source -and $null -ne $kn.data.table_entries -and $kn.data.read_only -eq $true) ("error=" + $kn.isError + " entries=" + $kn.data.table_entries + " path=" + $kn.data.source.path + " text=" + $knText)
+        }
 
         # 7. lookup tables
         $lt = & $Ctx.Call $Q @{ operation = 'family_lookup_tables'; target_document = $doc; max_rows = 20 }
