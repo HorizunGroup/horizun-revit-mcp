@@ -97,11 +97,21 @@ $script:HzProbeModules += [pscustomobject]@{
 
             $rd2 = & $Ctx.Call 'horizun_manage_curtain' @{ target_document = $doc; operation = 'read'; element_id = $cwId }
             $panel = @($rd2.data.panels) | Select-Object -First 1
-            $panelType = if ($panel) { Types 'OST_CurtainWallPanels' | Where-Object { [long]$_.element_id -ne [long]$panel.type_id } | Select-Object -First 1 }
-            if (-not $panel -or -not $panelType) { Case $catalog[3] 'horizun_manage_curtain' 'not_covered' 'no panel, or no second panel type, to change to' }
+            # What a panel can become is Revit's Type Selector rule: another curtain panel type,
+            # a curtain-wall door/window, or a BASIC wall type - never a curtain or stacked
+            # wall. Prefer a different panel type (rows of the Curtain Panels category that are
+            # not wall families); when the fixture offers none, a basic wall type is just as
+            # valid a replacement, so the case is still covered.
+            $panelType = $null; $panelKind = $null
+            if ($panel) {
+                $panelType = Types 'OST_CurtainWallPanels' | Where-Object { [long]$_.element_id -ne [long]$panel.type_id -and -not ($_.family -match 'Curtain Wall|Stacked|cortina|apilad') } | Select-Object -First 1
+                if ($panelType) { $panelKind = 'panel type' }
+                elseif ($basicType -and [long]$basicType.element_id -ne [long]$panel.type_id) { $panelType = $basicType; $panelKind = 'basic wall type' }
+            }
+            if (-not $panel -or -not $panelType) { Case $catalog[3] 'horizun_manage_curtain' 'not_covered' 'no panel, or no second panel type or basic wall type, to change to' }
             else {
                 $pt = & $Ctx.Apply 'horizun_manage_curtain' @{ target_document = $doc; operation = 'set_panel_type'; element_id = $cwId; panel_ids = @([long]$panel.id); type_id = $panelType.element_id } 'arch-cw-panel'
-                if (Verified $pt) { Case $catalog[3] 'horizun_manage_curtain' 'pass' ("panel " + $panel.id + " -> type " + $panelType.element_id) } else { Case $catalog[3] 'horizun_manage_curtain' 'fail' (Why $pt) }
+                if (Verified $pt) { Case $catalog[3] 'horizun_manage_curtain' 'pass' ("panel " + $panel.id + " -> $panelKind " + $panelType.element_id) } else { Case $catalog[3] 'horizun_manage_curtain' 'fail' ("$panelKind " + $panelType.element_id + ': ' + (Why $pt)) }
             }
 
             if ($lineId) {

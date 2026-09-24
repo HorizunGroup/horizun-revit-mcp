@@ -137,6 +137,71 @@ namespace Horizun.Revit.Core
             return null;
         }
 
+        /// <summary>
+        /// Fields that steer the APPROVAL, not the edit. The rehearsal carries dry_run=true
+        /// and no token; the apply carries dry_run=false and the token the rehearsal issued.
+        /// MEASURED on Revit 2026 (2026-09-24): the resolved plan hashed the raw request, so
+        /// these two fields alone made every apply of add_grid_line, add_point and
+        /// reset_shape refuse as "THE MODEL MOVED AFTER THE DRY RUN" with nobody touching
+        /// the model. They are the only fields that MUST differ between the two calls.
+        /// </summary>
+        private static readonly HashSet<string> ApprovalOnlyFields = new HashSet<string>(StringComparer.Ordinal)
+            { "dry_run", "confirmation_token", "idempotency_key", "transaction_name" };
+
+        /// <summary>
+        /// The request as the plan's proposed values: every field that shapes the edit,
+        /// canonically (keys sorted, nested values compact), without the approval-only
+        /// fields. A rehearsal and its apply render identically; a different offset,
+        /// point, type or target still does not.
+        /// </summary>
+        public static string ProposedRequest(JObject request)
+        {
+            var canonical = new JObject();
+            if (request == null) return canonical.ToString(Newtonsoft.Json.Formatting.None);
+            var keys = request.Properties().Select(p => p.Name).Where(n => !ApprovalOnlyFields.Contains(n)).ToList();
+            keys.Sort(StringComparer.Ordinal);
+            foreach (string k in keys) canonical[k] = request[k]?.DeepClone();
+            return canonical.ToString(Newtonsoft.Json.Formatting.None);
+        }
+
+        /// <summary>
+        /// Whether a type can take the place of a curtain panel, decided from what the type
+        /// IS rather than from Element.IsValidType on the panel. MEASURED on Revit 2026
+        /// (2026-09-24): IsValidType refused a type the Type Selector accepts for the same
+        /// panel, so the refusal said "a wall type is valid" while rejecting one. Revit's rule:
+        /// a curtain panel is replaced by a curtain panel type (a system PanelType or a
+        /// family of the Curtain Panels category), by a door or window whose family is a
+        /// curtain-panel family, or by a BASIC wall type. A curtain or stacked wall type can
+        /// never be a panel. Null when acceptable; otherwise the reason, naming what it is.
+        /// </summary>
+        /// <param name="typeClass">The API class: WallType, PanelType, FamilySymbol or anything else.</param>
+        /// <param name="wallKind">WallType.Kind as text (Basic, Curtain, Stacked); ignored otherwise.</param>
+        /// <param name="categoryKey">The type's BuiltInCategory name (OST_CurtainWallPanels, OST_Doors...).</param>
+        /// <param name="curtainPanelFamily">Family.IsCurtainPanelFamily for a family symbol.</param>
+        public static string CurtainPanelTypeRefusal(string typeClass, string wallKind, string categoryKey, bool curtainPanelFamily)
+        {
+            switch (typeClass ?? "")
+            {
+                case "WallType":
+                    if (string.Equals(wallKind, "Basic", StringComparison.OrdinalIgnoreCase)) return null;
+                    return "it is a " + (string.IsNullOrEmpty(wallKind) ? "non-basic" : wallKind.ToLowerInvariant()) +
+                           " wall type; only a BASIC wall type can replace a curtain panel (a curtain or stacked wall cannot be a panel).";
+                case "PanelType":
+                    return null;
+                case "FamilySymbol":
+                    if (categoryKey == "OST_CurtainWallPanels") return null;
+                    if (categoryKey == "OST_Doors" || categoryKey == "OST_Windows")
+                        return curtainPanelFamily ? null :
+                            "it is a " + (categoryKey == "OST_Doors" ? "door" : "window") + " type from a wall-hosted family; only a " +
+                            "curtain-wall door or window (a curtain-panel family) can replace a curtain panel.";
+                    return "it is a family type of category " + (categoryKey ?? "(none)") + "; a curtain panel takes a curtain panel " +
+                           "type, a curtain-wall door or window type, or a basic wall type.";
+                default:
+                    return "it is a " + (string.IsNullOrEmpty(typeClass) ? "(unknown)" : typeClass) + "; a curtain panel takes a " +
+                           "curtain panel type, a curtain-wall door or window type, or a basic wall type.";
+            }
+        }
+
         /// <summary>Linear arrays take 2..200 members, radial 3..200 - Revit's own ranges, refused before Revit throws.</summary>
         public static string ValidateArrayCount(bool radial, int count)
         {

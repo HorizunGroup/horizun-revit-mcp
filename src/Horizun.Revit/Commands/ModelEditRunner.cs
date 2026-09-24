@@ -207,7 +207,11 @@ namespace Horizun.Revit.Commands
                 UniqueId = uid, ElementId = Rid.Value(e.Id), Category = e.Category?.Name, Action = action,
                 GeometryFingerprint = geometry,
                 BeforeValues = new Dictionary<string, string> { { "type_id", Rid.Value(e.GetTypeId()).ToString(System.Globalization.CultureInfo.InvariantCulture) } },
-                ProposedValues = new Dictionary<string, string> { { "request", request.ToString(Formatting.None) } }
+                // NOT request.ToString(): the apply differs from its rehearsal by dry_run and
+                // confirmation_token by construction, so hashing them made every apply of a
+                // plan with a listed element refuse as stale (measured on Revit 2026,
+                // 2026-09-24; the railing path route passed only because it lists none).
+                ProposedValues = new Dictionary<string, string> { { "request", ArchitecturalEditRules.ProposedRequest(request) } }
             };
         }
 

@@ -285,15 +285,26 @@ namespace Horizun.Revit.Commands
                 targets.Add(hits[0]);
             }
             if (targets.Count == 0) throw new ArgumentException("panel_ids names no panel.");
-            Element type = ModelEditRunner.Need<ElementType>(doc, r, "type_id");
+            ElementType type = ModelEditRunner.Need<ElementType>(doc, r, "type_id");
             long typeId = Rid.Value(type.Id);
+            // Decided from what the type IS (ArchitecturalEditRules.CurtainPanelTypeRefusal),
+            // not from Element.IsValidType: measured on Revit 2026, IsValidType refused a
+            // type the Type Selector accepts for the same panel. Revit's own opinion is kept
+            // as evidence, and ChangeTypeId plus the re-read still have the last word.
+            string refusal = ArchitecturalEditRules.CurtainPanelTypeRefusal(TypeClass(type), WallKindOf(type), CategoryKey(type), IsCurtainPanelFamily(type));
+            if (refusal != null)
+                throw new ArgumentException("type " + typeId + " (" + DescribeType(type) + ") cannot replace a curtain panel: " + refusal);
+            var revitSays = new JObject();
             foreach (long id in targets)
             {
                 Element p = doc.GetElement(Rid.Make(id));
-                if (!p.IsValidType(type.Id))
-                    throw new ArgumentException("type " + typeId + " (" + type.Name + ") is not valid for panel " + id + ": a curtain panel takes a panel type, a curtain-wall door or window type, or a wall type.");
+                bool? valid = null;
+                try { valid = p.IsValidType(type.Id); } catch { }
+                revitSays[id.ToString(System.Globalization.CultureInfo.InvariantCulture)] = valid.HasValue ? (JToken)valid.Value : JValue.CreateNull();
                 edit.Planned.Add(ModelEditRunner.Planned(p, PlannedAction.Modify, r));
             }
+            edit.Summary["type_kind"] = DescribeType(type);
+            edit.Summary["revit_is_valid_type"] = revitSays;
             var now = new Dictionary<long, long>();
             edit.Summary["panel_ids"] = new JArray(targets); edit.Summary["type_id"] = typeId;
             edit.Apply = d =>
@@ -414,6 +425,40 @@ namespace Horizun.Revit.Commands
                 return c.ComputeNormalizedParameter(ir.Parameter) * c.Length;
             }
             catch { return null; }
+        }
+
+        // ---- what a candidate panel type is ------------------------------------------------
+
+        private static string TypeClass(ElementType t)
+        {
+            if (t is WallType) return "WallType";
+            if (t is PanelType) return "PanelType";
+            if (t is FamilySymbol) return "FamilySymbol";
+            return t?.GetType().Name;
+        }
+
+        private static string WallKindOf(ElementType t) { try { return (t as WallType)?.Kind.ToString(); } catch { return null; } }
+
+        private static string CategoryKey(ElementType t)
+        {
+            try
+            {
+                if (t?.Category == null) return null;
+                long raw = Rid.Value(t.Category.Id);
+                return Enum.IsDefined(typeof(BuiltInCategory), (int)raw) ? ((BuiltInCategory)(int)raw).ToString() : null;
+            }
+            catch { return null; }
+        }
+
+        private static bool IsCurtainPanelFamily(ElementType t) { try { return (t as FamilySymbol)?.Family?.IsCurtainPanelFamily == true; } catch { return false; } }
+
+        private static string DescribeType(ElementType t)
+        {
+            string family = null;
+            try { family = t.FamilyName; } catch { }
+            string kind = WallKindOf(t);
+            return (string.IsNullOrEmpty(family) ? "" : family + ": ") + t.Name + " - " + TypeClass(t) +
+                   (kind == null ? "" : " " + kind) + (CategoryKey(t) == null ? "" : ", " + CategoryKey(t));
         }
 
         private static string TypeName(Document doc, Element e) { try { return doc.GetElement(e.GetTypeId())?.Name; } catch { return null; } }
