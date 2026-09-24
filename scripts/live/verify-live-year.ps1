@@ -25,7 +25,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $yearNumber = 0
-if (-not [int]::TryParse([string]$Year, [ref]$yearNumber)) { $yearNumber = 0 }
+if (-not [int]::TryParse([string]$Year, [ref]$yearNumber)) {
+    # An unsubstituted placeholder such as '{year}' falls back to the driver's variable.
+    if (-not [int]::TryParse([string]$env:HORIZUN_REVIT_YEAR, [ref]$yearNumber)) { $yearNumber = 0 }
+}
 if ($yearNumber -lt 2022) {
     Write-Error "No Revit year: pass -Year or run through run-year-matrix.ps1 (HORIZUN_REVIT_YEAR)."
     exit 2
