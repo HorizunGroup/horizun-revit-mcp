@@ -51,6 +51,10 @@
     # the write tier: COMMITS into the model the fixtures file declares disposable
     pwsh scripts/verify-live.ps1 -Year 2026 -WriteProbes
 
+    # plus the opt-in ISO 19650 case that writes the delivery code into that
+    # disposable model to prove deliverable_ready=true (live-iso19650.probes.ps1)
+    pwsh scripts/verify-live.ps1 -Year 2026 -WriteProbes -IsoReadyProbe
+
   Requires: that Revit open with the add-in loaded.
 
   WHERE THE FIXTURE NAMES COME FROM. The parameters below name real things on
@@ -181,7 +185,17 @@ param(
     # Two separate things on purpose: the switch says what kind of run this is, the
     # fixture says WHICH model may be written into. Neither implies the other.
     [string]$WriteDocument,
-    [string]$WriteDocumentDisposable
+    [string]$WriteDocumentDisposable,
+
+    # ISO 19650 (scripts/live-iso19650.probes.ps1). The section itself writes no
+    # parameter; this switch adds the one case that does - the mapped delivery
+    # code on every element of the discovered class in the DISPOSABLE model - to
+    # prove deliverable_ready=true on the exported file. Off by default.
+    [switch]$IsoReadyProbe,
+    # The Revit parameter the generated Pset mapping reads, by its display name
+    # (the exporter looks it up by name, so it follows the Revit language; the
+    # release runner forces ENU).
+    [string]$IsoMappedParameter = 'Comments'
 )
 
 $probeRun = [guid]::NewGuid().ToString('N')
@@ -11127,6 +11141,68 @@ if ($writeGate) {
     Add-Write 'async results survive repeated submission and completed jobs refuse replay' 'horizun_submit_job' $asyncProof.outcome $asyncProof.detail
 }
 
+# ---------------------------------------------------------------------------
+# ISO 19650 INFORMATION MANAGEMENT. deliver_ifc and export-with-container
+# commit files OUTSIDE the model (write tier, disposable document); the
+# project context and the CDE are host-resident and run in every run. All of
+# it lives in live-iso19650.probes.ps1 and is exercised WITHOUT Revit by
+# live-iso19650.tests.ps1 before a matrix run pays for Revit.
+#
+# Every temporary file goes into ONE folder per run under $scratchDir, removed
+# only when every ISO case passed. The consolidator's record
+# (horizun.live-evidence/2) is written beside -Json, or into $scratchDir.
+# ---------------------------------------------------------------------------
+. (Join-Path $PSScriptRoot 'live-iso19650.probes.ps1')
+# <iso19650-section> (live-iso19650.tests.ps1 executes the text between these markers)
+$isoLive = $null
+try {
+    $isoHealth = Invoke-Write 'horizun_health' @{}
+    $isoProfile = $null
+    if ($isoHealth.data -and $isoHealth.data.operational_controls) {
+        $isoProfile = [string]$isoHealth.data.operational_controls.permission_profile
+    }
+    $isoSection = Invoke-HorizunIsoSection -Year $Year -Document $WriteDocument -ScratchRoot $scratchDir `
+        -RepoRoot $repositoryRoot -RunId $probeRun -WriteGate $writeGate -PreferredCategory $QuantityCategory `
+        -ReadyWrite:$IsoReadyProbe -MappedParameter $IsoMappedParameter -PermissionProfile $isoProfile `
+        -Call { param($tool, $arguments) Invoke-Write $tool $arguments } `
+        -Apply { param($tool, $arguments, $key) Invoke-WriteApply $tool $arguments $key }
+
+    # The identity the consolidator needs: the running add-in's commit and hash,
+    # the contract hash from the server that answered, and this harness.
+    $isoBuildIdentity = $null
+    Send-Rpc @{ jsonrpc = '2.0'; id = 990601; method = 'resources/read'; params = @{ uri = 'horizun://build/identity' } }
+    $isoIdentityReply = Read-Rpc 60000
+    if ($isoIdentityReply -and $isoIdentityReply.id -eq 990601 -and $isoIdentityReply.result) {
+        try { $isoBuildIdentity = @($isoIdentityReply.result.contents)[0].text | ConvertFrom-Json } catch { $isoBuildIdentity = $null }
+    }
+    $isoRepoClean = $null
+    try {
+        $isoDirty = @(& git -C $repositoryRoot status --porcelain --untracked-files=no 2>$null)
+        if ($LASTEXITCODE -eq 0) { $isoRepoClean = ($isoDirty.Count -eq 0) }
+    } catch { $isoRepoClean = $null }
+    $isoIdentity = New-HorizunIsoIdentity -Health $isoHealth.data -BuildIdentity $isoBuildIdentity `
+        -ServerSha256 $serverSha -HarnessFile $harnessFile -HarnessSha256 $harnessSha256 -HarnessGitBlob $harnessGitBlob `
+        -HarnessTrackedClean $harnessTrackedClean -RepoHead $harnessCommit -RepoClean $isoRepoClean `
+        -Year $Year -RunId $probeRun -Document $(if ($writeGate) { $Document } else { $WriteDocument })
+    $isoEvidenceDir = $scratchDir
+    if ($Json) { $isoEvidenceDir = Split-Path -Parent $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Json) }
+    $isoLive = Complete-HorizunIsoLiveRun -Section $isoSection -Identity $isoIdentity `
+        -EvidencePath (Join-Path $isoEvidenceDir ('iso19650-{0}-{1}.json' -f $Year, $probeRun)) `
+        -ScratchRoot $scratchDir -RunId $probeRun
+    foreach ($isoCase in $isoLive.cases) { Add-Write $isoCase.name $isoCase.tool $isoCase.outcome $isoCase.detail }
+}
+catch {
+    # A harness defect must not take the run down, and must not read like a pass:
+    # every ISO case is recorded UNVERIFIED with the reason.
+    $isoWhy = 'HARNESS: the ISO 19650 section threw before it could report: ' + $_.Exception.Message
+    foreach ($isoEntry in (Get-HorizunIsoCaseCatalog -IncludeReadyWrite:$IsoReadyProbe)) {
+        if (-not ($writeResults | Where-Object { $_.Name -eq $isoEntry.Name })) {
+            Add-Write $isoEntry.Name $isoEntry.Tool 'unverified' $isoWhy
+        }
+    }
+}
+# </iso19650-section>
+
 $proc.StandardInput.Close()
 if (-not $proc.WaitForExit(130000)) { $proc.Kill() }
 
@@ -11604,6 +11680,10 @@ $report = [pscustomobject]@{
         }
         cases = @($script:mpEvidence)
     }
+    # ISO 19650: the same cases folded into the probes above, with their ids,
+    # tiers and evidence, plus where the consolidator's own record was written.
+    # Null only when the section could not run at all; its probes then say why.
+    iso19650          = $isoLive
     summary           = @{
         passed      = $passed
         failed      = $failed
