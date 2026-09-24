@@ -141,7 +141,12 @@ namespace Horizun.Core.Tests
               // API-absent move_schedule refusal deliberately stays an
               // ArgumentException so a Python script facing the same absent setter is
               // never suggested.
-              "FixPlanimetryCommand.cs" };
+              "FixPlanimetryCommand.cs",
+              // Checked 2026-09-24: resize judges EVERY element into an ActionOutcome
+              // while planning (flex runs are the only UnsupportedKind; a size outside
+              // the element's catalog or a shape mismatch is an ordinary error) and
+              // refuses through Decide(writeStarted:false) before any transaction.
+              "MepRoutingCommand.cs" };
 
         [Fact]
         public void No_other_command_emits_the_fallback()
