@@ -796,6 +796,152 @@ function Register-HzOpenedDocument {
                       else { 'the register refused the entry; see registration_failures' }) }
 }
 
+function Register-HzHarnessDocuments {
+    <#
+    .SYNOPSIS
+      Adopt the models a HARNESS created for itself, from the manifest it wrote
+      (schema horizun.harness-documents/v1, see verify-live.ps1), into the SAME
+      register every other owned document lives in - kind 'harness_scratch'.
+
+      Measured 2026-09-24: verify-live creates and opens its own disposable models
+      (HZ_LINKSRC_<tag>.rvt, w12-linkcopy-<tag>.rvt, ...) under
+      %TEMP%\horizun-live-<run>, nothing registered them, and all five years ended
+      in left_running_foreign_document with the manifest not restored.
+
+      A manifest is a CLAIM, and a claim is not ownership. An entry is registered
+      only when EVERY one of these holds, and anything else is reported and left
+      out - which leaves any such document foreign, as before:
+        - the schema is exactly horizun.harness-documents/v1 and the register is
+          bound to this session's pid;
+        - scratch_root is a DIRECT child of the temp directory, named
+          horizun-live-<probe_run>, an existing directory and not a reparse point
+          (a junction there could point at anybody's folder);
+        - that directory was CREATED AT OR AFTER the moment the Revit this run
+          started came up - so an old folder, or one somebody else made before
+          this session existed, is never adopted;
+        - the path is absolute, has no '..' segment, lies INSIDE scratch_root
+          (normalised, case-insensitive), is a .rvt/.rfa file that exists and is
+          not a reparse point, and is declared created_by_harness.
+      The close path is unchanged: it still closes by registered path, through
+      the bridge's rehearsal-then-token close, discarding changes (these are the
+      harness's own disposable copies), and a document of that folder that the
+      manifest did NOT list is still foreign.
+      Returns [ordered]@{ state; why; manifest; scratch_root; registered; rejected }
+      with state registered | no_manifest | manifest_rejected.
+    #>
+    param([Parameter(Mandatory)]$Ledger, [Parameter(Mandatory)]$Identity, [Parameter(Mandatory)][string]$ManifestPath,
+          [string]$TempRoot = ([IO.Path]::GetTempPath()))
+    $result = [ordered]@{ state = $null; why = $null; manifest = $ManifestPath; scratch_root = $null
+                          registered = @(); rejected = @() }
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        $result.state = 'no_manifest'
+        $result.why = 'the harness wrote no documents manifest; nothing it created is registered, and anything it left open stays foreign'
+        return $result
+    }
+    $m = $null
+    try { $m = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json } catch { $m = $null }
+    if ($null -eq $m) {
+        $result.state = 'manifest_rejected'; $result.why = 'the manifest is not readable JSON'
+        return $result
+    }
+    if ([string](Get-HzField $m 'schema') -ne 'horizun.harness-documents/v1') {
+        $result.state = 'manifest_rejected'
+        $result.why = ("unknown manifest schema '{0}'; only horizun.harness-documents/v1 is read" -f [string](Get-HzField $m 'schema'))
+        return $result
+    }
+    # The register has to be THIS session's, exactly as for a close.
+    if (-not $Ledger.session_pid -or ([int]$Ledger.session_pid -ne [int](Get-HzField $Identity 'pid'))) {
+        $result.state = 'manifest_rejected'
+        $result.why = 'the register is not bound to this session; nothing can be attributed to it'
+        return $result
+    }
+    # When THIS run's Revit came up, read the way Get-HzSessionIdentityState reads
+    # it: round-trip with an explicit offset, or not at all.
+    $raw = Get-HzField $Identity 'start_time'
+    $sessionStart = $null
+    if ($raw -is [DateTimeOffset]) { $sessionStart = $raw }
+    elseif ($raw -is [datetime]) { $sessionStart = [DateTimeOffset]$raw }
+    elseif (-not [string]::IsNullOrWhiteSpace([string]$raw)) {
+        $parsed = [DateTimeOffset]::MinValue
+        if (([string]$raw -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$') -and
+            [DateTimeOffset]::TryParse([string]$raw, [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) { $sessionStart = $parsed }
+    }
+    if (-not $sessionStart) {
+        $result.state = 'manifest_rejected'
+        $result.why = 'the session has no readable start time, so the scratch folder cannot be proved younger than it'
+        return $result
+    }
+
+    $rootRaw = [string](Get-HzField $m 'scratch_root')
+    $result.scratch_root = $rootRaw
+    $tempNorm = Get-HzNormalizedPath $TempRoot
+    $rootNorm = Get-HzNormalizedPath $rootRaw
+    $probeRun = [string](Get-HzField $m 'probe_run')
+    $rootWhy = $null
+    if (-not $rootNorm -or -not [IO.Path]::IsPathRooted($rootRaw)) { $rootWhy = 'scratch_root is missing or not an absolute path' }
+    elseif ($rootRaw -match '(^|[\\/])\.\.([\\/]|$)') { $rootWhy = "scratch_root contains a '..' segment" }
+    elseif (-not $tempNorm -or ((Get-HzNormalizedPath ([IO.Path]::GetDirectoryName($rootNorm))) -ne $tempNorm)) {
+        $rootWhy = ("scratch_root '{0}' is not directly under the temp directory '{1}'" -f $rootRaw, $TempRoot)
+    }
+    elseif ([string]::IsNullOrWhiteSpace($probeRun) -or
+            ([IO.Path]::GetFileName($rootNorm) -ne ('horizun-live-' + $probeRun).ToLowerInvariant())) {
+        $rootWhy = ("scratch_root '{0}' is not named horizun-live-<probe_run> (probe_run '{1}')" -f $rootRaw, $probeRun)
+    }
+    else {
+        $di = [IO.DirectoryInfo]::new($rootNorm)
+        if (-not $di.Exists) { $rootWhy = "scratch_root '$rootRaw' does not exist" }
+        elseif (($di.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $rootWhy = "scratch_root '$rootRaw' is a reparse point (junction or link); where it leads is not the harness's folder"
+        }
+        elseif ($di.CreationTimeUtc -lt $sessionStart.UtcDateTime) {
+            $rootWhy = ("scratch_root '{0}' was created {1:o}, BEFORE this run's Revit started {2:o}; an older folder is never adopted" -f
+                        $rootRaw, $di.CreationTimeUtc, $sessionStart.UtcDateTime)
+        }
+    }
+    if ($rootWhy) {
+        $result.state = 'manifest_rejected'; $result.why = $rootWhy
+        foreach ($d in @(Get-HzField $m 'documents')) {
+            if ($null -eq $d) { continue }
+            $result.rejected += [ordered]@{ path = [string](Get-HzField $d 'path'); why = 'scratch_root refused: ' + $rootWhy }
+        }
+        return $result
+    }
+
+    foreach ($d in @(Get-HzField $m 'documents')) {
+        if ($null -eq $d) { continue }
+        $p = [string](Get-HzField $d 'path')
+        $why = $null
+        if ([string]::IsNullOrWhiteSpace($p)) { $why = 'the entry has no path' }
+        elseif (-not [IO.Path]::IsPathRooted($p)) { $why = 'the path is not absolute' }
+        elseif ($p -match '(^|[\\/])\.\.([\\/]|$)') { $why = "the path contains a '..' segment" }
+        elseif ((Get-HzField $d 'created_by_harness') -ne $true) { $why = 'the entry does not declare created_by_harness' }
+        else {
+            $np = Get-HzNormalizedPath $p
+            if (-not $np.StartsWith($rootNorm + '\')) { $why = ("the path is outside scratch_root '{0}'" -f $rootRaw) }
+            elseif ([IO.Path]::GetExtension($np) -notin @('.rvt', '.rfa')) { $why = 'not a Revit model or family file' }
+            elseif (-not (Test-Path -LiteralPath $p -PathType Leaf)) { $why = 'the file does not exist' }
+            elseif (((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $why = 'the file is a reparse point'
+            }
+        }
+        if ($why) {
+            $result.rejected += [ordered]@{ path = $p; why = $why }
+            continue
+        }
+        $full = [IO.Path]::GetFullPath($p)
+        $ok = Add-HzRehearsalDocument -Ledger $Ledger -Title ([IO.Path]::GetFileNameWithoutExtension($full)) -Path $full `
+            -SourceFile $ManifestPath -Kind 'harness_scratch'
+        if ($ok) { $result.registered += $full }
+        else { $result.rejected += [ordered]@{ path = $p; why = 'the register refused the entry; see registration_failures' } }
+    }
+    $result.state = 'registered'
+    if (@($result.rejected).Count -gt 0) {
+        $result.why = ("{0} entr(ies) refused and NOT registered; a document among them left open stays foreign" -f @($result.rejected).Count)
+    }
+    return $result
+}
+
 function Test-HzOnlyRehearsalDocuments {
     <#
     .SYNOPSIS

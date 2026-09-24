@@ -804,6 +804,181 @@ $c = & $p.CloseDocument ([ordered]@{ year = '2099'; dir = $dir; target = 'C:\now
     $reg4 = Register-HzOpenedDocument -Probes $t.probes -Ledger $L -Identity $id -Year '2024' -Dir $tmp -SourceFile 'C:\hz-live\HZ24_BASE.rvt' -ExpectedTitle 'HZ24_BASE'
     Check 'an unreadable session registers nothing and says why' ((-not $reg4.ok) -and ($reg4.why -match 'could not be registered'))
     Stop-Helpers
+
+    # -------------------------------------------------------------------------
+    # 12. HARNESS SCRATCH DOCUMENTS (measured 2026-09-24: verify-live's own
+    #     HZ_LINKSRC_/w12-linkcopy models left every year running). A manifest is
+    #     a claim; only entries that pass EVERY rule are registered, the rest are
+    #     reported and stay foreign. The temp root is this test's own folder
+    #     (-TempRoot), so no directory is left under the real %TEMP%.
+    # -------------------------------------------------------------------------
+    function New-Scratch([string]$Root, [string]$Run = ([guid]::NewGuid().ToString('N'))) {
+        $d = Join-Path $Root ('horizun-live-' + $Run)
+        New-Item -ItemType Directory -Force -Path $d | Out-Null
+        return @{ dir = $d; run = $Run }
+    }
+    function Write-DocsManifest([string]$Path, [string]$Root, [string]$Run, $Paths, [string]$Schema = 'horizun.harness-documents/v1') {
+        $docs = @(foreach ($p in @($Paths)) { [ordered]@{ path = $p; created_by_harness = $true } })
+        ([ordered]@{ schema = $Schema; harness = 'scripts/verify-live.ps1'; probe_run = $Run; scratch_root = $Root; documents = $docs } |
+            ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $Path -Encoding utf8
+    }
+    function Touch([string]$Path) { Set-Content -LiteralPath $Path -Value 'rvt' ; return $Path }
+
+    $h = Start-Helper
+    $t = New-TestProbes -Manifest (Manifest -Dev $true)
+    $t.state.healthPid = $h.Id
+    $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+    Start-Sleep -Milliseconds 50
+    # Created AFTER the session started, as a harness's own folder is.
+    $s = New-Scratch $tmp
+    $linkSrc = Touch (Join-Path $s.dir 'HZ_LINKSRC_t1.rvt')
+    $copy1 = Touch (Join-Path $s.dir 'w12-linkcopy-t1.rvt')
+    $unlisted = Touch (Join-Path $s.dir 'w12-linkcopy2-t1.rvt')
+    $outside = Touch (Join-Path $tmp 'outside-scratch.rvt')
+    $mf = Join-Path $tmp 'harness-documents-01-verify-live-year.json'
+
+    # 12a. A valid manifest: registered, kind harness_scratch, and then CLOSED.
+    Write-DocsManifest $mf $s.dir $s.run @($linkSrc, $copy1)
+    $L = Ledger; Register-HzRehearsalSession -Ledger $L -Identity $id
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'a valid harness manifest registers every listed model as harness_scratch' (
+        ($a.state -eq 'registered') -and (@($a.registered).Count -eq 2) -and (@($a.rejected).Count -eq 0) -and
+        (@($L.documents | Where-Object { $_.kind -eq 'harness_scratch' }).Count -eq 2)) ("state=$($a.state) why=$($a.why)")
+    $t.state.docs = @((Doc 'HZ_LINKSRC_t1' $linkSrc $true), (Doc 'w12-linkcopy-t1' $copy1))
+    $c = Close-HzRehearsalSession -Probes $t.probes -Identity $id -Ledger $L -Year '2024' -Dir $tmp -ExitTimeoutSec 20
+    Check 'adopted scratch models are closed by registered path, discarding, and the Revit exits' (
+        ($c.state -eq 'closed') -and ($t.state.closeCalls.Count -eq 2) -and
+        (@($t.state.closeRequests | Where-Object { $_['expect_path'] -eq $linkSrc }).Count -eq 1)) ("state=$($c.state) why=$($c.why)")
+    Stop-Helpers
+
+    # 12b. A model of the SAME folder that the manifest did not list stays foreign.
+    $h = Start-Helper
+    $t = New-TestProbes -Manifest (Manifest -Dev $true)
+    $t.state.healthPid = $h.Id
+    $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+    Start-Sleep -Milliseconds 50
+    $s = New-Scratch $tmp
+    $linkSrc = Touch (Join-Path $s.dir 'HZ_LINKSRC_t2.rvt')
+    $unlisted = Touch (Join-Path $s.dir 'w12-linkcopy2-t2.rvt')
+    Write-DocsManifest $mf $s.dir $s.run @($linkSrc)
+    $L = Ledger; Register-HzRehearsalSession -Ledger $L -Identity $id
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    $t.state.docs = @((Doc 'HZ_LINKSRC_t2' $linkSrc $true), (Doc 'w12-linkcopy2-t2' $unlisted))
+    $c = Close-HzRehearsalSession -Probes $t.probes -Identity $id -Ledger $L -Year '2024' -Dir $tmp -ExitTimeoutSec 5
+    Check 'an open model of the scratch folder that the manifest did NOT list is foreign: nothing closed' (
+        ($a.state -eq 'registered') -and ($c.state -eq 'left_running_foreign_document') -and
+        ($c.left_open -contains 'w12-linkcopy2-t2') -and ($t.state.closeCalls.Count -eq 0) -and (-not $h.HasExited)) ("state=$($c.state)")
+
+    # 12c. Entry by entry: outside the folder, '..', missing file, undeclared.
+    $dotdot = Join-Path $s.dir ('..\' + (Split-Path -Leaf $outside))
+    $missing = Join-Path $s.dir 'never-created.rvt'
+    $docsMixed = @(
+        [ordered]@{ path = $linkSrc; created_by_harness = $true },
+        [ordered]@{ path = $outside; created_by_harness = $true },
+        [ordered]@{ path = $dotdot; created_by_harness = $true },
+        [ordered]@{ path = $missing; created_by_harness = $true },
+        [ordered]@{ path = $unlisted })
+    ([ordered]@{ schema = 'horizun.harness-documents/v1'; harness = 'x'; probe_run = $s.run; scratch_root = $s.dir; documents = $docsMixed } |
+        ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $mf -Encoding utf8
+    $L = Ledger; Register-HzRehearsalSession -Ledger $L -Identity $id
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    $whyOf = { param($p) [string](@($a.rejected | Where-Object { $_.path -eq $p })[0].why) }
+    Check 'only the valid entry of a mixed manifest is registered' (
+        (@($a.registered).Count -eq 1) -and (@($L.documents).Count -eq 1) -and
+        ((Get-HzNormalizedPath $L.documents[0].path) -eq (Get-HzNormalizedPath $linkSrc))) ("registered=" + (@($a.registered) -join ','))
+    Check 'a path outside scratch_root is refused and reported' ((& $whyOf $outside) -match 'outside scratch_root')
+    Check "a path with a '..' segment is refused even though the file exists" ((& $whyOf $dotdot) -match "'\.\.'")
+    Check 'a listed file that does not exist is refused' ((& $whyOf $missing) -match 'does not exist')
+    Check 'an entry that does not declare created_by_harness is refused' ((& $whyOf $unlisted) -match 'created_by_harness')
+    Check 'a refused entry is not in the register' (@($L.documents | Where-Object { (Get-HzNormalizedPath $_.path) -eq (Get-HzNormalizedPath $outside) }).Count -eq 0)
+
+    # 12d. The folder itself: not under TEMP, older than the Revit, misnamed, bad schema.
+    $L = Ledger; Register-HzRehearsalSession -Ledger $L -Identity $id
+    Write-DocsManifest $mf $s.dir $s.run @($linkSrc)
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf   # the REAL temp root
+    Check 'a scratch_root that is not directly under the temp directory is refused whole' (
+        ($a.state -eq 'manifest_rejected') -and ($a.why -match 'not directly under the temp directory') -and
+        (@($L.documents).Count -eq 0) -and (@($a.rejected).Count -eq 1)) ("why=$($a.why)")
+    $old = New-Scratch $tmp
+    $oldDoc = Touch (Join-Path $old.dir 'HZ_LINKSRC_old.rvt')
+    [IO.Directory]::SetCreationTimeUtc($old.dir, ([DateTimeOffset]::Parse($id.start_time)).UtcDateTime.AddHours(-1))
+    Write-DocsManifest $mf $old.dir $old.run @($oldDoc)
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'a scratch folder created BEFORE this Revit started is never adopted' (
+        ($a.state -eq 'manifest_rejected') -and ($a.why -match 'BEFORE this run') -and (@($L.documents).Count -eq 0)) ("why=$($a.why)")
+    Write-DocsManifest $mf $s.dir ([guid]::NewGuid().ToString('N')) @($linkSrc)
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'a scratch_root not named horizun-live-<probe_run> is refused' (($a.state -eq 'manifest_rejected') -and ($a.why -match 'horizun-live-<probe_run>') -and (@($L.documents).Count -eq 0))
+    $bad = Join-Path $s.dir ('..\' + (Split-Path -Leaf $s.dir))
+    Write-DocsManifest $mf $bad $s.run @($linkSrc)
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check "a scratch_root spelled with '..' is refused" (($a.state -eq 'manifest_rejected') -and (@($L.documents).Count -eq 0))
+    Write-DocsManifest $mf $s.dir $s.run @($linkSrc) -Schema 'horizun.harness-documents/v2'
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'an unknown manifest schema registers nothing' (($a.state -eq 'manifest_rejected') -and ($a.why -match 'schema') -and (@($L.documents).Count -eq 0))
+    Set-Content -LiteralPath $mf -Value '{ not json'
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'an unreadable manifest registers nothing' (($a.state -eq 'manifest_rejected') -and (@($L.documents).Count -eq 0))
+    $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath (Join-Path $tmp 'no-such-manifest.json') -TempRoot $tmp
+    Check 'no manifest is reported as such and registers nothing' (($a.state -eq 'no_manifest') -and (@($L.documents).Count -eq 0))
+    Write-DocsManifest $mf $s.dir $s.run @($linkSrc)
+    $L9 = Ledger; BindLedger $L9 ($id.pid + 1)
+    $a = Register-HzHarnessDocuments -Ledger $L9 -Identity $id -ManifestPath $mf -TempRoot $tmp
+    Check 'a register bound to another session adopts nothing' (($a.state -eq 'manifest_rejected') -and (@($L9.documents).Count -eq 0))
+    Stop-Helpers
+
+    # 12e. THE REAL WRITER: verify-live's own function, lifted from its AST, lists
+    #      what exists in its scratch folder, and the driver's reader accepts it.
+    $vlPath = Join-Path $script:RepoRoot 'scripts\verify-live.ps1'
+    $tok = $null; $perr = $null
+    $vlAst = [Management.Automation.Language.Parser]::ParseFile($vlPath, [ref]$tok, [ref]$perr)
+    $writerAst = $vlAst.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                                         $n.Name -eq 'Write-HzHarnessDocumentsManifest' }, $true)
+    Check 'verify-live defines Write-HzHarnessDocumentsManifest' ($null -ne $writerAst)
+    # The finally that rewrites it on every way out, at SCRIPT level (not inside a function).
+    $topTry = @($vlAst.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and
+        $_.Finally -and $_.Finally.Extent.Text -match 'Write-HzHarnessDocumentsManifest' })
+    Check 'verify-live rewrites the manifest in a script-level finally that encloses its exits' (
+        ($topTry.Count -eq 1) -and ($topTry[0].Body.Extent.Text -match '(?m)^exit 0\s*$') -and
+        ($topTry[0].Body.Extent.Text -match 'dp2Source') -and ($topTry[0].Body.Extent.Text -match 'copy13b'))
+    if ($writerAst) {
+        . ([scriptblock]::Create($writerAst.Extent.Text))
+        $h = Start-Helper
+        $t = New-TestProbes -Manifest (Manifest -Dev $true)
+        $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+        Start-Sleep -Milliseconds 50
+        $w = New-Scratch $tmp
+        $scratchDir = $w.dir; $probeRun = $w.run; $harnessFile = 'scripts/verify-live.ps1'
+        $null = Touch (Join-Path $scratchDir 'HZ_LINKSRC_w.rvt')
+        New-Item -ItemType Directory -Force -Path (Join-Path $scratchDir 'sub') | Out-Null
+        $null = Touch (Join-Path $scratchDir 'sub\w12-linkcopy-w.rvt')
+        $null = Touch (Join-Path $scratchDir 'stage-link-fixture.py')
+        $wm = Join-Path $tmp 'harness-documents-02-verify-live.json'
+        $savedEnv = $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST
+        try {
+            $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST = $null
+            Write-HzHarnessDocumentsManifest
+            Check 'without the variable the harness writes no manifest' (-not (Test-Path -LiteralPath $wm))
+            $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST = $wm
+            Write-HzHarnessDocumentsManifest
+        }
+        finally { $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST = $savedEnv }
+        $written = Get-Content -LiteralPath $wm -Raw | ConvertFrom-Json
+        Check 'the harness lists only the models in its scratch folder, recursively' (
+            ($written.schema -eq 'horizun.harness-documents/v1') -and (@($written.documents).Count -eq 2) -and
+            ($written.probe_run -eq $w.run)) ("docs=" + (@($written.documents | ForEach-Object { $_.path }) -join ','))
+        $L = Ledger; Register-HzRehearsalSession -Ledger $L -Identity $id
+        $a = Register-HzHarnessDocuments -Ledger $L -Identity $id -ManifestPath $wm -TempRoot $tmp
+        Check "the driver adopts what the harness's own writer declared" (($a.state -eq 'registered') -and (@($a.registered).Count -eq 2)) ("why=$($a.why)")
+        Stop-Helpers
+    }
+
+    # 12f. The driver wires it: a variable per harness, cleared after, then adopted.
+    Check 'the driver sets the manifest variable per harness, clears it and adopts through Register-HzHarnessDocuments' (
+        ($driver -match '\$env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST = \$docsManifest') -and
+        ($driver -match 'Remove-Item Env:\\HORIZUN_HARNESS_DOCUMENTS_MANIFEST') -and
+        ($driver -match 'Register-HzHarnessDocuments -Ledger \$ledger -Identity \$identity -ManifestPath \$docsManifest') -and
+        ($driver -match 'Remove-Item -LiteralPath \$docsManifest'))
 }
 finally {
     Stop-Helpers

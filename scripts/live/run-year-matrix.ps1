@@ -20,12 +20,28 @@
     3. Enables the development session: only that year's manifest is swapped,
        for a signed copy of the build. The installed pair is not replaced.
     4. Starts Revit BY ITS EXECUTABLE and waits for the bridge to publish.
-    5. Runs each harness with HORIZUN_SERVER_EXE pointed at the fresh server.
+    5. Runs each harness with HORIZUN_SERVER_EXE pointed at the fresh server,
+       and HORIZUN_HARNESS_DOCUMENTS_MANIFEST pointed at a fresh JSON per harness
+       run in the year's artifact folder (cleared afterwards). A harness that
+       creates and opens models of its own - verify-live.ps1 does, under
+       %TEMP%\horizun-live-<run> - writes there which ones (schema
+       horizun.harness-documents/v1, rewritten in a finally so a harness that
+       dies half-way still declares them). After the harness, each entry is
+       adopted into the SAME register (kind 'harness_scratch') only if the
+       schema is right, the scratch folder is a direct child of the temp
+       directory named horizun-live-<probe_run>, is not a link, and was created
+       AFTER this driver started that Revit, and the path is inside that folder
+       (no '..'), is a .rvt/.rfa and exists. Anything refused is written down in
+       the run's harness_documents and stays foreign; a model of that folder the
+       manifest did not list stays foreign too. Before 2026-09-24 nothing was
+       adopted and every year ended left_running_foreign_document.
     6. Closes ONLY the Revit it started - and only after proving, right before
        the close, that it is still the same process (pid + start time +
        executable), that the bridge can say what is open AND answers for that
        pid, and that every open document is one THIS RUN REGISTERED, matched by
-       the path the bridge publishes rather than by its title. One foreign
+       the path the bridge publishes rather than by its title (a harness's
+       adopted scratch models are closed the same way, discarding changes: they
+       are that harness's own disposable copies). One foreign
        document, one doubtful identity or one unanswered question and the Revit
        is LEFT RUNNING, written down as recovery pending. Each close is aimed at
        the registered path and refused if the bridge's own rehearsal resolves a
@@ -515,6 +531,7 @@ foreach ($year in $Years) {
             }
         }
 
+        $harnessIndex = 0
         foreach ($h in $Harness) {
             $file = (($h.Trim()) -split '\s+')[0]
             $path = Join-Path $PSScriptRoot $file
@@ -542,13 +559,37 @@ foreach ($year in $Years) {
             $rest = $parts.Substring($file.Length).Trim()
             Write-Host "--- $year : $file $rest" -ForegroundColor DarkCyan
             $cmd = "& '$path' $rest -ArtifactDir '$yearDir'"
-            & pwsh -NoProfile -Command $cmd
-            $code = $LASTEXITCODE
+            # WHAT THE HARNESS MADE FOR ITSELF. A harness that creates and opens its
+            # own disposable models (verify-live: HZ_LINKSRC_<tag>.rvt,
+            # w12-linkcopy-<tag>.rvt ...) declares them in a manifest of its own,
+            # one fresh file per harness run; any file of that name left over is
+            # removed first, so a stale claim is never read as this run's.
+            $harnessIndex++
+            $docsManifest = Join-Path $yearDir ("harness-documents-{0:D2}-{1}.json" -f $harnessIndex,
+                                                [IO.Path]::GetFileNameWithoutExtension($file))
+            Remove-Item -LiteralPath $docsManifest -Force -ErrorAction SilentlyContinue
+            $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST = $docsManifest
+            try {
+                & pwsh -NoProfile -Command $cmd
+                $code = $LASTEXITCODE
+            }
+            finally { Remove-Item Env:\HORIZUN_HARNESS_DOCUMENTS_MANIFEST -ErrorAction SilentlyContinue }
+            # Adopted into the SAME register, only entry by entry and only under
+            # every rule of Register-HzHarnessDocuments (folder under TEMP, younger
+            # than this Revit, path inside it, file present). What is refused is
+            # written down and stays foreign - the close then leaves Revit running.
+            $adopted = Register-HzHarnessDocuments -Ledger $ledger -Identity $identity -ManifestPath $docsManifest
+            if (@($adopted.rejected).Count -gt 0 -or $adopted.state -eq 'manifest_rejected') {
+                Write-Host ("=== {0} : {1} - harness documents NOT adopted: {2}" -f $year, $file, $adopted.why) -ForegroundColor Yellow
+                foreach ($rj in @($adopted.rejected)) { Write-Host ("      {0}: {1}" -f $rj.path, $rj.why) -ForegroundColor Yellow }
+            }
             $row.runs += [ordered]@{
                 harness = $file; arguments = $rest; exit_code = $code
                 state = switch ($code) { 0 { 'green' } 1 { 'failed' } 2 { 'unverified' } 3 { 'not_covered' } default { "exit_$code" } }
+                harness_documents = $adopted
             }
         }
+        $row.registered_documents = @($ledger.documents)
         $row.state = if (@($row.runs | Where-Object { $_.state -ne 'green' }).Count -eq 0) { 'green' } else { 'partial' }
     }
     catch {
@@ -561,6 +602,7 @@ foreach ($year in $Years) {
         # is left running and written down. A manifest is restored only with no
         # Revit of that year running, and the restore is checked on disk.
         $pending = @()
+        Remove-Item Env:\HORIZUN_HARNESS_DOCUMENTS_MANIFEST -ErrorAction SilentlyContinue
         if ($identity) {
             # AN EXCEPTION IN HERE MUST NOT COST THE REPORT. If the close path
             # throws - an unreadable process, a probe that dies - the failure is

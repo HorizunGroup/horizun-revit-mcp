@@ -375,6 +375,57 @@ $target = $live[0]
 $scratchDir = Join-Path $env:TEMP "horizun-live-$probeRun"
 New-Item -ItemType Directory -Force $scratchDir | Out-Null
 
+# ---------------------------------------------------------------------------
+# THE DOCUMENTS THIS HARNESS CREATED, declared to whoever drives it.
+#
+# run-year-matrix.ps1 closes only documents it registered, by path. The models
+# this harness makes for itself (HZ_LINKSRC_<tag>.rvt, w12-linkcopy-<tag>.rvt,
+# ...) live in $scratchDir and were never in that register, so every year ended
+# in left_running_foreign_document (measured 2026-09-24, five years out of five).
+# When the driver sets HORIZUN_HARNESS_DOCUMENTS_MANIFEST, this harness writes
+# there the model files that exist under ITS OWN scratch folder - written now,
+# and rewritten in the finally below, so a run that dies half-way still declares
+# what it had made. The driver decides what to believe (schema, folder under
+# TEMP, folder younger than the Revit it started, path inside the folder, file
+# present); this only lists. Without the variable nothing is written.
+# ---------------------------------------------------------------------------
+function Write-HzHarnessDocumentsManifest {
+    $target = $env:HORIZUN_HARNESS_DOCUMENTS_MANIFEST
+    if ([string]::IsNullOrWhiteSpace($target)) { return }
+    try {
+        $docs = @()
+        if (Test-Path -LiteralPath $scratchDir) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $scratchDir -Recurse -File -ErrorAction SilentlyContinue |
+                             Where-Object { $_.Extension -in @('.rvt', '.rfa') } | Sort-Object FullName)) {
+                $docs += [ordered]@{ path = $f.FullName; created_by_harness = $true }
+            }
+        }
+        $manifest = [ordered]@{
+            schema = 'horizun.harness-documents/v1'
+            harness = $harnessFile
+            probe_run = $probeRun
+            scratch_root = [IO.Path]::GetFullPath($scratchDir)
+            written_utc = (Get-Date).ToUniversalTime().ToString('o')
+            documents = $docs
+        }
+        $parent = Split-Path -Parent $target
+        if ($parent -and -not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Force $parent | Out-Null }
+        ($manifest | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $target -Encoding utf8
+    }
+    catch {
+        # The declaration is a courtesy to the driver: failing it must not fail the
+        # run. The driver then finds no manifest and leaves the Revit running.
+        Write-Host ("WARNING: the harness-documents manifest could not be written: {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+    }
+}
+Write-HzHarnessDocumentsManifest
+
+# EVERYTHING FROM HERE ON runs inside this try, so the finally rewrites the
+# manifest on every way out: the exits at the end, a throw half-way, a Ctrl+C.
+# (Not re-indented: a try/finally at script level opens no new scope, so every
+# function and variable below is still script-scoped exactly as before.)
+try {
+
 # A ZIP wearing a .rvt name - the measured case in four bytes. This is what cost
 # two false diagnoses ("a newer Revit", then "a corrupt download").
 $zipAsRvt = Join-Path $scratchDir 'HZ_NOT_A_MODEL.rvt'
@@ -11762,3 +11813,9 @@ if ($notCovered.Count -gt 0) {
     Write-Host "  (exit 0: not a release gate. Under -ReleaseGate the line above is exit 3.)" -ForegroundColor DarkYellow
 }
 exit 0
+}
+finally {
+    # Opened right after $scratchDir was created: whatever the way out, the
+    # driver is told which models this run made, as they are at this moment.
+    Write-HzHarnessDocumentsManifest
+}
