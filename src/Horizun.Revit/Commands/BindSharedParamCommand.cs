@@ -1392,7 +1392,7 @@ namespace Horizun.Revit.Commands
             return true;
         }
 
-        private static Category ResolveCategory(Document doc, string input)
+        internal static Category ResolveCategory(Document doc, string input)
         {
             if (string.IsNullOrWhiteSpace(input)) return null;
             input = input.Trim();
@@ -1427,7 +1427,7 @@ namespace Horizun.Revit.Commands
         /// GroupTypeId. BuiltInParameterGroup does not exist across every version this
         /// assembly builds for, so the enum cannot be named here at all.
         /// </summary>
-        private static ForgeTypeId ResolveGroup(string spec, out string why)
+        internal static ForgeTypeId ResolveGroup(string spec, out string why)
         {
             why = null;
             spec = spec.Trim();

@@ -276,6 +276,8 @@ namespace Horizun.Contracts
             Row("horizun_manage_worksets", "model", "administration"),
             Row("horizun_set_keynote", "model", "family"),
             Row("horizun_bind_shared_param", "model", "family"),
+            Row("horizun_manage_parameters", "model", "family"),
+            Row("horizun_query_classification", "read", "audit"),
             Row("horizun_manage_phases", "model", "documentation"),
             Row("horizun_manage_assemblies_parts", "model", "structure"),
 
@@ -1472,6 +1474,59 @@ namespace Horizun.Contracts
     ""end"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
     ""offset"": { ""type"": ""number"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_parameters",
+                Command = "horizun_manage_parameters",
+                Description =
+                    "Project parameter bindings and Global Parameters. list_bindings and global_list read. create_shared " +
+                    "writes the definition to an SPF and binds it; rebind changes categories, Instance/Type or group; " +
+                    "remove_binding and global_delete report the values lost. global_create/global_set take a value in " +
+                    "display units, a formula, or element parameters to associate. create_project is refused: no Revit " +
+                    "2023-2027 API creates a non-shared project parameter. Writes rehearse (dry_run default), need the " +
+                    "token, and re-read the model and the SPF file.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_bindings"", ""create_shared"", ""create_project"", ""rebind"", ""remove_binding"", ""global_list"", ""global_create"", ""global_set"", ""global_delete""] },
+    ""name"": { ""type"": ""string"" },
+    ""guid"": { ""type"": ""string"", ""description"": ""rebind/remove_binding: wins over name."" },
+    ""spf_path"": { ""type"": ""string"", ""description"": ""Absolute; created if missing."" },
+    ""spf_group"": { ""type"": ""string"", ""default"": ""Horizun"" },
+    ""data_type"": { ""type"": ""string"", ""description"": ""SpecTypeId id or path (String.Text, Length) or legacy name (Text, YesNo, Integer)."" },
+    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""OST_ tokens or names; rebind: the final set."" },
+    ""binding_kind"": { ""type"": ""string"", ""enum"": [""Instance"", ""Type""] },
+    ""group"": { ""type"": ""string"", ""description"": ""PG_ name or group id."" },
+    ""allow_vary_between_groups"": { ""type"": ""boolean"", ""default"": true },
+    ""value"": { ""type"": [""number"", ""string"", ""boolean""] },
+    ""formula"": { ""type"": ""string"" },
+    ""associate"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""object"", ""required"": [""element_id"", ""parameter""], ""properties"": { ""element_id"": { ""type"": ""integer"" }, ""parameter"": { ""type"": ""string"" } }, ""additionalProperties"": false } },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_query_classification",
+                Command = "horizun_query_classification",
+                Description =
+                    "Read-only classification audit. keynote_table / assembly_code: source path and status, entries with " +
+                    "parent and use counts (types, placed instances). unused_codes: table codes nothing uses. missing_codes: " +
+                    "placed types without a code and codes absent from the table. family_lookup_tables: size tables of " +
+                    "loaded families (name, columns, rows), read without opening the family.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""keynote_table"", ""assembly_code"", ""family_lookup_tables"", ""unused_codes"", ""missing_codes""] },
+    ""table"": { ""type"": ""string"", ""enum"": [""keynote"", ""assembly_code""], ""default"": ""keynote"" },
+    ""family_id"": { ""type"": ""integer"" },
+    ""max_rows"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 500 }
   }, ""additionalProperties"": false
 }")
             },
@@ -6352,6 +6407,7 @@ namespace Horizun.Contracts
                 "horizun_copy_between_documents",
                 "horizun_execute_plan",
                 "horizun_apply_corrections",
+                "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param", "horizun_manage_parameters",
                 "horizun_set_keynote", "horizun_family_apply", "horizun_bind_shared_param",
                 "horizun_split_floor_loops", "horizun_split_multilayer_walls",
                 "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
@@ -6454,7 +6510,10 @@ namespace Horizun.Contracts
                 // dissolve_parts removes parts and every edit made to them; disassemble removes the assembly.
                 "horizun_manage_assemblies_parts",
                 // remove_grid_line and set_mullions remove delete grid elements; reset_shape erases shape points.
-                "horizun_manage_curtain", "horizun_slab_shape"
+                "horizun_manage_curtain", "horizun_slab_shape",
+                // remove_binding and rebind (Instance<->Type) discard stored values; global_delete
+                // deletes an element. Values do not come back by running the tool again.
+                "horizun_manage_parameters"
             };
 
             // MCP's openWorldHint. Effect already covers ExternalSideEffect and

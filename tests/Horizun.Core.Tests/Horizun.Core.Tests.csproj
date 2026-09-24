@@ -26,6 +26,7 @@
          that decision must be provable without a Revit in the room. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ParameterClassificationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupWorksetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ArchitecturalEditRules.cs" />
