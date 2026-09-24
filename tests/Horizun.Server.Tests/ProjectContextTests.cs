@@ -498,7 +498,7 @@ namespace Horizun.Server.Tests
             Assert.False(c.Destructive);
             Assert.True(c.OpenWorld);
             Assert.Null(c.InputSchema["properties"]["idempotency_key"]);
-            Assert.Equal(new[] { "schema", "validate", "questions", "draft" },
+            Assert.Equal(new[] { "schema", "validate", "questions", "draft", "elicit" },
                          c.InputSchema["properties"]["operation"]["enum"].Select(t => (string)t));
             Assert.NotNull(Tools.Find("horizun_project_context").Host);
         }

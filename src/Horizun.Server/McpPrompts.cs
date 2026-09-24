@@ -454,6 +454,11 @@ namespace Horizun.Server
                         "carries text.es and text.en), offering the question's options and saying why it matters. NEVER answer " +
                         "a question yourself or fill a value from a guess: an unknown stays out of the file and is listed in " +
                         "intake.missing. If a document does not exist, record status=missing - that is an answer, and a finding. " +
+                        "IF YOUR CLIENT SUPPORTS MCP ELICITATION, let the server ask instead: call horizun_project_context " +
+                        "operation=elicit" + (hasPath ? " with that path" : "") + ", language es or en, dry_run=true - it opens " +
+                        "one short form per topic and returns 'answers' plus every question still 'unanswered' with its reason " +
+                        "(declined, cancelled, left_blank, not_elicitable...). Ask only those in the chat. If it answers " +
+                        "code elicitation_unsupported, the client cannot show forms: ask everything in the chat as above. " +
                         "3) Send the answers to horizun_project_context operation=draft as {pointer: value} with dry_run=true, " +
                         "show the person the state (invalid / inconsistent / incomplete / complete) and every coherence " +
                         "finding, and get it confirmed. 4) Only then call draft with dry_run=false" +

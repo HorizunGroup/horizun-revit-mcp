@@ -128,7 +128,9 @@ namespace Horizun.Server
                             "Inspect measured flex and the PNG before accepting content.\n\n" +
                             "STARTING A NEW PROJECT: if it has no project-context.json yet, or " +
                             "horizun_project_context reports it incomplete, offer the project-intake prompt - the ISO " +
-                            "19650 intake asks only what is missing and never fills a gap by guessing.\n\n" +
+                            "19650 intake asks only what is missing and never fills a gap by guessing. If this client " +
+                            "declared MCP elicitation, horizun_project_context operation=elicit asks through forms; if it " +
+                            "answers code elicitation_unsupported, ask the same questions in the chat.\n\n" +
                             "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +
                             "rules are compiled in. Where a command needs one it is passed in at call time. The " +
                             "delivery workflows built on top of these commands - model audits, classification, " +

@@ -26,7 +26,7 @@ namespace Horizun.Server.Tests
     /// </summary>
     public class JsonRpcErrorCodeTests
     {
-        private static string ServerExe()
+        internal static string ServerExe()
         {
             var d = new DirectoryInfo(AppContext.BaseDirectory);
             while (d != null && !Directory.Exists(Path.Combine(d.FullName, "src", "Horizun.Server")))

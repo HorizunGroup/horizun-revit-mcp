@@ -108,13 +108,10 @@ confirmation → `draft` with `dry_run: false` → `validate`. The server
 instructions tell a client to offer this prompt when work starts on a project
 that has no `project-context.json`, or whose context is incomplete.
 
-### Not yet: elicitation
+### Asking through the client
 
-The intake is conversational: the agent asks. MCP elicitation (the server asking
-the client for structured input) is not implemented, because this server has no
-server→client request channel yet — no outbound request ids, no correlation of
-client responses, and no capability-gated dispatch for them. When that exists, an
-`elicit` operation can send each enum question as an elicitation schema.
+When the client declared MCP elicitation, `operation: "elicit"` lets the server
+ask the same questions through the client's forms. See [Elicitation](#elicitation).
 
 ---
 
@@ -138,8 +135,9 @@ español e inglés, con opciones y su porqué) y `draft` (arma el contexto desde
 respuestas; ensaya por defecto, y al escribir relee el archivo, nunca sobrescribe
 sin `overwrite: true` y nunca escribe un contexto inválido ni una credencial;
 escribir exige el perfil `full_write`). El prompt `project-intake` guía al agente
-por ese recorrido. La elicitation MCP no está implementada: el servidor aún no
-tiene canal de peticiones servidor→cliente.
+por ese recorrido. Si el cliente declaró elicitation MCP, la operación `elicit`
+hace las mismas preguntas mediante formularios del cliente (ver
+[Elicitation](#elicitation)).
 
 ## Information containers & CDE
 
@@ -521,3 +519,112 @@ estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
+
+## Elicitation
+
+MCP elicitation is the server asking the client to ask its user, in the middle of
+a tool call. `horizun_project_context` uses it for the ISO 19650 intake:
+`operation: "elicit"` sends the pending intake questions as short forms and
+applies the answers exactly as `draft` does.
+
+### What the specification says, and what this server does
+
+Verified against modelcontextprotocol.io on 2026-09-24:
+
+- **2025-06-18** introduced `elicitation/create` (server → client request) with
+  `message` and a `requestedSchema` that is a flat object of primitives: string
+  (formats `email`, `uri`, `date`, `date-time`), number/integer, boolean and enum
+  (`enum` + `enumNames`). The client declares `"elicitation": {}` at
+  initialize. The answer is `action: "accept" | "decline" | "cancel"`, with
+  `content` on accept. Servers MUST NOT request sensitive information.
+- **2025-11-25** adds modes: `"elicitation": { "form": {}, "url": {} }`, where an
+  empty object means form only; requests carry `mode` (`"form"` may be omitted);
+  titled enums are `oneOf` of `{const, title}`; multi-select enums are arrays;
+  URL mode (`url`, `elicitationId`, error `-32042`) is for sensitive
+  interactions. Servers MUST NOT send a mode the client did not declare.
+- **2026-07-28** no longer sends elicitation as a request: the server returns an
+  `InputRequiredResult` and the client retries the call with the answers
+  (multi round-trip requests).
+
+This server implements **form mode** for sessions negotiated at 2025-06-18 or
+2025-11-25 through `initialize`. It never uses URL mode (nothing in the intake is
+sensitive; a credential in an answer is refused by `draft` anyway). Enums are
+sent as `oneOf` const/title under 2025-11-25 and as `enum` + `enumNames` under
+2025-06-18; no field is `required`, so a person can always leave an unknown
+empty.
+
+### When it refuses
+
+If the client did not declare `elicitation` (or only `url`), the negotiated
+revision predates 2025-06-18, the request is a 2026-07-28 one, or the call was
+sent as a task, nothing is sent and the call fails with structured content
+`code: "elicitation_unsupported"`, a `reason` (`client_did_not_declare`,
+`form_mode_not_declared`, `protocol_version`,
+`input_required_result_not_implemented`, `task_augmented_call`) and
+`fallback: "ask_in_chat"`. The agent then asks in the chat: `questions` lists
+every pending question with its options, `draft` applies the answers. The
+`project-intake` prompt and the server instructions say exactly this.
+
+### How `elicit` asks
+
+- One form per thematic block (project, appointment, stage, EIR, BEP, MIDP/TIDP,
+  responsibility matrix, CDE, naming, classification, LOIN/IDS, georeference,
+  IFC, software), at most 6 fields, in `language` `es` or `en` (default `en`).
+- A question that depends on another in the same block waits for it: "where is
+  the EIR?" is asked in a follow-up form only when the EIR exists.
+- Lists and tables (task teams, TIDPs, naming fields, status codes, IDS, survey
+  point) are not flat primitives and are never squeezed into a form: they come
+  back as `not_elicitable`, for the chat.
+- **accept** applies each valid field; a value outside a question's options is
+  rejected (`not_an_option`), never coerced; an empty field is `left_blank`.
+  **decline** leaves that block open and moves to the next topic. **cancel**
+  ends the intake. No answer within `timeout_seconds` (default 300, 10–540) is
+  `timed_out` and ends it too. The whole call stays under 540 s so it answers
+  before the host-tool deadline.
+- The result carries `rounds` (what was asked and what came back), `answers`
+  (`{pointer: value}`), `unanswered` (every open question with its reason) and
+  `draft` (the same payload `draft` returns). `dry_run` defaults to true; with
+  `dry_run: false` a write that would be refused (existing file without
+  `overwrite`, missing folder, profile below `full_write`) is refused **before
+  the first form**, and a successful write is re-read before it is reported.
+  Passing an earlier `answers` back continues where a call stopped without
+  asking those questions again.
+
+### The transport underneath
+
+Server → client requests use string ids `horizun-server-<n>`, which a client
+never sends. The reader recognises a response by its shape (no `method`; a
+`result` or `error`) before the session's request-id rule, hands it to the
+waiting request and moves on — the tool waits on its own thread, so the reader
+keeps answering other requests while a form is open. Each request ends on its
+answer, its timeout, the tool call's cancellation, or the channel closing (stdin
+EOF or a lost stdout fails every pending request at once, so shutdown is not held
+by an open form). When the server stops waiting it sends
+`notifications/cancelled` for its own request. At most 8 server → client
+requests wait at once.
+
+### Clients
+
+Claude Code documents support for MCP elicitation ("Respond to MCP elicitation
+requests", code.claude.com/docs/en/mcp, read 2026-09-24). No other client was
+verified for this change; the capability a client declares at `initialize` is
+what decides, never its name.
+
+### Resumen en español
+
+La elicitation MCP permite que el servidor le pida al cliente que pregunte a su
+usuario durante una llamada. `horizun_project_context` con `operation: "elicit"`
+envía las preguntas pendientes del arranque ISO 19650 como formularios cortos
+(uno por bloque temático, máximo 6 campos, en `es` o `en`) y aplica las
+respuestas igual que `draft`: ensaya por defecto, y con `dry_run: false` escribe
+y relee; lo que no podría escribirse se rechaza antes del primer formulario. Solo
+se usa el modo formulario, y solo si el cliente declaró `elicitation` en
+`initialize` con la revisión 2025-06-18 o 2025-11-25; si no, la llamada falla con
+`code: "elicitation_unsupported"` y el agente pregunta en el chat. Aceptar aplica
+cada campo válido (un valor fuera de las opciones se rechaza, nunca se adivina);
+rechazar (`decline`) deja ese bloque abierto y sigue con el siguiente; cancelar
+o agotar el tiempo termina el arranque. Las listas y tablas no caben en un
+formulario y vuelven como `not_elicitable`. El resultado lista todo lo que quedó
+sin responder y por qué. Por debajo, las peticiones servidor→cliente usan ids
+`horizun-server-<n>`, el lector entrega cada respuesta sin bloquearse y cada
+espera termina por respuesta, tiempo, cancelación o cierre del canal.
