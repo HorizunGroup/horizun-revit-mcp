@@ -543,6 +543,27 @@
           "Ejecutar un procedimiento nombrado y versionado guardado en esta máquina, con su propio consentimiento."
         ]
       ]
+    },
+    {
+      "en": "ISO 19650 information management and openBIM delivery",
+      "es": "Gestión de información ISO 19650 y entrega openBIM",
+      "tools": [
+        [
+          "horizun_project_context",
+          "Validate, question and draft the project's ISO 19650 context: appointment, EIR/BEP/MIDP, CDE states, naming, delivery.",
+          "Validar, preguntar y redactar el contexto ISO 19650 del proyecto: designación, EIR/BEP/MIDP, estados del CDE, nomenclatura, entrega."
+        ],
+        [
+          "horizun_information_container",
+          "Name, seal, verify, inspect and transition information containers across WIP, Shared, Published and Archived folders.",
+          "Nombrar, sellar, verificar, inspeccionar y promover contenedores de información entre carpetas WIP, Compartido, Publicado y Archivado."
+        ],
+        [
+          "horizun_deliver_ifc",
+          "Export an IFC and prove it: IDS on the file, property-set mapping coverage, georeference, BCF of failures and a sealed container.",
+          "Exportar un IFC y demostrarlo: IDS sobre el archivo, cobertura del mapeo de Psets, georreferencia, BCF de fallos y contenedor sellado."
+        ]
+      ]
     }
   ]
 }

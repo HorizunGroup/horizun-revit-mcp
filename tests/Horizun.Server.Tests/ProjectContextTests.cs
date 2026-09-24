@@ -460,7 +460,7 @@ namespace Horizun.Server.Tests
             Assert.False(File.Exists(path));
 
             var secret = Answers();
-            secret["/cde/project_ref"] = "https://user:hunter2@cde.example/p/42";
+            secret["/cde/project_ref"] = "https://user:hunter2@cdehost/p/42";
             ToolRefusal credential = Assert.Throws<ToolRefusal>(() => Call(new JObject
             {
                 ["operation"] = "draft", ["answers"] = secret, ["path"] = path, ["dry_run"] = false

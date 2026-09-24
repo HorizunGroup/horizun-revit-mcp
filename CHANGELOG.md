@@ -3,6 +3,15 @@
 What changed, and — where it matters — what was actually measured rather than
 assumed. Dates are the day the work landed.
 
+## Unreleased — ISO 19650 information management
+
+- **`horizun_project_context`** (host-resident): JSON Schema `project-context.v1`, `validate` that keeps invalid / inconsistent / incomplete apart, the ordered intake `questions` (es/en) and a `draft` that writes only with `dry_run=false` and re-reads the file. MCP prompt `project-intake` and resource `horizun://schemas/project-context/v1`. Elicitation is not implemented: the server has no server-to-client request path yet.
+- **`horizun_information_container`** (host-resident): ISO 19650-2 container names, `.container.json` sidecars sealed by SHA-256, `verify`, a paginated `inspect` of WIP/Shared/Published/Archived folders cross-checked against the MIDP, and `transition` that copies (never moves), requires `approved_by` for publication and logs to `.horizun/cde-transitions.jsonl`. `horizun_export` accepts the same `information_container`.
+- **`horizun_deliver_ifc`**: one call that exports an IFC with explicit options, checks the file header, validates the FILE against IDS, measures user-defined Pset mapping coverage, reads back the georeference, writes a BCF of the failures and seals the container last. `deliverable_ready` is the file's verdict, never the model's.
+- **Toolsets**: `HORIZUN_TOOLSETS` / `toolsets` select tool packs declared once in the contract; `core` advertises 4 tools (~2.2k tokens) instead of 97 (~108k). Unconfigured, tools/list is unchanged. Resource `horizun://session/toolsets`.
+- **Model-content safety**: invisible and bidirectional control characters in text read from models and files are neutralised to visible `[U+XXXX]` tokens, replies carry a `content_safety` block, and instruction-like text is flagged (never removed). See SECURITY.md.
+- Measured: 5,295 unit tests pass (734 server, 4,561 core); the add-in builds with 0 warnings for Revit 2023–2027. Not yet measured live in Revit: the export-with-container and deliver_ifc cases in docs/INFORMATION-MANAGEMENT.md.
+
 ## v2.0.5 — 2026-09-22
 
 - Release hygiene correction: removes trailing blank lines that blocked the v2.0.4 CI run before package installation or live Revit verification.
