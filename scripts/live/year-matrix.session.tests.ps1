@@ -619,6 +619,35 @@ try {
     Check 'an unregistered linked model keeps the session running' (($c.state -eq 'left_running_foreign_document') -and (-not $h.HasExited))
     Stop-Helpers
 
+    # 6h. Revit crashing WHILE EXITING (measured 2026-09-24, 2025 and 2027): its own
+    #     unrecoverable-error dialog is the only window left. It alone may be pressed.
+    $crashText = @('OK', 'Help', 'An unrecoverable error has occurred.  The program will now be terminated.  All of your data has been recently saved, so there is no need to create recovery files.')
+    $crashWin = [pscustomobject]@{ title = 'Revit'; class = '#32770'; texts = $crashText; handle = [IntPtr]1; ok_handle = [IntPtr]2 }
+    $monitor = [pscustomobject]@{ title = '7a0fMonitor'; class = 'WindowsForms10'; texts = @(); handle = [IntPtr]3; ok_handle = $null }
+    $saveWin = [pscustomobject]@{ title = 'Revit'; class = '#32770'; texts = @('Yes', 'No', 'Do you want to save changes to HZ24_BASE.rvt?'); handle = [IntPtr]4; ok_handle = [IntPtr]5 }
+    Check 'the crash notice alone (beside its monitor) may be pressed' ((Test-HzCrashDialog -Windows @($crashWin, $monitor)).ok)
+    Check 'a save prompt is never pressed' (-not (Test-HzCrashDialog -Windows @($saveWin)).ok)
+    Check 'two dialogs are never pressed' (-not (Test-HzCrashDialog -Windows @($crashWin, $saveWin)).ok)
+    $mainWin = [pscustomobject]@{ title = 'Autodesk Revit 2025 - [HZ25_BASE]'; class = 'Afx:0000'; texts = @(); handle = [IntPtr]6; ok_handle = $null }
+    Check 'a still-open main window stops it' (-not (Test-HzCrashDialog -Windows @($crashWin, $mainWin)).ok)
+
+    $h = Start-Helper
+    $t = New-TestProbes -Manifest (Manifest -Dev $true) -Docs @((Doc 'HZ24_BASE' 'C:\hz-live\HZ24_BASE.rvt' $true))
+    $t.state.healthPid = $h.Id
+    $t.state['waits'] = 0; $t.state['pressed'] = $null
+    $st = $t.state
+    $t.probes.CloseMainWindow = { param($p) return $true }
+    $t.probes.WaitExit = { param($p, $s) $st['waits']++; return ($st['waits'] -gt 1) }.GetNewClosure()
+    $t.probes.ProcessWindows = { param($p) return ,@($crashWin, $monitor) }.GetNewClosure()
+    $t.probes.ConfirmCrashDialog = { param($w) $st['pressed'] = $w.ok_handle; return $true }.GetNewClosure()
+    $id = New-HzSessionIdentity -Probes $t.probes -ProcessId $h.Id
+    $L = Ledger; BindLedger $L $id.pid
+    $null = Add-HzRehearsalDocument -Ledger $L -Title 'HZ24_BASE' -Path 'C:\hz-live\HZ24_BASE.rvt'
+    $c = Close-HzRehearsalSession -Probes $t.probes -Identity $id -Ledger $L -Year '2024' -Dir $tmp -ExitTimeoutSec 5
+    Check 'a crash on exit is confirmed and recorded, the session counts as closed' (
+        ($c.state -eq 'closed_after_revit_crash') -and ($st['pressed'] -eq [IntPtr]2)) ("state=$($c.state) why=$($c.why)")
+    Stop-Helpers
+
     # 6e. The bridge says closed and the document is still open.
     $h = Start-Helper
     $t = New-TestProbes -Manifest (Manifest -Dev $true) -Docs @((Doc 'HZ24_BASE' 'C:\hz-live\HZ24_BASE.rvt' $true))

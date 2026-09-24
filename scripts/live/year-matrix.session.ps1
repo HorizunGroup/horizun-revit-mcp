@@ -412,6 +412,35 @@ function New-HzMatrixProbes {
         WaitExit = { param($ProcessInfo, [int]$Seconds)
             try { return [bool]$ProcessInfo.Process.WaitForExit($Seconds * 1000) } catch { return $false }
         }
+        # Every visible top-level window of THIS process, with its child texts and the
+        # handle of a button labelled OK. Read-only; Test-HzCrashDialog decides.
+        ProcessWindows = { param($ProcessInfo)
+            Initialize-HzExitNative
+            $procId = [uint32]$ProcessInfo.Process.Id
+            $found = New-Object System.Collections.Generic.List[object]
+            $cb = [HzExit.Native+EnumProc] { param($h, $p)
+                $o = [uint32]0; $null = [HzExit.Native]::GetWindowThreadProcessId($h, [ref]$o)
+                if ($o -eq $procId -and [HzExit.Native]::IsWindowVisible($h)) { $found.Add($h) }
+                return $true }
+            $null = [HzExit.Native]::EnumWindows($cb, [IntPtr]::Zero)
+            $rows = @()
+            foreach ($w in $found) {
+                $texts = New-Object System.Collections.Generic.List[string]; $ok = $null
+                $ccb = [HzExit.Native+EnumProc] { param($h, $p)
+                    $t = [HzExit.Native]::Text($h)
+                    if ($t) { $texts.Add($t); if ($t -eq 'OK' -and [HzExit.Native]::Class($h) -eq 'Button') { $script:HzOkHandle = $h } }
+                    return $true }
+                $script:HzOkHandle = $null
+                $null = [HzExit.Native]::EnumChildWindows($w, $ccb, [IntPtr]::Zero)
+                $rows += [pscustomobject]@{ title = [HzExit.Native]::Text($w); class = [HzExit.Native]::Class($w)
+                                            texts = @($texts); handle = $w; ok_handle = $script:HzOkHandle }
+            }
+            return ,$rows
+        }
+        ConfirmCrashDialog = { param($Window)
+            Initialize-HzExitNative
+            try { $null = [HzExit.Native]::SendMessage($Window.ok_handle, 0x00F5, [IntPtr]::Zero, [IntPtr]::Zero); return $true } catch { return $false }
+        }
         Enable = { param([string]$Year)
             # The script's lines go to the host, not into the return value: a function
             # returns EVERYTHING it emits, and "[lines..., 0]" is not an exit code of 0
@@ -1042,6 +1071,48 @@ function Test-HzDialogTitleAllowed {
     return $false
 }
 
+function Initialize-HzExitNative {
+    if ('HzExit.Native' -as [type]) { return }
+    Add-Type -Namespace HzExit -Name Native -MemberDefinition @"
+public delegate bool EnumProc(System.IntPtr h, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool EnumChildWindows(System.IntPtr parent, EnumProc cb, System.IntPtr p);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
+[System.Runtime.InteropServices.DllImport("user32.dll")] public static extern System.IntPtr SendMessage(System.IntPtr h, uint msg, System.IntPtr w, System.IntPtr l);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetWindowText(System.IntPtr h, System.Text.StringBuilder s, int max);
+[System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern int GetClassName(System.IntPtr h, System.Text.StringBuilder s, int max);
+public static string Text(System.IntPtr h) { var b = new System.Text.StringBuilder(2048); GetWindowText(h, b, 2048); return b.ToString(); }
+public static string Class(System.IntPtr h) { var b = new System.Text.StringBuilder(256); GetClassName(h, b, 256); return b.ToString(); }
+"@
+}
+
+function Test-HzCrashDialog {
+    <#
+    .SYNOPSIS
+      Is the ONLY visible window of an exiting Revit its own unrecoverable-error
+      dialog? $Windows: @{ title; class; texts[]; handle; ok_handle }. Returns
+      @{ ok; window; why }. Anything else - a second window, a save prompt, a text
+      that does not say the program will be terminated - is never pressed.
+    #>
+    param([object[]]$Windows)
+    $visible = @($Windows | Where-Object { $null -ne $_ })
+    $dialogs = @($visible | Where-Object { [string]$_.class -eq '#32770' })
+    if ($dialogs.Count -ne 1) { return @{ ok = $false; window = $null; why = ("{0} dialog(s) visible; only exactly one is ever pressed" -f $dialogs.Count) } }
+    $others = @($visible | Where-Object { [string]$_.class -ne '#32770' -and -not ([string]$_.title -match 'Monitor$') -and [string]$_.title })
+    if ($others.Count -gt 0) { return @{ ok = $false; window = $null; why = 'another titled window is still open: ' + ((@($others | ForEach-Object { $_.title })) -join ', ') } }
+    $d = $dialogs[0]
+    $text = (@($d.texts) -join ' ')
+    if ($text -notmatch 'An unrecoverable error has occurred' -or $text -notmatch 'will now be terminated') {
+        return @{ ok = $false; window = $null; why = "the only dialog is not Revit's unrecoverable-error notice: '" + [string]$d.title + "'" }
+    }
+    if ($text -match '(?i)do you want to save|save changes|save the|guardar los cambios|desea guardar|discard|descartar|synchroni') {
+        return @{ ok = $false; window = $null; why = 'the dialog mentions saving, discarding or synchronising; it is a person''s decision' }
+    }
+    if (-not $d.ok_handle) { return @{ ok = $false; window = $null; why = 'the dialog has no OK button to press' } }
+    return @{ ok = $true; window = $d; why = $null }
+}
+
 function Close-HzRehearsalSession {
     <#
     .SYNOPSIS
@@ -1228,6 +1299,27 @@ function Close-HzRehearsalSession {
         return $record
     }
     if (& $Probes.WaitExit $id.process $ExitTimeoutSec) { $record.state = 'closed'; return $record }
+    # REVIT CRASHED WHILE EXITING (measured 2026-09-24 on 2025 and 2027: the main
+    # frame closed, then "An unrecoverable error has occurred. The program will now
+    # be terminated." sat modal and the process never ended). The process is
+    # already terminating and says nothing needs saving; its OK is the only way out.
+    # It is pressed ONLY when that dialog is the one and only visible window of this
+    # pid - a save, discard or any other prompt is a person's decision and stops it.
+    if ($Probes.ContainsKey('ProcessWindows') -and $Probes.ContainsKey('ConfirmCrashDialog')) {
+        # Flattened: a probe may return its rows wrapped (`return ,$rows`) or bare.
+        $windows = @(& $Probes.ProcessWindows $id.process | ForEach-Object { $_ })
+        $crash = Test-HzCrashDialog -Windows $windows
+        $record.exit_windows = @($windows | ForEach-Object { [ordered]@{ title = $_.title; text = (@($_.texts) -join ' | ') } })
+        if ($crash.ok) {
+            $pressed = & $Probes.ConfirmCrashDialog $crash.window
+            if ($pressed -and (& $Probes.WaitExit $id.process 60)) {
+                $record.state = 'closed_after_revit_crash'
+                $record.why = 'Revit raised its own unrecoverable-error dialog while exiting (after its main window closed); its OK ended the process. Nothing was saved or discarded by this driver.'
+                return $record
+            }
+        }
+        elseif ($crash.why) { $record.crash_dialog_not_pressed = $crash.why }
+    }
     $record.state = 'left_running_no_exit'
     $record.why = "the process did not exit within $ExitTimeoutSec s after a normal close request (a dialog may be waiting for a person). It is not killed."
     return $record
