@@ -578,6 +578,13 @@
          with arguments from typed fields and the registry's own typed constants.
          Linked so the list itself is tested rather than only the rules that read it. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\CorrectionRegistry.cs" />
+    <!-- horizun_deliver_ifc, the Revit-free half: the exporter's property-set file and
+         its check against the exported IFC, the header/trailer proof, the gates, the
+         container name, and the BCF of IDS failures re-read from disk. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\BcfViewpoint.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IfcDeliveryRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PsetMapping.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsBcf.cs" />
   </ItemGroup>
 
   <ItemGroup>

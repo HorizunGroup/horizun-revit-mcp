@@ -242,6 +242,9 @@ namespace Horizun.Revit.Commands
             (new Regex(@"(?<!\w)doc\s*\.\s*Delete\s*\(", RegexOptions.Compiled),
              "horizun_delete_verified",
              "deletes elements and confirms they are actually gone afterwards."),
+            (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
+             "horizun_deliver_ifc",
+             "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
         };
 
         /// <summary>

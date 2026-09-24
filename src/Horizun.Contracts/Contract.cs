@@ -1302,6 +1302,45 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_deliver_ifc",
+                Command = "horizun_deliver_ifc",
+                Description =
+                    "Verified IFC delivery in one call: optional IDS precheck on the live model (advisory), IFC export with " +
+                    "explicit options (version, filter view, base quantities, splitting, space boundaries, the exporter's " +
+                    "user-defined property-set file, coordinate basis) beside the model's current georeference, then the " +
+                    "IDS validated on the EXPORTED FILE, every mapped property looked for in the file with n-of-m coverage " +
+                    "and missing GlobalIds, and an optional BCF of IDS failures re-read like the ledger's. Dry-run returns " +
+                    "the plan; apply needs confirmation and idempotency and reports gates precheck/export/schema_header/" +
+                    "ids_validate/pset_mapping/bcf. deliverable_ready is the file's verdict: true only when every requested " +
+                    "non-advisory gate passed, all re-read from disk.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""output_folder"", ""ifc_version""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""output_folder"": { ""type"": ""string"", ""description"": ""Absolute existing folder. The IFC is written as <name>.ifc and the optional BCF as <name>.ids-issues.bcf beside it. Nothing is created implicitly."" },
+    ""output_name"": { ""type"": ""string"", ""description"": ""File name stem (.ifc optional). Required unless information_container is given; if both are given they must agree."" },
+    ""information_container"": { ""type"": ""object"", ""description"": ""ISO 19650 information container: fields, field_order (required), separator (default '-'), field_patterns (anchored). The name is the fields joined in field_order; a field that is missing, holds the separator or misses its pattern refuses the call. Only the name is used here."", ""properties"": { ""fields"": { ""type"": ""object"" }, ""field_order"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } }, ""separator"": { ""type"": ""string"" }, ""field_patterns"": { ""type"": ""object"" }, ""status"": { ""type"": ""string"" }, ""revision"": { ""type"": ""string"" }, ""title"": { ""type"": ""string"" }, ""status_codes"": { ""type"": ""object"" }, ""revision_patterns"": { ""type"": ""object"" } } },
+    ""ifc_version"": { ""type"": ""string"", ""enum"": [""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCCOBIE"", ""IFC4"", ""IFC4RV"", ""IFC4DTV"", ""IFC4x3""], ""description"": ""Required: a delivery never takes the exporter default. Proved afterwards from FILE_SCHEMA (IFC2X3, IFC4 or IFC4X3 family). IFC4x3 needs Revit 2024+ and is refused by name where the enum lacks it."" },
+    ""ifc_filter_view_id"": { ""type"": ""integer"", ""description"": ""Optional non-template view whose visibility filters the export."" },
+    ""export_base_quantities"": { ""type"": ""boolean"", ""default"": false },
+    ""split_walls_and_columns"": { ""type"": ""boolean"", ""default"": false },
+    ""space_boundary_level"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 2, ""default"": 1 },
+    ""site_placement"": { ""type"": ""string"", ""enum"": [""shared"", ""survey_point"", ""project_base_point"", ""internal""], ""description"": ""Coordinate basis handed to the exporter (option SitePlacement = Shared/Site/Project/Internal). Omit for the exporter default. The reply shows the model's survey point, project base point, angle to true north and site location, and what the file wrote (IfcSite placement, IfcMapConversion) - observed, not judged."" },
+    ""pset_mapping_path"": { ""type"": ""string"", ""description"": ""Absolute path to the exporter's user-defined property-set file ('PropertySet:<TAB>name<TAB>I|T<TAB>IfcClass,...' then '<TAB>Property<TAB>DataType[<TAB>RevitParameter]'). Parsed strictly before export (a line the exporter would not split on TAB refuses by line number), passed via ExportUserDefinedPsets, then every declared property is looked for in the exported file."" },
+    ""pset_min_coverage"": { ""type"": ""number"", ""minimum"": 0, ""maximum"": 1, ""default"": 1, ""description"": ""Share of the expected entities that must carry each mapped property for the pset_mapping gate to pass. The exporter omits a property whose Revit parameter is empty."" },
+    ""export_ifc_common_property_sets"": { ""type"": ""boolean"", ""description"": ""Optional; omit for the exporter default. Passed by name, reported requested_unverifiable."" },
+    ""export_internal_revit_property_sets"": { ""type"": ""boolean"", ""description"": ""Optional; omit for the exporter default. Passed by name, reported requested_unverifiable."" },
+    ""ids_path"": { ""type"": ""string"", ""description"": ""Optional .ids file. Enables ids_validate on the exported file (the delivery verdict) and, by default, the advisory model precheck."" },
+    ""precheck"": { ""type"": ""boolean"", ""description"": ""Run the horizun_validate_ids precheck on the live model first. Default true when ids_path is given. Advisory: it never decides readiness."" },
+    ""bcf"": { ""type"": ""boolean"", ""default"": false, ""description"": ""Needs ids_path. Write one BCF 2.1 topic per failed specification with the failing GlobalIds, then re-read it structurally. No failure, no file."" },
+    ""max_findings"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 5000, ""default"": 100 },
+    ""overwrite"": { ""type"": ""boolean"", ""default"": false },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_get_dimension_references",
                 Command = "horizun_get_dimension_references",
                 Description =
@@ -5481,6 +5520,7 @@ namespace Horizun.Contracts
                 "horizun_manage_views",
                 "horizun_manage_schedules",
                 "horizun_export",
+                "horizun_deliver_ifc",
                 "horizun_power_bi_push",
                 "horizun_annotate",
                 "horizun_edit_dimensions",
@@ -5538,7 +5578,7 @@ namespace Horizun.Contracts
             var destructive = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_delete_verified", "horizun_execute_plan", "horizun_execute_python", "horizun_document_session",
-                "horizun_export", "horizun_create_family", "horizun_power_bi_push",
+                "horizun_export", "horizun_deliver_ifc", "horizun_create_family", "horizun_power_bi_push",
                 // overwrite_policy=replace replaces a workbook (backed up first) and a
                 // non-dry-run push lands rows in a dataset. Same reasons as export and
                 // power_bi_push above.
@@ -5581,7 +5621,7 @@ namespace Horizun.Contracts
             // classified by Effect as ordinary model writes.
             var openWorld = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_open_document", "horizun_export", "horizun_create_family",
+                "horizun_open_document", "horizun_export", "horizun_deliver_ifc", "horizun_create_family",
                 "horizun_power_bi_push", "horizun_execute_python", "horizun_catalog_lookup"
             };
 
