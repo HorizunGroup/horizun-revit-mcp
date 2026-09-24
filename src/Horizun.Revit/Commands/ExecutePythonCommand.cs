@@ -245,6 +245,12 @@ namespace Horizun.Revit.Commands
             (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
              "horizun_deliver_ifc",
              "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
+            (new Regex(@"\b(CreatedPhaseId|DemolishedPhaseId)\s*=(?!=)|\bPhaseFilter\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_phases",
+             "operation=\"set_element_phases\" / \"create_phase_filter\" set phases and phase filters and re-read them."),
+            (new Regex(@"\bPartUtils\s*\.\s*(CreateParts|DivideParts)\s*\(|\bAssemblyInstance\s*\.\s*Create\s*\(", RegexOptions.Compiled),
+             "horizun_manage_assemblies_parts",
+             "creates parts and assemblies and re-reads their associations and members."),
         };
 
         /// <summary>

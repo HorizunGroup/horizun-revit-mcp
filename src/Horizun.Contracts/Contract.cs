@@ -272,6 +272,8 @@ namespace Horizun.Contracts
             Row("horizun_regroup_by_param", "model"),
             Row("horizun_set_keynote", "model", "family"),
             Row("horizun_bind_shared_param", "model", "family"),
+            Row("horizun_manage_phases", "model", "documentation"),
+            Row("horizun_manage_assemblies_parts", "model", "structure"),
 
             // ---- architecture -----------------------------------------------------------
             Row("horizun_split_floor_loops", "architecture"),
@@ -3137,6 +3139,55 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_manage_phases",
+                Command = "horizun_manage_phases",
+                Description =
+                    "Phases, phase filters, design options. Reads: list (phases in order, filters with new/existing/demolished/" +
+                    "temporary presentation, option sets/options/primary/active with members); element_status (created/demolished " +
+                    "phase, ElementOnPhaseStatus in phase_id - default last - and design option). Writes, rehearsed then applied " +
+                    "with the token and re-read, rolled back on any mismatch: set_element_phases (demolition never before " +
+                    "creation; -1 clears it), create_phase_filter, edit_phase_filter, rename_phase. Revit's API cannot create or " +
+                    "reorder phases nor move elements between design options: create_phase and assign_design_option refuse, saying why.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""element_status"", ""set_element_phases"", ""create_phase_filter"", ""edit_phase_filter"", ""rename_phase"", ""create_phase"", ""assign_design_option""] },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""phase_id"": { ""type"": ""integer"" }, ""created_phase_id"": { ""type"": ""integer"" },
+    ""demolished_phase_id"": { ""type"": ""integer"", ""description"": ""-1 = not demolished."" },
+    ""filter_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" },
+    ""presentation"": { ""type"": ""object"", ""description"": ""Keys new, existing, demolished, temporary."", ""additionalProperties"": { ""enum"": [""by_category"", ""overridden"", ""hidden""] } },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_assemblies_parts",
+                Command = "horizun_manage_assemblies_parts",
+                Description =
+                    "Parts and assemblies. list reads parts, assemblies and, for element_ids, their parts/assembly. Writes, " +
+                    "rehearsed then applied with the token and re-read, rolled back on any mismatch: create_parts (elements valid " +
+                    "for parts), divide_parts (parts cut by reference_ids: levels, grids, reference planes), exclude_parts, " +
+                    "restore_parts, dissolve_parts (removes the parts of element_ids; originals stay), create_assembly (members, " +
+                    "naming_category_id defaulting to the first member's, optional name), assembly_views (assembly views and " +
+                    "part list), disassemble (removes the assembly; members stay).",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""create_parts"", ""divide_parts"", ""exclude_parts"", ""restore_parts"", ""dissolve_parts"", ""create_assembly"", ""assembly_views"", ""disassemble""] },
+    ""element_ids"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""reference_ids"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""integer"" } },
+    ""assembly_id"": { ""type"": ""integer"" }, ""naming_category_id"": { ""type"": ""integer"" }, ""name"": { ""type"": ""string"" },
+    ""views"": { ""type"": ""array"", ""items"": { ""enum"": [""3d"", ""plan"", ""section_a"", ""section_b"", ""elevation_front"", ""part_list""] } },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_detail_2d",
                 Command = "horizun_detail_2d",
                 Description =
@@ -5981,6 +6032,7 @@ namespace Horizun.Contracts
                 "horizun_fix_planimetry",
                 "horizun_pack_sheets",
                 "horizun_manage_revisions",
+                "horizun_manage_phases", "horizun_manage_assemblies_parts",
                 "horizun_connect_mep",
                 "horizun_structural_connections",
                 "horizun_manage_materials",
@@ -6081,7 +6133,9 @@ namespace Horizun.Contracts
                 // destructive, which reads the descriptions instead of a second hand-kept
                 // list. The hand-kept list had missed them for the same reason it missed the
                 // other three: it records what somebody remembered, not what the tools do.
-                "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors"
+                "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
+                // dissolve_parts removes parts and every edit made to them; disassemble removes the assembly.
+                "horizun_manage_assemblies_parts"
             };
 
             // MCP's openWorldHint. Effect already covers ExternalSideEffect and
