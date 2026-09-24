@@ -107,6 +107,8 @@ namespace Horizun.Revit.Commands
                     if (a["overrides"] != null) ReadOverrides(doc, a["overrides"] as JObject);
                     if (a["visible"] != null && a["visible"].Type != JTokenType.Boolean)
                         throw new ArgumentException("visible must be a boolean when given");
+                    if (a["enabled"] != null && a["enabled"].Type != JTokenType.Boolean)
+                        throw new ArgumentException("enabled must be a boolean when given");
                     break;
                 }
 
@@ -168,10 +170,20 @@ namespace Horizun.Revit.Commands
                 case "set_category_visibility":
                 {
                     View view = GraphicsView(doc, a, known);
-                    ElementId category = ResolveCategory(doc, a.Value<string>("category"));
-                    if (a["hidden"] == null || a["hidden"].Type != JTokenType.Boolean)
-                        throw new ArgumentException("hidden is required and must be a boolean");
-                    RequireCategoryHideable(doc, view, category, a.Value<string>("category"));
+                    ElementId category = ResolveVisibilityCategory(doc, a);
+                    bool hasHidden = a["hidden"] != null && a["hidden"].Type == JTokenType.Boolean;
+                    if (!hasHidden && a["overrides"] == null)
+                        throw new ArgumentException("set_category_visibility needs hidden (a boolean), overrides, or both - an action with neither changes nothing.");
+                    if (a["hidden"] != null && !hasHidden) throw new ArgumentException("hidden must be a boolean");
+                    RequireCategoryVgNotTemplated(doc, view, category);
+                    if (hasHidden) RequireCategoryHideable(doc, view, category, a.Value<string>("category"));
+                    if (a["overrides"] != null)
+                    {
+                        if (view != null && !view.IsCategoryOverridable(category))
+                            throw new ArgumentException("category '" + a.Value<string>("category") + "' cannot take graphic overrides in view '" +
+                                view.Name + "' (View.IsCategoryOverridable is false). Nothing was written.");
+                        ReadOverrides(doc, a["overrides"] as JObject);
+                    }
                     break;
                 }
             }
@@ -204,6 +216,7 @@ namespace Horizun.Revit.Commands
                     JObject overrides = a["overrides"] as JObject;
                     if (overrides != null) view.SetFilterOverrides(filterId, ReadOverrides(doc, overrides));
                     if (a["visible"] != null) view.SetFilterVisibility(filterId, a.Value<bool>("visible"));
+                    if (a["enabled"] != null) view.SetIsFilterEnabled(filterId, a.Value<bool>("enabled"));
                     a["__filter_id"] = Rid.Value(filterId);
                     return view;
                 }
@@ -246,8 +259,9 @@ namespace Horizun.Revit.Commands
                 case "set_category_visibility":
                 {
                     View view = GraphicsViewApply(doc, a, aliases);
-                    ElementId category = ResolveCategory(doc, a.Value<string>("category"));
-                    view.SetCategoryHidden(category, a.Value<bool>("hidden"));
+                    ElementId category = ResolveVisibilityCategory(doc, a);
+                    if (a["hidden"] != null) view.SetCategoryHidden(category, a.Value<bool>("hidden"));
+                    if (a["overrides"] != null) view.SetCategoryOverrides(category, ReadOverrides(doc, a["overrides"] as JObject));
                     a["__category_id"] = Rid.Value(category);
                     return view;
                 }
@@ -343,6 +357,8 @@ namespace Horizun.Revit.Commands
                     if (!view.GetFilters().Contains(filterId)) return false;
                     if (action["visible"] != null &&
                         view.GetFilterVisibility(filterId) != action.Value<bool>("visible")) return false;
+                    if (action["enabled"] != null &&
+                        view.GetIsFilterEnabled(filterId) != action.Value<bool>("enabled")) return false;
                     // The overrides are re-READ rather than assumed: a template that
                     // governs filters accepts the call and keeps its own value, and the
                     // only way to know which happened is to ask the view afterwards.
@@ -408,7 +424,10 @@ namespace Horizun.Revit.Commands
                     if (!(e is View categoryView)) return false;
                     long raw = action.Value<long?>("__category_id") ?? -1;
                     if (!Rid.CanRepresent(raw)) return false;
-                    return categoryView.GetCategoryHidden(Rid.Make(raw)) == action.Value<bool>("hidden");
+                    ElementId categoryId = Rid.Make(raw);
+                    if (action["hidden"] != null && categoryView.GetCategoryHidden(categoryId) != action.Value<bool>("hidden")) return false;
+                    return action["overrides"] == null ||
+                           OverridesMatch(categoryView.GetCategoryOverrides(categoryId), action["overrides"] as JObject);
                 }
             }
             return false;
@@ -486,7 +505,8 @@ namespace Horizun.Revit.Commands
                 "view '" + view.Name + "' does not accept " + what + ": View.AreGraphicsOverridesAllowed() is " +
                 "false. Its view template is " + template + ", and a template that governs V/G takes the write " +
                 "silently - Revit would accept this call and keep the template's value. Nothing was written. " +
-                "Duplicate the view without the template, or change the template itself.");
+                "Duplicate the view without the template, or change the template itself" +
+                (view.ViewTemplateId != ElementId.InvalidElementId ? " by sending the same action with view_id=" + Rid.Value(view.ViewTemplateId) : "") + ".");
         }
 
         private static void RequireCategoryHideable(Document doc, View view, ElementId category, string name)
@@ -888,6 +908,19 @@ namespace Horizun.Revit.Commands
             bool? halftone = o.Value<bool?>("halftone");
             if (halftone != null) settings.SetHalftone(halftone.Value);
 
+            string pattern = o.Value<string>("line_pattern");
+            if (!string.IsNullOrWhiteSpace(pattern))
+            {
+                ElementId patternId = string.Equals(pattern, "Solid", StringComparison.OrdinalIgnoreCase)
+                    ? LinePatternElement.GetSolidPatternId()
+                    : LinePatternElement.GetLinePatternElementByName(doc, pattern)?.Id;
+                if (patternId == null)
+                    throw new ArgumentException("line_pattern '" + pattern + "' is not a line pattern in this document (or 'Solid').");
+                settings.SetProjectionLinePatternId(patternId);
+                settings.SetCutLinePatternId(patternId);
+                o["__line_pattern_id"] = Rid.Value(patternId);
+            }
+
             int? weight = o.Value<int?>("line_weight");
             if (weight != null)
             {
@@ -944,11 +977,46 @@ namespace Horizun.Revit.Commands
                 bool? halftone = wanted.Value<bool?>("halftone");
                 if (halftone != null && actual.Halftone != halftone.Value) return false;
 
+                long? pattern = wanted.Value<long?>("__line_pattern_id");
+                if (pattern != null && Rid.Value(actual.ProjectionLinePatternId) != pattern.Value) return false;
+
                 int? weight = wanted.Value<int?>("line_weight");
                 if (weight != null && actual.ProjectionLineWeight != weight.Value) return false;
             }
             catch { return false; }
             return true;
+        }
+
+        /// <summary>The category, or its named subcategory (V/G rows are both).</summary>
+        private static ElementId ResolveVisibilityCategory(Document doc, JObject a)
+        {
+            ElementId main = ResolveCategory(doc, a.Value<string>("category"));
+            string sub = a.Value<string>("subcategory");
+            if (string.IsNullOrWhiteSpace(sub)) return main;
+            Category parent = Category.GetCategory(doc, main);
+            foreach (Category c in parent.SubCategories)
+                if (string.Equals(c.Name, sub, StringComparison.OrdinalIgnoreCase)) return c.Id;
+            throw new ArgumentException("subcategory '" + sub + "' is not under '" + parent.Name + "'. It has: " +
+                string.Join(", ", parent.SubCategories.Cast<Category>().Select(c => c.Name).Take(40)));
+        }
+
+        /// <summary>
+        /// A template that governs this category's V/G row takes any write to the view
+        /// silently. Refused with the one alternative that works: edit the template.
+        /// </summary>
+        private static void RequireCategoryVgNotTemplated(Document doc, View view, ElementId categoryId)
+        {
+            if (view == null || view.ViewTemplateId == ElementId.InvalidElementId) return;
+            View template = doc.GetElement(view.ViewTemplateId) as View;
+            Category category = Category.GetCategory(doc, categoryId);
+            bool annotation = category != null && category.CategoryType == CategoryType.Annotation;
+            if (!TemplateGoverns(template, annotation ? BuiltInParameter.VIS_GRAPHICS_ANNOTATION : BuiltInParameter.VIS_GRAPHICS_MODEL))
+                return;
+            throw new ArgumentException(
+                "view '" + view.Name + "' takes its " + (annotation ? "annotation" : "model") + " V/G from template '" +
+                template.Name + "' (id " + Rid.Value(template.Id) + "): Revit would accept this write and keep the template's " +
+                "value. Nothing was written. Edit the template instead - the same action with view_id=" + Rid.Value(template.Id) +
+                " - or release that row with set_template_controls controlled=false.");
         }
 
         private static bool SameColour(Color actual, Color wanted)

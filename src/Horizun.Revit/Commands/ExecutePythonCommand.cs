@@ -251,6 +251,18 @@ namespace Horizun.Revit.Commands
             (new Regex(@"\bPartUtils\s*\.\s*(CreateParts|DivideParts)\s*\(|\bAssemblyInstance\s*\.\s*Create\s*\(", RegexOptions.Compiled),
              "horizun_manage_assemblies_parts",
              "creates parts and assemblies and re-reads their associations and members."),
+            (new Regex(@"\bParameterFilterElement\s*\.\s*Create\s*\(|\.\s*SetElementFilter\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"create_filter\"/\"edit_filter\" builds or edits a filter's rules and re-reads them after the commit."),
+            (new Regex(@"\.\s*SetCategory(Hidden|Overrides)\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"set_category_visibility\" hides or overrides a category/subcategory and refuses a view whose template governs V/G."),
+            (new Regex(@"\bViewSchedule\s*\.\s*CreateKeySchedule\s*\(", RegexOptions.Compiled),
+             "horizun_create_schedule",
+             "key_schedule=true creates the key schedule and its key rows and re-reads them."),
+            (new Regex(@"\.\s*SetExportLayerTable\s*\(", RegexOptions.Compiled),
+             "horizun_export",
+             "format=\"dwg_layers\" writes a named DWG setup's layer table and re-reads it from a fresh lookup."),
         };
 
         /// <summary>
