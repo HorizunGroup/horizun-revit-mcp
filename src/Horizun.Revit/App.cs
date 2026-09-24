@@ -279,6 +279,8 @@ namespace Horizun.Revit
             d.Register(new ApplyCadUpdateCommand(d.ResolveCommand));
             d.Register(new CadConnectCommand(d.ResolveCommand));
             d.Register(new CadReviewCommand());
+            // Composes model_scan / audit_model in process for record_quality.
+            d.Register(new ModelDiffCommand(d.ResolveCommand));
             d.Register(new ManageCadLinksCommand());
             d.Register(new SubmitJobCommand(d.ResolveCommand, () => d.DocumentSnapshot));
             // more commands land here as they are ported.

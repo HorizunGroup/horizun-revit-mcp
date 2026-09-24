@@ -30,6 +30,10 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GroupWorksetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ArchitecturalEditRules.cs" />
+    <!-- horizun_model_diff: comparison, pairing heuristic, quality JSONL, narration. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModelDiffRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\QualityHistory.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ModelExplainRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />

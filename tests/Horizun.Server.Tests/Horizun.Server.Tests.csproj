@@ -63,6 +63,7 @@
          logical name the server uses, so the tests read the resource the shipped
          code reads rather than a file next to the test. -->
     <Compile Include="..\..\src\Horizun.Server\ProjectContext.cs" Link="ProjectContext.cs" />
+    <Compile Include="..\..\src\Horizun.Server\ModelExplainIso.cs" Link="ModelExplainIso.cs" />
     <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
     <!-- LOIN -> IDS and the bSDD lookup, with the resources under the server's logical
          names and the IDS reader the generated file is proved with. -->
