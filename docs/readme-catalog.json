@@ -129,6 +129,26 @@
           "horizun_validate_ids",
           "Check a model against an IDS specification and report each requirement it fails.",
           "Comprobar un modelo contra una especificación IDS y reportar cada requisito que incumple."
+        ],
+        [
+          "horizun_query_classification",
+          "Read the keynote and assembly-code tables, their use in the model, missing and unused codes, and families' lookup tables.",
+          "Leer las tablas de keynotes y códigos de ensamble, su uso en el modelo, códigos faltantes y sin uso, y las tablas de búsqueda de familias."
+        ],
+        [
+          "horizun_model_diff",
+          "Snapshot models and compare deliveries: added, deleted and changed elements with parameters, a coloured view, a plain summary and quality history.",
+          "Tomar instantáneas y comparar entregas: elementos añadidos, borrados y modificados con parámetros, vista coloreada, resumen y historial de calidad."
+        ],
+        [
+          "horizun_code_check",
+          "Check the model against declarative requirement sets, including Colombian accessibility, egress and lighting rules, with not_decidable instead of guesses.",
+          "Revisar el modelo contra conjuntos de requisitos declarativos, incluidas reglas colombianas de accesibilidad, evacuación e iluminación, con not_decidable en vez de suposiciones."
+        ],
+        [
+          "horizun_undo",
+          "List and undo the last verified Horizun batch, refusing when the model or file changed since.",
+          "Listar y deshacer el último lote verificado de Horizun, negándose si el modelo o el archivo cambiaron desde entonces."
         ]
       ]
     },
@@ -185,6 +205,46 @@
           "horizun_write_params_verified",
           "Write parameter values in batches and re-read each requested value.",
           "Escribir parámetros por lotes y releer cada valor solicitado."
+        ],
+        [
+          "horizun_manage_parameters",
+          "Read the full binding map, create and bind shared parameters, rebind or remove bindings, and manage Global Parameters.",
+          "Leer el mapa completo de bindings, crear y bindear parámetros compartidos, reasignarlos o quitarlos, y gestionar parámetros globales."
+        ],
+        [
+          "horizun_manage_curtain",
+          "Read and edit curtain grids: grid lines, mullions and panel types, re-measured after each change.",
+          "Leer y editar muros cortina: líneas de rejilla, montantes y tipos de panel, remedidos tras cada cambio."
+        ],
+        [
+          "horizun_slab_shape",
+          "Edit floor and roof shape: points, split lines and vertex elevations, with a reset.",
+          "Editar la forma de losas y cubiertas: puntos, líneas de división y elevación de vértices, con restablecimiento."
+        ],
+        [
+          "horizun_create_railing",
+          "Create railings on stairs or ramps, or from a sketched path on a level.",
+          "Crear barandas sobre escaleras o rampas, o desde un recorrido dibujado en un nivel."
+        ],
+        [
+          "horizun_manage_phases",
+          "Read phases, filters and design options; set element phases and create or edit phase filters.",
+          "Leer fases, filtros y opciones de diseño; asignar fases a elementos y crear o editar filtros de fase."
+        ],
+        [
+          "horizun_manage_assemblies_parts",
+          "Create, divide, exclude and dissolve parts; create assemblies with their views and disassemble them.",
+          "Crear, dividir, excluir y disolver partes; crear ensamblajes con sus vistas y desensamblarlos."
+        ],
+        [
+          "horizun_manage_styles",
+          "Read and set object styles, subcategories, line styles, line patterns and fill patterns.",
+          "Leer y ajustar estilos de objeto, subcategorías, estilos de línea, patrones de línea y de relleno."
+        ],
+        [
+          "horizun_manage_units",
+          "Read and set project units, Project Information and the base and survey points (with explicit consent).",
+          "Leer y ajustar unidades del proyecto, información del proyecto y los puntos base y de reconocimiento (con consentimiento explícito)."
         ]
       ]
     },
@@ -418,6 +478,26 @@
           "horizun_structural_connections",
           "Read and apply structural connection types between framing elements.",
           "Leer y aplicar tipos de conexión estructural entre elementos de estructura."
+        ],
+        [
+          "horizun_mep_routing",
+          "Read and edit routing preferences and catalogue sizes, resize MEP runs to catalogue sizes and plan sizes by flow.",
+          "Leer y editar preferencias de enrutamiento y tamaños de catálogo, redimensionar tramos MEP y planear tamaños por caudal."
+        ],
+        [
+          "horizun_electrical",
+          "List panels and circuits, create circuits, assign panels, add or remove elements and create panel schedules.",
+          "Listar tableros y circuitos, crear circuitos, asignar tableros, añadir o quitar elementos y crear cuadros de carga."
+        ],
+        [
+          "horizun_resolve_clash",
+          "Propose and apply the smallest safe move for MEP clashes, proved by re-detecting and rolled back if anything new clashes.",
+          "Proponer y aplicar el menor movimiento seguro para clashes MEP, probado redetectando y revertido si aparece un clash nuevo."
+        ],
+        [
+          "horizun_federation_check",
+          "Check that each federated model holds only its disciplines, its expected links and coherent shared coordinates.",
+          "Comprobar que cada modelo federado contiene solo sus disciplinas, sus vínculos esperados y coordenadas compartidas coherentes."
         ]
       ]
     },
@@ -469,6 +549,16 @@
           "horizun_grade_toposolid_around_floors",
           "Grade terrain around floors with offsets, breaklines and specified side slopes.",
           "Conformar terreno alrededor de suelos con desfases, líneas de quiebre y taludes definidos."
+        ],
+        [
+          "horizun_manage_groups",
+          "List, create, redefine, rename, duplicate and swap model group types, asking before touching other instances.",
+          "Listar, crear, redefinir, renombrar, duplicar y cambiar tipos de grupo de modelo, preguntando antes de tocar otras instancias."
+        ],
+        [
+          "horizun_manage_worksets",
+          "List, create and rename worksets, move elements between them and set per-view visibility.",
+          "Listar, crear y renombrar worksets, mover elementos entre ellos y ajustar su visibilidad por vista."
         ]
       ]
     },
@@ -510,6 +600,11 @@
           "horizun_export",
           "Export PDF, DWG, IFC, NWC, FBX, images and schedule CSV with output-file verification.",
           "Exportar PDF, DWG, IFC, NWC, FBX, imágenes y CSV de tablas verificando los archivos resultantes."
+        ],
+        [
+          "horizun_link_schedule",
+          "Import MS Project, Primavera or CSV schedules, link activities to elements, write dates and colour a 4D status view.",
+          "Importar cronogramas de MS Project, Primavera o CSV, vincular actividades a elementos, escribir fechas y colorear una vista de estado 4D."
         ]
       ]
     },
