@@ -5333,8 +5333,13 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_catalog_lookup",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
+                // The bSDD operations (2026-09-24) live here rather than in a tool of their own:
+                // both look classification up, and tools/list has a 512 KiB budget. Detail in
+                // docs/INFORMATION-MANAGEMENT.md (bSDD lookup) and BsddLookup.cs.
                 Description =
-                    "Resolve whether a hierarchical code is a LEAF of a catalog you pass at call time. Generic: " +
+                    "operation=bsdd_search|bsdd_search_dictionary|bsdd_class|bsdd_property|bsdd_dictionaries: " +
+                    "read-only buildingSMART Data Dictionary lookup (cached, capped; bsdd_class adds loin_property " +
+                    "suggestions). Default operation=leaf: resolve whether a hierarchical code is a LEAF of a catalog you pass at call time. Generic: " +
                     "the catalog is a file (catalog_path), no codes are baked in. A code is a LEAF iff it EXISTS in " +
                     "the catalog AND no OTHER code is its strict descendant (no other code begins with code + the " +
                     "hierarchy separator). HONESTY: a code that is NOT in the catalog returns is_leaf=null (unknown) " +
@@ -5347,8 +5352,17 @@ namespace Horizun.Contracts
                     "count, so the verdict is auditable. Read-only; touches no Revit model.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
-  ""required"": [""catalog_path"", ""code""],
   ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""leaf"", ""bsdd_search"", ""bsdd_search_dictionary"", ""bsdd_class"", ""bsdd_property"", ""bsdd_dictionaries""] },
+    ""text"": { ""type"": ""string"" },
+    ""uri"": { ""type"": ""string"", ""description"": ""bSDD class, property or dictionary URI."" },
+    ""dictionary_uris"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""related_ifc_entity"": { ""type"": ""string"" },
+    ""language_code"": { ""type"": ""string"" },
+    ""offset"": { ""type"": ""integer"" },
+    ""limit"": { ""type"": ""integer"" },
+    ""refresh"": { ""type"": ""boolean"" },
+    ""max_age_hours"": { ""type"": ""integer"" },
     ""catalog_path"": { ""type"": ""string"",
       ""description"": ""Absolute path to the catalog CSV. Codes are read from the FIRST comma-separated field of every non-blank line (a plain one-code-per-line file works too). A missing or unreadable file is an ERROR, not an empty catalog â€” the tool never answers off a file it could not read."" },
     ""code"": { ""type"": ""string"",
@@ -5374,12 +5388,12 @@ namespace Horizun.Contracts
                     "file or an empty context and validates it; dry_run defaults to true, dry_run=false writes and then " +
                     "re-reads the file, never replaces one without overwrite=true, and never writes an invalid context " +
                     "or a credential. elicit asks them via MCP elicitation forms (else code elicitation_unsupported: " +
-                    "ask in chat). Nothing is inferred to fill a gap.",
+                    "ask in chat). Nothing is inferred to fill a gap. ids_from_loin: loin (ISO 7817-1) to a validated IDS 1.0.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""required"": [""operation""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""schema"", ""validate"", ""questions"", ""draft"", ""elicit""],
+    ""operation"": { ""type"": ""string"", ""enum"": [""schema"", ""validate"", ""questions"", ""draft"", ""elicit"", ""ids_from_loin""],
       ""description"": ""schema: the JSON Schema. validate: check a file (path required). questions: the ordered intake questions still open (path optional; without it, all of them). draft: build a context from answers (path optional; required with dry_run=false). elicit: ask them via the client's forms, apply like draft."" },
     ""path"": { ""type"": ""string"",
       ""description"": ""Absolute path of the project-context.json. draft builds ON TOP of an existing file, so a second intake round fills gaps instead of erasing the first."" },
@@ -5392,7 +5406,11 @@ namespace Horizun.Contracts
     ""language"": { ""type"": ""string"", ""enum"": [""es"", ""en""], ""default"": ""en"" },
     ""timeout_seconds"": { ""type"": ""integer"", ""minimum"": 10, ""maximum"": 540, ""default"": 300 },
     ""include_answered"": { ""type"": ""boolean"", ""default"": false,
-      ""description"": ""questions: also list the answered and not-applicable questions, with their current values."" }
+      ""description"": ""questions: also list the answered and not-applicable questions, with their current values."" },
+    ""output_path"": { ""type"": ""string"" },
+    ""requirement_ids"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""milestone"": { ""type"": ""string"" },
+    ""info"": { ""type"": ""object"" }
   },
   ""additionalProperties"": false
 }")

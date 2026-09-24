@@ -130,6 +130,14 @@ namespace Horizun.Server
         internal static JObject Handle(JObject args, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            // The bSDD operations share this tool (both look classification up) and answer
+            // from BsddLookup.cs. Without an operation, this is the leaf check, exactly as before.
+            string operation = args?["operation"] is JValue op && op.Type == JTokenType.String ? (string)op : "leaf";
+            if (operation.StartsWith(BsddLookup.OperationPrefix, StringComparison.Ordinal))
+                return BsddLookup.Handle(args, cancellationToken);
+            if (operation != "leaf")
+                throw new ArgumentException("Unknown operation '" + operation + "'. Use leaf (default), bsdd_search, " +
+                                            "bsdd_search_dictionary, bsdd_class, bsdd_property or bsdd_dictionaries.");
             string catalogPath = (string)args?["catalog_path"];
             string code = (string)args?["code"];
             string separator = (string)args?["separator"];

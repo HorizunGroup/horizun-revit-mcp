@@ -64,6 +64,15 @@
          code reads rather than a file next to the test. -->
     <Compile Include="..\..\src\Horizun.Server\ProjectContext.cs" Link="ProjectContext.cs" />
     <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
+    <!-- LOIN -> IDS and the bSDD lookup, with the resources under the server's logical
+         names and the IDS reader the generated file is proved with. -->
+    <Compile Include="..\..\src\Horizun.Server\LoinIds.cs" Link="LoinIds.cs" />
+    <Compile Include="..\..\src\Horizun.Server\BsddLookup.cs" Link="BsddLookup.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsDocument.cs" Link="IdsDocument.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\IdsRestriction.cs" Link="IdsRestriction.cs" />
+    <EmbeddedResource Include="..\..\schemas\ids\ids-1.0.xsd" LogicalName="Horizun.Schemas.ids-1.0.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\xmlschema-subset.xsd" LogicalName="Horizun.Schemas.xmlschema-subset.xsd" />
+    <EmbeddedResource Include="..\..\schemas\ids\ifc-entities.txt" LogicalName="Horizun.Schemas.ifc-entities.txt" />
     <Compile Include="..\..\src\Horizun.Server\ExcelWriteRows.cs" Link="ExcelWriteRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\ExcelReadRows.cs" Link="ExcelReadRows.cs" />
     <Compile Include="..\..\src\Horizun.Server\PowerBiPush.cs" Link="PowerBiPush.cs" />
