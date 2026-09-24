@@ -88,6 +88,10 @@
          status strings it emits are pinned to CodeStatus by a Core test rather than
          by linking the readiness chain that CodeStatus lives beside. -->
     <Compile Include="..\Horizun.Revit\Core\BudgetComparisonRules.cs" />
+    <!-- ISO 19650 information containers: naming, validation and the verified sidecar.
+         Revit-free and net48-safe, because horizun_export compiles the same file into the
+         add-in to name and stamp what it produces. -->
+    <Compile Include="..\Horizun.Revit\Core\InformationContainer.cs" />
     <!-- The repair memory. Revit-free by design: the normalisation, the matching and
          the quarantine rules are arithmetic over strings, and the tool that works them
          answers in this process because the moment somebody most wants to ask "has this

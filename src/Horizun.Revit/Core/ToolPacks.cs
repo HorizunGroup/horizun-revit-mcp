@@ -145,7 +145,7 @@ namespace Horizun.Revit.Core
                 ["coordination"] = new[]
                 {
                     "horizun_clash", "horizun_coordination", "horizun_acc_upload_status", "horizun_file_info",
-                    "horizun_quantities", "horizun_manage_links", "horizun_budget_compare",
+                    "horizun_quantities", "horizun_manage_links", "horizun_budget_compare", "horizun_information_container",
                     // The project's ISO 19650 context: CDE states, naming, MIDP - what
                     // coordination is measured against. Host-resident, never touches Revit.
                     "horizun_project_context"
@@ -165,7 +165,7 @@ namespace Horizun.Revit.Core
                     "horizun_export", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
                     "horizun_manage_links", "horizun_budget_compare", "horizun_run_procedure",
                     "horizun_validate_ids", "horizun_coordination", "horizun_plan_from_ifc",
-                    "horizun_apply_ifc_plan", "horizun_create_elements", "horizun_project_context"
+                    "horizun_apply_ifc_plan", "horizun_create_elements", "horizun_project_context", "horizun_information_container"
                 },
                 ["powerbi"] = new[]
                 {

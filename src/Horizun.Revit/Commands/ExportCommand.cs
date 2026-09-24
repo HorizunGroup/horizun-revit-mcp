@@ -38,6 +38,29 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return CommandResult.Fail("output_path is invalid: " + ex.Message); }
             if (!ExpectedExtension(format, output))
                 return CommandResult.Fail("output_path extension does not match format=" + format + ". Use " + ExpectedExtensionDescription(format) + ".");
+
+            // ---- ISO 19650 information container (optional). ----
+            // Validated BEFORE anything else is decided, so an invalid container refuses
+            // here with every problem named and nothing exported. With a valid one the
+            // produced file takes the container's name (directory and extension from
+            // output_path) and, after the export is verified, a sidecar is written beside
+            // it and read back. Without the argument nothing below changes.
+            ContainerSpec container = null; ContainerValidation containerCheck = null; string requestedOutput = null;
+            if (request["information_container"] != null && request["information_container"].Type != JTokenType.Null)
+            {
+                if (format == "image")
+                    return CommandResult.Fail("information_container cannot name an image export: Revit derives image file names " +
+                        "from the view, so the file produced would not carry the container's name. Nothing was exported.");
+                try { container = InformationContainer.ParseSpec(request["information_container"]); }
+                catch (ContainerRuleException ex) { return CommandResult.Fail("information_container refused: " + ex.Message + " Nothing was exported."); }
+                containerCheck = InformationContainer.Validate(container, true);
+                if (!containerCheck.Valid)
+                    return CommandResult.FailWithDetail("information_container does not validate: " +
+                        string.Join("; ", containerCheck.Problems.Select(p => (string)p["field"] + ": " + (string)p["reason"])) +
+                        ". Nothing was exported.", new JObject { ["information_container"] = containerCheck.ToJson() });
+                requestedOutput = output;
+                output = InformationContainer.ContainerOutputPath(output, containerCheck);
+            }
             string folder = System.IO.Path.GetDirectoryName(output);
             if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder))
                 return CommandResult.Fail("The output directory does not exist: " + folder + ". It is not created implicitly.");
@@ -145,6 +168,12 @@ namespace Horizun.Revit.Commands
             bool emitManifest = request.Value<bool?>("emit_manifest") ?? false;
             if (format != "pdf" && (request["pdf_combine"] != null || emitManifest || request["pdf_print"] != null))
                 return CommandResult.Fail("pdf_combine, emit_manifest and pdf_print are PDF-only options.");
+            if (container != null && format == "pdf" && !pdfCombine)
+                return CommandResult.Fail("information_container names ONE file; pdf_combine=false produces one file per view. " +
+                    "Export combined, or export each view with its own container. Nothing was exported.");
+            if (container != null && File.Exists(InformationContainer.SidecarPath(output)))
+                return CommandResult.Fail("An information-container sidecar already exists at " + InformationContainer.SidecarPath(output) +
+                    " and is never overwritten, whatever overwrite says. Nothing was exported.");
             // THE PRINT POLICY. Parsed before anything else is decided so that a
             // wrong field refuses here, by name, and is never silently dropped on
             // the way to the exporter. Absent -> the policy defaults, with nothing
@@ -202,7 +231,7 @@ namespace Horizun.Revit.Commands
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error", "pdf_combine", "emit_manifest",
-                "pdf_print", "units", "delivery_id");
+                "pdf_print", "units", "delivery_id", "information_container");
             // ---- The MATERIALISED plan: the SOURCES and the DESTINATION as they stand. --
             // An export publishes the model outward, and two ambient facts shape what
             // lands on disk: WHICH views/schedule the ids resolve to - a renamed or
@@ -264,6 +293,12 @@ namespace Horizun.Revit.Commands
                     ["exporter_available"] = exporterAvailable,
                     ["note"] = "Nothing was exported and no file was created."
                 };
+                if (container != null)
+                    result["information_container"] = new JObject
+                    {
+                        ["validation"] = containerCheck.ToJson(), ["requested_output_path"] = requestedOutput,
+                        ["container_output_path"] = output, ["sidecar_path"] = InformationContainer.SidecarPath(output)
+                    };
                 if (gateDecision.Requested) result["prevention"] = gateDecision.Prevention;
                 if (exporterAvailable) DocumentGate.RecordResolvedPlan(resolvedPlan);
                 DocumentGate.StampConfirmation(result, gate, Name, planHash, exporterAvailable,
@@ -481,6 +516,36 @@ namespace Horizun.Revit.Commands
                 }
                 catch(Exception ex) { return CommandResult.FailWithDetail("PDF package verification failed: "+ex.Message,
                     new JObject { ["files"]=files,["pdf_evidence"]=verifiedPdf,["external_files_may_exist"]=true,["rollback_available"]=false }); }
+            }
+            if (container != null)
+            {
+                // The container names ONE file, the effective output. Revit not producing
+                // it means no sidecar: the other files exist and are reported, but none of
+                // them is sealed as the container.
+                if (!produced.Contains(output, StringComparer.OrdinalIgnoreCase))
+                    return CommandResult.FailWithDetail("The export ran but did not produce " + output + ", the file the information " +
+                        "container names. No sidecar was written.", new JObject { ["files"] = files,
+                        ["external_files_may_exist"] = true, ["rollback_available"] = false });
+                try
+                {
+                    long containerBytes;
+                    string containerSha = InformationContainer.Sha256File(output, out containerBytes);
+                    JObject sidecar = InformationContainer.BuildSidecar(container, containerCheck, output, containerBytes, containerSha,
+                        Name, doc.Title, hostYear.ToString(CultureInfo.InvariantCulture), DateTime.UtcNow,
+                        new JObject { ["state"] = JValue.CreateNull(), ["format"] = format });
+                    JObject evidence = InformationContainer.WriteSidecarVerified(output, sidecar);
+                    exportResult["information_container"] = new JObject
+                    {
+                        ["name"] = containerCheck.Name, ["file"] = output, ["requested_output_path"] = requestedOutput,
+                        ["sidecar"] = sidecar, ["verification"] = evidence, ["warnings"] = containerCheck.Warnings
+                    };
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException)
+                {
+                    return CommandResult.FailWithDetail("The export was produced and verified, but its information-container sidecar " +
+                        "could not be written and verified: " + ex.Message, new JObject { ["files"] = files,
+                        ["external_files_may_exist"] = true, ["rollback_available"] = false });
+                }
             }
             if (gateDecision.Requested) exportResult["prevention"] = gateDecision.Prevention;
             return CommandResult.Ok(exportResult);

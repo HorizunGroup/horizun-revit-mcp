@@ -246,7 +246,8 @@ namespace Horizun.Server.Tests
             var enforced = new Dictionary<string, string>(StringComparer.Ordinal)
             {
                 ["horizun_budget_compare"] = Path.Combine("src", "Horizun.Server", "BudgetCompare.cs"),
-                ["horizun_project_context"] = Path.Combine("src", "Horizun.Server", "ProjectContext.cs")
+                ["horizun_project_context"] = Path.Combine("src", "Horizun.Server", "ProjectContext.cs"),
+                ["horizun_information_container"] = Path.Combine("src", "Horizun.Server", "InformationContainerTool.cs")
             };
 
             var carrying = Contract.All

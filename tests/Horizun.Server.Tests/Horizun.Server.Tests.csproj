@@ -71,6 +71,8 @@
          proved against a disposable workbook and the Power BI one in dry_run only. -->
     <Compile Include="..\..\src\Horizun.Server\BudgetCompare.cs" Link="BudgetCompare.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BudgetComparisonRules.cs" Link="BudgetComparisonRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\InformationContainer.cs" Link="InformationContainer.cs" />
+    <Compile Include="..\..\src\Horizun.Server\InformationContainerTool.cs" Link="InformationContainerTool.cs" />
     <!-- The repair memory and the tool that works it. The property worth proving here is
          the privacy one: that nothing specific survives normalisation, and that a message
          the redactor could not clean is never written at all. -->

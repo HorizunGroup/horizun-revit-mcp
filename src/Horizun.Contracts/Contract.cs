@@ -1295,6 +1295,7 @@ namespace Horizun.Contracts
     ""fbx_lod"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 15, ""default"": 8 },
     ""fbx_stop_on_error"": { ""type"": ""boolean"", ""default"": true },
     ""overwrite"": { ""type"": ""boolean"", ""default"": false },
+    ""information_container"": { ""type"": ""object"", ""description"": ""Optional ISO 19650 container (same object as horizun_information_container: fields, field_order, separator, field_patterns, status, revision, title, status_codes, revision_patterns, file_name). Validated BEFORE anything is exported - an invalid one refuses with every problem named. The produced file takes the container's name (directory and extension from output_path) and, after the export is verified, '<file>.container.json' is written beside it with its SHA-256 and read back. status and revision are required. Not accepted for image, nor for PDF with pdf_combine=false (one container is one file); an existing sidecar is never overwritten."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
     ""require_gate"": " + RequireGateSchema + @"
   }, ""additionalProperties"": false
@@ -5055,6 +5056,53 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_information_container",
+                Command = null,           // host-resident: answered in the server, never forwarded to Revit
+                Description =
+                    "ISO 19650 information containers and CDE states over LOCAL or SYNCED folders - never a cloud API. " +
+                    "name: compose a container name from ordered fields and validate every field, the suitability " +
+                    "status and the revision (ISO 19650-2 defaults when no rules are passed, reported as defaults). " +
+                    "stamp: write '<file>.container.json' (name, fields, status, revision, bytes, SHA-256) for an " +
+                    "existing file whose name matches the container; read back exactly and the file re-hashed. " +
+                    "verify: does the file still match its sidecar - a changed hash means modified after sealing. " +
+                    "inspect: walk the wip/shared/published/archived folders (or a project-context.json) and report, " +
+                    "paginated, non-compliant names, files without sidecar, orphan sidecars, hash mismatches, one " +
+                    "revision with two contents, published revisions below shared ones, and MIDP deliverables that are " +
+                    "missing, in an insufficient status or overdue. transition: COPY a sealed container to the next " +
+                    "state (wip->shared->published->archived), rename, stamp, verify by SHA-256 and append to " +
+                    "<root>/.horizun/cde-transitions.jsonl; shared->published requires approved_by. It never moves, " +
+                    "deletes or overwrites. stamp and transition rehearse by default (dry_run=true); writing needs " +
+                    "full_write. Organisation-neutral: every concrete code and folder is an argument.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""name"", ""stamp"", ""verify"", ""inspect"", ""transition""] },
+    ""information_container"": { ""type"": ""object"", ""description"": ""name/stamp: { fields: {field: code}, field_order: [..] (optional only for the seven ISO fields project, originator, volume, level, type, role, number), separator ('-'), field_patterns: {field: regex} (full match; merged over the ISO defaults), status, revision, title, status_codes: {code: description} (ordered; replaces the ISO list), revision_patterns: {kind: regex} (replaces preliminary/contractual), file_name: 'name' | 'name_status_revision' }. Unknown keys are refused."" },
+    ""naming"": { ""type"": ""object"", ""description"": ""verify/inspect/transition: the rules only - the same keys as information_container without fields/status/revision/title. Omitted: the project context's naming, else the ISO 19650-2 defaults."" },
+    ""file_path"": { ""type"": ""string"", ""description"": ""stamp/verify: the container file. transition: the SOURCE file, inside the from_state folder and already stamped."" },
+    ""root"": { ""type"": ""string"", ""description"": ""Absolute CDE root that relative state folders resolve against; also where .horizun/cde-transitions.jsonl lives."" },
+    ""states"": { ""type"": ""object"", ""additionalProperties"": { ""type"": ""string"" }, ""description"": ""{ wip, shared, published, archived }: folder per ISO 19650 state, absolute or relative to root. State folders are never created."" },
+    ""project_context_path"": { ""type"": ""string"", ""description"": ""Absolute path to a project-context.json (schema_version 1): cde.root, cde.states, cde.approvals, naming and deliverables are read from it. Explicit arguments win."" },
+    ""deliverables"": { ""type"": ""array"", ""items"": { ""type"": ""object"", ""required"": [""container""], ""properties"": { ""container"": { ""type"": ""string"" }, ""title"": { ""type"": ""string"" }, ""task_team"": { ""type"": ""string"" }, ""due"": { ""type"": ""string"" }, ""required_status"": { ""type"": ""string"" }, ""format"": { ""type"": ""string"" }, ""milestone"": { ""type"": ""string"" } } }, ""description"": ""inspect: MIDP rows to cross; overrides the project context's deliverables."" },
+    ""as_of"": { ""type"": ""string"", ""description"": ""inspect: YYYY-MM-DD used to judge 'overdue'. Default: today (UTC)."" },
+    ""offset"": { ""type"": ""integer"", ""minimum"": 0, ""default"": 0 },
+    ""limit"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 1000, ""default"": 200 },
+    ""max_files"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 200000, ""default"": 20000, ""description"": ""inspect: files walked before stopping; a stopped walk reports coverage_complete=false."" },
+    ""from_state"": { ""type"": ""string"", ""enum"": [""wip"", ""shared"", ""published""] },
+    ""to_state"": { ""type"": ""string"", ""enum"": [""shared"", ""published"", ""archived""] },
+    ""status"": { ""type"": ""string"", ""description"": ""transition: the status in the destination state (default: the source's). Must belong to to_state (S* shared, A*/B*/CR published)."" },
+    ""revision"": { ""type"": ""string"", ""description"": ""transition: the revision in the destination (default: the source's)."" },
+    ""approved_by"": { ""type"": ""string"", ""description"": ""transition: who authorised it. REQUIRED for shared->published; recorded in the sidecar and the log."" },
+    ""note"": { ""type"": ""string"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""stamp/transition: true rehearses every check and writes nothing."" },
+    ""source_document"": { ""type"": ""string"", ""description"": ""stamp: provenance recorded in the sidecar."" },
+    ""revit_year"": { ""type"": ""string"", ""description"": ""stamp: provenance recorded in the sidecar."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_excel_read_rows",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
@@ -5557,7 +5605,11 @@ namespace Horizun.Contracts
                 "horizun_budget_compare",
                 // Reads and validates by default; writes project-context.json only on
                 // draft with dry_run=false, and asks Settings.AllowsExternalSideEffect first.
-                "horizun_project_context"
+                "horizun_project_context",
+                // name/verify/inspect only read; stamp and transition write a sidecar, a copy
+                // and a log line - and only with dry_run=false, which the handler gates
+                // through Settings.AllowsExternalSideEffect. Nothing is ever overwritten.
+                "horizun_information_container"
             };
 
             // Steers the host and leaves no artefact: which Revit answers, what is
