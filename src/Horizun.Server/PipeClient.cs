@@ -387,6 +387,7 @@ namespace Horizun.Server
             string wireId = Guid.NewGuid().ToString("N");
             bool possiblySubmitted = false, cancelledBeforeStart = false;
             string phase = "connect";
+            var sendClock = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 ct.ThrowIfCancellationRequested();
@@ -455,9 +456,11 @@ namespace Horizun.Server
                         if (cancel.CancelledBeforeStart == true)
                             throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. The request " +
                                 "was still waiting in Revit's FIFO queue and was removed. It NEVER STARTED: nothing " +
-                                "was executed and nothing was written.");
+                                "was executed and nothing was written. " +
+                                RetrySentence(args, true, sendClock.ElapsedMilliseconds));
                         throw new TimeoutException("No reply from Revit within " + timeoutMs + " ms. " +
-                            CancellationUncertainty(command, cancel));
+                            CancellationUncertainty(command, cancel) + " " +
+                            RetrySentence(args, false, sendClock.ElapsedMilliseconds));
                     }
 
                     if (waited == 1)
@@ -467,10 +470,12 @@ namespace Horizun.Server
                         if (cancel.CancelledBeforeStart == true)
                             throw new OperationCanceledException(
                                 "Cancelled while waiting for Revit to answer '" + command + "'. The request was still " +
-                                "in the FIFO queue and was removed before it started. Nothing was executed or written.", ct);
+                                "in the FIFO queue and was removed before it started. Nothing was executed or written. " +
+                                RetrySentence(args, true, sendClock.ElapsedMilliseconds), ct);
                         throw new OperationCanceledException(
                             "Cancelled while waiting for Revit to answer '" + command + "'. " +
-                            CancellationUncertainty(command, cancel), ct);
+                            CancellationUncertainty(command, cancel) + " " +
+                            RetrySentence(args, false, sendClock.ElapsedMilliseconds), ct);
                     }
 
                     BoundedLine reply = task.Result;
@@ -492,7 +497,8 @@ namespace Horizun.Server
             catch (Exception ex)
             {
                 bool nothingStarted = !possiblySubmitted || cancelledBeforeStart;
-                ex.Data["horizun_transport_detail"] = new JObject
+                bool hasKey = CancellationAdvice.HasKey(args);
+                var detail = new JObject
                 {
                     ["code"] = "revit_transport_failed",
                     ["tool"] = command,
@@ -505,11 +511,21 @@ namespace Horizun.Server
                     ["cancelled_before_start"] = cancelledBeforeStart,
                     ["write_started"] = nothingStarted ? (JToken)false : null,
                     ["changes_applied"] = nothingStarted ? (JToken)false : null,
-                    ["transaction_status"] = nothingStarted ? "not_started" : "unknown"
+                    ["transaction_status"] = nothingStarted ? "not_started" : "unknown",
+                    // What an identical retry does, machine-readable: runs freshly,
+                    // replays the durable record, or cannot be proven. See CancellationAdvice.
+                    ["retry"] = CancellationAdvice.ToJson(CancellationAdvice.Classify(nothingStarted, hasKey),
+                        hasKey, CancellationAdvice.BatchSize(args), sendClock.ElapsedMilliseconds)
                 };
+                ex.Data["horizun_transport_detail"] = detail;
                 throw;
             }
         }
+
+        private static string RetrySentence(JObject args, bool nothingStarted, long elapsedMs)
+            => CancellationAdvice.Sentence(
+                CancellationAdvice.Classify(nothingStarted, CancellationAdvice.HasKey(args)),
+                CancellationAdvice.BatchSize(args), elapsedMs);
 
         private sealed class CancelAttempt
         {

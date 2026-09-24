@@ -65,6 +65,11 @@ namespace Horizun.Server
         private static readonly McpSession _session = new McpSession();
         private static string _negotiatedProtocol;
 
+        // The client's self-declared software name from initialize (clientInfo.name),
+        // reduced to a short safe token. Only for attributing log lines: a parse error
+        // or a cancellation in server.log used to name no origin at all.
+        private static string _clientName;
+
         /// <summary>
         /// True once a LEGACY initialize handshake has completed in this process.
         ///
@@ -209,12 +214,15 @@ namespace Horizun.Server
                         // is still a line the caller sent, and it can carry a path, a token,
                         // or a model name; reporting its length and the parser's position
                         // says where to look without repeating the content.
-                        Log.Warn("parse error answered: " + ex.Message);
-                        _writer.TryError(null, -32700,
-                            "Parse error: that line is not valid JSON (" + ex.Message + "). The line was " +
-                            line.Length + " characters. Nothing was run, and no id could be read from it, so this " +
-                            "reply carries id null - it cannot be matched to your request. The content is not " +
-                            "echoed back because a line that failed to parse can still contain a path or a token.");
+                        //
+                        // WHERE and WHAT KIND, never WHAT: the position, a hint for the
+                        // causes that actually occur on this transport, and a window in
+                        // which every letter and digit is masked (Protocol/ParseErrorDiagnosis.cs).
+                        // The client name makes the log entry attributable on its own.
+                        var diagnosis = Protocol.ParseErrorDiagnosis.Of(line, ex);
+                        Log.Warn(diagnosis.LogLine(Volatile.Read(ref _clientName)));
+                        _writer.TryError(null, Protocol.McpErrorCodes.ParseError, diagnosis.Message(),
+                                         diagnosis.ToJson());
                         continue;
                     }
 
@@ -537,7 +545,8 @@ namespace Horizun.Server
                             metric.Outcome = "cancelled";
                             silencedByCancellation = AnswerCancellation(
                                 reply, envelope, toolName,
-                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                                proof ?? CancelledMessage(toolName, clock.ElapsedMilliseconds,
+                                                          prms?["arguments"] as JObject));
                             ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                         }
                         else
@@ -573,7 +582,8 @@ namespace Horizun.Server
                         string exact = oce.Message;
                         silencedByCancellation = AnswerCancellation(
                             reply, envelope, toolName,
-                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds));
+                            IsNeverStartedProof(exact) ? exact : CancelledMessage(toolName, clock.ElapsedMilliseconds,
+                                                                                  prms?["arguments"] as JObject));
                         ClientToolFinished(toolName, "cancelled", clock.ElapsedMilliseconds, "notice", envelope, id);
                     }
                     catch (Exception ex)
@@ -972,11 +982,14 @@ namespace Horizun.Server
         /// PipeClient supplies a stronger exact message when cancellation wins before start;
         /// this path must preserve uncertainty for work that may already be on the UI thread.
         /// </summary>
-        private static string CancelledMessage(string tool, long ms) =>
+        private static string CancelledMessage(string tool, long ms, JObject args) =>
             "'" + tool + "' was cancelled after " + ms + " ms. IMPORTANT: this stops this server waiting for it; it " +
             "could not prove the request was removed before it started. If the command had already reached Revit, " +
             "it is still running there and will finish - the Revit API offers no way to interrupt a command on its " +
-            "UI thread. Do not resend it assuming the model is untouched.";
+            "UI thread. Do not resend it assuming the model is untouched. " +
+            CancellationAdvice.Sentence(
+                CancellationAdvice.Classify(false, CancellationAdvice.HasKey(args)),
+                CancellationAdvice.BatchSize(args), ms);
 
         private static string CancellationProof(JToken result)
         {
@@ -1074,8 +1087,12 @@ namespace Horizun.Server
                     return Protocol.DiscoverHandler.Handle(envelope);
 
                 case "initialize":
+                    Volatile.Write(ref _clientName,
+                        Protocol.ParseErrorDiagnosis.SafeClientName(prms?["clientInfo"]?["name"]));
                     string negotiatedProtocol = ProtocolNegotiation.Answer(prms?.Value<string>("protocolVersion"));
                     _negotiatedProtocol = negotiatedProtocol;
+                    Log.Info("initialize from client '" + (Volatile.Read(ref _clientName) ?? "(unnamed)") +
+                             "', protocol " + negotiatedProtocol);
                     // The peer speaks the handshake dialect. See _legacyHandshake.
                     _legacyHandshake = true;
                     // What the client may be asked, from what IT declared and the
@@ -1504,8 +1521,24 @@ namespace Horizun.Server
             }
             catch (Exception ex)
             {
-                Log.Error(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") FAILED in " +
-                          clock.ElapsedMilliseconds + " ms", ex);
+                // A CLIENT'S CANCELLATION PROVEN TO HAVE REMOVED THE WORK BEFORE IT STARTED
+                // is the bridge doing what it was asked, not a failure. It used to be
+                // logged as ERROR with a stack trace, and the ten such entries of
+                // 2026-09-24 - every one the deliberate W13 case-11 probe of verify-live -
+                // read like ten lost batches until each was traced by hand.
+                JObject transport = ex.Data["horizun_transport_detail"] as JObject;
+                if (ex is OperationCanceledException && (bool?)transport?["cancelled_before_start"] == true)
+                    Log.Warn(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") cancelled by client '" +
+                             (Volatile.Read(ref _clientName) ?? "(unnamed)") + "' after " +
+                             clock.ElapsedMilliseconds + " ms, removed from the queue before it started " +
+                             "(nothing ran, key unclaimed)");
+                else
+                    Log.Error(name + " -> Revit " + d.Year + " (pid " + d.Pid + ") FAILED in " +
+                              clock.ElapsedMilliseconds + " ms" +
+                              (ex is OperationCanceledException
+                                  ? " (cancelled by client '" + (Volatile.Read(ref _clientName) ?? "(unnamed)") +
+                                    "'; retry " + (string)transport?["retry"]?["verdict"] + ")"
+                                  : ""), ex);
                 return ErrorResult("Error talking to Revit: " + ex.Message, null, null,
                     ex.Data["horizun_transport_detail"] as JObject ?? new JObject
                     {

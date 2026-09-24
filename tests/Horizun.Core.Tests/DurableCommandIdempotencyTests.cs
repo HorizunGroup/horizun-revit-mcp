@@ -17,6 +17,46 @@ namespace Horizun.Core.Tests
         private DurableCommandLedger Ledger(int pid = 10) =>
             new DurableCommandLedger(() => _dir, () => new DateTime(2026, 8, 1, 12, 0, 0, DateTimeKind.Utc), () => pid);
 
+        /// <summary>
+        /// The retry contract a CANCELLED or TIMED-OUT caller is now told
+        /// (Horizun.Server/CancellationAdvice.cs): the client stopped waiting, Revit
+        /// finished the batch anyway and recorded it, and the identical retry with the
+        /// same key - which Revit only reaches after the original, one command at a
+        /// time - replays that answer instead of creating the elements twice. A
+        /// request removed from the queue before start never claimed its key, so the
+        /// same key is still fresh.
+        /// </summary>
+        [Fact]
+        public void A_caller_that_stopped_waiting_gets_the_recorded_batch_on_an_identical_retry()
+        {
+            DurableCommandDecision original = Ledger(10).Claim("batch-1", "horizun_create_elements", "fp-grid");
+            Assert.Equal(DurableCommandOutcome.Fresh, original.Outcome);
+            // ... the caller cancels here; Revit cannot be interrupted and completes.
+            Ledger(10).Complete(original, CommandResult.Ok(new JObject { ["created"] = 250 }));
+
+            DurableCommandDecision retry = Ledger(10).Claim("batch-1", "horizun_create_elements", "fp-grid");
+            Assert.Equal(DurableCommandOutcome.Replay, retry.Outcome);
+            Assert.Equal(250, (int)((JObject)retry.ReplayResult.Data)["created"]);
+
+            // And across a Revit restart too: a model write lives in the file.
+            Assert.Equal(DurableCommandOutcome.Replay,
+                Ledger(77).Claim("batch-1", "horizun_create_elements", "fp-grid").Outcome);
+
+            // A different key for the same batch is new work - the second write the
+            // advice warns about.
+            Assert.Equal(DurableCommandOutcome.Fresh,
+                Ledger(10).Claim("batch-2", "horizun_create_elements", "fp-grid").Outcome);
+        }
+
+        [Fact]
+        public void A_key_whose_request_was_cancelled_before_start_is_still_fresh()
+        {
+            // Cancelled in the queue: Dispatcher never reached Claim. Nothing recorded.
+            Assert.False(File.Exists(System.IO.Path.Combine(_dir, RequestFingerprint.Sha256Hex("cxl-1") + ".jsonl")));
+            Assert.Equal(DurableCommandOutcome.Fresh,
+                Ledger(10).Claim("cxl-1", "horizun_create_elements", "fp-x").Outcome);
+        }
+
         [Fact]
         public void Completed_operation_replays_after_a_new_ledger_instance()
         {
