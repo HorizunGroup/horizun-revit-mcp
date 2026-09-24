@@ -40,6 +40,26 @@ namespace Horizun.Revit.Commands
 
     internal static class ModelEditRunner
     {
+        /// <summary>Which postconditions failed, with expected and measured values, and a short evidence extract -
+        /// in the TEXT, because that is what a probe or a person reads first.</summary>
+        internal static string FailedText(PostconditionCheck check, JObject evidence)
+        {
+            try
+            {
+                var props = check?.ToJson()?["properties"] as JArray;
+                var failed = props == null ? new System.Collections.Generic.List<string>() : props.OfType<JObject>()
+                    .Where(x => x.Value<bool?>("matches") != true)
+                    .Select(x => x.Value<string>("property") + " (requested " + x["requested"]?.ToString(Newtonsoft.Json.Formatting.None) +
+                                 ", found " + x["found_in_committed_model"]?.ToString(Newtonsoft.Json.Formatting.None) + ")").ToList();
+                string ev = evidence == null ? "" : evidence.ToString(Newtonsoft.Json.Formatting.None);
+                if (ev.Length > 500) ev = ev.Substring(0, 500) + "...";
+                return (failed.Count > 0 ? "Failed: " + string.Join("; ", failed) + "." : "No postcondition named the failure.") +
+                       (ev.Length > 0 ? " Evidence: " + ev : "");
+            }
+            catch { return ""; }
+        }
+
+
         public static CommandResult Run(UIApplication app, string paramsJson, string name, string defaultTransaction,
             Func<JObject, string> validate, Func<Document, JObject, double, ArchModelEdit> plan)
         {
@@ -133,7 +153,7 @@ namespace Horizun.Revit.Commands
                     {
                         var rolled = Guard.RollBack(group);
                         return CommandResult.FailWithDetail(
-                            "The committed model disagreed with the request, so the whole edit was rolled back.",
+                            "The committed model disagreed with the request, so the whole edit was rolled back. " + FailedText(check, edit.Evidence),
                             new JObject
                             {
                                 ["code"] = "postcondition_failed", ["write_started"] = true,
