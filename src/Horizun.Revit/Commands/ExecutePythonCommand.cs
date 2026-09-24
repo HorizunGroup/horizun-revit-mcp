@@ -245,6 +245,15 @@ namespace Horizun.Revit.Commands
             (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
              "horizun_deliver_ifc",
              "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
+            (new Regex(@"\b(LinePatternElement|FillPatternElement)\s*\.\s*Create\s*\(|\bNewSubcategory\s*\(", RegexOptions.Compiled),
+             "horizun_manage_styles",
+             "creates line patterns, fill patterns and subcategories and re-reads them after commit."),
+            (new Regex(@"\.\s*SetUnits\s*\(|\bSetProjectPosition\s*\(", RegexOptions.Compiled),
+             "horizun_manage_units",
+             "operation=set / base_points writes units or shared coordinates and re-reads them after commit."),
+            (new Regex(@"\bElectricalSystem\s*\.\s*Create\s*\(|\bSelectPanel\s*\(", RegexOptions.Compiled),
+             "horizun_electrical",
+             "creates circuits and assigns panels, re-reading members and panel after commit."),
         };
 
         /// <summary>
