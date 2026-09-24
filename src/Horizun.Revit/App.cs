@@ -210,6 +210,7 @@ namespace Horizun.Revit
             d.Register(new TransformElementsCommand());
             d.Register(new ManageViewsCommand());
             d.Register(new ExportCommand());
+            d.Register(new DeliverIfcCommand());
             d.Register(new AnnotateCommand());
             d.Register(new DimensionReferencesCommand());
             d.Register(new QueryDimensionsCommand());

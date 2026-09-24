@@ -162,7 +162,7 @@ namespace Horizun.Revit.Core
                 },
                 ["interoperability"] = new[]
                 {
-                    "horizun_export", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
+                    "horizun_export", "horizun_deliver_ifc", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
                     "horizun_manage_links", "horizun_budget_compare", "horizun_run_procedure",
                     "horizun_validate_ids", "horizun_coordination", "horizun_plan_from_ifc",
                     "horizun_apply_ifc_plan", "horizun_create_elements", "horizun_project_context", "horizun_information_container"

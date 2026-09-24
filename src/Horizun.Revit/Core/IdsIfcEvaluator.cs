@@ -146,8 +146,12 @@ namespace Horizun.Revit.Core
             }
         }
 
-        /// <summary>One property set or quantity set, flattened to (set, name, value).</summary>
-        private static List<Tuple<string, string, string>> ReadDefinition(IfcStepReader.Document ifc,
+        /// <summary>
+        /// One property set or quantity set, flattened to (set, name, value). Public so the
+        /// delivery's property-set check reads a type object's own sets with the SAME reader
+        /// the IDS facets use, rather than a second one that could disagree with it.
+        /// </summary>
+        public static List<Tuple<string, string, string>> ReadDefinition(IfcStepReader.Document ifc,
                                                                          IfcEntity definition)
         {
             var read = new List<Tuple<string, string, string>>();
