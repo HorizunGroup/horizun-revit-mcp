@@ -111,9 +111,15 @@ namespace Horizun.Revit.Commands
             }
             catch (Exception ex) { r.Source["link_status_error"] = ex.Message; }
 
-            KeyBasedTreeEntries entries = table.GetKeyBasedTreeEntries();
+            // MEASURED 2026-09-24 (Revit 2024/2025 fixtures): the read failed with a
+            // NullReferenceException. A table with no loaded file can hand back no entry
+            // collection at all, and an entry can be null; both read as "no entries".
+            KeyBasedTreeEntries entries = null;
+            try { entries = table.GetKeyBasedTreeEntries(); } catch (Exception ex) { r.Source["entries_error"] = ex.Message; }
+            if (entries == null) { r.Source["entries_available"] = false; return r; }
             foreach (KeyBasedTreeEntry e in entries)
             {
+                if (e == null) continue;
                 string key = e.Key;
                 if (string.IsNullOrWhiteSpace(key)) continue;
                 r.Keys.Add(key.Trim());
