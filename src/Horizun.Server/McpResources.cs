@@ -20,6 +20,7 @@ namespace Horizun.Server
         private const string SecurityUri = "horizun://security/current-profile";
         private const string BuildUri = "horizun://build/identity";
         private const string WorkflowsUri = "horizun://workflows/bim-production";
+        private const string ProjectContextSchemaUri = ProjectContext.SchemaResourceUri;
 
         public static JObject List(JObject prms)
         {
@@ -43,6 +44,9 @@ namespace Horizun.Server
                     Def(WorkflowsUri, "bim-production-workflows", "BIM Production Workflows",
                         "Task-oriented workflow catalog over the installed typed tool surface.",
                         "application/json", Encoding.UTF8.GetByteCount(WorkflowText())),
+                    Def(ProjectContextSchemaUri, "project-context-schema", "Project context schema (ISO 19650)",
+                        "JSON Schema (draft 2020-12) of project-context.json, schema_version 1: appointment, EIR/BEP/MIDP/TIDP, CDE states, container naming, classification, georeference and delivery. horizun_project_context validates against it.",
+                        "application/schema+json", Encoding.UTF8.GetByteCount(ProjectContext.SchemaText)),
                     // The MCP App. It is listed like any other resource because it IS
                     // one; what makes it an app is its mime type and the tool that
                     // names it, not a separate listing mechanism.
@@ -66,6 +70,7 @@ namespace Horizun.Server
                 case SecurityUri: mime = "application/json"; text = SecurityText(); break;
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
                 case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
+                case ProjectContextSchemaUri: mime = "application/schema+json"; text = ProjectContext.SchemaText; break;
                 case McpAppResources.ClashViewerUri:
                     mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");

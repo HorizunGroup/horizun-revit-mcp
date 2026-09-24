@@ -48,12 +48,13 @@ namespace Horizun.Server.Tests
                 // contract carries 98 tools, App.cs registers 87 in Revit, and these
                 // are the rest. The golden had seven and four tools had been added
                 // since - a drift this test exists to make loud, which it could not
-                // do while the project it lives in would not compile.
+                // do while the project it lives in would not compile. TWELVE since
+                // horizun_project_context (the ISO 19650 project context) joined them.
                 new[]
                 {
                     "horizun_budget_compare", "horizun_catalog_lookup", "horizun_excel_read_rows",
                     "horizun_excel_write_rows", "horizun_job_status", "horizun_power_bi_push",
-                    "horizun_promote_script", "horizun_repair_memory", "horizun_run_procedure",
+                    "horizun_project_context", "horizun_promote_script", "horizun_repair_memory", "horizun_run_procedure",
                     "horizun_selection_exchange", "horizun_target"
                 },
                 hostResident);

@@ -104,6 +104,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The ISO 19650 project-context schema (schemas/project-context.v1.schema.json),
+         embedded so an installed server validates against exactly the schema it was
+         built with, with no source checkout on the machine. -->
+    <EmbeddedResource Include="..\..\schemas\project-context.v1.schema.json" LogicalName="Horizun.Schemas.project-context.v1.schema.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- The single declaration of every command, shared with the other half. -->
     <Compile Include="..\Horizun.Contracts\Contract.cs" />
   </ItemGroup>

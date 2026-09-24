@@ -115,7 +115,8 @@ namespace Horizun.Server.Tests
             foreach (string name in new[] { "horizun_export", "horizun_power_bi_push",
                                             "horizun_excel_write_rows", "horizun_capture_view",
                                             "horizun_open_document", "horizun_document_session",
-                                            "horizun_execute_python", "horizun_catalog_lookup" })
+                                            "horizun_execute_python", "horizun_catalog_lookup",
+                                            "horizun_project_context" })
             {
                 CommandContract c = Contract.Find(name);
                 Assert.NotNull(c);
