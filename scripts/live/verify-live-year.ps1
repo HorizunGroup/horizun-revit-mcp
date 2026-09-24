@@ -38,8 +38,21 @@ if (-not $server -or -not (Test-Path -LiteralPath $server)) {
     Write-Error 'HORIZUN_SERVER_EXE is not set to an existing server; run this through run-year-matrix.ps1.'
     exit 2
 }
-$verifyLive = Join-Path (Split-Path -Parent $PSScriptRoot) 'verify-live.ps1'
+$verifyLive = if ($env:HORIZUN_VERIFY_LIVE_OVERRIDE) { $env:HORIZUN_VERIFY_LIVE_OVERRIDE } else { Join-Path (Split-Path -Parent $PSScriptRoot) 'verify-live.ps1' }
 $json = Join-Path $ArtifactDir ("verify-live-{0}.json" -f $yearNumber)
-$forward = @('-Year', $yearNumber, '-Server', $server, '-AllowDevServer', '-Json', $json) + @($Rest)
+# NAMED, NOT POSITIONAL. Splatting an ARRAY into a script binds '-Name' strings as
+# positional VALUES (measured: verify-live received '-Year' as the year). The rest
+# of the driver's string is parsed into a hashtable: a token starting with '-' is
+# a parameter name; it takes the next token as its value unless that one is also
+# a name, in which case it is a switch.
+$forward = [ordered]@{ Year = $yearNumber; Server = $server; AllowDevServer = $true; Json = $json }
+$tokens = @($Rest | ForEach-Object { [string]$_ })
+for ($i = 0; $i -lt $tokens.Count; $i++) {
+    $t = $tokens[$i]
+    if (-not $t.StartsWith('-')) { Write-Error "Unexpected positional argument '$t'."; exit 2 }
+    $name = $t.TrimStart('-').TrimEnd(':')
+    if ($i + 1 -lt $tokens.Count -and -not $tokens[$i + 1].StartsWith('-')) { $forward[$name] = $tokens[$i + 1]; $i++ }
+    else { $forward[$name] = $true }
+}
 & $verifyLive @forward
 exit $LASTEXITCODE
