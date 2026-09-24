@@ -27,6 +27,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ArchitecturalEditRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />

@@ -106,7 +106,14 @@ namespace Horizun.Revit.Core
                 F(C + "CreateElementsCommand.cs", C + "CreateElementsGeometry.cs", C + "CreateElementsProductionVerification.cs", C + "CreateStairsGeometry.cs")),
             Row("horizun_fix_planimetry", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "FixPlanimetryCommand.cs")),
             Row("horizun_transform_elements", VerificationMechanism.PostconditionChecklist, E("operations_verified", "postconditions", "application"), F(C + "TransformElementsCommand.cs"),
-                "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag operations carry a PostconditionCheck."),
+                "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag and array operations carry a PostconditionCheck.",
+                "TransformElementsCommand.cs VerifyArray: a radial copy's position is checked, not whether its axes turned."),
+            Row("horizun_manage_curtain", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "ManageCurtainCommand.cs", C + "ModelEditRunner.cs"),
+                "ManageCurtainCommand.cs OnCurve: a mullion belongs to a grid line by geometry (within 1 mm); Revit keeps no link between them."),
+            Row("horizun_slab_shape", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "SlabShapeCommand.cs", C + "ModelEditRunner.cs"),
+                "SlabShapeCommand.cs: SlabShapeVertex.Position.Z is undocumented as absolute or relative; both readings are accepted and the one that held is reported in evidence.z_convention."),
+            Row("horizun_create_railing", VerificationMechanism.PostconditionChecklist, E("postconditions", "evidence", "application"), F(C + "CreateRailingCommand.cs", C + "ModelEditRunner.cs"),
+                "CreateRailingCommand.cs: a sketched path is compared in plan (x, y); its z is reported, not judged."),
 
             // ---- typed model writes: per-row re-reads -------------------------------------
             Row("horizun_write_params_verified", VerificationMechanism.PerRowReread, E("verification", "application"), F(C + "WriteParamsCommand.cs")),
