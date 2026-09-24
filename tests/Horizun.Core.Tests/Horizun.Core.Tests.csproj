@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!--
     Horizun Core tests — original Horizun code.
@@ -27,6 +27,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\CadSourceCoherenceRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CadApplyGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Reconcile.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GroupWorksetRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QueryResponseOptions.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\QuerySummaryAccumulator.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\BoundedReadCache.cs" />
