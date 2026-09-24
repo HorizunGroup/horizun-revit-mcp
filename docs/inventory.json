@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "0e49a5ad4381172c3ce24be3d3ea4ea0b0429daeb8f91d8c5218fdaca7e71f9d",
-  "generated_from_contract_hash": "8fd3af49b91d0a905420db0e",
+  "generated_from_server_sha": "392b29b93f7c4f14d7ac960a746c999a527a3ef346f00cf8bcb30f8978565fb8",
+  "generated_from_contract_hash": "5fe3076cbafb41f05bbedfd2",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "39edf37aa42c8f20993c831aa6ac1575e5ee5a8c",
+  "code_candidate_commit": "033eceadba05cc0b95896da04a92e6ba33bfbcfe",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "39edf37aa42c8f20993c831aa6ac1575e5ee5a8c",
+  "source_tree_head_at_generation": "033eceadba05cc0b95896da04a92e6ba33bfbcfe",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 102,
-    "reads": 45,
-    "writes": 57,
-    "destructive": 15,
-    "operations": 285,
-    "enumerated_variants": 1314
+    "tools": 121,
+    "reads": 48,
+    "writes": 73,
+    "destructive": 20,
+    "operations": 395,
+    "enumerated_variants": 1492
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -270,8 +270,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 11,
-      "enumerated_variants": 18,
+      "operations": 13,
+      "enumerated_variants": 22,
       "operation_detail": [
         {
           "property": "operation",
@@ -287,11 +287,123 @@
             "change_type",
             "set_curve",
             "move_tag_head",
-            "set_tag_leader"
+            "set_tag_leader",
+            "array_linear",
+            "array_radial"
           ],
           "source_read_confirmed": true
         }
       ]
+    },
+    {
+      "tool": "horizun_manage_curtain",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 12,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "add_grid_line",
+            "remove_grid_line",
+            "set_mullions",
+            "set_panel_type"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "mode",
+          "path": "mode",
+          "values": [
+            "add",
+            "remove"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_slab_shape",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 5,
+      "enumerated_variants": 8,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "add_point",
+            "add_split_line",
+            "modify_subelement",
+            "reset_shape"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_manage_parameters",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 11,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list_bindings",
+            "create_shared",
+            "create_project",
+            "rebind",
+            "remove_binding",
+            "global_list",
+            "global_create",
+            "global_set",
+            "global_delete"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_query_classification",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 5,
+      "enumerated_variants": 7,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "keynote_table",
+            "assembly_code",
+            "family_lookup_tables",
+            "unused_codes",
+            "missing_codes"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_create_railing",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 5,
+      "operation_detail": []
     },
     {
       "tool": "horizun_list_schedules",
@@ -307,8 +419,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 41,
-      "enumerated_variants": 67,
+      "operations": 46,
+      "enumerated_variants": 72,
       "operation_detail": [
         {
           "property": "operation",
@@ -347,7 +459,12 @@
             "reset_temporary",
             "set_category_visibility",
             "create_legend",
-            "place_legend_component"
+            "place_legend_component",
+            "edit_filter",
+            "order_filters",
+            "explain_graphics",
+            "create_template",
+            "set_template_controls"
           ],
           "source_read_confirmed": true
         },
@@ -382,7 +499,7 @@
       "destructive": true,
       "open_world": true,
       "operations": 0,
-      "enumerated_variants": 77,
+      "enumerated_variants": 82,
       "operation_detail": []
     },
     {
@@ -803,6 +920,55 @@
       ]
     },
     {
+      "tool": "horizun_manage_groups",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 11,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "create",
+            "add_members",
+            "remove_members",
+            "rename_type",
+            "duplicate_type",
+            "swap_type",
+            "ungroup",
+            "convert_to_link"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_manage_worksets",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 6,
+      "enumerated_variants": 9,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "create",
+            "rename",
+            "move_elements",
+            "set_default",
+            "visibility"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
       "tool": "horizun_manage_revisions",
       "read_only": false,
       "destructive": false,
@@ -816,6 +982,57 @@
           "values": [
             "create_revision",
             "update_revision"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_manage_phases",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 8,
+      "enumerated_variants": 11,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "element_status",
+            "set_element_phases",
+            "create_phase_filter",
+            "edit_phase_filter",
+            "rename_phase",
+            "create_phase",
+            "assign_design_option"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_manage_assemblies_parts",
+      "read_only": false,
+      "destructive": true,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 21,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "create_parts",
+            "divide_parts",
+            "exclude_parts",
+            "restore_parts",
+            "dissolve_parts",
+            "create_assembly",
+            "assembly_views",
+            "disassemble"
           ],
           "source_read_confirmed": true
         }
@@ -980,6 +1197,30 @@
       ]
     },
     {
+      "tool": "horizun_model_diff",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 9,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "snapshot",
+            "list",
+            "compare",
+            "colorize",
+            "explain",
+            "record_quality",
+            "quality_trend"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
       "tool": "horizun_file_info",
       "read_only": true,
       "destructive": false,
@@ -1105,6 +1346,45 @@
       "operation_detail": []
     },
     {
+      "tool": "horizun_code_check",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_link_schedule",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 4,
+      "enumerated_variants": 4,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "import",
+            "match",
+            "write",
+            "status_view"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_federation_check",
+      "read_only": true,
+      "destructive": false,
+      "open_world": false,
+      "operations": 0,
+      "enumerated_variants": 0,
+      "operation_detail": []
+    },
+    {
       "tool": "horizun_audit_access",
       "read_only": true,
       "destructive": false,
@@ -1162,6 +1442,77 @@
       ]
     },
     {
+      "tool": "horizun_manage_styles",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 17,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list_object_styles",
+            "set_object_style",
+            "create_subcategory",
+            "list_line_styles",
+            "create_line_style",
+            "list_line_patterns",
+            "create_line_pattern",
+            "list_fill_patterns",
+            "create_fill_pattern"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_manage_units",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 4,
+      "enumerated_variants": 7,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "set",
+            "project_information",
+            "base_points"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_electrical",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 7,
+      "enumerated_variants": 7,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list_panels",
+            "list_circuits",
+            "create_circuit",
+            "assign_panel",
+            "add_to_circuit",
+            "remove_from_circuit",
+            "panel_schedule"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
       "tool": "horizun_structural_connections",
       "read_only": false,
       "destructive": false,
@@ -1169,6 +1520,39 @@
       "operations": 0,
       "enumerated_variants": 0,
       "operation_detail": []
+    },
+    {
+      "tool": "horizun_mep_routing",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 9,
+      "enumerated_variants": 20,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "read",
+            "set_rules",
+            "add_sizes",
+            "remove_sizes",
+            "resize",
+            "size_by_flow"
+          ],
+          "source_read_confirmed": true
+        },
+        {
+          "property": "action",
+          "path": "rules.action",
+          "values": [
+            "add",
+            "remove",
+            "move"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_connect_mep",
@@ -1250,6 +1634,44 @@
             "export",
             "import",
             "evidence"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_resolve_clash",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "propose",
+            "apply"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_undo",
+      "read_only": false,
+      "destructive": false,
+      "open_world": false,
+      "operations": 2,
+      "enumerated_variants": 2,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list",
+            "undo_last"
           ],
           "source_read_confirmed": true
         }
@@ -1448,13 +1870,14 @@
       "read_only": true,
       "destructive": false,
       "open_world": true,
-      "operations": 3,
-      "enumerated_variants": 5,
+      "operations": 4,
+      "enumerated_variants": 6,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
+            "list_projects",
             "list_states",
             "inspect",
             "versions"
