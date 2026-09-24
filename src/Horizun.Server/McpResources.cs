@@ -78,20 +78,9 @@ namespace Horizun.Server
                 case ProjectContextSchemaUri: mime = "application/schema+json"; text = ProjectContext.SchemaText; break;
                 case ToolsetReport.ResourceUri: mime = "application/json"; text = ToolsetText(); break;
                 case McpAppResources.ClashViewerUri:
-                    mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
+                    return AppContent(uri, McpAppResources.Html(), McpAppResources.ResourceMeta());
                 case ImpactPreviewApp.Uri:
-                    // The CSP travels on the content item too: the 2026-01-26 spec reads it there.
-                    return new JObject
-                    {
-                        ["contents"] = new JArray
-                        {
-                            new JObject
-                            {
-                                ["uri"] = uri, ["mimeType"] = McpAppResources.AppMimeType,
-                                ["text"] = ImpactPreviewApp.Html(), ["_meta"] = ImpactPreviewApp.ResourceMeta()
-                            }
-                        }
-                    };
+                    return AppContent(uri, ImpactPreviewApp.Html(), ImpactPreviewApp.ResourceMeta());
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
             }
             return new JObject
@@ -102,6 +91,22 @@ namespace Horizun.Server
                 }
             };
         }
+
+        /// <summary>
+        /// An MCP App's resources/read reply. The CSP travels on the content item too:
+        /// the 2026-01-26 spec reads `_meta.ui` there as well as on the listing.
+        /// </summary>
+        private static JObject AppContent(string uri, string html, JObject meta) => new JObject
+        {
+            ["contents"] = new JArray
+            {
+                new JObject
+                {
+                    ["uri"] = uri, ["mimeType"] = McpAppResources.AppMimeType,
+                    ["text"] = html, ["_meta"] = meta
+                }
+            }
+        };
 
         private static JObject Def(string uri, string name, string title, string description, string mime, int size)
             => new JObject
