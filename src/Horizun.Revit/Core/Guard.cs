@@ -102,6 +102,7 @@ namespace Horizun.Revit.Core
         /// </summary>
         public static object Verify(string what, int intended, int actual)
         {
+            bool measured = RMath.Measured(intended, actual);
             bool verified = RMath.Verified(intended, actual);
             return new
             {
@@ -109,11 +110,37 @@ namespace Horizun.Revit.Core
                 intended,
                 actual,
                 verified,
+                // Added field: false when either count is the "never reported" sentinel. An
+                // unmeasured comparison is neither agreement nor a mismatch, and it never passes.
+                measured,
                 note = verified
                     ? null
-                    : $"MISMATCH: asked for {intended}, the model reports {actual}. " +
-                      "The difference was NOT applied. Do not treat this as done."
+                    : !measured
+                        ? $"UNMEASURED: intended={intended}, actual={actual} - a negative count means the quantity " +
+                          "was never reported, so nothing was compared. This is not a pass. Do not treat this as done."
+                        : $"MISMATCH: asked for {intended}, the model reports {actual}. " +
+                          "The difference was NOT applied. Do not treat this as done."
             };
+        }
+
+        /// <summary>
+        /// Verify, for a call that ASKED for work. The same block as Verify, except that
+        /// when work was requested and nothing could be compared (intended == 0) it is NOT
+        /// verified: 0 == 0 over a request for n things is an empty checklist, and an empty
+        /// checklist never passes. A request for nothing (requested == 0) still verifies.
+        /// </summary>
+        public static Newtonsoft.Json.Linq.JObject VerifyRequested(string what, int requested, int intended, int actual)
+        {
+            var block = Newtonsoft.Json.Linq.JObject.FromObject(Verify(what, intended, actual));
+            block["requested"] = requested;
+            if (!RMath.VerifiedWork(requested, intended, actual) && RMath.Verified(intended, actual))
+            {
+                block["verified"] = false;
+                block["measured"] = false;
+                block["note"] = "NOTHING COMPARED: " + requested + " item(s) were requested and none of them reached " +
+                                "a comparison with the committed model. An empty check is not a pass.";
+            }
+            return block;
         }
 
         /// <summary>

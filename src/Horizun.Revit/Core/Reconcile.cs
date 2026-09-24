@@ -81,7 +81,22 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// Did a write land: does the count the model reports match what we intended.
         /// The whole anti-"758 purged" idea in one comparison — intent is never evidence.
+        ///
+        /// A NEGATIVE count is not a count: callers use -1 for "the quantity was never
+        /// reported" (RecipeCommand.ReadCount). Two absent quantities used to compare
+        /// -1 == -1 and read as verified - an agreement between two things nobody measured.
         /// </summary>
-        public static bool Verified(int intended, int actual) => intended == actual;
+        public static bool Verified(int intended, int actual) => Measured(intended, actual) && intended == actual;
+
+        /// <summary>Both sides are real counts (not the -1 "never reported" sentinel).</summary>
+        public static bool Measured(int intended, int actual) => intended >= 0 && actual >= 0;
+
+        /// <summary>
+        /// Verified, for a call that ASKED for `requested` things. When work was requested and
+        /// nothing reached a comparison (intended == 0), 0 == 0 is an empty checklist, and an
+        /// empty checklist never passes. A request for nothing still verifies.
+        /// </summary>
+        public static bool VerifiedWork(int requested, int intended, int actual)
+            => Verified(intended, actual) && !(requested > 0 && intended == 0);
     }
 }

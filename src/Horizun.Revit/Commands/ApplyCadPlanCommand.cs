@@ -828,7 +828,7 @@ namespace Horizun.Revit.Commands
         private static readonly string[] VerificationFields =
         {
             "index", "kind", "element_id", "element_ids", "elements_created",
-            "postconditions", "source_comparison", "unique_id", "coordinate_reference",
+            "postconditions", "production_postconditions", "source_comparison", "unique_id", "coordinate_reference",
             "absolute_z_feet", "level_elevation_feet", "offset_feet",
             "elements_created_means", "present_after_commit", "verified",
             "kind_verified", "type_verified", "host_verified", "curve_verified",

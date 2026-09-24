@@ -144,10 +144,12 @@ namespace Horizun.Revit.Commands
             }
 
             var rows = new JArray();
+            int verifiedRows = 0;
             foreach (Plan p in plans)
             {
                 string why;
                 bool ok = Verify(doc, p, out why);
+                if (ok) verifiedRows++;
                 JObject row = p.Result(doc);
                 row["verified"] = ok;
                 row["not_verified_because"] = ok ? (JToken)JValue.CreateNull() : why;
@@ -178,14 +180,18 @@ namespace Horizun.Revit.Commands
                 rows.Add(row);
             }
 
+            // The verdict counts the rows that RE-READ verified. It used to stamp plans.Count
+            // as verified whatever the post-commit rows said, beside literal
+            // state/host_verified values.
+            bool allRows = plans.Count > 0 && verifiedRows == plans.Count;
             var done = new JObject
             {
-                ["state"] = "committed_verified",
-                ["host_verified"] = true,
+                ["state"] = allRows ? "committed_verified" : "committed_partially_verified",
+                ["host_verified"] = allRows,
                 ["rows"] = rows
             };
             ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed,
-                                            plans.Count, plans.Count, plans.Count, 0, 0, 0);
+                                            plans.Count, plans.Count, verifiedRows, 0, plans.Count - verifiedRows, 0);
             return CommandResult.Ok(done);
         }
 
@@ -503,6 +509,45 @@ namespace Horizun.Revit.Commands
             if (!string.IsNullOrWhiteSpace(materialClass) &&
                 !string.Equals(material.MaterialClass, materialClass, StringComparison.Ordinal))
             { why = "the material class did not stick"; return false; }
+
+            // EVERY FIELD Apply WRITES IS RE-READ. These six were written and never compared,
+            // so an update touching only them reported committed_verified over nothing.
+            int? smoothness = p.Input.Value<int?>("smoothness");
+            if (smoothness != null && material.Smoothness != smoothness.Value)
+            { why = "the smoothness did not stick"; return false; }
+
+            string materialCategory = p.Input.Value<string>("material_category");
+            if (!string.IsNullOrWhiteSpace(materialCategory) &&
+                !string.Equals(material.MaterialCategory, materialCategory, StringComparison.Ordinal))
+            { why = "the material category did not stick"; return false; }
+
+            Color surfaceColour = ParseColour(p.Input.Value<string>("surface_pattern_color"));
+            if (surfaceColour != null && !SameColour(material.SurfaceForegroundPatternColor, surfaceColour))
+            { why = "the surface pattern colour did not stick"; return false; }
+
+            Color cutColour = ParseColour(p.Input.Value<string>("cut_pattern_color"));
+            if (cutColour != null && !SameColour(material.CutForegroundPatternColor, cutColour))
+            { why = "the cut pattern colour did not stick"; return false; }
+
+            string surfacePattern = p.Input.Value<string>("surface_pattern");
+            if (!string.IsNullOrWhiteSpace(surfacePattern))
+            {
+                ElementId wantedPattern;
+                try { wantedPattern = PatternId(doc, surfacePattern, FillPatternTarget.Drafting); }
+                catch (Exception ex) { why = "the surface pattern could not be re-resolved: " + ex.Message; return false; }
+                if (Rid.Value(material.SurfaceForegroundPatternId) != Rid.Value(wantedPattern))
+                { why = "the surface pattern did not stick"; return false; }
+            }
+
+            string cutPattern = p.Input.Value<string>("cut_pattern");
+            if (!string.IsNullOrWhiteSpace(cutPattern))
+            {
+                ElementId wantedPattern;
+                try { wantedPattern = PatternId(doc, cutPattern, FillPatternTarget.Drafting); }
+                catch (Exception ex) { why = "the cut pattern could not be re-resolved: " + ex.Message; return false; }
+                if (Rid.Value(material.CutForegroundPatternId) != Rid.Value(wantedPattern))
+                { why = "the cut pattern did not stick"; return false; }
+            }
 
             if (p.AppliedAssetId != null &&
                 Rid.Value(material.AppearanceAssetId) != Rid.Value(p.AppliedAssetId))

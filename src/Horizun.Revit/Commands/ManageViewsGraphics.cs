@@ -354,7 +354,8 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View coloured)) return false;
                     JArray legend = action["__legend"] as JArray;
-                    if (legend == null) return false;
+                    // An EMPTY legend coloured nothing: the loop below would pass it vacuously.
+                    if (legend == null || legend.Count == 0) return false;
                     foreach (JToken row in legend)
                     {
                         long raw = row.Value<long?>("filter_id") ?? -1;
@@ -370,7 +371,9 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View target)) return false;
                     JObject wanted = action["overrides"] as JObject;
-                    foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                    var overridden = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (overridden.Count == 0) return false;   // nothing compared is not a pass
+                    foreach (ElementId id in overridden)
                         if (!OverridesMatch(target.GetElementOverrides(id), wanted)) return false;
                     return true;
                 }
@@ -379,7 +382,9 @@ namespace Horizun.Revit.Commands
                 {
                     if (!(e is View hiding)) return false;
                     bool permanent = action.Value<bool?>("permanent") ?? false;
-                    foreach (ElementId id in ReadElementIds(doc, action, "element_ids"))
+                    var hidden = ReadElementIds(doc, action, "element_ids").ToList();
+                    if (hidden.Count == 0) return false;   // nothing compared is not a pass
+                    foreach (ElementId id in hidden)
                     {
                         Element element = doc.GetElement(id);
                         if (element == null) return false;

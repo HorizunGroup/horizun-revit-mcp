@@ -234,7 +234,7 @@ namespace Horizun.Revit.Commands
 
             var stageResults = new JArray();
             var provenanceRows = new JArray();
-            int created = 0, failedStages = 0, provenanceWritten = 0, provenanceRefused = 0;
+            int created = 0, failedStages = 0, provenanceWritten = 0, provenanceRefused = 0, updatesLanded = 0;
             bool stopped = false;
             string stoppedBecause = null;
 
@@ -327,6 +327,7 @@ namespace Horizun.Revit.Commands
                 int invalid = data == null ? 0 : (data.Value<int?>("invalid") ?? 0);
                 int valid = data == null ? 0 : (data.Value<int?>("valid") ?? 0);
                 created += madeHere;
+                if (isUpdate && data != null) updatesLanded += data.Value<int?>("updated") ?? 0;
 
                 // A REHEARSAL THAT COULD NOT PLAN A SINGLE ROW IS NOT A CLEAN REHEARSAL.
                 // create_elements answers a dry run with valid/invalid counts and does NOT
@@ -346,6 +347,26 @@ namespace Horizun.Revit.Commands
                           "applying builds NONE of this stage — not the other " + valid + "."
                         : "NOTHING in this stage can be built: all " + invalid + " row(s) were refused, each " +
                           "with its reason. This is not a rehearsal that passed.";
+                    failedStages++;
+                }
+                else if (isUpdate && data != null && data.Value<bool?>("coverage_complete") != true)
+                {
+                    // AN UPDATE STAGE THAT DID NOT COVER ITS ELEMENTS IS NOT "applied". ApplyUpdates
+                    // answers Ok even when every element was gone, lost its identity or was
+                    // refused; grading on Success alone made that stage - and the whole plan -
+                    // read "applied" with nothing written. Its own counts decide now.
+                    int updatedHere = data.Value<int?>("updated") ?? 0;
+                    int unchangedHere = data.Value<int?>("unchanged") ?? 0;
+                    row["ok"] = false;
+                    row["state"] = (dryRun ? "rehearsed" : "applied") +
+                                   (updatedHere + unchangedHere > 0 ? "_partial" : "_nothing");
+                    row["updated"] = updatedHere;
+                    row["unchanged"] = unchangedHere;
+                    row["refused"] = data["refused"];
+                    row["skipped"] = data["skipped"];
+                    row["partially_updated"] = data["partially_updated"];
+                    row["means"] = "coverage_complete is false: not every element of this update stage was " +
+                                   "updated or confirmed unchanged. See the stage's element rows.";
                     failedStages++;
                 }
                 else
@@ -371,7 +392,7 @@ namespace Horizun.Revit.Commands
             }
 
             string state = failedStages > 0
-                ? (created > 0 ? "partial" : "failed")
+                ? (created + updatesLanded > 0 ? "partial" : "failed")
                 : (dryRun ? "rehearsed" : "applied");
 
             var payload = new JObject

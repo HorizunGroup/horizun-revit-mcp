@@ -309,6 +309,14 @@ namespace Horizun.Revit.Commands
                     // rejected out of it means the caller asked us to delete nothing.
                     if (ids.Count == 0 && idsRejected.Count == 0)
                         return CommandResult.Fail("mode='ids' requires a non-empty ids array.");
+                    // EVERY ID REJECTED is not "nothing to delete": it is a request nobody can
+                    // carry out. Continuing produced an empty target list, a rehearsal that
+                    // recorded a plan, and on apply a no_op with fully_applied=true - the
+                    // rejected ids visible only in rejected_input.
+                    if (ids.Count == 0)
+                        return CommandResult.Fail("mode='ids': none of the " + idsRejected.Count + " id(s) sent could be " +
+                            "read as an element id, so there is nothing this call could delete or verify. Nothing was " +
+                            "deleted. Rejected: " + idsRejected.ToString(Newtonsoft.Json.Formatting.None));
                     return Stamp(DeleteIds(app, gate, request, planHash, doc, ids, protectedIds, dryRun, txName, idCap,
                         Concat(idsRejected, protRejected)), gate, dryRun, planHash);
                 }
@@ -1196,8 +1204,9 @@ namespace Horizun.Revit.Commands
                 // are excluded from what Verify reconciles (same exclusion `residual`
                 // makes, and for the same reason) and reported beside it instead: this
                 // block is now about the rows whose fate the model actually settled.
-                ["verification"] = JObject.FromObject(
-                    Guard.Verify("deletions", attempted - unverifiable, deleted)),
+                // VerifyRequested: when every attempted row is unverifiable nothing reaches a
+                // comparison, and 0 == 0 over n attempts is an empty check, never verified.
+                ["verification"] = Guard.VerifyRequested("deletions", attempted, attempted - unverifiable, deleted),
                 ["verification_scope"] = unverifiable == 0
                     ? (JToken)("All " + attempted + " attempted id(s) were re-resolved after the commit, so " +
                       "verification covers every one of them.")

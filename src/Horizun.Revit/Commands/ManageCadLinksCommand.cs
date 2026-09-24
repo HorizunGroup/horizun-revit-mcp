@@ -395,12 +395,20 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             LinkLoadResult outcome;
+            TransactionStatus commitStatus;
             using (var t = new Transaction(doc, "Horizun: reload a CAD drawing"))
             {
                 t.Start();
                 outcome = type.Reload();
-                t.Commit();
+                commitStatus = t.Commit();
             }
+            // THE RELOAD'S OWN ANSWER DECIDES TOO. host_verified and verified_applied used to
+            // be literals: a commit that did not commit, or a load result that was not a
+            // success, still read verified.
+            bool committed = commitStatus == TransactionStatus.Committed;
+            bool loaded;
+            try { loaded = outcome != null && LinkLoadResult.IsCodeSuccess(outcome.LoadResult); }
+            catch { loaded = false; }
 
             JObject after;
             string verifyError = Measure(doc, facts.ElementId, out after);
@@ -419,7 +427,10 @@ namespace Horizun.Revit.Commands
                 ["geometry_fingerprint_before"] = beforePrint,
                 ["geometry_fingerprint_after"] = afterPrint,
                 ["geometry_changed"] = !string.Equals(beforePrint, afterPrint, StringComparison.Ordinal),
-                ["host_verified"] = true,
+                ["host_verified"] = committed && loaded && afterPrint != null,
+                ["transaction_status"] = commitStatus.ToString(),
+                ["load_succeeded"] = loaded,
+                ["geometry_fingerprint_measured"] = afterPrint != null,
                 ["verified_by"] = "the drawing's CONTENT, before and after: the SHA-256 of the file the link " +
                                   "resolves to and a fingerprint over the geometry Revit hands back. CADLinkType " +
                                   "publishes no status that changes across a reload, so a status check would " +
@@ -430,7 +441,10 @@ namespace Horizun.Revit.Commands
                 ["api_limits"] = ApiLimits()
             };
             result["load_recorded"] = RecordLoad(doc, facts.ElementId, after, "horizun_manage_cad_links reload", afterPrint);
-            ApplicationOutcome.StampApplied(result, "Committed", 1, 1, 1, 0, 0, 0);
+            bool reloadVerified = committed && loaded && afterPrint != null;
+            ApplicationOutcome.StampApplied(result, committed ? ApplicationOutcome.Committed : commitStatus.ToString(), 1,
+                                            loaded ? 1 : 0, reloadVerified ? 1 : 0, 0,
+                                            committed && !loaded ? 1 : 0, committed && loaded && afterPrint == null ? 1 : 0);
             DocumentGate.StampConfirmation(result, gate, ToolName, hash, false);
             return CommandResult.Ok(result);
         }

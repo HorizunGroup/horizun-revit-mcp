@@ -189,7 +189,7 @@ namespace Horizun.Revit.Commands
                 detail["index"] = p.Index; detail["operation"] = p.Operation; detail["verified"] = ok;
                 verification.Add(detail); if (ok) verified++;
             }
-            if (verified != plans.Count)
+            if (plans.Count == 0 || verified != plans.Count)
                 return CommandResult.Fail("The transaction committed, but " + (plans.Count - verified) +
                     " operation(s) failed post-commit verification. Inspect the model. " + verification.ToString(Formatting.None));
             var trResult = new JObject
@@ -481,7 +481,8 @@ namespace Horizun.Revit.Commands
                     if(index<0) continue; matched++; remaining.RemoveAt(index);
                 }
                 detail["copies_geometry_verified"]=matched;
-                return present == p.Ids.Count && matched==p.Ids.Count;
+                // An operation over no source proves nothing: 0 == 0 is not a copy.
+                return p.Ids.Count > 0 && present == p.Ids.Count && matched==p.Ids.Count;
             }
             int good = 0;
             var tagRows = new JArray();
@@ -492,52 +493,79 @@ namespace Horizun.Revit.Commands
                 {
                     var tag = e as IndependentTag;
                     var row = new JObject { ["element_id"] = Rid.Value(id) };
-                    bool ok = tag != null;
-                    if (tag != null)
+                    // THE TAG'S CHECKLIST, typed. The requested properties are declared up
+                    // front, so a property nobody compared cannot pass by omission, and a
+                    // property that could not be re-read is UNMEASURED: it used to be
+                    // reported as the opposite of the request ("read": !requested), a
+                    // measurement nobody took.
+                    var check = new PostconditionCheck(TagProperties(p).ToArray());
+                    if (tag == null)
                     {
-                        if (p.Operation == "move_tag_head")
+                        foreach (string property in TagProperties(p))
+                            check.Unreadable(property, JValue.CreateNull(), "the element is no longer an IndependentTag");
+                    }
+                    else if (p.Operation == "move_tag_head")
+                    {
+                        XYZ expected = p.HeadPoint ?? p.HeadBefore[Rid.Value(id)].Add(p.Vector);
+                        XYZ actual = null; string why = null;
+                        try { actual = tag.TagHeadPosition; } catch (Exception ex) { why = ex.Message; }
+                        bool m = actual != null && actual.DistanceTo(expected) <= TagPositionToleranceFeet;
+                        row["head_before_feet"] = Arr(p.HeadBefore[Rid.Value(id)]);
+                        row["head_expected_feet"] = Arr(expected);
+                        row["head_read_feet"] = actual == null ? (JToken)JValue.CreateNull() : Arr(actual);
+                        row["tolerance_feet"] = TagPositionToleranceFeet;
+                        if (actual == null) check.Unreadable("head_position", Arr(expected), why ?? "TagHeadPosition returned null");
+                        else check.Record("head_position", Arr(expected), Arr(actual), m);
+                    }
+                    else
+                    {
+                        Reference r = p.TagRefs[Rid.Value(id)];
+                        if (p.HasLeader.HasValue)
                         {
-                            XYZ expected = p.HeadPoint ?? p.HeadBefore[Rid.Value(id)].Add(p.Vector);
-                            XYZ actual = null; try { actual = tag.TagHeadPosition; } catch { }
-                            ok = actual != null && actual.DistanceTo(expected) <= TagPositionToleranceFeet;
-                            row["head_before_feet"] = Arr(p.HeadBefore[Rid.Value(id)]);
-                            row["head_expected_feet"] = Arr(expected);
-                            row["head_read_feet"] = actual == null ? (JToken)JValue.CreateNull() : Arr(actual);
-                            row["tolerance_feet"] = TagPositionToleranceFeet;
+                            bool? v = null; string why = null;
+                            try { v = tag.HasLeader; } catch (Exception ex) { why = ex.Message; }
+                            row["has_leader"] = new JObject { ["requested"] = p.HasLeader.Value, ["read"] = v.HasValue ? (JToken)v.Value : JValue.CreateNull() };
+                            if (v.HasValue) check.Compare("has_leader", p.HasLeader.Value, v.Value);
+                            else check.Unreadable("has_leader", p.HasLeader.Value, why);
                         }
-                        else
+                        if (p.EndCondition.HasValue)
                         {
-                            Reference r = p.TagRefs[Rid.Value(id)];
-                            if (p.HasLeader.HasValue)
-                            {
-                                bool v; try { v = tag.HasLeader; } catch { v = !p.HasLeader.Value; }
-                                row["has_leader"] = new JObject { ["requested"] = p.HasLeader.Value, ["read"] = v }; ok = ok && v == p.HasLeader.Value;
-                            }
-                            if (p.EndCondition.HasValue)
-                            {
-                                LeaderEndCondition c; bool readable = true; try { c = tag.LeaderEndCondition; } catch { c = LeaderEndCondition.Attached; readable = false; }
-                                bool m = readable && c == p.EndCondition.Value;
-                                row["leader_end_condition"] = new JObject { ["requested"] = p.EndCondition.Value.ToString().ToLowerInvariant(), ["read"] = readable ? (JToken)c.ToString().ToLowerInvariant() : JValue.CreateNull() }; ok = ok && m;
-                            }
-                            if (p.LeaderEnd != null)
-                            {
-                                XYZ v = null; try { v = tag.GetLeaderEnd(r); } catch { }
-                                bool m = v != null && v.DistanceTo(p.LeaderEnd) <= TagPositionToleranceFeet;
-                                row["leader_end"] = new JObject { ["requested_feet"] = Arr(p.LeaderEnd), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m }; ok = ok && m;
-                            }
-                            if (p.LeaderElbow != null)
-                            {
-                                XYZ v = null; try { v = tag.GetLeaderElbow(r); } catch { }
-                                bool m = v != null && v.DistanceTo(p.LeaderElbow) <= TagPositionToleranceFeet;
-                                row["leader_elbow"] = new JObject { ["requested_feet"] = Arr(p.LeaderElbow), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m }; ok = ok && m;
-                            }
-                            if (p.LeaderVisible.HasValue)
-                            {
-                                bool v; try { v = tag.IsLeaderVisible(r); } catch { v = !p.LeaderVisible.Value; }
-                                row["leader_visible"] = new JObject { ["requested"] = p.LeaderVisible.Value, ["read"] = v }; ok = ok && v == p.LeaderVisible.Value;
-                            }
+                            LeaderEndCondition c = LeaderEndCondition.Attached; bool readable = true; string why = null;
+                            try { c = tag.LeaderEndCondition; } catch (Exception ex) { readable = false; why = ex.Message; }
+                            string requested = p.EndCondition.Value.ToString().ToLowerInvariant();
+                            row["leader_end_condition"] = new JObject { ["requested"] = requested, ["read"] = readable ? (JToken)c.ToString().ToLowerInvariant() : JValue.CreateNull() };
+                            if (readable) check.Compare("leader_end_condition", requested, c.ToString().ToLowerInvariant());
+                            else check.Unreadable("leader_end_condition", requested, why);
+                        }
+                        if (p.LeaderEnd != null)
+                        {
+                            XYZ v = null; string why = null;
+                            try { v = tag.GetLeaderEnd(r); } catch (Exception ex) { why = ex.Message; }
+                            bool m = v != null && v.DistanceTo(p.LeaderEnd) <= TagPositionToleranceFeet;
+                            row["leader_end"] = new JObject { ["requested_feet"] = Arr(p.LeaderEnd), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m };
+                            if (v == null) check.Unreadable("leader_end", Arr(p.LeaderEnd), why ?? "GetLeaderEnd returned null");
+                            else check.Record("leader_end", Arr(p.LeaderEnd), Arr(v), m);
+                        }
+                        if (p.LeaderElbow != null)
+                        {
+                            XYZ v = null; string why = null;
+                            try { v = tag.GetLeaderElbow(r); } catch (Exception ex) { why = ex.Message; }
+                            bool m = v != null && v.DistanceTo(p.LeaderElbow) <= TagPositionToleranceFeet;
+                            row["leader_elbow"] = new JObject { ["requested_feet"] = Arr(p.LeaderElbow), ["read_feet"] = v == null ? (JToken)JValue.CreateNull() : Arr(v), ["tolerance_feet"] = TagPositionToleranceFeet, ["match"] = m };
+                            if (v == null) check.Unreadable("leader_elbow", Arr(p.LeaderElbow), why ?? "GetLeaderElbow returned null");
+                            else check.Record("leader_elbow", Arr(p.LeaderElbow), Arr(v), m);
+                        }
+                        if (p.LeaderVisible.HasValue)
+                        {
+                            bool? v = null; string why = null;
+                            try { v = tag.IsLeaderVisible(r); } catch (Exception ex) { why = ex.Message; }
+                            row["leader_visible"] = new JObject { ["requested"] = p.LeaderVisible.Value, ["read"] = v.HasValue ? (JToken)v.Value : JValue.CreateNull() };
+                            if (v.HasValue) check.Compare("leader_visible", p.LeaderVisible.Value, v.Value);
+                            else check.Unreadable("leader_visible", p.LeaderVisible.Value, why);
                         }
                     }
+                    bool ok = check.AllVerified;
+                    row["postconditions"] = check.ToJson();
                     row["verified"] = ok;
                     tagRows.Add(row);
                     if (ok) good++;
@@ -627,7 +655,22 @@ namespace Horizun.Revit.Commands
             }
             detail["targets_verified"] = good;
             if (tagRows.Count > 0) detail["tags"] = tagRows;
-            return good == p.Ids.Count;
+            // An operation that targeted nothing verified nothing: good == Ids.Count over an
+            // empty list is the vacuous pass PostconditionCheck exists to refuse.
+            return p.Ids.Count > 0 && good == p.Ids.Count;
+        }
+
+        /// <summary>The properties a tag operation asked for - the tag checklist's required set.</summary>
+        private static List<string> TagProperties(Plan p)
+        {
+            var required = new List<string>();
+            if (p.Operation == "move_tag_head") { required.Add("head_position"); return required; }
+            if (p.HasLeader.HasValue) required.Add("has_leader");
+            if (p.EndCondition.HasValue) required.Add("leader_end_condition");
+            if (p.LeaderEnd != null) required.Add("leader_end");
+            if (p.LeaderElbow != null) required.Add("leader_elbow");
+            if (p.LeaderVisible.HasValue) required.Add("leader_visible");
+            return required;
         }
 
         /// <summary>0.003 mm: under anything a drawing shows, over floating-point noise.</summary>

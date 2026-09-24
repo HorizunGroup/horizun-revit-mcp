@@ -5922,7 +5922,15 @@ namespace Horizun.Contracts
                 "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
                 "horizun_regroup_by_param", "horizun_copy_slab_elevations",
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
-                "horizun_rectangularize_walls"
+                "horizun_rectangularize_walls",
+                // It writes nothing ITSELF, and that is why it sat in no set and fell through to
+                // ReadOnly: its children do, called in-process (connect_mep, create_elements and,
+                // through a refit, delete_verified) - past the admission a read_only profile
+                // applies by this effect, and with readOnlyHint=true on the wire. It opens a
+                // mutation gate and honours dry_run (default true), so this is its effect.
+                // Found by WriteVerificationCatalogTests, which derives "writes" from the
+                // source (DocumentGate.ForMutation) instead of trusting this list.
+                "horizun_cad_connect"
             };
             // Writes something outside the model that is still there after the call: a PNG,
             // a workbook. full_write is the rung that authorizes these.

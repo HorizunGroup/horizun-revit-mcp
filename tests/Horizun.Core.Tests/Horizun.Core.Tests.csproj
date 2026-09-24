@@ -361,6 +361,10 @@
          not say: an empty checklist is not a pass, and a property that could not be
          read is not agreement. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PostconditionCheck.cs" />
+    <!-- How every writing tool verifies, declared in one table, and the recipe verdict
+         that stopped 0 == 0 over failed elements reading as verified. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\WriteVerificationCatalog.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\RecipeVerdict.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceSnapshot.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometryInput.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\SourceTrace.cs" />

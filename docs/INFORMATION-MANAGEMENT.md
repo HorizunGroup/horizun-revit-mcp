@@ -410,3 +410,30 @@ estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
+
+## Worked examples
+
+[`examples/`](../examples/) holds copyable tool calls for everything on this page:
+the start-up (`iso19650-startup/`: `questions` → `draft` rehearsal → `draft` write →
+`validate`, plus a complete `project-context.example.json`), containers
+(`information-containers/`: `name` → `stamp` → `inspect` → `transition`), and a
+verified IFC delivery (`ifc-delivery/`) whose TAB-separated Pset mapping and IDS 1.0
+file agree: `HZ_Delivery.Code` on every `IfcDuctSegment`. Each file carries `tool`,
+a bilingual `title`/`about` and the exact `arguments`.
+
+They cannot drift from the contract: `ExamplePayloadTests` validates every
+`examples/**/*.json` against the `InputSchema` of the tool it declares, rehearses the
+project-context drafts and composes every container name, and
+`ExampleDeliveryFilesTests` runs the example IDS and mapping against a hand-written
+IFC. Names, codes and paths are placeholders under `C:/proyectos/demo/`; element ids
+are placeholders to resolve in your own model.
+
+### Resumen en español
+
+[`examples/`](../examples/) trae llamadas copiables para todo lo de esta página: el
+arranque (`questions` → ensayo de `draft` → escritura → `validate`, y un
+`project-context.example.json` completo), los contenedores (`name` → `stamp` →
+`inspect` → `transition`) y una entrega IFC verificada cuyo mapeo de Psets (separado
+por TAB) y cuyo IDS 1.0 coinciden: `HZ_Delivery.Code` en cada `IfcDuctSegment`. Un
+test valida cada archivo contra el `InputSchema` de la herramienta que declara, así
+que no se desactualizan; nombres, códigos, rutas e ids son marcadores.

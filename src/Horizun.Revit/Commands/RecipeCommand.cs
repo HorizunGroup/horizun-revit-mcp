@@ -181,24 +181,39 @@ namespace Horizun.Revit.Commands
             result["verified"] = outcome.Verified;
 
             var blocks = new JArray();
-            bool allAgree = true;
+            var counts = new List<KeyValuePair<int, int>>();
             foreach (VerifiedCount check in Verifications)
             {
                 int intended = ReadCount(outcome.Applied, check.IntendedKey);
                 int actual = ReadCount(outcome.Verified, check.ActualKey);
                 JObject block = JObject.FromObject(Guard.Verify(check.What, intended, actual));
-                if (block.Value<bool?>("verified") != true) allAgree = false;
+                counts.Add(new KeyValuePair<int, int>(intended, actual));
                 blocks.Add(block);
             }
+            // An element the recipe could not process is listed in applied.errors and then
+            // counts in NEITHER number - so agreeing counts alone could say verified over a
+            // run where every element failed. RecipeVerdict folds the errors in.
+            int errorsReported = (outcome.Applied?["errors"] as JArray)?.Count ?? 0;
+            RecipeVerdict.Result verdict = RecipeVerdict.Decide(counts, errorsReported);
+            bool allAgree = verdict.AllVerified;
 
             result["verification"] = blocks;
             result["all_verified"] = allAgree;
+            result["errors_reported"] = errorsReported;
+            result["nothing_changed"] = verdict.NothingChanged;
             result["verification_note"] = allAgree
-                ? "Every count below was RE-READ from the model after the commit, not counted from calls that " +
-                  "did not throw."
-                : "AT LEAST ONE COUNT DOES NOT MATCH. The model does not contain what this run claims to have " +
-                  "done. Do not treat this as finished — look at the mismatched block below and at 'errors' in " +
-                  "'applied' before running anything that builds on this.";
+                ? (verdict.NothingChanged
+                    ? "Nothing needed changing: every count below was RE-READ from the model after the commit and " +
+                      "is zero, and the recipe reported no failed element. Declared no_op, not a verified change."
+                    : "Every count below was RE-READ from the model after the commit, not counted from calls that " +
+                      "did not throw.")
+                : verdict.ErrorsReported > 0 && verdict.Mismatched == 0 && verdict.Unmeasured == 0
+                    ? "THE COUNTS AGREE, BUT " + verdict.ErrorsReported + " ELEMENT(S) FAILED and are listed in " +
+                      "'errors' in 'applied'. A failed element counts in neither number, so agreeing counts do not " +
+                      "mean the request was carried out. Do not treat this as finished."
+                    : "AT LEAST ONE COUNT DOES NOT MATCH OR WAS NEVER REPORTED. The model does not contain what this " +
+                      "run claims to have done. Do not treat this as finished — look at the mismatched or unmeasured " +
+                      "block below and at 'errors' in 'applied' before running anything that builds on this.";
 
             // The recipe's own verdict, in the vocabulary a plan reads. Every count above
             // was re-read from the model after the commit; a block that does not agree means
@@ -206,10 +221,8 @@ namespace Horizun.Revit.Commands
             // says so in prose. This is the same fact where a composing caller can act on it.
             // The transaction committed - a silent rollback is caught above and fails - so
             // the open question is only whether the counts agree.
-            int checks = blocks.Count;
-            int agreed = blocks.Count(b => (b as JObject)?.Value<bool?>("verified") == true);
-            ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, checks, agreed, agreed,
-                                            0, checks - agreed, 0);
+            ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, verdict.Requested, verdict.Applied,
+                                            verdict.Verified, 0, verdict.Failed, verdict.Unknown);
             DocumentGate.StampConfirmation(result, gate, Name, planHash, false);
             return CommandResult.Ok(result);
         }

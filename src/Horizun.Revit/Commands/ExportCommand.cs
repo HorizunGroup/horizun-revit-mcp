@@ -699,6 +699,7 @@ namespace Horizun.Revit.Commands
         {
             var optionRows = new JArray();
             bool allProvableHeld = true;
+            int provable = 0, proven = 0;
             foreach (KeyValuePair<string, string> option in preset.Options)
             {
                 var row = new JObject { ["option"] = option.Key, ["requested"] = option.Value };
@@ -751,14 +752,21 @@ namespace Horizun.Revit.Commands
                 }
                 catch (Exception ex) { row["verified"] = false; row["error"] = ex.Message; }
                 row["read_back"] = readBack;
-                if (row["verified"] != null && !(bool)row["verified"]) allProvableHeld = false;
+                provable++;
+                // A verifiable key this switch has no reader for leaves verified unset: that is
+                // an option nobody proved, and it used to leave the verdict true.
+                if ((bool?)row["verified"] != true) allProvableHeld = false;
+                else proven++;
                 row["status"] = row["status"] ?? ((bool?)row["verified"] == true ? "verified" : "failed");
                 optionRows.Add(row);
             }
             return new JObject
             {
                 ["name"] = preset.Name, ["format"] = preset.Format, ["sha256"] = presetHash,
-                ["options"] = optionRows, ["all_provable_options_held"] = allProvableHeld
+                // Held only when at least one option was provable and every provable one was
+                // proved: a preset of unverifiable options proves nothing, and says so.
+                ["options"] = optionRows, ["all_provable_options_held"] = allProvableHeld && provable > 0,
+                ["provable_options"] = provable, ["proven_options"] = proven
             };
         }
 
