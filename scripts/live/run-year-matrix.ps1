@@ -621,11 +621,14 @@ foreach ($year in $Years) {
                                             " Nothing was closed by force; the process is left as it is.") }
             }
             $row.close = $close
-            if ($close.state -notin @('closed', 'already_exited')) {
+            if ($close.state -eq 'closed_after_revit_crash') {
+                Write-Host ("=== {0} : closed after Revit crashed while exiting: {1}" -f $year, $close.why) -ForegroundColor Yellow
+            }
+            if ($close.state -notin @('closed', 'already_exited', 'closed_after_revit_crash')) {
                 Write-Host ("=== {0} : REVIT LEFT RUNNING ({1}): {2}" -f $year, $close.state, $close.why) -ForegroundColor Red
                 $pending += "close: $($close.state) - $($close.why)"
             }
-            elseif ($close.state -eq 'closed') {
+            elseif ($close.state -in @('closed', 'closed_after_revit_crash')) {
                 # Only the discovery file of the pid this driver started and closed.
                 Get-ChildItem $discovery -Filter "revit-$year-$($identity.pid).json" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
             }
