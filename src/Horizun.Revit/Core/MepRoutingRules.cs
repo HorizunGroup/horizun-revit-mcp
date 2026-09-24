@@ -48,6 +48,30 @@ namespace Horizun.Revit.Core
         public static bool CatalogHas(IEnumerable<double> catalogFeet, double wantedFeet)
             => catalogFeet != null && catalogFeet.Any(v => Math.Abs(v - wantedFeet) <= SizeToleranceFeet);
 
+        // ---- a rule's size range --------------------------------------------------------
+
+        /// <summary>
+        /// The size range an added rule is written with. Omitting BOTH bounds is the
+        /// documented form of "all sizes": the command then writes PrimarySizeCriterion.All()
+        /// itself. Its bounds are Revit's own representation of an open range and are never
+        /// validated as if the caller had typed them - doing that refused every rule sent
+        /// without min_size/max_size (live, Revit 2026, 2026-09-24). One bound alone reads
+        /// two ways (open or closed on the other side) and is refused rather than guessed.
+        /// </summary>
+        public static bool ResolveSizeRange(double? min, double? max, out bool allSizes, out string error)
+        {
+            error = null;
+            allSizes = !min.HasValue && !max.HasValue;
+            if (allSizes) return true;
+            if (!min.HasValue || !max.HasValue)
+            { error = "give both min_size and max_size, or neither for all sizes."; return false; }
+            double a = min.Value, b = max.Value;
+            if (double.IsNaN(a) || double.IsInfinity(a) || double.IsNaN(b) || double.IsInfinity(b))
+            { error = "min_size and max_size must be finite numbers."; return false; }
+            if (a < 0 || b < a) { error = "min_size must be >= 0 and <= max_size (omit both for all sizes)."; return false; }
+            return true;
+        }
+
         // ---- rule-list edits ---------------------------------------------------------
 
         public sealed class RuleEdit

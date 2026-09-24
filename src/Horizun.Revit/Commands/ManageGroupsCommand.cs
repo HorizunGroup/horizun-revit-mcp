@@ -84,7 +84,7 @@ namespace Horizun.Revit.Commands
                     return CommandResult.FailWithDetail("Group rehearsal rollback was not confirmed; model state is uncertain.",
                         new JObject { ["state"] = "uncertain", ["rehearsal"] = rehearsal, ["write_started"] = true });
                 if (rehearsal.Value<bool>("verified") != true)
-                    return CommandResult.FailWithDetail("The group rehearsal could not verify the change. Nothing was committed.",
+                    return CommandResult.FailWithDetail("The group rehearsal could not verify the change (" + RehearsalWhy(rehearsal) + "). Nothing was committed.",
                         new JObject { ["state"] = "refused", ["rehearsal"] = rehearsal });
                 DocumentGate.RecordResolvedPlan(resolved);
                 var result = new JObject { ["dry_run"] = true, ["plan"] = PlanJson(plan), ["rehearsal"] = rehearsal };
@@ -256,7 +256,14 @@ namespace Horizun.Revit.Commands
                     return p;
                 case "ungroup":
                     if (p.Groups.Count == 0) { error = "ungroup needs group_ids."; return null; }
-                    foreach (Group g in p.Groups) p.MembersBefore[g.Id] = g.GetMemberIds().ToList();
+                    foreach (Group g in p.Groups)
+                    {
+                        p.MembersBefore[g.Id] = g.GetMemberIds().ToList();
+                        p.ParentBefore[g.Id] = Rid.Value(g.GroupId);
+                        ElementId t = g.GroupType.Id;
+                        if (!p.UngroupTypes.ContainsKey(t)) p.UngroupTypes[t] = new[] { GroupsOf(g.GroupType).Count, 0 };
+                        p.UngroupTypes[t][1]++;
+                    }
                     return p;
             }
             error = "unknown operation."; return null;
@@ -348,7 +355,13 @@ namespace Horizun.Revit.Commands
                     foreach (Group g in p.Groups) g.GroupType = p.Type;
                     break;
                 case "ungroup":
-                    foreach (Group g in p.Groups) g.UngroupMembers();
+                    p.Released.Clear();
+                    for (int i = 0; i < p.Groups.Count; i++)
+                    {
+                        // The Group object is invalid once ungrouped: keep the id taken before, and Revit's own member list.
+                        ElementId id = p.GroupIds[i];
+                        p.Released[id] = (p.Groups[i].UngroupMembers() ?? new List<ElementId>()).ToList();
+                    }
                     break;
             }
         }
@@ -429,12 +442,41 @@ namespace Horizun.Revit.Commands
                 }
                 default: // ungroup
                 {
-                    var c = new PostconditionCheck("groups_removed", "members_released");
-                    var still = p.GroupIds.Where(id => doc.GetElement(id) != null).Select(Rid.Value).ToList();
+                    // Ungroup deletes the instance BY DESIGN: nothing is read through it. Members come from
+                    // UngroupMembers' own answer (read-before only as fallback) and are re-read one by one.
+                    var c = new PostconditionCheck("groups_removed", "members_released", "type_kept");
+                    var still = p.GroupIds.Where(id => { Element e = doc.GetElement(id); return e is Group && e.IsValidObject; }).Select(Rid.Value).ToList();
                     c.Record("groups_removed", p.GroupIds.Count, new JArray(still), still.Count == 0);
-                    var members = p.MembersBefore.Values.SelectMany(x => x).ToList();
-                    var bad = members.Where(id => { Element e = doc.GetElement(id); return e == null || e.GroupId != ElementId.InvalidElementId; }).Select(Rid.Value).ToList();
-                    c.Record("members_released", members.Count, new JArray(bad), members.Count > 0 && bad.Count == 0);
+                    var evidence = new JArray(); bool released = true; int checkedMembers = 0;
+                    foreach (ElementId gid in p.GroupIds)
+                    {
+                        List<ElementId> got; p.Released.TryGetValue(gid, out got);
+                        List<ElementId> before; p.MembersBefore.TryGetValue(gid, out before);
+                        var ids = UngroupRules.MembersToCheck((got ?? new List<ElementId>()).Select(Rid.Value), (before ?? new List<ElementId>()).Select(Rid.Value));
+                        var states = ids.Select(v =>
+                        {
+                            Element e = Rid.CanRepresent(v) ? doc.GetElement(Rid.Make(v)) : null;
+                            return new UngroupMemberState { Id = v, Exists = e != null, GroupIdAfter = e == null ? UngroupRules.NoGroup : Rid.Value(e.GroupId) };
+                        }).ToList();
+                        long parent; if (!p.ParentBefore.TryGetValue(gid, out parent)) parent = UngroupRules.NoGroup;
+                        bool ok = UngroupRules.MembersReleased(states, parent);
+                        released &= ok; checkedMembers += states.Count;
+                        evidence.Add(new JObject { ["group_id"] = Rid.Value(gid), ["members"] = states.Count,
+                            ["source"] = got != null && got.Count > 0 ? "UngroupMembers" : "read_before",
+                            ["expected_group_id"] = parent, ["not_released"] = new JArray(UngroupRules.NotReleased(states, parent)) });
+                    }
+                    c.Record("members_released", checkedMembers, evidence, released);
+                    var types = new JArray(); bool typesHeld = true;
+                    foreach (var kv in p.UngroupTypes)
+                    {
+                        GroupType t = doc.GetElement(kv.Key) as GroupType;
+                        int after = t == null ? 0 : GroupsOf(t).Count;
+                        string expectation;
+                        bool held = UngroupRules.TypeHeld(kv.Value[0], kv.Value[1], t != null, after, out expectation);
+                        typesHeld &= held;
+                        types.Add(new JObject { ["type_id"] = Rid.Value(kv.Key), ["expected"] = expectation, ["exists"] = t != null, ["instances_after"] = after, ["held"] = held });
+                    }
+                    c.Record("type_kept", p.UngroupTypes.Count, types, typesHeld);
                     return c;
                 }
             }
@@ -566,6 +608,17 @@ namespace Horizun.Revit.Commands
             tx.SetFailureHandlingOptions(opts);
         }
 
+        /// <summary>Which property failed, in the text a probe or a person reads - not only in the detail block.</summary>
+        private static string RehearsalWhy(JObject rehearsal)
+        {
+            string err = rehearsal.Value<string>("error");
+            if (!string.IsNullOrEmpty(err)) return "error: " + err;
+            var props = (rehearsal["postconditions"] as JObject)?["properties"] as JArray;
+            var failed = props == null ? new List<string>() : props.OfType<JObject>()
+                .Where(x => x.Value<bool?>("matches") != true).Select(x => x.Value<string>("property")).ToList();
+            return failed.Count > 0 ? "failed: " + string.Join(", ", failed) : "no postcondition was recorded";
+        }
+
         private static JObject SafeJson(Document doc, Plan p) { try { return Verify(doc, p).ToJson(); } catch { return null; } }
 
         private static ResolvedPlan Resolved(GateResult gate, UIApplication app, Plan p)
@@ -601,7 +654,11 @@ namespace Horizun.Revit.Commands
             public readonly Dictionary<ElementId, List<ElementId>> MembersBefore = new Dictionary<ElementId, List<ElementId>>();
             public readonly Dictionary<ElementId, List<MemberSignature>> SigsBefore = new Dictionary<ElementId, List<MemberSignature>>();
             public readonly Dictionary<ElementId, double[]> Shifts = new Dictionary<ElementId, double[]>();
-            public readonly Dictionary<ElementId, int> OtherCounts = new Dictionary<ElementId, int>();        }
+            public readonly Dictionary<ElementId, int> OtherCounts = new Dictionary<ElementId, int>();
+            public readonly Dictionary<ElementId, List<ElementId>> Released = new Dictionary<ElementId, List<ElementId>>();
+            public readonly Dictionary<ElementId, long> ParentBefore = new Dictionary<ElementId, long>();
+            public readonly Dictionary<ElementId, int[]> UngroupTypes = new Dictionary<ElementId, int[]>(); // type -> {instances before, ungrouped}
+        }
 
         /// <summary>Records and deletes warnings; an error rolls the transaction back and is reported.</summary>
         private sealed class FailureLog : IFailuresPreprocessor

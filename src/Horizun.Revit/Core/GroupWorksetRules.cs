@@ -162,6 +162,59 @@ namespace Horizun.Revit.Core
         }
     }
 
+    /// <summary>One former member as re-read after the ungroup. GroupIdAfter is -1 for no group.</summary>
+    public sealed class UngroupMemberState
+    {
+        public long Id;
+        public bool Exists;
+        public long GroupIdAfter = -1;
+    }
+
+    /// <summary>
+    /// The postcondition of operation=ungroup, Revit-free. Ungrouping DELETES the instance
+    /// by design, so nothing may be read through it afterwards: the members are the ids
+    /// Revit's UngroupMembers returned (the members read before are the fallback when it
+    /// returned none), each must still exist and belong to no group - or to the parent
+    /// group when the instance was nested - and the group TYPE must survive with its
+    /// other instances untouched. A type with no other instance may be kept or purged:
+    /// both are Revit's business, neither is the ungroup's failure.
+    /// </summary>
+    public static class UngroupRules
+    {
+        public const long NoGroup = -1;
+
+        public static List<long> MembersToCheck(IEnumerable<long> released, IEnumerable<long> readBefore)
+        {
+            var r = (released ?? Enumerable.Empty<long>()).Distinct().ToList();
+            return r.Count > 0 ? r : (readBefore ?? Enumerable.Empty<long>()).Distinct().ToList();
+        }
+
+        /// <summary>The ids that did NOT come out loose (missing, or still in some group other than the parent).</summary>
+        public static List<long> NotReleased(IEnumerable<UngroupMemberState> members, long parentGroupId)
+        {
+            long want = parentGroupId < 0 ? NoGroup : parentGroupId;
+            return (members ?? Enumerable.Empty<UngroupMemberState>())
+                .Where(m => m == null || !m.Exists || (m.GroupIdAfter < 0 ? NoGroup : m.GroupIdAfter) != want)
+                .Select(m => m == null ? NoGroup : m.Id).ToList();
+        }
+
+        public static bool MembersReleased(IList<UngroupMemberState> members, long parentGroupId)
+            => members != null && members.Count > 0 && NotReleased(members, parentGroupId).Count == 0;
+
+        /// <summary>What the type must look like after ungrouping `ungrouped` of its `instancesBefore` instances.</summary>
+        public static bool TypeHeld(int instancesBefore, int ungrouped, bool typeExistsAfter, int instancesAfter, out string expectation)
+        {
+            int others = instancesBefore - ungrouped;
+            if (others > 0)
+            {
+                expectation = "kept with " + others + " instance(s)";
+                return typeExistsAfter && instancesAfter == others;
+            }
+            expectation = "no instance left (kept or purged, either is Revit's)";
+            return !typeExistsAfter || instancesAfter == 0;
+        }
+    }
+
     public static class WorksetEditRules
     {
         public const string Movable = "movable";
