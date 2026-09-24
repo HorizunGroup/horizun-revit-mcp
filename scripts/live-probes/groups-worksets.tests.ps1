@@ -7,8 +7,8 @@ $script:HzProbeModules = @()
 $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'groups-worksets' }
 if (-not $module) { 'module did not register'; exit 1 }
 
-function New-Ctx([bool]$gate, [int]$walls, [bool]$workshared) {
-    $state = @{ deleted = $false; wallCount = $walls; workshared = $workshared; applies = New-Object System.Collections.Generic.List[string] }
+function New-Ctx([bool]$gate, [int]$walls, [bool]$workshared, [hashtable]$dryFail = @{}) {
+    $state = @{ deleted = $false; wallCount = $walls; workshared = $workshared; applies = New-Object System.Collections.Generic.List[string]; dryFail = $dryFail }
     $call = {
         param($tool, $arguments)
         $op = $arguments.operation
@@ -31,6 +31,8 @@ function New-Ctx([bool]$gate, [int]$walls, [bool]$workshared) {
     $apply = {
         param($tool, $arguments, $key)
         $state.applies.Add($key)
+        # A refused rehearsal: the shape Invoke-WriteApply returns when the dry run itself fails.
+        if ($state.dryFail.ContainsKey($key)) { return @{ stage = 'dry_run'; answer = @{ isError = $true; data = $null; text = $state.dryFail[$key] } } }
         if ($tool -eq 'horizun_delete_verified') { $state.deleted = $true }
         $data = [pscustomobject]@{ host_verified = $true; workset_id = 7
             result = [pscustomobject]@{ group_id = 500 + $state.applies.Count; type_id = 900 + $state.applies.Count }
@@ -68,5 +70,16 @@ $by = Run-Module $ctx
 Check 'on a workshared model the writes run and pass' ($by['worksets: create, rename and move an element on a workshared model'].Outcome -eq 'pass')
 Check 'on a workshared model the refusal case is not_covered' ($by['worksets: a model that is not workshared is refused typed (not_workshared)'].Outcome -eq 'not_covered')
 Check 'the moved element is moved back' ($ctx.State.applies.Contains('ws-move-back'))
+
+# E. the live refusal of 2026-09-24 (Revit 2026): the ungroup rehearsal did not verify. The case
+#    fails with the bridge's words, and the probe still deletes the types it created.
+$msg = 'Error: The group rehearsal could not verify the change (failed: members_released). Nothing was committed.'
+$ctx = New-Ctx $false 3 $false @{ 'grp-ungroup' = $msg }
+$by = Run-Module $ctx
+$u = $by['groups: ungroup and delete what the probe created']
+Check 'a refused ungroup rehearsal fails its case' ($u.Outcome -eq 'fail')
+Check 'the failure carries the stage and the failing property' ($u.Detail -like '*stage=dry_run*' -and $u.Detail -like '*members_released*')
+Check 'the earlier group cases still pass' (@(@('groups: create a model group of two walls and re-read its members', 'groups: rename, duplicate and swap the group type') | Where-Object { $by[$_].Outcome -ne 'pass' }).Count -eq 0)
+Check 'cleanup still runs after a refused ungroup' ($ctx.State.applies.Contains('grp-cleanup'))
 
 if ($fails) { "groups-worksets probe tests: $fails FAILED"; exit 1 } else { 'groups-worksets probe tests: ALL PASS'; exit 0 }

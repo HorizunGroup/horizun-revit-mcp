@@ -5273,7 +5273,7 @@ namespace Horizun.Contracts
       ""group"": { ""type"": ""string"", ""description"": ""RoutingPreferenceRuleGroupType: Segments, Elbows, Junctions, Crosses, Transitions, Unions, Caps..."" },
       ""action"": { ""type"": ""string"", ""enum"": [""add"", ""remove"", ""move""] },
       ""index"": { ""type"": ""integer"" }, ""to_index"": { ""type"": ""integer"" }, ""part_id"": { ""type"": ""integer"" },
-      ""min_size"": { ""type"": ""number"" }, ""max_size"": { ""type"": ""number"" }, ""description"": { ""type"": ""string"" }
+      ""min_size"": { ""type"": ""number"", ""description"": ""with max_size; omit both for all sizes"" }, ""max_size"": { ""type"": ""number"" }, ""description"": { ""type"": ""string"" }
     }, ""additionalProperties"": false } },
     ""junction"": { ""type"": ""string"", ""enum"": [""Tee"", ""Tap""] },
     ""catalog"": { ""type"": ""string"", ""enum"": [""segment"", ""conduit"", ""duct_round"", ""duct_rectangular"", ""duct_oval"", ""cable_tray""] },

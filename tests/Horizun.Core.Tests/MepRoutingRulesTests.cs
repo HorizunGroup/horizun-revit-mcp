@@ -157,5 +157,32 @@ namespace Horizun.Core.Tests
             Assert.Equal(400 / 304.8, r.Nominal, 9);
             Assert.False(MepRoutingRules.NarrowestRectangle(q, v, 0, widths).Found);
         }
+
+        [Fact]
+        public void Omitting_both_bounds_is_all_sizes_and_is_never_validated_as_numbers()
+        {
+            // Live, Revit 2026, 2026-09-24: an elbow rule sent without min/max was refused with
+            // "min_size must be >= 0 and <= max_size" because All()'s sentinel bounds were validated.
+            bool all; string error;
+            Assert.True(MepRoutingRules.ResolveSizeRange(null, null, out all, out error));
+            Assert.True(all);
+            Assert.Null(error);
+        }
+
+        [Fact]
+        public void A_given_range_is_validated_and_one_bound_alone_is_refused()
+        {
+            bool all; string error;
+            Assert.True(MepRoutingRules.ResolveSizeRange(15, 100, out all, out error));
+            Assert.False(all);
+            Assert.False(MepRoutingRules.ResolveSizeRange(15, null, out all, out error));
+            Assert.Contains("or neither for all sizes", error);
+            Assert.False(MepRoutingRules.ResolveSizeRange(null, 100, out all, out error));
+            Assert.False(MepRoutingRules.ResolveSizeRange(-1, 100, out all, out error));
+            Assert.Contains("min_size must be >= 0", error);
+            Assert.False(MepRoutingRules.ResolveSizeRange(100, 15, out all, out error));
+            Assert.False(MepRoutingRules.ResolveSizeRange(double.NaN, 15, out all, out error));
+            Assert.False(MepRoutingRules.ResolveSizeRange(0, double.PositiveInfinity, out all, out error));
+        }
     }
 }

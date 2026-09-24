@@ -134,5 +134,54 @@ namespace Horizun.Core.Tests
             Assert.Contains("GroupRedefinitionRules.ResolveScope", groups);
             Assert.Contains("GetAvailableAttachedDetailGroupTypeIds", groups);
         }
+
+        private static UngroupMemberState M(long id, bool exists = true, long group = -1)
+            => new UngroupMemberState { Id = id, Exists = exists, GroupIdAfter = group };
+
+        [Fact]
+        public void Ungroup_members_are_loose_members_that_still_exist()
+        {
+            Assert.True(UngroupRules.MembersReleased(new[] { M(1), M(2) }, -1));
+            Assert.Equal(new long[] { 2 }, UngroupRules.NotReleased(new[] { M(1), M(2, group: 77) }, -1));
+            Assert.Equal(new long[] { 3 }, UngroupRules.NotReleased(new[] { M(1), M(3, exists: false) }, -1));
+            Assert.False(UngroupRules.MembersReleased(new UngroupMemberState[0], -1));
+        }
+
+        [Fact]
+        public void A_nested_instance_releases_its_members_into_the_parent()
+        {
+            Assert.True(UngroupRules.MembersReleased(new[] { M(1, group: 50), M(2, group: 50) }, 50));
+            Assert.False(UngroupRules.MembersReleased(new[] { M(1), M(2, group: 50) }, 50));
+        }
+
+        [Fact]
+        public void The_members_are_what_UngroupMembers_returned_and_the_read_before_is_the_fallback()
+        {
+            Assert.Equal(new long[] { 5, 6 }, UngroupRules.MembersToCheck(new long[] { 5, 6, 6 }, new long[] { 1, 2 }));
+            Assert.Equal(new long[] { 1, 2 }, UngroupRules.MembersToCheck(new long[0], new long[] { 1, 2 }));
+            Assert.Equal(new long[] { 1, 2 }, UngroupRules.MembersToCheck(null, new long[] { 1, 2 }));
+        }
+
+        [Fact]
+        public void Ungrouping_the_last_instance_does_not_require_the_type_to_keep_instances()
+        {
+            // Live, Revit 2026, 2026-09-24: the probe ungrouped the only instance of its type.
+            string why;
+            Assert.True(UngroupRules.TypeHeld(1, 1, true, 0, out why));
+            Assert.True(UngroupRules.TypeHeld(1, 1, false, 0, out why));
+            Assert.True(UngroupRules.TypeHeld(3, 1, true, 2, out why));
+            Assert.Contains("kept with 2", why);
+            Assert.False(UngroupRules.TypeHeld(3, 1, false, 0, out why));
+            Assert.False(UngroupRules.TypeHeld(3, 1, true, 1, out why));
+        }
+
+        [Fact]
+        public void The_ungroup_postcondition_reads_nothing_through_the_deleted_instance()
+        {
+            string groups = Command("ManageGroupsCommand.cs");
+            Assert.Contains("UngroupRules.MembersToCheck", groups);
+            Assert.Contains("UngroupRules.TypeHeld", groups);
+            Assert.Contains("RehearsalWhy(rehearsal)", groups);
+        }
     }
 }

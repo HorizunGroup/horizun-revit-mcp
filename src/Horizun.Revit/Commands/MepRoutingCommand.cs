@@ -446,6 +446,13 @@ namespace Horizun.Revit.Commands
 
         internal static string R(double v) => Math.Round(v, 9).ToString("R", CultureInfo.InvariantCulture);
 
+        /// <summary>A read size range back as a criterion; All()'s sentinel bounds are re-created as All(), not as numbers.</summary>
+        private static PrimarySizeCriterion Criterion(double min, double max)
+        {
+            PrimarySizeCriterion all = PrimarySizeCriterion.All();
+            return min.Equals(all.MinimumSize) && max.Equals(all.MaximumSize) ? all : new PrimarySizeCriterion(min, max);
+        }
+
         private static RuleRead ReadRule(RoutingPreferenceRule rule)
         {
             var r = new RuleRead { PartId = rule.MEPPartId, Description = rule.Description };
@@ -483,7 +490,7 @@ namespace Horizun.Revit.Commands
             private sealed class Edit
             {
                 public RoutingPreferenceRuleGroupType Group; public string Action; public int? Index, ToIndex;
-                public ElementId Part; public string Description; public double? Min, Max; public string Signature;
+                public ElementId Part; public string Description; public double? Min, Max; public bool AllSizes; public string Signature;
             }
 
             public override int Count => _edits.Count + (_junction != null ? 1 : 0);
@@ -529,9 +536,12 @@ namespace Horizun.Revit.Commands
                         { error = at + ".part_id " + pid + " must name a " + (g == RoutingPreferenceRuleGroupType.Segments ? "pipe segment" : "fitting type (FamilySymbol)") + " for group " + g + "."; return null; }
                         e.Part = part.Id; e.Description = a.Value<string>("description") ?? "";
                         double? min = a.Value<double?>("min_size"), max = a.Value<double?>("max_size");
-                        e.Min = min.HasValue ? min.Value * u.ToFeet : all.MinimumSize;
-                        e.Max = max.HasValue ? max.Value * u.ToFeet : all.MaximumSize;
-                        if (e.Min < 0 || e.Max < e.Min) { error = at + ": min_size must be >= 0 and <= max_size."; return null; }
+                        if (!MepRoutingRules.ResolveSizeRange(min, max, out bool allSizes, out string rangeError))
+                        { error = at + ": " + rangeError; return null; }
+                        // All sizes: the criterion is All() itself; its bounds are Revit's sentinel, not caller numbers.
+                        e.AllSizes = allSizes;
+                        e.Min = allSizes ? all.MinimumSize : min.Value * u.ToFeet;
+                        e.Max = allSizes ? all.MaximumSize : max.Value * u.ToFeet;
                         e.Signature = Rid.Value(e.Part) + "|" + e.Description + "|" + R(e.Min.Value) + "~" + R(e.Max.Value);
                     }
                     else if (e.Action != "remove" && e.Action != "move") { error = at + ".action must be add, remove or move."; return null; }
@@ -559,7 +569,7 @@ namespace Horizun.Revit.Commands
                     if (e.Action == "add")
                     {
                         var rule = new RoutingPreferenceRule(e.Part, e.Description);
-                        rule.AddCriterion(new PrimarySizeCriterion(e.Min.Value, e.Max.Value));
+                        rule.AddCriterion(e.AllSizes ? PrimarySizeCriterion.All() : new PrimarySizeCriterion(e.Min.Value, e.Max.Value));
                         if (e.Index.HasValue) rpm.AddRule(e.Group, rule, e.Index.Value); else rpm.AddRule(e.Group, rule);
                     }
                     else if (e.Action == "remove") rpm.RemoveRule(e.Group, e.Index.Value);
@@ -568,7 +578,7 @@ namespace Horizun.Revit.Commands
                         RoutingPreferenceRule old = rpm.GetRule(e.Group, e.Index.Value);
                         RuleRead read = ReadRule(old);
                         var copy = new RoutingPreferenceRule(read.PartId, read.Description ?? "");
-                        foreach (double[] c in read.Criteria) copy.AddCriterion(new PrimarySizeCriterion(c[0], c[1]));
+                        foreach (double[] c in read.Criteria) copy.AddCriterion(Criterion(c[0], c[1]));
                         rpm.RemoveRule(e.Group, e.Index.Value);
                         rpm.AddRule(e.Group, copy, e.ToIndex.Value);
                     }

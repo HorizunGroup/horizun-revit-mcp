@@ -10,7 +10,7 @@ $module = $script:HzProbeModules | Where-Object { $_.Name -eq 'mep-routing' }
 function New-Fake([hashtable]$Break = @{}) {
     $s = [pscustomobject]@{
         Elbows = [System.Collections.ArrayList]@('Elbow A'); Sizes = [System.Collections.ArrayList]@(15.0, 20.0, 25.0)
-        Width = 400.0; Height = 250.0; Break = $Break; Calls = [System.Collections.ArrayList]@()
+        Width = 400.0; Height = 250.0; Break = $Break; Calls = [System.Collections.ArrayList]@(); RuleKeys = [System.Collections.ArrayList]@()
     }
     $obj = { param($h) ($h | ConvertTo-Json -Depth 20 | ConvertFrom-Json) }
     $call = {
@@ -41,6 +41,7 @@ function New-Fake([hashtable]$Break = @{}) {
     $apply = {
         param($tool, $a, $key)
         [void]$s.Calls.Add("apply/$($a.operation)/$key")
+        if ($a.operation -eq 'set_rules' -and $a.rules) { foreach ($k in $a.rules[0].Keys) { [void]$s.RuleKeys.Add([string]$k) } }
         if ($s.Break.ContainsKey($key)) { return @{ stage = 'apply'; answer = @{ isError = $true; text = $s.Break[$key]; data = $null } } }
         $result = @{}
         switch ($a.operation) {
@@ -79,5 +80,20 @@ Check 'no remove is attempted after a refused add' (@($f.State.Calls | Where-Obj
 $f = New-Fake @{ 'mep-resize-back' = 'rolled back' }
 $o = Outcomes @(& $module.Run $f.Ctx)
 Check 'a failed resize back fails the resize case' ($o['mep_routing: resize moves a duct to another catalog size and back, re-read both times'] -eq 'fail')
+
+# 4. The live refusal of 2026-09-24 (Revit 2026): the validator rejected the all-sizes form. It is
+#    a failure of the set_rules case with the bridge's own words, and nothing is removed after it.
+$refusal = 'Error: rules[0]: min_size must be >= 0 and <= max_size. Nothing was written.'
+$f = New-Fake @{ 'mep-rule-add' = $refusal }
+$cases = @(& $module.Run $f.Ctx)
+$set = $cases | Where-Object { $_.Name -eq 'mep_routing: set_rules adds an elbow rule, re-reads it, and removes it again' }
+Check 'the refused elbow rule fails set_rules with the bridge text' ($set.Outcome -eq 'fail' -and $set.Detail -like '*min_size must be*')
+Check 'no rule is removed after a refused add' (@($f.State.Calls | Where-Object { $_ -like 'apply/set_rules/mep-rule-remove' }).Count -eq 0)
+Check 'the rule was left as found' ($f.State.Elbows.Count -eq 1)
+
+# 5. The probe sends the documented all-sizes form: neither min_size nor max_size, never a sentinel.
+$f = New-Fake
+$null = @(& $module.Run $f.Ctx)
+Check 'the added rule omits both size bounds' (@($f.State.RuleKeys | Where-Object { $_ -eq 'min_size' -or $_ -eq 'max_size' }).Count -eq 0 -and $f.State.RuleKeys.Contains('part_id'))
 
 if ($fails) { "mep-routing probe tests: $fails FAILED"; exit 1 } else { 'mep-routing probe tests: ALL PASS'; exit 0 }
