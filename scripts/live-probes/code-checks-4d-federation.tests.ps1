@@ -20,10 +20,16 @@ $fakeCall = {
         'horizun_code_check' {
             if (-not (Test-Path -LiteralPath $a.requirement_set_path)) { return Err 'no file' }
             $nsr = $a.requirement_set_path -match 'nsr10'
-            $rules = @((Rule 'r1' 'not_decidable' 0), (Rule 'r2' $(if ($nsr) { 'not_decidable' } else { 'fails' }) 3))
+            $rules = @((Rule 'r1' 'not_decidable' 0), (Rule 'r2' 'fails' 3))
+            if ($nsr) {
+                # With the K.3 values verified the set decides; only travel distance stays unverified.
+                $u = Rule 'travel' $(if ($script:bad.unverifiedPass) { 'passes' } else { 'not_decidable' }) 2
+                $u | Add-Member -NotePropertyName unverified_value -NotePropertyValue $true
+                $rules += $u
+            }
             if ($script:bad.emptyPass -and -not $nsr) { $rules += (Rule 'r3' 'passes' 0) }
             return Ok @{ verdict = 'fails'; rules = $rules
-                         totals = [pscustomobject]@{ passes = $(if ($nsr) { 0 } else { 1 }); fails = $(if ($nsr) { 0 } else { 2 }); not_decidable = 4 } }
+                         totals = [pscustomobject]@{ passes = 1; fails = 2; not_decidable = 4 } }
         }
         'horizun_federation_check' {
             if ($a.rules.ContainsKey('modles')) { return Err "The federation rules were refused: rules: unknown key 'modles'." }
@@ -87,6 +93,10 @@ Check 'the synthetic CSV is removed' (@(Get-ChildItem -LiteralPath $scratch -Fil
 $script:bad = @{ emptyPass = $true }
 $by = Run-Module $false
 Check 'a rule that examined nothing yet passed fails the case' ($by['code-check: the NTC 6047 set runs and every rule reports a verdict'].Outcome -eq 'fail')
+
+$script:bad = @{ unverifiedPass = $true }
+$by = Run-Module $false
+Check 'an unverified NSR-10 rule that passes fails the case' ($by['code-check: the NSR-10 set runs and an unverified rule neither passes nor fails'].Outcome -eq 'fail')
 
 $script:bad = @{ foreignLink = $true }
 $by = Run-Module $false

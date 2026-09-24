@@ -88,15 +88,30 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void The_nsr10_set_decides_nothing_while_its_thresholds_are_unverified()
+        public void The_nsr10_set_applies_the_k3_values_and_keeps_only_travel_distance_unverified()
         {
             RequirementSet s = RequirementSet.Load(JObject.Parse(File.ReadAllText(Path.Combine(StandardsDir(), "co-nsr10-titulo-k-evacuacion.json"))), _ => null);
-            Assert.All(s.Rules, r => Assert.True(r.UnverifiedValue, r.Id));
-            var stair = new CheckedElement { Id = 1, CategoryToken = "OST_Stairs", Measures = { ["stair_riser_mm"] = MeasuredValue.Exact(250, "x") } };
-            JObject result = CodeCheckRules.Evaluate(s, new[] { stair }, 50, true);
-            Assert.Equal(0, result["totals"].Value<int>("passes"));
-            Assert.Equal(0, result["totals"].Value<int>("fails"));
-            Assert.NotEqual("passes", (string)result["verdict"]);
+            Assert.Equal(new[] { "travel-distance-max" }, s.Rules.Where(r => r.UnverifiedValue).Select(r => r.Id).ToArray());
+
+            // K.3.8.3.4: riser 100-180, tread >= 280, 2C+H 620-640; K.3.8.3.3: width >= 900.
+            CheckedElement Stair(long id, double riser, double tread, double width) => new CheckedElement
+            {
+                Id = id, CategoryToken = "OST_Stairs",
+                Measures =
+                {
+                    ["stair_riser_mm"] = MeasuredValue.Exact(riser, "x"), ["stair_tread_mm"] = MeasuredValue.Exact(tread, "x"),
+                    ["stair_2r_plus_t_mm"] = MeasuredValue.Exact(2 * riser + tread, "x"), ["stair_run_width_mm"] = MeasuredValue.Exact(width, "x")
+                }
+            };
+            JObject result = CodeCheckRules.Evaluate(s, new[] { Stair(1, 175, 280, 1200), Stair(2, 190, 230, 850) }, 200, true);
+            var rows = result["rules"].ToDictionary(r => (string)r["id"], r => (string)r["verdict"]);
+            foreach (string id in new[] { "stair-riser-max", "stair-tread-min", "stair-2r-plus-t", "stair-width-min" })
+                Assert.Equal("fails", rows[id]);
+            var good = result["findings"].Where(f => (long)f["element_id"] == 1).Select(f => (string)f["outcome"]).Distinct().ToArray();
+            Assert.Equal(new[] { "passes" }, good);
+            // A stair nobody classified as public / over 50 is not examined by the 1 200 mm rule.
+            Assert.Equal("not_decidable", rows["stair-width-public-or-over-50"]);
+            Assert.Equal("not_decidable", rows["travel-distance-max"]);
         }
 
         // ---- outcomes -----------------------------------------------------------------

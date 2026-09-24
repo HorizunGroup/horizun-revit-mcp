@@ -11,7 +11,7 @@ $script:HzProbeModules += [pscustomobject]@{
     Name    = 'code-checks-4d-federation'
     Catalog = @(
         @{ Name = 'code-check: the NTC 6047 set runs and every rule reports a verdict'; Tool = 'horizun_code_check' }
-        @{ Name = 'code-check: the NSR-10 set passes nothing while its thresholds are unverified'; Tool = 'horizun_code_check' }
+        @{ Name = 'code-check: the NSR-10 set runs and an unverified rule neither passes nor fails'; Tool = 'horizun_code_check' }
         @{ Name = 'code-check: the RETILAP set runs and a rule that examined nothing is not_decidable'; Tool = 'horizun_code_check' }
         @{ Name = 'link-schedule: import parses the synthetic CSV'; Tool = 'horizun_link_schedule' }
         @{ Name = 'link-schedule: match links exactly the two probe walls by Mark'; Tool = 'horizun_link_schedule' }
@@ -30,7 +30,7 @@ $script:HzProbeModules += [pscustomobject]@{
 
         # ---- 1. code checks: read-only, need only a document ----------------------------
         $n1 = 'code-check: the NTC 6047 set runs and every rule reports a verdict'
-        $n2 = 'code-check: the NSR-10 set passes nothing while its thresholds are unverified'
+        $n2 = 'code-check: the NSR-10 set runs and an unverified rule neither passes nor fails'
         $n3 = 'code-check: the RETILAP set runs and a rule that examined nothing is not_decidable'
         $sets = @(
             @{ N = $n1; F = 'co-ntc6047-accesibilidad.json' }, @{ N = $n2; F = 'co-nsr10-titulo-k-evacuacion.json' },
@@ -44,7 +44,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $bad = @($rules | Where-Object { $valid -notcontains [string]$_.verdict })
             $emptyPass = @($rules | Where-Object { [int]$_.examined -eq 0 -and $_.verdict -ne 'not_decidable' })
             $ok = $rules.Count -gt 0 -and $bad.Count -eq 0 -and $emptyPass.Count -eq 0
-            if ($s.N -eq $n2) { $ok = $ok -and [int]$r.data.totals.passes -eq 0 -and [int]$r.data.totals.fails -eq 0 }
+            if ($s.N -eq $n2) { $ok = $ok -and @($rules | Where-Object { $_.unverified_value -eq $true -and $_.verdict -ne 'not_decidable' }).Count -eq 0 }
             $summary = ('{0} rules, verdict {1}, totals {2}' -f $rules.Count, $r.data.verdict, ($r.data.totals | ConvertTo-Json -Compress))
             Case $s.N 'horizun_code_check' $(if ($ok) { 'pass' } else { 'fail' }) $summary
         }

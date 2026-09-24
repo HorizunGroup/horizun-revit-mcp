@@ -5,7 +5,8 @@
 //
 //   * EXITS PER LEVEL. Occupant load = sum over the level's PLACED rooms of the
 //     declared occupant parameter, or area / area_per_person_m2 when the set gives
-//     a factor. Required exits come from the set's own table. Exits are the doors
+//     a factor, or area / the factor area_per_person_by_group assigns to the group
+//     each room declares in occupancy_parameter. Required exits come from the set's own table. Exits are the doors
 //     the set's exit_door rule selects - nothing in a model marks an exit, so no
 //     rule means not_decidable, never a guess.
 //
@@ -47,8 +48,15 @@ namespace Horizun.Revit.Core
                 return MeasuredValue.None("config.exit_door is missing: nothing in a model marks an exit, so the set must say which doors are exits.");
             string loadParam = config.Value<string>("occupant_load_parameter");
             double? perPerson = config.Value<double?>("area_per_person_m2");
-            if (loadParam == null && (perPerson == null || perPerson <= 0))
-                return MeasuredValue.None("config needs occupant_load_parameter or a positive area_per_person_m2.");
+            // Occupancy-group selection: a norm's factor table keyed by the group each
+            // room declares (NSR-10 Tabla K.3.3-1). A room whose group is absent or not in
+            // the table makes the load incomplete - never a default factor.
+            string groupParam = config.Value<string>("occupancy_parameter");
+            JObject byGroup = config["area_per_person_by_group"] as JObject;
+            if ((groupParam == null) != (byGroup == null))
+                return MeasuredValue.None("config.occupancy_parameter and config.area_per_person_by_group go together: one without the other cannot assign a factor to a room.");
+            if (loadParam == null && byGroup == null && (perPerson == null || perPerson <= 0))
+                return MeasuredValue.None("config needs occupant_load_parameter, occupancy_parameter with area_per_person_by_group, or a positive area_per_person_m2.");
 
             List<CheckedElement> rooms = (level.Rooms ?? new List<CheckedElement>()).Where(r => r.AreaM2 > 0).ToList();
             if (rooms.Count == 0)
@@ -62,6 +70,17 @@ namespace Horizun.Revit.Core
                     if (!room.Params.TryGetValue(loadParam, out ParamFact p) || !p.Exists || p.Number == null)
                         return MeasuredValue.None("room " + room.Id + " carries no numeric '" + loadParam + "': the occupant load is incomplete.");
                     load += p.Number.Value;
+                }
+                else if (byGroup != null)
+                {
+                    if (!room.Params.TryGetValue(groupParam, out ParamFact g) || !g.Exists || string.IsNullOrWhiteSpace(g.Text))
+                        return MeasuredValue.None("room " + room.Id + " declares no '" + groupParam + "': its occupancy group, and so the occupant load, is unknown.");
+                    string group = g.Text.Trim();
+                    JProperty row = byGroup.Properties().FirstOrDefault(pr => string.Equals(pr.Name.Trim(), group, StringComparison.OrdinalIgnoreCase));
+                    double? factor = row?.Value.Type == JTokenType.Integer || row?.Value.Type == JTokenType.Float ? row.Value.Value<double>() : (double?)null;
+                    if (factor == null || factor <= 0)
+                        return MeasuredValue.None("room " + room.Id + " declares group '" + group + "', which config.area_per_person_by_group gives no positive factor for: the occupant load is incomplete.");
+                    load += room.AreaM2 / factor.Value;
                 }
                 else load += room.AreaM2 / perPerson.Value;
             }
@@ -81,7 +100,9 @@ namespace Horizun.Revit.Core
             {
                 Value = exits - required.Value,
                 Basis = "exit doors on the level minus required exits; occupant load from " +
-                        (loadParam != null ? "'" + loadParam + "'" : "area / " + Fmt(perPerson.Value) + " m2 per person") + ".",
+                        (loadParam != null ? "'" + loadParam + "'"
+                         : byGroup != null ? "area / the factor of each room's '" + groupParam + "'"
+                         : "area / " + Fmt(perPerson.Value) + " m2 per person") + ".",
                 Detail = new JObject { ["occupant_load"] = load, ["required_exits"] = required.Value, ["exit_doors"] = exits, ["rooms"] = rooms.Count }
             };
         }

@@ -859,7 +859,7 @@ Measures (`Core/CodeCheckRules.cs`):
 | `ramp_slope_percent`, `ramp_run_length_mm`, `ramp_width_mm`, `ramp_landing_length_mm` | the ramp's own planar top faces | exact geometry; a ramp with no flat top face has no landing measure. |
 | `stair_riser_mm`, `stair_tread_mm`, `stair_2r_plus_t_mm`, `stair_run_width_mm` | `Stairs.ActualRiserHeight/ActualTreadDepth`, narrowest `StairsRun.ActualRunWidth` | exact; handrails not deducted. |
 | `space_illuminance_lx` | Space `Average Estimated Illumination` | 0 or empty is `not_decidable` (Revit computed nothing). |
-| `exit_count_minus_required` | per Level: placed rooms, doors | needs `config`: `area_per_person_m2` or `occupant_load_parameter`, `exit_door` (`{parameter, value}` or `{mark_prefix}`) and `required_exits: [{max_load, exits}]`; any missing piece is `not_decidable`. |
+| `exit_count_minus_required` | per Level: placed rooms, doors | needs `config`: an occupant load (`occupant_load_parameter`, or `occupancy_parameter` + `area_per_person_by_group: {group: m2}` so each room takes the factor of the group it declares, or one `area_per_person_m2`), `exit_door` (`{parameter, value}` or `{mark_prefix}`) and `required_exits: [{max_load, exits}]`; any missing piece - including a room with no group or a group the table does not list - is `not_decidable`. |
 | `travel_distance_m` | — | never computed here: always `not_decidable`. `horizun_audit_access` with `route_view_id` routes a real path. |
 
 Outcomes are `passes`, `fails`, `not_decidable`, `unreadable`. A rule's verdict is
@@ -875,9 +875,37 @@ Example sets in `standards/` (data, not compiled in; review before use):
   (8.2.4), stairs riser ≤ 180, tread ≥ 260, 2C+H 600–660, flight width 1 200 (11.1–11.2).
   The 1:14 row of Tabla 2 is ambiguous in the PDF (3 640 or 3 920 mm) and that band
   is marked `unverified_value`.
-- `co-nsr10-titulo-k-evacuacion.json` — NSR-10 Título K, K.3: stairs, exit doors,
-  exits per floor, travel distance. The published text could not be read when the set
-  was written, so EVERY threshold is `unverified_value` and carries no number.
+- `co-nsr10-titulo-k-evacuacion.json` — NSR-10 Título K, K.3, read on 2026-09-24 from
+  the text of the Comisión Asesora Permanente
+  ([idrd.gov.co copy](https://idrd.gov.co/sites/default/files/documentos/Construcciones/11titulo-k-nsr-100.pdf),
+  pages K-15 to K-23) and checked against MinVivienda's
+  [anexo técnico de modificaciones](https://minvivienda.gov.co/sites/default/files/consultasp/Anexo%20t%C3%A9cnico_4.pdf),
+  whose only change to Título K is the K.3.2.5 cross-reference. Values below; "set"
+  marks the ones the set applies. Exit doors, 1 200 mm stairs and room occupancy groups
+  are selected through placeholder parameters (`Exit Door`, `NSR10 Stair Class`,
+  `Occupancy Group`) that a project renames.
+
+  | Requirement | Value | Numeral | In the set |
+  |---|---|---|---|
+  | Riser (contrahuella) | 100 to 180 mm | K.3.8.3.4 (b) | set |
+  | Tread (huella), straight flight | ≥ 280 mm | K.3.8.3.4 (a) | set |
+  | 2 risers + 1 tread | 620 to 640 mm | K.3.8.3.4 (c) | set |
+  | Curved flights / circular / spiral tread | ≥ 240 mm at 1/3 (≤ 420 outer) / ≥ 250 mm / ≥ 190 mm at 300 mm | K.3.8.3.4 (d), K.3.8.3.9, K.3.8.3.10 | no (not separated by the selector) |
+  | Stair width, load < 50 | ≥ 900 mm | K.3.8.3.3 | set (floor for every evacuation stair) |
+  | Stair width, load > 50 or public use | ≥ 1 200 mm | K.3.8.3.3 | set, on stairs marked by a placeholder |
+  | Stair width inside dwellings / single-family | 900 / 750 mm | K.3.8.3.3 | no (K.3.8.3 excludes stairs inside dwellings) |
+  | Landing depth; rise between landings | = stair width, ≤ 1.20 m needed; < 2.40 m (assembly, institutional), < 3.50 m others | K.3.8.3.5 | no measure |
+  | Stair headroom | ≥ 2.0 m | K.3.8.3.7 | no measure |
+  | Exit door clear width | ≥ 800 mm (bedrooms 700; each leaf of a split door ≥ 700) | K.3.8.2.1 | set (upper bound: nominal leaf) |
+  | Exit door height | ≥ 2.0 m | K.3.8.2.1 | set (`DOOR_HEIGHT`) |
+  | Doors in series; opening force | ≥ 2.10 m apart; < 250 N | K.3.8.2.3, K.3.8.2.6 | no measure |
+  | Exit access (corridor) width | ≥ 900 mm and ≥ capacity by Tabla K.3.3-2 | K.3.3.4 | no measure |
+  | Width per person: corridors, doors, passages / stairs (mm) | A 5/8, C 5/10, F 6/10, I-1 6/10, I-2…I-5 13/15, L 5/10, P 10/18, R 5/10; −50 % with a complete extinguishing system | Tabla K.3.3-2, K.3.3.3.1 | no (per-exit load not in the model) |
+  | Occupant load factor (m² net per occupant) | A 28; C-1 10; C-2 3 (street level and below) / 6 (other floors); F 9; I-1 11; I-2 7; I-3 2; I-4 2.8; I-5 0.3; L-1 0.7; L-2 1.3; L-3 0.7; L-4 0.7; L-5 0.3; P 9; R 18; E, T by occupancy; M the largest of its parts | Tabla K.3.3-1 | set (`area_per_person_by_group`) |
+  | Minimum exits by occupant load | 0–100: 1; 101–500: 2; 501–1 000: 3; > 1 000: 4 | K.3.4.2, Tabla K.3.4-1 | set (per level) |
+  | Travel distance to an exit, without / with sprinklers (m) | A-1 60/75; A-2 90/120; C-1 60/90; C-2 60/75; F-1 60/75; F-2 90/120; I 45/60; L 60/75; P not allowed/22; R 60/75; +30 % if straight, no intermediate stairs, to exterior at grade | K.3.6.5, Tabla K.3.6-1 | no value (group-dependent and never computed) |
+  | Travel inside a room of ≤ 6 people; dead-end corridors | ≤ 15 m; ≤ 6 m | K.3.6.3, K.3.5.1.3 | no measure |
+  | Evacuation ramp: slope; width; landings; headroom | 1:12 (printed "8 %"); ≥ 1.10 m (exceptions 0.90–2.4 m); 1.8–3.6 m; ≥ 2.0 m | K.3.8.6.2, .4, .7, .5 | no (the 1:12 vs 8 % reading is ambiguous; not transcribed) |
 - `co-retilap-iluminancia.json` — RETILAP as modified by Resolución 40150 de 2024,
   Libro 3, Tabla 3.2.2.6 a (maintained illuminance Ēm per space type), matched on
   Space names; plus a Room template with a declared illuminance parameter.

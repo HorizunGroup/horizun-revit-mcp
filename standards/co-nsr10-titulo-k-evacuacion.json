@@ -1,85 +1,121 @@
 {
   "requirement_set": {
     "id": "co-nsr10-titulo-k-evacuacion",
-    "version": "0.1.0",
-    "title": "NSR-10 Titulo K (K.3 Medios de evacuacion) - example set, thresholds pending verification",
+    "version": "0.2.0",
+    "title": "NSR-10 Titulo K (K.3 Medios de evacuacion) - example set",
     "jurisdiction": "CO",
     "sources": [
       {
-        "norm": "Reglamento Colombiano de Construccion Sismo Resistente NSR-10, Titulo K - Requisitos complementarios (Decreto 926 de 2010 y modificaciones)",
+        "norm": "Reglamento Colombiano de Construccion Sismo Resistente NSR-10, Titulo K - Requisitos complementarios, Capitulo K.3 (text of the Comision Asesora Permanente para el Regimen de Construcciones Sismo Resistentes, Decreto 926 de 2010)",
         "url": "https://idrd.gov.co/sites/default/files/documentos/Construcciones/11titulo-k-nsr-100.pdf",
-        "read": "NOT READ: the published text could not be retrieved on 2026-09-24. Every threshold below is unverified_value and carries no number."
+        "read": "2026-09-24, pages K-15 to K-23 (K.3.3 to K.3.8.6)"
+      },
+      {
+        "norm": "Ministerio de Vivienda, Ciudad y Territorio - Anexo tecnico de modificaciones a la NSR-10",
+        "url": "https://minvivienda.gov.co/sites/default/files/consultasp/Anexo%20t%C3%A9cnico_4.pdf",
+        "read": "2026-09-24, full text: its only change to Titulo K is the cross-reference of K.3.2.5 (alarmas); no value used here is modified"
       }
     ],
-    "disclaimer": "Example requirement set, not a compliance assessment. No threshold in this set was verified against the published NSR-10 text, so every rule evaluates to not_decidable and applies no number: a wrong number read as the norm is worse than none. Fill each value from the cited numeral, set unverified_value to false, and version the set."
+    "disclaimer": "Example requirement set, not a compliance assessment. Verify the edition in force and the project's occupancy group. Exit doors, stairs requiring 1.20 m and room occupancy groups are selected through PLACEHOLDER parameters ('Exit Door', 'NSR10 Stair Class', 'Occupancy Group'): rename them to the parameters your project uses, or those rules examine nothing and stay not_decidable."
   },
   "rules": [
     {
       "id": "stair-riser-max",
       "selector": { "category": "OST_Stairs" },
-      "assertion": { "measure": "stair_riser_mm", "operator": "lte" },
-      "unverified_value": true,
+      "assertion": { "measure": "stair_riser_mm", "operator": "lte", "value": 180 },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (huella y contrahuella)" },
-      "note": "Secondary summaries give a maximum riser for this numeral; confirm it in the published text before entering it."
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (b)", "text": "contrahuella no menor de 100 mm ni mayor de 180 mm" }
     },
     {
       "id": "stair-riser-min",
       "selector": { "category": "OST_Stairs" },
-      "assertion": { "measure": "stair_riser_mm", "operator": "gte" },
-      "unverified_value": true,
+      "assertion": { "measure": "stair_riser_mm", "operator": "gte", "value": 100 },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4" }
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (b)", "text": "contrahuella no menor de 100 mm ni mayor de 180 mm" }
     },
     {
       "id": "stair-tread-min",
       "selector": { "category": "OST_Stairs" },
-      "assertion": { "measure": "stair_tread_mm", "operator": "gte" },
-      "unverified_value": true,
+      "assertion": { "measure": "stair_tread_mm", "operator": "gte", "value": 280 },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4" }
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (a)", "text": "ancho minimo de huella, sin incluir proyecciones, 280 mm" },
+      "note": "Straight flights. Curved flights (K.3.8.3.4 d: 240 mm at 1/3 from the inner edge), circular stairs (K.3.8.3.9: 250 mm) and spiral stairs (K.3.8.3.10: 190 mm at 300 mm) are measured differently and are not separated by this selector."
     },
     {
       "id": "stair-2r-plus-t",
       "selector": { "category": "OST_Stairs" },
-      "assertion": { "measure": "stair_2r_plus_t_mm", "operator": "between" },
-      "unverified_value": true,
+      "assertion": { "measure": "stair_2r_plus_t_mm", "operator": "between", "value": [620, 640] },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (regla 2C + H)" },
-      "note": "Give value as [min, max] in mm once confirmed."
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.4 (c)", "text": "2 contrahuellas + 1 huella, sin proyecciones, entre 620 mm y 640 mm" }
     },
     {
       "id": "stair-width-min",
       "selector": { "category": "OST_Stairs" },
-      "assertion": { "measure": "stair_run_width_mm", "operator": "gte" },
-      "unverified_value": true,
+      "assertion": { "measure": "stair_run_width_mm", "operator": "gte", "value": 900 },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3 (escaleras); ancho segun carga de ocupacion" },
-      "note": "The minimum may depend on the occupant load served; if so, split this rule by selector (e.g. parameter_equals on a declared load class)."
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.3", "text": "carga de ocupacion inferior a 50: ancho minimo 900 mm; superior a 50 y escaleras de uso publico: 1.20 m" },
+      "note": "900 mm is the floor for an evacuation stair (K.3.8.3 excludes stairs inside dwellings, where 750 mm applies). Stairs that serve more than 50 people or public use need 1 200 mm: see stair-width-public-or-over-50. If the handrail stands more than 50 mm off the wall the width grows by the excess; the measure does not deduct handrails."
+    },
+    {
+      "id": "stair-width-public-or-over-50",
+      "selector": { "category": "OST_Stairs", "parameter_equals": { "parameter": "NSR10 Stair Class", "value": "publica_o_mas_de_50" } },
+      "assertion": { "measure": "stair_run_width_mm", "operator": "gte", "value": 1200 },
+      "severity": "blocking",
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.3.3", "text": "escaleras con carga de ocupacion superior a 50 personas y de uso publico: ancho minimo 1.20 m" },
+      "note": "'NSR10 Stair Class' is a placeholder: the model does not know the occupant load a stair serves. Mark those stairs with a parameter your project uses. Capacity by Tabla K.3.3-2 (mm per person) may demand more than 1 200 mm; this set does not compute it."
     },
     {
       "id": "exit-door-width-min",
-      "selector": { "category": "OST_Doors", "parameter_exists": "Exit Door" },
-      "assertion": { "measure": "door_clear_width_mm", "operator": "gte" },
-      "unverified_value": true,
+      "selector": { "category": "OST_Doors", "parameter_equals": { "parameter": "Exit Door", "value": "Yes" } },
+      "assertion": { "measure": "door_clear_width_mm", "operator": "gte", "value": 800 },
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3 (puertas de salida)" },
-      "note": "'Exit Door' is a placeholder: select exit doors with the parameter your project uses. The measure is the nominal leaf width, an upper bound of the clear width."
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.2.1", "text": "luz minima efectiva de 800 mm (dormitorios 700 mm; cada abertura de una puerta subdividida >= 700 mm)" },
+      "note": "'Exit Door' = 'Yes' is a placeholder. The measure is the nominal leaf width, an upper bound of the clear width: below 800 it fails for certain, at or above it is not_decidable."
+    },
+    {
+      "id": "exit-door-height-min",
+      "selector": { "category": "OST_Doors", "parameter_equals": { "parameter": "Exit Door", "value": "Yes" } },
+      "assertion": { "parameter": "DOOR_HEIGHT", "unit": "mm", "operator": "gte", "value": 2000, "missing_is": "not_decidable" },
+      "severity": "blocking",
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.8.2.1", "text": "las puertas no deben tener menos de 2.0 m de altura (se excluyen particiones sanitarias)" },
+      "note": "DOOR_HEIGHT is the nominal opening height (instance, then type)."
     },
     {
       "id": "exits-per-floor",
       "selector": { "category": "OST_Levels" },
       "assertion": { "measure": "exit_count_minus_required", "operator": "gte", "value": 0 },
-      "unverified_value": true,
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.14 (numero de salidas) and Tabla K.3.3-1 (indices de ocupacion)" },
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.4.2 (Tabla K.3.4-1) and K.3.3.2 (Tabla K.3.3-1)", "text": "0-100 ocupantes: 1 salida; 101-500: 2; 501-1000: 3; 1001 o mas: 4" },
       "config": {
-        "area_per_person_m2": null,
-        "occupant_load_parameter": null,
+        "occupancy_parameter": "Occupancy Group",
+        "area_per_person_by_group": {
+          "A": 28,
+          "C-1": 10,
+          "C-2 calle": 3,
+          "C-2 otros": 6,
+          "F": 9,
+          "I-1": 11,
+          "I-2": 7,
+          "I-3": 2,
+          "I-4": 2.8,
+          "I-5": 0.3,
+          "L-1": 0.7,
+          "L-2": 1.3,
+          "L-3": 0.7,
+          "L-4": 0.7,
+          "L-5": 0.3,
+          "P": 9,
+          "R": 18
+        },
         "exit_door": { "parameter": "Exit Door", "value": "Yes" },
-        "required_exits": []
+        "required_exits": [
+          { "max_load": 100, "exits": 1 },
+          { "max_load": 500, "exits": 2 },
+          { "max_load": 1000, "exits": 3 },
+          { "exits": 4 }
+        ]
       },
-      "note": "Fill area_per_person_m2 from Tabla K.3.3-1 for the occupancy group (or name a room parameter carrying the load), the required_exits rows [{max_load, exits}] from K.3, and the exit_door rule your project uses. Until then every level is not_decidable."
+      "note": "Tabla K.3.3-1 gives m2 of net floor area per occupant by group. 'Occupancy Group' is a placeholder room parameter carrying the group code; C-2 has two factors (street level and below: 'C-2 calle' = 3; other floors: 'C-2 otros' = 6). E and T ('segun ocupacion') and M (the largest load of its components) have no fixed factor, so a room declaring them is not_decidable. Fixed seating counts seats instead (K.3.3.1.2 b), K.3.3.1.2 takes the larger of the real occupants and area/factor, and K.3.3.2.3 allows omitting toilets and storage: a room parameter with the load (occupant_load_parameter) expresses those cases."
     },
     {
       "id": "travel-distance-max",
@@ -87,8 +123,8 @@
       "assertion": { "measure": "travel_distance_m", "operator": "lte" },
       "unverified_value": true,
       "severity": "blocking",
-      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3 (distancia maxima de recorrido)" },
-      "note": "Not computable by horizun_code_check in any case: always not_decidable. horizun_audit_access with route_view_id routes a real path per room."
+      "source": { "norm": "NSR-10 Titulo K", "numeral": "K.3.6.5 (Tabla K.3.6-1)" },
+      "note": "The limits WERE read (Tabla K.3.6-1: 22 to 120 m by group and sprinklers, +30 % under its note; K.3.6.3: 15 m inside a room of up to 6 people; K.3.5.1.3: dead ends 6 m) and are transcribed in docs/TOOLS-EXTENDED.md, but no single number applies to every room and horizun_code_check never computes this measure: kept without a value. horizun_audit_access with route_view_id routes a real path."
     }
   ]
 }
