@@ -7,7 +7,7 @@
 // status, revision, CDE states) are modelled; every concrete rule - fields, patterns,
 // codes, folders - arrives as an argument or from the caller's project-context.json.
 //
-// Five operations:
+// Eight operations:
 //   name        compose and validate a name. Read-only.
 //   stamp       write "<file>.container.json" for an existing file. dry_run by default.
 //   verify      does the file still match its sidecar (hash, name, bytes). Read-only.
@@ -16,9 +16,18 @@
 //   transition  COPY a container to the next CDE state, rename, stamp, verify by
 //               SHA-256 and append to <root>/.horizun/cde-transitions.jsonl. Never moves,
 //               never deletes, never overwrites. dry_run by default.
+//   transmittal   issue a numbered transmittal (<project>-TR-0001) for sealed containers
+//                 in one state: <root>/.horizun/transmittals/<id>.json/.md/.csv, each hash
+//                 re-measured against its sidecar. dry_run by default.
+//                 (InformationContainerTool.Register.cs)
+//   record_review append the receiving party's review outcome to
+//                 <root>/.horizun/reviews.jsonl. Moves nothing. dry_run by default.
+//   register      the approval register: transitions + transmittals + reviews joined per
+//                 container, with the incoherences between them. Read-only, paginated.
 //
 // PERMISSION. Classified ExternalSideEffectOnRequest: every profile may call it, and
-// the two operations that write (stamp, transition with dry_run=false) ask
+// the operations that write (stamp, transition, transmittal, record_review with
+// dry_run=false) ask
 // Settings.AllowsExternalSideEffect before they touch a file.
 // -----------------------------------------------------------------------------
 using System;
@@ -34,7 +43,7 @@ using Newtonsoft.Json.Linq;
 
 namespace Horizun.Server
 {
-    internal static class InformationContainerTool
+    internal static partial class InformationContainerTool
     {
         internal const string ToolName = "horizun_information_container";
         internal const string LogRelativePath = ".horizun/cde-transitions.jsonl";
@@ -47,7 +56,10 @@ namespace Horizun.Server
         {
             "operation", "information_container", "naming", "file_path", "root", "states", "project_context_path",
             "deliverables", "as_of", "offset", "limit", "max_files", "from_state", "to_state", "status", "revision",
-            "approved_by", "note", "dry_run", "source_document", "revit_year"
+            "approved_by", "note", "dry_run", "source_document", "revit_year",
+            // transmittal / record_review / register
+            "project", "state", "file_paths", "sender", "recipients", "purpose", "transmittal_id", "container",
+            "outcome", "comments", "reviewed_by", "reviewer_organization", "reviewed_on", "since", "until"
         };
 
         // Kinds are listed in the order findings are sorted, most consequential first.
@@ -75,8 +87,12 @@ namespace Horizun.Server
                     case "verify": return Verify(args);
                     case "inspect": return Inspect(args, ct, DateTime.UtcNow);
                     case "transition": return Transition(args, ct);
+                    case "transmittal": return Transmittal(args, ct, DateTime.UtcNow);
+                    case "record_review": return RecordReview(args, ct, DateTime.UtcNow);
+                    case "register": return Register(args, ct);
                     default:
-                        throw new ToolRefusal("operation must be one of name, stamp, verify, inspect, transition. Nothing was read or written.");
+                        throw new ToolRefusal("operation must be one of name, stamp, verify, inspect, transition, transmittal, " +
+                                              "record_review, register. Nothing was read or written.");
                 }
             }
             catch (ContainerRuleException ex) { throw new ToolRefusal(ex.Message + " Nothing was written."); }
@@ -727,10 +743,15 @@ namespace Horizun.Server
             catch (JsonException ex) { throw new ToolRefusal("project_context_path is not valid JSON: " + ex.Message); }
         }
 
-        private static Cde ResolveCde(JObject args, JObject context)
+        private static Cde ResolveCde(JObject args, JObject context, bool requireStates = true)
         {
             var cde = new Cde { Root = OptionalString(args, "root") ?? (string)context?["cde"]?["root"] };
             JObject states = args["states"] as JObject ?? context?["cde"]?["states"] as JObject;
+            if (!requireStates && (states == null || !states.Properties().Any()))
+            {
+                if (cde.Root != null && !Path.IsPathRooted(cde.Root)) throw new ToolRefusal("root must be absolute. Nothing was read.");
+                return cde;
+            }
             if (states == null || !states.Properties().Any())
                 throw new ToolRefusal("Declare the CDE state folders: 'states' {wip, shared, published, archived} (with 'root' when they are relative), " +
                                       "or a project_context_path whose cde.states does. Nothing was read.");
