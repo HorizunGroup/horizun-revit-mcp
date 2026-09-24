@@ -643,7 +643,8 @@ namespace Horizun.Contracts
                 Name = "horizun_create_schedule",
                 Command = "horizun_create_schedule",
                 Description =
-                    "Create one native Revit schedule for one category, optionally including elements from loaded RVT links. " +
+                    "Create one native Revit schedule for one category, optionally including elements from loaded RVT links; " +
+                    "also multi-category (category=OST_MultiCategory) and key schedules (key_schedule, key_rows re-read as key elements). " +
                     "Dry-run is the default. Resolves fields by Revit display name or stable token, groups non-itemized schedules, commits once, " +
                     "then re-reads the schedule, fields, IncludeLinkedFiles flag and body row count. Zero host elements is valid: " +
                     "the linked elements are included by Revit itself when include_links=true.",
@@ -656,6 +657,8 @@ namespace Horizun.Contracts
     ""fields"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""Fields to add: localized Revit display names, Count/Family/Type aliases, or BuiltInParameter tokens. Defaults to Count, Family, Type."" },
     ""include_links"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Set Revit's Include elements in links option."" },
     ""itemized"": { ""type"": ""boolean"", ""default"": false, ""description"": ""List every element when true; otherwise group by the requested non-Count fields."" },
+    ""key_schedule"": { ""type"": ""boolean"", ""default"": false },
+    ""key_rows"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 500 },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Validate category and scope without opening a transaction."" },
     ""confirmation_token"": { ""type"": ""string"", ""description"": ""Required when dry_run=false; returned by the exact dry run."" },
     ""target_document"": { ""type"": ""string"", ""description"": ""REQUIRED. Title or full path of the ACTIVE document to change."" }
@@ -1430,7 +1433,9 @@ namespace Horizun.Contracts
                     "view filters with typed rules, override lines/surfaces/transparency/halftone, colour every " +
                     "element by a parameter value with a deterministic palette and a returned legend, hide or " +
                     "isolate elements (temporary view mode by default, and the reply says which), reset the " +
-                    "temporary mode, and set category visibility. A view whose TEMPLATE governs V/G is REFUSED " +
+                    "temporary mode, category/subcategory visibility and overrides; edit filter rules, reorder and " +
+                    "enable filters, explain which override wins for an element, create templates and set what they " +
+                    "govern. A view whose TEMPLATE governs V/G is REFUSED " +
                     "with the template named rather than accepted and silently ignored, which is what Revit does. " +
                     "Sheet numbers are checked unique " +
                     "against the document AND the batch before anything runs. Actions may assign a key and later " +
@@ -1443,7 +1448,7 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls""] },
         ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
         ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""GRAPHIC CONTROL. Categories a filter applies to. Prefer the BuiltInCategory name (OST_Walls): a display name depends on the Revit language and would break on another machine."" },
         ""rules"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"", ""required"": [""parameter""], ""properties"": {
@@ -1462,9 +1467,15 @@ namespace Horizun.Contracts
           ""cut_line_color"": { ""type"": ""string"" }, ""surface_color"": { ""type"": ""string"" }, ""cut_color"": { ""type"": ""string"" },
           ""transparency"": { ""type"": ""integer"", ""minimum"": 0, ""maximum"": 100 },
           ""halftone"": { ""type"": ""boolean"" },
-          ""line_weight"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 16 }
+          ""line_weight"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 16 },
+          ""line_pattern"": { ""type"": ""string"", ""description"": ""Line pattern name, or Solid."" }
         }, ""description"": ""Only the fields you set are written, and only those are re-read afterwards."" },
         ""visible"": { ""type"": ""boolean"", ""description"": ""apply_filter: whether elements matching the filter are shown at all."" },
+        ""enabled"": { ""type"": ""boolean"", ""description"": ""apply_filter: the filter's Enable Filter flag."" },
+        ""filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters: ALL the view's filters, top first."" },
+        ""subcategory"": { ""type"": ""string"" },
+        ""parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""set_template_controls: BuiltInParameter names or labels."" },
+        ""controlled"": { ""type"": ""boolean"" },
         ""element_ids"": { ""type"": ""array"", ""maxItems"": 5000, ""items"": { ""type"": ""integer"" } },
         ""permanent"": { ""type"": ""boolean"", ""default"": false, ""description"": ""hide_elements: false is the TEMPORARY view mode, which does not survive closing the document and is not what a sheet prints. true stores the hide on the view."" },
         ""category"": { ""type"": ""string"", ""description"": ""set_category_visibility: BuiltInCategory name."" },
@@ -1476,7 +1487,7 @@ namespace Horizun.Contracts
         ""source_view_id"": { ""type"": ""integer"" }, ""source_view_key"": { ""type"": ""string"" },
         ""duplicate_option"": { ""type"": ""string"", ""enum"": [""Duplicate"", ""WithDetailing"", ""AsDependent""], ""default"": ""Duplicate"" },
         ""view_id"": { ""type"": ""integer"" }, ""view_key"": { ""type"": ""string"" },
-        ""template_view_id"": { ""type"": ""integer"" }, ""title_block_type_id"": { ""type"": ""integer"" },
+        ""template_view_id"": { ""type"": ""integer"", ""description"": ""-1 removes the template."" }, ""title_block_type_id"": { ""type"": ""integer"" },
         ""sheet_id"": { ""type"": ""integer"" }, ""sheet_key"": { ""type"": ""string"" },
         ""schedule_id"": { ""type"": ""integer"" }, ""schedule_key"": { ""type"": ""string"" },
         ""point"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
@@ -1546,7 +1557,7 @@ namespace Horizun.Contracts
   ""type"": ""object"", ""required"": [""target_document"", ""format"", ""output_path""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"" },
-    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv""] },
+    ""format"": { ""type"": ""string"", ""enum"": [""pdf"", ""dwg"", ""ifc"", ""nwc"", ""fbx"", ""image"", ""schedule_csv"", ""dwg_layers""] },
     ""output_path"": { ""type"": ""string"", ""description"": ""Absolute target file with an extension matching format (.pdf/.dwg/.ifc/.nwc/.fbx; an image extension; or .csv/.txt). Image export may create a family of names, all of which are reported."" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""PDF: one or more printable views/sheets. DWG/image: exactly one. FBX: one or more 3D views. NWC view scope: exactly one."" },
     ""schedule_id"": { ""type"": ""integer"" },
@@ -1579,6 +1590,12 @@ namespace Horizun.Contracts
     } },
     ""preset"": { ""type"": ""object"", ""description"": ""A NAMED, HASHED option bundle handed in as an argument (organisation-neutral: nothing ships compiled in). Its options override the loose arguments, its sha256 joins the plan hash - an edited preset is a different plan and the token refuses - and after the export each option is either PROVED from the produced file (ifc_version via FILE_SCHEMA, acad_version via the DWG signature, pixel_size via the PNG IHDR, combine by counting files) or reported requested_unverifiable by name. Unknown options and out-of-list values refuse the whole call."", ""properties"": { ""name"": { ""type"": ""string"" }, ""schema_version"": { ""type"": ""integer"", ""default"": 1 }, ""overwrite_policy"": { ""type"": ""string"", ""enum"": [""refuse"", ""replace""], ""default"": ""refuse"" }, ""options"": { ""type"": ""object"" } }, ""required"": [""name""] },
     ""acad_version"": { ""type"": ""string"", ""enum"": [""2013"", ""2018""], ""description"": ""dwg: the file version; verified from the produced file's signature."" },
+    ""dwg_setup"": { ""type"": ""object"", ""required"": [""name""], ""additionalProperties"": false, ""description"": ""dwg: export with this named setup. dwg_layers (.json output): read its layer table, create it (from source) if absent, write layers rows; re-read after commit."", ""properties"": {
+      ""name"": { ""type"": ""string"" }, ""source"": { ""type"": ""string"" },
+      ""layers"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""object"", ""required"": [""category""], ""additionalProperties"": false, ""properties"": {
+        ""category"": { ""type"": ""string"" }, ""subcategory"": { ""type"": ""string"" }, ""layer"": { ""type"": ""string"" },
+        ""color"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 255 }, ""cut_layer"": { ""type"": ""string"" },
+        ""cut_color"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 255 } } } } } },
     ""ifc_version"": { ""type"": ""string"", ""enum"": [""Default"", ""IFC2x2"", ""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCBCA"", ""IFCCOBIE"", ""IFC4"", ""IFC4DTV"", ""IFC4RV""], ""default"": ""Default"" },
     ""ifc_filter_view_id"": { ""type"": ""integer"", ""description"": ""Optional non-template view whose visibility filters the IFC export."" },
     ""ifc_export_base_quantities"": { ""type"": ""boolean"", ""default"": false },

@@ -14,7 +14,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class ExportCommand : ICommand
+    public sealed partial class ExportCommand : ICommand
     {
         public string Name => "horizun_export";
         public string Description => "Export PDF, DWG, IFC, Navisworks NWC, FBX, image or schedule CSV and verify actual files.";
@@ -29,8 +29,8 @@ namespace Horizun.Revit.Commands
             Document doc = gate.Document;
 
             string format = (request.Value<string>("format") ?? "").ToLowerInvariant();
-            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv")
-                return CommandResult.Fail("format must be pdf, dwg, ifc, nwc, fbx, image or schedule_csv.");
+            if (format != "pdf" && format != "dwg" && format != "ifc" && format != "nwc" && format != "fbx" && format != "image" && format != "schedule_csv" && format != "dwg_layers")
+                return CommandResult.Fail("format must be pdf, dwg, ifc, nwc, fbx, image, schedule_csv or dwg_layers.");
             string output = request.Value<string>("output_path");
             if (string.IsNullOrWhiteSpace(output) || !System.IO.Path.IsPathRooted(output))
                 return CommandResult.Fail("output_path must be absolute.");
@@ -38,6 +38,18 @@ namespace Horizun.Revit.Commands
             catch (Exception ex) { return CommandResult.Fail("output_path is invalid: " + ex.Message); }
             if (!ExpectedExtension(format, output))
                 return CommandResult.Fail("output_path extension does not match format=" + format + ". Use " + ExpectedExtensionDescription(format) + ".");
+            // The DWG layer table: a named export setup read, created and written in the
+            // document, with its re-read table written to output_path. See ExportDwgSetup.cs.
+            if (format == "dwg_layers") return ExecuteDwgLayers(app, gate, doc, request, output);
+            if (request["dwg_setup"] != null && format != "dwg")
+                return CommandResult.Fail("dwg_setup applies to format dwg (export with it) and dwg_layers (read/write it).");
+            DWGExportOptions dwgOptions = null;
+            if (format == "dwg")
+            {
+                string dwgRefusal;
+                dwgOptions = BuildDwgOptions(doc, request, out dwgRefusal);
+                if (dwgOptions == null) return CommandResult.Fail(dwgRefusal);
+            }
 
             // ---- ISO 19650 information container (optional). ----
             // Validated BEFORE anything else is decided, so an invalid container refuses
@@ -227,7 +239,7 @@ namespace Horizun.Revit.Commands
                         string.Join("; ", deliveryGate["reasons"].Values<string>()) + ". Nothing was exported.",
                         new JObject { ["publish_gate"] = deliveryGate, ["reverification"] = deliveryReverification });
             }
-            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset",
+            string planHash = DocumentGate.PlanHash(request, "format", "output_path", "view_ids", "schedule_id", "image_pixels", "overwrite", "preset", "dwg_setup",
                 "ifc_version", "ifc_filter_view_id", "ifc_export_base_quantities", "ifc_split_walls_and_columns", "ifc_space_boundary_level",
                 "nwc_scope", "nwc_coordinates", "nwc_parameters", "nwc_export_links", "nwc_export_element_ids", "nwc_export_room_geometry",
                 "nwc_export_parts", "fbx_without_boundary_edges", "fbx_use_lod", "fbx_lod", "fbx_stop_on_error", "pdf_combine", "emit_manifest",
@@ -341,7 +353,7 @@ namespace Horizun.Revit.Commands
                         break;
                     case "dwg":
                         apiAccepted = doc.Export(folder, System.IO.Path.GetFileNameWithoutExtension(output),
-                            new List<ElementId> { views[0].Id }, BuildDwgOptions(request)); break;
+                            new List<ElementId> { views[0].Id }, dwgOptions); break;
                     case "ifc":
                         var ifc = new IFCExportOptions
                         {
@@ -681,9 +693,27 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
-        private static DWGExportOptions BuildDwgOptions(JObject request)
+        private static DWGExportOptions BuildDwgOptions(Document doc, JObject request, out string refusal)
         {
+            refusal = null;
             var options = new DWGExportOptions();
+            JObject setup = request["dwg_setup"] as JObject;
+            if (setup != null)
+            {
+                string name = setup.Value<string>("name");
+                if (setup["layers"] != null || setup["source"] != null)
+                {
+                    refusal = "format dwg EXPORTS with a setup; writing its layers or creating it is format dwg_layers. Nothing was exported.";
+                    return null;
+                }
+                options = string.IsNullOrWhiteSpace(name) ? null : DWGExportOptions.GetPredefinedOptions(doc, name);
+                if (options == null)
+                {
+                    refusal = "dwg_setup '" + name + "' is not a DWG export setup in this document. It has: " +
+                              string.Join(", ", ExportDWGSettings.ListNames(doc)) + ". Nothing was exported.";
+                    return null;
+                }
+            }
             string acad = request.Value<string>("acad_version");
             if (acad == "2013") options.FileVersion = ACADVersion.R2013;
             else if (acad == "2018") options.FileVersion = ACADVersion.R2018;
@@ -853,6 +883,7 @@ namespace Horizun.Revit.Commands
                 case "fbx": return ext == ".fbx";
                 case "image": return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff";
                 case "schedule_csv": return ext == ".csv" || ext == ".txt";
+                case "dwg_layers": return ext == ".json";
                 default: return false;
             }
         }
@@ -860,6 +891,7 @@ namespace Horizun.Revit.Commands
         {
             if (format == "image") return ".png, .jpg, .jpeg, .bmp, .tif or .tiff";
             if (format == "schedule_csv") return ".csv or .txt";
+            if (format == "dwg_layers") return ".json";
             return "." + format;
         }
         private static Dictionary<string, Stamp> Snapshot(string folder)

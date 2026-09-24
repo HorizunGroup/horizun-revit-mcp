@@ -38,26 +38,47 @@ namespace Horizun.Revit.Commands
             if (string.IsNullOrWhiteSpace(categoryText)) return CommandResult.Fail("category is required.");
             if (string.IsNullOrWhiteSpace(scheduleName)) return CommandResult.Fail("name is required.");
 
-            Category category = ResolveCategory(doc, categoryText);
-            if (category == null)
-                return CommandResult.Fail("Category '" + categoryText + "' was not found. Use a BuiltInCategory token such as OST_Walls or the category display name.");
+            // MULTI-CATEGORY and KEY schedules. Field use forced 19 separate schedules
+            // because this command took one category only; the API takes
+            // InvalidElementId for multi-category on every year 2023-2027 (there is no
+            // OST_MultiCategory in BuiltInCategory - the token is accepted here as the
+            // name people use for it). A key schedule is CreateKeySchedule over one
+            // category and its rows are KEY ELEMENTS, re-read after the commit.
+            bool multi = string.Equals(categoryText, "OST_MultiCategory", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(categoryText, "multi_category", StringComparison.OrdinalIgnoreCase);
+            bool key = request.Value<bool?>("key_schedule") ?? false;
+            int keyRows = request.Value<int?>("key_rows") ?? 0;
+            if (multi && key) return CommandResult.Fail("A key schedule belongs to ONE category; it cannot be multi-category. Nothing was changed.");
+            if (!key && request["key_rows"] != null) return CommandResult.Fail("key_rows applies to key_schedule=true only. Nothing was changed.");
+            if (keyRows < 0 || keyRows > 500) return CommandResult.Fail("key_rows must be 0..500.");
+            if (key && request.Value<bool?>("include_links") == true)
+                return CommandResult.Fail("A key schedule lists key elements of this document; include_links does not apply. Nothing was changed.");
+            if (key && request["itemized"] != null)
+                return CommandResult.Fail("A key schedule is always one row per key; itemized does not apply. Nothing was changed.");
 
-            var valid = ViewSchedule.GetValidCategoriesForSchedule();
-            if (!valid.Any(id => id == category.Id))
-                return CommandResult.Fail("Category '" + category.Name + "' is not valid for a regular Revit schedule.");
+            Category category = multi ? null : ResolveCategory(doc, categoryText);
+            if (category == null && !multi)
+                return CommandResult.Fail("Category '" + categoryText + "' was not found. Use a BuiltInCategory token such as OST_Walls, OST_MultiCategory, or the category display name.");
+            ElementId categoryId = multi ? ElementId.InvalidElementId : category.Id;
+            string categoryName = multi ? "Multi-Category" : category.Name;
+
+            if (key ? !ViewSchedule.IsValidCategoryForKeySchedule(categoryId)
+                    : !multi && !ViewSchedule.GetValidCategoriesForSchedule().Any(id => id == categoryId))
+                return CommandResult.Fail("Category '" + categoryName + "' is not valid for a " + (key ? "key" : "regular") + " Revit schedule.");
 
             if (new FilteredElementCollector(doc).OfClass(typeof(ViewSchedule)).Cast<ViewSchedule>()
                     .Any(v => string.Equals(v.Name, scheduleName, StringComparison.OrdinalIgnoreCase)))
                 return CommandResult.Fail("A schedule named '" + scheduleName + "' already exists; nothing was changed.");
 
-            bool includeLinks = request["include_links"] == null || request.Value<bool>("include_links");
+            bool includeLinks = !key && (request["include_links"] == null || request.Value<bool>("include_links"));
             bool itemized = request.Value<bool?>("itemized") ?? false;
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
+            string kind = key ? "key" : multi ? "multi_category" : "regular";
             List<string> requestedFields = ReadFields(request["fields"] as JArray);
-            if (requestedFields.Count == 0)
+            if (requestedFields.Count == 0 && !key)
                 requestedFields.AddRange(new[] { "Count", "Family", "Type" });
 
-            string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized");
+            string planHash = DocumentGate.PlanHash(request, "category", "name", "fields", "include_links", "itemized", "key_schedule", "key_rows");
 
             // ---- The MATERIALISED plan. One creation, but two ambient facts decide what
             // it produces, and neither is in the request: WHICH category the name resolved
@@ -76,11 +97,12 @@ namespace Horizun.Revit.Commands
             resolvedPlan.Elements.Add(new PlannedElement
             {
                 UniqueId = "schedule:" + scheduleName,
-                Category = SafePlanCatName(category),
+                Category = multi ? categoryName : SafePlanCatName(category),
                 Action = PlannedAction.Create,
                 BeforeValues = new Dictionary<string, string>
                 {
-                    { "category_id", Rid.Value(category.Id).ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "category_id", Rid.Value(categoryId).ToString(System.Globalization.CultureInfo.InvariantCulture) },
+                    { "kind", kind }, { "key_rows", keyRows.ToString(System.Globalization.CultureInfo.InvariantCulture) },
                     { "fields", string.Join(",", requestedFields) },
                     { "include_links", includeLinks ? "1" : "0" },
                     { "itemized", itemized ? "1" : "0" }
@@ -93,13 +115,15 @@ namespace Horizun.Revit.Commands
                 {
                     ["dry_run"] = true,
                     ["transaction_status"] = "not_started",
-                    ["category"] = category.Name,
-                    ["category_id"] = Rid.Value(category.Id),
+                    ["category"] = categoryName,
+                    ["category_id"] = Rid.Value(categoryId),
+                    ["kind"] = kind,
+                    ["key_rows"] = keyRows,
                     ["name"] = scheduleName,
                     ["fields_requested"] = new JArray(requestedFields),
                     ["include_links"] = includeLinks,
                     ["itemized"] = itemized,
-                    ["host_element_count"] = new FilteredElementCollector(doc).OfCategoryId(category.Id)
+                    ["host_element_count"] = multi ? (JToken)JValue.CreateNull() : new FilteredElementCollector(doc).OfCategoryId(categoryId)
                         .WhereElementIsNotElementType().GetElementCount(),
                     ["note"] = "Nothing was written. Field availability and linked rows are verified after creation, not guessed from host elements."
                 };
@@ -134,11 +158,19 @@ namespace Horizun.Revit.Commands
                 tx.Start();
                 try
                 {
-                    ViewSchedule schedule = ViewSchedule.CreateSchedule(doc, category.Id);
+                    ViewSchedule schedule = key ? ViewSchedule.CreateKeySchedule(doc, categoryId)
+                                                : ViewSchedule.CreateSchedule(doc, categoryId);
                     schedule.Name = scheduleName;
                     ScheduleDefinition definition = schedule.Definition;
-                    definition.IncludeLinkedFiles = includeLinks;
-                    definition.IsItemized = itemized;
+                    if (!key)
+                    {
+                        definition.IncludeLinkedFiles = includeLinks;
+                        definition.IsItemized = itemized;
+                    }
+                    // Revit adds fields of its own to some kinds (a key schedule's Key
+                    // Name): they are part of what the re-read must find, in order.
+                    foreach (ScheduleFieldId id in definition.GetFieldOrder())
+                        expectedFields.Add(FieldIdentity.From(definition.GetField(id)));
 
                     var available = definition.GetSchedulableFields().ToList();
 
@@ -160,11 +192,25 @@ namespace Horizun.Revit.Commands
                     {
                         Guard.RollBack(tx);
                         return CommandResult.Fail("The schedule was not created because these requested fields are not schedulable for " +
-                            category.Name + ": " + string.Join(", ", missing) + ". Use a displayed field name, Count/Family/Type, " +
+                            categoryName + ": " + string.Join(", ", missing) + ". Use a displayed field name, Count/Family/Type, " +
                             "or a BuiltInParameter token such as ELEM_TYPE_PARAM.");
                     }
 
-                    if (!itemized)
+                    if (key)
+                    {
+                        // A key schedule's rows ARE key elements; inserting a body row
+                        // creates one. CanInsertRow is asked first so a refusal names
+                        // the row rather than surfacing as an opaque API exception.
+                        TableSectionData body = schedule.GetTableData().GetSectionData(SectionType.Body);
+                        for (int r = 0; r < keyRows; r++)
+                        {
+                            int at = body.FirstRowNumber;
+                            if (!body.CanInsertRow(at))
+                                throw new InvalidOperationException("Revit refused key row " + (r + 1) + " (TableSectionData.CanInsertRow is false).");
+                            body.InsertRow(at);
+                        }
+                    }
+                    else if (!itemized)
                     {
                         foreach (ScheduleField field in added.Where(f => f.FieldType != ScheduleFieldType.Count))
                             definition.AddSortGroupField(new ScheduleSortGroupField(field.FieldId));
@@ -233,8 +279,12 @@ namespace Horizun.Revit.Commands
             // The five properties this request carries, named ONCE, here. A check deleted
             // from below, or one key recorded twice while another is dropped, now fails
             // coverage instead of passing on the checks that happen to remain.
-            var postcondition = new PostconditionCheck("name", "category", "fields",
-                                                       "include_links", "itemized");
+            // A key schedule carries neither links nor itemization; it carries its KIND
+            // and its key rows instead. Regular and multi-category keep the five.
+            var postcondition = key
+                ? new PostconditionCheck("name", "category", "fields", "kind", "key_rows")
+                : new PostconditionCheck("name", "category", "fields",
+                                         "include_links", "itemized");
 
             // (a) NAME.
             try { postcondition.Compare("name", scheduleName, verified.Name); }
@@ -247,13 +297,13 @@ namespace Horizun.Revit.Commands
             {
                 ElementId actualCategoryId = verified.Definition.CategoryId;
                 postcondition.Record("category",
-                    new JObject { ["id"] = Rid.Value(category.Id), ["name"] = category.Name },
-                    new JObject { ["id"] = Rid.Value(actualCategoryId), ["name"] = SafePlanCatName(Category.GetCategory(doc, actualCategoryId)) },
-                    actualCategoryId == category.Id);
+                    new JObject { ["id"] = Rid.Value(categoryId), ["name"] = categoryName },
+                    new JObject { ["id"] = Rid.Value(actualCategoryId), ["name"] = actualCategoryId == ElementId.InvalidElementId ? "Multi-Category" : SafePlanCatName(Category.GetCategory(doc, actualCategoryId)) },
+                    multi ? actualCategoryId == ElementId.InvalidElementId : actualCategoryId == category.Id);
             }
             catch (Exception ex)
             {
-                postcondition.Unreadable("category", Rid.Value(category.Id),
+                postcondition.Unreadable("category", Rid.Value(categoryId),
                     "the committed schedule's category could not be read: " + ex.Message);
             }
 
@@ -278,12 +328,26 @@ namespace Horizun.Revit.Commands
                                          "the committed schedule's fields could not be read: " + ex.Message);
             }
 
-            // (d) INCLUDE_LINKS and (e) ITEMIZED.
-            try { postcondition.Compare("include_links", includeLinks, verified.Definition.IncludeLinkedFiles); }
-            catch (Exception ex) { postcondition.Unreadable("include_links", includeLinks, "could not be read: " + ex.Message); }
+            if (key)
+            {
+                // (d) KIND, read off the committed definition. Multi-category needs no
+                // separate kind: it IS the invalid category id compared above.
+                try { postcondition.Compare("kind", kind, verified.Definition.IsKeySchedule ? "key" : "regular"); }
+                catch (Exception ex) { postcondition.Unreadable("kind", kind, "could not be read: " + ex.Message); }
 
-            try { postcondition.Compare("itemized", itemized, verified.Definition.IsItemized); }
-            catch (Exception ex) { postcondition.Unreadable("itemized", itemized, "could not be read: " + ex.Message); }
+                // KEY ROWS as key ELEMENTS owned by the schedule, counted after the commit.
+                try { postcondition.Compare("key_rows", keyRows, new FilteredElementCollector(doc, verified.Id).GetElementCount()); }
+                catch (Exception ex) { postcondition.Unreadable("key_rows", keyRows, "could not be read: " + ex.Message); }
+            }
+            else
+            {
+                // (e) INCLUDE_LINKS and (f) ITEMIZED.
+                try { postcondition.Compare("include_links", includeLinks, verified.Definition.IncludeLinkedFiles); }
+                catch (Exception ex) { postcondition.Unreadable("include_links", includeLinks, "could not be read: " + ex.Message); }
+
+                try { postcondition.Compare("itemized", itemized, verified.Definition.IsItemized); }
+                catch (Exception ex) { postcondition.Unreadable("itemized", itemized, "could not be read: " + ex.Message); }
+            }
 
             bool postconditionVerified = postcondition.AllVerified;
             if (!postconditionVerified)
@@ -310,7 +374,8 @@ namespace Horizun.Revit.Commands
                     ["schedule_id"] = Rid.Value(verified.Id),
                     // Read off the committed schedule, never echoed from the request.
                     ["name"] = verified.Name,
-                    ["category"] = SafePlanCatName(Category.GetCategory(doc, verified.Definition.CategoryId)),
+                    ["category"] = verified.Definition.CategoryId == ElementId.InvalidElementId ? "Multi-Category" : SafePlanCatName(Category.GetCategory(doc, verified.Definition.CategoryId)),
+                    ["kind"] = kind,
                     ["category_id"] = Rid.Value(verified.Definition.CategoryId),
                     ["include_links_verified"] = verified.Definition.IncludeLinkedFiles,
                     ["itemized_verified"] = verified.Definition.IsItemized,
@@ -369,6 +434,8 @@ namespace Horizun.Revit.Commands
                 candidates = new[] { BuiltInParameter.ELEM_FAMILY_PARAM, BuiltInParameter.SYMBOL_FAMILY_NAME_PARAM };
             else if (key == "type" || key == "tipo")
                 candidates = new[] { BuiltInParameter.ELEM_TYPE_PARAM, BuiltInParameter.ELEM_TYPE_LABEL };
+            else if (key == "category" || key == "categoria" || key == "categoría")
+                candidates = new[] { BuiltInParameter.ELEM_CATEGORY_PARAM, BuiltInParameter.ELEM_CATEGORY_PARAM_MT };
             else if (Enum.TryParse(requested, true, out parameter)) candidates = new[] { parameter };
             else return null;
 

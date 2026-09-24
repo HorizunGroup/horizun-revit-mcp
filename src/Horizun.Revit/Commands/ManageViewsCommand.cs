@@ -57,7 +57,12 @@ namespace Horizun.Revit.Commands
                 {
                     string key = a.Value<string>("key");
                     if (!string.IsNullOrWhiteSpace(key)) knownKeys.Add(key, ResultType(a.Value<string>("operation")));
-                    plans.Add(new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key });
+                    var planRow = new JObject { ["index"] = i, ["operation"] = a.Value<string>("operation"), ["key"] = key };
+                    // The precedence report is a READ: the rehearsal already carries it.
+                    if (string.Equals(a.Value<string>("operation"), "explain_graphics", StringComparison.OrdinalIgnoreCase) &&
+                        a["view_id"] != null && doc.GetElement(Rid.Make(a.Value<long>("view_id"))) is View explained)
+                        planRow["report"] = ExplainGraphics(doc, explained, ReadElementIds(doc, a, "element_ids"));
+                    plans.Add(planRow);
                 }
             }
             bool dryRun = request["dry_run"] == null || request.Value<bool>("dry_run");
@@ -238,7 +243,8 @@ namespace Horizun.Revit.Commands
                 // permanent one. Both are things the caller would otherwise have to
                 // guess at, and guessing wrong about the second means expecting a
                 // printed sheet to show something that was never stored.
-                JObject detail = GraphicsDetail(a.Action, a.Operation.ToLowerInvariant());
+                JObject detail = GraphicsDetail(a.Action, a.Operation.ToLowerInvariant())
+                                 ?? ControlDetail(a.Action, a.Operation.ToLowerInvariant());
                 if (detail != null) row["graphics"] = detail;
                 rows.Add(row);
             }
@@ -268,7 +274,8 @@ namespace Horizun.Revit.Commands
         {
             "apply_template", "place_view", "place_schedule",
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
-            "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports"
+            "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
+            "edit_filter", "order_filters", "set_template_controls", "explain_graphics"
         };
 
         /// <summary>
@@ -354,6 +361,7 @@ namespace Horizun.Revit.Commands
                         break;
                     case "apply_template":
                         Reference<View>(doc, a, "view_id", "view_key", known);
+                        if (a.Value<long?>("template_view_id") == -1) break;   // -1 removes the template
                         View template = Need<View>(doc, a, "template_view_id"); if (!template.IsTemplate) throw new ArgumentException("template_view_id is not a view template"); break;
                     case "create_sheet":
                         if (a["title_block_type_id"] != null)
@@ -547,6 +555,8 @@ namespace Horizun.Revit.Commands
                         // through its API; those refuse with the exact manual step rather
                         // than with a generic failure. See ManageViewsLegends.cs.
                         if (IsLegendOperation(op)) { ValidateLegend(doc, a, op, known); break; }
+                        // Filter editing/order, the precedence report and templates. See ManageViewsControl.cs.
+                        if (IsControlOperation(op)) { ValidateControl(doc, a, op, known); break; }
                         // A capability gap, not a fixable argument: this command implements a
                         // fixed set of documentation operations and this is not one of them.
                         unsupportedReason = FallbackSignal.ReasonUnsupportedOperation;
@@ -607,6 +617,7 @@ namespace Horizun.Revit.Commands
             string op = a.Value<string>("operation").ToLowerInvariant();
             if (IsGraphicsOperation(op)) return ApplyGraphics(doc, a, op, aliases);
             if (IsLegendOperation(op)) return ApplyLegend(doc, a, op, aliases, scale);
+            if (IsControlOperation(op)) return ApplyControl(doc, a, op, aliases);
             if (op == "create_floor_plan" || op == "create_ceiling_plan" || op == "create_structural_plan")
             {
                 ViewFamily family = op == "create_floor_plan" ? ViewFamily.FloorPlan :
@@ -654,8 +665,10 @@ namespace Horizun.Revit.Commands
             }
             if (op == "apply_template")
             {
-                View view = Resolve<View>(doc, a, "view_id", "view_key", aliases); View template = Need<View>(doc, a, "template_view_id");
-                view.ViewTemplateId = template.Id; return view;
+                View view = Resolve<View>(doc, a, "view_id", "view_key", aliases);
+                view.ViewTemplateId = a.Value<long?>("template_view_id") == -1
+                    ? ElementId.InvalidElementId : Need<View>(doc, a, "template_view_id").Id;
+                return view;
             }
             if (op == "create_sheet")
             {
@@ -1105,6 +1118,7 @@ namespace Horizun.Revit.Commands
                     string graphicsOp = a.Operation.ToLowerInvariant();
                     if (IsGraphicsOperation(graphicsOp)) return VerifyGraphics(doc, a.Action, graphicsOp, e);
                     if (IsLegendOperation(graphicsOp)) return VerifyLegend(doc, a.Action, graphicsOp, e);
+                    if (IsControlOperation(graphicsOp)) return VerifyControl(doc, a.Action, graphicsOp, e);
                     return false;
                 }
             }
@@ -1125,8 +1139,8 @@ namespace Horizun.Revit.Commands
         {
             try
             {
-                return string.Equals(a.Value<string>("operation"), "apply_template", StringComparison.OrdinalIgnoreCase)
-                    ? Need<View>(d, a, "template_view_id").Id : null;
+                if (!string.Equals(a.Value<string>("operation"), "apply_template", StringComparison.OrdinalIgnoreCase)) return null;
+                return a.Value<long?>("template_view_id") == -1 ? ElementId.InvalidElementId : Need<View>(d, a, "template_view_id").Id;
             }
             catch { return null; }
         }
@@ -1233,6 +1247,9 @@ namespace Horizun.Revit.Commands
                 case "hide_elements": case "isolate_elements": case "reset_temporary":
                 case "set_category_visibility": return typeof(View);
                 case "create_legend": return typeof(View);
+                case "edit_filter": return typeof(ParameterFilterElement);
+                case "order_filters": case "explain_graphics": case "create_template": case "set_template_controls":
+                    return typeof(View);
                 case "place_legend_component": return typeof(Element);
                 default: return typeof(Element);
             }

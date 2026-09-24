@@ -245,6 +245,18 @@ namespace Horizun.Revit.Commands
             (new Regex(@"\bIFCExportOptions\s*\(", RegexOptions.Compiled),
              "horizun_deliver_ifc",
              "exports the IFC with explicit options and re-reads the file: header, IDS on the file, mapped property sets, optional BCF."),
+            (new Regex(@"\bParameterFilterElement\s*\.\s*Create\s*\(|\.\s*SetElementFilter\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"create_filter\"/\"edit_filter\" builds or edits a filter's rules and re-reads them after the commit."),
+            (new Regex(@"\.\s*SetCategory(Hidden|Overrides)\s*\(", RegexOptions.Compiled),
+             "horizun_manage_views",
+             "operation=\"set_category_visibility\" hides or overrides a category/subcategory and refuses a view whose template governs V/G."),
+            (new Regex(@"\bViewSchedule\s*\.\s*CreateKeySchedule\s*\(", RegexOptions.Compiled),
+             "horizun_create_schedule",
+             "key_schedule=true creates the key schedule and its key rows and re-reads them."),
+            (new Regex(@"\.\s*SetExportLayerTable\s*\(", RegexOptions.Compiled),
+             "horizun_export",
+             "format=\"dwg_layers\" writes a named DWG setup's layer table and re-reads it from a fresh lookup."),
         };
 
         /// <summary>

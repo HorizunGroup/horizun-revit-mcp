@@ -35,6 +35,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLayoutRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\AnnotationVisibility.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PdfPrintPolicy.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\GraphicsPrecedence.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPreflight.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\DeliveryPlan.cs" />
