@@ -562,6 +562,11 @@
           "horizun_deliver_ifc",
           "Export an IFC and prove it: IDS on the file, property-set mapping coverage, georeference, BCF of failures and a sealed container.",
           "Exportar un IFC y demostrarlo: IDS sobre el archivo, cobertura del mapeo de Psets, georreferencia, BCF de fallos y contenedor sellado."
+        ],
+        [
+          "horizun_cde_cloud",
+          "Read a cloud CDE (Autodesk Construction Cloud or an OpenCDE server) by state and cross it against the MIDP, read-only.",
+          "Leer un CDE en la nube (Autodesk Construction Cloud o un servidor OpenCDE) por estado y cruzarlo con el MIDP, en solo lectura."
         ]
       ]
     }
