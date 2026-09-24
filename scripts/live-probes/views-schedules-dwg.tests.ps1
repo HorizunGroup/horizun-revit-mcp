@@ -1,7 +1,9 @@
 #Requires -Version 5.1
 # Exercises views-schedules-dwg.probes.ps1 WITHOUT Revit: its Run against fake Call/Apply
-# that answer the way the bridge does. Three scenarios: everything verifies; the write
-# tier is closed; the DWG layer write does not persist (the measured failure).
+# that answer the way the bridge does: everything verifies; the write tier is closed; the
+# DWG layer write does not persist; and the three failures MEASURED on Revit 2026 on
+# 2026-09-24 (inherited filters on a duplicated view, the precedence report around them,
+# an empty DWG layer table on a new setup).
 $ErrorActionPreference = 'Stop'
 $script:HzProbeModules = @()
 . (Join-Path $PSScriptRoot 'views-schedules-dwg.probes.ps1')
@@ -10,8 +12,15 @@ $module = @($script:HzProbeModules | Where-Object { $_.Name -eq 'views-schedules
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('hz-vg-probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 
-function New-Fake([bool]$persist) {
-    $state = @{ calls = New-Object System.Collections.Generic.List[string]; persist = $persist }
+# $inherited: the filters Revit copies onto a duplicated view (MEASURED 2026-09-24: five
+# filters on the own view, not two). $dwgMode: 'rows' (the table has rows), 'empty_refused'
+# (the default seeds are empty and the tool refuses; AIA gives rows), 'empty_json' (the
+# pre-fix behaviour: a created setup whose json holds no rows).
+function New-Fake([bool]$persist, [long[]]$inherited = @(150, 151), [string]$dwgMode = 'rows') {
+    $state = @{ calls = New-Object System.Collections.Generic.List[string]; persist = $persist
+                order = New-Object System.Collections.Generic.List[long]; disabled = New-Object System.Collections.Generic.List[long]
+                inherited = @($inherited); dwgMode = $dwgMode; sentOrder = $null; aia = $null
+                names = New-Object System.Collections.Generic.List[string] }
     $call = {
         param($tool, $arguments)
         $state.calls.Add('call:' + $tool)
@@ -24,10 +33,11 @@ function New-Fake([bool]$persist) {
             'horizun_manage_views' {
                 $op = $arguments.actions[0].operation
                 if ($op -eq 'explain_graphics') {
+                    # Every filter on the view, in its CURRENT order - inherited ones included.
+                    $layers = @([pscustomobject]@{ source = 'element' })
+                    foreach ($fid in $state.order) { $layers += [pscustomobject]@{ source = 'filter'; filter_id = $fid; enabled = ($state.disabled -notcontains $fid) } }
                     $report = [pscustomobject]@{
-                        layers = @([pscustomobject]@{ source = 'element' },
-                                   [pscustomobject]@{ source = 'filter'; filter_id = 202; enabled = $false },
-                                   [pscustomobject]@{ source = 'filter'; filter_id = 201; enabled = $true })
+                        layers = $layers
                         winners = [pscustomobject]@{ line_color = [pscustomobject]@{ from = 'object_style' }
                                                      visible = [pscustomobject]@{ decided_by = 'no layer hides it' } } }
                     return @{ isError = $false; data = [pscustomobject]@{ plan = @([pscustomobject]@{ report = @($report) }) } }
@@ -44,9 +54,26 @@ function New-Fake([bool]$persist) {
         $state.calls.Add('apply:' + $key)
         $ok = { param($data) @{ stage = 'apply'; answer = @{ isError = $false; data = [pscustomobject]$data } } }
         switch ($key) {
-            'vg-create' { $state.source = $arguments.actions[0].source_view_id; return (& $ok @{ aliases = [pscustomobject]@{ dup = 200; f1 = 201; f2 = 202 }; actions_verified = 6 }) }
+            'vg-create' {
+                $state.source = $arguments.actions[0].source_view_id
+                foreach ($i in $state.inherited) { $state.order.Add($i) }
+                $state.order.Add(201); $state.order.Add(202)
+                return (& $ok @{ aliases = [pscustomobject]@{ dup = 200; f1 = 201; f2 = 202 }; actions_verified = 6 })
+            }
             'vg-edit' { return (& $ok @{ rows = @([pscustomobject]@{ graphics = [pscustomobject]@{ rules_reread = "OR(P(FilterStringRule[-1001203]FilterStringContains'HZ-EDIT'),P(x))" } }) }) }
-            'vg-order' { return (& $ok @{ rows = @([pscustomobject]@{ graphics = [pscustomobject]@{ order = @(202, 201) } }) }) }
+            'vg-order' {
+                # The tool's contract: filter_ids lists EXACTLY the filters on the view.
+                $sent = @($arguments.actions[0].filter_ids | ForEach-Object { [long]$_ })
+                $state.sentOrder = $sent
+                $same = ($sent.Count -eq $state.order.Count) -and (@($sent | Where-Object { $state.order -notcontains $_ }).Count -eq 0)
+                if (-not $same) {
+                    return @{ stage = 'dry_run'; answer = @{ isError = $true; data = $null
+                              text = "filter_ids must list EXACTLY the filters on view 'HZ_VG' (" + ($state.order -join ', ') + ') in the new order' } }
+                }
+                $state.order.Clear(); foreach ($i in $sent) { $state.order.Add($i) }
+                $state.disabled.Add([long]$arguments.actions[1].filter_id)
+                return (& $ok @{ rows = @([pscustomobject]@{ graphics = [pscustomobject]@{ order = @($state.order.ToArray()) } }) })
+            }
             'vg-category' { return (& $ok @{ actions_verified = 1 }) }
             'vg-tpl-create' { return (& $ok @{ aliases = [pscustomobject]@{ tpl = 300 } }) }
             'vg-tpl-apply' { return (& $ok @{ actions_verified = 2 }) }
@@ -54,10 +81,24 @@ function New-Fake([bool]$persist) {
             'vg-sched-multi' { return (& $ok @{ schedule_id = 400; category_id = -1; body_rows = 3 }) }
             'vg-sched-key' { return (& $ok @{ schedule_id = 401; postcondition = [pscustomobject]@{ properties = @([pscustomobject]@{ property = 'key_rows'; found = 2 }) } }) }
             'vg-dwg-read' {
-                Set-Content -LiteralPath $arguments.output_path -Value '{"rows":[{"category":"Walls","layer":"A-WALL"}]}'
-                return (& $ok @{ setup_id = 500 })
+                if ($state.dwgMode -eq 'empty_refused') {
+                    return @{ stage = 'dry_run'; answer = @{ isError = $true; data = $null
+                              text = "dwg_setup 'x' was not created: every seed gave it an EMPTY layer table (revit_default -> 0 rows). Nothing was changed." } }
+                }
+                if ($state.dwgMode -eq 'empty_json') {
+                    Set-Content -LiteralPath $arguments.output_path -Value '{"rows":[]}'
+                    return (& $ok @{ setup_id = 500; seeded_from = $null })
+                }
+                Set-Content -LiteralPath $arguments.output_path -Value '{"rows":[{"category":"Walls","special":"Default","layer":"A-WALL"}]}'
+                return (& $ok @{ setup_id = 500; seeded_from = 'revit_default' })
+            }
+            'vg-dwg-read-aia' {
+                $state.aia = $arguments.dwg_setup.layer_standard
+                Set-Content -LiteralPath $arguments.output_path -Value '{"rows":[{"category":"Walls","special":"Default","layer":"A-WALL"}]}'
+                return (& $ok @{ setup_id = 500; seeded_from = 'layer_standard:AIA' })
             }
             'vg-dwg-write' {
+                $state.names.Add([string]$arguments.dwg_setup.layers[0].category)
                 if (-not $state.persist) { return @{ stage = 'apply'; answer = @{ isError = $true; text = 'DWG export setup write failed: the DWG setup did not keep these rows'; data = $null } } }
                 return (& $ok @{ edits = @([pscustomobject]@{ key = 'Walls'; persisted = $true }) })
             }
@@ -105,6 +146,34 @@ $f = New-Fake $false
 $by = Invoke-Module $f $false 'r-3'
 Check 'a DWG write that does not persist is a failure' ($by['views-vg: DWG layer table write persists (measured per year)'].Outcome -eq 'fail')
 Check 'the other cases are unaffected' ($by['views-vg: DWG export with the named setup to ScratchRoot'].Outcome -eq 'pass')
+
+# 4) MEASURED case 1: the duplicated view inherits filters. The probe must send the
+#    WHOLE list (the fake refuses a partial one, as the tool does) and move only its own.
+$f = New-Fake $true @(1364036, 576429, 576430)
+$by = Invoke-Module $f $false 'r-4'
+Check 'with inherited filters the reorder case passes' ($by['views-vg: reorder and disable filters, re-read order and state'].Outcome -eq 'pass')
+Check 'the full list was sent, inherited filters in place and only 201/202 swapped' (($f.state.sentOrder -join ',') -eq '1364036,576429,576430,202,201')
+# 5) MEASURED case 2: the precedence report holds the inherited filters above the module's.
+Check 'the precedence case finds its filters by id among inherited ones' ($by['views-vg: precedence report for one element'].Outcome -eq 'pass')
+Check 'the precedence detail names their real positions' ($by['views-vg: precedence report for one element'].Detail -match 'f2 at 4 \(disabled\) above f1 at 5 among 5 filters')
+# 6) inherited filters interleaved with the module's: they keep their slots.
+$reorder = $module.FilterOrder
+Check 'FilterOrder keeps foreign filters in their slots' (((& $reorder @(150, 201, 151, 202) @(202, 201)) -join ',') -eq '150,202,151,201')
+Check 'FilterOrder refuses when a module filter is missing' ($null -eq (& $reorder @(150, 201) @(202, 201)))
+Check 'FilterOrder with only the module filters is the plain swap' (((& $reorder @(201, 202) @(202, 201)) -join ',') -eq '202,201')
+
+# 7) MEASURED case 3: every default seed empty -> the tool refuses, the probe measures the AIA seed.
+$f = New-Fake $true @(150) 'empty_refused'
+$by = Invoke-Module $f $false 'r-7'
+$c9 = $by['views-vg: DWG setup create and layer table read to json']
+Check 'an empty default table is retried with layer_standard AIA' ($f.state.aia -eq 'AIA')
+Check 'the read case passes and records both the refusal and the seed' ($c9.Outcome -eq 'pass' -and $c9.Detail -match 'layer_standard:AIA' -and $c9.Detail -match 'EMPTY')
+Check 'the write then runs against the seeded setup' ($by['views-vg: DWG layer table write persists (measured per year)'].Outcome -eq 'pass')
+Check 'the DWG write names OST_Walls, not a display name that follows the language' (($f.state.names -join ',') -eq 'OST_Walls')
+# 8) the pre-fix behaviour (a created setup with no rows) still FAILS the read case.
+$f = New-Fake $true @(150) 'empty_json'
+$by = Invoke-Module $f $false 'r-8'
+Check 'a created setup with an empty table is a failure' ($by['views-vg: DWG setup create and layer table read to json'].Outcome -eq 'fail')
 
 Get-ChildItem -LiteralPath $scratch -File | ForEach-Object { Remove-Item -LiteralPath $_.FullName }
 Remove-Item -LiteralPath $scratch

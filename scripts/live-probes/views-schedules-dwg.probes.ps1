@@ -24,10 +24,30 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'views-vg: DWG export with the named setup to ScratchRoot'; Tool = 'horizun_export' }
         @{ Name = 'views-vg: cleanup deletes everything the module created'; Tool = 'horizun_delete_verified' }
     )
+    # MEASURED (2026-09-24, Revit 2026): a DUPLICATED view carries the source view's
+    # filters - Revit copies them - so the own view held five filters, not two, and
+    # order_filters (which takes the WHOLE list, by contract) refused the pair. The
+    # full order is read first; the module's own filters are rearranged among the
+    # positions they already occupy, and every inherited filter stays where it was.
+    # Returns $null when one of $mine is not on the view.
+    FilterOrder = {
+        param([long[]]$current, [long[]]$mine)
+        $cur = @($current); $own = @($mine)
+        foreach ($m in $own) { if ($cur -notcontains $m) { return $null } }
+        $result = New-Object System.Collections.Generic.List[long]
+        $next = 0
+        foreach ($id in $cur) {
+            if ($own -contains $id) { $result.Add([long]$own[$next]); $next++ }
+            else { $result.Add([long]$id) }
+        }
+        return , $result.ToArray()
+    }
     Run     = {
         param($Ctx)
         $cases = New-Object System.Collections.Generic.List[object]
-        $catalog = @($script:HzProbeModules | Where-Object { $_.Name -eq 'views-schedules-dwg' })[0].Catalog
+        $self = @($script:HzProbeModules | Where-Object { $_.Name -eq 'views-schedules-dwg' })[0]
+        $catalog = $self.Catalog
+        $filterOrder = $self.FilterOrder
         function Out-Case($i, $outcome, $detail) {
             $cases.Add(@{ Name = $catalog[$i].Name; Tool = $catalog[$i].Tool; Outcome = $outcome; Detail = [string]$detail })
         }
@@ -87,27 +107,47 @@ $script:HzProbeModules += [pscustomobject]@{
                 else { Out-Case 1 'fail' ('re-read "' + $reread + '"; ' + (Short $e.answer)) }
 
                 # ---- reorder, then disable -------------------------------------------
-                $o = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
-                        @{ operation = 'order_filters'; view_id = $dup; filter_ids = @($f2, $f1) }
-                        @{ operation = 'apply_filter'; view_id = $dup; filter_id = $f2; enabled = $false }) } 'vg-order'
-                if (Applied $o) {
-                    $order = @(@($o.answer.data.rows)[0].graphics.order) -join ','
-                    if ($order -eq ("{0},{1}" -f $f2, $f1)) { Out-Case 2 'pass' ('order ' + $order + ' re-read; f2 disabled and re-read') }
-                    else { Out-Case 2 'fail' ('order re-read as ' + $order) }
+                # The view's WHOLE filter list is read first (explain_graphics lists every
+                # filter on the view, whatever the element); inherited filters keep their
+                # places and only the module's two swap.
+                $probeId = if ($wall) { [long]$wall.element_id } else { $f1 }
+                $before = & $Ctx.Call 'horizun_manage_views' @{ target_document = $doc; dry_run = $true; actions = @(
+                        @{ operation = 'explain_graphics'; view_id = $dup; element_ids = @($probeId) }) }
+                $beforeReport = if ($before.data) { @(@($before.data.plan)[0].report)[0] } else { $null }
+                $current = @(if ($beforeReport) { $beforeReport.layers | Where-Object { $_.source -eq 'filter' } | ForEach-Object { [long]$_.filter_id } })
+                $wanted = & $filterOrder $current @($f2, $f1)
+                if (-not $wanted) { Out-Case 2 'fail' ('could not read the view''s filter list, or it lacks the module''s filters: [' + ($current -join ',') + ']; ' + (Short $before)) }
+                else {
+                    $o = & $Ctx.Apply 'horizun_manage_views' @{ target_document = $doc; actions = @(
+                            @{ operation = 'order_filters'; view_id = $dup; filter_ids = @($wanted) }
+                            @{ operation = 'apply_filter'; view_id = $dup; filter_id = $f2; enabled = $false }) } 'vg-order'
+                    if (Applied $o) {
+                        $order = @(@($o.answer.data.rows)[0].graphics.order) -join ','
+                        $inherited = $current.Count - 2
+                        if ($order -eq ($wanted -join ',')) { Out-Case 2 'pass' ("order $order re-read ($inherited inherited filters kept in place); f2 disabled and re-read") }
+                        else { Out-Case 2 'fail' ('order re-read as ' + $order + ', wanted ' + ($wanted -join ',')) }
+                    }
+                    else { Out-Case 2 'fail' (Short $o.answer) }
                 }
-                else { Out-Case 2 'fail' (Short $o.answer) }
 
                 # ---- precedence report (a READ: the rehearsal carries it) -------------
+                # The module's filters are located BY ID: the duplicated view also holds
+                # the source view's filters, so no absolute position is assumed.
                 if (-not $wall) { Out-Case 3 'unverified' 'the fixture holds no wall to explain' }
                 else {
                     $x = & $Ctx.Call 'horizun_manage_views' @{ target_document = $doc; dry_run = $true; actions = @(
                             @{ operation = 'explain_graphics'; view_id = $dup; element_ids = @([long]$wall.element_id) }) }
                     $report = if ($x.data) { @(@($x.data.plan)[0].report)[0] } else { $null }
-                    $filters = if ($report) { @($report.layers | Where-Object { $_.source -eq 'filter' }) } else { @() }
-                    if ($report -and $report.winners -and $filters.Count -eq 2 -and $filters[0].filter_id -eq $f2 -and $filters[0].enabled -eq $false) {
-                        Out-Case 3 'pass' ("line_color from {0}; visible decided by '{1}'" -f $report.winners.line_color.from, $report.winners.visible.decided_by)
+                    $filters = @(if ($report) { $report.layers | Where-Object { $_.source -eq 'filter' } })
+                    $ids = @($filters | ForEach-Object { [long]$_.filter_id })
+                    $i1 = [array]::IndexOf($ids, [long]$f1); $i2 = [array]::IndexOf($ids, [long]$f2)
+                    $ok = $report -and $report.winners -and $i1 -ge 0 -and $i2 -ge 0 -and $i2 -lt $i1 -and
+                          $filters[$i2].enabled -eq $false -and $filters[$i1].enabled -eq $true
+                    if ($ok) {
+                        Out-Case 3 'pass' ("f2 at {0} (disabled) above f1 at {1} among {2} filters; line_color from {3}; visible decided by '{4}'" -f
+                            ($i2 + 1), ($i1 + 1), $ids.Count, $report.winners.line_color.from, $report.winners.visible.decided_by)
                     }
-                    else { Out-Case 3 'fail' ('report missing or wrong: ' + (Short $x)) }
+                    else { Out-Case 3 'fail' ("report missing or wrong: f2 at $i2, f1 at $i1 among [" + ($ids -join ',') + ']; ' + (Short $x)) }
                 }
 
                 # ---- category V/G on the own view --------------------------------------
@@ -164,22 +204,38 @@ $script:HzProbeModules += [pscustomobject]@{
         # ---- DWG layer table ---------------------------------------------------------------
         $setup = "HZ_DWG_$tag"
         $json1 = Join-Path $Ctx.ScratchRoot "hz-dwg-layers-$tag-read.json"
+        # MEASURED (2026-09-24, Revit 2026): a setup created from an empty options
+        # object had an EMPTY layer table. The tool now seeds a new setup from whatever
+        # really gives it rows and refuses when every seed is empty; the refusal is
+        # itself a measurement, so the probe then tries the explicit AIA standard and
+        # records which seed produced the table.
         $d1 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg_layers'; output_path = $json1; dwg_setup = @{ name = $setup } } 'vg-dwg-read'
+        $firstRefusal = $null
+        if (-not (Applied $d1) -and ([string]$d1.answer.text) -match 'empty_layer_table|EMPTY layer') {
+            $firstRefusal = Short $d1.answer
+            $d1 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg_layers'; output_path = $json1
+                    dwg_setup = @{ name = $setup; layer_standard = 'AIA' } } 'vg-dwg-read-aia'
+        }
         $setupId = $null
         if ((Applied $d1) -and (Test-Path -LiteralPath $json1)) {
             $setupId = [long]$d1.answer.data.setup_id; $created.Add($setupId)
             $rows = @((Get-Content -LiteralPath $json1 -Raw | ConvertFrom-Json).rows)
-            if ($rows.Count -gt 0) { Out-Case 9 'pass' ("setup {0} created; {1} layer rows in the json" -f $setupId, $rows.Count) }
-            else { Out-Case 9 'fail' 'the json holds no layer rows' }
+            $how = "seeded from '{0}'" -f $d1.answer.data.seeded_from
+            if ($firstRefusal) { $how += '; every default seed was empty: ' + $firstRefusal }
+            if ($rows.Count -gt 0) { Out-Case 9 'pass' ("MEASURED Revit {0}: setup {1} created, {2}; {3} layer rows in the json" -f $Ctx.Year, $setupId, $how, $rows.Count) }
+            else { Out-Case 9 'fail' ("MEASURED Revit {0}: the json holds no layer rows ({1})" -f $Ctx.Year, $how) }
         }
-        else { Out-Case 9 'fail' (Short $d1.answer) }
+        else { Out-Case 9 'fail' ("MEASURED Revit {0}: {1}" -f $Ctx.Year, (Short $d1.answer)) }
 
         if ($setupId) {
             $json2 = Join-Path $Ctx.ScratchRoot "hz-dwg-layers-$tag-write.json"
             $d2 = & $Ctx.Apply 'horizun_export' @{ target_document = $doc; format = 'dwg_layers'; output_path = $json2
                     dwg_setup = @{ name = $setup; layers = @(@{ category = 'OST_Walls'; layer = "HZ-WALLS-$tag"; color = 3 }) } } 'vg-dwg-write'
-            if ((Applied $d2) -and @($d2.answer.data.edits | Where-Object { $_.persisted -eq $true }).Count -eq 1) {
-                Out-Case 10 'pass' ("MEASURED Revit {0}: the layer row written is read back from a fresh lookup after the commit" -f $Ctx.Year)
+            # @() around the if: an assignment unrolls a one-row array, and on Windows
+            # PowerShell 5.1 a lone PSCustomObject has no Count.
+            $kept = @(if (Applied $d2) { $d2.answer.data.edits | Where-Object { $_.persisted -eq $true } })
+            if ($kept.Count -eq 1) {
+                Out-Case 10 'pass' ("MEASURED Revit {0}: row '{1}' (named by OST_Walls, whatever Revit's language) read back from a fresh lookup after the commit" -f $Ctx.Year, $kept[0].key)
             }
             else { Out-Case 10 'fail' ("MEASURED Revit {0}: not persisted or refused - {1}" -f $Ctx.Year, (Short $d2.answer)) }
         }
