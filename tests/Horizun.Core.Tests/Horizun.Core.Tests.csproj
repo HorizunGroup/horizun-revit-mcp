@@ -524,6 +524,7 @@
          name refusal, the closed operator table with value shapes, and the canonical
          definition snapshot a before/after diff hangs off. Pure, proved here. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleEditRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\PhaseRules.cs" />
     <!-- Which dimension edits are eligible for which dimensions, and what the final
          state may claim once the transaction status is known. Depends only on
          ApplicationOutcome and PlanFailure, both linked above. -->

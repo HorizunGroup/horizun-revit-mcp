@@ -234,6 +234,8 @@ namespace Horizun.Revit
             d.Register(new PlanViewsCommand());
             d.Register(new ManageSchedulesCommand());
             d.Register(new ManageRevisionsCommand());
+            d.Register(new ManagePhasesCommand());
+            d.Register(new ManageAssembliesPartsCommand());
             d.Register(new ListSchedulesCommand());
             d.Register(new GetScheduleDataCommand());
 
