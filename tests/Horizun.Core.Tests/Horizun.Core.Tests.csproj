@@ -72,6 +72,8 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\PenetrationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ClashResolveRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\UndoJournal.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLayoutRules.cs" />
     <!-- The rebar layout arithmetic. Provable at a desk, and it HAS to be: the
          plan computes every bar position and the apply compares Revit's answer

@@ -180,6 +180,8 @@ namespace Horizun.Revit
             d.Register(new QuantitiesCommand());
             d.Register(new ClashCommand());
             d.Register(new CoordinationCommand());
+            d.Register(new ResolveClashCommand());
+            d.Register(new UndoCommand());
             d.Register(new PlanStructureCommand());
             d.Register(new ManageLinksCommand());
             d.Register(new PlanMepCommand());

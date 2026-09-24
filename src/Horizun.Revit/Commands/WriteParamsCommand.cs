@@ -613,7 +613,43 @@ namespace Horizun.Revit.Commands
             // is, even though this command was asked to behave that way.
             ApplicationOutcome.StampApplied(result, txStatus, rows.Count, confirmed,
                                        confirmedAgainstCallerValue, unresolved, failed, unknown);
+            if (committed && confirmed > 0) result["undo"] = RecordUndo(doc, rows);
             return CommandResult.Ok(result);
+        }
+
+        /// <summary>
+        /// horizun_undo: each confirmed row's previous value. A confirmed row whose previous
+        /// value was unreadable makes the batch not undoable - a restore to an unknown value
+        /// is not a restore.
+        /// </summary>
+        private JObject RecordUndo(Document doc, List<Row> rows)
+        {
+            var entries = new List<UndoEntry>(); string blocked = null;
+            foreach (Row r in rows.Where(x => x.Confirmed))
+            {
+                string key = UndoCapture.ParameterKey(r.Parameter);
+                long id;
+                try { id = Rid.Value(r.Target.Id); } catch { blocked = "a target id could not be read"; continue; }
+                JObject before = null;
+                if (Readable(r.Before) && r.Before["storage"] != null)
+                {
+                    string storage = r.Before.Value<string>("storage");
+                    JToken v = r.Before["value"];
+                    if (storage == "ElementId" && long.TryParse((string)v, out long raw)) before = new JObject { ["storage"] = storage, ["value"] = raw };
+                    else if (storage == "String" || storage == "Integer" || storage == "Double") before = new JObject { ["storage"] = storage, ["value"] = v };
+                }
+                if (key == null || before == null) { blocked = "row " + r.Index + ": the previous value or the parameter identity is unknown"; continue; }
+                string sid = id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                Element fresh = doc.GetElement(Rid.Make(id));
+                entries.Add(new UndoEntry
+                {
+                    Op = "parameter", ElementIds = new List<long> { id }, UniqueIds = new List<string> { fresh?.UniqueId },
+                    Before = new JObject { [sid] = before },
+                    After = new JObject { [sid] = (JToken)UndoCapture.ParameterState(UndoCapture.ResolveParameter(fresh, key)) ?? JValue.CreateNull() },
+                    Inverse = new JObject { ["parameter"] = key }
+                });
+            }
+            return UndoCapture.Record(doc, Name, entries, blocked);
         }
 
         // ---- The three-way split. -------------------------------------------------

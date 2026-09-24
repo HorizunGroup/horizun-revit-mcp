@@ -107,6 +107,10 @@ namespace Horizun.Revit.Core
             Row("horizun_fix_planimetry", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "FixPlanimetryCommand.cs")),
             Row("horizun_transform_elements", VerificationMechanism.PostconditionChecklist, E("operations_verified", "postconditions", "application"), F(C + "TransformElementsCommand.cs"),
                 "TransformElementsCommand.cs Verify: move/rotate/mirror/pin/change_type/set_curve/wall_join compare per element with booleans (guarded: an element that does not re-read fails, an empty target list never passes); only the tag operations carry a PostconditionCheck."),
+            Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs"),
+                "ResolveClashCommand.cs Detect: re-detection covers the host neighbourhood of the moved runs only, not linked models; a clash the move creates against a link is not seen."),
+            Row("horizun_undo", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "UndoCommand.cs"),
+                "UndoCapture.cs State: the drift guard compares location, type, pin, orientation and tag head; an edit to an element's OTHER parameters since the batch is not detected."),
 
             // ---- typed model writes: per-row re-reads -------------------------------------
             Row("horizun_write_params_verified", VerificationMechanism.PerRowReread, E("verification", "application"), F(C + "WriteParamsCommand.cs")),
