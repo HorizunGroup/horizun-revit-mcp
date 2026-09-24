@@ -72,6 +72,9 @@ namespace Horizun.Server.Tests
                 "Run: dotnet build src/Horizun.Server -c " + configuration);
         }
 
+        private static readonly string WireTestDataRoot =
+            Path.Combine(Path.GetTempPath(), "horizun-wire-tests-" + Environment.ProcessId);
+
         /// <summary>Send raw lines, read every reply line back. One process, one round.</summary>
         private static List<JObject> ExchangeRaw(params string[] lines)
         {
@@ -84,6 +87,12 @@ namespace Horizun.Server.Tests
                 CreateNoWindow = true,
                 StandardOutputEncoding = new UTF8Encoding(false)
             };
+            // THIS SUITE SENDS BAD LINES ON PURPOSE, and used to send them into the
+            // machine owner's own %USERPROFILE%\.horizun\logs\server.log: 132 "parse
+            // error answered" warnings over five days, each of which read like a client
+            // corrupting its stream until traced back here (2026-09-24). The negative
+            // tests now log into a throwaway data root of their own.
+            psi.Environment[Horizun.Revit.Core.HorizunPaths.RootOverrideVariable] = WireTestDataRoot;
 
             var replies = new List<JObject>();
             using (var proc = Process.Start(psi))
@@ -195,6 +204,26 @@ namespace Horizun.Server.Tests
 
             // And it must not echo the offending text back - it can carry a path or a token.
             Assert.DoesNotContain("this is not json", err.ToString(), StringComparison.Ordinal);
+
+            // But it does say WHERE and WHAT KIND, over the real transport.
+            JObject data = err["error"]["data"] as JObject;
+            Assert.NotNull(data);
+            Assert.Equal("bare_word", (string)data["hint"]);
+            Assert.Equal(6, (int)data["offset"]);
+            Assert.Equal("{aaaa aa aaa aaaa", (string)data["shape"]);
+            Assert.Contains("character 6 of 17", (string)err["error"]["message"]);
+        }
+
+        [Fact]
+        public void An_unescaped_windows_path_is_answered_32700_with_the_backslash_hint()
+        {
+            var replies = Exchange(
+                "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"horizun_target\"," +
+                "\"arguments\":{\"path\":\"C:\\hz-live\\model.rvt\"}}}");
+            JObject err = FindError(replies, -32700);
+            Assert.NotNull(err);
+            Assert.Equal("unescaped_backslash", (string)err["error"]["data"]["hint"]);
+            Assert.DoesNotContain("hz-live", err.ToString(), StringComparison.Ordinal);
         }
 
         [Fact]

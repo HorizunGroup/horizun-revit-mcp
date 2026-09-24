@@ -31,8 +31,13 @@ param(
     # fact off a file on disk instead, and a file describes whatever binary last
     # wrote it, not the one that just answered.
     [string]$Resource,
-    # JSON object. Defaults to no arguments.
+    # JSON object. Defaults to no arguments. Hand-typed JSON is where Windows paths
+    # go wrong ("C:\x" is an invalid escape; it must be "C:\\x" or "C:/x"): prefer
+    # -ArgumentsObject from PowerShell, or -ArgumentsPath written by ConvertTo-Json.
     [string]$Arguments = '{}',
+    # The arguments as a PowerShell hashtable/object, serialized here with
+    # ConvertTo-Json - no hand-built JSON, so no escaping to get wrong.
+    [object]$ArgumentsObject,
     # Exact transport for callers that launch a separate PowerShell process.
     # JSON quotes and Windows paths are not reliably preserved through the
     # native Windows command line.
@@ -46,6 +51,36 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# ARGUMENTS FIRST, before any server is looked for or started: a malformed
+# argument string is the caller's mistake and is reported as one, with the
+# position and the usual cause, instead of costing a server process.
+if ($PSBoundParameters.ContainsKey('ArgumentsObject') -and
+    ($ArgumentsPath -or $PSBoundParameters.ContainsKey('Arguments'))) {
+    throw "Use exactly one of -Arguments, -ArgumentsPath or -ArgumentsObject."
+}
+if ($ArgumentsPath) {
+    if (-not (Test-Path -LiteralPath $ArgumentsPath -PathType Leaf)) {
+        throw "-ArgumentsPath does not exist: $ArgumentsPath"
+    }
+    $Arguments = Get-Content -LiteralPath $ArgumentsPath -Raw
+}
+if ($PSBoundParameters.ContainsKey('ArgumentsObject')) {
+    $Arguments = if ($null -eq $ArgumentsObject) { '{}' } else { $ArgumentsObject | ConvertTo-Json -Depth 40 -Compress }
+}
+try { $argObj = $Arguments | ConvertFrom-Json } catch {
+    $why = $_.Exception.Message
+    $hint = ''
+    if ($why -match 'escape' -or $Arguments -match '[^\\]\\[^\\"/bfnrtu]') {
+        $hint = ' A backslash inside a JSON string must be doubled - a Windows path like C:\folder is written ' +
+                '"C:\\folder" (or "C:/folder"). Pass -ArgumentsObject @{ path = ''C:\folder'' } and let ' +
+                'ConvertTo-Json do the escaping.'
+    }
+    throw "arguments must be a JSON object: $why.$hint Nothing was sent."
+}
+if ($null -ne $argObj -and ($argObj -isnot [System.Management.Automation.PSCustomObject])) {
+    throw "arguments must be a JSON object ({...}), not $($argObj.GetType().Name). Nothing was sent."
+}
+
 if (-not $Server -and $env:HORIZUN_SERVER_EXE) {
     # A development session drives a freshly built server against a development
     # add-in WITHOUT replacing the installed pair (scripts/live/dev-addin-session.ps1).
@@ -58,14 +93,6 @@ if (-not $Server) {
     $Server = if ($env:HORIZUN_SERVER_EXE) { $env:HORIZUN_SERVER_EXE } else { Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\horizun-mcp.exe' }
 }
 if (-not (Test-Path $Server)) { throw "MCP server not found: $Server" }
-
-if ($ArgumentsPath) {
-    if (-not (Test-Path -LiteralPath $ArgumentsPath -PathType Leaf)) {
-        throw "-ArgumentsPath does not exist: $ArgumentsPath"
-    }
-    $Arguments = Get-Content -LiteralPath $ArgumentsPath -Raw
-}
-try { $argObj = $Arguments | ConvertFrom-Json } catch { throw "arguments must be a JSON object: $($_.Exception.Message)" }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $Server
