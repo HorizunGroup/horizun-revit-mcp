@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "03087e484adc1a8425bede7eded46decc32fd9906b874102bc0ae274d8b88320",
-  "generated_from_contract_hash": "8fc75371c6b1cdd0b6cf953b",
+  "generated_from_server_sha": "0e49a5ad4381172c3ce24be3d3ea4ea0b0429daeb8f91d8c5218fdaca7e71f9d",
+  "generated_from_contract_hash": "8fd3af49b91d0a905420db0e",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "6c2d741a7ce98cd111212cbf9a26d946f7ab40b9",
+  "code_candidate_commit": "39edf37aa42c8f20993c831aa6ac1575e5ee5a8c",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
-  "source_tree_clean_at_generation": false,
-  "source_tree_head_at_generation": "6c2d741a7ce98cd111212cbf9a26d946f7ab40b9",
+  "source_tree_clean_at_generation": true,
+  "source_tree_head_at_generation": "39edf37aa42c8f20993c831aa6ac1575e5ee5a8c",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 101,
+    "tools": 102,
     "reads": 45,
-    "writes": 56,
+    "writes": 57,
     "destructive": 15,
-    "operations": 271,
-    "enumerated_variants": 1289
+    "operations": 285,
+    "enumerated_variants": 1314
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -512,7 +512,7 @@
     },
     {
       "tool": "horizun_cad_connect",
-      "read_only": true,
+      "read_only": false,
       "destructive": false,
       "open_world": false,
       "operations": 6,
@@ -1377,17 +1377,31 @@
       "read_only": true,
       "destructive": false,
       "open_world": true,
-      "operations": 0,
-      "enumerated_variants": 0,
-      "operation_detail": []
+      "operations": 6,
+      "enumerated_variants": 6,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "leaf",
+            "bsdd_search",
+            "bsdd_search_dictionary",
+            "bsdd_class",
+            "bsdd_property",
+            "bsdd_dictionaries"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
     },
     {
       "tool": "horizun_project_context",
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 4,
-      "enumerated_variants": 4,
+      "operations": 6,
+      "enumerated_variants": 8,
       "operation_detail": [
         {
           "property": "operation",
@@ -1396,7 +1410,9 @@
             "schema",
             "validate",
             "questions",
-            "draft"
+            "draft",
+            "elicit",
+            "ids_from_loin"
           ],
           "source_read_confirmed": true
         }
@@ -1407,8 +1423,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": true,
-      "operations": 5,
-      "enumerated_variants": 11,
+      "operations": 8,
+      "enumerated_variants": 21,
       "operation_detail": [
         {
           "property": "operation",
@@ -1418,7 +1434,30 @@
             "stamp",
             "verify",
             "inspect",
-            "transition"
+            "transition",
+            "transmittal",
+            "record_review",
+            "register"
+          ],
+          "source_read_confirmed": true
+        }
+      ]
+    },
+    {
+      "tool": "horizun_cde_cloud",
+      "read_only": true,
+      "destructive": false,
+      "open_world": true,
+      "operations": 3,
+      "enumerated_variants": 5,
+      "operation_detail": [
+        {
+          "property": "operation",
+          "path": "operation",
+          "values": [
+            "list_states",
+            "inspect",
+            "versions"
           ],
           "source_read_confirmed": true
         }

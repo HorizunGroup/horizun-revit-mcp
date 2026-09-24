@@ -3,8 +3,8 @@
 **Made in Colombia 🇨🇴 by Horizun Group.**
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
-**Autodesk Revit 2023–2027**. Its complete catalog contains **101 tools** <!--inventory:tools-->
-with **271 named suboperations and dispatch modes** <!--inventory:operations-->
+**Autodesk Revit 2023–2027**. Its complete catalog contains **102 tools** <!--inventory:tools-->
+with **285 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
 
@@ -28,8 +28,8 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 | Surface | What is available | Inspect it |
 |---|---|---|
-| MCP entry points | **101 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **56 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
-| Internal actions | **271 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| MCP entry points | **102 tools** <!--inventory:tools-->, including **45 read-only** <!--inventory:reads--> and **57 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| Internal actions | **285 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
 | Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
@@ -337,6 +337,7 @@ The [detailed tool reference](docs/TOOLS.md) documents arguments and limitations
 | `horizun_project_context` | Validate, question and draft the project's ISO 19650 context: appointment, EIR/BEP/MIDP, CDE states, naming, delivery. |
 | `horizun_information_container` | Name, seal, verify, inspect and transition information containers across WIP, Shared, Published and Archived folders. |
 | `horizun_deliver_ifc` | Export an IFC and prove it: IDS on the file, property-set mapping coverage, georeference, BCF of failures and a sealed container. |
+| `horizun_cde_cloud` | Read a cloud CDE (Autodesk Construction Cloud or an OpenCDE server) by state and cross it against the MIDP, read-only. |
 
 <!-- END TOOL CATALOG -->
 
@@ -346,7 +347,7 @@ A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
 and a stair are choices under `horizun_create_elements`; creating a section and
 placing a schedule are different actions under `horizun_manage_views`.
 
-The table contains **271 named suboperations and dispatch modes** <!--inventory:operations-->
+The table contains **285 named suboperations and dispatch modes** <!--inventory:operations-->
 across 26 multi-operation tools. A choice is counted once per tool, selector
 property and value, including nested selectors. Repeated `oneOf` schema paths
 are deduplicated. Some selectors refine another action: these numbers describe
@@ -390,16 +391,18 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_plan_structure` | `operation` | `columns_on_grid_intersections`, `beams_along_grids` |
 | `horizun_query_structure` | `mode` | `members`, `hosts`, `covers`, `rebar`, `reinforcement_systems`, `connections`, `coverage`, `quantities` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff` |
+| `horizun_catalog_lookup` | `operation` | `leaf`, `bsdd_search`, `bsdd_search_dictionary`, `bsdd_class`, `bsdd_property`, `bsdd_dictionaries` |
 | `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
 | `horizun_promote_script` | `operation` | `list`, `show`, `propose`, `review`, `approve`, `activate`, `deactivate`, `source`, `resolve`, `invocation` |
 | `horizun_run_procedure` | `operation` | `start`, `advance`, `decide`, `record`, `reconcile`, `status`, `abandon` |
-| `horizun_project_context` | `operation` | `schema`, `validate`, `questions`, `draft` |
-| `horizun_information_container` | `operation` | `name`, `stamp`, `verify`, `inspect`, `transition` |
+| `horizun_project_context` | `operation` | `schema`, `validate`, `questions`, `draft`, `elicit`, `ids_from_loin` |
+| `horizun_information_container` | `operation` | `name`, `stamp`, `verify`, `inspect`, `transition`, `transmittal`, `record_review`, `register` |
+| `horizun_cde_cloud` | `operation` | `list_states`, `inspect`, `versions` |
 <!-- END SUBOPERATIONS -->
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1289 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1314 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 

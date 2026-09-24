@@ -4,9 +4,9 @@ Every tool Horizun Revit MCP exposes, what it does, and where it refuses.
 The [README](../README.md) has the short version; this page is the complete
 surface.
 
-This surface is **101 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
-read-only - dispatching **271 distinct suboperations and modes** <!--inventory:operations--> across
-**1289 enumerated argument values** <!--inventory:enumerated_variants-->.
+This surface is **102 tools** <!--inventory:tools--> - **45** <!--inventory:reads--> of them
+read-only - dispatching **285 distinct suboperations and modes** <!--inventory:operations--> across
+**1314 enumerated argument values** <!--inventory:enumerated_variants-->.
 
 Those numbers are GENERATED, never typed by hand. `scripts/generate-inventory.ps1`
 asks the built server for `tools/list` - the same call a client makes - and writes
