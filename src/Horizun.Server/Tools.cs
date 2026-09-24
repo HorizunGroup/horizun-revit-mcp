@@ -245,7 +245,7 @@ namespace Horizun.Server
                     ["name"] = t.Name,
                     ["title"] = Title(t.Name),
                     ["description"] = CompactDescription(t.Description),
-                    ["inputSchema"] = t.InputSchema,
+                    ["inputSchema"] = CompactSchema(t.Name, t.InputSchema),
                     ["outputSchema"] = t.OutputSchema,
                     ["annotations"] = Annotations(t)
 
@@ -301,6 +301,57 @@ namespace Horizun.Server
             if (cut < Math.Min(160, limit / 2)) cut = limit;
             else cut += 1;
             return normalized.Substring(0, cut).TrimEnd() + "…" + suffix;
+        }
+
+        // ARGUMENT DESCRIPTIONS ARE BUDGETED LIKE TOOL DESCRIPTIONS. Measured 2026-09-24:
+        // of a 519 KB tools/list, 417 KB were input schemas and 237 KB of those were
+        // argument descriptions, some of them essays. A description longer than
+        // SchemaDescriptionMax is cut at a sentence boundary and points at the full
+        // contract resource, exactly as CompactDescription does one level up. Only the
+        // ADVERTISED copy is compacted: argument validation reads t.InputSchema, and
+        // horizun://contract/tools serves every word. The copy is computed once per tool.
+        internal const int SchemaDescriptionMax = 400;
+        private const string SchemaDescriptionSuffix = " (full text: horizun://contract/tools)";
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, JObject> CompactSchemas =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, JObject>(StringComparer.Ordinal);
+
+        internal static JObject CompactSchema(string toolName, JObject schema)
+        {
+            if (schema == null) return null;
+            return CompactSchemas.GetOrAdd(toolName, _ =>
+            {
+                var copy = (JObject)schema.DeepClone();
+                CompactSchemaNode(copy);
+                return copy;
+            });
+        }
+
+        private static void CompactSchemaNode(JToken node)
+        {
+            if (node is JObject o)
+            {
+                foreach (JProperty p in o.Properties())
+                {
+                    if (p.Name == "description" && p.Value.Type == JTokenType.String)
+                        p.Value = CompactSchemaDescription((string)p.Value);
+                    else if (p.Name == "properties" && p.Value is JObject props)
+                        foreach (JProperty arg in props.Properties()) CompactSchemaNode(arg.Value); // argument NAMES are never touched
+                    else
+                        CompactSchemaNode(p.Value);
+                }
+            }
+            else if (node is JArray a)
+                foreach (JToken item in a) CompactSchemaNode(item);
+        }
+
+        internal static string CompactSchemaDescription(string description)
+        {
+            if (description == null || description.Length <= SchemaDescriptionMax) return description;
+            int limit = SchemaDescriptionMax - SchemaDescriptionSuffix.Length - 1;
+            int cut = description.LastIndexOf(". ", limit, StringComparison.Ordinal);
+            if (cut < limit / 2) cut = limit;
+            else cut += 1;
+            return description.Substring(0, cut).TrimEnd() + "…" + SchemaDescriptionSuffix;
         }
 
         // The task-support rule lives in McpTasks.Supports so the advertised hint and

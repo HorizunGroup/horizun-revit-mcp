@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Horizun.Revit.Core;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -140,6 +141,33 @@ namespace Horizun.Server.Tests
             }
             int bytes = System.Text.Encoding.UTF8.GetByteCount(tools.ToString(Newtonsoft.Json.Formatting.None));
             Assert.True(bytes <= 512 * 1024, "tools/list is " + bytes + " bytes; progressive discovery budget is 512 KiB");
+        }
+
+        [Fact]
+        public void Advertised_argument_descriptions_are_budgeted_but_the_contract_keeps_every_word()
+        {
+            JArray tools = Tools.List(true);
+            foreach (JObject tool in tools)
+                foreach (JToken d in tool["inputSchema"].SelectTokens("$..description"))
+                    if (d.Type == JTokenType.String)
+                        Assert.True(((string)d).Length <= Tools.SchemaDescriptionMax, (string)tool["name"] + ": " + ((string)d).Length);
+
+            // The compacted copy never changes what a call is validated against, never renames
+            // an argument, and the full text is still served by the contract resource.
+            foreach (var c in Horizun.Contracts.Contract.All)
+            {
+                JObject advertised = Tools.CompactSchema(c.Name, c.InputSchema);
+                if (c.InputSchema == null) continue;
+                var fullArgs = ((JObject)c.InputSchema["properties"])?.Properties().Select(p => p.Name).ToArray() ?? new string[0];
+                var advArgs = ((JObject)advertised["properties"])?.Properties().Select(p => p.Name).ToArray() ?? new string[0];
+                Assert.Equal(fullArgs, advArgs);
+            }
+            string contract = (string)McpResources.Read(new JObject { ["uri"] = "horizun://contract/tools" })["contents"][0]["text"];
+            var longest = Horizun.Contracts.Contract.All.Where(c => c.InputSchema != null)
+                .SelectMany(c => c.InputSchema.SelectTokens("$..description")).Where(t => t.Type == JTokenType.String)
+                .Select(t => (string)t).OrderByDescending(t => t.Length).First();
+            Assert.True(longest.Length > Tools.SchemaDescriptionMax);
+            Assert.Contains(JsonConvert.SerializeObject(longest).Trim('"').Substring(0, 60), contract);
         }
 
         [Fact]
