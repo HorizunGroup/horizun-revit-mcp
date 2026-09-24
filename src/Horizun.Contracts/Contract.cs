@@ -1624,6 +1624,7 @@ namespace Horizun.Contracts
         ""visible"": { ""type"": ""boolean"", ""description"": ""apply_filter: whether elements matching the filter are shown at all."" },
         ""enabled"": { ""type"": ""boolean"", ""description"": ""apply_filter: the filter's Enable Filter flag."" },
         ""filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters: ALL the view's filters, top first."" },
+        ""move_filter_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""description"": ""order_filters, instead of filter_ids: only these filters, in this order, rearranged among the slots they already hold; every other filter on the view (e.g. ones a duplicated view inherited) keeps its place."" },
         ""subcategory"": { ""type"": ""string"" },
         ""parameters"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""set_template_controls: BuiltInParameter names or labels."" },
         ""controlled"": { ""type"": ""boolean"" },
@@ -1741,10 +1742,13 @@ namespace Horizun.Contracts
     } },
     ""preset"": { ""type"": ""object"", ""description"": ""A NAMED, HASHED option bundle handed in as an argument (organisation-neutral: nothing ships compiled in). Its options override the loose arguments, its sha256 joins the plan hash - an edited preset is a different plan and the token refuses - and after the export each option is either PROVED from the produced file (ifc_version via FILE_SCHEMA, acad_version via the DWG signature, pixel_size via the PNG IHDR, combine by counting files) or reported requested_unverifiable by name. Unknown options and out-of-list values refuse the whole call."", ""properties"": { ""name"": { ""type"": ""string"" }, ""schema_version"": { ""type"": ""integer"", ""default"": 1 }, ""overwrite_policy"": { ""type"": ""string"", ""enum"": [""refuse"", ""replace""], ""default"": ""refuse"" }, ""options"": { ""type"": ""object"" } }, ""required"": [""name""] },
     ""acad_version"": { ""type"": ""string"", ""enum"": [""2013"", ""2018""], ""description"": ""dwg: the file version; verified from the produced file's signature."" },
-    ""dwg_setup"": { ""type"": ""object"", ""required"": [""name""], ""additionalProperties"": false, ""description"": ""dwg: export with this named setup. dwg_layers (.json output): read its layer table, create it (from source) if absent, write layers rows; re-read after commit."", ""properties"": {
-      ""name"": { ""type"": ""string"" }, ""source"": { ""type"": ""string"" },
+    ""dwg_setup"": { ""type"": ""object"", ""required"": [""name""], ""additionalProperties"": false, ""description"": ""dwg: export with this named setup. dwg_layers (.json output): read its layer table, create it if absent, write layers rows; re-read after commit. A new setup is seeded from source, else layer_standard, else Revit's default, the active setup or a predefined one - whichever REALLY gives the created setup a layer table (rehearsed and rolled back); all empty refuses."", ""properties"": {
+      ""name"": { ""type"": ""string"" }, ""source"": { ""type"": ""string"", ""description"": ""An existing setup whose table seeds a NEW one."" },
+      ""layer_standard"": { ""type"": ""string"", ""enum"": [""AIA"", ""ISO13567"", ""CP83"", ""BS1192""], ""description"": ""Seed a NEW setup from a layer standard Revit ships."" },
       ""layers"": { ""type"": ""array"", ""maxItems"": 500, ""items"": { ""type"": ""object"", ""required"": [""category""], ""additionalProperties"": false, ""properties"": {
-        ""category"": { ""type"": ""string"" }, ""subcategory"": { ""type"": ""string"" }, ""layer"": { ""type"": ""string"" },
+        ""category"": { ""type"": ""string"", ""description"": ""BuiltInCategory token (OST_Walls, language-independent) or the name Revit shows (follows Revit's language)."" },
+        ""special"": { ""type"": ""string"", ""description"": ""Default, ExteriorWall, InteriorWall, FoundationWall, RetainingWall. Omitted: the Default row."" },
+        ""subcategory"": { ""type"": ""string"" }, ""layer"": { ""type"": ""string"" },
         ""color"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 255 }, ""cut_layer"": { ""type"": ""string"" },
         ""cut_color"": { ""type"": ""integer"", ""minimum"": 1, ""maximum"": 255 } } } } } },
     ""ifc_version"": { ""type"": ""string"", ""enum"": [""Default"", ""IFC2x2"", ""IFC2x3"", ""IFC2x3CV2"", ""IFC2x3BFM"", ""IFC2x3FM"", ""IFCBCA"", ""IFCCOBIE"", ""IFC4"", ""IFC4DTV"", ""IFC4RV""], ""default"": ""Default"" },

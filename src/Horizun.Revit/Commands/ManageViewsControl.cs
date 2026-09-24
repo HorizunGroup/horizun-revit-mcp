@@ -14,8 +14,13 @@
 //   nothing writes it. AddFilter APPENDS, so the only way to reorder is to remove
 //   every filter and add them back in the new order, restoring each one's
 //   overrides, visibility and enabled flag. order_filters does exactly that and
-//   re-reads the order AND every restored state; a filter whose state did not
-//   survive the round trip fails the batch before commit.
+//   re-reads every restored state AT ONCE, before a later action in the batch can
+//   change it (MEASURED 2023: checking it at the end of the batch failed a correct
+//   reorder followed by apply_filter enabled=false); after the batch it re-reads the
+//   relative order. A filter whose state did not survive the round trip fails the
+//   batch before commit. move_filter_ids rearranges only the named filters: a
+//   duplicated view carries its source's filters (MEASURED 2026), and the caller
+//   usually knows only its own.
 //
 //   A TEMPLATE IS A VIEW. CreateViewTemplate makes one from a view; which
 //   parameters it governs is the complement of GetNonControlledTemplateParameterIds,
@@ -27,6 +32,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using Autodesk.Revit.DB;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Horizun.Revit.Core;
 
@@ -77,6 +83,14 @@ namespace Horizun.Revit.Commands
                 {
                     View view = GraphicsView(doc, a, known);
                     RequireOverridesAllowed(view, "filters");
+                    if (a["move_filter_ids"] != null && a["filter_ids"] != null)
+                        throw new ArgumentException("order_filters takes filter_ids (the whole list) OR move_filter_ids (only the filters to rearrange), not both.");
+                    if (a["move_filter_ids"] != null)
+                    {
+                        ReadIdList(a, "move_filter_ids");
+                        if (view != null) ResolveFilterOrder(view, a);
+                        break;
+                    }
                     List<ElementId> wanted = ReadFilterOrder(a);
                     if (view == null) break;
                     var current = view.GetOrderedFilters().ToList();
@@ -156,7 +170,8 @@ namespace Horizun.Revit.Commands
                 case "order_filters":
                 {
                     View view = GraphicsViewApply(doc, a, aliases);
-                    List<ElementId> wanted = ReadFilterOrder(a);
+                    List<ElementId> wanted = ResolveFilterOrder(view, a);
+                    a["__wanted"] = new JArray(wanted.Select(Rid.Value));
                     var state = new JObject();
                     var saved = new Dictionary<long, OverrideGraphicSettings>();
                     foreach (ElementId id in view.GetOrderedFilters())
@@ -173,7 +188,27 @@ namespace Horizun.Revit.Commands
                         view.SetFilterVisibility(id, s.Value<bool>("visible"));
                         view.SetIsFilterEnabled(id, s.Value<bool>("enabled"));
                     }
+                    // The restoration is re-read HERE, at the moment of the reorder, and not
+                    // at the end of the batch. MEASURED (Revit 2023, 2026-09-24): a batch of
+                    // order_filters followed by apply_filter(enabled=false) on one of the
+                    // same filters failed order_filters' verification - the end-of-batch
+                    // re-read compared the LATER action's legitimate change against the
+                    // state saved before the reorder. What order_filters owns is the order
+                    // and the restoration, so the restoration is proved before anything
+                    // else in the batch can touch it.
+                    var notRestored = new List<string>();
+                    foreach (ElementId id in wanted)
+                    {
+                        string k = Rid.Value(id).ToString(CultureInfo.InvariantCulture);
+                        JObject now = FilterState(view, id);
+                        if (!JToken.DeepEquals(now, state[k]))
+                            notRestored.Add(k + ": saved " + state[k].ToString(Formatting.None) + ", re-read " + now.ToString(Formatting.None));
+                    }
+                    if (notRestored.Count > 0)
+                        throw new InvalidOperationException("order_filters removed and re-added the filters, but the re-read state " +
+                            "differs from the saved one for " + string.Join("; ", notRestored));
                     a["__state"] = state;
+                    a["__restored"] = true;
                     return view;
                 }
 
@@ -222,15 +257,13 @@ namespace Horizun.Revit.Commands
                 case "order_filters":
                 {
                     if (!(e is View view)) return false;
-                    List<long> wanted = ReadFilterOrder(a).Select(Rid.Value).ToList();
+                    // The restoration was re-read at apply time (see ApplyControl). Here, after
+                    // the whole batch, only what later actions cannot legitimately change is
+                    // checked: the reordered filters still stand in the requested relative
+                    // order (a later apply_filter may append a new filter or change a state).
+                    List<long> wanted = (a["__wanted"] as JArray)?.Select(t => t.Value<long>()).ToList() ?? new List<long>();
                     List<long> order = view.GetOrderedFilters().Select(Rid.Value).ToList();
-                    if (!order.SequenceEqual(wanted)) return false;
-                    JObject state = a["__state"] as JObject;
-                    if (state == null) return false;
-                    foreach (long id in order)
-                        if (!JToken.DeepEquals(FilterState(view, Rid.Make(id)), state[id.ToString(CultureInfo.InvariantCulture)]))
-                            return false;
-                    return true;
+                    return a.Value<bool?>("__restored") == true && FilterOrderRules.KeepsRelativeOrder(order, wanted);
                 }
 
                 case "explain_graphics":
@@ -260,7 +293,7 @@ namespace Horizun.Revit.Commands
             switch (op)
             {
                 case "edit_filter": return new JObject { ["rules_reread"] = a["__rules_reread"], ["categories"] = a["__categories"] };
-                case "order_filters": return new JObject { ["order"] = a["filter_ids"], ["restored_state"] = a["__state"] };
+                case "order_filters": return new JObject { ["order"] = a["__wanted"], ["moved"] = a["move_filter_ids"], ["restored_state"] = a["__state"] };
                 case "explain_graphics": return new JObject { ["report"] = a["__report"] };
                 case "set_template_controls": return new JObject { ["parameter_ids"] = a["__parameter_ids"], ["controlled"] = a["controlled"] };
             }
@@ -439,10 +472,41 @@ namespace Horizun.Revit.Commands
             };
         }
 
+        /// <summary>
+        /// The whole new order: filter_ids as given, or - with move_filter_ids - the view's current
+        /// order with only those filters rearranged among the slots they already occupy. A duplicated
+        /// view carries its source's filters (MEASURED 2026), so the caller often knows only its own.
+        /// </summary>
+        private static List<ElementId> ResolveFilterOrder(View view, JObject a)
+        {
+            if (a["move_filter_ids"] == null) return ReadFilterOrder(a);
+            List<long> moved = ReadIdList(a, "move_filter_ids");
+            List<long> current = view.GetOrderedFilters().Select(Rid.Value).ToList();
+            List<long> order = FilterOrderRules.Reorder(current, moved);
+            if (order == null)
+                throw new ArgumentException("move_filter_ids must name filters that are on view '" + view.Name + "' (" +
+                                            string.Join(", ", current) + "), each once.");
+            return order.Select(Rid.Make).ToList();
+        }
+
+        private static List<long> ReadIdList(JObject a, string field)
+        {
+            JArray raw = a[field] as JArray;
+            if (raw == null || raw.Count == 0) throw new ArgumentException(field + " must be a non-empty array of filter ids.");
+            var ids = new List<long>();
+            foreach (JToken t in raw)
+            {
+                long v = t.Value<long?>() ?? -1;
+                if (!Rid.CanRepresent(v) || ids.Contains(v)) throw new ArgumentException(field + " holds an invalid or repeated id: " + t);
+                ids.Add(v);
+            }
+            return ids;
+        }
+
         private static List<ElementId> ReadFilterOrder(JObject a)
         {
             JArray raw = a["filter_ids"] as JArray;
-            if (raw == null || raw.Count == 0) throw new ArgumentException("filter_ids is required: the view's filters in the new order.");
+            if (raw == null || raw.Count == 0) throw new ArgumentException("filter_ids (the view's filters in the new order) or move_filter_ids is required.");
             var ids = new List<ElementId>();
             var seen = new HashSet<long>();
             foreach (JToken t in raw)
