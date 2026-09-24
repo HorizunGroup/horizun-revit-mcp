@@ -140,6 +140,8 @@ namespace Horizun.Revit.Commands
             {
                 string lp = r.Config.Value<string>("occupant_load_parameter");
                 if (lp != null) keys.Add((lp, null));
+                string gp = r.Config.Value<string>("occupancy_parameter");
+                if (gp != null) keys.Add((gp, null));
                 string dp = (r.Config["exit_door"] as JObject)?.Value<string>("parameter");
                 if (dp != null) keys.Add((dp, null));
             }

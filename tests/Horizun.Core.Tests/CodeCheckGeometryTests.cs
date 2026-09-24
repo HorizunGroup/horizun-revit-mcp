@@ -59,6 +59,38 @@ namespace Horizun.Core.Tests
             Assert.Contains("incomplete", m.Unavailable);
         }
 
+        private const string Groups = "'occupancy_parameter': 'Grupo', 'area_per_person_by_group': { 'R': 18, 'C-1': 10 }";
+
+        [Fact]
+        public void Each_room_takes_the_factor_of_the_occupancy_group_it_declares()
+        {
+            // 360 m2 residential at 18 = 20 people + 500 m2 services at 10 = 50 people -> 70 -> 2 exits.
+            CheckedElement level = Level(new[] { 360.0, 500.0 }, "EX-1", "EX-2");
+            level.Rooms[0].Params["Grupo"] = new ParamFact { Exists = true, Text = "R" };
+            level.Rooms[1].Params["Grupo"] = new ParamFact { Exists = true, Text = " c-1 " };
+            MeasuredValue m = CodeCheckRules.ExitsVsRequired(
+                Config("{ " + Groups + ", 'exit_door': { 'mark_prefix': 'EX' }, " + Table + " }"), level);
+            Assert.Equal(0, m.Value);
+            Assert.Equal(70, (double)m.Detail["occupant_load"]);
+            Assert.Contains("Grupo", m.Basis);
+        }
+
+        [Fact]
+        public void A_room_with_no_group_or_a_group_the_table_does_not_list_is_not_decidable_never_defaulted()
+        {
+            JObject cfg = Config("{ " + Groups + ", 'area_per_person_m2': 5, 'exit_door': { 'mark_prefix': 'EX' }, " + Table + " }");
+            CheckedElement noGroup = Level(new[] { 100.0 }, "EX-1");
+            Assert.Contains("declares no 'Grupo'", CodeCheckRules.ExitsVsRequired(cfg, noGroup).Unavailable);
+
+            CheckedElement unknown = Level(new[] { 100.0 }, "EX-1");
+            unknown.Rooms[0].Params["Grupo"] = new ParamFact { Exists = true, Text = "E" };
+            Assert.Contains("'E'", CodeCheckRules.ExitsVsRequired(cfg, unknown).Unavailable);
+
+            // Half a declaration is refused rather than half applied.
+            JObject half = Config("{ 'occupancy_parameter': 'Grupo', 'exit_door': { 'mark_prefix': 'EX' }, " + Table + " }");
+            Assert.Contains("go together", CodeCheckRules.ExitsVsRequired(half, noGroup).Unavailable);
+        }
+
         private static PlanarFaceFact Face(double nx, double ny, double nz, params double[][] pts)
         {
             var f = new PlanarFaceFact { Nx = nx, Ny = ny, Nz = nz };
