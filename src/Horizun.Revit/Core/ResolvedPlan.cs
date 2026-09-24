@@ -279,6 +279,20 @@ namespace Horizun.Revit.Core
             {
                 PlannedElement isNow;
                 if (was.UniqueId == null || !current.TryGetValue(was.UniqueId, out isNow)) continue;
+                if (!string.Equals(was.GeometryFingerprint ?? "", isNow.GeometryFingerprint ?? "", StringComparison.Ordinal))
+                    result.Add(was.UniqueId + " geometry: '" + Elide(was.GeometryFingerprint) + "' -> '" + Elide(isNow.GeometryFingerprint) + "'");
+                // The proposed side is the plan's own intent, not a model value. When only it
+                // differs, the model did NOT move - say so, instead of blaming "somebody else"
+                // (measured 2026-09-24: an approval-only field in the proposed request read
+                // exactly like a concurrent edit).
+                if (was.ProposedValues != null && isNow.ProposedValues != null)
+                    foreach (KeyValuePair<string, string> pair in was.ProposedValues)
+                    {
+                        string after;
+                        if (!isNow.ProposedValues.TryGetValue(pair.Key, out after)) after = null;
+                        if (!string.Equals(pair.Value ?? "", after ?? "", StringComparison.Ordinal))
+                            result.Add(was.UniqueId + " proposed " + pair.Key + " differs from the rehearsal (the edit asked for changed, not the model)");
+                    }
                 if (was.BeforeValues == null || isNow.BeforeValues == null) continue;
                 foreach (KeyValuePair<string, string> pair in was.BeforeValues)
                 {

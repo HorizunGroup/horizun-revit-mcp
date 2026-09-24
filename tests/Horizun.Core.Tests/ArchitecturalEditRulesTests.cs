@@ -68,6 +68,71 @@ namespace Horizun.Core.Tests
             Assert.NotNull(ArchitecturalEditRules.ValidateSlabShape(J("{operation:'reset_shape'}")));
         }
 
+        // Measured on Revit 2026 (2026-09-24): add_grid_line, add_point and reset_shape
+        // refused EVERY apply as "THE MODEL MOVED AFTER THE DRY RUN" because the plan
+        // hashed the raw request, and the apply differs from its rehearsal by dry_run and
+        // confirmation_token by construction.
+        private static ResolvedPlan HostPlan(JObject request, string typeId = "7", string box = "0,0,0,1,1,1")
+        {
+            var plan = new ResolvedPlan { Command = "horizun_manage_curtain", DocumentKey = "doc", RevitVersion = "2026", DocumentFingerprint = "fp" };
+            plan.Elements.Add(new PlannedElement
+            {
+                UniqueId = "host-uid", ElementId = 42, Category = "Walls", Action = PlannedAction.Modify, GeometryFingerprint = box,
+                BeforeValues = new System.Collections.Generic.Dictionary<string, string> { { "type_id", typeId } },
+                ProposedValues = new System.Collections.Generic.Dictionary<string, string> { { "request", ArchitecturalEditRules.ProposedRequest(request) } }
+            });
+            return plan;
+        }
+
+        [Fact]
+        public void A_rehearsal_and_its_apply_resolve_to_the_same_plan()
+        {
+            var rehearsal = J("{target_document:'HZ_WRITE',operation:'add_grid_line',element_id:42,direction:'v',offset:1234}");
+            var apply = J("{offset:1234,direction:'v',element_id:42,operation:'add_grid_line',target_document:'HZ_WRITE'," +
+                          "dry_run:false,confirmation_token:'tok-1',idempotency_key:'k',transaction_name:'x'}");
+            Assert.Equal(ArchitecturalEditRules.ProposedRequest(rehearsal), ArchitecturalEditRules.ProposedRequest(apply));
+            Assert.Equal(HostPlan(rehearsal).Fingerprint(), HostPlan(apply).Fingerprint());
+            var slab = J("{target_document:'HZ_WRITE',operation:'reset_shape',element_id:9}");
+            var slabApply = J("{target_document:'HZ_WRITE',operation:'reset_shape',element_id:9,dry_run:false,confirmation_token:'t'}");
+            Assert.Equal(HostPlan(slab).Fingerprint(), HostPlan(slabApply).Fingerprint());
+        }
+
+        [Fact]
+        public void The_plan_still_refuses_a_different_edit_or_a_host_somebody_changed()
+        {
+            var rehearsal = J("{target_document:'HZ_WRITE',operation:'add_grid_line',element_id:42,direction:'v',offset:1234}");
+            var otherOffset = J("{target_document:'HZ_WRITE',operation:'add_grid_line',element_id:42,direction:'v',offset:1500,dry_run:false,confirmation_token:'t'}");
+            Assert.NotEqual(HostPlan(rehearsal).Fingerprint(), HostPlan(otherOffset).Fingerprint());
+            // Same request, but the host's type or shape moved between the dry run and the apply.
+            Assert.NotEqual(HostPlan(rehearsal).Fingerprint(), HostPlan(rehearsal, typeId: "8").Fingerprint());
+            Assert.NotEqual(HostPlan(rehearsal).Fingerprint(), HostPlan(rehearsal, box: "0,0,0,1,1,2").Fingerprint());
+            Assert.Contains("type_id", ResolvedPlan.DescribeDrift(HostPlan(rehearsal), HostPlan(rehearsal, typeId: "8")));
+            Assert.Contains("geometry", ResolvedPlan.DescribeDrift(HostPlan(rehearsal), HostPlan(rehearsal, box: "0,0,0,1,1,2")));
+            Assert.Contains("not the model", ResolvedPlan.DescribeDrift(HostPlan(rehearsal), HostPlan(otherOffset)));
+        }
+
+        [Theory]
+        [InlineData("WallType", "Basic", "OST_Walls", false, true)]
+        [InlineData("WallType", "Curtain", "OST_Walls", false, false)]
+        [InlineData("WallType", "Stacked", "OST_Walls", false, false)]
+        [InlineData("PanelType", null, "OST_CurtainWallPanels", false, true)]
+        [InlineData("FamilySymbol", null, "OST_CurtainWallPanels", false, true)]
+        [InlineData("FamilySymbol", null, "OST_Doors", true, true)]
+        [InlineData("FamilySymbol", null, "OST_Windows", true, true)]
+        [InlineData("FamilySymbol", null, "OST_Doors", false, false)]
+        [InlineData("FamilySymbol", null, "OST_Furniture", false, false)]
+        [InlineData("MullionType", null, "OST_CurtainWallMullions", false, false)]
+        public void A_curtain_panel_takes_panel_types_curtain_doors_and_basic_walls_only(string cls, string kind, string cat, bool panelFamily, bool ok) =>
+            Assert.Equal(ok, ArchitecturalEditRules.CurtainPanelTypeRefusal(cls, kind, cat, panelFamily) == null);
+
+        [Fact]
+        public void A_refused_panel_type_says_what_it_is_not_that_a_wall_type_is_fine()
+        {
+            string why = ArchitecturalEditRules.CurtainPanelTypeRefusal("WallType", "Curtain", "OST_Walls", false);
+            Assert.Contains("curtain wall type", why);
+            Assert.Contains("BASIC", why);
+        }
+
         [Fact]
         public void Railing_takes_a_host_or_a_path_never_both()
         {
