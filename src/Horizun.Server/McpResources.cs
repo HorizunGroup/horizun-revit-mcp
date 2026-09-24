@@ -47,6 +47,10 @@ namespace Horizun.Server
                     Def(ProjectContextSchemaUri, "project-context-schema", "Project context schema (ISO 19650)",
                         "JSON Schema (draft 2020-12) of project-context.json, schema_version 1: appointment, EIR/BEP/MIDP/TIDP, CDE states, container naming, classification, georeference and delivery. horizun_project_context validates against it.",
                         "application/schema+json", Encoding.UTF8.GetByteCount(ProjectContext.SchemaText)),
+                    Def(ToolsetReport.ResourceUri, "session-toolsets", "Active toolsets",
+                        "Which toolsets (tool packs) this session advertises, and the measured size of tools/list " +
+                        "with and without the selection, in characters and estimated tokens.",
+                        "application/json", Encoding.UTF8.GetByteCount(ToolsetText())),
                     // The MCP App. It is listed like any other resource because it IS
                     // one; what makes it an app is its mime type and the tool that
                     // names it, not a separate listing mechanism.
@@ -71,6 +75,7 @@ namespace Horizun.Server
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
                 case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
                 case ProjectContextSchemaUri: mime = "application/schema+json"; text = ProjectContext.SchemaText; break;
+                case ToolsetReport.ResourceUri: mime = "application/json"; text = ToolsetText(); break;
                 case McpAppResources.ClashViewerUri:
                     mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
@@ -100,6 +105,8 @@ namespace Horizun.Server
                 }
             };
 
+        private static string ToolsetText() => ToolsetReport.Document().ToString(Formatting.Indented);
+
         private static string ContractText()
         {
             var rows = new JArray();
@@ -112,6 +119,8 @@ namespace Horizun.Server
                     ["effect"] = c.Effect.ToString(),
                     ["destructive"] = c.Destructive,
                     ["open_world"] = c.OpenWorld,
+                    ["toolsets"] = new JArray(c.Toolsets ?? new string[0]),
+                    ["external_content"] = c.ExternalContent,
                     ["input_schema"] = c.InputSchema?.DeepClone(),
                     ["output_schema"] = c.OutputSchema?.DeepClone()
                 });

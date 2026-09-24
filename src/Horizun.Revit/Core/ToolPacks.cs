@@ -42,6 +42,11 @@
 // owner choice. Administrators override with HORIZUN_TOOL_PACKS (comma-
 // separated; "all" restores everything); the environment wins over the file
 // and the health report says which source decided.
+//
+// "Toolsets" is the same thing under the name MCP clients use: HORIZUN_TOOLSETS and
+// a "toolsets" settings key are accepted synonyms, and the three convenience names
+// families / data / admin expand to real packs. Which tool belongs to which pack is
+// declared in the shared contract (ToolsetCatalog), not here.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -55,134 +60,31 @@ namespace Horizun.Revit.Core
         public const string EnvironmentOverride = "HORIZUN_TOOL_PACKS";
         public const string AllToken = "all";
 
-        // ---- the pack map, closed --------------------------------------------------
-        //
-        // A tool may live in several packs: capture_view is how documentation gets
-        // reviewed AND how an audit collects evidence. Membership is curated by what
-        // a session doing that KIND of work actually calls, not by implementation
-        // relatives.
+        // TOOLSETS ARE TOOL PACKS. The names below are accepted as synonyms of the two
+        // selectors above, so a client configuration can say HORIZUN_TOOLSETS=mep,cad
+        // and a settings file can say "toolsets": [...]. When both spellings are present
+        // the pack spelling wins and the health report says which one decided - one
+        // selection, one resolution, one refusal, one measurement.
+        public const string ToolsetsSettingsKey = "toolsets";
+        public const string ToolsetsEnvironmentVariable = "HORIZUN_TOOLSETS";
 
-        private static readonly Dictionary<string, string[]> Members =
-            new Dictionary<string, string[]>(StringComparer.Ordinal)
-            {
-                ["core"] = new[]
-                {
-                    // FOUR, and the guard on this list says so by name.
-                    //
-                    // horizun_repair_memory was put here so it would belong to some
-                    // pack at all - every tool must, or no restricted session can
-                    // reach it - and core is not that pack: it is what a session
-                    // cannot work without, not everything that is always available.
-                    // It is in administration now, with the other recovery tools.
-                    "horizun_health", "horizun_target", "horizun_job_status", "horizun_submit_job"
-                },
-                ["read"] = new[]
-                {
-                    "get_document_info", "horizun_navigate", "horizun_list_elements", "horizun_query_model",
-                    "horizun_model_scan", "horizun_file_info", "horizun_list_schedules",
-                    "horizun_get_schedule_data", "horizun_query_dimensions", "horizun_get_dimension_references",
-                    "horizun_query_detail_2d", "horizun_query_planimetry", "horizun_quantities",
-                    "horizun_capture_view", "horizun_query_cad", "horizun_plan_from_cad",
-                    "horizun_audit_cad_model", "horizun_plan_cad_update",
-                    "horizun_cad_extract", "horizun_cad_networks", "horizun_cad_unit_instances",
-                    "horizun_cad_symbols", "horizun_cad_review",
-                    "horizun_query_structure", "horizun_plan_reinforcement",
-                    "horizun_audit_reinforcement"
-                },
-                ["model"] = new[]
-                {
-                    "horizun_create_elements", "horizun_transform_elements", "horizun_write_params_verified",
-                    "horizun_delete_verified", "horizun_set_keynote", "horizun_bind_shared_param",
-                    "horizun_ungroup_and_mark", "horizun_regroup_by_param", "horizun_execute_plan",
-                    "horizun_apply_cad_plan", "horizun_apply_cad_update", "horizun_manage_cad_links",
-                    "horizun_cad_connect",
-                    "horizun_manage_materials", "horizun_copy_between_documents"
-                },
-                ["architecture"] = new[]
-                {
-                    "horizun_split_floor_loops", "horizun_split_multilayer_walls",
-                    "horizun_rectangularize_walls", "horizun_embed_floors_in_toposolid",
-                    "horizun_grade_toposolid_around_floors"
-                },
-                ["structure"] = new[]
-                {
-                    "horizun_split_multilayer_slabs", "horizun_copy_slab_elevations",
-                    "horizun_plan_structure", "horizun_create_elements",
-                    "horizun_query_structure", "horizun_plan_reinforcement",
-                    "horizun_apply_reinforcement", "horizun_audit_reinforcement",
-                    "horizun_structural_connections"
-                },
-                ["mep"] = new[]
-                {
-                    "horizun_manage_system_types", "horizun_plan_mep", "horizun_connect_mep",
-                    "horizun_create_elements", "horizun_query_model",
-                    // A DWG is where most MEP in this bridge starts, and a session
-                    // doing MEP work reaches for the network reading and the
-                    // connectivity review far more often than for a CAD census.
-                    "horizun_cad_networks", "horizun_cad_connect", "horizun_cad_review"
-                },
-                ["documentation"] = new[]
-                {
-                    "horizun_manage_views", "horizun_plan_views", "horizun_annotate",
-                    "horizun_edit_dimensions", "horizun_get_dimension_references", "horizun_query_dimensions",
-                    "horizun_plan_annotations", "horizun_detail_2d", "horizun_query_detail_2d",
-                    "horizun_manage_revisions", "horizun_pack_sheets", "horizun_capture_view",
-                    "horizun_delete_verified"
-                },
-                ["planimetry"] = new[]
-                {
-                    "horizun_query_planimetry", "horizun_audit_planimetry", "horizun_fix_planimetry",
-                    "horizun_pack_sheets", "horizun_plan_annotations", "horizun_manage_revisions",
-                    "horizun_capture_view"
-                },
-                ["audit"] = new[]
-                {
-                    "horizun_audit_model", "horizun_apply_corrections", "horizun_model_scan", "horizun_clash",
-                    "horizun_coordination", "horizun_query_planimetry", "horizun_audit_planimetry",
-                    "horizun_capture_view", "horizun_audit_reinforcement",
-                    "horizun_audit_access"
-                },
-                ["coordination"] = new[]
-                {
-                    "horizun_clash", "horizun_coordination", "horizun_acc_upload_status", "horizun_file_info",
-                    "horizun_quantities", "horizun_manage_links", "horizun_budget_compare", "horizun_information_container",
-                    // The project's ISO 19650 context: CDE states, naming, MIDP - what
-                    // coordination is measured against. Host-resident, never touches Revit.
-                    "horizun_project_context"
-                },
-                ["schedules"] = new[]
-                {
-                    "horizun_create_schedule", "horizun_manage_schedules", "horizun_list_schedules",
-                    "horizun_get_schedule_data"
-                },
-                ["family"] = new[]
-                {
-                    "horizun_create_family", "horizun_family_apply", "horizun_catalog_lookup",
-                    "horizun_set_keynote", "horizun_bind_shared_param"
-                },
-                ["interoperability"] = new[]
-                {
-                    "horizun_export", "horizun_deliver_ifc", "horizun_excel_write_rows", "horizun_excel_read_rows", "horizun_catalog_lookup",
-                    "horizun_manage_links", "horizun_budget_compare", "horizun_run_procedure",
-                    "horizun_validate_ids", "horizun_coordination", "horizun_plan_from_ifc",
-                    "horizun_apply_ifc_plan", "horizun_create_elements", "horizun_project_context", "horizun_information_container"
-                },
-                ["powerbi"] = new[]
-                {
-                    "horizun_power_bi_push", "horizun_excel_write_rows", "horizun_excel_read_rows",
-                    "horizun_budget_compare", "horizun_selection_exchange"
-                },
-                ["administration"] = new[]
-                {
-                    "horizun_document_session", "horizun_open_document", "horizun_save_document",
-                    "horizun_relinquish_all",
-                    "horizun_promote_script", "horizun_repair_memory"
-                },
-                ["unsafe_code"] = new[]
-                {
-                    "horizun_execute_python", "horizun_request_python_access"
-                }
-            };
+        // ---- the pack map, declared in the contract --------------------------------
+        //
+        // Membership used to be a literal dictionary in this file. It is now declared
+        // once, beside each tool, in Horizun.Contracts.ToolsetCatalog, and derived here:
+        // a tool added without a row fails a test instead of being reachable only when
+        // nothing is restricted. The sixteen packs that lived here moved there with
+        // their membership unchanged (the golden lists in ToolPackTests pin that); "cad"
+        // is new.
+        private static readonly Dictionary<string, string[]> Members = BuildMembers();
+
+        private static Dictionary<string, string[]> BuildMembers()
+        {
+            var members = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            foreach (string pack in Horizun.Contracts.ToolsetCatalog.Known)
+                members[pack] = Horizun.Contracts.ToolsetCatalog.MembersOf(pack);
+            return members;
+        }
 
         // ---- dependencies, explicit ------------------------------------------------
         //
@@ -204,6 +106,9 @@ namespace Horizun.Revit.Core
                 ["family"] = new[] { "read" },
                 ["interoperability"] = new[] { "read" },
                 ["powerbi"] = new[] { "interoperability" },
+                // The CAD pack plans, applies and reviews on its own; what it needs besides
+                // is to read the model it is converting into.
+                ["cad"] = new[] { "read" },
                 ["administration"] = new string[0],
                 ["unsafe_code"] = new string[0],
                 ["read"] = new string[0],
@@ -234,6 +139,11 @@ namespace Horizun.Revit.Core
             public List<string> AddedByDependency;
             /// <summary>Non-null when the configuration could not be read as a pack list.</summary>
             public string Problem;
+            /// <summary>
+            /// Which spelling decided: HORIZUN_TOOL_PACKS, HORIZUN_TOOLSETS, tool_packs or
+            /// toolsets. Null for the default. Set by Settings.ActivePackResolution.
+            /// </summary>
+            public string SourceName;
 
             public bool Restricting => ActivePacks != null;
 
@@ -290,6 +200,12 @@ namespace Horizun.Revit.Core
 
         private static Resolution Build(SelectionSource source, List<string> requested)
         {
+            // Convenience names (families, data, admin) expand to the packs they stand
+            // for BEFORE validation, so an alias can never name something a pack does not.
+            requested = requested
+                .SelectMany(p => Horizun.Contracts.ToolsetCatalog.Aliases.TryGetValue(p, out string[] targets)
+                    ? (IEnumerable<string>)targets : new[] { p })
+                .ToList();
             var unknown = requested.Where(p => !Members.ContainsKey(p)).Distinct().ToList();
             if (unknown.Count > 0)
                 return new Resolution
@@ -300,6 +216,8 @@ namespace Horizun.Revit.Core
                     AddedByDependency = new List<string>(),
                     Problem = "unknown pack name(s): " + string.Join(", ", unknown) + ". Known packs: " +
                               string.Join(", ", Members.Keys.OrderBy(k => k, StringComparer.Ordinal)) +
+                              " (aliases: " + string.Join(", ", Horizun.Contracts.ToolsetCatalog.Aliases.Keys
+                                  .OrderBy(k => k, StringComparer.Ordinal)) + ")" +
                               ". Until this is fixed, only the core tools are offered."
                 };
 
@@ -341,9 +259,11 @@ namespace Horizun.Revit.Core
             return toolName + " is hidden by the active tool packs (" + prefix +
                    "active: " + (resolution.ActivePacks == null || resolution.ActivePacks.Count == 0
                        ? "core only" : string.Join(", ", resolution.ActivePacks)) +
-                   ", source: " + resolution.Source.ToString().ToLowerInvariant() + "); " + providerText +
+                   ", source: " + resolution.Source.ToString().ToLowerInvariant() +
+                   (resolution.SourceName == null ? "" : " (" + resolution.SourceName + ")") + "); " + providerText +
                    ". Add the pack to " + SettingsKey + " in the settings file (or set " + EnvironmentOverride +
-                   ") and compatible clients refresh via tools/list_changed; others need one restart.";
+                   " / " + ToolsetsEnvironmentVariable + " in the MCP client configuration) and compatible " +
+                   "clients refresh via tools/list_changed; others need one restart. Nothing was run.";
         }
 
         /// <summary>

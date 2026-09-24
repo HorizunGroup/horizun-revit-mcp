@@ -351,19 +351,49 @@ namespace Horizun.Revit.Core
         /// actually running and the UI can show it; the OPTIONAL settings argument
         /// spares a second file read on the IsToolAllowed hot path.
         /// </summary>
+        /// <remarks>
+        /// TWO SPELLINGS, ONE SELECTION. HORIZUN_TOOLSETS and the "toolsets" key are the
+        /// names MCP clients use for the same thing; each is read only when its pack
+        /// spelling is absent, so a machine that already configured tool_packs keeps
+        /// exactly the behaviour it had, and the resolution says which spelling decided.
+        /// </remarks>
         public static ToolPacks.Resolution ActivePackResolution(JObject settings = null)
         {
+            string envName = ToolPacks.EnvironmentOverride;
             string env = null;
-            try { env = Environment.GetEnvironmentVariable(ToolPacks.EnvironmentOverride); } catch { env = null; }
+            try
+            {
+                env = Environment.GetEnvironmentVariable(ToolPacks.EnvironmentOverride);
+                if (string.IsNullOrWhiteSpace(env))
+                {
+                    env = Environment.GetEnvironmentVariable(ToolPacks.ToolsetsEnvironmentVariable);
+                    envName = ToolPacks.ToolsetsEnvironmentVariable;
+                }
+            }
+            catch { env = null; }
 
             FileState state;
             JObject o = settings ?? Read(out state);
+            string key = ToolPacks.SettingsKey;
             JToken raw = o?[ToolPacks.SettingsKey];
-            if (raw == null) return ToolPacks.Resolve(env, null, settingsValueMalformed: false);
-            var array = raw as JArray;
-            if (array == null || array.Any(t => t.Type != JTokenType.String))
-                return ToolPacks.Resolve(env, null, settingsValueMalformed: true);
-            return ToolPacks.Resolve(env, array.Select(t => (string)t), settingsValueMalformed: false);
+            if (raw == null)
+            {
+                raw = o?[ToolPacks.ToolsetsSettingsKey];
+                key = ToolPacks.ToolsetsSettingsKey;
+            }
+
+            ToolPacks.Resolution r;
+            if (raw == null) r = ToolPacks.Resolve(env, null, settingsValueMalformed: false);
+            else
+            {
+                var array = raw as JArray;
+                r = array == null || array.Any(t => t.Type != JTokenType.String)
+                    ? ToolPacks.Resolve(env, null, settingsValueMalformed: true)
+                    : ToolPacks.Resolve(env, array.Select(t => (string)t), settingsValueMalformed: false);
+            }
+            if (!string.IsNullOrWhiteSpace(env)) r.SourceName = envName;
+            else if (raw != null) r.SourceName = key;
+            return r;
         }
 
         /// <summary>

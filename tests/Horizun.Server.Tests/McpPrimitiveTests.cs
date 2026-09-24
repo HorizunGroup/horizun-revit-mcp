@@ -18,10 +18,10 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            // Six documents (the sixth is the ISO 19650 project-context schema) and one
+            // Seven documents (the ISO 19650 project-context schema and horizun://session/toolsets joined the five) and one
             // MCP App. The app lives under ui:// because that is the scheme the Apps
             // extension names; it is as virtual as the rest.
-            Assert.Equal(7, resources.Count);
+            Assert.Equal(8, resources.Count);
             foreach (JObject resource in resources)
             {
                 string uri = (string)resource["uri"];

@@ -258,7 +258,7 @@ namespace Horizun.Server.Tests
                     "horizun_get_dimension_references", "horizun_get_schedule_data", "horizun_health",
                     "horizun_job_status", "horizun_list_elements", "horizun_list_schedules",
                     "horizun_model_scan", "horizun_navigate", "horizun_plan_cad_update",
-                    "horizun_plan_from_cad", "horizun_plan_reinforcement", "horizun_quantities",
+                    "horizun_plan_from_cad", "horizun_plan_reinforcement", "horizun_project_context", "horizun_quantities",
                     "horizun_query_cad", "horizun_query_detail_2d", "horizun_query_dimensions", "horizun_query_model",
                     "horizun_query_planimetry", "horizun_query_structure", "horizun_submit_job",
                     "horizun_target"
@@ -273,7 +273,7 @@ namespace Horizun.Server.Tests
                     "horizun_health", "horizun_job_status", "horizun_list_elements",
                     "horizun_list_schedules", "horizun_manage_schedules", "horizun_model_scan",
                     "horizun_navigate", "horizun_plan_cad_update", "horizun_plan_from_cad",
-                    "horizun_plan_reinforcement",
+                    "horizun_plan_reinforcement", "horizun_project_context",
                     "horizun_quantities", "horizun_query_cad", "horizun_query_detail_2d",
                     "horizun_query_dimensions", "horizun_query_model", "horizun_query_planimetry",
                     "horizun_query_structure", "horizun_submit_job", "horizun_target"
