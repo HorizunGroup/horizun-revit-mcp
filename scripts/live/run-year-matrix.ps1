@@ -558,7 +558,10 @@ foreach ($year in $Years) {
             if ($script:AddinSha) { $parts = $parts.Replace('{addin_sha256}', $script:AddinSha) }
             $rest = $parts.Substring($file.Length).Trim()
             Write-Host "--- $year : $file $rest" -ForegroundColor DarkCyan
-            $cmd = "& '$path' $rest -ArtifactDir '$yearDir'"
+            # `; exit $LASTEXITCODE` CARRIES THE HARNESS'S CODE. Without it `pwsh -Command`
+            # reports any non-zero exit as 1, so 'unverified' (2) and 'not_covered' (3)
+            # were recorded as 'failed' (measured 2026-09-24).
+            $cmd = "& '$path' $rest -ArtifactDir '$yearDir'; exit `$LASTEXITCODE"
             # WHAT THE HARNESS MADE FOR ITSELF. A harness that creates and opens its
             # own disposable models (verify-live: HZ_LINKSRC_<tag>.rvt,
             # w12-linkcopy-<tag>.rvt ...) declares them in a manifest of its own,
