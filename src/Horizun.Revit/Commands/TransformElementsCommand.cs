@@ -149,6 +149,8 @@ namespace Horizun.Revit.Commands
             refusal = DocumentGate.StillTheSame(app, gate.Fingerprint, Name);
             if (refusal != null) return refusal;
 
+            // horizun_undo: the state each target is in BEFORE the commit.
+            var undoBefore = plans.ToDictionary(p => p, p => UndoCapture.States(doc, p.Ids.Select(Rid.Value)));
             string txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: transform elements";
             using (var tx = new Transaction(doc, txName))
@@ -200,7 +202,45 @@ namespace Horizun.Revit.Commands
             // Reached only when every planned operation passed its post-commit check.
             ApplicationOutcome.StampApplied(trResult, ApplicationOutcome.Committed,
                                             plans.Count, verified, verified, 0, 0, 0);
+            trResult["undo"] = RecordUndo(doc, plans, undoBefore);
             return CommandResult.Ok(trResult);
+        }
+
+        /// <summary>The batch's inverse for horizun_undo. Ops without a recorded inverse make the batch not undoable, by name.</summary>
+        private JObject RecordUndo(Document doc, List<Plan> plans, Dictionary<Plan, JObject> before)
+        {
+            var entries = new List<UndoEntry>(); string blocked = null;
+            foreach (Plan p in plans)
+            {
+                IEnumerable<long> ids = p.Ids.Select(Rid.Value);
+                switch (p.Operation)
+                {
+                    case "move": entries.Add(UndoCapture.Entry(doc, "move", ids, before[p], new JObject { ["vector"] = new JArray(p.Vector.X, p.Vector.Y, p.Vector.Z) })); break;
+                    case "copy": entries.Add(UndoCapture.Entry(doc, "created", (p.Created ?? new List<ElementId>()).Select(Rid.Value), new JObject(), new JObject())); break;
+                    case "rotate":
+                        entries.Add(UndoCapture.Entry(doc, "rotate", ids, before[p], new JObject
+                        {
+                            ["axis_start"] = new JArray(p.Axis.GetEndPoint(0).X, p.Axis.GetEndPoint(0).Y, p.Axis.GetEndPoint(0).Z),
+                            ["axis_end"] = new JArray(p.Axis.GetEndPoint(1).X, p.Axis.GetEndPoint(1).Y, p.Axis.GetEndPoint(1).Z),
+                            ["angle"] = p.Angle
+                        })); break;
+                    case "mirror":
+                        entries.Add(UndoCapture.Entry(doc, "mirror", ids, before[p], new JObject
+                        {
+                            ["plane_origin"] = new JArray(p.MirrorPlane.Origin.X, p.MirrorPlane.Origin.Y, p.MirrorPlane.Origin.Z),
+                            ["plane_normal"] = new JArray(p.MirrorPlane.Normal.X, p.MirrorPlane.Normal.Y, p.MirrorPlane.Normal.Z)
+                        })); break;
+                    case "pin": case "unpin": entries.Add(UndoCapture.Entry(doc, "pin", ids, before[p], null)); break;
+                    case "change_type": entries.Add(UndoCapture.Entry(doc, "type", ids, before[p], null)); break;
+                    case "set_curve":
+                        if (before[p].Properties().Any(x => x.Value["line"]?.Value<bool>() != true)) blocked = "set_curve replaced a non-line curve";
+                        else entries.Add(UndoCapture.Entry(doc, "curve", ids, before[p], null));
+                        break;
+                    case "move_tag_head": entries.Add(UndoCapture.Entry(doc, "tag_head", ids, before[p], null)); break;
+                    default: blocked = p.Operation + " has no recorded inverse"; break;
+                }
+            }
+            return UndoCapture.Record(doc, Name, entries, blocked);
         }
 
         private static Plan PlanOperation(Document doc, int index, JObject o, double scale, HashSet<long> claimed,

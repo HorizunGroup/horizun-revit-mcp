@@ -366,6 +366,11 @@ namespace Horizun.Revit.Commands
                 ["verification"] = new JObject { ["intended"] = requested, ["actual"] = verified, ["verified"] = verified == requested }
             };
             ApplicationOutcome.StampApplied(result, ApplicationOutcome.Committed, requested, verified, verified, 0, 0, 0);
+            // horizun_undo: created elements are deleted by the inverse.
+            result["undo"] = UndoCapture.Record(doc, "horizun_create_elements", new List<UndoEntry>
+            {
+                UndoCapture.Entry(doc, "created", created.Select(x => Rid.Value(x.Id)), new JObject(), new JObject())
+            });
             return CommandResult.Ok(result);
         }
 

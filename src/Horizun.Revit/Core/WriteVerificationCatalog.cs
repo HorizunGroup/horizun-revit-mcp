@@ -121,6 +121,10 @@ namespace Horizun.Revit.Core
             Row("horizun_manage_worksets", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "ManageWorksetsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
                 "ManageWorksetsCommand.cs set_default: the dry run is a measured preview, not a provisional change - the active workset is a session setting."),
+            Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs"),
+                "ResolveClashCommand.cs Detect: re-detection covers the host neighbourhood of the moved runs only, not linked models; a clash the move creates against a link is not seen."),
+            Row("horizun_undo", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "UndoCommand.cs"),
+                "UndoCapture.cs State: the drift guard compares location, type, pin, orientation and tag head; an edit to an element's OTHER parameters since the batch is not detected."),
 
             // ---- typed model writes: per-row re-reads -------------------------------------
             Row("horizun_write_params_verified", VerificationMechanism.PerRowReread, E("verification", "application"), F(C + "WriteParamsCommand.cs")),

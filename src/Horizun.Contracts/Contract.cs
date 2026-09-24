@@ -349,6 +349,8 @@ namespace Horizun.Contracts
             Row("horizun_audit_access", "audit"),
             Row("horizun_clash", "audit", "coordination"),
             Row("horizun_coordination", "audit", "coordination", "interoperability"),
+            Row("horizun_resolve_clash", "coordination", "mep"),
+            Row("horizun_undo", "model"),
             Row("horizun_acc_upload_status", "coordination"),
             Row("horizun_manage_links", "coordination", "interoperability"),
             Row("horizun_budget_compare", "coordination", "interoperability", "powerbi"),
@@ -5287,6 +5289,38 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_resolve_clash",
+                Command = "horizun_resolve_clash",
+                Description = @"Resolve horizun_clash ledger findings with verification. propose (read-only): shift or re-elevate the unconnected host MEP run the minimum + clearance; structure, architecture, links, connected or pinned runs and moves touching a third element are report-only. apply: dry_run -> token -> TransactionGroup, re-detect on solids; the pair must vanish with no new clash or the group rolls back. Kept moves are undoable (horizun_undo); findings become resolved_by_model only by that measurement.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""propose"", ""apply""], ""default"": ""propose"" },
+    ""target_document"": { ""type"": ""string"" },
+    ""finding_ids"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""string"" } },
+    ""proposals"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"" }, ""description"": ""apply: next_arguments.proposals from propose."" },
+    ""clearance_mm"": { ""type"": ""number"", ""default"": 50 },
+    ""max_move_mm"": { ""type"": ""number"", ""default"": 600 },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_undo",
+                Command = "horizun_undo",
+                Description = @"Undo the last Horizun batch (Revit has no API Undo). transform_elements, write_params_verified, create_elements and resolve_clash record an inverse; undo_last applies it verified, refusing if those elements changed since or the document was saved/synced. list shows batches.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""list"", ""undo_last""], ""default"": ""list"" },
+    ""target_document"": { ""type"": ""string"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  }
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_set_keynote",
                 Command = "horizun_set_keynote",
                 Description = @"Set the Keynote code on elements, reporting exactly what it touched. In Revit the Keynote parameter normally lives on the TYPE, so writing it re-codes every instance of that type: this tool resolves the target first, tells you the blast radius (including elements you did not name), writes each type once, and VERIFIES AFTER THE COMMIT: every target is re-resolved from the committed document and its value read fresh, because a value read inside an open transaction can still disappear with it. elements_now_carrying_this_keynote is counted by asking the model again afterwards, never by summing what the plan expected. The counts are kept apart because they answer different questions: requested_ids (every id sent, INCLUDING entries that were not integers), parsed_ids, targets_resolved, writes_accepted_in_transaction (not evidence), writes_verified_after_commit (evidence) and writes_failed. Use scope='instance' to refuse any write that would spill onto siblings, or dry_run=true to see the impact first.",
@@ -6296,6 +6330,7 @@ namespace Horizun.Contracts
                 "horizun_create_family",
                 "horizun_manage_system_types",
                 "horizun_transform_elements",
+                "horizun_resolve_clash", "horizun_undo",
                 "horizun_manage_views",
                 "horizun_manage_schedules",
                 "horizun_export",
