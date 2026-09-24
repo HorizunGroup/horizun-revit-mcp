@@ -1,0 +1,16 @@
+{
+  "tool": "horizun_project_context",
+  "title": {
+    "en": "ISO 19650 start-up, step 1: which intake questions are still open",
+    "es": "Arranque ISO 19650, paso 1: qué preguntas de arranque siguen abiertas"
+  },
+  "about": {
+    "en": "Host-resident: works with Revit closed. With a path to a project-context.json that does not exist yet, every question is open; with an existing file, only the unanswered ones come back, in intake order, each with its JSON pointer, options and why it matters. Ask the person in short blocks - never answer for them.",
+    "es": "Se resuelve en el servidor: funciona con Revit cerrado. Con una ruta a un project-context.json que aún no existe, todas las preguntas están abiertas; con un archivo existente solo vuelven las pendientes, en orden de arranque, cada una con su puntero JSON, sus opciones y su porqué. Pregúntale a la persona en bloques cortos: nunca respondas por ella."
+  },
+  "next": "02-draft-rehearsal.json",
+  "arguments": {
+    "operation": "questions",
+    "path": "C:/proyectos/demo/project-context.json"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "tool": "horizun_create_elements",
+  "title": {
+    "en": "Architecture: four walls and the slab they enclose (6 x 4 m room on level 01)",
+    "es": "Arquitectura: cuatro muros y la losa que encierran (recinto de 6 x 4 m en el nivel 01)"
+  },
+  "about": {
+    "en": "Ids are placeholders: resolve the level and the wall/floor types in YOUR model first (horizun_query_model), then replace 1001 (level at elevation 0), 2001 (wall type) and 2101 (floor type). Coordinates are internal-origin millimetres (units=mm); Z is absolute and must agree with the level. dry_run=true rehearses the whole batch without a transaction; validation_mode=revit_rollback would also build it provisionally, verify it and roll it back. After the apply every element is RE-READ from the committed model - location, height, profile, offset, type - and the reply lists each property as requested vs found; a property that could not be read is unmeasured, never a pass.",
+    "es": "Los ids son marcadores: resuelve primero el nivel y los tipos de muro/losa en TU modelo (horizun_query_model) y reemplaza 1001 (nivel a cota 0), 2001 (tipo de muro) y 2101 (tipo de losa). Las coordenadas son milímetros desde el origen interno (units=mm); Z es absoluta y debe coincidir con el nivel. dry_run=true ensaya el lote completo sin transacción; validation_mode=revit_rollback además lo construye provisionalmente, lo verifica y lo revierte. Tras aplicar, cada elemento se RELEE del modelo confirmado (ubicación, altura, contorno, desfase, tipo) y la respuesta lista cada propiedad como pedida vs encontrada; una propiedad que no se pudo leer queda sin medir, nunca como aprobada."
+  },
+  "arguments": {
+    "target_document": "DEMO-ABC-ZZ-XX-M3-A-0001",
+    "units": "mm",
+    "dry_run": true,
+    "validation_mode": "arguments",
+    "transaction_name": "Demo: room 6x4 walls and slab",
+    "elements": [
+      { "kind": "wall", "start": [0, 0, 0], "end": [6000, 0, 0], "level_id": 1001, "type_id": 2001, "height": 3000, "join_rule": "auto" },
+      { "kind": "wall", "start": [6000, 0, 0], "end": [6000, 4000, 0], "level_id": 1001, "type_id": 2001, "height": 3000, "join_rule": "auto" },
+      { "kind": "wall", "start": [6000, 4000, 0], "end": [0, 4000, 0], "level_id": 1001, "type_id": 2001, "height": 3000, "join_rule": "auto" },
+      { "kind": "wall", "start": [0, 4000, 0], "end": [0, 0, 0], "level_id": 1001, "type_id": 2001, "height": 3000, "join_rule": "auto" },
+      {
+        "kind": "floor",
+        "level_id": 1001,
+        "type_id": 2101,
+        "structural": false,
+        "profile": [
+          [ [0, 0, 0], [6000, 0, 0], [6000, 4000, 0], [0, 4000, 0] ]
+        ]
+      }
+    ]
+  }
+}

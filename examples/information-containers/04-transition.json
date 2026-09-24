@@ -1,0 +1,23 @@
+{
+  "tool": "horizun_information_container",
+  "title": {
+    "en": "Containers, step 4: share the sealed container (WIP -> Shared)",
+    "es": "Contenedores, paso 4: compartir el contenedor sellado (WIP -> Compartido)"
+  },
+  "about": {
+    "en": "One step at a time: wip -> shared -> published -> archived. The source must sit in the from_state folder and match its sidecar. The file is COPIED (never moved or deleted) to the shared folder under its new status, SHA-256 compared, the new sidecar written and read back, and one line appended to <root>/.horizun/cde-transitions.jsonl. approved_by is required for shared -> published and recorded here too. Shown as the rehearsal; dry_run=false needs full_write. Sending the same transition again answers already_transitioned.",
+    "es": "Un paso a la vez: wip -> shared -> published -> archived. El origen debe estar en la carpeta de from_state y coincidir con su sidecar. El archivo se COPIA (nunca se mueve ni se borra) a la carpeta compartida con su nuevo estado, se compara el SHA-256, se escribe y relee el nuevo sidecar y se agrega una línea a <raíz>/.horizun/cde-transitions.jsonl. approved_by es obligatorio para shared -> published y aquí también queda registrado. Va como ensayo; dry_run=false exige full_write. Repetir la misma transición responde already_transitioned."
+  },
+  "arguments": {
+    "operation": "transition",
+    "project_context_path": "C:/proyectos/demo/project-context.json",
+    "file_path": "C:/proyectos/demo/cde/01_WIP/DEMO-ABC-ZZ-XX-M3-A-0001.rvt",
+    "from_state": "wip",
+    "to_state": "shared",
+    "status": "S2",
+    "revision": "P01",
+    "approved_by": "Task team lead",
+    "note": "Issued for stage 4 coordination",
+    "dry_run": true
+  }
+}

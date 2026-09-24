@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Horizun example - an IDS 1.0 file that matches hz-delivery-psets.txt.
+  Synthetic: no project data. Every IfcDuctSegment must carry HZ_Delivery.Code,
+  an IfcLabel shaped like DCT-0001. The mapping file exports exactly that property
+  from the Revit parameter HZ_Delivery_Code, so a duct whose parameter is empty
+  fails this specification on the EXPORTED file - which is where the verdict is taken.
+-->
+<ids xmlns="http://standards.buildingsmart.org/IDS"
+     xmlns:xs="http://www.w3.org/2001/XMLSchema"
+     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+     xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Horizun example - duct delivery codes</title>
+    <version>1.0</version>
+    <description>Every duct segment carries a delivery code in HZ_Delivery.Code.</description>
+    <date>2026-09-24</date>
+    <purpose>Example for horizun_deliver_ifc</purpose>
+  </info>
+  <specifications>
+    <specification name="Duct segments carry a delivery code" ifcVersion="IFC4" identifier="HZ-DCT-001"
+                   description="HZ_Delivery.Code is required on every IfcDuctSegment and follows DCT-nnnn.">
+      <applicability minOccurs="1" maxOccurs="unbounded">
+        <entity>
+          <name>
+            <simpleValue>IFCDUCTSEGMENT</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCLABEL" cardinality="required">
+          <propertySet>
+            <simpleValue>HZ_Delivery</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>Code</simpleValue>
+          </baseName>
+          <value>
+            <xs:restriction base="xs:string">
+              <xs:pattern value="DCT-[0-9]{4}"/>
+            </xs:restriction>
+          </value>
+        </property>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>

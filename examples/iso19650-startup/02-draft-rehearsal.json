@@ -1,0 +1,49 @@
+{
+  "tool": "horizun_project_context",
+  "title": {
+    "en": "ISO 19650 start-up, step 2: rehearse the draft from the person's answers",
+    "es": "Arranque ISO 19650, paso 2: ensayar el borrador con las respuestas de la persona"
+  },
+  "about": {
+    "en": "Each key of answers is a JSON pointer returned by operation=questions; each value is what the person answered. dry_run=true (the default) returns the drafted document and its validation state (invalid / inconsistent / incomplete / complete) and writes nothing. Topics left out here (EIR, MIDP, classification, georeference...) stay listed in intake.missing - nothing is invented to make the file look complete.",
+    "es": "Cada clave de answers es un puntero JSON devuelto por operation=questions; cada valor es lo que respondió la persona. dry_run=true (por defecto) devuelve el documento redactado y su estado de validación (inválido / incoherente / incompleto / completo) y no escribe nada. Los temas que no aparecen aquí (EIR, MIDP, clasificación, georreferencia...) quedan en intake.missing: no se inventa nada para que el archivo parezca completo."
+  },
+  "next": "03-draft-write.json",
+  "arguments": {
+    "operation": "draft",
+    "path": "C:/proyectos/demo/project-context.json",
+    "dry_run": true,
+    "answers": {
+      "/project/code": "DEMO",
+      "/project/name": "Demo office building",
+      "/appointment/role": "lead_appointed_party",
+      "/appointment/organisation_code": "ABC",
+      "/appointment/task_teams": [
+        { "role_code": "A", "discipline": "architecture", "organisation": "ABC" },
+        { "role_code": "S", "discipline": "structure", "organisation": "ABC" },
+        { "role_code": "M", "discipline": "mechanical", "organisation": "ABC" }
+      ],
+      "/appointment/stage": "4",
+      "/appointment/stage_scheme": "riba2020",
+      "/documents/bep/kind": "post_appointment",
+      "/documents/bep/status": "draft",
+      "/documents/bep/path": "C:/proyectos/demo/00_docs/DEMO-ABC-ZZ-XX-BE-Z-0001.pdf",
+      "/cde/platform": "local",
+      "/cde/root": "C:/proyectos/demo/cde",
+      "/cde/states/wip": "01_WIP",
+      "/cde/states/shared": "02_SHARED",
+      "/cde/states/published": "03_PUBLISHED",
+      "/cde/states/archived": "04_ARCHIVED",
+      "/cde/working_state": "wip",
+      "/cde/approvals/wip_to_shared": "Task team lead",
+      "/cde/approvals/shared_to_published": "Information manager",
+      "/cde/approvals/published_to_archived": "Information manager",
+      "/naming/scheme": "iso19650-2",
+      "/naming/separator": "-",
+      "/delivery/ifc/version": "IFC4",
+      "/delivery/ifc/mvd": "RV",
+      "/delivery/ifc/site_placement": "shared",
+      "/software/revit_year": 2026
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "tool": "horizun_project_context",
+  "title": {
+    "en": "ISO 19650 start-up, step 4: validate the file on disk",
+    "es": "Arranque ISO 19650, paso 4: validar el archivo en disco"
+  },
+  "about": {
+    "en": "Reads the written file and answers one of four states: invalid (breaks the schema), inconsistent (contradicts itself), incomplete (questions still open - listed in intake order) or complete. project-context.example.json in this folder is a complete context you can validate the same way.",
+    "es": "Lee el archivo escrito y responde uno de cuatro estados: inválido (rompe el esquema), incoherente (se contradice), incompleto (quedan preguntas abiertas, listadas en orden de arranque) o completo. project-context.example.json en esta carpeta es un contexto completo que puedes validar igual."
+  },
+  "arguments": {
+    "operation": "validate",
+    "path": "C:/proyectos/demo/project-context.json"
+  }
+}

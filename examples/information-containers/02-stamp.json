@@ -1,0 +1,35 @@
+{
+  "tool": "horizun_information_container",
+  "title": {
+    "en": "Containers, step 2: seal an existing file with its sidecar",
+    "es": "Contenedores, paso 2: sellar un archivo existente con su sidecar"
+  },
+  "about": {
+    "en": "The file must already exist and its name must match the container. With dry_run=false this writes <file>.container.json (name, fields, status, revision, bytes, SHA-256, provenance), reads it back exactly and re-hashes the file; an existing sidecar is never overwritten. Shown here as the rehearsal (dry_run=true, the default): send the same arguments with dry_run=false once the rehearsal is clean - that write needs the full_write profile.",
+    "es": "El archivo debe existir y su nombre debe coincidir con el contenedor. Con dry_run=false escribe <archivo>.container.json (nombre, campos, estado, revisión, bytes, SHA-256, procedencia), lo relee exacto y vuelve a calcular el hash del archivo; nunca sobrescribe un sidecar existente. Aquí va como ensayo (dry_run=true, por defecto): manda los mismos argumentos con dry_run=false cuando el ensayo salga limpio; esa escritura exige el perfil full_write."
+  },
+  "next": "03-inspect.json",
+  "arguments": {
+    "operation": "stamp",
+    "file_path": "C:/proyectos/demo/cde/01_WIP/DEMO-ABC-ZZ-XX-M3-A-0001.rvt",
+    "information_container": {
+      "fields": {
+        "project": "DEMO",
+        "originator": "ABC",
+        "volume": "ZZ",
+        "level": "XX",
+        "type": "M3",
+        "role": "A",
+        "number": "0001"
+      },
+      "field_order": [ "project", "originator", "volume", "level", "type", "role", "number" ],
+      "separator": "-",
+      "status": "S0",
+      "revision": "P01",
+      "title": "Architectural model - general arrangement"
+    },
+    "source_document": "DEMO-ABC-ZZ-XX-M3-A-0001.rvt",
+    "revit_year": "2026",
+    "dry_run": true
+  }
+}
