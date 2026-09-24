@@ -205,6 +205,29 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
+        public void Search_in_dictionary_reads_the_live_shape_where_classes_are_nested_in_the_dictionary()
+        {
+            // Recorded from api.bsdd.buildingsmart.org on 2026-09-24 (trimmed to two classes).
+            // The first implementation read classes and dictionaryName at the top level and
+            // returned an empty dictionary with zero classes for a query that has 179.
+            var handler = new FakeHandler
+            {
+                Respond = r => Json(@"{""dictionary"":{""name"":""Uniclass 2015"",""uri"":""https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1"",""classes"":[" +
+                    @"{""name"":""Outdoor sports activities"",""uri"":""https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1/class/Ac_42_55"",""referenceCode"":""Ac_42_55"",""classType"":""Class""}," +
+                    @"{""name"":""Indoor sports activities"",""uri"":""https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1/class/Ac_42_40"",""referenceCode"":""Ac_42_40"",""classType"":""Class""}]}," +
+                    @"""totalCount"":179,""offset"":0,""count"":2}")
+            };
+            JObject tree = BsddLookup.Handle(new JObject
+            {
+                ["operation"] = "bsdd_search_dictionary", ["uri"] = "https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1", ["text"] = "door"
+            }, CancellationToken.None, Options(handler));
+            Assert.Equal("Uniclass 2015", (string)tree["dictionary"]["name"]);
+            Assert.Equal("https://identifier.buildingsmart.org/uri/nbs/uniclass2015/1", (string)tree["dictionary"]["uri"]);
+            Assert.Equal(179, (int)tree["total_count"]);
+            Assert.Equal(new[] { "Ac_42_55", "Ac_42_40" }, tree["classes"].Select(c => (string)c["code"]));
+        }
+
+        [Fact]
         public void Without_network_it_says_so_and_serves_only_an_expired_copy_labelled_stale()
         {
             var args = new JObject { ["operation"] = "bsdd_search", ["text"] = "wall" };

@@ -416,7 +416,8 @@ namespace Horizun.Server
                 ["dictionary_uri"] = S(c["dictionaryUri"]),
                 ["dictionary_name"] = S(c["dictionaryName"]),
                 ["status"] = S(c["status"]),
-                ["definition"] = S(c["definition"]),
+                ["definition"] = S(c["definition"]) ?? S(c["description"]),   // the live TextSearch/v2 names it description
+                ["parent_class_name"] = S(c["parentClassName"]),
                 ["related_ifc_entities"] = Strings(c["relatedIfcEntityNames"])
             }));
             result["properties"] = new JArray(Items(body?["properties"]).Select(p => new JObject
@@ -434,11 +435,18 @@ namespace Horizun.Server
 
         private static void ShapeSearchInDictionary(JToken body, int limit, JObject result)
         {
+            // MEASURED against the live API on 2026-09-24: SearchInDictionary/v1 answers
+            // {"dictionary":{"name","uri",...,"classes":[{"name","uri","referenceCode","classType"}]},
+            // "totalCount":179} - the classes are NESTED in the dictionary, which carries
+            // name/uri (not dictionaryName/dictionaryUri), and a class names its code
+            // referenceCode. Reading only the top level returned an empty dictionary and
+            // zero classes for a query that has 179. Both shapes are read.
             JToken d = body?["dictionary"];
+            result["total_count"] = body?["totalCount"];
             result["dictionary"] = d == null ? null : new JObject
             {
-                ["uri"] = S(d["dictionaryUri"]),
-                ["name"] = S(d["dictionaryName"]),
+                ["uri"] = S(d["uri"]) ?? S(d["dictionaryUri"]),
+                ["name"] = S(d["name"]) ?? S(d["dictionaryName"]),
                 ["version"] = S(d["version"]),
                 ["status"] = S(d["status"]),
                 ["release_date"] = S(d["releaseDate"])
@@ -453,7 +461,7 @@ namespace Horizun.Server
                     flat.Add(new JObject
                     {
                         ["uri"] = S(c["uri"]),
-                        ["code"] = S(c["code"]),
+                        ["code"] = S(c["code"]) ?? S(c["referenceCode"]),
                         ["name"] = S(c["name"]),
                         ["class_type"] = S(c["classType"]),
                         ["parent_code"] = S(c["parentClassCode"]) ?? parent,
@@ -462,7 +470,7 @@ namespace Horizun.Server
                     if (depth < 12) Walk(c["children"], S(c["code"]), depth + 1);
                 }
             }
-            Walk(body?["classes"], null, 0);
+            Walk(body?["classes"] ?? d?["classes"], null, 0);
             result["classes"] = flat;
             result["classes_truncated"] = truncated;
         }
