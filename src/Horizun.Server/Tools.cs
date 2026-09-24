@@ -268,6 +268,9 @@ namespace Horizun.Server
                 // whose payload it cannot render is a blank panel the user blames their
                 // client for.
                 if (t.Name == "horizun_clash") published["_meta"] = McpAppResources.ToolUiMeta();
+                // The impact preview: the five bulk writes whose rehearsal payload
+                // (change_preview / plan_resolved / confirmation_token) the app reads.
+                else if (ImpactPreviewApp.Renders(t.Name)) published["_meta"] = ImpactPreviewApp.ToolUiMeta();
 
                 arr.Add(published);
             }

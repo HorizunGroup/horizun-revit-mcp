@@ -54,7 +54,8 @@ namespace Horizun.Server
                     // The MCP App. It is listed like any other resource because it IS
                     // one; what makes it an app is its mime type and the tool that
                     // names it, not a separate listing mechanism.
-                    McpAppResources.Definition()
+                    McpAppResources.Definition(),
+                    ImpactPreviewApp.Definition()
                 }
             };
         }
@@ -78,6 +79,19 @@ namespace Horizun.Server
                 case ToolsetReport.ResourceUri: mime = "application/json"; text = ToolsetText(); break;
                 case McpAppResources.ClashViewerUri:
                     mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
+                case ImpactPreviewApp.Uri:
+                    // The CSP travels on the content item too: the 2026-01-26 spec reads it there.
+                    return new JObject
+                    {
+                        ["contents"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["uri"] = uri, ["mimeType"] = McpAppResources.AppMimeType,
+                                ["text"] = ImpactPreviewApp.Html(), ["_meta"] = ImpactPreviewApp.ResourceMeta()
+                            }
+                        }
+                    };
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
             }
             return new JObject

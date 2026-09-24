@@ -1,0 +1,23 @@
+{
+  "tool": "horizun_create_elements",
+  "provenance": "Shape of the CreateElementsCommand dry run at 038f882. Synthetic, anonymised.",
+  "arguments": { "target_document": "HZ_WRITE", "units": "mm", "elements": [
+    { "kind": "wall", "type_id": 2001, "level_id": 311, "start": [0, 0, 0], "end": [3000, 0, 0] },
+    { "kind": "wall", "type_id": 2001, "level_id": 312, "start": [0, 0, 0], "end": [0, 3000, 0] },
+    { "kind": "pipe", "type_id": 9001, "level_id": 311, "start": [0, 0, 2500], "end": [2000, 0, 2500] } ] },
+  "result": {
+    "dry_run": true, "transaction_status": "not_started", "requested": 3, "valid": 3, "invalid": 0, "errors": [],
+    "validation_level": "arguments_and_references",
+    "application": { "state": "rehearsed", "requested": 3, "unresolved": 0, "state_means": "rehearsed" },
+    "change_preview": {
+      "fingerprint": "c1", "total": 3, "shown": 3, "truncated": false, "expected_cascade": 0,
+      "rows": [
+        { "unique_id": "create:0", "element_id": null, "action": "create", "category": "wall", "type": "Generic - 200mm", "captured_state": { "level": "Level 1", "level_elev_mm": "0.0" }, "proposed_values": null, "values_truncated": false },
+        { "unique_id": "create:1", "element_id": null, "action": "create", "category": "wall", "type": "Generic - 200mm", "captured_state": { "level": "Level 2", "level_elev_mm": "3000.0" }, "proposed_values": null, "values_truncated": false },
+        { "unique_id": "create:2", "element_id": null, "action": "create", "category": "pipe", "type": "Standard", "captured_state": { "level": "Level 1", "level_elev_mm": "0.0" }, "proposed_values": null, "values_truncated": false }
+      ]
+    },
+    "plan_resolved": { "elements": 3, "create": 3, "modify": 0, "delete": 0, "expected_cascade": 0, "fingerprint": "c1" },
+    "confirmation_token": "tok-cr-1", "confirmation_expires_utc": "2026-09-24 12:00:00Z"
+  }
+}

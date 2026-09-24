@@ -124,6 +124,11 @@
     <EmbeddedResource Include="..\..\schemas\ids\ids-1.0.xsd" LogicalName="Horizun.Schemas.ids-1.0.xsd" />
     <EmbeddedResource Include="..\..\schemas\ids\xmlschema-subset.xsd" LogicalName="Horizun.Schemas.xmlschema-subset.xsd" />
     <EmbeddedResource Include="..\..\schemas\ids\ifc-entities.txt" LogicalName="Horizun.Schemas.ifc-entities.txt" />
+    <!-- The impact-preview MCP App: page, adapter and view, composed into one page at
+         read time. Three files so the adapter can be run under node by the tests. -->
+    <EmbeddedResource Include="Apps\impact-preview.html" LogicalName="Horizun.Apps.impact-preview.html" />
+    <EmbeddedResource Include="Apps\impact-preview-adapter.js" LogicalName="Horizun.Apps.impact-preview-adapter.js" />
+    <EmbeddedResource Include="Apps\impact-preview-view.js" LogicalName="Horizun.Apps.impact-preview-view.js" />
   </ItemGroup>
 
   <ItemGroup>

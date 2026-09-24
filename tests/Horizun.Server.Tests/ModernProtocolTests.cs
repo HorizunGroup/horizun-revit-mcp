@@ -289,10 +289,16 @@ namespace Horizun.Server.Tests
             JArray listed = (JArray)McpResources.List(null)["resources"];
             foreach (JToken mime in (JArray)ui["mimeTypes"])
             {
-                JObject app = listed.OfType<JObject>().Single(r => (string)r["mimeType"] == (string)mime);
-                JObject read = McpResources.Read(new JObject { ["uri"] = app["uri"] });
-                Assert.Equal((string)mime, (string)read["contents"][0]["mimeType"]);
-                Assert.False(string.IsNullOrWhiteSpace((string)read["contents"][0]["text"]));
+                // Two apps share the mime type now (clash viewer, impact preview): every one
+                // listed under it must be served under it.
+                var apps = listed.OfType<JObject>().Where(r => (string)r["mimeType"] == (string)mime).ToList();
+                Assert.NotEmpty(apps);
+                foreach (JObject app in apps)
+                {
+                    JObject read = McpResources.Read(new JObject { ["uri"] = app["uri"] });
+                    Assert.Equal((string)mime, (string)read["contents"][0]["mimeType"]);
+                    Assert.False(string.IsNullOrWhiteSpace((string)read["contents"][0]["text"]));
+                }
             }
             foreach (McpExtension e in ExtensionRegistry.All)
                 Assert.Equal(e.Implemented, advertised[e.Id] != null);

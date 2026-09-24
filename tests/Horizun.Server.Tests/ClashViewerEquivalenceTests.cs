@@ -1,4 +1,4 @@
-// -----------------------------------------------------------------------------
+﻿// -----------------------------------------------------------------------------
 // Horizun Server tests - the MCP App and the text say the same thing.
 // Original Horizun code.
 //
@@ -114,6 +114,10 @@ namespace Horizun.Server.Tests
                 JToken ui = tool["_meta"]?["ui"];
                 if ((string)tool["name"] == "horizun_clash")
                     Assert.Equal(McpAppResources.ClashViewerUri, (string)ui?["resourceUri"]);
+                // The impact preview declares itself on the five bulk writes it can read,
+                // under the same rule; ImpactPreviewAppTests owns that list.
+                else if (ImpactPreviewApp.Renders((string)tool["name"]))
+                    Assert.Equal(ImpactPreviewApp.Uri, (string)ui?["resourceUri"]);
                 else
                     Assert.Null(ui);
             }

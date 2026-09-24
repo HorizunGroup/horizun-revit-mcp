@@ -1,0 +1,23 @@
+{
+  "tool": "horizun_set_keynote",
+  "provenance": "Shape of the SetKeynoteCommand dry run at 038f882. Synthetic, anonymised.",
+  "arguments": { "target_document": "HZ_WRITE", "element_ids": [1001, 1002, 3001], "keynote": "K-01", "scope": "auto" },
+  "result": {
+    "dry_run": true, "keynote": "K-01", "requested_ids": 3, "parsed_ids": 3, "writes_planned": 2,
+    "targets": [
+      { "writes_to": "type", "target_id": "2001", "target_name": "Generic - 200mm", "parameter": "Keynote", "current_keynote": "", "requested_elements": ["1001", "1002"], "elements_affected": 3, "collateral_elements": 1, "collateral_note": "1 element(s) you did not name share this type and WILL be re-coded." },
+      { "writes_to": "type", "target_id": "4001", "target_name": "Single-Flush 0915 x 2134mm", "parameter": "Keynote", "current_keynote": "08 14 00", "requested_elements": ["3001"], "elements_affected": 1, "collateral_elements": 0, "collateral_note": null }
+    ],
+    "failed": [], "total_elements_affected": 4,
+    "application": { "state": "rehearsed", "requested": 2, "unresolved": 0, "state_means": "rehearsed" },
+    "change_preview": {
+      "fingerprint": "k1", "total": 2, "shown": 2, "truncated": false, "expected_cascade": 0,
+      "rows": [
+        { "unique_id": "u-2001", "element_id": null, "action": "modify", "category": "Walls", "type": "Generic - 200mm", "captured_state": { "keynote": "", "parameter": "Keynote", "writes_to": "type" }, "proposed_values": null, "values_truncated": false },
+        { "unique_id": "u-4001", "element_id": null, "action": "modify", "category": "Doors", "type": "Single-Flush 0915 x 2134mm", "captured_state": { "keynote": "08 14 00", "parameter": "Keynote", "writes_to": "type" }, "proposed_values": null, "values_truncated": false }
+      ]
+    },
+    "plan_resolved": { "elements": 2, "create": 0, "modify": 2, "delete": 0, "expected_cascade": 0, "fingerprint": "k1" },
+    "confirmation_token": "tok-key-1", "confirmation_expires_utc": "2026-09-24 12:00:00Z"
+  }
+}
