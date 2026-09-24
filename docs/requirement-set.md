@@ -86,6 +86,12 @@ rules:
 | `in_list` | one of the listed values | yes (list) |
 | `is_leaf_of` | the value is a last-level leaf of the named table | yes (table id) |
 | `gt` / `gte` / `lt` / `lte` | numeric comparison against the raw stored value | yes |
+| `between` | inclusive range `[min, max]` | yes (pair) |
+
+The tool that runs this grammar is `horizun_code_check`. It adds geometric `measure`
+assertions, `unit`, `missing_is`, the selectors `name_matches` / `parameter_equals` /
+`measure_range`, per-rule `source` and `unverified_value`, and a fourth outcome,
+`not_decidable` - see [TOOLS-EXTENDED.md](TOOLS-EXTENDED.md#code-checks-4d-and-federation).
 
 `is_leaf_of` is what makes classification checkable without teaching the bridge any
 classification system: the set carries the table, the bridge only asks whether a

@@ -1,0 +1,116 @@
+{
+  "requirement_set": {
+    "id": "co-ntc6047-accesibilidad",
+    "version": "0.1.0",
+    "title": "NTC 6047:2013 - Accesibilidad al medio fisico (espacios de servicio al ciudadano) - example set",
+    "jurisdiction": "CO",
+    "sources": [
+      {
+        "norm": "NTC 6047:2013 (ICONTEC), Accesibilidad al medio fisico. Espacios de servicio al ciudadano en la administracion publica",
+        "url": "https://colaboracion.dnp.gov.co/CDT/Programa%20Nacional%20del%20Servicio%20al%20Ciudadano/NTC6047.pdf",
+        "read": "2026-09-24, full text"
+      }
+    ],
+    "disclaimer": "Example requirement set, not a compliance assessment. NTC 6047 applies to citizen-service spaces; confirm applicability, edition and project exemptions. Doors, ramps and stairs are selected by category: restrict the selectors to the accessible route of your project (e.g. parameter_equals) before relying on the results."
+  },
+  "rules": [
+    {
+      "id": "door-clear-width",
+      "selector": { "category": "OST_Doors" },
+      "assertion": { "measure": "door_clear_width_mm", "operator": "gte", "value": 800 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "16.1.2", "text": "ancho libre de paso >= 800 mm (850 mm recomendado)" },
+      "note": "The bridge reads the NOMINAL leaf width, an upper bound of the clear width: below 800 it fails for certain; at or above 800 it is not_decidable until the clear width is measured."
+    },
+    {
+      "id": "ramp-width",
+      "selector": { "category": "OST_Ramps" },
+      "assertion": { "measure": "ramp_width_mm", "operator": "gte", "value": 1200 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.3", "text": "superficie de rampa >= 1 200 mm; >= 1 000 mm entre pasamanos; edificios existentes >= 900 mm" }
+    },
+    {
+      "id": "ramp-slope-run-upto-2520",
+      "selector": { "category": "OST_Ramps", "measure_range": { "measure": "ramp_run_length_mm", "min": 0, "max": 2520 } },
+      "assertion": { "measure": "ramp_slope_percent", "operator": "lte", "value": 8.34 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2", "text": "pendiente 1:12 (8,33 %) para tramos hasta 2 520 mm" },
+      "note": "8.34 = 1:12 plus 0.01 % so that a ramp drawn at exactly 1:12 is not failed by rounding."
+    },
+    {
+      "id": "ramp-slope-run-2520-3640",
+      "selector": { "category": "OST_Ramps", "measure_range": { "measure": "ramp_run_length_mm", "min": 2520, "max": 3640 } },
+      "assertion": { "measure": "ramp_slope_percent", "operator": "lte", "value": 7.15 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2", "text": "pendiente 1:14 (7,14 %)" },
+      "note": "The 1:14 row's length reads 3 640 mm (rise 260) or 3 920 mm (rise 280) depending on how the PDF columns align; up to 3 640 mm both readings agree."
+    },
+    {
+      "id": "ramp-slope-run-3640-3920",
+      "selector": { "category": "OST_Ramps", "measure_range": { "measure": "ramp_run_length_mm", "min": 3640, "max": 3920 } },
+      "assertion": { "measure": "ramp_slope_percent", "operator": "lte" },
+      "unverified_value": true,
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2" },
+      "note": "Ambiguous row (1:14 up to 3 640 or 3 920 mm): confirm in the printed table, then give the value and remove unverified_value."
+    },
+    {
+      "id": "ramp-slope-run-3920-5600",
+      "selector": { "category": "OST_Ramps", "measure_range": { "measure": "ramp_run_length_mm", "min": 3920, "max": 5600 } },
+      "assertion": { "measure": "ramp_slope_percent", "operator": "lte", "value": 6.26 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2", "text": "pendiente 1:16 (6,25 %) para tramos hasta 5 600 mm" }
+    },
+    {
+      "id": "ramp-slope-run-5600-10000",
+      "selector": { "category": "OST_Ramps", "measure_range": { "measure": "ramp_run_length_mm", "min": 5600, "max": 10000 } },
+      "assertion": { "measure": "ramp_slope_percent", "operator": "lte", "value": 5.01 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2", "text": "pendiente 1:20 (5 %) para tramos hasta 10 000 mm" }
+    },
+    {
+      "id": "ramp-run-max-length",
+      "selector": { "category": "OST_Ramps" },
+      "assertion": { "measure": "ramp_run_length_mm", "operator": "lte", "value": 10000 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.2, Tabla 2", "text": "longitud maxima entre descansos 10 000 mm (a 1:20)" }
+    },
+    {
+      "id": "ramp-landing-length",
+      "selector": { "category": "OST_Ramps" },
+      "assertion": { "measure": "ramp_landing_length_mm", "operator": "gte", "value": 1500 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "8.2.4", "text": "descanso no inferior a 1 500 mm; edificios existentes 1 200 mm" },
+      "note": "A ramp with no modelled flat landing is not_decidable here: a single short run may need none."
+    },
+    {
+      "id": "stair-riser-max",
+      "selector": { "category": "OST_Stairs" },
+      "assertion": { "measure": "stair_riser_mm", "operator": "lte", "value": 180 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "11.1", "text": "contrahuella <= 180 mm" }
+    },
+    {
+      "id": "stair-tread-min",
+      "selector": { "category": "OST_Stairs" },
+      "assertion": { "measure": "stair_tread_mm", "operator": "gte", "value": 260 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "11.1", "text": "huella >= 260 mm" }
+    },
+    {
+      "id": "stair-2r-plus-t",
+      "selector": { "category": "OST_Stairs" },
+      "assertion": { "measure": "stair_2r_plus_t_mm", "operator": "between", "value": [600, 660] },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "11.1", "text": "2C + H entre 600 mm y 660 mm" }
+    },
+    {
+      "id": "stair-flight-width",
+      "selector": { "category": "OST_Stairs" },
+      "assertion": { "measure": "stair_run_width_mm", "operator": "gte", "value": 1200 },
+      "severity": "blocking",
+      "source": { "norm": "NTC 6047:2013", "numeral": "11.2", "text": "ancho de tramo >= 1 200 mm; >= 1 000 mm entre pasamanos" },
+      "note": "Run width as Revit reports it; handrail projection is not deducted."
+    }
+  ]
+}

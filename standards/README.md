@@ -14,6 +14,13 @@ before use on a project.
   requirement-set skeleton for `horizun_audit_planimetry`. Populate the empty
   policy fields only after the project team approves them.
 
+- `co-ntc6047-accesibilidad.json`, `co-nsr10-titulo-k-evacuacion.json`,
+  `co-retilap-iluminancia.json`: example requirement sets for
+  `horizun_code_check`, transcribing public Colombian technical norms (NTC 6047,
+  NSR-10 Título K, RETILAP 2024) with the numeral of every rule. A threshold that
+  could not be verified against the norm's text is marked `unverified_value` and
+  carries no number. See [docs/TOOLS-EXTENDED.md](../docs/TOOLS-EXTENDED.md).
+
 ## Safe use
 
 1. Copy a profile into the project repository.

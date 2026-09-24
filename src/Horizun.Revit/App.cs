@@ -189,6 +189,9 @@ namespace Horizun.Revit
             d.Register(new ValidateIdsCommand());
             d.Register(new CopyBetweenDocumentsCommand());
             d.Register(new AuditAccessCommand());
+            d.Register(new CodeCheckCommand());
+            d.Register(new LinkScheduleCommand());
+            d.Register(new FederationCheckCommand());
             d.Register(new PlanFromIfcCommand());
             d.Register(new SetKeynoteCommand());
             d.Register(new FamilyApplyCommand());
