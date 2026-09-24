@@ -31,6 +31,22 @@ try {
     Save-Report (New-Report 2025)
     Save-Report (New-Report 2026)
     Assert 'accepts consistent reports, allowing separate binary checks' (Matrix).complete
+    # verify-live.ps1 writes schema 2 (with its iso19650 block); the matrix must
+    # accept exactly what the harness writes, or it rejects every real report.
+    foreach ($y in 2025, 2026) {
+        $r2 = New-Report $y
+        $r2.schema = 2
+        $r2 | Add-Member -NotePropertyName iso19650 -NotePropertyValue @{ evidence_file = 'iso19650.json'; cases = @() }
+        $r2.probes += @{ name = 'shared->published without approved_by is refused and nothing is written'
+                         tool = 'horizun_information_container'; outcome = 'pass' }
+        $r2.summary.passed++
+        Save-Report $r2
+    }
+    $m2 = Matrix
+    Assert 'accepts the schema-2 reports verify-live writes, ISO rows included' ($m2.complete -and
+        @($m2.coverage | Where-Object { $_.tool -eq 'horizun_information_container' }).Count -eq 1)
+    Save-Report (New-Report 2025)
+    Save-Report (New-Report 2026)
     $cases = @(
         @{ name = 'old commit'; change = { param($r) $r.expected_commit = 'c' * 40 } },
         @{ name = 'false green summary'; change = { param($r) $r.probes[2].outcome = 'fail' } },
@@ -45,7 +61,15 @@ try {
         @{ name = 'duplicate probe'; change = { param($r) $r.probes += $r.probes[2]; $r.summary.passed++ } },
         @{ name = 'missing binary proof'; change = { param($r) $r.probes = @($r.probes[0],$r.probes[2]); $r.summary.passed = 2 } },
         @{ name = 'different server bytes'; change = { param($r) $r.server_sha256 = 'c' * 64 } },
-        @{ name = 'probe omitted in one year'; change = { param($r) $r.probes = @($r.probes[0],$r.probes[1]); $r.summary.passed = 2 } }
+        @{ name = 'probe omitted in one year'; change = { param($r) $r.probes = @($r.probes[0],$r.probes[1]); $r.summary.passed = 2 } },
+        @{ name = 'unknown report schema'; change = { param($r) $r.schema = 3 } },
+        @{ name = 'an ISO 19650 case present in one year only'; change = { param($r)
+            $r.probes += @{ name = 'export ifc with information_container names the file after the container and seals it (verify = match)'
+                            tool = 'horizun_export'; outcome = 'pass' }
+            $r.summary.passed++ } },
+        @{ name = 'an ISO 19650 case not covered'; change = { param($r)
+            $r.probes[2].outcome = 'not_covered'; $r.summary.passed--; $r.summary.not_covered = 1
+            $r.not_covered = @('deliver_ifc: needs -WriteProbes') } }
     )
     foreach ($case in $cases) {
         $r = New-Report 2026

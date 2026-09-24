@@ -20,7 +20,10 @@ function Get-HorizunLiveMatrix {
         try {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'report missing' }
             $doc = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
-            if ($doc.schema -ne 1) { $issues.Add('unsupported report schema') }
+            # verify-live.ps1 has written schema 2 since 1.0.0 (it adds sections such as
+            # iso19650 and keeps every field read below); refusing it made this
+            # consolidator reject every real report.
+            if ($doc.schema -ne 1 -and $doc.schema -ne 2) { $issues.Add('unsupported report schema') }
             if ($doc.revit_year -ne $year) { $issues.Add('report belongs to a different Revit year') }
             if ($doc.release_gate -isnot [bool] -or $doc.release_gate -ne $true) {
                 $issues.Add('release_gate must be true')

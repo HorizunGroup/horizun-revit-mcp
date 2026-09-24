@@ -410,3 +410,62 @@ estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
+
+## Live verification of the ISO 19650 tools
+
+`scripts/verify-live.ps1` measures these tools against a running Revit, the way
+every other tool that touches Revit is measured. The probes live in
+`scripts/live-iso19650.probes.ps1` and are exercised **without Revit** by
+`scripts/live-iso19650.tests.ps1` (a fake bridge that answers in the real
+shapes and simulates each defect the probes exist to catch, plus the glue in
+`verify-live.ps1` executed from its own text).
+
+| Case | Tool | What must hold |
+|---|---|---|
+| ISO-D1 | `horizun_deliver_ifc` | dry run: plan, `georeference_in_model`, token, mapping and IDS bound by SHA-256; the output folder is unchanged |
+| ISO-D2 | `horizun_deliver_ifc` | apply: `export`, `schema_header` (FILE_SCHEMA family IFC4) and `information_container` passed; `horizun_information_container verify` = `match` with the delivered SHA-256 |
+| ISO-D3 | `horizun_deliver_ifc` | `ids_validate` and `pset_mapping` are decided on the file (passed or failed, never undecided), `bcf` follows the IDS, and `deliverable_ready` equals what the gates imply |
+| ISO-D4 | `horizun_deliver_ifc` | a second apply onto the sealed name, even with `overwrite=true`, is refused before export; the IFC, its sidecar and the folder are unchanged |
+| ISO-D5 | `horizun_deliver_ifc` | IFC4x3 is planned on Revit 2024+ and refused by name on 2023 |
+| ISO-D6 *(opt-in)* | `horizun_deliver_ifc` | `-IsoReadyProbe`: after a verified write of the code to every element of the class, the same delivery is `deliverable_ready=true` |
+| ISO-E1 / E2 | `horizun_export` | IFC export with a container takes the container's name and is sealed (`match`); a repeat onto the sealed name is refused whatever `overwrite` says |
+| ISO-E3 | `horizun_export` | a real (non-placeholder) sheet prints as one sealed PDF; NOT COVERED when the model has none |
+| ISO-H1…H3 | `horizun_project_context` | `validate` keeps invalid / inconsistent / incomplete apart; `questions` is ordered and bilingual; a `draft` rehearsal writes no file |
+| ISO-H4…H7 | `horizun_information_container` | `inspect` of a temporary CDE finds the bad name, the missing sidecar, the missing and the overdue deliverable and writes nothing; shared→published without `approved_by` is refused; with it, the rehearsal passes on a sealed container; the apply lands a verified, logged copy that replays as `already_transitioned` under `full_write`, or is refused by the profile with nothing written |
+
+Nothing is assumed about the fixture. The delivery class is **discovered** by
+counting elements (ducts → IfcDuctSegment first, then pipes, cable trays,
+floors, columns, framing, walls, generic models; `-QuantityCategory` goes first
+when it is one of them), and the TAB mapping (`HZ_Delivery.Code` from
+`Comments`) and the IDS are generated for that class in a folder per run. The
+delivery uses IFC4 in every year; IFC4x3 is its own case. The section writes no
+parameter unless `-IsoReadyProbe` is passed; `-IsoMappedParameter` names the
+Revit parameter the mapping reads (display name, `Comments` under the ENU
+runner).
+
+The write cases need `-WriteProbes` and the disposable `WriteDocument`; without
+them they are NOT COVERED by name. The host-resident cases run in every run; H6
+and H7 need a sealed container, which comes from ISO-E1 or, under `full_write`,
+from a host-side `stamp`. Temporary files go into one folder per run under the
+harness scratch directory (never the repository) and are removed only when every
+ISO case passed. Besides the main report (`iso19650` block and one probe row per
+case), the run writes `iso19650-<year>-<run>.json` beside `-Json`, a
+`horizun.live-evidence/2` record that `scripts/consolidate-live-session.py`
+consumes (case = probe × harness × year × document).
+
+### Resumen en español
+
+`verify-live.ps1` mide las herramientas ISO 19650 contra un Revit real con las
+sondas de `scripts/live-iso19650.probes.ps1`, que `live-iso19650.tests.ps1`
+ejercita sin Revit. `deliver_ifc`: ensayo sin archivos con plan, georreferencia y
+token; aplicación con un mapeo TAB y un IDS generados por corrida para la clase
+que el modelo **tiene** (se descubre contando elementos), con `export`,
+`schema_header` e `information_container` aprobados y `verify = match`; IDS y
+mapeo decididos sobre el archivo y `deliverable_ready` coherente con los gates;
+rechazo de un segundo sellado; IFC4x3 planificado en 2024+ y rechazado por nombre
+en 2023. `export` con contenedor (IFC y PDF si hay lámina real) y rechazo de la
+repetición. Sin Revit: `project_context` validate/questions/draft (ensayo) y
+`information_container` inspect/transition sobre un CDE temporal con la regla de
+`approved_by`. La sonda no escribe parámetros salvo con `-IsoReadyProbe`. Los
+archivos temporales van a una carpeta por corrida fuera del repositorio, y cada
+corrida deja además un registro `horizun.live-evidence/2` para el consolidador.
