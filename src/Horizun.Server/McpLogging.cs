@@ -63,9 +63,25 @@ namespace Horizun.Server
                                           string requestLevel, object requestId)
         {
             if (requestLevel == null) return;
+            WarnDeprecatedOnce();
             if (!Severity.TryGetValue(level, out int severity)) return;
             if (!Severity.TryGetValue(requestLevel, out int wanted) || severity < wanted) return;
             Write(level, data, notify, requestId);
+        }
+
+        private static int _deprecationWarned;
+
+        /// <summary>
+        /// SEP-2577: logging is deprecated from 2026-07-28 and "implementations SHOULD emit a
+        /// warning (e.g., in logs or developer tooling) when deprecated capabilities are
+        /// negotiated". Once per process, in the server's own log - never on the wire, where
+        /// it would be one more of the notifications being deprecated.
+        /// </summary>
+        private static void WarnDeprecatedOnce()
+        {
+            if (Interlocked.Exchange(ref _deprecationWarned, 1) != 0) return;
+            Log.Warn("a 2026-07-28 request asked for client-visible logs (_meta logLevel). MCP logging is deprecated " +
+                     "from that revision (SEP-2577) and still served; the server's own record is this log file.");
         }
 
         /// <summary>Is this a level this server understands? Used to refuse a bad one loudly.</summary>

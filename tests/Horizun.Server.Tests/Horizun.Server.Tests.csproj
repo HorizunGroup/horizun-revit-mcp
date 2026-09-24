@@ -169,6 +169,7 @@
     <!-- Server-to-client requests (elicitation): ProjectContext's elicit reads the
          per-call ClientContext, and the in-memory client drives McpClientRequests. -->
     <Compile Include="..\..\src\Horizun.Server\McpClientRequests.cs" Link="McpClientRequests.cs" />
+    <Compile Include="..\..\src\Horizun.Server\MrtrRequestState.cs" Link="MrtrRequestState.cs" />
     <!-- The bounded stdin reader. The case it exists for - a payload with no newline
          in it, larger than memory - can only be proved against a stream that never
          allocates the payload, which is a test fixture and never a client. -->

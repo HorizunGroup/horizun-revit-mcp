@@ -308,7 +308,7 @@ namespace Horizun.Server.Tests
         }
 
         [Fact]
-        public void The_legacy_capability_block_still_advertises_logging()
+        public void Both_capability_blocks_advertise_logging()
         {
             // logging/setLevel exists in every legacy revision. Dropping the capability
             // there would be removing a method those clients may legitimately call.
@@ -316,8 +316,10 @@ namespace Horizun.Server.Tests
             Assert.NotNull(legacy["logging"]);
             Assert.Null(legacy["extensions"]);
 
+            // 2026-07-28 removed setLevel, not logging: a request that names a logLevel is
+            // sent notifications/message, and a server that emits them MUST declare it.
             JObject modern = DiscoverHandler.Capabilities(McpEra.Modern);
-            Assert.Null(modern["logging"]);
+            Assert.NotNull(modern["logging"]);
             Assert.NotNull(modern["extensions"]);
         }
 

@@ -542,26 +542,130 @@ Verified against modelcontextprotocol.io on 2026-09-24:
   titled enums are `oneOf` of `{const, title}`; multi-select enums are arrays;
   URL mode (`url`, `elicitationId`, error `-32042`) is for sensitive
   interactions. Servers MUST NOT send a mode the client did not declare.
-- **2026-07-28** no longer sends elicitation as a request: the server returns an
-  `InputRequiredResult` and the client retries the call with the answers
-  (multi round-trip requests).
+- **2026-07-28** no longer sends elicitation as a request. Verified against the
+  specification source (`modelcontextprotocol/modelcontextprotocol`,
+  `docs/specification/2026-07-28/basic/patterns/mrtr.mdx`, `client/elicitation.mdx`,
+  `changelog.mdx`, SEP-2322 and SEP-2577) on 2026-09-24:
+  - *Multi round-trip requests* (SEP-2322): servers "MUST send server-to-client
+    requests (such as `roots/list`, `sampling/createMessage`, or
+    `elicitation/create`) using the MRTR pattern". The tool answers with an
+    `InputRequiredResult` — `resultType: "input_required"`, an `inputRequests` map
+    (server-chosen keys → `{method, params}`) and an opaque `requestState` — and the
+    client calls again with a new JSON-RPC id, `params.inputResponses` (same keys →
+    the `ElicitResult`) and `params.requestState` echoed unchanged. Only
+    `tools/call`, `prompts/get` and `resources/read` may return it.
+  - `requestState` "MUST" be treated as attacker-controlled; when it influences
+    business logic its integrity MUST be protected (HMAC or AEAD) and failing state
+    rejected; servers SHOULD bind it to the principal, a short expiry and the
+    originating request, and MUST enforce single use server-side when a state may
+    be consumed only once.
+  - The capability is per request, in
+    `_meta["io.modelcontextprotocol/clientCapabilities"].elicitation`, with the same
+    modes as 2025-11-25 (empty object = form only). A retry that lacks information
+    the server still needs SHOULD get a new `InputRequiredResult`, not an error;
+    malformed `inputResponses` SHOULD be a JSON-RPC error.
+  - The version is not negotiated: there is no `initialize`; each request names
+    `io.modelcontextprotocol/protocolVersion` in `_meta`, and `server/discover`
+    lists the versions a server implements.
 
-This server implements **form mode** for sessions negotiated at 2025-06-18 or
-2025-11-25 through `initialize`. It never uses URL mode (nothing in the intake is
-sensitive; a credential in an answer is refused by `draft` anyway). Enums are
-sent as `oneOf` const/title under 2025-11-25 and as `enum` + `enumNames` under
-2025-06-18; no field is `required`, so a person can always leave an unknown
+This server implements **form mode** in every revision that has elicitation:
+through `elicitation/create` requests for sessions negotiated at 2025-06-18 or
+2025-11-25 via `initialize`, and through `InputRequiredResult` rounds for
+2026-07-28 requests (below). It never uses URL mode (nothing in the intake is
+sensitive; a credential in an answer is refused by `draft` anyway). Enums are sent
+as `oneOf` const/title under 2025-11-25 and 2026-07-28 and as `enum` + `enumNames`
+under 2025-06-18; no field is `required`, so a person can always leave an unknown
 empty.
+
+### 2026-07-28: rounds instead of requests
+
+The same intake, the same forms, the same answer rules — but nothing waits for
+the client:
+
+1. `tools/call` `horizun_project_context` `{operation: "elicit", ...}` → a result
+   with `resultType: "input_required"`, one entry in `inputRequests`
+   (`intake_form_<n>`: `elicitation/create`, `mode: "form"`, the block's
+   `requestedSchema`) and a `requestState`. No `content`, no cache hints.
+2. The client asks the person and calls again with **the same `arguments`**, plus
+   `inputResponses: {"intake_form_<n>": {action, content}}` and the
+   `requestState`. The answer is applied exactly as in the legacy path; if a block
+   is left, the reply is the next `InputRequiredResult`.
+3. When no block is left, or the person cancels, the reply is the ordinary
+   `resultType: "complete"` result: `rounds`, `answers`, `unanswered`, `draft`.
+   `dry_run` still defaults to true; with `dry_run: false` the file is written
+   only at this last step, through `draft`, and re-read. Nothing is written
+   between rounds.
+
+A retry without the pending key in `inputResponses` gets the same form and the
+same state again (nothing consumed). `decline` leaves that block open and moves to
+the next; `cancel` ends the intake. There is no per-form wait, so
+`timeout_seconds` (default 300, 10–540) is the life of each `requestState`.
+
+**The state is sealed and trusted for nothing the client could change.** It is
+`payload.HMAC-SHA256` under a 256-bit key generated per server process and never
+stored. The payload carries the tool name, a SHA-256 of the canonicalised
+`arguments`, the request's `clientInfo.name`, the answers so far, the questions
+asked and the form in flight, an expiry and a nonce. A retry is refused with
+`code: "request_state_rejected"` (nothing applied, nothing written) and a
+`reason`:
+
+| reason | when |
+|---|---|
+| `malformed` | not a state this server format produces |
+| `tampered` | the MAC does not verify — altered, or issued by an earlier server process (a server restart ends every open intake) |
+| `mismatch` | issued for other arguments: another `path`, `dry_run` flipped, other `answers` — a state can never carry answers to a file the person was not asked about |
+| `principal_mismatch` | issued to a client with another `clientInfo.name` |
+| `expired` | older than `timeout_seconds`; the answers it held come back in `answers` so they are not lost, and are not acted on |
+| `replayed` | already used: each state is consumed once, when its answer is applied (a bounded in-memory set, pruned by expiry) |
+
+The payload is signed, not encrypted: it holds what the person typed and nothing
+the client did not already see. A malformed `inputResponses` (not an object) or
+`requestState` (not a string) is `-32602`. A task-augmented call cannot elicit
+(`task_augmented_call`), nor can the tool when it runs inside another tool such as
+a procedure step (`nested_call`): the round belongs to the `tools/call` the client
+sent.
+
+### Roots, sampling and logging under 2026-07-28
+
+SEP-2577 deprecates roots, sampling and logging from 2026-07-28: they "remain
+fully functional", capability negotiation is unchanged, and implementations
+SHOULD warn when a deprecated feature is negotiated. This server:
+
+- never sends `roots/list` or `sampling/createMessage` in any revision, and does
+  not read the client's `roots`/`sampling` capabilities;
+- keeps logging as it was in the legacy revisions (`logging/setLevel`, capability
+  `logging`), untouched;
+- under 2026-07-28 emits `notifications/message` only for a request that names
+  `_meta["io.modelcontextprotocol/logLevel"]`, on that request's own response
+  stream. Because "servers that emit log message notifications MUST declare the
+  logging capability" (server/utilities/logging), `server/discover` now declares
+  `logging: {}` in the modern block too — it previously omitted it while still
+  emitting. An unknown level is refused with `-32602`, as that page asks. The
+  first such request writes a one-time deprecation warning to the server log
+  (never to the wire).
+
+### Is 2026-07-28 accepted?
+
+Yes, and it was before this change: `Protocol/McpRevision.cs` lists it,
+`server/discover` advertises it, and a request declaring it in `_meta` is served
+statelessly (`RequestEnvelope`, `ResultEnvelope`, `SubscriptionStream`,
+`ModernTasks`). `ProtocolNegotiation` (the `initialize` answer) deliberately does
+**not** offer it: that revision has no `initialize`. What was missing for this
+feature was only the MRTR half of elicitation, which previously answered
+`elicitation_unsupported` / `input_required_result_not_implemented`; that reason
+no longer exists. Open points: `prompts/get` and `resources/read` never return
+`InputRequiredResult` (nothing there needs input), and no 2026-07-28 client was
+available to verify against — the proof is the stdio tests.
 
 ### When it refuses
 
-If the client did not declare `elicitation` (or only `url`), the negotiated
-revision predates 2025-06-18, the request is a 2026-07-28 one, or the call was
-sent as a task, nothing is sent and the call fails with structured content
+If the client did not declare `elicitation` (or only `url`) — at `initialize`, or
+in a 2026-07-28 request's own `_meta` — the negotiated revision predates
+2025-06-18, the call was sent as a task, or the tool runs inside another tool,
+nothing is sent and the call fails with structured content
 `code: "elicitation_unsupported"`, a `reason` (`client_did_not_declare`,
-`form_mode_not_declared`, `protocol_version`,
-`input_required_result_not_implemented`, `task_augmented_call`) and
-`fallback: "ask_in_chat"`. The agent then asks in the chat: `questions` lists
+`form_mode_not_declared`, `protocol_version`, `task_augmented_call`,
+`nested_call`) and `fallback: "ask_in_chat"`. The agent then asks in the chat: `questions` lists
 every pending question with its options, `draft` applies the answers. The
 `project-intake` prompt and the server instructions say exactly this.
 
@@ -628,6 +732,21 @@ formulario y vuelven como `not_elicitable`. El resultado lista todo lo que qued�
 sin responder y por qué. Por debajo, las peticiones servidor→cliente usan ids
 `horizun-server-<n>`, el lector entrega cada respuesta sin bloquearse y cada
 espera termina por respuesta, tiempo, cancelación o cierre del canal.
+
+**Revisión 2026-07-28 (MRTR, SEP-2322).** Ahí no hay petición servidor→cliente:
+la herramienta devuelve un `InputRequiredResult` (`resultType: "input_required"`,
+un formulario en `inputRequests` y un `requestState`) y el cliente vuelve a
+llamar con los mismos `arguments`, `inputResponses` y el `requestState` intacto.
+Cada ronda aplica sus respuestas como siempre; al terminar (o al cancelar) llega
+el resultado normal, con `dry_run` por defecto y, si se escribe, relectura. El
+estado va firmado con HMAC-SHA256 (clave por proceso), atado a la herramienta, a
+los argumentos (otra `path` o `dry_run` → `mismatch`), al `clientInfo.name`,
+caduca con `timeout_seconds` y se consume una sola vez; cualquier fallo devuelve
+`request_state_rejected` sin aplicar ni escribir nada. La capacidad se lee de
+`_meta` de cada petición. Roots y sampling no se usan; logging sigue igual en
+2025-*, y en 2026-07-28 (obsoleto por SEP-2577 pero vigente) se declara
+`logging` en `server/discover` porque el servidor emite registros cuando la
+petición pide `logLevel`, y un nivel desconocido da `-32602`.
 
 ## Cloud CDE reader
 

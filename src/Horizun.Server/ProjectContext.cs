@@ -38,6 +38,9 @@
 //              refuses with code elicitation_unsupported and the agent asks in chat.
 //              A declined or cancelled form, a blank field and a question that is
 //              not a flat primitive all stay unanswered - and are listed as such.
+//              Under 2026-07-28 the forms travel as InputRequiredResult rounds
+//              (multi round-trip requests) with a sealed, single-use requestState
+//              instead of elicitation/create requests; see ElicitRoundTrip.
 //
 // Writing is the only thing here that reaches outside this process, and only when a
 // call asks for it: the contract classifies the tool ExternalSideEffectOnRequest, so
@@ -439,7 +442,11 @@ namespace Horizun.Server
             // the code and asks in the chat, instead of parsing this sentence.
             ClientContext client = ClientContext.Current;
             ClientElicitationSupport support = client?.Elicitation ?? ClientElicitationSupport.NotInitialized();
-            if (!support.CanElicitForm || client?.Channel == null)
+            // 2026-07-28: the input_required answer belongs to the tools/call the client
+            // sent. Reached from inside another tool, it would be bound to the wrong call.
+            if (support.Mrtr && support.CanElicitForm && client?.ToolName != ToolName)
+                support = support.ForNestedCall();
+            if (!support.CanElicitForm || (!support.Mrtr && client?.Channel == null))
                 throw new ToolRefusal(
                     "elicitation_unsupported: " + support.Explain("en") + " Nothing was asked and nothing was written. Ask " +
                     "the person in the chat instead: operation=questions lists every pending question with its options, and " +
@@ -478,16 +485,7 @@ namespace Horizun.Server
             }
 
             // THE BASE: the file (a second intake fills gaps), then earlier answers.
-            JObject working = new JObject();
-            if (path != null && File.Exists(path))
-            {
-                JToken parsed;
-                string parseError;
-                if (!TryParse(File.ReadAllBytes(path), out parsed, out parseError) || !(parsed is JObject))
-                    throw new ToolRefusal("'" + path + "' exists and is not a JSON object (" +
-                                          (parseError ?? "top level is not an object") + "). Run operation=validate. Nothing was asked.");
-                working = (JObject)parsed;
-            }
+            JObject working = LoadElicitBase(path);
             var collected = new JObject();
             foreach (JProperty p in prior.Properties())
             {
@@ -502,25 +500,21 @@ namespace Horizun.Server
             var outcome = new Dictionary<string, string>(StringComparer.Ordinal);   // question id -> why it stayed unanswered
             var asked = new HashSet<string>(StringComparer.Ordinal);
             string stopped = null;
+
+            if (support.Mrtr)
+            {
+                stopped = ElicitRoundTrip(args, client, support, language, timeoutSeconds, working, collected, rounds,
+                                          outcome, asked);
+                return FinishElicit(language, dryRun, overwrite, path, support, working, rounds, stopped, collected,
+                                    outcome, ct);
+            }
+
             int timeoutMs = timeoutSeconds * 1000;
-
-            var sections = new List<string>();
-            foreach (Question q in Questions) if (!sections.Contains(q.Section)) sections.Add(q.Section);
-
-            foreach (string section in sections)
+            foreach (string section in SectionsInOrder())
             {
                 while (stopped == null)
                 {
-                    List<Question> pending = Questions
-                        .Where(q => q.Section == section && IsElicitable(q) && !asked.Contains(q.Id) &&
-                                    StateOf(q, working) == "pending")
-                        .ToList();
-                    // A question that depends on another one still open in this block waits
-                    // for its answer: "where is the EIR?" is not asked beside "does it exist?".
-                    List<Question> ready = pending
-                        .Where(q => q.DependsOnPointer == null || !pending.Any(o => o.Pointer == q.DependsOnPointer))
-                        .Take(MaxFieldsPerForm)
-                        .ToList();
+                    List<Question> ready = ReadyBlock(section, working, asked);
                     if (ready.Count == 0) break;
 
                     long remaining = ElicitBudgetMs - clock.ElapsedMilliseconds;
@@ -562,64 +556,282 @@ namespace Horizun.Server
                         break;
                     }
 
-                    string action = reply.Result?["action"] is JValue av && av.Type == JTokenType.String ? (string)av : null;
-                    round["action"] = action;
-                    if (action == "decline" || action == "cancel")
-                    {
-                        // Respected, never retried. A declined block leaves its questions
-                        // open and the intake moves on to the next topic; a cancelled form
-                        // (dismissed without a choice) ends the whole intake for now.
-                        string state = action == "decline" ? "declined" : "cancelled";
-                        foreach (Question q in ready) outcome[q.Id] = state;
-                        if (action == "cancel") stopped = "cancelled";
-                        break;
-                    }
-                    if (action != "accept")
-                    {
-                        round["action"] = "client_error";
-                        round["error"] = "the client answered with action '" + (action ?? "(none)") +
-                                         "'; only accept, decline and cancel exist";
-                        foreach (Question q in ready) outcome[q.Id] = "client_error";
-                        stopped = "client_error";
-                        break;
-                    }
-
-                    JObject content = reply.Result["content"] as JObject ?? new JObject();
-                    var answeredIds = new JArray();
-                    var blank = new JArray();
-                    var rejected = new JArray();
-                    foreach (Question q in ready)
-                    {
-                        JToken value;
-                        string reason;
-                        if (!TryReadAnswer(q, content[q.Id], out value, out reason))
-                        {
-                            outcome[q.Id] = reason;
-                            if (reason == "left_blank") blank.Add(q.Id);
-                            else rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = reason });
-                            continue;
-                        }
-                        string why = SetPointer(working, q.Pointer, value.DeepClone());
-                        if (why != null)
-                        {
-                            // The FILE already holds something at this path that is not an
-                            // object; the answer cannot be placed and is said so.
-                            outcome[q.Id] = "cannot_be_placed";
-                            rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = "cannot_be_placed: " + why });
-                            continue;
-                        }
-                        collected[q.Pointer] = value.DeepClone();
-                        answeredIds.Add(q.Id);
-                    }
-                    var ignored = new JArray(content.Properties().Select(p => p.Name).Where(n => ready.All(q => q.Id != n)));
-                    round["answered"] = answeredIds;
-                    round["left_blank"] = blank;
-                    round["rejected"] = rejected;
-                    if (ignored.Count > 0) round["ignored_fields"] = ignored;
+                    string verdict = ApplyFormResult(ready, reply.Result, working, collected, outcome, round);
+                    if (verdict == "declined") break;
+                    if (verdict != null) { stopped = verdict; break; }
                 }
                 if (stopped != null) break;
             }
 
+            return FinishElicit(language, dryRun, overwrite, path, support, working, rounds, stopped, collected, outcome, ct);
+        }
+
+        /// <summary>The tool name a 2026-07-28 requestState is bound to.</summary>
+        internal const string ToolName = "horizun_project_context";
+
+        private static JObject LoadElicitBase(string path)
+        {
+            if (path == null || !File.Exists(path)) return new JObject();
+            JToken parsed;
+            string parseError;
+            if (!TryParse(File.ReadAllBytes(path), out parsed, out parseError) || !(parsed is JObject))
+                throw new ToolRefusal("'" + path + "' exists and is not a JSON object (" +
+                                      (parseError ?? "top level is not an object") + "). Run operation=validate. Nothing was asked.");
+            return (JObject)parsed;
+        }
+
+        private static List<string> SectionsInOrder()
+        {
+            var sections = new List<string>();
+            foreach (Question q in Questions) if (!sections.Contains(q.Section)) sections.Add(q.Section);
+            return sections;
+        }
+
+        /// <summary>The next form of a block: its pending flat questions, dependants held back, at most six.</summary>
+        private static List<Question> ReadyBlock(string section, JObject working, HashSet<string> asked)
+        {
+            List<Question> pending = Questions
+                .Where(q => q.Section == section && IsElicitable(q) && !asked.Contains(q.Id) &&
+                            StateOf(q, working) == "pending")
+                .ToList();
+            // A question that depends on another one still open in this block waits
+            // for its answer: "where is the EIR?" is not asked beside "does it exist?".
+            return pending
+                .Where(q => q.DependsOnPointer == null || !pending.Any(o => o.Pointer == q.DependsOnPointer))
+                .Take(MaxFieldsPerForm)
+                .ToList();
+        }
+
+        /// <summary>
+        /// Apply one ElicitResult to the questions its form carried - the same rules on both
+        /// transports. Returns null to go on, "declined" to leave this block, or the reason
+        /// the whole intake stops (cancelled, client_error).
+        /// </summary>
+        private static string ApplyFormResult(List<Question> ready, JObject result, JObject working, JObject collected,
+                                              Dictionary<string, string> outcome, JObject round)
+        {
+            string action = result?["action"] is JValue av && av.Type == JTokenType.String ? (string)av : null;
+            round["action"] = action;
+            if (action == "decline" || action == "cancel")
+            {
+                // Respected, never retried. A declined block leaves its questions
+                // open and the intake moves on to the next topic; a cancelled form
+                // (dismissed without a choice) ends the whole intake for now.
+                string state = action == "decline" ? "declined" : "cancelled";
+                foreach (Question q in ready) outcome[q.Id] = state;
+                return state;
+            }
+            if (action != "accept")
+            {
+                round["action"] = "client_error";
+                round["error"] = "the client answered with action '" + (action ?? "(none)") +
+                                 "'; only accept, decline and cancel exist";
+                foreach (Question q in ready) outcome[q.Id] = "client_error";
+                return "client_error";
+            }
+
+            JObject content = result["content"] as JObject ?? new JObject();
+            var answeredIds = new JArray();
+            var blank = new JArray();
+            var rejected = new JArray();
+            foreach (Question q in ready)
+            {
+                JToken value;
+                string reason;
+                if (!TryReadAnswer(q, content[q.Id], out value, out reason))
+                {
+                    outcome[q.Id] = reason;
+                    if (reason == "left_blank") blank.Add(q.Id);
+                    else rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = reason });
+                    continue;
+                }
+                string why = SetPointer(working, q.Pointer, value.DeepClone());
+                if (why != null)
+                {
+                    // The FILE already holds something at this path that is not an
+                    // object; the answer cannot be placed and is said so.
+                    outcome[q.Id] = "cannot_be_placed";
+                    rejected.Add(new JObject { ["id"] = q.Id, ["reason"] = "cannot_be_placed: " + why });
+                    continue;
+                }
+                collected[q.Pointer] = value.DeepClone();
+                answeredIds.Add(q.Id);
+            }
+            var ignored = new JArray(content.Properties().Select(p => p.Name).Where(n => ready.All(q => q.Id != n)));
+            round["answered"] = answeredIds;
+            round["left_blank"] = blank;
+            round["rejected"] = rejected;
+            if (ignored.Count > 0) round["ignored_fields"] = ignored;
+            return null;
+        }
+
+        // ---- elicit under 2026-07-28: multi round-trip requests (SEP-2322) ----------------
+        //
+        // The same intake, the same forms, the same rules for what an answer is - but no
+        // request is sent to the client and nothing waits. Each call either returns ONE
+        // form as an InputRequiredResult, or - when no block is left - the same result the
+        // legacy path returns. Everything that has to survive between calls travels in a
+        // requestState sealed by MrtrRequestState: the answers so far, which questions were
+        // asked and why some stay open, and the form that is waiting for its answer. The
+        // client cannot change any of it, cannot move it to other arguments (another path,
+        // dry_run flipped), and cannot use it twice.
+
+        /// <summary>The inputRequests key of the form in flight. Server-assigned, unique within the request.</summary>
+        private static string FormKey(int round) => "intake_form_" + round.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+        /// <summary>
+        /// Advance the intake by what the retried call brought, and either throw the next
+        /// InputRequiredResult or return the stop reason (null when every block was asked).
+        /// </summary>
+        private static string ElicitRoundTrip(JObject args, ClientContext client, ClientElicitationSupport support,
+                                             string language, int timeoutSeconds, JObject working, JObject collected,
+                                             JArray rounds, Dictionary<string, string> outcome, HashSet<string> asked)
+        {
+            string binding = MrtrRequestState.Binding(ToolName, args);
+            string principal = client.Principal ?? "";
+            var skipped = new HashSet<string>(StringComparer.Ordinal);   // sections a person declined
+            string stopped = null;
+
+            if (client.RequestState != null)
+            {
+                string reason;
+                JObject state = MrtrRequestState.Open(client.RequestState, out reason);
+                if (reason == null && ((string)state["tool"] != ToolName || (string)state["binding"] != binding))
+                    reason = "mismatch";
+                if (reason == null && (string)state["principal"] != principal) reason = "principal_mismatch";
+                if (reason != null) throw StateRejected(reason, reason == "expired" ? state : null);
+
+                // THE STATE REPLACES THE ARGUMENTS' ANSWERS, it does not add to them: the
+                // binding proved they are the same arguments, and the state holds the
+                // answers of every round since.
+                foreach (JProperty p in ((JObject)state["collected"]).Properties())
+                {
+                    string why = CheckPointer(p.Name) ?? SetPointer(working, p.Name, p.Value.DeepClone());
+                    if (why != null)
+                        throw new ToolRefusal("The answer for '" + p.Name + "' carried between rounds cannot be placed any " +
+                                              "more: " + why + ". The file changed under the intake; run operation=validate. " +
+                                              "Nothing was written.");
+                    collected[p.Name] = p.Value.DeepClone();
+                }
+                foreach (JProperty p in ((JObject)state["outcome"]).Properties()) outcome[p.Name] = (string)p.Value;
+                foreach (JToken t in (JArray)state["asked"]) asked.Add((string)t);
+                foreach (JToken t in (JArray)state["skipped"]) skipped.Add((string)t);
+                foreach (JToken t in (JArray)state["rounds"]) rounds.Add(t.DeepClone());
+
+                JObject pendingForm = (JObject)state["pending"];
+                string key = (string)pendingForm["key"];
+                JObject response = client.InputResponses?[key] as JObject;
+                if (response == null)
+                {
+                    // The spec's SHOULD: information that is still needed is asked for
+                    // again, not turned into an error. Same form, same state - nothing was
+                    // consumed, so the retry that does carry the answer still works.
+                    throw new InputRequiredException(new JObject
+                    {
+                        ["inputRequests"] = new JObject { [key] = (JObject)pendingForm["request"] },
+                        ["requestState"] = client.RequestState
+                    });
+                }
+                if (!MrtrRequestState.TryConsume(state)) throw StateRejected("replayed", null);
+
+                var ready = new List<Question>();
+                foreach (JToken t in (JArray)pendingForm["ids"])
+                {
+                    Question q = Questions.FirstOrDefault(x => x.Id == (string)t);
+                    if (q != null) ready.Add(q);
+                }
+                JObject round = (JObject)rounds.Last;
+                string verdict = ApplyFormResult(ready, response, working, collected, outcome, round);
+                if (verdict == "declined") skipped.Add((string)pendingForm["section"]);
+                else if (verdict != null) stopped = verdict;
+            }
+
+            if (stopped != null) return stopped;
+            foreach (string section in SectionsInOrder())
+            {
+                if (skipped.Contains(section)) continue;
+                List<Question> ready = ReadyBlock(section, working, asked);
+                if (ready.Count == 0) continue;
+
+                foreach (Question q in ready) asked.Add(q.Id);
+                rounds.Add(new JObject
+                {
+                    ["round"] = rounds.Count + 1,
+                    ["section"] = section,
+                    ["asked"] = new JArray(ready.Select(q => q.Id))
+                });
+                string key = FormKey(rounds.Count);
+                var request = new JObject
+                {
+                    ["method"] = "elicitation/create",
+                    ["params"] = new JObject
+                    {
+                        ["mode"] = "form",
+                        ["message"] = FormMessage(section, rounds.Count, language),
+                        ["requestedSchema"] = FormSchema(ready, language, support.ProtocolVersion)
+                    }
+                };
+                var outcomeJson = new JObject();
+                foreach (var kv in outcome) outcomeJson[kv.Key] = kv.Value;
+                string sealedState = MrtrRequestState.Seal(new JObject
+                {
+                    ["tool"] = ToolName,
+                    ["binding"] = binding,
+                    ["principal"] = principal,
+                    ["collected"] = collected.DeepClone(),
+                    ["outcome"] = outcomeJson,
+                    ["asked"] = new JArray(asked.OrderBy(a => a, StringComparer.Ordinal)),
+                    ["skipped"] = new JArray(skipped.OrderBy(a => a, StringComparer.Ordinal)),
+                    ["rounds"] = rounds.DeepClone(),
+                    ["pending"] = new JObject
+                    {
+                        ["key"] = key,
+                        ["section"] = section,
+                        ["ids"] = new JArray(ready.Select(q => q.Id)),
+                        ["request"] = request.DeepClone()
+                    }
+                }, TimeSpan.FromSeconds(timeoutSeconds));
+                throw new InputRequiredException(new JObject
+                {
+                    ["inputRequests"] = new JObject { [key] = request },
+                    ["requestState"] = sealedState
+                });
+            }
+            return null;
+        }
+
+        private static ToolRefusal StateRejected(string reason, JObject expiredState)
+        {
+            string meaning;
+            switch (reason)
+            {
+                case "expired": meaning = "it is older than timeout_seconds"; break;
+                case "tampered": meaning = "it was altered, or it was issued by an earlier server process"; break;
+                case "mismatch": meaning = "it was issued for different arguments (path, dry_run, overwrite, language or answers must be sent unchanged on the retry)"; break;
+                case "principal_mismatch": meaning = "it was issued to a different client"; break;
+                case "replayed": meaning = "it was already used; each state carries one answer once"; break;
+                default: meaning = "it is not a state this server issued"; break;
+            }
+            var detail = new JObject
+            {
+                ["code"] = "request_state_rejected",
+                ["reason"] = reason,
+                ["written"] = false,
+                ["next"] = "call operation=elicit again WITHOUT requestState to restart the intake" +
+                           (expiredState != null ? ", passing 'answers' (below) so nothing already answered is asked again" : "")
+            };
+            // An expired state is authentic: the answers in it are the person's, so they
+            // are handed back rather than lost. They are still not ACTED on.
+            if (expiredState != null) detail["answers"] = expiredState["collected"]?.DeepClone();
+            return new ToolRefusal("request_state_rejected: the requestState was refused because " + meaning +
+                                   ". Nothing was applied and nothing was written.", detail);
+        }
+
+        private static JObject FinishElicit(string language, bool dryRun, bool overwrite, string path,
+                                            ClientElicitationSupport support, JObject working, JArray rounds,
+                                            string stopped, JObject collected, Dictionary<string, string> outcome,
+                                            CancellationToken ct)
+        {
             // WHAT IS STILL OPEN, AND WHY - every question, not only the ones asked.
             var unanswered = new JArray();
             foreach (Question q in Questions)
@@ -718,7 +930,8 @@ namespace Horizun.Server
         /// A flat requestedSchema: one primitive property per question, keyed by the
         /// question id, none required - a person may always leave an unknown empty.
         /// Options without free text become a typed enum: `oneOf` const/title under
-        /// 2025-11-25, `enum` + `enumNames` under 2025-06-18, as each revision defines.
+        /// 2025-11-25 and 2026-07-28, `enum` + `enumNames` under 2025-06-18, as each
+        /// revision defines.
         /// </summary>
         internal static JObject FormSchema(IEnumerable<Question> questions, string language, string protocolVersion)
         {
@@ -734,7 +947,7 @@ namespace Horizun.Server
                 if (q.Type == "enum" && q.Options.Length > 0 && !q.AllowOther)
                 {
                     field["type"] = "string";
-                    if (protocolVersion == "2025-11-25")
+                    if (protocolVersion == "2025-11-25" || Protocol.McpRevision.IsModern(protocolVersion))
                         field["oneOf"] = new JArray(q.Options.Select(o => new JObject
                         {
                             ["const"] = o.Value, ["title"] = es ? o.Es : o.En
