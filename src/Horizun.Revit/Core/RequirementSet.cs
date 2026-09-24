@@ -35,6 +35,29 @@ namespace Horizun.Revit.Core
         public string RemediationTool;
         public JObject RemediationArguments;
         public bool Blocking;                      // default advisory
+
+        // ---- code-check extensions (horizun_code_check). All optional; a set that
+        // uses none of them loads and evaluates exactly as before.
+        /// <summary>A GEOMETRIC measurement the bridge computes, instead of a parameter. See CodeCheckRules.Measures.</summary>
+        public string AssertionMeasure;
+        /// <summary>Unit a numeric parameter is converted to before comparing (mm, m, m2, lx). Null = raw stored value.</summary>
+        public string AssertionUnit;
+        /// <summary>What an absent or blank value means: "fails" (default) or "not_decidable".</summary>
+        public string MissingIs = "fails";
+        public string SelectorNameMatches;
+        public string SelectorParameterEqualsName;
+        public string SelectorParameterEqualsValue;
+        /// <summary>Select only elements whose measure lies in (min, max]; either bound optional.</summary>
+        public string SelectorMeasure;
+        public double? SelectorMeasureMin;
+        public double? SelectorMeasureMax;
+        /// <summary>The norm and numeral the rule comes from, echoed on every finding.</summary>
+        public JToken Source;
+        /// <summary>The threshold was NOT verified against the norm's text: nothing is applied, every element is not_decidable.</summary>
+        public bool UnverifiedValue;
+        public string Note;
+        /// <summary>Per-measure configuration (exit_count_minus_required only).</summary>
+        public JObject Config;
     }
 
     public sealed class RequirementTable
@@ -71,8 +94,37 @@ namespace Horizun.Revit.Core
         {
             { "exists", false }, { "not_exists", false }, { "not_empty", false },
             { "equals", true }, { "not_equals", true }, { "matches", true }, { "in_list", true },
-            { "is_leaf_of", true }, { "gt", true }, { "gte", true }, { "lt", true }, { "lte", true }
+            { "is_leaf_of", true }, { "gt", true }, { "gte", true }, { "lt", true }, { "lte", true },
+            { "between", true }
         };
+
+        private static readonly HashSet<string> NumericOperators = new HashSet<string>(StringComparer.Ordinal)
+        { "gt", "gte", "lt", "lte", "between" };
+
+        private static readonly HashSet<string> RuleKeys = new HashSet<string>(StringComparer.Ordinal)
+        { "id", "selector", "assertion", "remediation", "severity", "source", "unverified_value", "note", "config" };
+        private static readonly HashSet<string> SelectorKeys = new HashSet<string>(StringComparer.Ordinal)
+        { "category", "type_name_matches", "parameter_exists", "name_matches", "parameter_equals", "measure_range" };
+        private static readonly HashSet<string> AssertionKeys = new HashSet<string>(StringComparer.Ordinal)
+        { "parameter", "measure", "operator", "value", "unit", "missing_is" };
+        private static readonly HashSet<string> Units = new HashSet<string>(StringComparer.Ordinal)
+        { "mm", "m", "m2", "lx" };
+
+        private static void RefuseUnknownKeys(JObject o, HashSet<string> known, string where)
+        {
+            foreach (JProperty p in o.Properties())
+                if (!known.Contains(p.Name))
+                    throw new RequirementSetException(
+                        where + ": unknown key '" + p.Name + "'. Known: " + string.Join(", ", known.OrderBy(x => x)) +
+                        ". A misspelt key would otherwise be a condition that silently does not apply.");
+        }
+
+        private static void CheckRegex(string ruleId, string what, string pattern)
+        {
+            if (pattern == null) return;
+            try { _ = new System.Text.RegularExpressions.Regex(pattern); }
+            catch (Exception ex) { throw new RequirementSetException("Rule '" + ruleId + "' " + what + " is not a valid regex: " + ex.Message); }
+        }
 
         private static readonly HashSet<string> TopLevelKeys = new HashSet<string>(StringComparer.Ordinal)
         { "requirement_set", "rules", "tables" };
@@ -158,6 +210,16 @@ namespace Horizun.Revit.Core
                 var rule = new Requirement { Id = rj.Value<string>("id") };
                 if (string.IsNullOrWhiteSpace(rule.Id)) throw new RequirementSetException("A rule without an id cannot be reported on; findings are keyed by it.");
                 if (!seen.Add(rule.Id)) throw new RequirementSetException("Rule id '" + rule.Id + "' is duplicated.");
+                RefuseUnknownKeys(rj, RuleKeys, "Rule '" + rule.Id + "'");
+                rule.Source = rj["source"];
+                rule.Note = rj.Value<string>("note");
+                rule.Config = rj["config"] as JObject;
+                if (rj["unverified_value"] != null)
+                {
+                    if (rj["unverified_value"].Type != JTokenType.Boolean)
+                        throw new RequirementSetException("Rule '" + rule.Id + "' unverified_value must be true or false.");
+                    rule.UnverifiedValue = (bool)rj["unverified_value"];
+                }
 
                 // WHICH elements. A rule with no selector selects nothing and is refused,
                 // because a rule that silently matches everything is how a requirement set
@@ -165,13 +227,32 @@ namespace Horizun.Revit.Core
                 JObject sel = rj["selector"] as JObject;
                 if (sel == null || !sel.Properties().Any())
                     throw new RequirementSetException("Rule '" + rule.Id + "' has no selector. Refused: a rule that matches everything can drive a remediation across an entire model.");
+                RefuseUnknownKeys(sel, SelectorKeys, "Rule '" + rule.Id + "' selector");
                 rule.SelectorCategory = sel.Value<string>("category");
                 rule.SelectorTypeNameMatches = sel.Value<string>("type_name_matches");
                 rule.SelectorParameterExists = sel.Value<string>("parameter_exists");
-                if (rule.SelectorTypeNameMatches != null)
+                rule.SelectorNameMatches = sel.Value<string>("name_matches");
+                CheckRegex(rule.Id, "type_name_matches", rule.SelectorTypeNameMatches);
+                CheckRegex(rule.Id, "name_matches", rule.SelectorNameMatches);
+                if (sel["parameter_equals"] != null)
                 {
-                    try { _ = new System.Text.RegularExpressions.Regex(rule.SelectorTypeNameMatches); }
-                    catch (Exception ex) { throw new RequirementSetException("Rule '" + rule.Id + "' type_name_matches is not a valid regex: " + ex.Message); }
+                    JObject pe = sel["parameter_equals"] as JObject;
+                    rule.SelectorParameterEqualsName = pe?.Value<string>("parameter");
+                    rule.SelectorParameterEqualsValue = pe?["value"]?.ToString();
+                    if (string.IsNullOrWhiteSpace(rule.SelectorParameterEqualsName) || rule.SelectorParameterEqualsValue == null)
+                        throw new RequirementSetException("Rule '" + rule.Id + "' selector.parameter_equals needs {parameter, value}.");
+                }
+                if (sel["measure_range"] != null)
+                {
+                    JObject mr = sel["measure_range"] as JObject;
+                    rule.SelectorMeasure = mr?.Value<string>("measure");
+                    if (rule.SelectorMeasure == null || !CodeCheckRules.IsKnownMeasure(rule.SelectorMeasure))
+                        throw new RequirementSetException("Rule '" + rule.Id + "' selector.measure_range.measure '" +
+                            (rule.SelectorMeasure ?? "(none)") + "' is unknown. Known: " + string.Join(", ", CodeCheckRules.MeasureNames) + ".");
+                    rule.SelectorMeasureMin = mr.Value<double?>("min");
+                    rule.SelectorMeasureMax = mr.Value<double?>("max");
+                    if (rule.SelectorMeasureMin == null && rule.SelectorMeasureMax == null)
+                        throw new RequirementSetException("Rule '" + rule.Id + "' selector.measure_range needs min and/or max.");
                 }
 
                 // WHAT must be true. Exactly one assertion - the schema makes two
@@ -179,25 +260,57 @@ namespace Horizun.Revit.Core
                 // refusal here is about the DEGENERATE shapes: missing, or empty.
                 JObject a = rj["assertion"] as JObject;
                 if (a == null) throw new RequirementSetException("Rule '" + rule.Id + "' has no assertion.");
+                RefuseUnknownKeys(a, AssertionKeys, "Rule '" + rule.Id + "' assertion");
                 rule.AssertionParameter = a.Value<string>("parameter");
-                if (string.IsNullOrWhiteSpace(rule.AssertionParameter))
-                    throw new RequirementSetException("Rule '" + rule.Id + "' assertion has no parameter.");
+                rule.AssertionMeasure = a.Value<string>("measure");
+                bool hasParameter = !string.IsNullOrWhiteSpace(rule.AssertionParameter);
+                bool hasMeasure = !string.IsNullOrWhiteSpace(rule.AssertionMeasure);
+                if (hasParameter == hasMeasure)
+                    throw new RequirementSetException("Rule '" + rule.Id + "' assertion needs exactly one of parameter or measure" +
+                        (hasParameter ? " (both given): a failure could not say which was measured." : "."));
+                if (hasMeasure && !CodeCheckRules.IsKnownMeasure(rule.AssertionMeasure))
+                    throw new RequirementSetException("Rule '" + rule.Id + "' measure '" + rule.AssertionMeasure + "' is unknown. Known: " +
+                        string.Join(", ", CodeCheckRules.MeasureNames) + ". Refused rather than skipped.");
+                rule.AssertionUnit = a.Value<string>("unit");
+                if (rule.AssertionUnit != null && (!hasParameter || !Units.Contains(rule.AssertionUnit)))
+                    throw new RequirementSetException("Rule '" + rule.Id + "' unit applies to a parameter assertion and must be one of " +
+                        string.Join(", ", Units) + ".");
+                rule.MissingIs = a.Value<string>("missing_is") ?? "fails";
+                if (rule.MissingIs != "fails" && rule.MissingIs != "not_decidable")
+                    throw new RequirementSetException("Rule '" + rule.Id + "' missing_is must be fails or not_decidable.");
                 rule.Operator = a.Value<string>("operator");
                 if (rule.Operator == null || !Operators.ContainsKey(rule.Operator))
                     throw new RequirementSetException(
                         "Rule '" + rule.Id + "' operator '" + (rule.Operator ?? "(none)") + "' is unknown. Known: " +
                         string.Join(", ", Operators.Keys.OrderBy(x => x)) +
                         ". Refused rather than skipped: a skipped rule reports a clean model.");
+                if (hasMeasure && !NumericOperators.Contains(rule.Operator))
+                    throw new RequirementSetException("Rule '" + rule.Id + "' measure '" + rule.AssertionMeasure +
+                        "' is a number: its operator must be one of " + string.Join(", ", NumericOperators) + ".");
                 rule.Value = a["value"];
-                if (Operators[rule.Operator] && rule.Value == null)
+                if (rule.Value != null && rule.Value.Type == JTokenType.Null) rule.Value = null;
+                // An UNVERIFIED threshold may - and should - carry no number: a number nobody
+                // checked against the norm would be applied as if it were the norm.
+                if (Operators[rule.Operator] && rule.Value == null && !rule.UnverifiedValue)
                     throw new RequirementSetException("Rule '" + rule.Id + "' operator '" + rule.Operator + "' requires value.");
-                if (rule.Operator == "is_leaf_of")
+                if (rule.Value != null && rule.Operator == "between")
+                {
+                    JArray range = rule.Value as JArray;
+                    if (range == null || range.Count != 2 ||
+                        !range.All(t => t.Type == JTokenType.Integer || t.Type == JTokenType.Float) ||
+                        range[0].Value<double>() > range[1].Value<double>())
+                        throw new RequirementSetException("Rule '" + rule.Id + "' between requires value [min, max] with min <= max.");
+                }
+                else if (rule.Value != null && hasMeasure &&
+                         rule.Value.Type != JTokenType.Integer && rule.Value.Type != JTokenType.Float)
+                    throw new RequirementSetException("Rule '" + rule.Id + "' value must be a number for a measure.");
+                if (rule.Operator == "is_leaf_of" && rule.Value != null)
                 {
                     string tableId = rule.Value.Type == JTokenType.String ? (string)rule.Value : null;
                     if (tableId == null || !set.Tables.ContainsKey(tableId))
                         throw new RequirementSetException("Rule '" + rule.Id + "' is_leaf_of names table '" + (tableId ?? "(not a string)") + "', which this set does not carry.");
                 }
-                if (rule.Operator == "in_list" && !(rule.Value is JArray))
+                if (rule.Operator == "in_list" && rule.Value != null && !(rule.Value is JArray))
                     throw new RequirementSetException("Rule '" + rule.Id + "' in_list requires value to be a list.");
 
                 // WHAT TO DO about it. Optional - a set may be read-only by design - but
@@ -246,20 +359,31 @@ namespace Horizun.Revit.Core
                         string.Equals(measured, v.ToString(), StringComparison.OrdinalIgnoreCase));
                 case "is_leaf_of":
                     return parameterExists && Tables[(string)rule.Value].IsLeaf(measured);
-                case "gt": case "gte": case "lt": case "lte":
+                case "gt": case "gte": case "lt": case "lte": case "between":
                     if (!parameterExists) return false;
                     if (!double.TryParse(measured, NumberStyles.Any, CultureInfo.InvariantCulture, out double have)) return false;
-                    double want = rule.Value.Value<double>();
-                    return rule.Operator == "gt" ? have > want
-                         : rule.Operator == "gte" ? have >= want
-                         : rule.Operator == "lt" ? have < want
-                         : have <= want;
+                    return CompareNumber(rule, have);
                 default:
                     // Unreachable: Load() refused unknown operators. Throwing keeps it
                     // that way - returning false here would turn a future loader bug
                     // into findings that look measured.
                     throw new InvalidOperationException("operator '" + rule.Operator + "' escaped load validation");
             }
+        }
+
+        /// <summary>A numeric operator against one exact number. The value must be present (Load refused otherwise, unless unverified).</summary>
+        public static bool CompareNumber(Requirement rule, double have)
+        {
+            if (rule.Operator == "between")
+            {
+                var range = (JArray)rule.Value;
+                return have >= range[0].Value<double>() && have <= range[1].Value<double>();
+            }
+            double want = rule.Value.Value<double>();
+            return rule.Operator == "gt" ? have > want
+                 : rule.Operator == "gte" ? have >= want
+                 : rule.Operator == "lt" ? have < want
+                 : have <= want;
         }
 
         private static void ParseCsv(RequirementTable table, string csv)

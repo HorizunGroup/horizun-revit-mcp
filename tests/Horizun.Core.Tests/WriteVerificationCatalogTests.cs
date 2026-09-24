@@ -46,6 +46,9 @@ namespace Horizun.Core.Tests
         {
             // partial class CaptureViewCommand
             { "CaptureViewOptions.cs", new[] { "horizun_capture_view" } },
+            // partial class LinkScheduleCommand: operation=write and operation=status_view
+            { "LinkScheduleWrite.cs", new[] { "horizun_link_schedule" } },
+            { "LinkScheduleStatusView.cs", new[] { "horizun_link_schedule" } },
             // the abstract base of every recipe tool in RecipeTools.cs
             { "RecipeCommand.cs", new[] { "horizun_split_floor_loops", "horizun_split_multilayer_slabs", "horizun_ungroup_and_mark",
                                           "horizun_regroup_by_param", "horizun_copy_slab_elevations", "horizun_embed_floors_in_toposolid",

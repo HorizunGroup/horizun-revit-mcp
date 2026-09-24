@@ -350,6 +350,9 @@ namespace Horizun.Contracts
             Row("horizun_audit_model", "audit"),
             Row("horizun_apply_corrections", "audit"),
             Row("horizun_audit_access", "audit"),
+            Row("horizun_code_check", "audit"),
+            Row("horizun_federation_check", "audit", "coordination"),
+            Row("horizun_link_schedule", "coordination", "powerbi"),
             Row("horizun_clash", "audit", "coordination"),
             Row("horizun_coordination", "audit", "coordination", "interoperability"),
             Row("horizun_resolve_clash", "coordination", "mep"),
@@ -4807,6 +4810,69 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_code_check",
+                Command = "horizun_code_check",
+                Description =
+                    "Evaluate a declarative requirement set over the active model: parameter assertions and geometric measures " +
+                    "(doors, ramps, stairs, 2R+T, space illuminance, exits per level). Examples: " +
+                    "standards/co-*.json. Outcomes passes|fails|not_decidable|unreadable. Read-only.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""requirement_set"": { ""type"": ""object"", ""description"": ""Inline set, or give requirement_set_path."" },
+    ""requirement_set_path"": { ""type"": ""string"" },
+    ""max_findings"": { ""type"": ""integer"" },
+    ""include_passes"": { ""type"": ""boolean"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_link_schedule",
+                Command = "horizun_link_schedule",
+                Description =
+                    "4D: a schedule (MS Project .xml, CSV id,name,start,finish,wbs, Primavera .xer) to elements. import; match by " +
+                    "parameter or rules, gaps both ways; write activity/dates to text instance parameters; status_view " +
+                    "colours a duplicated view by status at as_of. write/status_view: dry run, token, re-read.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""operation"", ""schedule_path""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""import"", ""match"", ""write"", ""status_view""] },
+    ""target_document"": { ""type"": ""string"" },
+    ""schedule_path"": { ""type"": ""string"" },
+    ""match"": { ""type"": ""object"", ""description"": ""{parameter, key:id|wbs} or {rules:[{activity,category,level?,parameter?,value?}]}"" },
+    ""write"": { ""type"": ""object"", ""description"": ""{activity_parameter, start_parameter?, finish_parameter?}"" },
+    ""view_id"": { ""type"": ""integer"" },
+    ""as_of"": { ""type"": ""string"", ""description"": ""yyyy-MM-dd"" },
+    ""max_rows"": { ""type"": ""integer"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_federation_check",
+                Command = "horizun_federation_check",
+                Description =
+                    "Federation QA against declared rules, read-only: out-of-place categories per model (host and loaded links), " +
+                    "expected/missing/duplicate links, link workset and phase, and whether each link's shared coordinates match " +
+                    "the host's (same site).",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""rules""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""rules"": { ""type"": ""object"", ""description"": ""{models:[{match (title regex or $host), allowed_categories?, forbidden_categories?}], expected_links:[{name_matches, count?, workset_matches?}], same_site?}"" },
+    ""tolerance_mm"": { ""type"": ""number"" },
+    ""max_items"": { ""type"": ""integer"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_audit_access",
                 Command = "horizun_audit_access",
                 Description =
@@ -6434,6 +6500,7 @@ namespace Horizun.Contracts
                 "horizun_manage_schedules",
                 "horizun_export",
                 "horizun_deliver_ifc",
+                "horizun_link_schedule",
                 "horizun_power_bi_push",
                 "horizun_annotate",
                 "horizun_edit_dimensions",

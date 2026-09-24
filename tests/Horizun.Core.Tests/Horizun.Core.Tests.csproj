@@ -397,6 +397,15 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\DurableStoreRetention.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ResolvedPlan.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\RequirementSet.cs" />
+    <!-- horizun_code_check, horizun_link_schedule and horizun_federation_check: the
+         Revit-free halves (measures and outcomes, schedule parsers and matching,
+         federation rules). -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckEvaluation.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\CodeCheckGeometry.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleImport.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\ScheduleLinkRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\FederationCheckRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ReceiptLedger.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Confirmation.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\GeometrySignature.cs" />

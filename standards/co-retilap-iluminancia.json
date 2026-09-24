@@ -1,0 +1,201 @@
+{
+  "requirement_set": {
+    "id": "co-retilap-iluminancia",
+    "version": "0.1.0",
+    "title": "RETILAP 2024 - iluminancia mantenida por tipo de espacio (Tabla 3.2.2.6 a) - example set",
+    "jurisdiction": "CO",
+    "sources": [
+      {
+        "norm": "Reglamento Tecnico de Iluminacion y Alumbrado Publico RETILAP, Libro 3, modificado por la Resolucion 40150 del 3 de mayo de 2024 (Ministerio de Minas y Energia)",
+        "url": "https://www.minenergia.gov.co/documents/11687/03_Libro_3_RETILAP_2024_Rev_Final_WEB.pdf",
+        "read": "2026-09-24, full text; Em values verified. The 2010 Tabla 410.1 (min/medio/max) is superseded and not used here."
+      }
+    ],
+    "disclaimer": "Example requirement set, not a lighting calculation or a compliance assessment. Spaces are matched by NAME with the regexes below - rename or extend them for your project. Revit's Average Estimated Illumination is a lumen-method estimate; an Em check needs a photometric calculation (maintenance factor, uniformity Uo, UGR), which this set does not replace. A space whose illuminance Revit did not compute is not_decidable."
+  },
+  "rules": [
+    {
+      "id": "space-offices",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)oficina|office"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 500
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 26.2",
+        "text": "oficinas: escritura, lectura, procesamiento de datos: Em = 500 lx"
+      }
+    },
+    {
+      "id": "space-meeting-rooms",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)reuni[oó]n|conferencia|meeting|conference"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 500
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 26.5.1-26.5.2",
+        "text": "salas de reuniones y conferencias: Em = 500 lx"
+      }
+    },
+    {
+      "id": "space-classrooms",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)\\baula|sal[oó]n de clases?|classroom"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 500
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 36.1",
+        "text": "aulas / salones de clase: Em = 500 lx"
+      }
+    },
+    {
+      "id": "space-corridors",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)corredor|pasillo|circulaci[oó]n|corridor"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 100
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 1.1",
+        "text": "corredores y areas de circulacion: Em = 100 lx"
+      }
+    },
+    {
+      "id": "space-stairs",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)escalera|stair"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 100
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 1.2",
+        "text": "escaleras: Em = 100 lx"
+      }
+    },
+    {
+      "id": "space-toilets",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)ba[ñn]o|sanitario|vestier|vestidor|ducha|toilet|restroom"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 200
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 2.4",
+        "text": "banos, vestieres, duchas: Em = 200 lx"
+      }
+    },
+    {
+      "id": "space-kitchens",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)cocina|kitchen"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 500
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 29.2",
+        "text": "cocinas (restaurantes y hoteles): Em = 500 lx"
+      }
+    },
+    {
+      "id": "space-storage",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)bodega|dep[oó]sito|almac[eé]n|storage"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 200
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 5.4",
+        "text": "bodegas: almacenamiento abierto: Em = 200 lx"
+      }
+    },
+    {
+      "id": "space-parking",
+      "selector": {
+        "category": "OST_MEPSpaces",
+        "name_matches": "(?i)parqueadero|estacionamiento|parking|garaje"
+      },
+      "assertion": {
+        "measure": "space_illuminance_lx",
+        "operator": "gte",
+        "value": 75
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 34.4",
+        "text": "parqueaderos cubiertos: areas de estacionamiento: Em = 75 lx"
+      }
+    },
+    {
+      "id": "room-offices-declared",
+      "selector": {
+        "category": "OST_Rooms",
+        "name_matches": "(?i)oficina|office"
+      },
+      "assertion": {
+        "parameter": "Illuminance (declared)",
+        "unit": "lx",
+        "operator": "gte",
+        "value": 500,
+        "missing_is": "not_decidable"
+      },
+      "severity": "advisory",
+      "source": {
+        "norm": "RETILAP 2024 (Resolucion 40150 de 2024), Libro 3",
+        "numeral": "Tabla 3.2.2.6 a, ref. 26.2",
+        "text": "oficinas: Em = 500 lx"
+      },
+      "note": "Template for a Room carrying a DECLARED illuminance: 'Illuminance (declared)' is a placeholder name - use your project's parameter. A room without the datum is not_decidable, never a pass."
+    }
+  ]
+}
