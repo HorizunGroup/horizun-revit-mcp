@@ -13,22 +13,30 @@
 .EXAMPLE
   & scripts/live/run-year-matrix.ps1 -Years 2026 `
       -PrepareDocument @('2026=C:\hz-live\HZ_WRITE.rvt') `
-      -Harness @('verify-live-year.ps1 -Year 2026 -Document {title} -WriteProbes -WriteDocument {title} -WriteDocumentDisposable yes-this-model-is-disposable')
+      -Harness @('verify-live-year.ps1 -Document {title} -WriteProbes -WriteDocument {title} -WriteDocumentDisposable yes-this-model-is-disposable')
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][int]$Year,
+    # The driver does not substitute placeholders other than {title}; it sets
+    # HORIZUN_REVIT_YEAR for the harness shell, so that is the default.
+    [string]$Year = $env:HORIZUN_REVIT_YEAR,
     [Parameter(Mandatory)][string]$ArtifactDir,
     [Parameter(ValueFromRemainingArguments)][object[]]$Rest
 )
 $ErrorActionPreference = 'Stop'
+$yearNumber = 0
+if (-not [int]::TryParse([string]$Year, [ref]$yearNumber)) { $yearNumber = 0 }
+if ($yearNumber -lt 2022) {
+    Write-Error "No Revit year: pass -Year or run through run-year-matrix.ps1 (HORIZUN_REVIT_YEAR)."
+    exit 2
+}
 $server = $env:HORIZUN_SERVER_EXE
 if (-not $server -or -not (Test-Path -LiteralPath $server)) {
     Write-Error 'HORIZUN_SERVER_EXE is not set to an existing server; run this through run-year-matrix.ps1.'
     exit 2
 }
 $verifyLive = Join-Path (Split-Path -Parent $PSScriptRoot) 'verify-live.ps1'
-$json = Join-Path $ArtifactDir ("verify-live-{0}.json" -f $Year)
-$forward = @('-Year', $Year, '-Server', $server, '-AllowDevServer', '-Json', $json) + @($Rest)
+$json = Join-Path $ArtifactDir ("verify-live-{0}.json" -f $yearNumber)
+$forward = @('-Year', $yearNumber, '-Server', $server, '-AllowDevServer', '-Json', $json) + @($Rest)
 & $verifyLive @forward
 exit $LASTEXITCODE
