@@ -1,0 +1,45 @@
+{
+  "tool": "horizun_deliver_ifc",
+  "title": {
+    "en": "Verified IFC delivery of the mechanical model, named as an ISO 19650 container",
+    "es": "Entrega IFC verificada del modelo mecánico, con nombre de contenedor ISO 19650"
+  },
+  "about": {
+    "en": "Rehearsal first (dry_run=true, the default): it returns the plan - effective exporter options, the model's current georeference, the SHA-256 of the mapping and the IDS, the output paths - and writes nothing. The apply is the same call with dry_run=false, the confirmation_token of the rehearsal and a fresh idempotency_key. The verdict is the FILE's: FILE_SCHEMA must be IFC4, hz-delivery.ids is evaluated on the exported IFC (not on the model), and every property of hz-delivery-psets.txt (HZ_Delivery.Code and .System on IfcDuctSegment) is looked for in the file with coverage n of m. deliverable_ready is true only when every requested gate passed. With a container, the file is named DEMO-ABC-ZZ-01-M3-M-0001.ifc and sealed with a sidecar.",
+    "es": "Primero el ensayo (dry_run=true, por defecto): devuelve el plan (opciones efectivas del exportador, georreferencia actual del modelo, SHA-256 del mapeo y del IDS, rutas de salida) y no escribe nada. La aplicación es la misma llamada con dry_run=false, el confirmation_token del ensayo y un idempotency_key nuevo. El veredicto es del ARCHIVO: FILE_SCHEMA debe ser IFC4, hz-delivery.ids se evalúa sobre el IFC exportado (no sobre el modelo) y cada propiedad de hz-delivery-psets.txt (HZ_Delivery.Code y .System en IfcDuctSegment) se busca en el archivo con cobertura n de m. deliverable_ready solo es true si pasa cada gate pedido. Con contenedor, el archivo se llama DEMO-ABC-ZZ-01-M3-M-0001.ifc y queda sellado con su sidecar."
+  },
+  "files": [ "hz-delivery-psets.txt", "hz-delivery.ids" ],
+  "arguments": {
+    "target_document": "DEMO-ABC-ZZ-01-M3-M-0001",
+    "output_folder": "C:/proyectos/demo/cde/01_WIP/ifc",
+    "information_container": {
+      "fields": {
+        "project": "DEMO",
+        "originator": "ABC",
+        "volume": "ZZ",
+        "level": "01",
+        "type": "M3",
+        "role": "M",
+        "number": "0001"
+      },
+      "field_order": [ "project", "originator", "volume", "level", "type", "role", "number" ],
+      "separator": "-",
+      "status": "S2",
+      "revision": "P01",
+      "title": "Mechanical model - level 01 ductwork"
+    },
+    "ifc_version": "IFC4",
+    "export_base_quantities": true,
+    "split_walls_and_columns": false,
+    "space_boundary_level": 1,
+    "site_placement": "shared",
+    "pset_mapping_path": "C:/proyectos/demo/00_docs/hz-delivery-psets.txt",
+    "pset_min_coverage": 1,
+    "ids_path": "C:/proyectos/demo/00_docs/hz-delivery.ids",
+    "precheck": true,
+    "bcf": true,
+    "max_findings": 100,
+    "overwrite": false,
+    "dry_run": true
+  }
+}

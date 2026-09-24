@@ -1,0 +1,37 @@
+{
+  "tool": "horizun_create_elements",
+  "title": {
+    "en": "MEP: a rectangular supply duct run and a round branch on level 01",
+    "es": "MEP: un tramo de ducto rectangular de suministro y un ramal circular en el nivel 01"
+  },
+  "about": {
+    "en": "Placeholders: 1002 is level 01 (elevation 3500 mm), 3001 a RECTANGULAR duct type, 3002 a ROUND duct type, 3101 a supply-air MechanicalSystemType - resolve them in YOUR model first. Width and height are the section of the rectangular run (the horizontal side first); diameter is for the round one; never both on one run. Z is absolute: 3500 + 2700 = 6200 mm. After the apply the section is re-read from the width/height parameters AND from every end connector, including which way the width lies; the system type is re-read too. To join the two runs, add a kind=fitting entry (tee/elbow/takeoff) naming them by batch_index, or call horizun_connect_mep afterwards.",
+    "es": "Marcadores: 1002 es el nivel 01 (cota 3500 mm), 3001 un tipo de ducto RECTANGULAR, 3002 un tipo de ducto CIRCULAR, 3101 un MechanicalSystemType de aire de suministro; resuélvelos primero en TU modelo. width y height son la sección del tramo rectangular (primero el lado horizontal); diameter es para el circular; nunca ambos en un tramo. Z es absoluta: 3500 + 2700 = 6200 mm. Tras aplicar, la sección se relee de los parámetros de ancho/alto Y de cada conector extremo, incluida la orientación del ancho; también se relee el tipo de sistema. Para unir los dos tramos agrega una entrada kind=fitting (tee/elbow/takeoff) que los nombre por batch_index, o llama a horizun_connect_mep después."
+  },
+  "arguments": {
+    "target_document": "DEMO-ABC-ZZ-01-M3-M-0001",
+    "units": "mm",
+    "dry_run": true,
+    "elements": [
+      {
+        "kind": "duct",
+        "start": [0, 2000, 6200],
+        "end": [12000, 2000, 6200],
+        "level_id": 1002,
+        "type_id": 3001,
+        "system_type_id": 3101,
+        "width": 600,
+        "height": 400
+      },
+      {
+        "kind": "duct",
+        "start": [6000, 2000, 6200],
+        "end": [6000, 6000, 6200],
+        "level_id": 1002,
+        "type_id": 3002,
+        "system_type_id": 3101,
+        "diameter": 250
+      }
+    ]
+  }
+}

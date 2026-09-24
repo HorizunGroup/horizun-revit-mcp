@@ -1,0 +1,37 @@
+{
+  "tool": "horizun_export",
+  "title": {
+    "en": "Documentation: export two sheets to one PDF named and sealed as an ISO 19650 container",
+    "es": "Documentación: exportar dos planos a un PDF con nombre y sello de contenedor ISO 19650"
+  },
+  "about": {
+    "en": "4001 and 4002 are placeholder sheet ids (horizun_query_model lists yours; horizun_pack_sheets arranges views on them first). The container is validated BEFORE anything is exported - an invalid one refuses with every problem named. The combined PDF takes the container's name in the folder of output_path (DEMO-ABC-ZZ-01-DR-A-0101.pdf), is reopened and its pages counted, and then the sidecar is written beside it and read back. With a container, pdf_combine must stay true (one container is one file) and an existing sidecar refuses the export. Rehearse first; the apply needs dry_run=false, the rehearsal's confirmation_token and a fresh idempotency_key.",
+    "es": "4001 y 4002 son ids de plano de ejemplo (horizun_query_model lista los tuyos; horizun_pack_sheets acomoda antes las vistas en ellos). El contenedor se valida ANTES de exportar nada: uno inválido se rechaza nombrando cada problema. El PDF combinado toma el nombre del contenedor en la carpeta de output_path (DEMO-ABC-ZZ-01-DR-A-0101.pdf), se reabre y se cuentan sus páginas, y luego se escribe el sidecar a su lado y se relee. Con contenedor, pdf_combine debe quedar en true (un contenedor es un archivo) y un sidecar existente rechaza la exportación. Ensaya primero; aplicar exige dry_run=false, el confirmation_token del ensayo y un idempotency_key nuevo."
+  },
+  "arguments": {
+    "target_document": "DEMO-ABC-ZZ-XX-M3-A-0001",
+    "format": "pdf",
+    "output_path": "C:/proyectos/demo/cde/01_WIP/pdf/sheets.pdf",
+    "view_ids": [4001, 4002],
+    "pdf_combine": true,
+    "emit_manifest": true,
+    "overwrite": false,
+    "information_container": {
+      "fields": {
+        "project": "DEMO",
+        "originator": "ABC",
+        "volume": "ZZ",
+        "level": "01",
+        "type": "DR",
+        "role": "A",
+        "number": "0101"
+      },
+      "field_order": [ "project", "originator", "volume", "level", "type", "role", "number" ],
+      "separator": "-",
+      "status": "S2",
+      "revision": "P01",
+      "title": "Level 01 general arrangement plans"
+    },
+    "dry_run": true
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "tool": "horizun_information_container",
+  "title": {
+    "en": "Containers, step 3: inspect the CDE state folders against the MIDP",
+    "es": "Contenedores, paso 3: inspeccionar las carpetas de estado del CDE contra el MIDP"
+  },
+  "about": {
+    "en": "Never writes. The CDE root, state folders, naming and deliverables are read from the project context (see ../iso19650-startup/project-context.example.json). Findings: name_noncompliant, missing_sidecar, orphan_sidecar, hash_mismatch, state_status_mismatch, revision_incoherent and, with the MIDP, deliverable_missing / deliverable_insufficient_state / deliverable_overdue as of as_of. A folder that could not be read is reported covered=false, never as an empty folder.",
+    "es": "Nunca escribe. La raíz del CDE, las carpetas de estado, la nomenclatura y los entregables se leen del contexto del proyecto (ver ../iso19650-startup/project-context.example.json). Hallazgos: name_noncompliant, missing_sidecar, orphan_sidecar, hash_mismatch, state_status_mismatch, revision_incoherent y, con el MIDP, deliverable_missing / deliverable_insufficient_state / deliverable_overdue a la fecha as_of. Una carpeta que no se pudo leer sale covered=false, nunca como carpeta vacía."
+  },
+  "next": "04-transition.json",
+  "arguments": {
+    "operation": "inspect",
+    "project_context_path": "C:/proyectos/demo/project-context.json",
+    "as_of": "2026-10-01",
+    "offset": 0,
+    "limit": 200
+  }
+}

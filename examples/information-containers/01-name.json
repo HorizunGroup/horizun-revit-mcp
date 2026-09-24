@@ -1,0 +1,32 @@
+{
+  "tool": "horizun_information_container",
+  "title": {
+    "en": "Containers, step 1: compose and validate a container name",
+    "es": "Contenedores, paso 1: componer y validar el nombre de un contenedor"
+  },
+  "about": {
+    "en": "Never writes. The name is the fields in field_order joined by separator: DEMO-ABC-ZZ-XX-M3-A-0001. field_patterns is merged over the ISO 19650-2 defaults; every problem is listed, and the reply says which rules were defaults and which were yours. S2 with a preliminary revision P01 is coherent; a published status (A1) with P01 would be a warning, never a refusal.",
+    "es": "Nunca escribe. El nombre son los campos en el orden de field_order unidos por separator: DEMO-ABC-ZZ-XX-M3-A-0001. field_patterns se combina sobre los valores por defecto de ISO 19650-2; se listan todos los problemas y la respuesta indica qué reglas eran por defecto y cuáles tuyas. S2 con la revisión preliminar P01 es coherente; un estado publicado (A1) con P01 sería una advertencia, nunca un rechazo."
+  },
+  "next": "02-stamp.json",
+  "arguments": {
+    "operation": "name",
+    "information_container": {
+      "fields": {
+        "project": "DEMO",
+        "originator": "ABC",
+        "volume": "ZZ",
+        "level": "XX",
+        "type": "M3",
+        "role": "A",
+        "number": "0001"
+      },
+      "field_order": [ "project", "originator", "volume", "level", "type", "role", "number" ],
+      "separator": "-",
+      "field_patterns": { "project": "DEMO", "number": "[0-9]{4}" },
+      "status": "S2",
+      "revision": "P01",
+      "title": "Architectural model - general arrangement"
+    }
+  }
+}

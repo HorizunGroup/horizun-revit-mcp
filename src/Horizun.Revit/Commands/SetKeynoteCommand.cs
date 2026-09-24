@@ -457,7 +457,9 @@ namespace Horizun.Revit.Commands
                 // The verdict is over the POST-COMMIT number now. It used to be over the
                 // in-transaction one, which cannot distinguish a committed write from one
                 // that was rolled back underneath it.
-                ["verification"] = JObject.FromObject(Guard.Verify("keynote writes", byTarget.Count, verified)),
+                // VerifyRequested: ids were sent, so zero resolved targets is an empty check,
+                // never "verified" - application already said failed, and now this agrees.
+                ["verification"] = Guard.VerifyRequested("keynote writes", idsToken.Count, byTarget.Count, verified),
                 ["written"] = written,
                 ["failed"] = failed
             };

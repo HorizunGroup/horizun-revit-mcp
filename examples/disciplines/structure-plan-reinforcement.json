@@ -1,0 +1,46 @@
+{
+  "tool": "horizun_plan_reinforcement",
+  "title": {
+    "en": "Structure: plan the stirrups of one beam from a declared requirement set",
+    "es": "Estructura: planear los estribos de una viga desde un conjunto de requisitos declarado"
+  },
+  "about": {
+    "en": "Read-only: it computes every bar position and writes nothing; horizun_apply_reinforcement then builds the plan and compares Revit's answer with it. The bridge does not design - diameter, spacing, cover, hooks and the bar curve are the engineer's numbers, declared here in the neutral horizun.structural-requirements/1 document (lengths are always millimetres). 5001 is a placeholder for a beam id in YOUR model; 10M and the hook name must be types that exist there. See docs/STRUCTURAL-REQUIREMENT-SET.md.",
+    "es": "Solo lectura: calcula cada posición de barra y no escribe nada; después horizun_apply_reinforcement construye el plan y compara la respuesta de Revit con él. El puente no diseña: diámetro, separación, recubrimiento, ganchos y la curva de la barra son números del ingeniero, declarados aquí en el documento neutral horizun.structural-requirements/1 (las longitudes siempre en milímetros). 5001 es un marcador de un id de viga en TU modelo; 10M y el nombre del gancho deben ser tipos que existan allí. Ver docs/STRUCTURAL-REQUIREMENT-SET.md."
+  },
+  "arguments": {
+    "requirement_set": {
+      "schema": "horizun.structural-requirements/1",
+      "requirement_set": { "id": "demo-beam-b1", "version": "1.0.0", "title": "Demo B1 beam stirrups" },
+      "units": "millimeter",
+      "tolerances": { "length_mm": 2.0, "spacing_mm": 2.0, "cover_mm": 1.0, "angle_degrees": 1.0 },
+      "bar_types": [
+        { "id": "T10", "type_name": "10M", "nominal_diameter_mm": 10 }
+      ],
+      "hook_types": [
+        { "id": "H135", "type_name": "Stirrup/Tie Hook - 135 deg" }
+      ],
+      "cover_rules": [
+        { "id": "beam-cover", "host": { "category": "OST_StructuralFraming" }, "face": "common", "cover_type_name": "Beam, Sides", "distance_mm": 40 }
+      ],
+      "reinforcement_rules": [
+        {
+          "id": "b1-stirrups",
+          "host": { "element_ids": [5001] },
+          "bar_type": "T10",
+          "style": "stirrup_tie",
+          "curve_mm": [[0, 40, 40], [0, 260, 40], [0, 260, 460], [0, 40, 460]],
+          "closed": true,
+          "normal": [1, 0, 0],
+          "start": { "hook_type": "H135", "orientation": "left" },
+          "end": { "hook_type": "H135", "orientation": "right" },
+          "layout": { "rule": "maximum_spacing", "spacing_mm": 200, "array_length_mm": 3800 },
+          "allow_new_shape": true,
+          "mark": "S1",
+          "required": true
+        }
+      ]
+    },
+    "host_ids": [5001]
+  }
+}

@@ -492,9 +492,20 @@ namespace Horizun.Revit.Commands
                     }
                     return target;
                 case ScheduleEditRules.OpRemoveFields:
+                {
+                    // Record the IDENTITY of every field actually removed. A positional entry
+                    // (field_index) names nothing that survives the removal, so without this the
+                    // re-read had nothing to look for and passed vacuously.
+                    var removed = new JArray();
                     foreach (JToken t in (JArray)a["fields"])
-                        definition.RemoveField(ResolveFieldId(target, (JObject)t));
+                    {
+                        ScheduleFieldId id = ResolveFieldId(target, (JObject)t);
+                        removed.Add(id.IntegerValue);
+                        definition.RemoveField(id);
+                    }
+                    a["__removed_field_ids"] = removed;
                     return target;
+                }
                 case ScheduleEditRules.OpSetField:
                 {
                     ScheduleField field = definition.GetField(ResolveFieldId(target, a));
@@ -617,16 +628,30 @@ namespace Horizun.Revit.Commands
                 case ScheduleEditRules.OpRemoveFields:
                 {
                     List<ScheduleFieldFacts> facts = FieldFacts(schedule);
+                    JArray removedIds = a.Action["__removed_field_ids"] as JArray;
+                    var remainingIds = new HashSet<int>(definition.GetFieldOrder().Select(f => f.IntegerValue));
                     foreach (JToken t in (JArray)a.Action["fields"])
                     {
                         var entry = (JObject)t;
                         long? parameterId = entry.Value<long?>("parameter_id");
                         string name = entry.Value<string>("name");
+                        if (parameterId == null && name == null)
+                        {
+                            // Positional: judged by the identity recorded at removal. No record
+                            // means nothing was measured - never a pass.
+                            if (removedIds == null || removedIds.Count == 0)
+                            { why = "a field removed by field_index has no recorded identity to re-read"; return false; }
+                            continue;
+                        }
                         bool present = parameterId != null
                             ? facts.Any(f => f.ParameterId == parameterId.Value)
-                            : name != null && facts.Any(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
+                            : facts.Any(f => string.Equals(f.Name, name, StringComparison.OrdinalIgnoreCase));
                         if (present) { why = "field " + (name ?? parameterId.ToString()) + " is still present"; return false; }
                     }
+                    if (removedIds != null)
+                        foreach (JToken removed in removedIds)
+                            if (remainingIds.Contains(removed.Value<int>()))
+                            { why = "removed field id " + removed + " is still in the schedule"; return false; }
                     return true;
                 }
                 // The OpSetField re-read lives further down, with the totals

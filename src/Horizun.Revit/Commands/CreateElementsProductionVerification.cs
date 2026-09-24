@@ -78,7 +78,7 @@ namespace Horizun.Revit.Commands
             bool paramsOk = w.HasValue && h.HasValue && Math.Abs(w.Value - width) <= tol && Math.Abs(h.Value - height) <= tol;
             var connectors = new JArray();
             bool shapeOk = true, orientOk = true, connSizeOk = true;
-            int ends = 0;
+            int ends = 0, unreadableConnectors = 0;
             string orientation = "not_applicable";
             XYZ axis = null;
             try
@@ -95,9 +95,11 @@ namespace Horizun.Revit.Commands
                     ends++;
                     string shape = Safe(() => c.Shape.ToString());
                     bool isRect = c.Shape == ConnectorProfileType.Rectangular;
-                    double cw = 0, ch = 0;
-                    try { cw = c.Width; ch = c.Height; } catch { }
-                    bool sizeOk = isRect && Math.Abs(cw - width) <= tol && Math.Abs(ch - height) <= tol;
+                    // An end connector whose size cannot be read is UNMEASURED - it used to be
+                    // published as 0 x 0 mm, a measurement nobody took.
+                    double cw = 0, ch = 0; bool sizeRead = true;
+                    try { cw = c.Width; ch = c.Height; } catch { sizeRead = false; unreadableConnectors++; }
+                    bool sizeOk = sizeRead && isRect && Math.Abs(cw - width) <= tol && Math.Abs(ch - height) <= tol;
                     XYZ bx = null;
                     try { bx = c.CoordinateSystem.BasisX; } catch { }
                     bool horizontalWidth = bx != null && Math.Abs(bx.Z) < 1e-6;
@@ -107,7 +109,8 @@ namespace Horizun.Revit.Commands
                     connectors.Add(new JObject
                     {
                         ["connector"] = c.Id, ["shape"] = shape,
-                        ["width_mm"] = Math.Round(cw * 304.8, 3), ["height_mm"] = Math.Round(ch * 304.8, 3),
+                        ["width_mm"] = sizeRead ? (JToken)Math.Round(cw * 304.8, 3) : JValue.CreateNull(),
+                        ["height_mm"] = sizeRead ? (JToken)Math.Round(ch * 304.8, 3) : JValue.CreateNull(),
                         ["width_axis"] = bx == null ? null : new JArray(Math.Round(bx.X, 6), Math.Round(bx.Y, 6), Math.Round(bx.Z, 6)),
                         ["connected"] = Safe(() => c.IsConnected.ToString()) == "True"
                     });
@@ -125,6 +128,7 @@ namespace Horizun.Revit.Commands
                 ["connector_size_verified"] = connSizeOk,
                 ["orientation"] = orientation,
                 ["end_connectors"] = connectors,
+                ["unreadable_connectors"] = unreadableConnectors,
                 ["verified"] = ok
             };
         }
@@ -199,9 +203,11 @@ namespace Horizun.Revit.Commands
                 // and nothing about it looks wrong in plan.
                 bool structuralMatches = true;
                 JObject structuralRow = null;
+                bool? structuralRead = null;
                 if (made.ExpectedStructural.HasValue)
                 {
                     bool? readBack = StructuralOf(element);
+                    structuralRead = readBack;
                     structuralMatches = readBack.HasValue && readBack.Value == made.ExpectedStructural.Value;
                     structuralRow = new JObject
                     {
@@ -217,9 +223,11 @@ namespace Horizun.Revit.Commands
                 // and fails every flow calculation downstream.
                 bool diameterMatches = true;
                 JObject diameterRow = null;
+                double? diameterRead = null;
                 if (made.ExpectedDiameter.HasValue)
                 {
                     double? readBack = DiameterOf(element);
+                    diameterRead = readBack;
                     // A tenth of a millimetre, in feet: Revit stores sizes as
                     // doubles and a nominal bore rounds.
                     diameterMatches = readBack.HasValue &&
@@ -323,10 +331,23 @@ namespace Horizun.Revit.Commands
                 JObject curveRow = VerifyCurve(element, made);
                 bool curveMatches = curveRow == null || (bool)curveRow["verified"];
 
+                // THE SAME COMPARISONS, AS A TYPED CHECKLIST. The booleans above decide as they
+                // always did; the checklist adds the two protections they lack by construction:
+                // it knows WHICH properties this row asked for (so one silently dropped from the
+                // code cannot pass by omission), and a value that could not be re-read is
+                // UNMEASURED rather than a comparison against a default. The row now verifies
+                // only when both agree.
+                PostconditionCheck production = ProductionChecklist(doc, made, element,
+                    kindMatches, typeMatches, structuralTypeMatches, connectorsMatch,
+                    inlineConnectionsMatch, inlineConnectionsRow, structuralRead, diameterRead,
+                    sectionRow, sectionMatches, identityRow, hostMatches, systemRow, systemMatches,
+                    curveRow, curveMatches);
+
                 bool rowVerified = kindMatches && typeMatches && structuralTypeMatches && connectorsMatch &&
                                    inlineConnectionsMatch &&
                                    hostMatches && systemMatches && curveMatches && structuralMatches &&
-                                   diameterMatches && sectionMatches && identityMatches;
+                                   diameterMatches && sectionMatches && identityMatches &&
+                                   production.AllVerified;
 
                 var verifyRow = new JObject
                 {
@@ -361,7 +382,109 @@ namespace Horizun.Revit.Commands
                 if (made.ExpectedConnected != null) verifyRow["connectors_verified"] = connectorsMatch;
                 if (inlineConnectionsRow != null) verifyRow["inline_connections"] = inlineConnectionsRow;
                 if (made.ExpectedHostId != null) verifyRow["host_verified"] = hostMatches;
+                verifyRow["production_postconditions"] = production.ToJson();
                 return verifyRow;
+        }
+
+        /// <summary>
+        /// The production properties of one created row as a PostconditionCheck: exactly the
+        /// properties this row declared, each recorded with what was requested and what the
+        /// committed model returned, or as unmeasured when it could not be read.
+        /// </summary>
+        private static PostconditionCheck ProductionChecklist(Document doc, Created made, Element element,
+            bool kindMatches, bool typeMatches, bool structuralTypeMatches, bool connectorsMatch,
+            bool inlineConnectionsMatch, JObject inlineConnectionsRow, bool? structuralRead, double? diameterRead,
+            JObject sectionRow, bool sectionMatches, JObject identityRow, bool hostMatches,
+            JObject systemRow, bool systemMatches, JObject curveRow, bool curveMatches)
+        {
+            var required = new List<string> { "present", "kind" };
+            if (made.ExpectedTypeId != null) required.Add("type_id");
+            if (made.ExpectedStructuralType != null) required.Add("structural_type");
+            if (made.ExpectedConnected != null) required.Add("fitting_connections");
+            if (made.ExpectedInlineConnections) required.Add("inline_connections");
+            if (made.ExpectedStructural.HasValue) required.Add("structural");
+            if (made.ExpectedDiameter.HasValue) required.Add("diameter");
+            if (made.ExpectedWidth.HasValue && made.ExpectedHeight.HasValue) required.Add("section");
+            if (made.ExpectedName != null) required.Add("name");
+            if (made.ExpectedNumber != null) required.Add("number");
+            if (made.ExpectedHostId != null) required.Add("host_id");
+            if (made.ExpectedSystemName != null) required.Add("mep_system");
+            if (curveRow != null) required.Add("curve");
+            var check = new PostconditionCheck(required.ToArray());
+
+            check.Compare("present", true, element != null);
+            if (element == null)
+            {
+                foreach (string property in required.Skip(1))
+                    check.Unreadable(property, JValue.CreateNull(), "the element is not in the committed model");
+                return check;
+            }
+
+            check.Record("kind", made.Kind, element.GetType().Name, kindMatches);
+            if (made.ExpectedTypeId != null)
+            {
+                long? typeRead = null;
+                try { typeRead = Rid.Value(element.GetTypeId()); } catch { }
+                if (typeRead.HasValue) check.Record("type_id", Rid.Value(made.ExpectedTypeId), typeRead.Value, typeMatches);
+                else check.Unreadable("type_id", Rid.Value(made.ExpectedTypeId), "GetTypeId could not be read");
+            }
+            if (made.ExpectedStructuralType != null)
+            {
+                string read = Safe(() => (element as FamilyInstance)?.StructuralType.ToString());
+                if (read != null) check.Record("structural_type", made.ExpectedStructuralType.Value.ToString(), read, structuralTypeMatches);
+                else check.Unreadable("structural_type", made.ExpectedStructuralType.Value.ToString(), "not a FamilyInstance, or StructuralType could not be read");
+            }
+            if (made.ExpectedConnected != null)
+                check.Record("fitting_connections", made.ExpectedConnected.Count,
+                             connectorsMatch ? (JToken)made.ExpectedConnected.Count : "not every approved connector re-reads as connected",
+                             connectorsMatch);
+            if (made.ExpectedInlineConnections)
+                check.Record("inline_connections", 2, inlineConnectionsRow?["distinct_pipes"], inlineConnectionsMatch);
+            if (made.ExpectedStructural.HasValue)
+            {
+                if (structuralRead.HasValue) check.Compare("structural", made.ExpectedStructural.Value, structuralRead.Value);
+                else check.Unreadable("structural", made.ExpectedStructural.Value, "the structural flag could not be read");
+            }
+            if (made.ExpectedDiameter.HasValue)
+            {
+                if (diameterRead.HasValue)
+                    check.Measure("diameter", made.ExpectedDiameter.Value, diameterRead.Value, 0.1 / 304.8, "feet",
+                                  "diameter parameter read back after commit");
+                else check.Unreadable("diameter", made.ExpectedDiameter.Value, "the diameter parameter could not be read");
+            }
+            if (made.ExpectedWidth.HasValue && made.ExpectedHeight.HasValue)
+            {
+                bool readable = sectionRow != null && sectionRow["read_width_mm"]?.Type != JTokenType.Null &&
+                                sectionRow["read_height_mm"]?.Type != JTokenType.Null &&
+                                sectionRow["unreadable_connectors"]?.Value<int>() == 0;
+                var requested = new JObject { ["width_mm"] = Math.Round(made.ExpectedWidth.Value * 304.8, 3), ["height_mm"] = Math.Round(made.ExpectedHeight.Value * 304.8, 3) };
+                if (readable) check.Record("section", requested, sectionRow, sectionMatches);
+                else check.Unreadable("section", requested, "the section parameters or an end connector's size could not be read");
+            }
+            if (made.ExpectedName != null)
+                check.Record("name", made.ExpectedName, identityRow?["name_read"], identityRow?.Value<bool?>("name_verified") == true);
+            if (made.ExpectedNumber != null)
+                check.Record("number", made.ExpectedNumber, identityRow?["number_read"], identityRow?.Value<bool?>("number_verified") == true);
+            if (made.ExpectedHostId != null)
+            {
+                long? hostRead = null;
+                try
+                {
+                    Element host = (element as Opening)?.Host ?? (element as FamilyInstance)?.Host;
+                    if (host != null) hostRead = Rid.Value(host.Id);
+                }
+                catch { }
+                check.Record("host_id", Rid.Value(made.ExpectedHostId), hostRead.HasValue ? (JToken)hostRead.Value : JValue.CreateNull(), hostMatches);
+            }
+            if (made.ExpectedSystemName != null)
+                check.Record("mep_system", made.ExpectedSystemName, systemRow, systemMatches);
+            if (curveRow != null)
+            {
+                if (curveRow.Value<bool?>("measured") == false)
+                    check.Unreadable("curve", curveRow["requested"] ?? JValue.CreateNull(), (string)curveRow["means"]);
+                else check.Record("curve", curveRow["requested"] ?? JValue.CreateNull(), curveRow, curveMatches);
+            }
+            return check;
         }
     }
 }

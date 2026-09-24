@@ -187,6 +187,13 @@ namespace Horizun.Revit.Commands
                         if (cp.LoopCount != loops.Count) { error = "Every clouds.loops entry must be an array."; return null; }
                         p.Clouds.Add(cp);
                     }
+                // AN UPDATE THAT NAMES NO CHANGE verified by construction: Verify only found the
+                // revision still there and reported it committed_verified over nothing.
+                if (op == "update_revision" && a["description"] == null && a["revision_date"] == null &&
+                    a["issued_by"] == null && a["issued_to"] == null && a["issued"] == null &&
+                    p.Sheets.Count == 0 && p.RemoveSheets.Count == 0 && p.Clouds.Count == 0)
+                { error = "actions[" + i + "] (update_revision) changes nothing: pass description, revision_date, " +
+                          "issued_by, issued_to, issued, sheet_ids, remove_sheet_ids and/or clouds. Nothing was written."; return null; }
                 plans.Add(p);
             }
             return plans;
@@ -227,8 +234,10 @@ namespace Horizun.Revit.Commands
             if (a["issued_by"] != null && revision.IssuedBy != (a.Value<string>("issued_by") ?? "")) return false;
             if (a["issued_to"] != null && revision.IssuedTo != (a.Value<string>("issued_to") ?? "")) return false;
             if (a["issued"] != null && revision.Issued != a.Value<bool>("issued")) return false;
-            if (p.Sheets.Any(s => !(doc.GetElement(s.Id) as ViewSheet).GetAdditionalRevisionIds().Contains(revision.Id))) return false;
-            if (p.RemoveSheets.Any(s => (doc.GetElement(s.Id) as ViewSheet).GetAdditionalRevisionIds().Contains(revision.Id))) return false;
+            // A sheet that no longer re-reads is UNMEASURED - never a pass for a removal, and
+            // never a null dereference outside the rollback path either.
+            if (p.Sheets.Any(s => !((doc.GetElement(s.Id) as ViewSheet)?.GetAdditionalRevisionIds().Contains(revision.Id) ?? false))) return false;
+            if (p.RemoveSheets.Any(s => (doc.GetElement(s.Id) as ViewSheet)?.GetAdditionalRevisionIds().Contains(revision.Id) ?? true)) return false;
             foreach (CloudPlan c in p.Clouds)
             {
                 RevisionCloud cloud = c.CreatedId == null ? null : doc.GetElement(c.CreatedId) as RevisionCloud;

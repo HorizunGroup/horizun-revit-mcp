@@ -243,10 +243,21 @@ namespace Horizun.Revit.Commands
                 });
             }
 
+            // THE VERDICT IS DERIVED, NOT WRITTEN. state/host_verified used to be the literals
+            // "committed_verified"/true while the application block below was computed from
+            // ids against created - so a copy that produced fewer elements than it was asked
+            // for said verified in one field and partial in the other. Revit copies dependents
+            // along (a hosted door with its wall), so MORE created than requested is normal:
+            // what was requested is the larger of the two, and every created element must
+            // re-read present.
+            int requestedCount = Math.Max(ids.Count, created.Count);
+            ApplicationState copyState = ApplicationOutcome.Applied(ApplicationOutcome.Committed,
+                                                                    requestedCount, present, present, 0, 0, 0);
+            bool copyVerified = copyState == ApplicationState.VerifiedApplied;
             var done = new JObject
             {
-                ["state"] = "committed_verified",
-                ["host_verified"] = true,
+                ["state"] = copyVerified ? "committed_verified" : ApplicationOutcome.Name(copyState),
+                ["host_verified"] = copyVerified,
                 ["source_document"] = source.Title,
                 ["destination_document"] = destination.Title,
                 ["requested"] = ids.Count,
@@ -260,8 +271,11 @@ namespace Horizun.Revit.Commands
                     "not a report from the copy. A copy that silently duplicated a type catalogue is how a " +
                     "project acquires a second 'Basic Wall - 200' and nobody knows when."
             };
+            if (created.Count < ids.Count)
+                done["created_fewer_than_requested"] = "Revit produced " + created.Count + " element(s) for " +
+                    ids.Count + " requested; the difference was not copied.";
             ApplicationOutcome.StampApplied(done, ApplicationOutcome.Committed,
-                                            ids.Count, created.Count, present, 0, 0, 0);
+                                            requestedCount, present, present, 0, 0, 0);
             return CommandResult.Ok(done);
         }
 

@@ -1,0 +1,11 @@
+# Horizun example - user-defined property-set file for the Revit IFC exporter.
+# Synthetic: no project data. FIELDS ARE SEPARATED BY TAB, not spaces - a line the
+# exporter would not split on TAB is refused by line number before anything is exported.
+#
+# PropertySet:<TAB><Pset name><TAB>I|T<TAB><IFC classes, comma separated>
+# <TAB><Property name><TAB><Data type><TAB>[Revit parameter, if the name differs]
+#
+# HZ_Delivery.Code on every IfcDuctSegment is what hz-delivery.ids requires.
+PropertySet:	HZ_Delivery	I	IfcDuctSegment
+	Code	Label	HZ_Delivery_Code
+	System	Label	System Name

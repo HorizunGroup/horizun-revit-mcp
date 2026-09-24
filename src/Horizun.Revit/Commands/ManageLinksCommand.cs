@@ -285,20 +285,26 @@ namespace Horizun.Revit.Commands
                     return CommandResult.Fail("Pin change failed and was rolled back: " + ex.Message);
                 }
             }
-            bool pinnedAfter = Safe<bool>(() => (doc.GetElement(instance.Id) as RevitLinkInstance)?.Pinned) == true;
+            // An UNREADABLE pinned state is unmeasured, never false: `== true` used to turn a
+            // read that threw into "not pinned", which is exactly what an unpin asks for.
+            bool? pinnedRead = Safe<bool>(() => (doc.GetElement(instance.Id) as RevitLinkInstance)?.Pinned);
+            bool matches = pinnedRead.HasValue && pinnedRead.Value == pin;
             var applied = new JObject
             {
                 ["dry_run"] = false,
                 ["instance_id"] = instanceId,
                 ["pinned_before"] = pinnedBefore,
-                ["pinned_after_reread"] = pinnedAfter,
-                ["verified"] = pinnedAfter == pin
+                ["pinned_after_reread"] = pinnedRead.HasValue ? (JToken)pinnedRead.Value : JValue.CreateNull(),
+                ["pinned_after_measured"] = pinnedRead.HasValue,
+                ["verified"] = matches
             };
             ApplicationOutcome.StampApplied(applied, ApplicationOutcome.Committed, 1,
-                                            pinnedAfter == pin ? 1 : 0, pinnedAfter == pin ? 1 : 0, 0,
-                                            pinnedAfter == pin ? 0 : 1, 0);
-            if (pinnedAfter != pin)
-                return CommandResult.FailWithDetail("The transaction committed but the pinned state re-read wrong.", applied);
+                                            matches ? 1 : 0, matches ? 1 : 0, 0,
+                                            matches || !pinnedRead.HasValue ? 0 : 1, pinnedRead.HasValue ? 0 : 1);
+            if (!matches)
+                return CommandResult.FailWithDetail(pinnedRead.HasValue
+                    ? "The transaction committed but the pinned state re-read wrong."
+                    : "The transaction committed but the pinned state could not be re-read, so the change is unverified.", applied);
             return CommandResult.Ok(applied);
         }
 

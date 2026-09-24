@@ -390,6 +390,10 @@ namespace Horizun.Revit.Commands
                 if (reopened == null || !reopened.IsFamilyDocument)
                     throw new InvalidOperationException("the saved file did not re-open as a family document");
                 reopenedVerification = VerifyReopenedFamily(reopened, output, plan, createdDimensions);
+                // The dimension re-read above walks only the dimensions, so a family with
+                // none compared NOTHING from disk while output_verified said true. The
+                // parameters and types the plan declared are re-read from the saved bytes too.
+                reopenedVerification["catalogue"] = VerifyReopenedCatalogue(reopened, plan);
             }
             catch (Exception ex)
             {
@@ -1720,6 +1724,45 @@ namespace Horizun.Revit.Commands
                     if (regenTx.GetStatus() == TransactionStatus.Started) Guard.RollBack(regenTx);
                 }
             }
+        }
+
+        /// <summary>
+        /// Every parameter and type the plan declared, looked up BY NAME in the family
+        /// re-opened from disk. A missing one throws - the same substantive failure as a
+        /// dimension that did not survive the save - so the file is reported unverified.
+        /// </summary>
+        private static JObject VerifyReopenedCatalogue(Document reopened, FamilyPlan plan)
+        {
+            FamilyManager manager = reopened.FamilyManager;
+            var parameterNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (FamilyParameter p in manager.Parameters)
+            {
+                string name = null;
+                try { name = p.Definition?.Name; } catch { }
+                if (name != null) parameterNames.Add(name);
+            }
+            var typeNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (FamilyType t in manager.Types)
+            {
+                string name = null;
+                try { name = t.Name; } catch { }
+                if (name != null) typeNames.Add(name);
+            }
+            var missingParameters = plan.Parameters.Select(p => p.Name).Where(n => !parameterNames.Contains(n)).ToList();
+            var missingTypes = plan.Types.Select(t => t.Name).Where(n => !typeNames.Contains(n)).ToList();
+            if (missingParameters.Count > 0 || missingTypes.Count > 0)
+                throw new InvalidOperationException("the re-opened file does not carry " +
+                    (missingParameters.Count > 0 ? "parameter(s) " + string.Join(", ", missingParameters) : "") +
+                    (missingParameters.Count > 0 && missingTypes.Count > 0 ? " and " : "") +
+                    (missingTypes.Count > 0 ? "type(s) " + string.Join(", ", missingTypes) : "") + ".");
+            return new JObject
+            {
+                ["parameters_requested"] = plan.Parameters.Count,
+                ["parameters_reread"] = plan.Parameters.Count,
+                ["types_requested"] = plan.Types.Count,
+                ["types_reread"] = plan.Types.Count,
+                ["note"] = "every declared parameter and type was found by name in the family re-opened from disk"
+            };
         }
 
         private static bool IsAvailabilityOnlyFailure(InvalidOperationException ex)

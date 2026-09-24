@@ -1,0 +1,50 @@
+{
+  "tool": "horizun_project_context",
+  "title": {
+    "en": "ISO 19650 start-up, step 3: write the confirmed context",
+    "es": "Arranque ISO 19650, paso 3: escribir el contexto confirmado"
+  },
+  "about": {
+    "en": "Only after the person confirmed the rehearsal of step 2. Same answers, dry_run=false. The server writes the file, reads it back and compares bytes and content before reporting it written. It refuses to write an invalid context or one that carries a credential, never creates the project folder, never replaces an existing file without overwrite=true, and writes only under the full_write or unsafe_code permission profile (under a stricter profile the drafted document is returned for the person to save).",
+    "es": "Solo después de que la persona confirme el ensayo del paso 2. Mismas respuestas, dry_run=false. El servidor escribe el archivo, lo relee y compara bytes y contenido antes de darlo por escrito. Se niega a escribir un contexto inválido o con una credencial, nunca crea la carpeta del proyecto, nunca reemplaza un archivo existente sin overwrite=true y solo escribe con el perfil full_write o unsafe_code (con un perfil más estricto devuelve el documento para que la persona lo guarde)."
+  },
+  "next": "04-validate.json",
+  "arguments": {
+    "operation": "draft",
+    "path": "C:/proyectos/demo/project-context.json",
+    "dry_run": false,
+    "overwrite": false,
+    "answers": {
+      "/project/code": "DEMO",
+      "/project/name": "Demo office building",
+      "/appointment/role": "lead_appointed_party",
+      "/appointment/organisation_code": "ABC",
+      "/appointment/task_teams": [
+        { "role_code": "A", "discipline": "architecture", "organisation": "ABC" },
+        { "role_code": "S", "discipline": "structure", "organisation": "ABC" },
+        { "role_code": "M", "discipline": "mechanical", "organisation": "ABC" }
+      ],
+      "/appointment/stage": "4",
+      "/appointment/stage_scheme": "riba2020",
+      "/documents/bep/kind": "post_appointment",
+      "/documents/bep/status": "draft",
+      "/documents/bep/path": "C:/proyectos/demo/00_docs/DEMO-ABC-ZZ-XX-BE-Z-0001.pdf",
+      "/cde/platform": "local",
+      "/cde/root": "C:/proyectos/demo/cde",
+      "/cde/states/wip": "01_WIP",
+      "/cde/states/shared": "02_SHARED",
+      "/cde/states/published": "03_PUBLISHED",
+      "/cde/states/archived": "04_ARCHIVED",
+      "/cde/working_state": "wip",
+      "/cde/approvals/wip_to_shared": "Task team lead",
+      "/cde/approvals/shared_to_published": "Information manager",
+      "/cde/approvals/published_to_archived": "Information manager",
+      "/naming/scheme": "iso19650-2",
+      "/naming/separator": "-",
+      "/delivery/ifc/version": "IFC4",
+      "/delivery/ifc/mvd": "RV",
+      "/delivery/ifc/site_placement": "shared",
+      "/software/revit_year": 2026
+    }
+  }
+}

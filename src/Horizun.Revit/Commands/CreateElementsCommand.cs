@@ -2554,6 +2554,7 @@ namespace Horizun.Revit.Commands
             catch (Exception ex)
             {
                 o["verified"] = false;
+                o["measured"] = false;
                 o["means"] = "the built curve could not be re-read: " + ex.Message;
             }
             return o;
