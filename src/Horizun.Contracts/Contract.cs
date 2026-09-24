@@ -245,6 +245,7 @@ namespace Horizun.Contracts
             Row("horizun_query_model", "read", "mep"),
             Row("horizun_model_scan", "read", "audit"),
             Row("horizun_file_info", "read", "coordination"),
+            Row("horizun_model_diff", "audit", "coordination", "powerbi"),
             Row("horizun_quantities", "read", "coordination"),
             Row("horizun_capture_view", "read", "documentation", "planimetry", "audit"),
 
@@ -4073,6 +4074,49 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_model_diff",
+                Command = "horizun_model_diff",
+                Description =
+                    "What changed between two model deliveries, the model explained, and quality over time. snapshot: " +
+                    "record the active model, or a .rvt opened detached and closed unsaved (file_path + expected_version), " +
+                    "to %USERPROFILE%\\.horizun\\snapshots\\<id>.json.gz: per element UniqueId, category, family/type, " +
+                    "level, workset, phases, bbox, location, instance/type parameters (internal units), geometry hash. " +
+                    "list: stored snapshots. compare before/after (snapshot id or 'active'): added, deleted, modified " +
+                    "(parameter before/after, moves over tolerance, type changes) by category/discipline/level, paged, " +
+                    "CSV+JSON exported. Identity is UniqueId; a re-created model is flagged and heuristic_match pairs by " +
+                    "category/type/location, marked inferred. colorize: overrides added/modified in a new copy of view_id " +
+                    "(the only write; dry_run token, re-read). explain: facts-only summary; ISO 19650 gaps from " +
+                    "project_context_path. record_quality: runs model_scan/audit_model, appends to quality-history\\" +
+                    "<project>.jsonl; quality_trend: rows for horizun_power_bi_push + CSV.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""snapshot"", ""list"", ""compare"", ""colorize"", ""explain"", ""record_quality"", ""quality_trend""] },
+    ""target_document"": { ""type"": ""string"", ""description"": ""Title of the active document; required by colorize, checked by reads."" },
+    ""file_path"": { ""type"": ""string"" },
+    ""expected_version"": { ""type"": ""string"" },
+    ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""OST_ names or category names."" },
+    ""max_elements"": { ""type"": ""integer"", ""default"": 50000, ""minimum"": 1 },
+    ""before"": { ""type"": ""string"" },
+    ""after"": { ""type"": ""string"", ""default"": ""active"" },
+    ""move_tolerance_mm"": { ""type"": ""number"", ""default"": 1 },
+    ""heuristic_match"": { ""type"": ""boolean"", ""default"": false },
+    ""offset"": { ""type"": ""integer"", ""default"": 0 },
+    ""limit"": { ""type"": ""integer"", ""default"": 100 },
+    ""view_id"": { ""type"": ""integer"" },
+    ""source"": { ""type"": ""string"", ""enum"": [""model_scan"", ""audit_model""] },
+    ""project"": { ""type"": ""string"" },
+    ""metrics"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
+    ""project_context_path"": { ""type"": ""string"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true },
+    ""confirmation_token"": { ""type"": ""string"" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_file_info",
                 Command = "horizun_file_info",
                 Description =
@@ -5993,6 +6037,9 @@ namespace Horizun.Contracts
                 "horizun_regroup_by_param", "horizun_copy_slab_elevations",
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls",
+                // Only operation=colorize writes (a duplicated view with overrides); every
+                // other operation reads the model and writes only under the data root.
+                "horizun_model_diff",
                 // It writes nothing ITSELF, and that is why it sat in no set and fell through to
                 // ReadOnly: its children do, called in-process (connect_mep, create_elements and,
                 // through a refit, delete_verified) - past the admission a read_only profile

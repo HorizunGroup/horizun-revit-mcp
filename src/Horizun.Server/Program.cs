@@ -1554,6 +1554,12 @@ namespace Horizun.Server
                     health["toolsets"] = ToolsetReport.HealthBlock();
                 }
 
+                // model_diff explain: the ISO 19650 gaps come from the SAME validator
+                // horizun_project_context runs, which lives in this process, not the add-in.
+                if (def.Command == "horizun_model_diff" && data is JObject explained &&
+                    (string)explained["operation"] == "explain")
+                    explained["iso19650"] = ModelExplainIso.Evaluate(args?.Value<string>("project_context_path"));
+
                 return WithImageIfAny(data, reply["revit_said"],
                                       reply["fallback"] as JObject,
                                       reply["capability_gaps"] as JArray);
