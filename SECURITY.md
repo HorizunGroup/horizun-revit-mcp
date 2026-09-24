@@ -28,6 +28,23 @@ code as the signed-in user, its output is self-reported and `host_verified` is
 always false. Release notes state the
 actual signature/trust status, and users should verify the published SHA-256.
 
+## Cloud CDE credentials (APS, OpenCDE)
+
+`horizun_cde_cloud` reads Autodesk Construction Cloud / BIM 360 Docs and OpenCDE
+servers **read-only**. Its credentials are never accepted in tool arguments or in
+`project-context.json`; they come only from the MCP server's environment
+(`HORIZUN_APS_ACCESS_TOKEN`, `HORIZUN_APS_CLIENT_ID` / `HORIZUN_APS_CLIENT_SECRET`,
+with `APS_CLIENT_ID` / `APS_CLIENT_SECRET` also read, and
+`HORIZUN_OPENCDE_ACCESS_TOKEN`) or from the user's 3-legged token file
+`%USERPROFILE%\.horizun\aps-token.json`, which the tool rewrites only after a
+refresh. Tokens are requested with the `data:read` scope, are sent only to
+`developer.api.autodesk.com` or to the named OpenCDE server and the Documents API
+base it advertised (any other host in a pagination or document link is refused),
+and never appear in a reply, an error or a log: errors carry the HTTP status, not
+the response body. Protect the token file like a password (it holds a refresh
+token), prefer an APS app provisioned with the least access it needs, and revoke
+the app or the token if the machine is shared or lost.
+
 ## Untrusted content from models and files (prompt injection)
 
 Text that a tool reply carries from a Revit model, a linked IFC, a DWG, an Excel

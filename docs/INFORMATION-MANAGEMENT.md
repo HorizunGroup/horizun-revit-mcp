@@ -410,3 +410,91 @@ estructuralmente. El pre-chequeo del modelo es solo orientativo y nunca decide.
 ensayo (`dry_run`, por defecto) devuelve el plan, la georreferencia actual del
 modelo y no escribe nada. El archivo de mapeo es el mismo formato del
 exportador de Revit, separado por **tabuladores**.
+
+## Cloud CDE reader
+
+`horizun_cde_cloud` reads a CDE **in the cloud**, where `horizun_information_container`
+reads local or synced folders. It is host-resident (it answers with Revit closed) and
+**read-only**: it never uploads, moves, renames, approves or deletes anything in the
+cloud. It is classified `ReadOnly` with `openWorldHint: true`.
+
+| provider | what it talks to |
+|---|---|
+| `acc` | Autodesk Construction Cloud / BIM 360 Docs through the APS Data Management API: `GET /project/v1/hubs` → `/hubs/{hub}/projects/{project}` → `/topFolders` → `GET /data/v1/projects/{project}/folders/{folder}/contents` → items and their tip versions → `GET /data/v1/projects/{project}/items/{item}/versions`. Scope `data:read`. |
+| `opencde` | a buildingSMART OpenCDE server: Foundation API discovery (`GET /foundation/versions`, `GET /foundation/{version}/auth`) and the Documents API 1.0 query surface (`POST /document-versions`, the server-provided `document_versions` link). |
+
+| operation | acc | opencde |
+|---|---|---|
+| `list_states` | maps cloud folders to `wip`/`shared`/`published`/`archived` from `cde.states` (paths such as `Project Files/01_WIP`, from the top folder). A segment matches only an **exact** folder name; a case-only difference is named and not taken. Folders listed on the way that are neither a state folder nor on the path to one come back as `unmapped_folders`. A local path (`C:\...`) in `cde.states` is reported as not a cloud folder. | discovery only: the Documents API has no folders, so `states_mappable: false`. |
+| `inspect` | walks each state folder (subfolders up to depth 8, at most 5,000 files; the first 500 are listed in `files`): per file the path, item id, tip version number, last modified, size and file type; the name checked against the project's naming; status and revision read from the **name** (`file_name: name_status_revision`); `state_status_mismatch` when the name's status belongs to another state; and the MIDP cross. | reads the given `document_ids` only (the latest version of each), checks names and crosses the MIDP; every document has `state: null`. |
+| `versions` | `item_id` → every version, newest first. | `document_id` → its latest version, then the server's `document_versions` link. |
+
+**One core, two readers.** Name compliance, the cross-state revision rule, the MIDP
+cross (`deliverable_missing`, `deliverable_insufficient_state`, `deliverable_overdue`,
+`deliverable_not_assessable`) and the sorted, paginated findings come from
+`ContainerInspection`, the same code the local `inspect` of
+`horizun_information_container` now uses. The APS API exposes no content hash, so the
+SHA-256 and sidecar rules of the local reader do not apply in the cloud.
+
+**Coverage is the contract.** Every reply carries `coverage_complete`, per-state
+`coverage` with the `gaps` that were not read, and an `http` block (`calls`,
+`retries`, `budget`, `budget_exhausted`, `errors` with path and status — never a
+response body). Anything unread makes `coverage_complete: false`: a 401/403 (not
+retried), a spent `max_calls` budget (default 300, max 5000; retries and the token
+request count), the depth or file limit, a state folder not found. A deliverable
+judged `missing` then carries a `caveat`: it may sit in the part that was not read.
+`429` and `502`/`503`/`504` are retried up to 4 times, honouring `Retry-After`,
+otherwise after 1, 2, 4 and 8 s (cap 30 s). Pagination follows `links.next`. OpenCDE
+`inspect` is `coverage_complete: false` by construction.
+
+**Credentials** never travel in arguments or in `project-context.json` (an argument
+such as `client_secret` is refused as unknown). With nothing configured the call is
+refused **before any request**.
+
+- `acc`, in this order: `HORIZUN_APS_ACCESS_TOKEN`; the 3-legged token file
+  `%USERPROFILE%\.horizun\aps-token.json` (`access_token`, `refresh_token`,
+  `expires_at`), refreshed when it has expired and `HORIZUN_APS_CLIENT_ID` is set —
+  APS replaces the refresh token when it is used, so the new pair is written back
+  through a temporary file and read back; 2-legged `HORIZUN_APS_CLIENT_ID` +
+  `HORIZUN_APS_CLIENT_SECRET` (`APS_CLIENT_ID` / `APS_CLIENT_SECRET` are also read).
+  Token endpoint `POST https://developer.api.autodesk.com/authentication/v2/token`,
+  with the client credential in a Basic header. A 2-legged token sees only what the
+  APS app is provisioned for in the ACC account (a custom integration).
+- `opencde`: `HORIZUN_OPENCDE_ACCESS_TOKEN`, an OAuth2 token issued by the server's
+  `oauth2_token_url`. This tool does not run the interactive authorization-code flow.
+- Tokens are sent only to `developer.api.autodesk.com`, or to the named OpenCDE
+  server and the Documents API base it advertised. A pagination or document link to
+  any other host is refused before the request.
+
+**Limits, stated.** The OpenCDE Documents API 1.0 cannot enumerate a project: document
+selection happens in the CDE's own web UI (`POST /select-documents` returns a browser
+URL), and the API carries no CDE state. So `opencde` reads documents by id and never
+maps states. The published schema is kept deliberately terse (tools/list has a byte
+budget): arguments are `operation`, `provider`, `project_context_path`, `hub_id`,
+`project_id`, `states`, `naming`, `deliverables`, `as_of`, `offset`, `limit`,
+`max_calls`, `item_id`, `server_url`, `document_ids` and `document_id`. In ACC, status and revision come from file names, not from ACC review or
+approval workflows.
+
+References: the APS OpenAPI descriptions
+(<https://github.com/autodesk-platform-services/aps-sdk-openapi>, `datamanagement` and
+`authentication`), the APS documentation (<https://aps.autodesk.com/en/docs/data/v2/>,
+<https://aps.autodesk.com/en/docs/oauth/v2/>), the buildingSMART OpenCDE Documents API
+release 1.0 (<https://github.com/buildingSMART/documents-API>) and the Foundation API
+release 1.1 (<https://github.com/buildingSMART/foundation-API>).
+
+### Resumen en español
+
+`horizun_cde_cloud` lee un CDE **en la nube** en solo lectura: nunca sube, mueve,
+renombra, aprueba ni borra. `provider=acc` (ACC/BIM 360 Docs por la API Data
+Management de APS, alcance `data:read`) u `opencde` (buildingSMART OpenCDE:
+descubrimiento Foundation y Documents API 1.0). `list_states` asigna las carpetas de
+la nube a los cuatro estados ISO 19650 según `cde.states` (`Project Files/01_WIP`),
+solo por nombre **exacto**, y reporta las carpetas sin asignar; `inspect` lista por
+estado archivos, versión, fecha y tamaño, valida el nombre y cruza el MIDP (faltantes,
+vencidos, en estado insuficiente) con el **mismo núcleo** que el `inspect` local;
+`versions` da el historial de un ítem. Paginación, tope de llamadas, reintentos con
+backoff ante 429 y `coverage_complete=false` ante cualquier cosa no leída (nunca
+"vacío" por error). Credenciales solo desde variables de entorno del servidor o el
+archivo de token 3-legged; sin credenciales, se niega sin hacer una sola llamada.
+OpenCDE no permite listar un proyecto sin el flujo interactivo del navegador: lee
+documentos por id y no asigna estados.
