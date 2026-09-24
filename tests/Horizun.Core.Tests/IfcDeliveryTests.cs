@@ -262,6 +262,24 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void The_container_sidecar_is_a_reported_gate_that_blocks_readiness_when_it_fails()
+        {
+            // Measured live 2026-09-24: the sidecar was written and verified but the gate was
+            // missing from the report, because GateOrder did not name it.
+            var passed = new[] { G("export", DeliveryGateStatus.Passed), G("schema_header", DeliveryGateStatus.Passed),
+                                 G("information_container", DeliveryGateStatus.Passed) };
+            JArray json = IfcDeliveryRules.GatesJson(passed);
+            Assert.Equal("passed", json.Single(g => g.Value<string>("gate") == "information_container").Value<string>("status"));
+            List<string> blocking;
+            Assert.True(IfcDeliveryRules.DeliverableReady(passed, out blocking));
+
+            var failed = new[] { G("export", DeliveryGateStatus.Passed), G("schema_header", DeliveryGateStatus.Passed),
+                                 G("information_container", DeliveryGateStatus.Failed) };
+            Assert.False(IfcDeliveryRules.DeliverableReady(failed, out blocking));
+            Assert.Contains("information_container is failed", blocking);
+        }
+
+        [Fact]
         public void The_IDS_gate_never_counts_an_undecided_specification_as_passed()
         {
             var report = new IdsReport();

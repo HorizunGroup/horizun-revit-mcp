@@ -217,7 +217,7 @@ namespace Horizun.Revit.Commands
                     ["georeference_in_model"] = georeference,
                     ["ids"] = ids == null ? null : new JObject { ["path"] = idsPath, ["sha256"] = idsSha, ["info"] = ids.InfoJson() },
                     ["pset_mapping"] = mapping == null ? null : new JObject { ["path"] = mappingPath, ["sha256"] = mappingSha, ["summary"] = mapping.SummaryJson() },
-                    ["gates_planned"] = PlannedGates(precheck, ids != null, mapping != null, bcf),
+                    ["gates_planned"] = PlannedGates(precheck, ids != null, mapping != null, bcf, containerSpec != null),
                     ["gates"] = IfcDeliveryRules.GatesJson(gates),
                     ["precheck"] = precheckJson,
                     ["overwrite"] = overwrite,
@@ -430,13 +430,14 @@ namespace Horizun.Revit.Commands
 
         // =====================================================================
 
-        private static JArray PlannedGates(bool precheck, bool ids, bool mapping, bool bcf) => new JArray(
+        private static JArray PlannedGates(bool precheck, bool ids, bool mapping, bool bcf, bool container) => new JArray(
             new JObject { ["gate"] = "precheck", ["requested"] = precheck, ["advisory"] = true },
             new JObject { ["gate"] = "export", ["requested"] = true },
             new JObject { ["gate"] = "schema_header", ["requested"] = true },
             new JObject { ["gate"] = "ids_validate", ["requested"] = ids },
             new JObject { ["gate"] = "pset_mapping", ["requested"] = mapping },
-            new JObject { ["gate"] = "bcf", ["requested"] = bcf });
+            new JObject { ["gate"] = "bcf", ["requested"] = bcf },
+            new JObject { ["gate"] = "information_container", ["requested"] = container });
 
         /// <summary>
         /// Every option the exporter will be handed, with HOW it reaches the exporter and HOW

@@ -73,7 +73,7 @@ namespace Horizun.Revit.Core
     {
         /// <summary>The fixed gate order of the report.</summary>
         public static readonly string[] GateOrder =
-            { "precheck", "export", "schema_header", "ids_validate", "pset_mapping", "bcf" };
+            { "precheck", "export", "schema_header", "ids_validate", "pset_mapping", "bcf", "information_container" };
 
         /// <summary>
         /// IFC versions this tool offers, each with the FILE_SCHEMA family it must write.
