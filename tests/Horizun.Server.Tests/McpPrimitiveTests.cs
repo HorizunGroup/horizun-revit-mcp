@@ -18,9 +18,10 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            // Five documents and one MCP App. The app lives under ui:// because that is
-            // the scheme the Apps extension names; it is as virtual as the rest.
-            Assert.Equal(6, resources.Count);
+            // Six documents (the sixth is the ISO 19650 project-context schema) and one
+            // MCP App. The app lives under ui:// because that is the scheme the Apps
+            // extension names; it is as virtual as the rest.
+            Assert.Equal(7, resources.Count);
             foreach (JObject resource in resources)
             {
                 string uri = (string)resource["uri"];
@@ -145,9 +146,9 @@ namespace Horizun.Server.Tests
         public void Prompts_require_the_declared_arguments_and_return_standard_messages()
         {
             JArray prompts = (JArray)McpPrompts.List(null)["prompts"];
-            // Twenty, three procedures added with the 2026-09-15 catalogue, and the two
-            // DWG procedures that had no prompt behind them.
-            Assert.Equal(27, prompts.Count);
+            // Twenty, three procedures added with the 2026-09-15 catalogue, the two
+            // DWG procedures that had no prompt behind them, and project-intake.
+            Assert.Equal(28, prompts.Count);
             foreach (var item in new[] { ("room-documentation", "specification"), ("family-recipe", "specification"), ("review-correct-verify", "selection") })
             {
                 Assert.Throws<McpError>(() => McpPrompts.Get(new JObject { ["name"] = item.Item1 }));

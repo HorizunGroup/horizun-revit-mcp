@@ -110,6 +110,9 @@ namespace Horizun.Server
                         Arg("symbol_layers", "The symbol layers, as globs; required because grouping over the whole drawing buries the symbols in the wiring.", true),
                         Arg("max_footprint_mm", "How large connected line work may be and still be one symbol; required because a receptacle is 40 mm on one drawing and 400 mm on another.", true),
                         Arg("family_types", "The family type for each symbol type, as decided by a person; required because this route never names a symbol type itself.", true)),
+                    Prompt("project-intake", "Start a BIM project the ISO 19650 way",
+                        "Arrancar un proyecto BIM según ISO 19650: ask only what the project context is missing, with options, and write project-context.json from the answers.",
+                        Arg("path", "Absolute path of the project's project-context.json. Optional: without it the intake starts from nothing and the draft is only rehearsed until a path is agreed.", false)),
                     Prompt("material-standardisation", "Bring materials to a declared standard",
                         "Create, duplicate and edit materials to match an approved standard, re-reading every value and touching nothing else.",
                         Arg("material_standard", "The approved standard - names, classes, colours, patterns. Required because Horizun carries no organisation's catalogue.", true))
@@ -432,6 +435,46 @@ namespace Horizun.Server
                         "is UNKNOWN, never clean. Return findings by sheet with severity, evidence and element/view " +
                         "ids. Use the narrowest typed correction only after approval and its dry run.";
                     break;
+                case "project-intake":
+                    string contextPath = Argument(args, "path", false);
+                    bool hasPath = !string.IsNullOrWhiteSpace(contextPath);
+                    description = "Start a BIM project the ISO 19650 way / Arrancar un proyecto BIM según ISO 19650.";
+                    body =
+                        "Set up this project's ISO 19650 information-management context. " +
+                        (hasPath
+                            ? "The project context file is: " + contextPath + ". "
+                            : "No project-context.json path was given: agree one with the person before anything is written. ") +
+                        "This needs no Revit. 1) Call horizun_project_context operation=questions" +
+                        (hasPath ? " with that path" : "") +
+                        " and read the ORDERED list of what is still missing: role in the appointment, stage, EIR, BEP " +
+                        "(pre- or post-appointment), MIDP/TIDP, responsibility matrix, CDE (platform, root, the WIP/Shared/" +
+                        "Published/Archived folders, where work happens today, who approves each transition), naming, " +
+                        "classification, LOIN/IDS, georeference/CRS, IFC delivery (version, MVD, Pset mapping) and the Revit " +
+                        "version. 2) Ask the person in short blocks, one topic at a time, in their language (every question " +
+                        "carries text.es and text.en), offering the question's options and saying why it matters. NEVER answer " +
+                        "a question yourself or fill a value from a guess: an unknown stays out of the file and is listed in " +
+                        "intake.missing. If a document does not exist, record status=missing - that is an answer, and a finding. " +
+                        "3) Send the answers to horizun_project_context operation=draft as {pointer: value} with dry_run=true, " +
+                        "show the person the state (invalid / inconsistent / incomplete / complete) and every coherence " +
+                        "finding, and get it confirmed. 4) Only then call draft with dry_run=false" +
+                        (hasPath ? "" : " and the agreed path") +
+                        "; it re-reads the file before reporting it written and refuses to replace an existing file " +
+                        "without overwrite=true. Writing needs the full_write profile; under a stricter profile, hand the " +
+                        "drafted document to the person instead of editing settings. 5) Finish with operation=validate " +
+                        "and report what is still missing as missing, never as done.";
+                    // Not a model workflow: the model-query efficiency note appended below does not apply.
+                    return new JObject
+                    {
+                        ["description"] = description,
+                        ["messages"] = new JArray
+                        {
+                            new JObject
+                            {
+                                ["role"] = "user",
+                                ["content"] = new JObject { ["type"] = "text", ["text"] = body }
+                            }
+                        }
+                    };
                 default: throw new McpError(-32602, "Unknown Horizun prompt: '" + name + "'.");
             }
 

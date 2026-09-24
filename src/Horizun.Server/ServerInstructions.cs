@@ -110,6 +110,9 @@ namespace Horizun.Server
                             "For corrections, use horizun_audit_model then horizun_apply_corrections and inspect re-audit findings. " +
                             "Family recipes rectangular_prism and rectangular_tube require explicit types; only height flexes. " +
                             "Inspect measured flex and the PNG before accepting content.\n\n" +
+                            "STARTING A NEW PROJECT: if it has no project-context.json yet, or " +
+                            "horizun_project_context reports it incomplete, offer the project-intake prompt - the ISO " +
+                            "19650 intake asks only what is missing and never fills a gap by guessing.\n\n" +
                             "This bridge is organisation-neutral on purpose: no standards, catalogues or naming " +
                             "rules are compiled in. Where a command needs one it is passed in at call time. The " +
                             "delivery workflows built on top of these commands - model audits, classification, " +

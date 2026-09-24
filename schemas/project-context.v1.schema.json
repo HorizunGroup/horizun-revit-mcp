@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://horizunhub.com/schemas/project-context/v1",
+  "title": "Horizun project context, schema_version 1",
+  "description": "One file per project describing its ISO 19650 information-management context: the appointment, the requirement and planning documents (EIR, BEP, MIDP, TIDP), the common data environment, container naming, classification, georeference and delivery. Everything is optional except schema_version and project.code. A field that is not known is left out and listed in intake.missing; it is never invented. Dates are ISO 8601 (YYYY-MM-DD). No credentials or tokens belong in this file. Organisation-neutral: codes, catalogues, paths and parameter names are project data, not part of the schema.",
+  "type": "object",
+  "required": ["schema_version", "project"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "required": ["code"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "description": "Project code; normally the 'project' field of every information container name." },
+        "name": { "type": "string" },
+        "client": { "type": "string" },
+        "location": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "appointment": {
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["appointing_party", "lead_appointed_party", "appointed_party"], "description": "This organisation's role in the ISO 19650-2 appointment." },
+        "organisation_code": { "type": "string", "description": "This organisation's code; the 'originator' field of the container name." },
+        "task_teams": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role_code": { "type": "string", "description": "Discipline/role code used in container names, e.g. A, S, M." },
+              "discipline": { "type": "string" },
+              "organisation": { "type": "string" },
+              "lead": { "type": "string" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "stage": { "type": "string", "description": "The current stage, in the project's own words." },
+        "stage_scheme": { "type": "string", "enum": ["riba2020", "iso22263", "custom"] }
+      },
+      "additionalProperties": false
+    },
+    "documents": {
+      "type": "object",
+      "properties": {
+        "oir": { "$ref": "#/$defs/document" },
+        "pir": { "$ref": "#/$defs/document" },
+        "air": { "$ref": "#/$defs/document" },
+        "eir": { "$ref": "#/$defs/document" },
+        "bep": { "$ref": "#/$defs/bep_document" },
+        "midp": { "$ref": "#/$defs/document" },
+        "tidp": { "type": "array", "items": { "$ref": "#/$defs/tidp_document" } },
+        "responsibility_matrix": { "$ref": "#/$defs/document" },
+        "loin": { "$ref": "#/$defs/document" },
+        "ids": { "type": "array", "items": { "$ref": "#/$defs/ids_document" } },
+        "information_protocol": { "$ref": "#/$defs/document" }
+      },
+      "additionalProperties": false
+    },
+    "deliverables": {
+      "type": "array",
+      "description": "The MIDP in machine-readable form. Optional: when absent, the MIDP file is the source.",
+      "items": {
+        "type": "object",
+        "required": ["container"],
+        "properties": {
+          "container": { "type": "string", "minLength": 1, "description": "The information container name, built from naming.fields joined by naming.separator." },
+          "title": { "type": "string" },
+          "task_team": { "type": "string", "description": "A role_code of appointment.task_teams." },
+          "due": { "$ref": "#/$defs/date" },
+          "required_status": { "type": "string", "description": "A key of naming.status_codes, e.g. S3, S4, A1." },
+          "format": { "type": "string", "enum": ["rvt", "ifc", "pdf", "dwg", "xlsx"] },
+          "milestone": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cde": {
+      "type": "object",
+      "properties": {
+        "platform": { "type": "string", "enum": ["acc", "bim360", "sharepoint", "trimble_connect", "projectwise", "local", "other"] },
+        "project_ref": { "type": "string", "description": "Project or hub id, or URL, WITHOUT credentials." },
+        "root": { "type": "string", "description": "Locally synchronised root, when one exists." },
+        "states": {
+          "type": "object",
+          "description": "One folder per ISO 19650 container state, relative to root or absolute.",
+          "properties": {
+            "wip": { "type": "string", "minLength": 1 },
+            "shared": { "type": "string", "minLength": 1 },
+            "published": { "type": "string", "minLength": 1 },
+            "archived": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        },
+        "working_state": { "type": "string", "enum": ["wip", "shared", "published", "archived"], "description": "Where the team works TODAY." },
+        "approvals": {
+          "type": "object",
+          "description": "Who authorises each state transition.",
+          "properties": {
+            "wip_to_shared": { "type": "string" },
+            "shared_to_published": { "type": "string" },
+            "published_to_archived": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "confirmed_by_user_on": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "naming": {
+      "type": "object",
+      "properties": {
+        "scheme": { "type": "string", "enum": ["iso19650-2", "iso19650-2-uk-annex", "custom"] },
+        "separator": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "description": "In name order.",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "pattern": { "type": "string", "format": "regex" }
+            },
+            "additionalProperties": false
+          }
+        },
+        "status_codes": {
+          "type": "object",
+          "description": "Suitability/status code to its meaning, e.g. S2 -> information.",
+          "additionalProperties": { "type": "string" }
+        },
+        "revision": {
+          "type": "object",
+          "properties": {
+            "preliminary_pattern": { "type": "string", "format": "regex" },
+            "contractual_pattern": { "type": "string", "format": "regex" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "classification": {
+      "type": "object",
+      "properties": {
+        "system": { "type": "string", "enum": ["uniclass2015", "omniclass", "custom"] },
+        "name": { "type": "string", "description": "The system's name when system is custom." },
+        "catalog_path": { "type": "string" },
+        "type_parameter": { "type": "string", "description": "Where the code lives on a type, e.g. Keynote." },
+        "instance_override_parameter": { "type": "string", "description": "Optional instance parameter that prevails over the type code." },
+        "leaf_pattern": { "type": "string", "format": "regex", "description": "Optional regex of a last-level code." }
+      },
+      "additionalProperties": false
+    },
+    "georeference": {
+      "type": "object",
+      "properties": {
+        "crs": { "type": "string", "description": "Coordinate reference system, e.g. EPSG:9377." },
+        "survey_point": { "$ref": "#/$defs/point" },
+        "project_base_point": { "$ref": "#/$defs/point" },
+        "true_north_deg": { "type": "number" }
+      },
+      "additionalProperties": false
+    },
+    "delivery": {
+      "type": "object",
+      "properties": {
+        "ifc": {
+          "type": "object",
+          "properties": {
+            "version": { "type": "string", "description": "e.g. IFC4, IFC2x3, IFC4x3." },
+            "mvd": { "type": "string", "description": "e.g. RV, DTV, CV2." },
+            "pset_mapping_path": { "type": "string" },
+            "ids_paths": { "type": "array", "items": { "type": "string" } },
+            "site_placement": { "type": "string", "enum": ["shared", "internal", "survey"] }
+          },
+          "additionalProperties": false
+        },
+        "sheets": {
+          "type": "object",
+          "properties": {
+            "format": { "type": "string" },
+            "naming": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "software": {
+      "type": "object",
+      "properties": {
+        "revit_year": { "type": "integer", "minimum": 2000, "maximum": 2100 }
+      },
+      "additionalProperties": false
+    },
+    "client_profile": { "type": "string", "description": "Alias of a private client profile kept outside this file." },
+    "intake": {
+      "type": "object",
+      "properties": {
+        "completed_on": { "$ref": "#/$defs/date" },
+        "missing": { "type": "array", "items": { "type": "string" }, "description": "Ids of intake questions still unanswered." },
+        "assumptions": { "type": "array", "items": { "type": "string" } },
+        "confirmed_by": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "document_status": {
+      "type": "string",
+      "enum": ["missing", "draft", "received", "approved"]
+    },
+    "document": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "status": { "$ref": "#/$defs/document_status" },
+        "version": { "type": "string" },
+        "date": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "bep_document": {
+      "type": "object",
+      "properties": {
+        "kind": { "type": "string", "enum": ["pre_appointment", "post_appointment"] },
+        "path": { "type": "string" },
+        "status": { "$ref": "#/$defs/document_status" },
+        "version": { "type": "string" },
+        "date": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "tidp_document": {
+      "type": "object",
+      "properties": {
+        "task_team": { "type": "string", "description": "A role_code of appointment.task_teams." },
+        "path": { "type": "string" },
+        "status": { "$ref": "#/$defs/document_status" },
+        "version": { "type": "string" },
+        "date": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "ids_document": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string" },
+        "applies_to": { "type": "string" },
+        "status": { "$ref": "#/$defs/document_status" },
+        "version": { "type": "string" },
+        "date": { "$ref": "#/$defs/date" }
+      },
+      "additionalProperties": false
+    },
+    "point": {
+      "type": "object",
+      "properties": {
+        "n": { "type": "number" },
+        "e": { "type": "number" },
+        "z": { "type": "number" },
+        "angle_deg": { "type": "number" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

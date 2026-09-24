@@ -5020,6 +5020,41 @@ namespace Horizun.Contracts
             },
             new CommandContract
             {
+                Name = "horizun_project_context",
+                Command = null,           // host-resident: answered in the server, never forwarded to Revit
+                Description =
+                    "ISO 19650 project context and intake, answered WITHOUT Revit. operation=schema returns the JSON " +
+                    "Schema of project-context.json (schema_version 1; also resource horizun://schemas/project-context/v1). " +
+                    "validate reads a file and keeps three verdicts apart: invalid (breaks the schema, errors by JSON " +
+                    "pointer), inconsistent (e.g. a deliverable name that does not follow naming.fields, a status code " +
+                    "naming.status_codes does not declare) and incomplete (ISO 19650 questions unanswered, listed in order). questions " +
+                    "returns the ordered intake questions still open, each with its target pointer, type, options and " +
+                    "why it matters, in Spanish and English. draft applies {pointer: value} answers onto the existing " +
+                    "file or an empty context and validates it; dry_run defaults to true, dry_run=false writes and then " +
+                    "re-reads the file, never replaces one without overwrite=true, and never writes an invalid context " +
+                    "or a credential. Nothing is inferred to fill a gap.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""required"": [""operation""],
+  ""properties"": {
+    ""operation"": { ""type"": ""string"", ""enum"": [""schema"", ""validate"", ""questions"", ""draft""],
+      ""description"": ""schema: the JSON Schema. validate: check a file (path required). questions: the ordered intake questions still open (path optional; without it, all of them). draft: build a context from answers (path optional; required with dry_run=false)."" },
+    ""path"": { ""type"": ""string"",
+      ""description"": ""Absolute path of the project-context.json. draft builds ON TOP of an existing file, so a second intake round fills gaps instead of erasing the first."" },
+    ""answers"": { ""type"": ""object"", ""additionalProperties"": true,
+      ""description"": ""draft: {\""<JSON pointer>\"": value}, e.g. {\""/project/code\"": \""P01\"", \""/cde/states/wip\"": \""01_WIP\""}. Pointers come from operation=questions. A pointer that cannot be placed refuses the whole call. intake.missing is derived from what is still unanswered unless you set it."" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true,
+      ""description"": ""draft: true (default) returns the drafted document and its validation without writing. false writes it (full_write or unsafe_code profile) and re-reads it before reporting it written."" },
+    ""overwrite"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""draft with dry_run=false: required to replace an existing file. Without it an existing file is never touched."" },
+    ""include_answered"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""questions: also list the answered and not-applicable questions, with their current values."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
                 Name = "horizun_excel_read_rows",
                 Command = null,           // host-resident: answered in the server, never forwarded to Revit
                 Description =
@@ -5519,7 +5554,10 @@ namespace Horizun.Contracts
             // ToolEffect.ExternalSideEffectOnRequest for the two halves of the fix.
             var externalOnRequest = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_budget_compare"
+                "horizun_budget_compare",
+                // Reads and validates by default; writes project-context.json only on
+                // draft with dry_run=false, and asks Settings.AllowsExternalSideEffect first.
+                "horizun_project_context"
             };
 
             // Steers the host and leaves no artefact: which Revit answers, what is
