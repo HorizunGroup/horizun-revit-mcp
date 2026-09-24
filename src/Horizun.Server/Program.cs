@@ -1231,8 +1231,23 @@ namespace Horizun.Server
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe)
             => CallTool(prms, ct, observe, null);
 
+        /// <summary>
+        /// Every tools/call result leaves through here. For a tool whose replies carry
+        /// text authored outside this bridge (CommandContract.ExternalContent) the payload
+        /// has already been neutralised and marked inside CallToolCore; this adds the same
+        /// verdict to the result's _meta and neutralises any text block that was built from
+        /// a message rather than a payload. See ContentSafety.cs.
+        /// </summary>
         private static JToken CallTool(JObject prms, CancellationToken ct, Action<JObject> observe,
                                        Protocol.RequestEnvelope envelope)
+        {
+            ContentSafety.Report safety = null;
+            JToken result = CallToolCore(prms, ct, observe, envelope, ref safety);
+            return safety == null ? result : ContentSafety.Finish(result, safety);
+        }
+
+        private static JToken CallToolCore(JObject prms, CancellationToken ct, Action<JObject> observe,
+                                           Protocol.RequestEnvelope envelope, ref ContentSafety.Report safety)
         {
             // -32602 is INVALID PARAMS, and each of these is a different way of being
             // invalid. They used to collapse: a missing name became "Unknown tool: ''",
@@ -1281,6 +1296,14 @@ namespace Horizun.Server
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
+            // From here on every answer - success, refusal or failure - belongs to this tool,
+            // so a tool whose replies carry model or file text gets the content verdict.
+            if (def.ExternalContent)
+                safety = new ContentSafety.Report
+                {
+                    Origin = def.Host != null ? ContentSafety.OriginExternal : ContentSafety.OriginModel
+                };
+
             // Host-resident tool: answer in this process, never touch Revit. Same result shape
             // as the pipe path — the handler returns the data payload, we wrap it in TextResult.
             if (def.Host != null)
@@ -1289,6 +1312,11 @@ namespace Horizun.Server
                 {
                     JObject data = HostCallRunner.Run(name, token => def.Host(args, token), ct, CommandTimeoutMs);
                     Log.Info(name + " (host) ok in " + clock.ElapsedMilliseconds + " ms");
+                    if (safety != null)
+                    {
+                        ContentSafety.Scrub(data, safety);
+                        ContentSafety.Attach(data, safety);
+                    }
                     return StructuredResult(data);
                 }
                 catch (ToolRefusal refusal)
@@ -1449,6 +1477,20 @@ namespace Horizun.Server
                      " in " + clock.ElapsedMilliseconds + " ms" +
                      (supported == null ? " [plugin did not publish its command list]" : ""));
 
+            // MODEL TEXT IS DATA. Neutralise invisible/bidi controls and flag agent-directed
+            // phrasing in everything the add-in said, before any of it is rendered.
+            if (safety != null)
+            {
+                safety = ContentSafety.ScrubReply(reply, safety.Origin);
+                if (ok) ContentSafety.Attach(reply["data"], safety);
+                else if (safety.HasFindings)
+                {
+                    JObject detail = reply["detail"] as JObject ?? new JObject();
+                    detail[ContentSafety.PayloadKey] = safety.ToJson();
+                    reply["detail"] = detail;
+                }
+            }
+
             if (ok)
             {
                 JToken data = reply["data"];
@@ -1461,7 +1503,13 @@ namespace Horizun.Server
                 // changes are the same version and different software; this is where a
                 // support conversation, or a benchmark run, gets to tell them apart.
                 if (def.Command == "horizun_health" && data is JObject health)
+                {
                     health["server_provenance"] = Protocol.ProvenanceStamp.Current();
+                    // The toolset selection lives in THIS process's environment, which the
+                    // add-in cannot see, so the server reports it: which toolsets are active
+                    // and how many characters/estimated tokens the tool list costs.
+                    health["toolsets"] = ToolsetReport.HealthBlock();
+                }
 
                 return WithImageIfAny(data, reply["revit_said"],
                                       reply["fallback"] as JObject,

@@ -294,7 +294,7 @@ namespace Horizun.Server.Tests
                 "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tasks/list\",\"params\":{}}");
 
             Assert.Equal(5, replies.Count);
-            Assert.Equal(6, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
+            Assert.Equal(7, ((JArray)replies.Find(x => (int?)x["id"] == 11)["result"]["resources"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 12)["result"]["contents"]);
             Assert.Equal(27, ((JArray)replies.Find(x => (int?)x["id"] == 13)["result"]["prompts"]).Count);
             Assert.NotEmpty((JArray)replies.Find(x => (int?)x["id"] == 14)["result"]["messages"]);

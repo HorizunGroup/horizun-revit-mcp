@@ -124,6 +124,301 @@ namespace Horizun.Contracts
         /// Destructive: declared with the contract, never inferred three files away.
         /// </summary>
         public bool OpenWorld;
+
+        /// <summary>
+        /// The TOOLSETS (tool packs) this tool belongs to - the groups a session selects
+        /// with tool_packs / HORIZUN_TOOL_PACKS or their synonyms "toolsets" /
+        /// HORIZUN_TOOLSETS, so a client does not pay for every schema in every session.
+        /// Declared in ONE table (<see cref="ToolsetCatalog"/>), attached here by Annotate,
+        /// and read by ToolPacks as its membership - there is no second list. A test fails
+        /// when a new tool is added without a row.
+        ///
+        /// A toolset decides WHETHER a tool is visible, never what it takes or what it may
+        /// do: selecting one cannot widen the permission profile, the allowlist or the
+        /// Python grant. It is not part of the contract hash, as pack membership never was:
+        /// it does not change what travels on the wire.
+        /// </summary>
+        public string[] Toolsets = new string[0];
+
+        /// <summary>
+        /// Does a reply from this tool carry text that came from OUTSIDE this bridge - a
+        /// model's element, parameter, view, sheet or family names, comments and marks, a
+        /// workbook's cells, a DWG's layers and block names, an IFC/BCF topic title?
+        ///
+        /// That text reaches the client's language model, and whoever authored the model
+        /// or the file authored it. The server therefore neutralises invisible and
+        /// bidirectional control characters in the reply and marks it as untrusted content
+        /// (see ContentSafety in the server). Every tool that forwards to the add-in
+        /// carries model text by construction; host-resident tools that read a file or a
+        /// job result are named in Annotate.
+        /// </summary>
+        public bool ExternalContent;
+    }
+
+    /// <summary>
+    /// THE TOOLSET MAP, DECLARED ONCE, IN THE CONTRACT. A toolset is what tools/list
+    /// calls a TOOL PACK: a named subset a session selects so a client does not pay for
+    /// every schema in every session. The selection, the dependencies between packs,
+    /// the welded core, the refusal of a hidden tool and the measurement all live in
+    /// ToolPacks.cs (the add-in and the server share it); this table only says WHICH
+    /// TOOL BELONGS WHERE, next to the tool's other declarations, and ToolPacks derives
+    /// its membership from it. There is no second list.
+    ///
+    /// A tool may belong to several toolsets: capture_view is how documentation gets
+    /// reviewed AND how an audit collects evidence. Membership is curated by what a
+    /// session doing that KIND of work calls, never inferred from a name prefix -
+    /// horizun_audit_access is an ACCESSIBILITY audit, not access control.
+    ///
+    /// Three memberships are guarded by tests because they are security-shaped, not
+    /// organisational: core is exactly health/target/job_status/submit_job; the Python
+    /// surface rides ONLY in unsafe_code; the document-session tools ride ONLY in
+    /// administration. A selection is visibility, never privilege.
+    /// </summary>
+    public static class ToolsetCatalog
+    {
+        public const string Core = "core";
+
+        /// <summary>Every toolset, with the sentence a client reads to choose one.</summary>
+        private static readonly Dictionary<string, string> DescriptionMap =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [Core] = "Always on, welded to every selection: health, target, job status, submit job.",
+                ["read"] = "Read the model: document facts, element listing and queries, model scan, schedules " +
+                           "data, dimensions, 2D detail, planimetry, quantities, structure and CAD reading, capture.",
+                ["model"] = "Typed model writes: create/transform/delete elements, parameters, keynotes, shared " +
+                            "parameters, groups, materials, execute_plan, CAD plan apply.",
+                ["architecture"] = "Architectural operations: wall/floor decomposition, rectangularize walls, " +
+                                   "toposolid grading.",
+                ["structure"] = "Structural modelling: slabs, structural planning, reinforcement (plan, apply, " +
+                                "audit) and structural connections.",
+                ["mep"] = "MEP modelling: system types, MEP planning and connection, networks read from CAD.",
+                ["cad"] = "DWG to BIM: CAD links, extraction, networks, symbols, units, review, plan/apply/update.",
+                ["documentation"] = "Views, dimensions, annotation, 2D detail, revisions, sheet packing.",
+                ["planimetry"] = "Planimetry audit and fix, sheet packing, annotation planning, revisions.",
+                ["audit"] = "Model audits and corrections, model scan, clash, coordination, accessibility audit.",
+                ["coordination"] = "Coordination: clash, BCF coordination, links, file triage, ACC status, " +
+                                   "quantities, budget comparison.",
+                ["schedules"] = "Create, manage and read schedules.",
+                ["family"] = "Family authoring and homologation: create_family, family_apply, keynotes, shared " +
+                             "parameters, catalog lookup.",
+                ["interoperability"] = "Exchange: export, Excel read/write, IFC plan/apply, IDS validation, " +
+                                       "links, catalog lookup, budget comparison, workflow procedures.",
+                ["powerbi"] = "Power BI push and selection exchange, Excel read/write, budget comparison.",
+                ["administration"] = "Document session, open/save, relinquish, script promotion, repair memory.",
+                ["unsafe_code"] = "The Python surface: execute_python (still gated by the owner's grant) and the " +
+                                  "access request."
+            };
+
+        /// <summary>
+        /// Convenience names a selection may use, each expanding to real toolsets. They
+        /// are NOT toolsets themselves - nothing declares membership in an alias - so the
+        /// guarded memberships above cannot be widened through one.
+        /// </summary>
+        private static readonly Dictionary<string, string[]> AliasMap =
+            new Dictionary<string, string[]>(StringComparer.Ordinal)
+            {
+                ["families"] = new[] { "family" },
+                ["data"] = new[] { "schedules", "interoperability", "powerbi" },
+                ["admin"] = new[] { "administration", "unsafe_code" }
+            };
+
+        public static IReadOnlyDictionary<string, string> Descriptions => DescriptionMap;
+
+        public static IReadOnlyCollection<string> Known => DescriptionMap.Keys;
+
+        public static IReadOnlyDictionary<string, string[]> Aliases => AliasMap;
+
+        // One row per tool, in contract order except core, whose four come first in the
+        // order the core guard pins.
+        private static readonly List<KeyValuePair<string, string[]>> Rows = new List<KeyValuePair<string, string[]>>
+        {
+            // ---- core: welded to every selection -----------------------------------
+            Row("horizun_health", Core),
+            Row("horizun_target", Core),
+            Row("horizun_job_status", Core),
+            Row("horizun_submit_job", Core),
+
+            // ---- reading the model --------------------------------------------------
+            Row("get_document_info", "read"),
+            Row("horizun_navigate", "read"),
+            Row("horizun_list_elements", "read"),
+            Row("horizun_query_model", "read", "mep"),
+            Row("horizun_model_scan", "read", "audit"),
+            Row("horizun_file_info", "read", "coordination"),
+            Row("horizun_quantities", "read", "coordination"),
+            Row("horizun_capture_view", "read", "documentation", "planimetry", "audit"),
+
+            // ---- document session and administration -----------------------------------
+            Row("horizun_save_document", "administration"),
+            Row("horizun_open_document", "administration"),
+            Row("horizun_relinquish_all", "administration"),
+            Row("horizun_document_session", "administration"),
+            Row("horizun_promote_script", "administration"),
+            Row("horizun_repair_memory", "administration"),
+
+            // ---- the Python surface ---------------------------------------------------
+            Row("horizun_request_python_access", "unsafe_code"),
+            Row("horizun_execute_python", "unsafe_code"),
+
+            // ---- typed model writes -----------------------------------------------------
+            Row("horizun_create_elements", "model", "structure", "mep", "interoperability"),
+            Row("horizun_transform_elements", "model"),
+            Row("horizun_write_params_verified", "model"),
+            Row("horizun_delete_verified", "model", "documentation"),
+            Row("horizun_execute_plan", "model"),
+            Row("horizun_copy_between_documents", "model"),
+            Row("horizun_manage_materials", "model"),
+            Row("horizun_ungroup_and_mark", "model"),
+            Row("horizun_regroup_by_param", "model"),
+            Row("horizun_set_keynote", "model", "family"),
+            Row("horizun_bind_shared_param", "model", "family"),
+
+            // ---- architecture -----------------------------------------------------------
+            Row("horizun_split_floor_loops", "architecture"),
+            Row("horizun_split_multilayer_walls", "architecture"),
+            Row("horizun_embed_floors_in_toposolid", "architecture"),
+            Row("horizun_grade_toposolid_around_floors", "architecture"),
+            Row("horizun_rectangularize_walls", "architecture"),
+
+            // ---- structure --------------------------------------------------------------
+            Row("horizun_query_structure", "read", "structure"),
+            Row("horizun_plan_reinforcement", "read", "structure"),
+            Row("horizun_audit_reinforcement", "read", "structure", "audit"),
+            Row("horizun_apply_reinforcement", "structure"),
+            Row("horizun_structural_connections", "structure"),
+            Row("horizun_plan_structure", "structure"),
+            Row("horizun_split_multilayer_slabs", "structure"),
+            Row("horizun_copy_slab_elevations", "structure"),
+
+            // ---- mep --------------------------------------------------------------------
+            Row("horizun_manage_system_types", "mep"),
+            Row("horizun_plan_mep", "mep"),
+            Row("horizun_connect_mep", "mep"),
+
+            // ---- cad (dwg -> bim) ---------------------------------------------------------
+            Row("horizun_plan_from_cad", "read", "cad"),
+            Row("horizun_plan_cad_update", "read", "cad"),
+            Row("horizun_audit_cad_model", "read", "cad"),
+            Row("horizun_query_cad", "read", "cad"),
+            Row("horizun_cad_extract", "read", "cad"),
+            Row("horizun_cad_symbols", "read", "cad"),
+            Row("horizun_cad_unit_instances", "read", "cad"),
+            Row("horizun_cad_review", "read", "mep", "cad"),
+            Row("horizun_cad_networks", "read", "mep", "cad"),
+            Row("horizun_cad_connect", "model", "mep", "cad"),
+            Row("horizun_manage_cad_links", "model", "cad"),
+            Row("horizun_apply_cad_update", "model", "cad"),
+            Row("horizun_apply_cad_plan", "model", "cad"),
+
+            // ---- documentation and planimetry -------------------------------------------
+            Row("horizun_manage_views", "documentation"),
+            Row("horizun_plan_views", "documentation"),
+            Row("horizun_annotate", "documentation"),
+            Row("horizun_edit_dimensions", "documentation"),
+            Row("horizun_detail_2d", "documentation"),
+            Row("horizun_get_dimension_references", "read", "documentation"),
+            Row("horizun_query_dimensions", "read", "documentation"),
+            Row("horizun_query_detail_2d", "read", "documentation"),
+            Row("horizun_plan_annotations", "documentation", "planimetry"),
+            Row("horizun_manage_revisions", "documentation", "planimetry"),
+            Row("horizun_pack_sheets", "documentation", "planimetry"),
+            Row("horizun_query_planimetry", "read", "planimetry", "audit"),
+            Row("horizun_audit_planimetry", "planimetry", "audit"),
+            Row("horizun_fix_planimetry", "planimetry"),
+
+            // ---- schedules --------------------------------------------------------------
+            Row("horizun_create_schedule", "schedules"),
+            Row("horizun_manage_schedules", "schedules"),
+            Row("horizun_list_schedules", "read", "schedules"),
+            Row("horizun_get_schedule_data", "read", "schedules"),
+
+            // ---- audit and coordination -------------------------------------------------
+            Row("horizun_audit_model", "audit"),
+            Row("horizun_apply_corrections", "audit"),
+            Row("horizun_audit_access", "audit"),
+            Row("horizun_clash", "audit", "coordination"),
+            Row("horizun_coordination", "audit", "coordination", "interoperability"),
+            Row("horizun_acc_upload_status", "coordination"),
+            Row("horizun_manage_links", "coordination", "interoperability"),
+            Row("horizun_budget_compare", "coordination", "interoperability", "powerbi"),
+
+            // ---- families ---------------------------------------------------------------
+            Row("horizun_create_family", "family"),
+            Row("horizun_family_apply", "family"),
+            Row("horizun_catalog_lookup", "family", "interoperability"),
+
+            // ---- interoperability and Power BI ------------------------------------------
+            Row("horizun_export", "interoperability"),
+            Row("horizun_plan_from_ifc", "interoperability"),
+            Row("horizun_apply_ifc_plan", "interoperability"),
+            Row("horizun_validate_ids", "interoperability"),
+            Row("horizun_run_procedure", "interoperability"),
+            Row("horizun_excel_read_rows", "interoperability", "powerbi"),
+            Row("horizun_excel_write_rows", "interoperability", "powerbi"),
+            Row("horizun_power_bi_push", "powerbi"),
+            Row("horizun_selection_exchange", "powerbi")
+        };
+
+        private static KeyValuePair<string, string[]> Row(string tool, params string[] toolsets)
+            => new KeyValuePair<string, string[]>(tool, toolsets);
+
+        private static readonly Dictionary<string, string[]> ByTool = BuildByTool();
+
+        private static Dictionary<string, string[]> BuildByTool()
+        {
+            var d = new Dictionary<string, string[]>(StringComparer.Ordinal);
+            foreach (KeyValuePair<string, string[]> row in Rows)
+            {
+                if (d.ContainsKey(row.Key))
+                    throw new InvalidOperationException("ToolsetCatalog declares '" + row.Key + "' twice.");
+                d[row.Key] = row.Value;
+            }
+            return d;
+        }
+
+        /// <summary>The toolsets a tool declares, or an empty array when it has no row.</summary>
+        public static string[] Of(string toolName)
+            => toolName != null && ByTool.TryGetValue(toolName, out string[] sets) ? sets : new string[0];
+
+        /// <summary>The tools declaring a toolset, in declaration order.</summary>
+        public static string[] MembersOf(string toolset)
+            => Rows.Where(r => r.Value.Contains(toolset, StringComparer.Ordinal)).Select(r => r.Key).ToArray();
+
+        /// <summary>
+        /// Every problem with the map: a row naming a tool that does not exist (a rename
+        /// nobody finished), a row naming an unknown toolset, an alias expanding to an
+        /// unknown toolset or shadowing a real one, and - given the contract names -
+        /// every tool with no row at all. Annotate throws on all but the last; the tests
+        /// fail on all four.
+        /// </summary>
+        public static List<string> Audit(IEnumerable<string> contractNames)
+        {
+            var problems = new List<string>();
+            var names = new HashSet<string>(contractNames ?? new string[0], StringComparer.Ordinal);
+            foreach (KeyValuePair<string, string[]> row in Rows)
+            {
+                if (!names.Contains(row.Key))
+                    problems.Add("toolset row names a tool that does not exist: '" + row.Key + "'");
+                if (row.Value == null || row.Value.Length == 0)
+                    problems.Add("toolset row for '" + row.Key + "' names no toolset");
+                else
+                    foreach (string set in row.Value)
+                        if (!DescriptionMap.ContainsKey(set))
+                            problems.Add("'" + row.Key + "' names unknown toolset '" + set + "'");
+            }
+            foreach (KeyValuePair<string, string[]> alias in AliasMap)
+            {
+                if (DescriptionMap.ContainsKey(alias.Key))
+                    problems.Add("alias '" + alias.Key + "' shadows a real toolset");
+                foreach (string target in alias.Value)
+                    if (!DescriptionMap.ContainsKey(target))
+                        problems.Add("alias '" + alias.Key + "' expands to unknown toolset '" + target + "'");
+            }
+            foreach (string name in names)
+                if (!ByTool.ContainsKey(name))
+                    problems.Add("'" + name + "' declares no toolset: add a row to ToolsetCatalog.Rows");
+            return problems;
+        }
     }
 
     public static class Contract
@@ -5715,6 +6010,34 @@ namespace Horizun.Contracts
             captureProps["calibrate_world_to_pixel"]=new JObject { ["type"]="boolean",["default"]=false,["description"]="Plans/sections with rectangular unsplit active crop only, requires hide_annotations=true; max 4096 pixels per axis. Creates temporary colored anchors in a separate export, fits from three anchors and checks three independent anchors within 1.5 pixels, verifies background stability, then rolls back. Returns the clean PNG and measured affine map; fails explicitly when calibration cannot be proven." };
             captureProps["display_style"]=new JObject { ["type"]="string",["enum"]=new JArray("Wireframe","HLR","Shading","ShadingWithEdges","FlatColors","Realistic","RealisticWithEdges") };
             captureProps["orientation"]=new JObject { ["type"]="string",["enum"]=new JArray("top","front","right","isometric"),["description"]="Temporary orientation, orthographic 3D only. Spatial output contains measured model crop and axes; exact world-to-pixel mapping remains explicitly uncalibrated." };
+
+            // TOOLSETS. A row that names a tool that does not exist, or a toolset that does
+            // not exist, is a rename nobody finished and fails here, loudly, like every other
+            // set in this method. A tool with NO row is left with an empty list - visible only
+            // when every toolset is selected - and ToolsetTests fails the build for it, so a
+            // tool added in a parallel branch cannot crash a server at startup.
+            foreach (string problem in ToolsetCatalog.Audit(all.Select(c => c.Name)))
+                if (!problem.Contains("declares no toolset"))
+                    throw new InvalidOperationException("Toolset map: " + problem + ".");
+
+            // Host-resident tools whose reply carries text read from a file or from a job
+            // the add-in ran. Plugin-forwarded tools carry model text by construction.
+            var hostExternalContent = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "horizun_job_status", "horizun_excel_read_rows", "horizun_budget_compare",
+                "horizun_catalog_lookup", "horizun_selection_exchange", "horizun_power_bi_push",
+                "horizun_run_procedure", "horizun_excel_write_rows"
+            };
+            foreach (string n in hostExternalContent)
+                if (!known.Contains(n))
+                    throw new InvalidOperationException(
+                        "hostExternalContent names a tool that does not exist: '" + n + "'.");
+
+            foreach (CommandContract c in all)
+            {
+                c.Toolsets = ToolsetCatalog.Of(c.Name);
+                c.ExternalContent = !string.IsNullOrEmpty(c.Command) || hostExternalContent.Contains(c.Name);
+            }
             return all;
         }
         /// <summary>

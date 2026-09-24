@@ -79,6 +79,16 @@ names `unsafe_code` does not surface Python without the owner grant, and
 closed to core-only (health, target, jobs, submit — the four that survive any
 configuration), and the environment override `HORIZUN_TOOL_PACKS` is read from
 the server process an administrator controls, never from a request.
+`HORIZUN_TOOLSETS` and a `toolsets` settings key are synonyms read only when the
+pack spelling is absent; which tool belongs to which pack is declared once, in
+the shared contract (`ToolsetCatalog`), and a tool without a declaration fails
+the build.
+
+**Model and file text is untrusted content.** See SECURITY.md, "Untrusted
+content from models and files": replies that carry it are neutralised
+(invisible/bidirectional controls become visible `[U+XXXX]` tokens), marked
+(`content_safety`, `_meta`) and scanned for agent-directed phrasing, which is
+flagged and never acted on.
 
 ### 2b. Local operational controls
 

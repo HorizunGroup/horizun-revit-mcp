@@ -161,6 +161,10 @@
     <Compile Include="..\..\src\Horizun.Server\Tools.cs" Link="Tools.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Settings.cs" Link="Settings.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ToolPacks.cs" Link="ToolPacks.cs" />
+    <!-- The model-data neutraliser and injection marker every tool reply passes through. -->
+    <Compile Include="..\..\src\Horizun.Server\ContentSafety.cs" Link="ContentSafety.cs" />
+    <!-- The toolset measurement behind horizun://session/toolsets and health. -->
+    <Compile Include="..\..\src\Horizun.Server\ToolsetReport.cs" Link="ToolsetReport.cs" />
     <Compile Include="..\..\src\Horizun.Server\Log.cs" Link="Log.cs" />
   </ItemGroup>
 

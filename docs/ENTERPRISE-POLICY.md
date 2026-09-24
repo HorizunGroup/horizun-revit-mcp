@@ -10,7 +10,20 @@ fail-closed rules.
 3. Review `settings` with the BIM/IT owner. Only existing enforceable keys are
    accepted: `permission_profile`, `mcp_paused`,
    `force_read_only_on_workshared`, `enable_execute_python`, `allowed_tools`,
-   and `denied_tools`.
+   `denied_tools` and `tool_packs`.
+
+   `tool_packs` is the toolset selection: an array of toolset names
+   (`core` is always on; for example `["read", "documentation"]`, or the
+   convenience names `families`, `data`, `admin`). It shrinks what sessions on
+   the machine advertise and can call, which lowers the context every MCP
+   client pays per session; it is visibility, never privilege, so a real
+   restriction still belongs in `permission_profile`, `allowed_tools` or
+   `denied_tools`. The policy accepts only the canonical `tool_packs` key, not
+   its `toolsets` synonym, because the bridge reads the synonym only when
+   `tool_packs` is absent. Note that an MCP client can still set
+   `HORIZUN_TOOL_PACKS` / `HORIZUN_TOOLSETS` in its own server entry, and the
+   environment wins over the settings file; `horizun_health` (`toolsets`) and
+   the `horizun://session/toolsets` resource report which source decided.
 4. Deploy it silently, for example:
 
    ```powershell

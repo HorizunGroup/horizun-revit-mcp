@@ -18,9 +18,10 @@ namespace Horizun.Server.Tests
         {
             JObject listed = McpResources.List(null);
             JArray resources = Assert.IsType<JArray>(listed["resources"]);
-            // Five documents and one MCP App. The app lives under ui:// because that is
-            // the scheme the Apps extension names; it is as virtual as the rest.
-            Assert.Equal(6, resources.Count);
+            // Six documents (the sixth is horizun://session/toolsets) and one MCP App. The
+            // app lives under ui:// because that is the scheme the Apps extension names; it
+            // is as virtual as the rest.
+            Assert.Equal(7, resources.Count);
             foreach (JObject resource in resources)
             {
                 string uri = (string)resource["uri"];

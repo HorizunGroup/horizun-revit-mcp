@@ -36,7 +36,11 @@ if ([string]::IsNullOrWhiteSpace([string]$policy.policy_id) -or [string]::IsNull
     throw 'policy_id and version are required.'
 }
 if ($null -eq $policy.settings) { throw 'settings is required.' }
-$known = @('permission_profile','mcp_paused','force_read_only_on_workshared','enable_execute_python','allowed_tools','denied_tools')
+# tool_packs is the canonical spelling of the toolset selection. The "toolsets"
+# synonym is deliberately NOT accepted here: the bridge reads it only when tool_packs
+# is absent, so a policy written under that name could be silently shadowed by a
+# user's own tool_packs. A selection is visibility, never privilege.
+$known = @('permission_profile','mcp_paused','force_read_only_on_workshared','enable_execute_python','allowed_tools','denied_tools','tool_packs')
 foreach ($p in $policy.settings.PSObject.Properties) {
     if ($known -notcontains $p.Name) { throw "Policy settings key '$($p.Name)' is not enforceable by this installer." }
 }
@@ -50,9 +54,16 @@ foreach ($name in @('mcp_paused','force_read_only_on_workshared','enable_execute
     $v = $policy.settings.$name
     if ($null -ne $v -and -not ($v -is [bool])) { throw "$name must be boolean." }
 }
-foreach ($name in @('allowed_tools','denied_tools')) {
+foreach ($name in @('allowed_tools','denied_tools','tool_packs')) {
     $v = $policy.settings.$name
     if ($null -ne $v -and (($v -is [string]) -or -not ($v -is [System.Collections.IEnumerable]))) { throw "$name must be an array." }
+}
+if ($null -ne $policy.settings.tool_packs) {
+    foreach ($pack in @($policy.settings.tool_packs)) {
+        if (-not ($pack -is [string]) -or [string]::IsNullOrWhiteSpace($pack)) { throw 'tool_packs must be an array of non-empty strings.' }
+    }
+    # Unknown names are not rejected here: the bridge itself falls closed to core-only
+    # and names the problem in horizun_health, which is the authority on what exists.
 }
 
 $root = Resolve-DataRoot

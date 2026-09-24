@@ -43,6 +43,10 @@ namespace Horizun.Server
                     Def(WorkflowsUri, "bim-production-workflows", "BIM Production Workflows",
                         "Task-oriented workflow catalog over the installed typed tool surface.",
                         "application/json", Encoding.UTF8.GetByteCount(WorkflowText())),
+                    Def(ToolsetReport.ResourceUri, "session-toolsets", "Active toolsets",
+                        "Which toolsets (tool packs) this session advertises, and the measured size of tools/list " +
+                        "with and without the selection, in characters and estimated tokens.",
+                        "application/json", Encoding.UTF8.GetByteCount(ToolsetText())),
                     // The MCP App. It is listed like any other resource because it IS
                     // one; what makes it an app is its mime type and the tool that
                     // names it, not a separate listing mechanism.
@@ -66,6 +70,7 @@ namespace Horizun.Server
                 case SecurityUri: mime = "application/json"; text = SecurityText(); break;
                 case BuildUri: mime = "application/json"; text = BuildText(); break;
                 case WorkflowsUri: mime = "application/json"; text = WorkflowText(); break;
+                case ToolsetReport.ResourceUri: mime = "application/json"; text = ToolsetText(); break;
                 case McpAppResources.ClashViewerUri:
                     mime = McpAppResources.AppMimeType; text = McpAppResources.Html(); break;
                 default: throw new McpError(-32602, "Unknown Horizun resource URI: '" + uri + "'.");
@@ -95,6 +100,8 @@ namespace Horizun.Server
                 }
             };
 
+        private static string ToolsetText() => ToolsetReport.Document().ToString(Formatting.Indented);
+
         private static string ContractText()
         {
             var rows = new JArray();
@@ -107,6 +114,8 @@ namespace Horizun.Server
                     ["effect"] = c.Effect.ToString(),
                     ["destructive"] = c.Destructive,
                     ["open_world"] = c.OpenWorld,
+                    ["toolsets"] = new JArray(c.Toolsets ?? new string[0]),
+                    ["external_content"] = c.ExternalContent,
                     ["input_schema"] = c.InputSchema?.DeepClone(),
                     ["output_schema"] = c.OutputSchema?.DeepClone()
                 });

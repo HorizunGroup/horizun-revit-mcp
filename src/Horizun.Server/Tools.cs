@@ -25,6 +25,12 @@ namespace Horizun.Server
         public bool Destructive;
         public bool OpenWorld;
 
+        /// <summary>The toolsets this tool belongs to, as declared in the contract.</summary>
+        public string[] Toolsets;
+
+        /// <summary>Its replies carry text authored outside this bridge (model, file, job).</summary>
+        public bool ExternalContent;
+
         // A host-resident tool answers inside the server and never touches Revit. When Host
         // is non-null the server invokes it locally and does NOT forward to the plugin; when
         // it is null the tool forwards to Command over the pipe, exactly as before.
@@ -87,6 +93,8 @@ namespace Horizun.Server
                     Effect = c.Effect,
                     Destructive = c.Destructive,
                     OpenWorld = c.OpenWorld,
+                    Toolsets = c.Toolsets ?? new string[0],
+                    ExternalContent = c.ExternalContent,
                     Host = host
                 });
             }
@@ -201,6 +209,20 @@ namespace Horizun.Server
         /// </summary>
         public static JArray ListIgnoringPacks(bool advertiseTaskSupport = false)
             => Build(advertiseTaskSupport, IsEnabledIgnoringPacks);
+
+        /// <summary>
+        /// The list a session selecting exactly <paramref name="packs"/> (toolsets, with
+        /// their dependencies and core) WOULD see, at the current permission posture. It
+        /// answers "what would selecting mep cost?" for horizun://session/toolsets; it is
+        /// never dispatched and never shown to a client as its tool list.
+        /// </summary>
+        public static JArray ListForPacks(IEnumerable<string> packs, bool advertiseTaskSupport = false)
+        {
+            Horizun.Revit.Core.ToolPacks.Resolution selection =
+                Horizun.Revit.Core.ToolPacks.Resolve(null, packs, false);
+            HashSet<string> visible = selection.Tools();
+            return Build(advertiseTaskSupport, t => visible.Contains(t.Name) && IsEnabledIgnoringPacks(t));
+        }
 
         private static JArray Build(bool advertiseTaskSupport, Func<ToolDef, bool> enabled)
         {
