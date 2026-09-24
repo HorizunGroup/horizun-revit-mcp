@@ -83,8 +83,8 @@ namespace Horizun.Server
                 if (!Keys.Contains(p.Name))
                     throw new ToolRefusal("Unknown argument '" + p.Name + "'. Nothing was read.");
             string op = Str(args, "operation");
-            if (op != "list_states" && op != "inspect" && op != "versions")
-                throw new ToolRefusal("operation must be one of list_states, inspect, versions. Nothing was read.");
+            if (op != "list_projects" && op != "list_states" && op != "inspect" && op != "versions")
+                throw new ToolRefusal("operation must be one of list_projects, list_states, inspect, versions. Nothing was read.");
             string provider = Str(args, "provider");
             try
             {
@@ -124,9 +124,12 @@ namespace Horizun.Server
             if (platform != null && platform != "acc" && platform != "bim360")
                 throw new ToolRefusal("The project context declares cde.platform='" + platform + "', not acc or bim360. " +
                                       "provider=acc will not read another platform's folders as if they were ACC's. Nothing was read.");
-            string projectId = ProjectId(Str(args, "project_id") ?? (string)context?["cde"]?["project_ref"]);
             string hubId = HubId(Str(args, "hub_id"));
             int maxCalls = Int(args, "max_calls", DefaultMaxCalls, 1, MaxMaxCalls);
+            // Nobody knows a b.<guid> by heart: the intake asks WHERE the CDE is, and this
+            // answers with what the credential can see, so the project is chosen, not typed.
+            if (op == "list_projects") return AccListProjects(hubId, maxCalls, ct, env);
+            string projectId = ProjectId(Str(args, "project_id") ?? (string)context?["cde"]?["project_ref"]);
             string itemId = null;
             List<StateTarget> targets = null;
             ContainerNaming naming = null;
@@ -342,6 +345,53 @@ namespace Horizun.Server
         }
 
         /// <summary>Finds the hub holding the project: the hubs this credential sees, then a direct project read in each.</summary>
+        private static JObject AccListProjects(string hubId, int maxCalls, CancellationToken ct, CdeCloudEnvironment env)
+        {
+            if (!ApsAuth.AnyConfigured(env)) throw new ToolRefusal(ApsAuth.NotConfiguredMessage(env));
+            using (var http = new CdeCloudHttp(env, maxCalls, ct))
+            {
+                http.AllowHost(ApsAuth.Host);
+                CloudCredential cred = ApsAuth.Resolve(env, http);
+                http.BearerToken = cred.Token;
+                var hubsOut = new JArray();
+                var problems = new JArray();
+                List<JObject> hubs, _;
+                string hubError = Paged(http, ApsBase + "/project/v1/hubs", out hubs, out _);
+                if (hubError != null) problems.Add("hubs: " + hubError);
+                foreach (JObject hub in hubs.Take(MaxHubs))
+                {
+                    string id = (string)hub["id"];
+                    if (id == null || (hubId != null && id != hubId)) continue;
+                    List<JObject> projects, __;
+                    string projectError = Paged(http, ApsBase + "/project/v1/hubs/" + Esc(id) + "/projects", out projects, out __);
+                    if (projectError != null) problems.Add("projects of hub " + id + ": " + projectError);
+                    hubsOut.Add(new JObject
+                    {
+                        ["hub_id"] = id,
+                        ["name"] = (string)hub["attributes"]?["name"],
+                        ["region"] = (string)hub["attributes"]?["region"],
+                        ["kind"] = (string)hub["attributes"]?["extension"]?["type"],
+                        ["projects"] = new JArray(projects.Select(pr => new JObject
+                        {
+                            ["project_id"] = (string)pr["id"],
+                            ["name"] = (string)pr["attributes"]?["name"]
+                        }))
+                    });
+                }
+                return new JObject
+                {
+                    ["operation"] = "list_projects", ["provider"] = "acc",
+                    ["hubs"] = hubsOut,
+                    ["coverage_complete"] = problems.Count == 0 && hubs.Count <= MaxHubs,
+                    ["problems"] = problems,
+                    ["auth"] = cred.Describe(),
+                    ["http"] = http.Describe(),
+                    ["note"] = "Read-only. Only what this credential can see is listed; a 2-legged app sees an ACC account only " +
+                               "after an account admin adds it as a custom integration. Put the chosen project_id in cde.project_ref."
+                };
+            }
+        }
+
         private static string FindHub(CdeCloudHttp http, string projectId)
         {
             List<JObject> hubs, _;

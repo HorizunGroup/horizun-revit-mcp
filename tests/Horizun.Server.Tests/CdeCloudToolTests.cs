@@ -161,6 +161,27 @@ namespace Horizun.Server.Tests
         // ---- credentials -------------------------------------------------------------------
 
         [Fact]
+        public void Acc_list_projects_names_the_hubs_and_projects_the_credential_can_see()
+        {
+            var cloud = Project2Legged();
+            cloud.Routes.Remove("GET " + Aps + "/project/v1/hubs");
+            cloud.Json("GET", Aps + "/project/v1/hubs", Page(new JArray(new JObject
+            {
+                ["type"] = "hubs", ["id"] = Hub,
+                ["attributes"] = new JObject { ["name"] = "Demo account", ["region"] = "US", ["extension"] = new JObject { ["type"] = "hubs:autodesk.bim360:Account" } }
+            })));
+            cloud.Json("GET", Aps + "/project/v1/hubs/" + Uri.EscapeDataString(Hub) + "/projects", Page(new JArray(
+                new JObject { ["type"] = "projects", ["id"] = Project, ["attributes"] = new JObject { ["name"] = "Demo tower" } })));
+            JObject r = CdeCloudTool.Handle(new JObject { ["operation"] = "list_projects", ["provider"] = "acc" },
+                                            CancellationToken.None, Env(cloud, ClientCredentials()));
+            Assert.True((bool)r["coverage_complete"]);
+            Assert.Equal("Demo account", (string)r["hubs"][0]["name"]);
+            Assert.Equal(Project, (string)r["hubs"][0]["projects"][0]["project_id"]);
+            Assert.Equal("Demo tower", (string)r["hubs"][0]["projects"][0]["name"]);
+            Assert.All(cloud.Requests, q => Assert.Equal(q.Url.Contains("/authentication/") ? "POST" : "GET", q.Method));
+        }
+
+        [Fact]
         public void Acc_without_any_credential_is_refused_with_zero_requests()
         {
             var cloud = Project2Legged();

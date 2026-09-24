@@ -5485,12 +5485,12 @@ namespace Horizun.Contracts
                 // Deliberately terse: tools/list has a byte budget. The detail is in
                 // docs/INFORMATION-MANAGEMENT.md, "Cloud CDE reader".
                 Description =
-                    "READ-ONLY cloud CDE reader, acc (APS) or opencde. list_states: folders to ISO 19650 states; inspect: " +
+                    "READ-ONLY cloud CDE reader, acc (APS) or opencde. list_projects (acc): hubs and projects visible; list_states: folders to ISO 19650 states; inspect: " +
                     "files, naming, MIDP cross; versions: history. Env-var credentials only. Unread parts: coverage_complete=false.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation"", ""provider""],
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""list_states"", ""inspect"", ""versions""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""list_projects"", ""list_states"", ""inspect"", ""versions""] },
     ""provider"": { ""type"": ""string"", ""enum"": [""acc"", ""opencde""] },
     ""project_context_path"": { ""type"": ""string"" },
     ""hub_id"": { ""type"": ""string"" },
