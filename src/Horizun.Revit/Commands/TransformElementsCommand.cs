@@ -212,10 +212,11 @@ namespace Horizun.Revit.Commands
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "mirror" && op != "pin" && op != "unpin" &&
-                    op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join")
+                    op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join" &&
+                    op != "array_linear" && op != "array_radial")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head and set_tag_leader only. Nothing was written.",
+                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head, set_tag_leader, array_linear and array_radial only. Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
                 var allowed = new HashSet<string>(new[] { "operation", "element_ids" });
                 if(op=="move" || op=="copy") allowed.Add("vector");
@@ -224,6 +225,8 @@ namespace Horizun.Revit.Commands
                 if(op=="change_type") allowed.Add("type_id");
                 if(op=="wall_join") allowed.UnionWith(new[] { "join_end", "allow" });
                 if(op=="set_curve") allowed.UnionWith(new[] { "start", "end" });
+                if(op=="array_linear") allowed.UnionWith(new[] { "vector", "count", "anchor", "group" });
+                if(op=="array_radial") allowed.UnionWith(new[] { "axis_start", "axis_end", "angle_degrees", "count", "anchor", "group" });
                 if(op=="move_tag_head") allowed.UnionWith(new[] { "point", "vector" });
                 if(op=="set_tag_leader") allowed.UnionWith(new[] { "has_leader", "leader_end_condition", "leader_end", "leader_elbow", "leader_visible" });
                 foreach(var field in o.Properties()) if(!allowed.Contains(field.Name)) throw new ArgumentException(field.Name+" is not applicable to "+op);
@@ -267,7 +270,7 @@ namespace Horizun.Revit.Commands
                             p.TagRefs[raw] = refs[0];
                         }
                     }
-                    if (op == "move" || op == "rotate" || op == "copy" || op == "mirror")
+                    if (op == "move" || op == "rotate" || op == "copy" || op == "mirror" || op == "array_linear" || op == "array_radial")
                     {
                         List<XYZ> sample = Samples(element);
                         if (sample.Count == 0) throw new ArgumentException("ElementId " + raw + " has no LocationPoint/LocationCurve sample, so " + op + " cannot be verified");
@@ -314,6 +317,7 @@ namespace Horizun.Revit.Commands
                     p.JoinEnd=o.Value<int>("join_end"); p.JoinAllowed=o.Value<bool>("allow");
                 }
                 if (op == "move" || op == "copy") p.Vector = Point(o["vector"], scale, "vector");
+                if (op == "array_linear" || op == "array_radial") PlanArray(doc, o, scale, p);
                 if (op == "rotate")
                 {
                     XYZ a = Point(o["axis_start"], scale, "axis_start"), b = Point(o["axis_end"], scale, "axis_end");
@@ -424,6 +428,7 @@ namespace Horizun.Revit.Commands
             {
                 case "move": ElementTransformUtils.MoveElements(doc, p.Ids, p.Vector); break;
                 case "copy": p.Created = ElementTransformUtils.CopyElements(doc, p.Ids, p.Vector).ToList(); break;
+                case "array_linear": case "array_radial": ApplyArray(doc, p); break;
                 case "rotate": ElementTransformUtils.RotateElements(doc, p.Ids, p.Axis, p.Angle); break;
                 case "mirror": ElementTransformUtils.MirrorElements(doc, p.Ids, p.MirrorPlane, false); break;
                 case "pin": foreach (ElementId id in p.Ids) doc.GetElement(id).Pinned = true; break;
@@ -466,6 +471,7 @@ namespace Horizun.Revit.Commands
         private static bool Verify(Document doc, Plan p, out JObject detail)
         {
             detail = new JObject { ["targets"] = p.Ids.Count };
+            if (p.Operation == "array_linear" || p.Operation == "array_radial") return VerifyArray(doc, p, detail);
             if (p.Operation == "copy")
             {
                 int present = p.Created == null ? 0 : p.Created.Count(id => doc.GetElement(id) != null);
@@ -841,6 +847,139 @@ namespace Horizun.Revit.Commands
             catch { return null; }
         }
 
+        // ---- arrays -------------------------------------------------------------------
+        // LinearArray / RadialArray, with or without association (group=true keeps the
+        // Revit array element). Every copy is re-read and matched against the formula:
+        // member k of each source sits at the source's samples moved by k*step (linear)
+        // or turned by k*step angle about the axis (radial). anchor=last divides the
+        // vector/angle over count-1 steps, a full turn over count
+        // (ArchitecturalEditRules.ArrayStepVector / ArrayStepAngle).
+
+        private static void PlanArray(Document doc, JObject o, double scale, Plan p)
+        {
+            bool radial = p.Operation == "array_radial";
+            if (o["count"]?.Type != JTokenType.Integer) throw new ArgumentException(p.Operation + " requires an integer count (members including the original).");
+            p.Count = o.Value<int>("count");
+            string countError = ArchitecturalEditRules.ValidateArrayCount(radial, p.Count);
+            if (countError != null) throw new ArgumentException(countError);
+            string anchor = (o.Value<string>("anchor") ?? "second").ToLowerInvariant();
+            if (anchor != "second" && anchor != "last") throw new ArgumentException("anchor must be second or last.");
+            p.AnchorLast = anchor == "last";
+            if (o["group"] != null && o["group"].Type != JTokenType.Boolean) throw new ArgumentException("group must be a boolean.");
+            p.Grouped = o.Value<bool?>("group") ?? false;
+            View view = doc.ActiveView;
+            if (view == null || view is ViewSheet || view is ViewSchedule)
+                throw new ArgumentException("arrays are created in the ACTIVE view, and the active view is " + (view == null ? "none" : "a " + view.GetType().Name) + "; activate a plan, section or 3D view.");
+            foreach (ElementId id in p.Ids)
+                if (!LinearArray.IsElementArrayable(doc, id))
+                    throw new ArgumentException("ElementId " + Rid.Value(id) + " cannot be arrayed (LinearArray.IsElementArrayable is false).");
+            if (!radial)
+            {
+                XYZ v = Point(o["vector"], scale, "vector");
+                if (v.GetLength() < 1e-9) throw new ArgumentException("vector must not be zero");
+                double[] s = ArchitecturalEditRules.ArrayStepVector(new[] { v.X, v.Y, v.Z }, p.Count, p.AnchorLast);
+                p.Vector = v; p.Step = new XYZ(s[0], s[1], s[2]);
+            }
+            else
+            {
+                XYZ a = Point(o["axis_start"], scale, "axis_start"), b = Point(o["axis_end"], scale, "axis_end");
+                if (a.DistanceTo(b) < 1e-9) throw new ArgumentException("rotation axis endpoints must differ");
+                if (o["angle_degrees"] == null) throw new ArgumentException("angle_degrees is required for array_radial");
+                p.Axis = Line.CreateBound(a, b); p.AxisOrigin = a; p.AxisDirection = (b - a).Normalize();
+                p.Angle = o.Value<double>("angle_degrees") * Math.PI / 180.0;
+                if (Math.Abs(p.Angle) < 1e-9) throw new ArgumentException("angle_degrees must not be zero");
+                p.StepAngle = ArchitecturalEditRules.ArrayStepAngle(p.Angle, p.Count, p.AnchorLast);
+            }
+        }
+
+        private static void ApplyArray(Document doc, Plan p)
+        {
+            View view = doc.ActiveView;
+            ArrayAnchorMember anchor = p.AnchorLast ? ArrayAnchorMember.Last : ArrayAnchorMember.Second;
+            ICollection<ElementId> made;
+            if (p.Operation == "array_linear")
+            {
+                if (p.Grouped)
+                {
+                    LinearArray array = LinearArray.Create(doc, view, p.Ids, p.Count, p.Vector, anchor);
+                    p.ArrayId = Rid.Value(array.Id); made = array.GetCopiedMemberIds();
+                }
+                else made = LinearArray.ArrayElementsWithoutAssociation(doc, view, p.Ids, p.Count, p.Vector, anchor);
+            }
+            else
+            {
+                if (p.Grouped)
+                {
+                    RadialArray array = RadialArray.Create(doc, view, p.Ids, p.Count, p.Axis, p.Angle, anchor);
+                    p.ArrayId = Rid.Value(array.Id); made = array.GetCopiedMemberIds();
+                }
+                else made = RadialArray.ArrayElementsWithoutAssociation(doc, view, p.Ids, p.Count, p.Axis, p.Angle, anchor);
+            }
+            p.Created = (made ?? new List<ElementId>()).ToList();
+        }
+
+        private static bool VerifyArray(Document doc, Plan p, JObject detail)
+        {
+            bool grouped = p.Grouped;
+            var required = new List<string> { "copies_present", "copies_at_formula" };
+            if (grouped) required.Add("array_element");
+            var check = new PostconditionCheck(required.ToArray());
+            // Leaves: a member that Revit wrapped in a group is judged by what it holds.
+            var leaves = new List<Element>();
+            foreach (ElementId id in p.Created ?? new List<ElementId>())
+            {
+                Element e = doc.GetElement(id);
+                if (e is Group g) leaves.AddRange(g.GetMemberIds().Select(doc.GetElement).Where(x => x != null));
+                else if (e != null) leaves.Add(e);
+            }
+            var sources = new HashSet<long>(p.Ids.Select(Rid.Value));
+            leaves = leaves.Where(e => !sources.Contains(Rid.Value(e.Id))).ToList();
+            int expected = p.Ids.Count * (p.Count - 1);
+            check.Compare("copies_present", expected, leaves.Count);
+            int matched = 0;
+            var misses = new JArray();
+            var remaining = new List<Element>(leaves);
+            foreach (ElementId sourceId in p.Ids)
+            {
+                Element source = doc.GetElement(sourceId);
+                List<XYZ> before = p.Samples[Rid.Value(sourceId)];
+                for (int k = 1; k < p.Count; k++)
+                {
+                    Func<XYZ, XYZ> member = p.Operation == "array_linear"
+                        ? (Func<XYZ, XYZ>)(x => x + p.Step * k)
+                        : (x => Transform.CreateRotationAtPoint(p.AxisDirection, p.StepAngle * k, p.AxisOrigin).OfPoint(x));
+                    var want = before.Select(member).ToList();
+                    int hit = remaining.FindIndex(e => source != null && e.GetTypeId() == source.GetTypeId() && e.GetType() == source.GetType() &&
+                        SamplesNear(want, Samples(e)));
+                    if (hit < 0) { misses.Add(new JObject { ["source_id"] = Rid.Value(sourceId), ["member"] = k, ["expected_feet"] = new JArray(want.Select(Arr)) }); continue; }
+                    matched++; remaining.RemoveAt(hit);
+                }
+            }
+            check.Compare("copies_at_formula", expected, matched);
+            if (grouped)
+                check.Compare("array_element", true, p.ArrayId.HasValue && doc.GetElement(Rid.Make(p.ArrayId.Value)) is BaseArray);
+            detail["created_ids"] = new JArray(leaves.Select(e => (JToken)Rid.Value(e.Id)));
+            detail["array_id"] = p.ArrayId.HasValue ? (JToken)p.ArrayId.Value : JValue.CreateNull();
+            detail["step_feet"] = p.Step == null ? null : Arr(p.Step);
+            if (p.Operation == "array_radial") detail["step_degrees"] = p.StepAngle * 180 / Math.PI;
+            if (misses.Count > 0) detail["members_not_at_formula"] = misses;
+            detail["postconditions"] = check.ToJson();
+            return check.AllVerified;
+        }
+
+        /// <summary>Same samples within 1e-5 ft, in order or (for a curve) reversed.</summary>
+        private static bool SamplesNear(List<XYZ> want, List<XYZ> got)
+        {
+            if (want.Count != got.Count || want.Count == 0) return false;
+            bool fwd = true, rev = true;
+            for (int i = 0; i < want.Count; i++)
+            {
+                fwd &= want[i].DistanceTo(got[i]) <= 1e-5;
+                rev &= want[i].DistanceTo(got[got.Count - 1 - i]) <= 1e-5;
+            }
+            return fwd || (want.Count == 2 && rev);
+        }
+
         private sealed class Plan
         {
             public int JoinEnd; public bool JoinAllowed;
@@ -862,6 +1001,9 @@ namespace Horizun.Revit.Commands
             public bool? HasLeader, LeaderVisible;
             public LeaderEndCondition? EndCondition;
             public XYZ LeaderEnd, LeaderElbow;
+            // array_linear / array_radial
+            public int Count; public bool AnchorLast, Grouped; public XYZ Step; public double StepAngle; public XYZ AxisDirection, AxisOrigin;
+            public long? ArrayId;
         }
     }
 }

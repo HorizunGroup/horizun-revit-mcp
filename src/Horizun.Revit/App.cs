@@ -212,6 +212,9 @@ namespace Horizun.Revit
             d.Register(new NavigateCommand());
             d.Register(new CreateElementsCommand());
             d.Register(new TransformElementsCommand());
+            d.Register(new ManageCurtainCommand());
+            d.Register(new SlabShapeCommand());
+            d.Register(new CreateRailingCommand());
             d.Register(new ManageViewsCommand());
             d.Register(new ExportCommand());
             d.Register(new DeliverIfcCommand());

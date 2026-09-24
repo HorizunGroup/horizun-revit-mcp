@@ -285,6 +285,9 @@ namespace Horizun.Contracts
             Row("horizun_embed_floors_in_toposolid", "architecture"),
             Row("horizun_grade_toposolid_around_floors", "architecture"),
             Row("horizun_rectangularize_walls", "architecture"),
+            Row("horizun_manage_curtain", "architecture"),
+            Row("horizun_slab_shape", "architecture", "structure"),
+            Row("horizun_create_railing", "architecture"),
 
             // ---- structure --------------------------------------------------------------
             Row("horizun_query_structure", "read", "structure"),
@@ -1383,8 +1386,8 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""operations"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""element_ids""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader""],
-          ""description"": ""move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure."" },
+        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader"", ""array_linear"", ""array_radial""],
+          ""description"": ""array_linear/array_radial: count members incl. the original, along vector or about axis_start-axis_end by angle_degrees; each copy re-read at k*step. move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure."" },
         ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
         ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move/copy: the translation. move_tag_head: the head displacement, in units."" },
         ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move_tag_head: the absolute head position, in units; exactly one element_id."" },
@@ -1405,11 +1408,90 @@ namespace Horizun.Contracts
         ""end"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" },
           ""description"": ""set_curve: the other end. A zero-length line is refused."" },
         ""join_end"": { ""type"": ""integer"", ""enum"": [0,1], ""description"": ""wall_join: wall end index."" },
+        ""count"": { ""type"": ""integer"", ""minimum"": 2, ""maximum"": 200 },
+        ""anchor"": { ""type"": ""string"", ""enum"": [""second"", ""last""], ""description"": ""array: vector/angle reaches the 2nd or the last member."" },
+        ""group"": { ""type"": ""boolean"", ""default"": false, ""description"": ""array: keep the associated Revit array."" },
         ""allow"": { ""type"": ""boolean"", ""description"": ""wall_join: allow/disallow join at the specified end; verified after commit."" }
       }, ""additionalProperties"": false
     }},
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" },
     ""transaction_name"": { ""type"": ""string"", ""default"": ""Horizun: transform elements"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_manage_curtain",
+                Command = "horizun_manage_curtain",
+                Description =
+                    "Curtain wall/system grids: read (u/v lines with offsets and segments, mullions, panels), " +
+                    "add_grid_line, remove_grid_line (deletes it), set_mullions (add/remove on a line's segments) and " +
+                    "set_panel_type (panel ids or a point; door/window panel types included). One edit per call, " +
+                    "re-read from the committed grid; a disagreement rolls back.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""element_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""add_grid_line"", ""remove_grid_line"", ""set_mullions"", ""set_panel_type""] },
+    ""element_id"": { ""type"": ""integer"", ""description"": ""Curtain wall or curtain system."" },
+    ""grid_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""Curtain system grid; 0 for a wall."" },
+    ""direction"": { ""type"": ""string"", ""enum"": [""u"", ""v""], ""description"": ""u horizontal, v vertical."" },
+    ""offset"": { ""type"": ""number"", ""description"": ""Walls: v = along the wall from its start, u = above its base."" },
+    ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+    ""grid_line_id"": { ""type"": ""integer"" },
+    ""mode"": { ""type"": ""string"", ""enum"": [""add"", ""remove""] },
+    ""mullion_type_id"": { ""type"": ""integer"" },
+    ""segment_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""Omit for every segment."" },
+    ""panel_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
+    ""type_id"": { ""type"": ""integer"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_slab_shape",
+                Command = "horizun_slab_shape",
+                Description =
+                    "Floor/roof shape editing: read (vertices, creases), add_point, add_split_line, modify_subelement " +
+                    "(vertex points or one crease by start/end) and reset_shape (erases the shape points). Every " +
+                    "touched vertex elevation is re-read after commit; a disagreement rolls back.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""element_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""operation"": { ""type"": ""string"", ""enum"": [""read"", ""add_point"", ""add_split_line"", ""modify_subelement"", ""reset_shape""] },
+    ""element_id"": { ""type"": ""integer"" },
+    ""points"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } },
+      ""description"": ""[x, y, offset]; offset is from the unmodified top."" },
+    ""start"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
+    ""end"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 2, ""items"": { ""type"": ""number"" } },
+    ""offset"": { ""type"": ""number"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
+  }, ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_create_railing",
+                Command = "horizun_create_railing",
+                Description =
+                    "Create a railing on a stair/ramp (host_id; one per side Revit places) or along a sketched open " +
+                    "path on a level. Type, host, path and base_offset are re-read after commit; height is the type's.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"", ""required"": [""target_document"", ""type_id""],
+  ""properties"": {
+    ""target_document"": { ""type"": ""string"" },
+    ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
+    ""type_id"": { ""type"": ""integer"" },
+    ""host_id"": { ""type"": ""integer"" },
+    ""placement"": { ""type"": ""string"", ""enum"": [""treads"", ""stringer""], ""default"": ""treads"" },
+    ""path"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 200, ""items"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" } } },
+    ""level_id"": { ""type"": ""integer"" },
+    ""base_offset"": { ""type"": ""number"" },
+    ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
             },
@@ -6241,6 +6323,7 @@ namespace Horizun.Contracts
                 "horizun_regroup_by_param", "horizun_copy_slab_elevations",
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 "horizun_rectangularize_walls",
+                "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing",
                 // It writes nothing ITSELF, and that is why it sat in no set and fell through to
                 // ReadOnly: its children do, called in-process (connect_mep, create_elements and,
                 // through a refit, delete_verified) - past the admission a read_only profile
@@ -6334,7 +6417,9 @@ namespace Horizun.Contracts
                 // other three: it records what somebody remembered, not what the tools do.
                 "horizun_embed_floors_in_toposolid", "horizun_grade_toposolid_around_floors",
                 // dissolve_parts removes parts and every edit made to them; disassemble removes the assembly.
-                "horizun_manage_assemblies_parts"
+                "horizun_manage_assemblies_parts",
+                // remove_grid_line and set_mullions remove delete grid elements; reset_shape erases shape points.
+                "horizun_manage_curtain", "horizun_slab_shape"
             };
 
             // MCP's openWorldHint. Effect already covers ExternalSideEffect and
