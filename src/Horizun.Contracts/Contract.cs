@@ -1394,9 +1394,10 @@ namespace Horizun.Contracts
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""operations"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation"", ""element_ids""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader"", ""array_linear"", ""array_radial""],
-          ""description"": ""array_linear/array_radial: count members incl. the original, along vector or about axis_start-axis_end by angle_degrees; each copy re-read at k*step. move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure."" },
+        ""operation"": { ""type"": ""string"", ""enum"": [""wall_join"", ""move"", ""copy"", ""rotate"", ""mirror"", ""pin"", ""unpin"", ""change_type"", ""set_curve"", ""move_tag_head"", ""set_tag_leader"", ""array_linear"", ""array_radial"", ""rename_level""],
+          ""description"": ""array_linear/array_radial: count members incl. the original, along vector or about axis_start-axis_end by angle_degrees; each copy re-read at k*step. move_tag_head sets an IndependentTag's head (point: absolute, one tag; or vector: a displacement for every tag listed) and re-reads TagHeadPosition within 1e-5 ft; set_tag_leader edits the leader of an IndependentTag with exactly ONE tagged reference (has_leader, leader_end_condition attached|free, leader_end for a FREE end, leader_elbow, leader_visible), refusing what Revit reports it cannot assign (CanLeaderEndConditionBeAssigned), a free end on an attached leader, a leader edit on a tag without a leader, a pinned tag and a multi-reference tag; every requested property is re-read after commit. Room/space/area tags are NOT covered by these two operations. set_curve replaces ONE element's location line with the line given by start and end - what an incremental DWG update needs when a drawing moves a wall and the element must keep its id, its parameters and everything hosted on it. It is verified by re-reading the curve and checking the endpoints lie ON the line that was set, because Revit trims a wall back to where the centrelines of the walls it meets cross, and demanding the exact endpoints would report every joined corner as a failure. rename_level (one element_id, the level; must be the sole operation in its batch) renames a Level with name: Revit also SOLELY renames any plan view whose name exactly matched the level's, and may raise Copy/Monitor alerts - the dry run lists both (views_expected_to_rename is a read; the Copy/Monitor alerts come from an actual rename rehearsed in a rolled-back transaction), and the applied reply reports views renamed before/after plus copy_monitor_alerts captured from the real commit."" },
         ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" } },
+        ""name"": { ""type"": ""string"", ""description"": ""rename_level: the level's new name."" },
         ""vector"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move/copy: the translation. move_tag_head: the head displacement, in units."" },
         ""point"": { ""type"": ""array"", ""minItems"": 3, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""move_tag_head: the absolute head position, in units; exactly one element_id."" },
         ""has_leader"": { ""type"": ""boolean"", ""description"": ""set_tag_leader: IndependentTag.HasLeader."" },
@@ -1586,7 +1587,8 @@ namespace Horizun.Contracts
                     "isolate elements (temporary view mode by default, and the reply says which), reset the " +
                     "temporary mode, category/subcategory visibility and overrides; edit filter rules, reorder and " +
                     "enable filters, explain which override wins for an element, create templates and set what they " +
-                    "govern. A view whose TEMPLATE governs V/G is REFUSED " +
+                    "govern; list/create/update/delete named PrintManager sheet sets (view_ids replaces membership " +
+                    "on update), restoring the print manager's own current selection afterward. A view whose TEMPLATE governs V/G is REFUSED " +
                     "with the template named rather than accepted and silently ignored, which is what Revit does. " +
                     "Sheet numbers are checked unique " +
                     "against the document AND the batch before anything runs. Actions may assign a key and later " +
@@ -1599,7 +1601,8 @@ namespace Horizun.Contracts
     ""target_document"": { ""type"": ""string"" }, ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""actions"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": {
       ""type"": ""object"", ""required"": [""operation""], ""properties"": {
-        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls""] },
+        ""operation"": { ""type"": ""string"", ""enum"": [""create_floor_plan"", ""create_ceiling_plan"", ""create_structural_plan"", ""create_area_plan"", ""create_3d"", ""create_drafting"", ""create_section"", ""create_elevation"", ""create_callout"", ""duplicate_view"", ""apply_template"", ""set_phase"", ""assign_scope_box"", ""set_view_range"", ""set_crop"", ""set_annotation_crop"", ""create_sheet"", ""create_placeholder_sheet"", ""convert_placeholder_sheet"", ""duplicate_sheet"", ""place_view"", ""place_schedule"", ""set_viewport_type"", ""align_viewports"", ""create_filter"", ""apply_filter"", ""color_by_value"", ""set_element_overrides"", ""hide_elements"", ""isolate_elements"", ""reset_temporary"", ""set_category_visibility"", ""create_legend"", ""place_legend_component"", ""edit_filter"", ""order_filters"", ""explain_graphics"", ""create_template"", ""set_template_controls"", ""sheet_set_list"", ""sheet_set_create"", ""sheet_set_update"", ""sheet_set_delete""],
+          ""description"": ""sheet_set_list reads every PrintManager.ViewSheetSetting sheet set (id, name, is_automatic, member views/sheets); sheet_set_create needs name and view_ids; sheet_set_update needs sheet_set_id and name and/or view_ids (view_ids REPLACES membership); sheet_set_delete needs sheet_set_id. The print manager's own current selection is saved and restored around each call."" },
         ""key"": { ""type"": ""string"", ""description"": ""Unique alias for an object this action creates."" },
         ""categories"": { ""type"": ""array"", ""items"": { ""type"": ""string"" }, ""description"": ""GRAPHIC CONTROL. Categories a filter applies to. Prefer the BuiltInCategory name (OST_Walls): a display name depends on the Revit language and would break on another machine."" },
         ""rules"": { ""type"": ""array"", ""maxItems"": 50, ""items"": { ""type"": ""object"", ""required"": [""parameter""], ""properties"": {
@@ -1635,6 +1638,8 @@ namespace Horizun.Contracts
         ""detail_level"": { ""type"": ""string"", ""enum"": [""coarse"", ""medium"", ""fine""], ""description"": ""place_legend_component: how the component is drawn."" },
         ""hidden"": { ""type"": ""boolean"", ""description"": ""set_category_visibility: true hides it."" },
         ""name"": { ""type"": ""string"" }, ""number"": { ""type"": ""string"" },
+        ""sheet_set_id"": { ""type"": ""integer"", ""description"": ""sheet_set_update/sheet_set_delete: an existing saved sheet set."" },
+        ""view_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" }, ""description"": ""sheet_set_create/sheet_set_update: the views/sheets the set holds. On update this REPLACES the whole membership."" },
         ""level_id"": { ""type"": ""integer"" }, ""view_family_type_id"": { ""type"": ""integer"" }, ""plan_view_id"": { ""type"": ""integer"" },
         ""source_view_id"": { ""type"": ""integer"" }, ""source_view_key"": { ""type"": ""string"" },
         ""duplicate_option"": { ""type"": ""string"", ""enum"": [""Duplicate"", ""WithDetailing"", ""AsDependent""], ""default"": ""Duplicate"" },
@@ -3296,7 +3301,10 @@ namespace Horizun.Contracts
                     "User worksets on a workshared model (otherwise refused, code not_workshared): list (open, editable, " +
                     "owner, element count), create, rename, move_elements (element_ids or category; borrowed elements are " +
                     "reported, never forced), set_default (active workset), visibility per view. Dry run rehearses; apply " +
-                    "needs the token; WorksetId and the table are re-read.",
+                    "needs the token; WorksetId and the table are re-read. create/rename/move_elements report " +
+                    "ownership_effect (elements and the workset newly owned by the caller - renaming can silently take " +
+                    "ownership of thousands) and accept relinquish_after to give everything the caller owns back and " +
+                    "re-measure.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
@@ -3308,6 +3316,7 @@ namespace Horizun.Contracts
     ""category"": { ""type"": ""string"" },
     ""view_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
     ""visibility"": { ""type"": ""string"", ""enum"": [""visible"", ""hidden"", ""use_global""] },
+    ""relinquish_after"": { ""type"": ""boolean"", ""default"": false, ""description"": ""create/rename/move_elements only: after a verified apply, relinquish EVERYTHING the caller owns in the document (the same call horizun_relinquish_all makes) and re-measure this operation's own targets to report what remains owned."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
@@ -5000,23 +5009,29 @@ namespace Horizun.Contracts
                 Name = "horizun_copy_between_documents",
                 Command = "horizun_copy_between_documents",
                 Description =
-                    "Copy elements from another OPEN Revit document into the ACTIVE one. The direction is " +
+                    "Copy elements from another Revit document into the ACTIVE one - already OPEN (source_document) " +
+                    "or a library .rvt/.rte opened in the BACKGROUND, never activated, and closed WITHOUT SAVING " +
+                    "before this returns (source_path; shares horizun_open_document's version guard - a mismatched " +
+                    "file is refused, never silently upgraded - and always detaches). The direction is " +
                     "fixed and that is the design: this bridge writes to the active document and nowhere else, " +
-                    "so the destination is always the active model and the source is read. It never opens a " +
-                    "document. EVERY AMBIGUITY REFUSES BEFORE WRITING, each one a case Revit itself accepts: a " +
+                    "so the destination is always the active model and the source is read. EVERY AMBIGUITY REFUSES BEFORE WRITING, each one a case Revit itself accepts: a " +
                     "view-specific element copied without its view, a hosted instance whose host is not coming, " +
                     "a member copied out of its group, a pinned element, an element with no category. Revit " +
                     "brings the TYPES with the elements and cannot rename one on the way in - its " +
                     "DuplicateTypeAction has exactly two members - so duplicate_types chooses between taking " +
                     "the destination's same-named type (whose layers may differ, and nothing compares them) and " +
-                    "aborting the whole copy, which is the default. The reply names every type that arrived, " +
+                    "aborting the whole copy, which is the default; the SAME handler reports every name collision, " +
+                    "materials included. The reply names every type that arrived, " +
                     "measured as the difference in the destination's type set rather than reported by the copy.",
                 InputSchema = JObject.Parse(@"{
-  ""type"": ""object"", ""required"": [""target_document"", ""source_document"", ""element_ids""],
+  ""type"": ""object"", ""required"": [""target_document""],
   ""properties"": {
     ""target_document"": { ""type"": ""string"", ""description"": ""The DESTINATION, which must be the document active in Revit."" },
-    ""source_document"": { ""type"": ""string"", ""description"": ""Title of the other OPEN document to read from. Two open documents sharing a title refuse, rather than guessing which project the geometry came from."" },
-    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Ids IN THE SOURCE document. Ids are per document; an id from the destination names a different element there."" },
+    ""source_document"": { ""type"": ""string"", ""description"": ""Title of the other OPEN document to read from (exactly one of this or source_path). Two open documents sharing a title refuse, rather than guessing which project the geometry came from."" },
+    ""source_path"": { ""type"": ""string"", ""description"": ""A .rvt/.rte NOT already open (exactly one of this or source_document): opened in the background, never activated, ALWAYS detached, closed WITHOUT SAVING before this call returns - success, refusal or exception alike. A file from another Revit year is refused (same guard as horizun_open_document); there is no allow_upgrade here, because upgrading somebody's shared library in passing is not this command's decision."" },
+    ""element_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 2000, ""items"": { ""type"": ""integer"" }, ""description"": ""Ids IN THE SOURCE document (exactly one of this or type_names). Ids are per document; an id from the destination names a different element there. Only usable with source_document - a source opened by source_path was never open before, so no id from it could be known ahead of this call."" },
+    ""type_names"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""string"" }, ""description"": ""Type names to resolve BY NAME in the source document (exactly one of this or element_ids) - the way to name what to copy from a file opened by source_path, which has no ids to give ahead of time. Each name must match EXACTLY ONE ElementType in the source; category narrows a collision, and zero or more-than-one matches refuse by name rather than guess."" },
+    ""category"": { ""type"": ""string"", ""description"": ""type_names only: a BuiltInCategory token (e.g. OST_Walls) that narrows the name match when the same type name exists under more than one category."" },
     ""units"": { ""type"": ""string"", ""enum"": [""mm"", ""m"", ""feet""], ""default"": ""mm"" },
     ""offset"": { ""type"": ""array"", ""minItems"": 2, ""maxItems"": 3, ""items"": { ""type"": ""number"" }, ""description"": ""Translation applied to the copy. Omit to land at the same coordinates."" },
     ""duplicate_types"": { ""type"": ""string"", ""enum"": [""abort_on_collision"", ""use_destination""], ""default"": ""abort_on_collision"" },
