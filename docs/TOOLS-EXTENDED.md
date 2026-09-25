@@ -958,3 +958,44 @@ disagreement is compared with `tolerance_mm` (default 10). An unloaded link is
 - `horizun_federation_check`: categorías fuera de lugar por modelo, vínculos
   esperados/faltantes/duplicados, workset y fase, y coordenadas compartidas
   coherentes medidas en tres puntos.
+
+## Spatial coherence after every write (`spatial_check`, `horizun_verify_changes`)
+
+A typed write re-reads its postconditions: that proves the request was carried out,
+not that the result makes sense. Measured in field use: a modelling session left a
+column and a door in the same place with every postcondition true.
+
+**Automatic.** Every call that leaves the model changed carries `spatial_check`, and
+`attention` as the FIRST key of the reply when it found something. The dispatcher
+watches `DocumentChanged` for the duration of the call (`Core/ChangeWatch.cs`), keeps
+what the call added or modified after its own rollbacks, and checks those model
+elements (`Core/SpatialCoherence.cs`): every element whose solid intersects theirs
+(`ElementIntersectsElementFilter`), the shared volume (`BooleanOperationsUtils`), and
+how the two relate. The rules (`Core/SpatialCoherenceRules.cs`, unit-tested) judge:
+
+| Situation | Verdict |
+|---|---|
+| door or window sharing solid with a column, beam, another wall, MEP, furniture, stair | error — blocked opening |
+| two elements of the same type occupying ≥95 % of the same volume | error — duplicate |
+| duct/pipe/tray/conduit through a structural column, beam or foundation | error — clash |
+| MEP against MEP without a connector between them | warning |
+| same category overlapping without a join (walls, floors, columns) | warning |
+| furniture, fixtures, equipment against structure or each other | warning |
+| host and hosted, joined elements, MEP connected, curtain members, the structural frame (beam–column–slab), walls on slabs, MEP through walls/floors | expected, not a finding |
+| shared volume below ~28 cm³ (touching faces) | nothing |
+
+It never rolls anything back — the write already committed and verified what was
+asked. It is bounded (800 elements, 8 s) and says `partial` when a bound stopped it.
+Data-only tools (parameters, keynotes, worksets, materials, schedules, views…) are
+skipped: `DocumentChanged` cannot tell a moved element from a renamed one. Links are
+not examined (use `horizun_clash`). `HORIZUN_SPATIAL_CHECK=off` disables it for a
+process, for a bulk import that checks once at the end.
+
+**On demand.** `horizun_verify_changes` checks the elements the LAST Horizun write in
+the active document changed (kept in memory since Revit started) or the `element_ids`
+given, and returns the findings plus an IMAGE: a temporary isometric 3D view with a
+section box around them — blue changed, red in an error, orange in a warning,
+annotations hidden — created in a transaction group that is always rolled back
+(`image.temporary_view_rollback = RolledBack`). Call it after a modelling batch and
+look at the image: the check sees solids, not intent (a wrong level or room, or a
+missing element, needs the picture).
