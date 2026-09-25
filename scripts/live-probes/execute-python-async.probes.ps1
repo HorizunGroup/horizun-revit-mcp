@@ -50,6 +50,10 @@ __output__ = {
 
         $jobId = $null
         if ($queued.data) { $jobId = $queued.data.job_id }
+        if ($queued.isError -and ([string]$queued.text) -match 'disabled|not enabled|request_python_access|unsafe_code') {
+            $cases += @{ Name = 'execute-python-async: run_async carries arguments into the deferred script'; Tool = 'horizun_execute_python'; Outcome = 'not_covered'; Detail = 'execute_python is not enabled on this machine: ' + [string]$queued.text }
+            return $cases
+        }
         if ($queued.isError -or -not $jobId) {
             $cases += Case 'execute-python-async: run_async carries arguments into the deferred script' 'horizun_execute_python' $false `
                 ("could not queue: isError={0} text={1}" -f $queued.isError, [string]$queued.text)
