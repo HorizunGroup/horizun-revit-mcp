@@ -36,7 +36,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $levelId = if ($lv.data -and @($lv.data.rows).Count -gt 0) { @($lv.data.rows)[0].element_id } else { $null }
         $tq = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls'); include_types = $true; max_rows = 500; include_links = $false }
         $wallType = if ($tq.data) { @($tq.data.rows | Where-Object { $_.is_element_type })[0].element_id } else { $null }
-        if (-not $Ctx.WriteGate -or -not $levelId -or -not $wallType) {
+        if ($Ctx.WriteGate -or -not $levelId -or -not $wallType) {
             $why = 'no write gate, level or wall type in the fixture (level=' + $levelId + ', wall type=' + $wallType + ')'
             return @(0..4 | ForEach-Object { Out $_ 'not_covered' $why })
         }

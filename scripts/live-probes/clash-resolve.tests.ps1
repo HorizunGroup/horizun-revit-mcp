@@ -45,7 +45,7 @@ function New-Fake([string]$mode) {
         }
         return @{ stage = 'dry_run'; answer = (& $reply $null $true) }
     }.GetNewClosure()
-    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't'; WriteGate = $true; Call = $call; Apply = $apply } }
+    return @{ State = $s; Ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $env:TEMP; RunId = 't'; WriteGate = $false; Call = $call; Apply = $apply } }
 }
 
 $fails = 0
@@ -64,7 +64,7 @@ $cases2 = @(& $module.Run $g.Ctx)
 Check 'a missing proposal fails the propose case and still cleans up' ((@($cases2 | Where-Object { $_.Outcome -eq 'fail' }).Count -ge 1) -and ($g.State.Calls -contains 'horizun_delete_verified:apply'))
 Check 'no apply is sent without a proposal' (-not ($g.State.Calls -contains 'horizun_resolve_clash:apply'))
 
-$h = New-Fake 'ok'; $h.Ctx.WriteGate = $false
+$h = New-Fake 'ok'; $h.Ctx.WriteGate = $true
 $cases3 = @(& $module.Run $h.Ctx)
 Check 'without the write gate every case is not_covered' (@($cases3 | Where-Object { $_.Outcome -eq 'not_covered' }).Count -eq 5)
 

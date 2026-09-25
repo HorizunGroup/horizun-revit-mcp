@@ -17,7 +17,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $cases = @()
         $names = @($script:HzProbeModules | Where-Object { $_.Name -eq 'clash-resolve' } | Select-Object -First 1).Catalog
         function Out-Case($i, $outcome, $detail) { @{ Name = $names[$i].Name; Tool = $names[$i].Tool; Outcome = $outcome; Detail = $detail } }
-        if (-not $Ctx.WriteGate) { return @(0..4 | ForEach-Object { Out-Case $_ 'not_covered' 'write tier not enabled' }) }
+        if ($Ctx.WriteGate) { return @(0..4 | ForEach-Object { Out-Case $_ 'not_covered' 'write tier closed' }) }
         $doc = $Ctx.Document
 
         function Find-Type($category) {

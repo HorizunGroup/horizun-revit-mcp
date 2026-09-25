@@ -60,7 +60,7 @@ function New-Fake([bool]$extraRow, [bool]$noLevel) {
                 view_verified = $true; overrides_applied = 2; overrides_verified = 2; not_in_view = 0 } } } }
         }
     }.GetNewClosure()
-    return @{ state = $state; ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $tmp; RunId = 'r1'; WriteGate = $true; Call = $call; Apply = $apply } }
+    return @{ state = $state; ctx = [pscustomobject]@{ Year = 2026; Document = 'HZ_WRITE'; ScratchRoot = $tmp; RunId = 'r1'; WriteGate = $false; Call = $call; Apply = $apply } }
 }
 
 # ---- the honest run: everything passes and everything is cleaned --------------------------
