@@ -28,6 +28,22 @@ namespace Horizun.Revit.Core
         public const int MaxSubjects = 800;
         public const int BudgetMs = 8000;
 
+        /// <summary>
+        /// Tools whose writes are data, not geometry. Revit's DocumentChanged cannot tell a
+        /// moved element from a renamed one, and a parameter write to ten thousand
+        /// elements would otherwise pay seconds of solid booleans and blame this call for
+        /// conflicts it never touched.
+        /// </summary>
+        public static readonly HashSet<string> DataOnlyTools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "horizun_write_params_verified", "horizun_set_keynote", "horizun_bind_shared_param",
+            "horizun_manage_parameters", "horizun_manage_materials", "horizun_manage_styles", "horizun_manage_units",
+            "horizun_manage_revisions", "horizun_manage_worksets", "horizun_manage_phases", "horizun_relinquish_all",
+            "horizun_save_document", "horizun_manage_system_types", "horizun_regroup_by_param",
+            "horizun_ungroup_and_mark", "horizun_manage_schedules", "horizun_create_schedule", "horizun_manage_views",
+            "horizun_pack_sheets", "horizun_manage_links", "horizun_manage_cad_links", "horizun_family_apply"
+        };
+
         public static bool Enabled
         {
             get
@@ -44,7 +60,7 @@ namespace Horizun.Revit.Core
             if (watch == null) return;
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             if (result == null || !result.Success || !Enabled) return;
-            if (tool == "horizun_verify_changes") return;
+            if (tool == "horizun_verify_changes" || DataOnlyTools.Contains(tool)) return;
             try
             {
                 ChangeWatch.DocChanges changed = watch.Documents
