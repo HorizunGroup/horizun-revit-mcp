@@ -550,6 +550,13 @@ namespace Horizun.Revit.Commands
                     ["code"] = code,
                     ["code_origin_path"] = source.Path,
                     ["source_includes"] = source.Includes.DeepClone(),
+                    // MEASURED 2026-09-25: a field session found the deferred run read
+                    // HORIZUN_ARGS_JSON as '{}' and KeyError'd on its own arguments, because
+                    // this queued copy never carried them - only the synchronous path (below,
+                    // request["arguments"]) ever read them. The dispatcher replays the run by
+                    // re-Executing THIS command with 'queued' as the whole request, so
+                    // whatever this object omits, the deferred script never sees.
+                    ["arguments"] = request["arguments"]?.DeepClone(),
                     ["response_mode"] = request["response_mode"],
                     ["max_output_chars"] = outputLimit,
                     // The dispatcher runs the script itself; a second async hop would

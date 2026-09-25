@@ -154,14 +154,15 @@ namespace Horizun.Revit.Core
                 case "verified":
                 case "self_reported_verified":
                     report.Structured = true;
-                    if (!HasSelfReportedEvidence(o))
+                    EvidenceCheck check = CheckSelfReportedEvidence(o);
+                    if (!check.HasEvidence)
                     {
                         report.Status = "completed_unverified";
                         report.Warnings.Add(
-                            "__output__ claimed status=" + status + " but verification.checked was not true or " +
-                            "verification.evidence was empty, so the claim was DOWNGRADED to " +
-                            "completed_unverified. Re-read the elements you touched inside the script and " +
-                            "put what you re-read into verification.evidence.");
+                            "__output__ claimed status=" + status + " but " + check.Reason + ", so the claim was " +
+                            "DOWNGRADED to completed_unverified. Re-read the elements you touched inside the " +
+                            "script and put what you re-read into verification.evidence (a list, or a single " +
+                            "object naming one record).");
                         return report;
                     }
                     // The ceiling for arbitrary code. The script declared it checked and
@@ -191,26 +192,68 @@ namespace Horizun.Revit.Core
             }
         }
 
+        /// <summary>Why verification.evidence did or did not count, in the caller's own words.</summary>
+        private readonly struct EvidenceCheck
+        {
+            public readonly bool HasEvidence;
+            public readonly string Reason;   // null when HasEvidence is true
+            public EvidenceCheck(bool hasEvidence, string reason) { HasEvidence = hasEvidence; Reason = reason; }
+        }
+
         /// <summary>
         /// Whether the script attached anything it CALLS evidence. Deliberately shallow:
         /// the host cannot judge whether ["ok"] or a document title actually demonstrates
         /// the write, so it does not pretend to - it only distinguishes "attached
         /// something" from "attached nothing", and the resulting state is named
         /// self_reported so the shallowness is visible rather than implied.
+        ///
+        /// TWO container shapes count as "attached something": a non-empty LIST (the
+        /// recommended contract shape) and a non-empty OBJECT, read as ONE record. A
+        /// field report (2026-09-25) found a script that wrote a single object into
+        /// verification.evidence - real content - and the earlier version here read it
+        /// with (evidence as JArray), which is null for a JObject, and reported the
+        /// downgrade as "verification.evidence was empty". That was false: the field
+        /// was not empty, it was the wrong CONTAINER shape. Reason is always the
+        /// SPECIFIC fact found - missing, an empty list, an empty object, or present but
+        /// neither - so "empty" is only ever said about a genuinely empty container.
         /// </summary>
-        private static bool HasSelfReportedEvidence(JObject o)
+        private static EvidenceCheck CheckSelfReportedEvidence(JObject o)
         {
-            try
+            JObject verification = o["verification"] as JObject;
+            if (verification == null)
+                return new EvidenceCheck(false, "verification was missing or was not an object");
+
+            JToken checkedToken = verification["checked"];
+            if (checkedToken == null || checkedToken.Type != JTokenType.Boolean || !(bool)checkedToken)
+                return new EvidenceCheck(false, "verification.checked was not true");
+
+            JToken evidence = verification["evidence"];
+            if (evidence == null || evidence.Type == JTokenType.Null)
+                return new EvidenceCheck(false, "verification.evidence was missing");
+
+            if (evidence.Type == JTokenType.Array)
             {
-                JObject verification = o["verification"] as JObject;
-                if (verification == null) return false;
-                JToken checkedToken = verification["checked"];
-                if (checkedToken == null || checkedToken.Type != JTokenType.Boolean || !(bool)checkedToken)
-                    return false;
-                JArray evidence = verification["evidence"] as JArray;
-                return evidence != null && evidence.Count > 0;
+                var list = (JArray)evidence;
+                return list.Count > 0
+                    ? new EvidenceCheck(true, null)
+                    : new EvidenceCheck(false, "verification.evidence was an empty list");
             }
-            catch { return false; }
+
+            if (evidence.Type == JTokenType.Object)
+            {
+                var single = (JObject)evidence;
+                return single.Count > 0
+                    ? new EvidenceCheck(true, null)
+                    : new EvidenceCheck(false, "verification.evidence was an empty object");
+            }
+
+            // Present, not null, but neither a list nor an object (e.g. a bare string or
+            // number). Still not "nothing attached" - name the actual shape instead of
+            // calling it empty, which it demonstrably is not.
+            return new EvidenceCheck(false,
+                "verification.evidence was expected to be a list or an object, but was " +
+                evidence.Type.ToString().ToLowerInvariant() + " instead (value: " +
+                evidence.ToString(Newtonsoft.Json.Formatting.None) + ")");
         }
     }
 }

@@ -5905,21 +5905,27 @@ namespace Horizun.Contracts
                 Description =
                     "operation=bsdd_search|bsdd_search_dictionary|bsdd_class|bsdd_property|bsdd_dictionaries: " +
                     "read-only buildingSMART Data Dictionary lookup (cached, capped; bsdd_class adds loin_property " +
-                    "suggestions). Default operation=leaf: resolve whether a hierarchical code is a LEAF of a catalog you pass at call time. Generic: " +
+                    "suggestions). operation=leaf (default): resolve whether a hierarchical code is a LEAF of a catalog you pass at call time. Generic: " +
                     "the catalog is a file (catalog_path), no codes are baked in. A code is a LEAF iff it EXISTS in " +
                     "the catalog AND no OTHER code is its strict descendant (no other code begins with code + the " +
                     "hierarchy separator). HONESTY: a code that is NOT in the catalog returns is_leaf=null (unknown) " +
-                    "â€” never false; 'exists' is a separate field, so 'absent' and 'not a leaf' are never conflated. " +
-                    "The CSV is read simply: one code per line, the first comma-separated field of each non-blank " +
-                    "line (trimmed, surrounding double quotes stripped); every non-blank line is a code, no header " +
-                    "is assumed or skipped. If 'separator' is given, a descendant is other=code+separator+â€¦; if it " +
-                    "is omitted the code is opaque and any of - . _ / or space counts as the separator. PROVENANCE: " +
-                    "the response carries a sha256 of the catalog bytes, the parsed row_count and the distinct code " +
-                    "count, so the verdict is auditable. Read-only; touches no Revit model.",
+                    "— never false; 'exists' is a separate field, so 'absent' and 'not a leaf' are never conflated. " +
+                    "operation=search: find codes whose description best matches 'query' (accent- and case-insensitive " +
+                    "whole-token overlap), returning code/description/is_leaf/score ranked highest first. Both leaf and " +
+                    "search share the same COLUMN parsing: delimiter is auto-detected among tab/;/,/| by counting each " +
+                    "one consistently across the first sampled lines (a genuine tie between two delimiters REFUSES and " +
+                    "asks for 'delimiter' explicitly, rather than guessing); pass 'delimiter' to pin it. code_column " +
+                    "(0-based index, default 0) and description_column (search only, default 1) select columns; either " +
+                    "may be a header-name string when has_header=true. A quoted cell (\"...\") may contain the delimiter. " +
+                    "If 'separator' is given, a descendant is other=code+separator+…; if it is omitted the code is " +
+                    "opaque and any of - . _ / or space counts as the hierarchy separator (unrelated to the column " +
+                    "delimiter). PROVENANCE: the response carries a sha256 of the catalog bytes, delimiter_used/" +
+                    "delimiter_mode, columns (when has_header), row_count and distinct_code_count, so the verdict is " +
+                    "auditable. Read-only; touches no Revit model.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
-    ""operation"": { ""type"": ""string"", ""enum"": [""leaf"", ""bsdd_search"", ""bsdd_search_dictionary"", ""bsdd_class"", ""bsdd_property"", ""bsdd_dictionaries""] },
+    ""operation"": { ""type"": ""string"", ""enum"": [""leaf"", ""search"", ""bsdd_search"", ""bsdd_search_dictionary"", ""bsdd_class"", ""bsdd_property"", ""bsdd_dictionaries""] },
     ""text"": { ""type"": ""string"" },
     ""uri"": { ""type"": ""string"", ""description"": ""bSDD class, property or dictionary URI."" },
     ""dictionary_uris"": { ""type"": ""array"", ""items"": { ""type"": ""string"" } },
@@ -5930,11 +5936,23 @@ namespace Horizun.Contracts
     ""refresh"": { ""type"": ""boolean"" },
     ""max_age_hours"": { ""type"": ""integer"" },
     ""catalog_path"": { ""type"": ""string"",
-      ""description"": ""Absolute path to the catalog CSV. Codes are read from the FIRST comma-separated field of every non-blank line (a plain one-code-per-line file works too). A missing or unreadable file is an ERROR, not an empty catalog â€” the tool never answers off a file it could not read."" },
+      ""description"": ""Absolute path to the catalog file (leaf and search). A missing or unreadable file is an ERROR, not an empty catalog — the tool never answers off a file it could not read."" },
     ""code"": { ""type"": ""string"",
-      ""description"": ""The code to test. If it is not present in the catalog the answer is exists=false, is_leaf=null (unknown) â€” never is_leaf=false."" },
+      ""description"": ""leaf: the code to test. If it is not present in the catalog the answer is exists=false, is_leaf=null (unknown) — never is_leaf=false."" },
+    ""query"": { ""type"": ""string"",
+      ""description"": ""search: free text to match against each row's description, normalized (lowercase, accents stripped) and compared by whole token."" },
     ""separator"": { ""type"": ""string"",
-      ""description"": ""The hierarchy segment separator, e.g. '-' or '.'. A code X is a parent of Y when Y begins with X+separator. If omitted, the code is treated as opaque and any of - . _ / or space is accepted as the separator; state it explicitly when your codes use exactly one."" }
+      ""description"": ""The HIERARCHY segment separator inside a code, e.g. '-' or '.' (not the column delimiter). A code X is a parent of Y when Y begins with X+separator. If omitted, any of - . _ / or space is accepted."" },
+    ""delimiter"": { ""type"": ""string"",
+      ""description"": ""The COLUMN delimiter that splits each catalog line into cells (e.g. tab, ';', ',', '|'). Omitted: auto-detected deterministically from the first sampled lines; a genuine tie between two delimiters is an error asking for this explicitly."" },
+    ""has_header"": { ""type"": ""boolean"", ""default"": false,
+      ""description"": ""True when the catalog's first non-blank line is a header row (its cells become the 'columns' in the response and let code_column/description_column be header names)."" },
+    ""code_column"": { ""type"": [""integer"", ""string""],
+      ""description"": ""Which column holds the code: a 0-based index, or a header-name string when has_header=true. Default: column 0."" },
+    ""description_column"": { ""type"": [""integer"", ""string""],
+      ""description"": ""search only: which column holds the description: a 0-based index, or a header-name string when has_header=true. Default: column 1."" },
+    ""max_results"": { ""type"": ""integer"", ""default"": 10,
+      ""description"": ""search only: how many ranked matches to return (capped at 200)."" }
   },
   ""additionalProperties"": false
 }")

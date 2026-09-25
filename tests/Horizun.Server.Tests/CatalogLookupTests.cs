@@ -10,6 +10,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json.Linq;
 using Xunit;
@@ -223,6 +224,260 @@ namespace Horizun.Server.Tests
             string path = Path.Combine(Path.GetTempPath(), "hz_nope_" + Guid.NewGuid().ToString("N") + ".csv");
             Assert.Throws<FileNotFoundException>(() =>
                 CatalogLookup.Handle(new JObject { ["catalog_path"] = path, ["code"] = "A" }));
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // The 2026-09-25 field regression: a real classification catalog is TAB-
+    // delimited, not comma-delimited. The old parser took the whole line as one
+    // "code" (15,783 of them) and reported a real code absent. These prove
+    // delimiter detection, code_column/has_header, and operation=search — all
+    // WITHOUT any client name or real code baked in, per the neutrality rule.
+    // -------------------------------------------------------------------------
+    public sealed class CatalogLookupDelimiterTests
+    {
+        private static string WriteTemp(string content)
+        {
+            string path = Path.Combine(Path.GetTempPath(), "hz_delim_" + Guid.NewGuid().ToString("N") + ".txt");
+            File.WriteAllText(path, content, new UTF8Encoding(false));
+            return path;
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_Tab_IsFoundWithoutBeingTold()
+        {
+            string csv = "D01\tGrupo\r\nD01-A1\tHoja\r\nD01-A2\tHoja\r\n";
+            ColumnDelimiterDetection d = CatalogLookup.DetectColumnDelimiter(csv, null);
+            Assert.Equal("\t", d.Delimiter);
+            Assert.Equal("detected", d.Mode);
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_Semicolon_IsFoundWithoutBeingTold()
+        {
+            string csv = "D01;Grupo\r\nD01-A1;Hoja\r\n";
+            ColumnDelimiterDetection d = CatalogLookup.DetectColumnDelimiter(csv, null);
+            Assert.Equal(";", d.Delimiter);
+            Assert.Equal("detected", d.Mode);
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_QuotedCommaInsideAField_DoesNotBreakDetection()
+        {
+            // Every row has exactly two REAL commas outside quotes; the comma embedded in
+            // the quoted description must not be counted as a third delimiter occurrence.
+            string csv = "D01,\"Estructura, general\",Grupo\r\nD01-A1,\"Cimentacion, superficial\",Hoja\r\n";
+            ColumnDelimiterDetection d = CatalogLookup.DetectColumnDelimiter(csv, null);
+            Assert.Equal(",", d.Delimiter);
+            Assert.Equal("detected", d.Mode);
+
+            List<string> row = CatalogLookup.SplitRow("D01,\"Estructura, general\",Grupo", d.Delimiter);
+            Assert.Equal(new[] { "D01", "Estructura, general", "Grupo" }, row);
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_NoDelimiterPresent_FallsBackToSingleColumnComma()
+        {
+            string csv = "D01\r\nD01-A1\r\nD01-A2\r\n";
+            ColumnDelimiterDetection d = CatalogLookup.DetectColumnDelimiter(csv, null);
+            Assert.Equal(",", d.Delimiter);
+            Assert.Equal("single_column_default", d.Mode);
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_ExplicitDelimiter_AlwaysWinsAndIsMarkedExplicit()
+        {
+            ColumnDelimiterDetection d = CatalogLookup.DetectColumnDelimiter("D01,Grupo\r\n", "|");
+            Assert.Equal("|", d.Delimiter);
+            Assert.Equal("explicit", d.Mode);
+        }
+
+        [Fact]
+        public void DetectColumnDelimiter_GenuineTie_RefusesRatherThanGuesses()
+        {
+            // Every line has exactly one comma AND exactly one semicolon, consistently:
+            // a real ambiguity, not a malformed file. Must refuse, not pick one silently.
+            string csv = "D01,A;1\r\nD02,B;2\r\nD03,C;3\r\n";
+            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.DetectColumnDelimiter(csv, null));
+            Assert.Contains("delimiter", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Handle_Leaf_TabDelimitedCatalog_FindsTheRealCodeInsteadOfOneGiantCode()
+        {
+            // This is the exact shape of the field bug: without tab detection the whole
+            // line "D01\tGrupo" would have been read as the code and D01-A1 would be
+            // reported absent even though it is right there in column 0.
+            string path = WriteTemp("D01\tGrupo\r\nD01-A1\tHoja\r\nD01-A2\tHoja\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject { ["catalog_path"] = path, ["code"] = "D01-A1", ["separator"] = "-" });
+                Assert.True((bool)r["exists"]);
+                Assert.True((bool)r["is_leaf"]);
+                Assert.Equal("\t", (string)r["delimiter_used"]);
+                Assert.Equal("detected", (string)r["delimiter_mode"]);
+                Assert.Equal(3, (int)r["row_count"]);
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Leaf_HeaderAndCodeColumnByName_ResolvesTheNamedColumn()
+        {
+            string path = WriteTemp("Nivel;Codigo;Descripcion\r\nGrupo;D01;Estructura\r\nHoja;D01-A1;Cimentacion\r\nHoja;D01-A2;Muros\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject
+                {
+                    ["catalog_path"] = path,
+                    ["code"] = "D01-A1",
+                    ["separator"] = "-",
+                    ["has_header"] = true,
+                    ["code_column"] = "Codigo"
+                });
+                Assert.True((bool)r["exists"]);
+                Assert.True((bool)r["is_leaf"]);
+                Assert.Equal(1, (int)r["code_column_index"]);
+                Assert.Equal("Codigo", (string)r["code_column_name"]);
+                var columns = (JArray)r["columns"];
+                Assert.Equal(new[] { "Nivel", "Codigo", "Descripcion" }, columns.Select(t => (string)t));
+                Assert.Equal(3, (int)r["row_count"]);   // the header line itself is not a code
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Leaf_CodeColumnHeaderName_WithoutHasHeader_Throws()
+        {
+            string path = WriteTemp("D01;Estructura\r\n");
+            try
+            {
+                Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
+                {
+                    ["catalog_path"] = path,
+                    ["code"] = "D01",
+                    ["code_column"] = "Codigo"
+                }));
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Search_RanksByNormalizedTokenOverlap_AccentAndCaseInsensitive()
+        {
+            string path = WriteTemp(
+                "D01\tCielo raso liviano de yeso\r\n" +
+                "D02\tCielo falso metalico\r\n" +
+                "D03\tMuro de bloque de concreto\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "search",
+                    ["catalog_path"] = path,
+                    ["query"] = "CIELO RASO",   // upper-case on purpose: must still match
+                    ["separator"] = "-"
+                });
+                var matches = (JArray)r["matches"];
+                Assert.True(matches.Count >= 1);
+                Assert.Equal("D01", (string)matches[0]["code"]);
+                Assert.Equal(1.0, (double)matches[0]["score"], 3);
+                Assert.True((bool)matches[0]["exists"]);
+                // D03 shares no token with "cielo raso" and must not appear at all.
+                Assert.DoesNotContain(matches, m => (string)m["code"] == "D03");
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Search_AccentInsensitive_ElectricoMatchesElectricoWithoutAccent()
+        {
+            string path = WriteTemp("E01\tTablero Eléctrico principal\r\nE02\tPunto de red\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "search",
+                    ["catalog_path"] = path,
+                    ["query"] = "electrico"   // no accent in the query
+                });
+                var matches = (JArray)r["matches"];
+                Assert.Contains(matches, m => (string)m["code"] == "E01");
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Search_GroupVsLeaf_ReportsIsLeafCorrectlyPerResult()
+        {
+            string path = WriteTemp("D01\tEstructura general\r\nD01-A1\tEstructura de cimentacion\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "search",
+                    ["catalog_path"] = path,
+                    ["query"] = "estructura",
+                    ["separator"] = "-"
+                });
+                var matches = (JArray)r["matches"];
+                JToken group = matches.First(m => (string)m["code"] == "D01");
+                JToken leaf = matches.First(m => (string)m["code"] == "D01-A1");
+                Assert.False((bool)group["is_leaf"]);   // D01-A1 descends from it
+                Assert.True((bool)leaf["is_leaf"]);
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Search_NoMatch_ReturnsEmptyMatchesNotAnError()
+        {
+            string path = WriteTemp("D01\tMuro de bloque\r\n");
+            try
+            {
+                JObject r = CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "search",
+                    ["catalog_path"] = path,
+                    ["query"] = "ascensor"
+                });
+                Assert.Empty((JArray)r["matches"]);
+                Assert.Equal(0, (int)r["matched_count"]);
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_Search_BlankQuery_Throws()
+        {
+            string path = WriteTemp("D01\tMuro de bloque\r\n");
+            try
+            {
+                Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "search",
+                    ["catalog_path"] = path,
+                    ["query"] = "   "
+                }));
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Fact]
+        public void Handle_UnknownOperation_MentionsSearchInTheError()
+        {
+            string path = WriteTemp("D01\tX\r\n");
+            try
+            {
+                var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "nope",
+                    ["catalog_path"] = path,
+                    ["code"] = "D01"
+                }));
+                Assert.Contains("search", ex.Message, StringComparison.Ordinal);
+            }
+            finally { File.Delete(path); }
         }
     }
 }
