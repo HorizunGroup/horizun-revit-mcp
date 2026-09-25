@@ -52,6 +52,9 @@ $script:HzProbeModules += [pscustomobject]@{
             $lv = Create @(@{ kind = 'level'; name = "HZ_SPATIAL_$run"; elevation = $E }) 'level'
             $levelId = if ($lv.ids.Count -gt 0) { $lv.ids[0] } else { $null }
             $basic = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }) | Select-Object -First 1
+            $tplRoot = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates'
+            $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English-Imperial\Default-Multi-Discipline.rte', 'English\Default-Multi-Discipline_Metric.rte') |
+                ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
             $door = Types 'OST_Doors' | Select-Object -First 1
             $doorWhy = ''
             if (-not $door) {
@@ -59,9 +62,6 @@ $script:HzProbeModules += [pscustomobject]@{
                 # Autodesk template of this very Revit (copy_between_documents source_path:
                 # opened in the background, never upgraded, closed without saving), learning
                 # its exact name from the refusal that lists what the template holds.
-                $tplRoot = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates'
-                $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English-Imperial\Default-Multi-Discipline.rte', 'English\Default-Multi-Discipline_Metric.rte') |
-                    ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
                 if (-not $tpl) { $doorWhy = ' no Autodesk template found under ' + $tplRoot }
                 if ($tpl) {
                     $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('__hz_probe_no_such_type__') }
@@ -76,9 +76,23 @@ $script:HzProbeModules += [pscustomobject]@{
                     }
                 }
             }
-            $column = Types 'OST_StructuralColumns' | Select-Object -First 1
+            # An ARCHITECTURAL column from this Revit's own template, placed with an explicit
+            # height. MEASURED 2026-09-25: the structural column type the fixture happened to
+            # carry (loaded by an earlier module) produced no usable solid at the probe's level,
+            # so the check had nothing to find - the probe must bring a column it knows.
+            $column = $null
+            if ($tpl) {
+                $cprobe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Columns'; type_names = @('__hz_probe_no_such_type__') }
+                $clist = [regex]::Match([string]$cprobe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
+                $cname = if ($clist.Success) { (($clist.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
+                if ($cname) {
+                    $null = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Columns'; type_names = @($cname); duplicate_types = 'use_destination' } ($run + '-sc-coltype')
+                    $column = @(Types 'OST_Columns' | Where-Object { ($_.family + ': ' + $_.type) -eq $cname -or $_.type -eq $cname }) | Select-Object -First 1
+                    if ($column) { [void]$created.Add([long]$column.element_id) }
+                }
+            }
             if (-not $levelId -or -not $basic -or -not $door -or -not $column) {
-                $why = "the fixture lacks what the probe stages (level=$levelId, basic wall=" + $basic.element_id + ', door=' + $door.element_id + ', structural column=' + $column.element_id + ')' + $doorWhy
+                $why = "the fixture lacks what the probe stages (level=$levelId, basic wall=" + $basic.element_id + ', door=' + $door.element_id + ', column=' + $column.element_id + ')' + $doorWhy
                 foreach ($i in 0..4) { Case $i 'not_covered' $why }
             }
             else {
@@ -90,7 +104,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 else {
                     $doorId = [long]$d.ids[0]
                     # 1. the column in the doorway
-                    $c = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 3000), $Y, $E); level_id = $levelId }) 'column-in-door'
+                    $c = Create @(@{ kind = 'family_instance'; type_id = $column.element_id; coordinate_mode = 'absolute'; height = 3000; point = @(($X + 3000), $Y, $E); level_id = $levelId }) 'column-in-door'
                     $sc = if ($c.reply.answer.data) { $c.reply.answer.data.spatial_check } else { $null }
                     $hit = @($sc.findings | Where-Object { $_.severity -eq 'error' -and ([long]$_.a.id -eq $doorId -or [long]$_.b.id -eq $doorId) })
                     if ($c.ids.Count -eq 0) { Case 0 'unverified' ('the column could not be placed: ' + (Short $c.reply.answer)) }
@@ -111,13 +125,13 @@ $script:HzProbeModules += [pscustomobject]@{
                     else { Case 2 $(if ($before -eq $after -and $rolled -eq 'RolledBack') { 'pass' } else { 'fail' }) ("views before=$before after=$after rollback=$rolled") }
 
                     # 4. a column far from everything
-                    $far = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 20000), ($Y + 20000), $E); level_id = $levelId }) 'column-clear'
+                    $far = Create @(@{ kind = 'family_instance'; type_id = $column.element_id; coordinate_mode = 'absolute'; height = 3000; point = @(($X + 20000), ($Y + 20000), $E); level_id = $levelId }) 'column-clear'
                     $fsc = if ($far.reply.answer.data) { $far.reply.answer.data.spatial_check } else { $null }
                     if ($far.ids.Count -eq 0) { Case 3 'unverified' ('the clear column could not be placed: ' + (Short $far.reply.answer)) }
                     else { Case 3 $(if ($fsc -and [int]$fsc.errors -eq 0 -and [int]$fsc.warnings -eq 0 -and -not $far.reply.answer.data.attention) { 'pass' } else { 'fail' }) ('status=' + $fsc.status + ' errors=' + $fsc.errors + ' warnings=' + $fsc.warnings) }
 
                     # 5. a column 700 mm in front of the door: no shared solid, still in the way
-                    $front = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 3000), ($Y + 700), $E); level_id = $levelId }) 'column-front'
+                    $front = Create @(@{ kind = 'family_instance'; type_id = $column.element_id; coordinate_mode = 'absolute'; height = 3000; point = @(($X + 3000), ($Y + 700), $E); level_id = $levelId }) 'column-front'
                     $psc = if ($front.reply.answer.data) { $front.reply.answer.data.spatial_check } else { $null }
                     $pass = @($psc.findings | Where-Object { $_.severity -eq 'error' -and ([long]$_.a.id -eq $doorId -or [long]$_.b.id -eq $doorId) -and [string]$_.reason -match 'passage' })
                     if ($front.ids.Count -eq 0) { Case 4 'unverified' ('the front column could not be placed: ' + (Short $front.reply.answer)) }

@@ -11,15 +11,19 @@ function Check($ok, $what) { if ($ok) { Write-Host "  PASS  $what" } else { Writ
 function New-Fake([string]$mode) {
     $s = @{ Mode = $mode; Next = 100; Views = 40; Deleted = @(); Door = $null; Image = (Join-Path $env:TEMP ('hz-fake-' + [guid]::NewGuid().ToString('N') + '.png')) }
     Set-Content -LiteralPath $s.Image -Value 'png' -Encoding ascii
-    $reply = { param($data, $isError = $false) [pscustomobject]@{ isError = $isError; data = $data; text = 'fake' } }
+    $reply = { param($data, $isError = $false, $text = 'fake') [pscustomobject]@{ isError = $isError; data = $data; text = $text } }
     $call = {
         param($tool, $a)
         switch ($tool) {
             'horizun_query_model' {
-                if ($s.Mode -eq 'no-types' -and $a.categories[0] -eq 'OST_StructuralColumns') { return & $reply ([pscustomobject]@{ rows = @() }) }
+                if ($s.Mode -eq 'no-types' -and $a.categories[0] -eq 'OST_Columns') { return & $reply ([pscustomobject]@{ rows = @() }) }
                 return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 7; is_element_type = $true; family = 'Basic Wall'; type = 'Generic' }) })
             }
             'horizun_list_elements' { return & $reply ([pscustomobject]@{ total = $s.Views }) }
+            'horizun_copy_between_documents' {
+                if ($s.Mode -eq 'no-types') { return & $reply $null $true 'no type named x. Types there: .' }
+                return & $reply $null $true 'no type named x. Types there: Basic Wall: Generic | Other: Type.'
+            }
             'horizun_verify_changes' {
                 if ($s.Mode -eq 'leaks-view') { $s.Views++ }
                 $f = [pscustomobject]@{ severity = 'error'; reason = 'door is blocked by structural column'; a = [pscustomobject]@{ id = $s.Door }; b = [pscustomobject]@{ id = 999 } }
@@ -31,12 +35,13 @@ function New-Fake([string]$mode) {
     }.GetNewClosure()
     $apply = {
         param($tool, $a, $key)
+        if ($tool -eq 'horizun_copy_between_documents') { return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ state = 'committed_verified' })) } }
         if ($tool -eq 'horizun_delete_verified') { $s.Deleted = @($a.ids); return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ ok = $true })) } }
         $id = $s.Next; $s.Next++
         $el = $a.elements[0]
         $data = [pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) }
-        if ($el.kind -eq 'family_instance') { $s.Door = $id }
-        if ($el.kind -eq 'structural_column') {
+        if ($el.kind -eq 'family_instance' -and -not $el.height) { $s.Door = $id }
+        if ($el.kind -eq 'family_instance' -and $el.height) {
             if ($key -like '*column-front') {
                 $f = [pscustomobject]@{ severity = 'error'; reason = 'structural column stands in the passage in front of a door'; a = [pscustomobject]@{ id = $s.Door }; b = [pscustomobject]@{ id = $id } }
                 $data | Add-Member spatial_check ([pscustomobject]@{ status = 'conflicts'; errors = 1; warnings = 0; findings = @($f) })
@@ -57,7 +62,7 @@ function Outcomes($h) { @(& $module.Run $h.Ctx) }
 $h = New-Fake 'ok'; $r = Outcomes $h
 Check ($r.Count -eq 6) 'six cases, one per catalog entry'
 Check (@($r | Where-Object { $_.Outcome -ne 'pass' }).Count -eq 0) ('a column in a doorway, the look afterwards and the clear column all pass: ' + (($r | ForEach-Object { $_.Outcome }) -join ','))
-Check ($h.State.Deleted.Count -eq 6) 'the level, wall, door and the three columns are deleted'
+Check ($h.State.Deleted.Count -eq 7) 'the level, wall, door, the three columns and the copied column type are deleted'
 
 $h = New-Fake 'no-attention'; $r = Outcomes $h
 Check ($r[0].Outcome -eq 'fail') 'a finding without the attention headline fails the first case'
