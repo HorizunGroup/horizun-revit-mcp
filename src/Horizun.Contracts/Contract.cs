@@ -6967,8 +6967,8 @@ namespace Horizun.Contracts
             // drawing distinguishes a left-handed fixture from a right-handed one
             // that way. Applied with flipHand() and verified by re-reading
             // HandFlipped; a family that cannot be flipped refuses the row.
-            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face" },
-            ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees" },
+            ["family_instance"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "structural_type", "host_id", "rotation_degrees", "flip", "face_allowance_mm", "facing_degrees", "side_dead_band_mm", "host_face", "top_level_id", "top_offset", "height" },
+            ["structural_column"] = new[] { "point", "type_id", "level_id", "coordinate_mode", "rotation_degrees", "top_level_id", "top_offset", "height" },
             ["structural_framing"] = new[] { "start", "end", "type_id", "level_id", "structural_type" },
             ["duct"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter", "width", "height" },
             ["pipe"] = new[] { "start", "end", "type_id", "level_id", "system_type_id", "diameter" },
