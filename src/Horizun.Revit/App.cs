@@ -51,6 +51,7 @@ namespace Horizun.Revit
                 // fully working bridge and one fewer window.
                 try
                 {
+                    try { Horizun.Revit.Ui.OperationsPane.Spanish = RibbonText.IsSpanish(app.ControlledApplication.Language); } catch { }
                     app.RegisterDockablePane(
                         Horizun.Revit.Ui.OperationsPaneIdentity.PaneId,
                         Horizun.Revit.Ui.OperationsPaneIdentity.Title,

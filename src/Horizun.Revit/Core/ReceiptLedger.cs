@@ -46,7 +46,8 @@ namespace Horizun.Revit.Core
         /// without one, and the reader sees the absence instead of a guess.
         /// </summary>
         public static JObject Build(string tool, bool success, string error, JObject replyData,
-                                    long waitedMs, long totalMs, string correlationId, DateTime utcNow)
+                                    long waitedMs, long totalMs, string correlationId, DateTime utcNow,
+                                    JObject request = null)
         {
             var receipt = new JObject
             {
@@ -81,8 +82,28 @@ namespace Horizun.Revit.Core
                     Copy(receipt, "plan_fingerprint", planResolved["fingerprint"]);
                 }
                 Copy(receipt, "all_verified", replyData["all_verified"]);
+                // What the call left changed, as the dispatcher measured it, and what the
+                // spatial check said about it: the operations pane reads these to say in
+                // one sentence what was done and whether it looks right.
+                Copy(receipt, "model_changes", replyData["model_changes"]);
+                if (replyData["spatial_check"] is JObject sc)
+                    receipt["spatial_check"] = new JObject { ["status"] = sc["status"]?.DeepClone(), ["errors"] = sc["errors"]?.DeepClone(), ["warnings"] = sc["warnings"]?.DeepClone() };
+                Copy(receipt, "attention", Short(replyData["attention"], 300));
+            }
+            if (request != null)
+            {
+                // Only the declared, short, human fields of the request - never the payload.
+                Copy(receipt, "request_operation", Short(request["operation"], 60));
+                Copy(receipt, "purpose", Short(request["purpose"], 200));
             }
             return receipt;
+        }
+
+        private static JToken Short(JToken value, int max)
+        {
+            if (value == null || value.Type != JTokenType.String) return null;
+            string text = (string)value;
+            return text.Length <= max ? value : new JValue(text.Substring(0, max) + "...");
         }
 
         private static void Copy(JObject receipt, string name, JToken value)

@@ -3870,6 +3870,15 @@ namespace Horizun.Contracts
                                 "different operation under that key is refused, and a claimed operation with no " +
                                 "terminal record after a crash is reported in_doubt instead of repeated."
                         },
+                        ["purpose"] = new JObject
+                        {
+                            ["type"] = "string",
+                            ["maxLength"] = 200,
+                            ["description"] =
+                                "One plain sentence saying what this script does to the model (e.g. 'renames 12 " +
+                                "levels to the project standard'). Shown to the person in Revit's operations pane " +
+                                "instead of the bare tool name. Not executed, not hashed."
+                        },
                         ["preflight"] = new JObject
                         {
                             ["type"] = "boolean",

@@ -58,6 +58,10 @@ namespace Horizun.Revit.Ui
 
     public sealed class OperationsPane : Page, IDockablePaneProvider
     {
+        /// <summary>Revit's own UI language, set at start-up (App.OnStartup). Words follow it.</summary>
+        public static bool Spanish { get; set; }
+        private static string T(string es, string en) => Spanish ? es : en;
+        private readonly CheckBox _showAll = new CheckBox();
         private readonly ListView _rows = new ListView();
         private readonly TextBlock _summary = new TextBlock();
         private readonly TextBlock _detail = new TextBlock();
@@ -108,11 +112,12 @@ namespace Horizun.Revit.Ui
             root.Children.Add(header);
 
             var columns = new GridView();
-            columns.Columns.Add(Column("When", "When", 120));
-            columns.Columns.Add(Column("State", "State", 90));
-            columns.Columns.Add(Column("Tool", "Tool", 170));
-            columns.Columns.Add(Column("Changed", "Changed", 80));
-            columns.Columns.Add(Column("Document", "DocumentTitle", 160));
+            // What a person needs from a row: when, whether it changed their model, and
+            // WHAT it did - in words. The tool id and the raw receipt are in the detail.
+            columns.Columns.Add(Column(T("Hora", "When"), "When", 70));
+            columns.Columns.Add(Column(T("Resultado", "Result"), "State", 110));
+            columns.Columns.Add(Column(T("Qué se hizo", "What was done"), "Tool", 420));
+            columns.Columns.Add(Column(T("Documento", "Document"), "DocumentTitle", 150));
             _rows.View = columns;
             _rows.SelectionChanged += (s, e) => ShowDetail(_rows.SelectedItem as Row);
             Grid.SetRow(_rows, 1);
@@ -132,17 +137,23 @@ namespace Horizun.Revit.Ui
 
             var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8) };
 
-            var refresh = new Button { Content = "Refresh", Padding = new Thickness(10, 3, 10, 3) };
+            _showAll.Content = T("Mostrar también consultas y ensayos", "Also show reads and rehearsals");
+            _showAll.Margin = new Thickness(0, 4, 12, 0);
+            _showAll.IsChecked = false;
+            _showAll.Click += (s, e) => Refresh();
+            buttons.Children.Add(_showAll);
+
+            var refresh = new Button { Content = T("Actualizar", "Refresh"), Padding = new Thickness(10, 3, 10, 3) };
             refresh.Click += (s, e) => Refresh();
             buttons.Children.Add(refresh);
 
-            _cancelQueued.Content = "Cancel what has not started";
+            _cancelQueued.Content = T("Cancelar lo que no ha empezado", "Cancel what has not started");
             _cancelQueued.Margin = new Thickness(8, 0, 0, 0);
             _cancelQueued.Padding = new Thickness(10, 3, 10, 3);
             _cancelQueued.Click += (s, e) => CancelQueued();
             buttons.Children.Add(_cancelQueued);
 
-            _select.Content = "Select in Revit";
+            _select.Content = T("Seleccionar en Revit", "Select in Revit");
             _select.Margin = new Thickness(8, 0, 0, 0);
             _select.Padding = new Thickness(10, 3, 10, 3);
             _select.IsEnabled = false;
@@ -155,7 +166,8 @@ namespace Horizun.Revit.Ui
                 TextWrapping = TextWrapping.Wrap,
                 Opacity = 0.75,
                 // The sentence that keeps the button honest, on the button's own row.
-                Text = "Work already running inside Revit cannot be interrupted by anyone, including Revit."
+                Text = T("Lo que ya se está ejecutando dentro de Revit no se puede interrumpir, ni siquiera desde Revit.",
+                         "Work already running inside Revit cannot be interrupted by anyone, including Revit.")
             };
             buttons.Children.Add(caveat);
 
@@ -322,7 +334,9 @@ namespace Horizun.Revit.Ui
         {
             try
             {
-                List<Row> rows = Read();
+                List<Row> all = Read();
+                bool showAll = _showAll.IsChecked == true;
+                List<Row> rows = showAll ? all : all.Where(r => r.Prominent).ToList();
                 object selected = _rows.SelectedItem;
                 _rows.ItemsSource = rows;
                 if (selected is Row previous)
@@ -334,12 +348,15 @@ namespace Horizun.Revit.Ui
                 int queued = 0;
                 try { queued = AsyncQueue.Count; } catch { queued = -1; }
 
-                int failed = rows.Count(r => r.State == "failed");
+                int failed = all.Count(r => r.Kind == OperationDescription.Failed);
+                int changed = all.Count(r => r.Kind == OperationDescription.Changed);
+                int hidden = all.Count - rows.Count;
                 _summary.Text =
-                    "Queued: " + (queued < 0 ? "unknown" : queued.ToString(CultureInfo.InvariantCulture)) +
-                    "   ·   shown: " + rows.Count +
-                    "   ·   failed among them: " + failed +
-                    (rows.Count >= MaxRows ? "   ·   (only the most recent " + MaxRows + " are shown)" : "");
+                    T("En cola: ", "Queued: ") + (queued < 0 ? T("desconocido", "unknown") : queued.ToString(CultureInfo.InvariantCulture)) +
+                    "   ·   " + T("cambiaron el modelo: ", "changed the model: ") + changed +
+                    "   ·   " + T("fallaron: ", "failed: ") + failed +
+                    (hidden > 0 ? "   ·   " + hidden + T(" consultas/ensayos ocultos", " reads/rehearsals hidden") : "") +
+                    (all.Count >= MaxRows ? "   ·   " + T("(solo los últimos ", "(only the most recent ") + MaxRows + ")" : "");
 
                 _cancelQueued.IsEnabled = queued > 0;
                 _select.IsEnabled = _event != null && _rows.SelectedItem is Row selectedRow &&
@@ -436,8 +453,10 @@ namespace Horizun.Revit.Ui
                     Id = "job:" + file.Name,
                     WhenUtc = file.LastWriteTimeUtc,
                     When = file.LastWriteTimeUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-                    State = record.Value<string>("state") ?? "unknown",
-                    Tool = record.Value<string>("tool") ?? "(unnamed)",
+                    State = JobState(record.Value<string>("state")),
+                    Kind = JobKind(record.Value<string>("state")),
+                    Prominent = true,
+                    Tool = OperationDescription.ToolPhrase(record.Value<string>("tool"), Spanish) + T(" (trabajo en segundo plano)", " (background job)"),
                     Changed = "-",
                     DocumentTitle = record.Value<string>("document_title") ?? "",
                     Raw = record
@@ -470,21 +489,48 @@ namespace Horizun.Revit.Ui
                                           DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out parsed))
                         when = parsed;
 
-                    bool success = receipt.Value<bool?>("success") ?? false;
+                    // The ledger writes outcome=ok|failed. Reading a field it never wrote made
+                    // every row "failed" (field report, 2026-09-25).
+                    string kind = OperationDescription.Kind(receipt);
                     yield return new Row
                     {
                         Id = "receipt:" + file.Name + ":" + line.GetHashCode().ToString(CultureInfo.InvariantCulture),
                         WhenUtc = when,
                         When = when.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-                        State = success ? "ok" : "failed",
-                        Tool = receipt.Value<string>("tool") ?? "(unnamed)",
+                        State = OperationDescription.KindLabel(kind, Spanish),
+                        Kind = kind,
+                        Prominent = OperationDescription.ShownByDefault(receipt),
+                        Tool = OperationDescription.Sentence(receipt, Spanish),
                         Changed = ChangedCount(receipt),
-                        DocumentTitle = receipt.Value<string>("document_title") ?? "",
+                        DocumentTitle = DocumentOf(receipt),
                         Raw = receipt
                     };
                 }
             }
         }
+
+        private static string DocumentOf(JObject receipt)
+        {
+            string d = receipt.Value<string>("document") ?? receipt.Value<string>("document_title") ?? "";
+            int bracket = d.IndexOf(" [", StringComparison.Ordinal);
+            return bracket > 0 ? d.Substring(0, bracket) : d;
+        }
+
+        private static string JobState(string state)
+        {
+            switch ((state ?? "").ToLowerInvariant())
+            {
+                case "queued": return T("En cola", "Queued");
+                case "running": return T("Ejecutándose", "Running");
+                case "completed": case "succeeded": return T("Terminado", "Done");
+                case "failed": return T("Falló", "Failed");
+                case "cancelled": case "canceled": return T("Cancelado", "Cancelled");
+                default: return state ?? T("desconocido", "unknown");
+            }
+        }
+
+        private static string JobKind(string state) =>
+            string.Equals(state, "failed", StringComparison.OrdinalIgnoreCase) ? OperationDescription.Failed : "job";
 
         private static string ChangedCount(JObject receipt)
         {
@@ -508,7 +554,15 @@ namespace Horizun.Revit.Ui
         private void ShowDetail(Row row)
         {
             if (row == null) { _detail.Text = ""; return; }
-            try { _detail.Text = row.Raw.ToString(Newtonsoft.Json.Formatting.Indented); }
+            try
+            {
+                string attention = row.Raw.Value<string>("attention");
+                string tool = row.Raw.Value<string>("tool");
+                _detail.Text = row.State + " - " + row.Tool + Environment.NewLine +
+                               (attention == null ? "" : "(!) " + attention + Environment.NewLine) +
+                               T("Herramienta: ", "Tool: ") + tool + Environment.NewLine + Environment.NewLine +
+                               row.Raw.ToString(Newtonsoft.Json.Formatting.Indented);
+            }
             catch (Exception ex) { _detail.Text = "This record could not be rendered: " + ex.Message; }
         }
 
@@ -573,6 +627,8 @@ namespace Horizun.Revit.Ui
             public DateTime WhenUtc { get; set; }
             public string When { get; set; }
             public string State { get; set; }
+            public string Kind { get; set; }
+            public bool Prominent { get; set; }
             public string Tool { get; set; }
             public string Changed { get; set; }
             public string DocumentTitle { get; set; }

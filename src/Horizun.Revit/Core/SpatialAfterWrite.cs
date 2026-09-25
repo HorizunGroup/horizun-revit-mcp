@@ -55,11 +55,41 @@ namespace Horizun.Revit.Core
             }
         }
 
+        /// <summary>
+        /// model_changes on every successful call that changed a document: what the call
+        /// really left added, modified and deleted, as Revit reported it - for the caller,
+        /// and for the operations pane, which otherwise could not tell a write from a read.
+        /// </summary>
+        private static void StampChanges(ChangeWatch watch, CommandResult result)
+        {
+            try
+            {
+                int added = 0, modified = 0, deleted = 0;
+                var docs = new JArray();
+                foreach (ChangeWatch.DocChanges d in watch.Documents)
+                {
+                    if (d.Added.Count + d.Modified.Count + d.Deleted.Count == 0) continue;
+                    added += d.Added.Count; modified += d.Modified.Count; deleted += d.Deleted.Count;
+                    string title = null; try { title = d.Document.Title; } catch { }
+                    docs.Add(title);
+                }
+                if (added + modified + deleted == 0) return;
+                JObject data = result.Data as JObject ?? (result.Data == null ? new JObject() : JObject.FromObject(result.Data));
+                if (data["model_changes"] == null)
+                    data["model_changes"] = new JObject { ["added"] = added, ["modified"] = modified, ["deleted"] = deleted, ["documents"] = docs,
+                        ["source"] = "Revit DocumentChanged during this call, after its own rollbacks" };
+                result.ReplaceData(data);
+            }
+            catch { }
+        }
+
         public static void Attach(string tool, ChangeWatch watch, CommandResult result)
         {
             if (watch == null) return;
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
-            if (result == null || !result.Success || !Enabled) return;
+            if (result == null || !result.Success) return;
+            StampChanges(watch, result);
+            if (!Enabled) return;
             if (tool == "horizun_verify_changes" || DataOnlyTools.Contains(tool)) return;
             try
             {

@@ -376,13 +376,19 @@ namespace Horizun.Revit.Core
                     result.Data as Newtonsoft.Json.Linq.JObject,
                     waitedMs, clock.ElapsedMilliseconds,
                     req.Ticket.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                    DateTime.UtcNow);
+                    DateTime.UtcNow, ReceiptRequest(paramsJson));
                 ReceiptLedger.Append(ReceiptLedger.DefaultDirectory(), receipt,
                                      Settings.RawValue, DateTime.UtcNow);
             }
             catch { /* counted inside Append; a diary must never cost an answer */ }
 
             return result;
+        }
+
+        private static Newtonsoft.Json.Linq.JObject ReceiptRequest(string paramsJson)
+        {
+            try { return string.IsNullOrWhiteSpace(paramsJson) ? null : Newtonsoft.Json.Linq.JObject.Parse(paramsJson); }
+            catch { return null; }
         }
 
         private CommandResult SubmitJobWithoutWaitingForUi(string name, string paramsJson)
