@@ -87,6 +87,19 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_column_in_front_of_a_door_blocks_it_and_furniture_is_a_warning()
+        {
+            Assert.Equal("error", SpatialCoherenceRules.Clearance("OST_StructuralColumns", false).Severity);
+            Assert.Equal("error", SpatialCoherenceRules.Clearance("OST_Walls", false).Severity);
+            Assert.Equal("warning", SpatialCoherenceRules.Clearance("OST_Furniture", false).Severity);
+            // The door's own host wall, the slab it stands on and a beam overhead are not obstacles.
+            Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_Walls", true).Kind);
+            Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_Floors", false).Kind);
+            Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_StructuralFraming", false).Kind);
+            Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_Doors", false).Kind);
+        }
+
+        [Fact]
         public void Labels_read_like_words()
         {
             Assert.Equal("structural column", SpatialCoherenceRules.Label("OST_StructuralColumns"));

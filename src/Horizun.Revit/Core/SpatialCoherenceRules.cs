@@ -174,6 +174,33 @@ namespace Horizun.Revit.Core
             };
         }
 
+        /// <summary>Clear depth kept free in front of and behind a door, as a share of its width (min 0.6 m).</summary>
+        public const double ClearanceMinFt = 0.6 / 0.3048;
+        /// <summary>Clear height checked above the door's base, so beams and ceilings overhead are not obstacles.</summary>
+        public const double ClearanceHeightFt = 2.0 / 0.3048;
+
+        /// <summary>
+        /// An element standing in the swing/passage zone of a door (not touching the door
+        /// itself). Walls, columns and stairs make the door unusable; furniture and
+        /// fixtures are a warning; slabs, ceilings, openings and the door's own host are
+        /// not obstacles.
+        /// </summary>
+        public static Verdict Clearance(string obstacle, bool isHost)
+        {
+            if (isHost || !Considered(obstacle) || Openings.Contains(obstacle)) return None();
+            if (obstacle == "OST_Floors" || obstacle == "OST_Ceilings" || obstacle == "OST_Roofs" ||
+                obstacle == "OST_StructuralFraming" || obstacle == "OST_StructuralFoundation" ||
+                obstacle == "OST_Railings" || obstacle == "OST_StairsRailing") return None();
+            bool blocks = obstacle == "OST_Walls" || obstacle == "OST_StructuralColumns" || obstacle == "OST_Columns" ||
+                          obstacle == "OST_Stairs" || obstacle == "OST_CurtainWallPanels" || obstacle == "OST_CurtainWallMullions";
+            return new Verdict
+            {
+                Kind = Kind.Conflict, Severity = blocks ? "error" : "warning",
+                Reason = Label(obstacle) + " stands in the passage in front of a door",
+                Suggestion = "keep the door's clear zone free: move the " + Label(obstacle) + " or the door"
+            };
+        }
+
         public static bool IsDuplicate(double shared, double? volumeA, double? volumeB)
         {
             if (!volumeA.HasValue || !volumeB.HasValue) return false;

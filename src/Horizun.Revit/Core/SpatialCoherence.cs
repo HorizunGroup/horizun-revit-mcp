@@ -110,8 +110,122 @@ namespace Horizun.Revit.Core
                     o.Findings.Add(new Finding { Verdict = v, A = a, B = b, SharedVolumeFt3 = shared });
                 }
             }
+            if (!o.Partial) DoorClearance(doc, subjects, o, pairs, solidCache, clock, budgetMs);
             o.Ms = clock.ElapsedMilliseconds;
             return o;
+        }
+
+        // ---- door clear zones -----------------------------------------------------------
+        // A column one hand's width in front of a door shares no solid with it, so the pair
+        // check above cannot see it - and it is exactly what an expert spots first. Each
+        // door gets a clear zone on both faces of its host (door width deep, at least
+        // 0.6 m; 2 m high; slightly narrower than the leaf so a wall at the jamb corner is
+        // not an obstacle) and whatever physical element fills part of it is judged by
+        // SpatialCoherenceRules.Clearance. Reported only when the door or the obstacle is
+        // among the elements being checked.
+        private static void DoorClearance(Document doc, IList<Element> subjects, Outcome o, HashSet<string> pairs,
+                                          Dictionary<long, List<Solid>> cache, Stopwatch clock, int budgetMs)
+        {
+            var subjectIds = new HashSet<long>(subjects.Select(e => Rid.Value(e.Id)));
+            var doors = new Dictionary<long, FamilyInstance>();
+            foreach (Element e in subjects)
+                if (e is FamilyInstance fi && CategoryKey(e) == "OST_Doors") doors[Rid.Value(e.Id)] = fi;
+            foreach (Element e in subjects)
+            {
+                if (CategoryKey(e) == "OST_Doors") continue;
+                BoundingBoxXYZ b = null;
+                try { b = e.get_BoundingBox(null); } catch { }
+                if (b == null) continue;
+                const double reach = 2.0 / 0.3048;
+                var around = new Outline(b.Min - new XYZ(reach, reach, 0.5), b.Max + new XYZ(reach, reach, 0.5));
+                try
+                {
+                    foreach (Element d in new FilteredElementCollector(doc).OfCategory(BuiltInCategory.OST_Doors)
+                                 .WhereElementIsNotElementType().WherePasses(new BoundingBoxIntersectsFilter(around)))
+                        if (d is FamilyInstance fd) doors[Rid.Value(d.Id)] = fd;
+                }
+                catch { }
+            }
+            foreach (FamilyInstance door in doors.Values)
+            {
+                if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out during the door clear-zone pass"; return; }
+                List<Solid> zones = ClearZones(door);
+                long doorId = Rid.Value(door.Id);
+                long hostId = door.Host == null ? -1 : Rid.Value(door.Host.Id);
+                foreach (Solid zone in zones)
+                {
+                    IList<Element> hits;
+                    try
+                    {
+                        hits = new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                            .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
+                    }
+                    catch { continue; }
+                    foreach (Element b in hits)
+                    {
+                        long ib = Rid.Value(b.Id);
+                        if (ib == doorId || !IsPhysical(b)) continue;
+                        if (!subjectIds.Contains(doorId) && !subjectIds.Contains(ib)) continue;
+                        if (b is FamilyInstance bf && bf.SuperComponent != null && Rid.Value(bf.SuperComponent.Id) == doorId) continue;
+                        SpatialCoherenceRules.Verdict v = SpatialCoherenceRules.Clearance(CategoryKey(b), ib == hostId || Hosts(b, door));
+                        if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                        double? shared = Shared(new List<Solid> { zone }, Solids(b, cache));
+                        if (shared.HasValue && shared.Value < SpatialCoherenceRules.TouchVolumeFt3) continue;
+                        if (!pairs.Add("clear:" + doorId + "|" + ib)) continue;
+                        o.Findings.Add(new Finding { Verdict = v, A = door, B = b, SharedVolumeFt3 = shared });
+                    }
+                }
+            }
+        }
+
+        private static List<Solid> ClearZones(FamilyInstance door)
+        {
+            var zones = new List<Solid>();
+            try
+            {
+                if (!(door.Location is LocationPoint lp)) return zones;
+                XYZ p = lp.Point;
+                XYZ hand = door.HandOrientation, facing = door.FacingOrientation;
+                if (hand == null || facing == null || hand.IsZeroLength() || facing.IsZeroLength()) return zones;
+                hand = new XYZ(hand.X, hand.Y, 0).Normalize(); facing = new XYZ(facing.X, facing.Y, 0).Normalize();
+                double width = DoorWidth(door);
+                if (width <= 0) return zones;
+                double half = width * 0.45;   // narrower than the leaf: a wall at the jamb is not an obstacle
+                double depth = Math.Max(SpatialCoherenceRules.ClearanceMinFt, width);
+                double wall = door.Host is Wall w ? w.Width : 0;
+                double z0 = p.Z + 0.05;
+                foreach (int side in new[] { 1, -1 })
+                {
+                    XYZ f = facing * side;
+                    XYZ start = new XYZ(p.X, p.Y, z0) + f * (wall / 2 + 0.05);
+                    XYZ a = start - hand * half, b = start + hand * half, c = b + f * depth, d = a + f * depth;
+                    var loop = CurveLoop.Create(new List<Curve> { Line.CreateBound(a, b), Line.CreateBound(b, c), Line.CreateBound(c, d), Line.CreateBound(d, a) });
+                    zones.Add(GeometryCreationUtilities.CreateExtrusionGeometry(new List<CurveLoop> { loop }, XYZ.BasisZ, SpatialCoherenceRules.ClearanceHeightFt - 0.05));
+                }
+            }
+            catch { }
+            return zones;
+        }
+
+        private static double DoorWidth(FamilyInstance door)
+        {
+            foreach (BuiltInParameter bip in new[] { BuiltInParameter.DOOR_WIDTH, BuiltInParameter.FAMILY_WIDTH_PARAM, BuiltInParameter.FURNITURE_WIDTH })
+            {
+                try
+                {
+                    Parameter q = door.get_Parameter(bip) ?? door.Symbol?.get_Parameter(bip);
+                    if (q != null && q.StorageType == StorageType.Double && q.AsDouble() > 0.3) return q.AsDouble();
+                }
+                catch { }
+            }
+            try
+            {
+                BoundingBoxXYZ b = door.get_BoundingBox(null);
+                XYZ h = door.HandOrientation;
+                if (b != null && h != null) return Math.Abs((b.Max - b.Min).DotProduct(new XYZ(Math.Abs(h.X), Math.Abs(h.Y), 0)));
+            }
+            catch { }
+            return 0;
         }
 
         public static JObject ToJson(Outcome o, int maxFindings = 50)

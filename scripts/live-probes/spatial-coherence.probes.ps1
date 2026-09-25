@@ -13,6 +13,7 @@ $script:HzProbeModules += [pscustomobject]@{
         @{ Name = 'spatial: verify_changes on the last write reports the conflict and returns an image';    Tool = 'horizun_verify_changes' }
         @{ Name = 'spatial: verify_changes leaves the model as it was (no view survives)';                  Tool = 'horizun_verify_changes' }
         @{ Name = 'spatial: a column away from everything carries no finding';                            Tool = 'horizun_create_elements' }
+        @{ Name = 'spatial: a column in front of a door (not touching it) is flagged as blocking the passage'; Tool = 'horizun_create_elements' }
         @{ Name = 'spatial: everything the probe created is deleted';                                     Tool = 'horizun_delete_verified' }
     )
     Run     = {
@@ -21,7 +22,7 @@ $script:HzProbeModules += [pscustomobject]@{
         $out = New-Object System.Collections.Generic.List[object]
         function Case($i, $outcome, $detail) { $out.Add(@{ Name = $names[$i].Name; Tool = $names[$i].Tool; Outcome = $outcome; Detail = [string]$detail }) }
         # $Ctx.WriteGate TRUE means the write tier is CLOSED (verify-live keeps the reason).
-        if ($Ctx.WriteGate) { foreach ($i in 0..4) { Case $i 'not_covered' 'write tier closed' }; return $out.ToArray() }
+        if ($Ctx.WriteGate) { foreach ($i in 0..5) { Case $i 'not_covered' 'write tier closed' }; return $out.ToArray() }
         $doc = $Ctx.Document; $run = $Ctx.RunId
         $created = New-Object System.Collections.ArrayList
         function Short($a) { $t = [string]$a.text; if ($t.Length -gt 400) { $t.Substring(0, 400) } else { $t } }
@@ -55,13 +56,13 @@ $script:HzProbeModules += [pscustomobject]@{
             $column = Types 'OST_StructuralColumns' | Select-Object -First 1
             if (-not $levelId -or -not $basic -or -not $door -or -not $column) {
                 $why = "the fixture lacks what the probe stages (level=$levelId, basic wall=" + $basic.element_id + ', door=' + $door.element_id + ', structural column=' + $column.element_id + ')'
-                foreach ($i in 0..3) { Case $i 'not_covered' $why }
+                foreach ($i in 0..4) { Case $i 'not_covered' $why }
             }
             else {
                 $w = Create @(@{ kind = 'wall'; start = @($X, $Y, $E); end = @(($X + 6000), $Y, $E); level_id = $levelId; type_id = $basic.element_id; height = 3000 }) 'wall'
                 $d = if ($w.ids.Count -gt 0) { Create @(@{ kind = 'family_instance'; type_id = $door.element_id; point = @(($X + 3000), $Y, $E); level_id = $levelId; host_id = $w.ids[0] }) 'door' } else { @{ ids = @() } }
                 if ($d.ids.Count -eq 0) {
-                    foreach ($i in 0..3) { Case $i 'unverified' ('the wall and door could not be staged: ' + (Short $w.reply.answer) + ' | ' + (Short $d.reply.answer)) }
+                    foreach ($i in 0..4) { Case $i 'unverified' ('the wall and door could not be staged: ' + (Short $w.reply.answer) + ' | ' + (Short $d.reply.answer)) }
                 }
                 else {
                     $doorId = [long]$d.ids[0]
@@ -91,17 +92,24 @@ $script:HzProbeModules += [pscustomobject]@{
                     $fsc = if ($far.reply.answer.data) { $far.reply.answer.data.spatial_check } else { $null }
                     if ($far.ids.Count -eq 0) { Case 3 'unverified' ('the clear column could not be placed: ' + (Short $far.reply.answer)) }
                     else { Case 3 $(if ($fsc -and [int]$fsc.errors -eq 0 -and [int]$fsc.warnings -eq 0 -and -not $far.reply.answer.data.attention) { 'pass' } else { 'fail' }) ('status=' + $fsc.status + ' errors=' + $fsc.errors + ' warnings=' + $fsc.warnings) }
+
+                    # 5. a column 700 mm in front of the door: no shared solid, still in the way
+                    $front = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; point = @(($X + 3000), ($Y + 700), $E); level_id = $levelId }) 'column-front'
+                    $psc = if ($front.reply.answer.data) { $front.reply.answer.data.spatial_check } else { $null }
+                    $pass = @($psc.findings | Where-Object { $_.severity -eq 'error' -and ([long]$_.a.id -eq $doorId -or [long]$_.b.id -eq $doorId) -and [string]$_.reason -match 'passage' })
+                    if ($front.ids.Count -eq 0) { Case 4 'unverified' ('the front column could not be placed: ' + (Short $front.reply.answer)) }
+                    else { Case 4 $(if ($pass.Count -ge 1) { 'pass' } else { 'fail' }) ('status=' + $psc.status + ' errors=' + $psc.errors + ' finding=' + $pass[0].reason) }
                 }
             }
         }
         finally {
             $ids = @($created.ToArray())
-            if ($ids.Count -eq 0) { Case 4 'not_covered' 'nothing was created' }
+            if ($ids.Count -eq 0) { Case 5 'not_covered' 'nothing was created' }
             else {
                 [array]::Reverse($ids)
                 $del = & $Ctx.Apply 'horizun_delete_verified' @{ target_document = $doc; mode = 'ids'; ids = $ids; id_cap = 500 } ($run + '-sc-cleanup')
-                if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case 4 'pass' ('deleted ' + $ids.Count + ' created ids') }
-                else { Case 4 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
+                if ($del.stage -eq 'apply' -and -not $del.answer.isError) { Case 5 'pass' ('deleted ' + $ids.Count + ' created ids') }
+                else { Case 5 'fail' ('left in the disposable document: ' + ($ids -join ',') + ' - ' + (Short $del.answer)) }
             }
         }
         return $out.ToArray()
