@@ -1490,10 +1490,18 @@ $proc = [System.Diagnostics.Process]::Start($psi)
 # comfortably above every closed tool schema's maximum nesting.
 function Send-Rpc($obj) { $proc.StandardInput.WriteLine(($obj | ConvertTo-Json -Depth 32 -Compress)); $proc.StandardInput.Flush() }
 $script:rpcNotifications = [System.Collections.Generic.List[object]]::new()
-function Read-Rpc([int]$TimeoutMs = 620000) {
+# MEASURED 2026-09-25 (run at a66968c): one call outlived its wait, the read it had
+# started was abandoned still pending, and the NEXT call's ReadLineAsync threw "the
+# stream is currently in use" - every probe module after it became unverified. The
+# pending read is now kept and reused, and a caller that knows its request id skips a
+# late answer to an earlier call instead of taking it as its own.
+$script:pendingRead = $null
+$script:lateReplies = [System.Collections.Generic.List[object]]::new()
+function Read-Rpc([int]$TimeoutMs = 620000, $ExpectId = $null) {
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     while ($true) {
-        $t = $proc.StandardOutput.ReadLineAsync()
+        if ($null -eq $script:pendingRead) { $script:pendingRead = $proc.StandardOutput.ReadLineAsync() }
+        $t = $script:pendingRead
         # See hz-call.ps1: use WhenAny rather than Task.Wait or IsCompleted
         # polling for redirected StreamReader reads on Windows PowerShell 5.1.
         $remaining = [Math]::Max(1, [int](($deadline - (Get-Date)).TotalMilliseconds))
@@ -1501,8 +1509,21 @@ function Read-Rpc([int]$TimeoutMs = 620000) {
         $winner = [Threading.Tasks.Task]::WhenAny(
             [Threading.Tasks.Task[]]@($t, $delay)).Result
         if (-not [object]::ReferenceEquals($winner, $t)) { return $null }
+        $script:pendingRead = $null
         if (-not $t.Result) { return $null }
-        try { $m = $t.Result | ConvertFrom-Json } catch { continue }
+        try { $m = $t.Result | ConvertFrom-Json }
+        catch {
+            # A reply PowerShell cannot parse (e.g. two keys differing only in case) is
+            # still THE reply to its id. Skipping it left the caller waiting ten minutes
+            # for an answer that had already arrived (2026-09-25); hand it back as an
+            # error naming why, so the case fails with the cause instead of hanging.
+            $idMatch = [regex]::Match($t.Result, '^\s*\{\s*"jsonrpc"\s*:\s*"2\.0"\s*,\s*"id"\s*:\s*(\d+)')
+            if (-not $idMatch.Success) { $idMatch = [regex]::Match($t.Result, '"id"\s*:\s*(\d+)') }
+            if (-not $idMatch.Success) { continue }
+            $m = [pscustomobject]@{ jsonrpc = '2.0'; id = [long]$idMatch.Groups[1].Value
+                                    error = [pscustomobject]@{ code = -32700; message = ('the harness could not parse this reply as JSON: ' + $_.Exception.Message + ' | first 300 chars: ' + $t.Result.Substring(0, [Math]::Min(300, $t.Result.Length))) } }
+        }
+        if ($null -ne $ExpectId -and $m.id -and "$($m.id)" -ne "$ExpectId") { [void]$script:lateReplies.Add($m); continue }
         # Progress and list-change notifications carry no id and are not
         # anybody's answer. Keep them in the one stdout reader's inbox so a
         # probe can inspect them without starting a second ReadLineAsync on the
@@ -1989,7 +2010,7 @@ function Invoke-Write($tool, $arguments) {
     $script:writeCallId++
     Send-Rpc @{ jsonrpc='2.0'; id=$script:writeCallId; method='tools/call'
                 params=@{ name=$tool; arguments=$arguments } }
-    $m = Read-Rpc
+    $m = Read-Rpc -ExpectId $script:writeCallId
     if (-not $m) { return @{ replied = $false; isError = $true; text = 'no reply'; data = $null } }
 
     # A JSON-RPC error reply carries no result at all, so reaching into
