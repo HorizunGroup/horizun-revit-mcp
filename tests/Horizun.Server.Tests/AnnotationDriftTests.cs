@@ -149,6 +149,49 @@ namespace Horizun.Server.Tests
         }
 
         /// <summary>
+        /// EVERY tool classified ReadOnly must publish readOnlyHint=true in the ACTUAL
+        /// tools/list entry a client reads, not merely in the in-memory contract. A field
+        /// session (2026-09-25) had a client treat horizun_job_status - which only reads a
+        /// checkpoint file off disk - as a write, because nothing pinned the annotation all
+        /// the way to the wire. Annotations() already derives readOnlyHint from Effect, so
+        /// this cannot fail today; it exists to catch the day that derivation drifts, the
+        /// same role AnnotationDriftTests already plays for destructiveHint/idempotentHint.
+        /// </summary>
+        [Fact]
+        public void Read_only_effect_tools_publish_readOnlyHint_true_on_the_wire()
+        {
+            var published = Tools.List();
+            var offenders = new List<string>();
+            foreach (CommandContract c in Contract.All.Where(c => c.Effect == ToolEffect.ReadOnly))
+            {
+                var entry = published.FirstOrDefault(t => (string)t["name"] == c.Name) as Newtonsoft.Json.Linq.JObject;
+                if (entry == null) continue;   // withheld under the current profile - not this test's concern
+                var annotations = (Newtonsoft.Json.Linq.JObject)entry["annotations"];
+                if (annotations == null || annotations["readOnlyHint"] == null || !(bool)annotations["readOnlyHint"])
+                    offenders.Add(c.Name);
+            }
+            Assert.True(offenders.Count == 0,
+                "ReadOnly-effect tools missing readOnlyHint=true on the wire: " + string.Join(", ", offenders));
+        }
+
+        /// <summary>
+        /// A NAMED pin for the exact tool the field session flagged, so a future change that
+        /// happens to move horizun_job_status or horizun_catalog_lookup into a mutating Effect
+        /// set fails here with their name in the message, not only in the sweep above.
+        /// </summary>
+        [Fact]
+        public void Job_status_and_catalog_lookup_are_read_only_and_never_destructive()
+        {
+            foreach (string name in new[] { "horizun_job_status", "horizun_catalog_lookup" })
+            {
+                CommandContract c = Contract.Find(name);
+                Assert.NotNull(c);
+                Assert.True(c.Effect == ToolEffect.ReadOnly, name + " must be classified ToolEffect.ReadOnly");
+                Assert.False(c.Destructive, name + " must not declare Destructive");
+            }
+        }
+
+        /// <summary>
         /// The whole point of moving these onto the contract: a NEW command inherits a
         /// classification from its own definition. Every command must land in exactly one
         /// Effect, and no command may be left with the enum's default by accident - which

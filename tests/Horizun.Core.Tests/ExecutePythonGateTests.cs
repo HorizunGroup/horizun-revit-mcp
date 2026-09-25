@@ -140,6 +140,29 @@ namespace Horizun.Core.Tests
         }
 
         /// <summary>
+        /// MEASURED 2026-09-25 (field session): the dispatcher replays a queued job by
+        /// re-Executing THIS SAME COMMAND with 'queued' as the whole request (see
+        /// Dispatcher's `cmd.Execute(app, work.ParamsJson)`). The synchronous path binds the
+        /// caller's 'arguments' into HORIZUN_ARGS_JSON - but the 'queued' object never copied
+        /// that field across, so a script run via run_async=true read its OWN arguments back
+        /// as '{}' and KeyError'd. Asserted against the QUEUED OBJECT'S OWN BLOCK, not just
+        /// "somewhere in the file", so a fix that adds 'arguments' outside the object that
+        /// actually gets serialized into ParamsJson would not falsely pass this.
+        /// </summary>
+        [Fact]
+        public void The_queued_copy_carries_the_callers_arguments()
+        {
+            string text = Source(File_);
+            int queuedObject = text.IndexOf("var queued = new JObject", StringComparison.Ordinal);
+            Assert.True(queuedObject >= 0, "the queued parameter object moved; this test needs updating");
+            int queuedClose = text.IndexOf("};", queuedObject, StringComparison.Ordinal);
+            Assert.True(queuedClose >= 0, "could not find the end of the queued-request object");
+
+            string queuedBlock = text.Substring(queuedObject, queuedClose - queuedObject);
+            Assert.Contains("[\"arguments\"] = request[\"arguments\"]", queuedBlock);
+        }
+
+        /// <summary>
         /// The universal dispatcher now stores synchronous results durably, so the old
         /// command-local refusal would make synchronous Python impossible: admission
         /// requires the key and the command would then reject it.

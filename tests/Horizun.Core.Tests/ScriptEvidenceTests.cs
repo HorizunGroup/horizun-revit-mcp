@@ -262,5 +262,81 @@ namespace Horizun.Core.Tests
             Assert.NotEqual("verified", r.Status);
             Assert.Contains(r.Warnings, w => ((string)w).Contains("did not re-read the model"));
         }
+
+        // ---------------------------------------------------------------------
+        // MEASURED 2026-09-25 (field session): a script wrote a single OBJECT into
+        // verification.evidence instead of a list. The classifier read it with
+        // (evidence as JArray) - null for a JObject - and reported the claim
+        // DOWNGRADED as "verification.evidence was empty", which was false: the
+        // field was not empty, it was the wrong CONTAINER shape. These prove the
+        // fix accepts an object as one record, and that "empty" is only ever said
+        // about a genuinely empty container.
+        // ---------------------------------------------------------------------
+
+        private static JObject StructuredWithEvidenceToken(string status, bool check, JToken evidence)
+        {
+            return new JObject
+            {
+                ["status"] = status,
+                ["summary"] = "s",
+                ["verification"] = new JObject { ["checked"] = check, ["evidence"] = evidence },
+                ["warnings"] = new JArray()
+            };
+        }
+
+        [Fact]
+        public void A_single_object_in_evidence_is_accepted_as_one_record_not_reported_empty()
+        {
+            JToken evidenceObject = new JObject { ["element_id"] = 42, ["comments"] = "checked" };
+            EvidenceReport r = ScriptEvidence.Classify(
+                StructuredWithEvidenceToken("verified", true, evidenceObject));
+
+            Assert.Equal("self_reported_verified", r.Status);
+            // The exact lie this fixes: an object present must never be reported as "empty".
+            Assert.DoesNotContain(r.Warnings, w => ((string)w).Contains("was empty"));
+        }
+
+        [Fact]
+        public void An_empty_object_in_evidence_is_genuinely_reported_as_an_empty_object()
+        {
+            EvidenceReport r = ScriptEvidence.Classify(
+                StructuredWithEvidenceToken("verified", true, new JObject()));
+
+            Assert.Equal("completed_unverified", r.Status);
+            Assert.Contains(r.Warnings, w => ((string)w).Contains("verification.evidence was an empty object"));
+        }
+
+        [Fact]
+        public void An_empty_list_in_evidence_is_reported_as_an_empty_list_not_an_empty_object()
+        {
+            EvidenceReport r = ScriptEvidence.Classify(
+                StructuredWithEvidenceToken("verified", true, new JArray()));
+
+            Assert.Equal("completed_unverified", r.Status);
+            Assert.Contains(r.Warnings, w => ((string)w).Contains("verification.evidence was an empty list"));
+        }
+
+        [Fact]
+        public void A_scalar_in_evidence_names_the_actual_type_instead_of_calling_it_empty()
+        {
+            EvidenceReport r = ScriptEvidence.Classify(
+                StructuredWithEvidenceToken("verified", true, new JValue("ok")));
+
+            Assert.Equal("completed_unverified", r.Status);
+            Assert.DoesNotContain(r.Warnings, w => ((string)w).Contains("was empty"));
+            Assert.Contains(r.Warnings, w => ((string)w).Contains("expected to be a list or an object") &&
+                                              ((string)w).Contains("string"));
+        }
+
+        [Fact]
+        public void Self_reported_verified_also_accepts_a_single_object_as_evidence()
+        {
+            JToken evidenceObject = new JObject { ["title"] = "HZ_LIVE_A", ["level_count"] = 3 };
+            EvidenceReport r = ScriptEvidence.Classify(
+                StructuredWithEvidenceToken("self_reported_verified", true, evidenceObject));
+
+            Assert.Equal("self_reported_verified", r.Status);
+            Assert.False(r.HostVerified);
+        }
     }
 }
