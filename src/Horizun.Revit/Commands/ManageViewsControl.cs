@@ -42,7 +42,8 @@ namespace Horizun.Revit.Commands
     {
         internal static readonly string[] ControlOperations =
         {
-            "edit_filter", "order_filters", "explain_graphics", "create_template", "set_template_controls"
+            "edit_filter", "order_filters", "explain_graphics", "create_template", "set_template_controls",
+            "sheet_set_list", "sheet_set_create", "sheet_set_update", "sheet_set_delete"
         };
 
         internal static bool IsControlOperation(string op) => Array.IndexOf(ControlOperations, op ?? "") >= 0;
@@ -135,6 +136,41 @@ namespace Horizun.Revit.Commands
                     TemplateParameters(template, a);
                     break;
                 }
+
+                case "sheet_set_list": break;
+
+                case "sheet_set_create":
+                {
+                    if (string.IsNullOrWhiteSpace(a.Value<string>("name")))
+                        throw new ArgumentException("sheet_set_create requires name.");
+                    if (SheetSetExists(doc, a.Value<string>("name")))
+                        throw new ArgumentException("a sheet set named '" + a.Value<string>("name") + "' already exists; sheet_set_update edits it.");
+                    ReadSheetSetViews(doc, a);
+                    break;
+                }
+
+                case "sheet_set_update":
+                {
+                    RequireSheetSet(doc, a);
+                    bool renaming = a["name"] != null;
+                    bool changingViews = a["view_ids"] != null;
+                    if (!renaming && !changingViews)
+                        throw new ArgumentException("sheet_set_update names no change: give name and/or view_ids.");
+                    if (changingViews) ReadSheetSetViews(doc, a);
+                    if (renaming)
+                    {
+                        string newName = a.Value<string>("name");
+                        if (string.IsNullOrWhiteSpace(newName)) throw new ArgumentException("name must not be blank.");
+                        ViewSheetSet target = RequireSheetSet(doc, a);
+                        if (!string.Equals(newName, target.Name, StringComparison.Ordinal) && SheetSetExists(doc, newName))
+                            throw new ArgumentException("a sheet set named '" + newName + "' already exists.");
+                    }
+                    break;
+                }
+
+                case "sheet_set_delete":
+                    RequireSheetSet(doc, a);
+                    break;
             }
         }
 
@@ -233,6 +269,89 @@ namespace Horizun.Revit.Commands
                     a["__parameter_ids"] = new JArray(ids.Select(Rid.Value));
                     return template;
                 }
+
+                case "sheet_set_list":
+                    // A read: the anchor element just has to exist and be non-null (the
+                    // shared batch loop refuses a null Apply result), so ProjectInformation
+                    // stands in - the real payload is the census, stashed for the row.
+                    a["__report"] = SheetSetCensus(doc);
+                    return doc.ProjectInformation;
+
+                case "sheet_set_create":
+                {
+                    string name = a.Value<string>("name");
+                    ViewSet vs = ReadSheetSetViews(doc, a);
+                    PrintManager pm = doc.PrintManager;
+                    ViewSheetSetting vss = pm.ViewSheetSetting;
+                    ElementId originalNamedId = CurrentNamedSheetSetId(vss);
+                    try
+                    {
+                        vss.CurrentViewSheetSet = vss.InSession;
+                        vss.CurrentViewSheetSet.Views = vs;
+                        if (!vss.SaveAs(name))
+                            throw new InvalidOperationException("Revit refused to save sheet set '" + name + "' (ViewSheetSetting.SaveAs returned false).");
+                    }
+                    finally { RestoreCurrentSheetSet(doc, vss, originalNamedId); }
+                    ViewSheetSet created = FindSheetSet(doc, name);
+                    if (created == null) throw new InvalidOperationException("sheet set '" + name + "' was saved but does not re-read from the document.");
+                    a["__view_ids"] = new JArray(vs.Cast<View>().Select(v => Rid.Value(v.Id)));
+                    return created;
+                }
+
+                case "sheet_set_update":
+                {
+                    ViewSheetSet target = RequireSheetSet(doc, a);
+                    ElementId targetId = target.Id;
+                    PrintManager pm = doc.PrintManager;
+                    ViewSheetSetting vss = pm.ViewSheetSetting;
+                    ElementId originalNamedId = CurrentNamedSheetSetId(vss);
+                    try
+                    {
+                        vss.CurrentViewSheetSet = target;
+                        if (a["view_ids"] != null)
+                        {
+                            ViewSet vs = ReadSheetSetViews(doc, a);
+                            vss.CurrentViewSheetSet.Views = vs;
+                            if (!vss.Save())
+                                throw new InvalidOperationException("Revit refused to save sheet set '" + target.Name + "' (ViewSheetSetting.Save returned false).");
+                            a["__view_ids"] = new JArray(vs.Cast<View>().Select(v => Rid.Value(v.Id)));
+                        }
+                        if (a["name"] != null && !string.Equals(a.Value<string>("name"), doc.GetElement(targetId)?.Name, StringComparison.Ordinal))
+                        {
+                            // The current selection may have been invalidated by Save() above
+                            // (Revit re-resolves it against the persisted set); re-select by id
+                            // before renaming it.
+                            vss.CurrentViewSheetSet = (doc.GetElement(targetId) as ViewSheetSet) ?? target;
+                            if (!vss.Rename(a.Value<string>("name")))
+                                throw new InvalidOperationException("Revit refused to rename sheet set to '" + a.Value<string>("name") + "' (ViewSheetSetting.Rename returned false).");
+                        }
+                    }
+                    finally { RestoreCurrentSheetSet(doc, vss, originalNamedId); }
+                    a["__sheet_set_id"] = Rid.Value(targetId);
+                    return doc.GetElement(targetId) ?? target;
+                }
+
+                case "sheet_set_delete":
+                {
+                    ViewSheetSet target = RequireSheetSet(doc, a);
+                    ElementId targetId = target.Id;
+                    string targetName = target.Name;
+                    PrintManager pm = doc.PrintManager;
+                    ViewSheetSetting vss = pm.ViewSheetSetting;
+                    ElementId originalNamedId = CurrentNamedSheetSetId(vss);
+                    bool deletingCurrent = originalNamedId != null && originalNamedId == targetId;
+                    try
+                    {
+                        vss.CurrentViewSheetSet = target;
+                        if (!vss.Delete())
+                            throw new InvalidOperationException("Revit refused to delete sheet set '" + targetName + "' (ViewSheetSetting.Delete returned false).");
+                    }
+                    finally { RestoreCurrentSheetSet(doc, vss, deletingCurrent ? null : originalNamedId); }
+                    a["__deleted_id"] = Rid.Value(targetId);
+                    // The deleted object is gone; ProjectInformation is the non-null anchor
+                    // the shared batch loop needs, exactly as sheet_set_list uses it for a read.
+                    return doc.ProjectInformation;
+                }
             }
             throw new ArgumentException("unsupported control operation '" + op + "'");
         }
@@ -284,6 +403,38 @@ namespace Horizun.Revit.Commands
                     bool controlled = a.Value<bool>("controlled");
                     return ids.All(t => free.Contains(t.Value<long>()) != controlled);
                 }
+
+                case "sheet_set_list":
+                    if (e == null) return false;
+                    a["__report"] = SheetSetCensus(doc);   // re-read after the whole batch, same as explain_graphics
+                    return true;
+
+                case "sheet_set_create":
+                {
+                    if (!(e is ViewSheetSet madeSet)) return false;
+                    if (!string.Equals(madeSet.Name, a.Value<string>("name"), StringComparison.Ordinal)) return false;
+                    var ids = new HashSet<long>((a["__view_ids"] as JArray)?.Select(t => t.Value<long>()) ?? Enumerable.Empty<long>());
+                    var reread = new HashSet<long>(madeSet.Views.Cast<View>().Select(v => Rid.Value(v.Id)));
+                    return ids.SetEquals(reread);
+                }
+
+                case "sheet_set_update":
+                {
+                    long id = a.Value<long>("__sheet_set_id");
+                    var target = doc.GetElement(Rid.Make(id)) as ViewSheetSet;
+                    if (target == null) return false;
+                    if (a["name"] != null && !string.Equals(target.Name, a.Value<string>("name"), StringComparison.Ordinal)) return false;
+                    if (a["__view_ids"] is JArray wanted)
+                    {
+                        var ids = new HashSet<long>(wanted.Select(t => t.Value<long>()));
+                        var reread = new HashSet<long>(target.Views.Cast<View>().Select(v => Rid.Value(v.Id)));
+                        if (!ids.SetEquals(reread)) return false;
+                    }
+                    return true;
+                }
+
+                case "sheet_set_delete":
+                    return e != null && doc.GetElement(Rid.Make(a.Value<long>("__deleted_id"))) == null;
             }
             return false;
         }
@@ -296,8 +447,95 @@ namespace Horizun.Revit.Commands
                 case "order_filters": return new JObject { ["order"] = a["__wanted"], ["moved"] = a["move_filter_ids"], ["restored_state"] = a["__state"] };
                 case "explain_graphics": return new JObject { ["report"] = a["__report"] };
                 case "set_template_controls": return new JObject { ["parameter_ids"] = a["__parameter_ids"], ["controlled"] = a["controlled"] };
+                case "sheet_set_list": return new JObject { ["report"] = a["__report"] };
+                case "sheet_set_create": case "sheet_set_update": return new JObject { ["view_ids"] = a["__view_ids"] };
+                case "sheet_set_delete": return new JObject { ["deleted_id"] = a["__deleted_id"] };
             }
             return null;
+        }
+
+        // =====================================================================
+        // SHEET SETS - PrintManager.ViewSheetSetting. Field evidence, 2026-09-25:
+        // horizun_manage_views had no way to create or edit a print/publish set.
+        //
+        // ViewSheetSetting.CurrentViewSheetSet is the print manager's OWN selection -
+        // a document-wide, session-level pointer, not scoped to this batch. Every
+        // operation here saves the original selection and restores it in a finally
+        // block, so a caller's print dialog (or another action) sees it unchanged.
+        // A named ViewSheetSet IS an Element (FilteredElementCollector finds it); the
+        // transient in-session set (ViewSheetSetting.InSession) is not, so the restore
+        // re-selects it by ElementId when there was one, or InSession when there
+        // wasn't.
+        // =====================================================================
+
+        private static bool SheetSetExists(Document doc, string name)
+            => new FilteredElementCollector(doc).OfClass(typeof(ViewSheetSet)).Cast<ViewSheetSet>()
+                .Any(s => string.Equals(s.Name, name, StringComparison.Ordinal));
+
+        private static ViewSheetSet FindSheetSet(Document doc, string name)
+            => new FilteredElementCollector(doc).OfClass(typeof(ViewSheetSet)).Cast<ViewSheetSet>()
+                .FirstOrDefault(s => string.Equals(s.Name, name, StringComparison.Ordinal));
+
+        private static ViewSheetSet RequireSheetSet(Document doc, JObject a)
+        {
+            long? id = a.Value<long?>("sheet_set_id");
+            if (id == null) throw new ArgumentException("sheet_set_id is required.");
+            if (!Rid.CanRepresent(id.Value) || !(doc.GetElement(Rid.Make(id.Value)) is ViewSheetSet set))
+                throw new ArgumentException("sheet_set_id " + id + " is not a saved sheet set.");
+            return set;
+        }
+
+        /// <summary>view_ids: 1..500 views or sheets, each resolved and validated non-template.</summary>
+        private static ViewSet ReadSheetSetViews(Document doc, JObject a)
+        {
+            JArray raw = a["view_ids"] as JArray;
+            if (raw == null || raw.Count == 0 || raw.Count > 500)
+                throw new ArgumentException("view_ids must hold 1..500 view/sheet ids.");
+            var vs = new ViewSet();
+            var seen = new HashSet<long>();
+            foreach (JToken t in raw)
+            {
+                long v = t.Value<long?>() ?? -1;
+                if (!Rid.CanRepresent(v) || !seen.Add(v)) throw new ArgumentException("view_ids holds an invalid or repeated id: " + t);
+                if (!(doc.GetElement(Rid.Make(v)) is View view))
+                    throw new ArgumentException("view_ids names " + v + ", which is not a view or sheet.");
+                if (view.IsTemplate) throw new ArgumentException("view_ids names " + v + ", which is a view TEMPLATE, not a printable view.");
+                vs.Insert(view);
+            }
+            return vs;
+        }
+
+        /// <summary>The named set currently selected, or null when it is the transient in-session set.</summary>
+        private static ElementId CurrentNamedSheetSetId(ViewSheetSetting vss)
+            => (vss.CurrentViewSheetSet as ViewSheetSet)?.Id;
+
+        private static void RestoreCurrentSheetSet(Document doc, ViewSheetSetting vss, ElementId originalNamedId)
+        {
+            try
+            {
+                if (originalNamedId != null && doc.GetElement(originalNamedId) is ViewSheetSet again)
+                    vss.CurrentViewSheetSet = again;
+                else
+                    vss.CurrentViewSheetSet = vss.InSession;
+            }
+            catch { /* best-effort restore: the operation's own result still stands */ }
+        }
+
+        /// <summary>Every saved sheet set, its membership by id/name/type, and whether it is Revit's automatic "All Sheets".</summary>
+        private static JArray SheetSetCensus(Document doc)
+        {
+            var rows = new JArray();
+            foreach (ViewSheetSet set in new FilteredElementCollector(doc).OfClass(typeof(ViewSheetSet)).Cast<ViewSheetSet>()
+                         .OrderBy(s => Rid.Value(s.Id)))
+            {
+                var views = new JArray();
+                foreach (View v in set.Views.Cast<View>().OrderBy(v => Rid.Value(v.Id)))
+                    views.Add(new JObject { ["view_id"] = Rid.Value(v.Id), ["name"] = v.Name, ["is_sheet"] = v is ViewSheet,
+                        ["sheet_number"] = v is ViewSheet sheet ? sheet.SheetNumber : null });
+                bool automatic = false; try { automatic = set.IsAutomatic; } catch { }
+                rows.Add(new JObject { ["sheet_set_id"] = Rid.Value(set.Id), ["name"] = set.Name, ["is_automatic"] = automatic, ["views"] = views });
+            }
+            return rows;
         }
 
         // =====================================================================
