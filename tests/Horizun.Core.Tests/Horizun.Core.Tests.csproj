@@ -619,6 +619,12 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\IdsBcf.cs" />
     <!-- horizun_mep_routing: rule-list edits and velocity sizing, Revit-free. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\MepRoutingRules.cs" />
+    <!-- Field audit 2026-09-25: rule-based mass type change, template/SPF audit,
+         warning root-cause classification, edited-wall-profile drift. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\TypeChangeRuleRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\TemplateComparisonRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WarningRootCauseRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\WallSketchDriftRules.cs" />
   </ItemGroup>
 
   <ItemGroup>

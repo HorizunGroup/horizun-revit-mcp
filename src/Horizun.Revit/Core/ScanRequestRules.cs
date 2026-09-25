@@ -120,6 +120,9 @@ namespace Horizun.Revit.Core
             "prevention_gate",
             "store_snapshot",
             "health_profile",
+            "template_path",
+            "spf_path",
+            "wall_sketch_drift_tolerance_mm",
         };
 
         /// <summary>Unknown option names, refused with the real list. Shared.</summary>

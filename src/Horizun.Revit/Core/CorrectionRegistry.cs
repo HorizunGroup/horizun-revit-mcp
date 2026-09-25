@@ -344,6 +344,42 @@ namespace Horizun.Revit.Core
                             "this bridge does not have. horizun_write_params_verified writes them once somebody " +
                             "provides them; nothing here invents them."
                     }
+                },
+
+                // UNSUPPORTED HERE, ON PURPOSE - not because no typed fix exists, but because the
+                // fix (horizun_transform_elements realign_wall_sketch) takes an element_ids ARRAY
+                // and a tolerance_mm, not the single scalar id this registry's ElementArgument
+                // substitutes into a fixed call shape; every other ACTIONABLE entry issues one call
+                // per finding item with one id in it, and forcing that shape onto a batched
+                // array-typed operation would be the composed-call risk this file's own header
+                // warns about, not a convenience. The typed command exists and is documented; a
+                // caller reads this finding's correctable=true rows and calls it directly.
+                {
+                    AuditCheckNames.WallSketchDrift, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.WallSketchDrift,
+                        CannotAutomateBecause =
+                            "horizun_transform_elements realign_wall_sketch is the typed fix, but it takes a " +
+                            "batched element_ids array and a shared tolerance_mm, not the single scalar id this " +
+                            "registry's ElementArgument substitutes per finding item - forcing that mismatch " +
+                            "would be exactly the composed-call risk this registry exists to avoid. Call it " +
+                            "directly with the ids this finding reports correctable=true."
+                    }
+                },
+
+                // UNSUPPORTED. Opt-in and comparative by nature: which extras, missing entries or
+                // conflicts to act on is a judgement about the model's OWN standard, not a
+                // mechanical fix this registry can propose the same way for every project.
+                {
+                    AuditCheckNames.TemplateComparison, new CorrectionRecipe
+                    {
+                        FindingType = AuditCheckNames.TemplateComparison,
+                        CannotAutomateBecause =
+                            "an extra parameter, filter or pattern may be exactly what this project needed beyond " +
+                            "its template, or it may be drift worth removing - and a 'Material' name collision is " +
+                            "a decision about which guid is the real parameter, never a mechanical fix. The finding " +
+                            "lists what differs; which of it to act on is a modelling-standard judgement."
+                    }
                 }
             };
 

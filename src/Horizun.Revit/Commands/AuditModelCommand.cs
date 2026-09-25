@@ -38,7 +38,7 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public class AuditModelCommand : ICommand
+    public partial class AuditModelCommand : ICommand
     {
         public string Name => "horizun_audit_model";
 
@@ -70,6 +70,15 @@ namespace Horizun.Revit.Commands
             public double GridCoincidenceMm = DatumRules.DefaultGridCoincidenceMm;
             public double GridAxisDegrees = DatumRules.DefaultGridAxisToleranceDegrees;
 
+            /// <summary>Opt-in template_comparison: an .rte/.rvt opened in the background, detached,
+            /// closed without saving. Null skips that half of the comparison.</summary>
+            public string TemplatePath;
+            /// <summary>Opt-in template_comparison: a shared parameter file read from disk, never
+            /// opened as the application's own (Core/ParameterClassificationRules.ReadSpf). Null
+            /// skips that half.</summary>
+            public string SpfPath;
+            public double WallSketchDriftToleranceMm = WallSketchDriftRules.DefaultToleranceMm;
+
             /// <summary>
             /// Read the four option keys off any object that carries them. A non-null
             /// return is the refusal: a misspelled tolerance silently ignored leaves
@@ -100,6 +109,13 @@ namespace Horizun.Revit.Commands
                                                         DatumRules.DefaultGridCoincidenceMm);
                 options.GridAxisDegrees = ToleranceOr(options.Tolerances, DatumRules.ToleranceGridAxis,
                                                       DatumRules.DefaultGridAxisToleranceDegrees);
+                options.TemplatePath = source.Value<string>("template_path");
+                options.SpfPath = source.Value<string>("spf_path");
+                // A top-level field, not a `tolerances` entry: PreDeliveryGateRules.ValidateTolerances
+                // enforces a closed whitelist of gate tolerances and this one is not part of that
+                // grammar - it configures a finding, not a pass/fail requirement.
+                double? driftTol = source.Value<double?>("wall_sketch_drift_tolerance_mm");
+                if (driftTol.HasValue && driftTol.Value >= 0) options.WallSketchDriftToleranceMm = driftTol.Value;
                 return null;
             }
         }
@@ -167,12 +183,18 @@ namespace Horizun.Revit.Commands
             AuditOptions o = options ?? new AuditOptions();
             Dictionary<string, GateMeasurement> parts = run.PartCounts;
 
+            // Computed AT MOST ONCE, on first use: the warnings check and the wall_sketch_drift
+            // check both classify against the same set of stranded walls, and a warning's root
+            // cause must never disagree with the finding that names the wall itself.
+            var strandedWalls = new Lazy<Dictionary<long, WallSketchDriftResult>>(
+                () => WallSketchGeometry.ComputeStrandedWalls(doc, o.WallSketchDriftToleranceMm));
+
             // The order is the order the findings are published in. Each check is
             // wrapped so one failure cannot take the run down, but the failure is
             // REPORTED, never swallowed.
             var checks = new List<KeyValuePair<string, Func<JObject>>>
             {
-                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Warnings, () => Warnings(doc, top, o.WarningProfile)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Warnings, () => Warnings(doc, top, o.WarningProfile, strandedWalls.Value)),
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.WorksetPlacement, () => WorksetPlacement(doc, top, o.WorksetRules)),
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.OrphanGroupTypes, () => GroupTypes(doc, top)),
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.InPlaceFamilies, () => InPlaceFamilies(doc, top)),
@@ -193,8 +215,17 @@ namespace Horizun.Revit.Commands
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Datums,
                     () => Datums(doc, top, o.LevelCoincidenceMm, o.GridCoincidenceMm, o.GridAxisDegrees, parts)),
                 new KeyValuePair<string, Func<JObject>>(AuditCheckNames.Readiness,
-                    () => Readiness(doc, top, o.ReadinessRoles, parts))
+                    () => Readiness(doc, top, o.ReadinessRoles, parts)),
+                new KeyValuePair<string, Func<JObject>>(AuditCheckNames.WallSketchDrift,
+                    () => WallSketchDrift(doc, top, strandedWalls.Value))
             };
+
+            // OPT-IN: opens a second document in the background. Every other finding here reads
+            // only the document already open, so this one is added only when the caller actually
+            // asked for it - an audit must not silently open a file nobody named.
+            if (!string.IsNullOrWhiteSpace(o.TemplatePath) || !string.IsNullOrWhiteSpace(o.SpfPath))
+                checks.Add(new KeyValuePair<string, Func<JObject>>(AuditCheckNames.TemplateComparison,
+                    () => TemplateComparison(app, doc, top, o.TemplatePath, o.SpfPath)));
 
             foreach (KeyValuePair<string, Func<JObject>> check in checks)
             {
@@ -1249,7 +1280,37 @@ namespace Horizun.Revit.Commands
         // two tools cannot report a different number of distinct warnings for one
         // document. It used to group on GetDescriptionText(), which is localized
         // and rewritten between versions - see Core/WarningRules.
-        private static JObject Warnings(Document doc, int top, WarningProfile profile)
+        /// <summary>Bounding-box facts for a warning's failing elements, for WarningRootCauseRules.
+        /// Capped: a group naming dozens of elements is not a pair to classify, and reading every
+        /// box would cost real time for a result Classify() would report unclassified anyway.</summary>
+        private static List<ElementBoxFact> WarningBoxFacts(Document doc, IEnumerable<long> ids,
+                                                             Dictionary<long, WallSketchDriftResult> stranded)
+        {
+            var facts = new List<ElementBoxFact>();
+            foreach (long id in ids.Take(12))
+            {
+                Element e;
+                try { e = doc.GetElement(Rid.Make(id)); } catch { continue; }
+                if (e == null) continue;
+                BoundingBoxXYZ bb;
+                try { bb = e.get_BoundingBox(null); } catch { bb = null; }
+                if (bb == null) continue;
+                WallSketchDriftResult driftHit;
+                facts.Add(new ElementBoxFact
+                {
+                    Id = id,
+                    Category = e.Category?.Name,
+                    TypeId = Rid.Value(e.GetTypeId()),
+                    MinX = bb.Min.X * 304.8, MinY = bb.Min.Y * 304.8, MinZ = bb.Min.Z * 304.8,
+                    MaxX = bb.Max.X * 304.8, MaxY = bb.Max.Y * 304.8, MaxZ = bb.Max.Z * 304.8,
+                    StrandedProfile = stranded != null && stranded.TryGetValue(id, out driftHit) && driftHit.Stranded
+                });
+            }
+            return facts;
+        }
+
+        private static JObject Warnings(Document doc, int top, WarningProfile profile,
+                                        Dictionary<long, WallSketchDriftResult> strandedWalls)
         {
             var all = doc.GetWarnings();
             var facts = new List<WarningFact>();
@@ -1278,6 +1339,7 @@ namespace Horizun.Revit.Commands
             List<WarningGroup> groups = WarningRules.Group(facts);
             WarningRules.Triage(groups, profile);
 
+            var causeCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             var items = new JArray(groups.Take(top).Select(g =>
             {
                 JObject row = WarningRules.ToJson(g);
@@ -1289,6 +1351,23 @@ namespace Horizun.Revit.Commands
                 row["failing_element_ids_total"] = g.IdsComplete
                     ? (JToken)g.FailingElementIds.Count
                     : JValue.CreateNull();
+
+                // ROOT CAUSE, from the failing elements' own geometry - not from the warning's
+                // (localized, rewritten-between-versions) description text. Field session
+                // 2026-09-25: the same warning shape split into a duplicate, a containment, a
+                // measured vertical overlap and a stranded wall profile, and only the geometry
+                // told them apart.
+                List<ElementBoxFact> boxFacts = WarningBoxFacts(doc, g.FailingElementIds, strandedWalls);
+                WarningRootCause cause = WarningRootCauseRules.Classify(boxFacts);
+                row["root_cause"] = new JObject
+                {
+                    ["cause"] = cause.Cause,
+                    ["overlap_mm"] = cause.OverlapMm.HasValue ? (JToken)Math.Round(cause.OverlapMm.Value, 1) : JValue.CreateNull(),
+                    ["detail"] = cause.Detail,
+                    ["elements_classified"] = boxFacts.Count,
+                    ["elements_named"] = g.FailingElementIds.Count
+                };
+                causeCounts[cause.Cause] = causeCounts.TryGetValue(cause.Cause, out int n) ? n + 1 : 1;
                 return (JToken)row;
             }));
 
@@ -1302,6 +1381,11 @@ namespace Horizun.Revit.Commands
                       ? $" CAUTION: {unstable} group(s) could not report a failure definition id and were " +
                         "grouped by their description text instead, so those must not be compared across " +
                         "languages or Revit versions."
+                      : "") +
+                  (causeCounts.Count > 0
+                      ? " root_cause (of the " + items.Count + " shown): " +
+                        string.Join(", ", causeCounts.OrderByDescending(kv => kv.Value).Select(kv => kv.Key + "=" + kv.Value)) +
+                        ". " + WarningRootCauseRules.BoxCaveat
                       : "");
 
             return Finding(AuditCheckNames.Warnings, all.Count > 0, all.Count, summary, items, groups.Count);
