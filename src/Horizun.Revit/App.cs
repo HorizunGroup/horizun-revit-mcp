@@ -211,6 +211,7 @@ namespace Horizun.Revit
             d.Register(new AccUploadStatusCommand());
             d.Register(new RelinquishAllCommand());
             d.Register(new CaptureViewCommand());
+            d.Register(new VerifyChangesCommand());
             d.Register(new CreateScheduleCommand());
             d.Register(new ListElementsCommand());
             d.Register(new QueryModelCommand());

@@ -588,6 +588,7 @@ namespace Horizun.Revit.Core
                 // times out, and a dismissed warning that nobody reports is a lie by
                 // omission. Both are caught here and travel back with the result.
                 using (var watch = new Interference(app))
+                using (var changes = new ChangeWatch(app?.Application))
                 {
                     try
                     {
@@ -598,6 +599,9 @@ namespace Horizun.Revit.Core
                         // and a write is never allowed to ask at all.
                         CooperativeRead.Abandoned = () => req.Abandoned;
                         req.Result = cmd.Execute(app, req.ParamsJson);
+                        // What the command left changed in the model gets the spatial
+                        // coherence check (Core/SpatialAfterWrite.cs); reads cost nothing.
+                        SpatialAfterWrite.Attach(req.Name, changes, req.Result);
                     }
                     finally
                     {
@@ -822,7 +826,9 @@ namespace Horizun.Revit.Core
                         AsyncResumeGuard.Begin(work.Record);
                         began = true;
                         Job.Ambient = work.Record;
-                        try { result = cmd.Execute(app, work.ParamsJson); }
+                        using (var changes = new ChangeWatch(app?.Application))
+                        {
+                            try { result = cmd.Execute(app, work.ParamsJson); SpatialAfterWrite.Attach(work.Command, changes, result); }
                         finally
                         {
                             Job.Ambient = null;
@@ -833,6 +839,7 @@ namespace Horizun.Revit.Core
                                 if (result == null) result = CommandResult.Fail("'" + work.Command + "' produced no result.");
                                 result.RevitSaid = said;
                             }
+                        }
                         }
                     }
                 }

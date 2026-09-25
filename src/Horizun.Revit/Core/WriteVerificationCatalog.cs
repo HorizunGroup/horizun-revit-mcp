@@ -216,6 +216,7 @@ namespace Horizun.Revit.Core
                 "ExportCommand.cs Snapshot ~l.861: a file that could not be stat'ed before the export is missing from the before-snapshot, so it counts as produced."),
             Row("horizun_deliver_ifc", VerificationMechanism.FileArtifactReread, E("deliverable_ready"), F(C + "DeliverIfcCommand.cs")),
             Row("horizun_capture_view", VerificationMechanism.FileArtifactReread, E("sha256", "bytes"), F(C + "CaptureViewCommand.cs")),
+            Row("horizun_verify_changes", VerificationMechanism.FileArtifactReread, E("image", "spatial_check"), F(C + "VerifyChangesCommand.cs")),
             Row("horizun_excel_write_rows", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "ExcelWriteRows.cs")),
             Row("horizun_budget_compare", VerificationMechanism.FileArtifactReread, E("verified"), F(S + "BudgetCompare.cs")),
             Row("horizun_project_context", VerificationMechanism.FileArtifactReread, E("written", "verification"), F(S + "ProjectContext.cs")),

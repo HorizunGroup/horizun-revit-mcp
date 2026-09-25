@@ -248,6 +248,7 @@ namespace Horizun.Contracts
             Row("horizun_model_diff", "audit", "coordination", "powerbi"),
             Row("horizun_quantities", "read", "coordination"),
             Row("horizun_capture_view", "read", "documentation", "planimetry", "audit"),
+            Row("horizun_verify_changes", "read", "coordination", "audit", "mep"),
 
             // ---- document session and administration -----------------------------------
             Row("horizun_save_document", "administration"),
@@ -653,6 +654,33 @@ namespace Horizun.Contracts
     ""view_name"": { ""type"": ""string"", ""description"": ""Name of the view to capture. Omitted together with view_id: the ACTIVE view."" },
     ""view_id"": { ""type"": ""integer"", ""description"": ""Element id of the view. Takes precedence over view_name."" },
     ""pixel_size"": { ""type"": ""integer"", ""default"": 1600, ""description"": ""Requested width in pixels (64-8192). Revit fits to the view's aspect, so the result may differ - the response reports the real dimensions."" }
+  },
+  ""additionalProperties"": false
+}")
+            },
+            new CommandContract
+            {
+                Name = "horizun_verify_changes",
+                Command = "horizun_verify_changes",
+                Description =
+                    "LOOK AT WHAT WAS JUST MODELLED. Spatial coherence check of the elements the previous Horizun write " +
+                    "added or modified in this document (or the element_ids you name): every model solid they share with " +
+                    "another element is measured and judged - a door or window blocked by a column, wall or fixture, a " +
+                    "duplicate of the same type, MEP through structure, unjoined overlaps - while hosts, joins, MEP " +
+                    "connections and the structural frame are expected. Returns the findings AND an image (temporary " +
+                    "isometric 3D view, always rolled back: blue changed, red errors, orange warnings). Every typed write " +
+                    "already carries a spatial_check; call this after a modelling batch, look at the image, and do not " +
+                    "report the work as done while errors remain.",
+                InputSchema = JObject.Parse(@"{
+  ""type"": ""object"",
+  ""properties"": {
+    ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" }, ""minItems"": 1, ""maxItems"": 5000, ""description"": ""Elements to check. Omitted: the elements the last Horizun write in this document added or modified (kept in memory since Revit started)."" },
+    ""capture"": { ""type"": ""boolean"", ""default"": true, ""description"": ""Return an image of the elements with the findings coloured. False: findings only, no temporary view."" },
+    ""orientation"": { ""type"": ""string"", ""enum"": [""isometric"", ""top"", ""front"", ""right""], ""default"": ""isometric"" },
+    ""pixel_size"": { ""type"": ""integer"", ""default"": 1400, ""minimum"": 256, ""maximum"": 4096 },
+    ""max_findings"": { ""type"": ""integer"", ""default"": 50, ""minimum"": 1, ""maximum"": 500 },
+    ""time_budget_seconds"": { ""type"": ""integer"", ""default"": 60, ""minimum"": 5, ""maximum"": 600, ""description"": ""Stops early and reports partial rather than running unbounded."" },
+    ""target_document"": { ""type"": ""string"", ""description"": ""Title or full path of the ACTIVE document; required when capture=true."" }
   },
   ""additionalProperties"": false
 }")
@@ -6546,7 +6574,7 @@ namespace Horizun.Contracts
             // a workbook. full_write is the rung that authorizes these.
             var external = new HashSet<string>(StringComparer.Ordinal)
             {
-                "horizun_capture_view", "horizun_excel_write_rows"
+                "horizun_capture_view", "horizun_excel_write_rows", "horizun_verify_changes"
             };
 
             // Reaches outside the model ONLY when the call declares a destination, and

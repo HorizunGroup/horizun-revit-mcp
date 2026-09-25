@@ -22,6 +22,15 @@ namespace Horizun.Server
                             "through it are expected to verify their own work in __output__, and why what comes " +
                             "back is labelled self-reported rather than verified.\n\n" +
 
+                            "VERIFIED IS NOT THE SAME AS RIGHT. A re-read proves the request was carried out, not " +
+                            "that the result makes sense: a column and a door can both be verified and stand in " +
+                            "the same place. Every call that changed the model carries spatial_check (and " +
+                            "attention first when it found something): solids the changed elements share with " +
+                            "others, judged like an expert - a blocked door, a duplicate, MEP through structure, " +
+                            "an unjoined overlap. Read it before the next step. After a modelling batch call " +
+                            "horizun_verify_changes and LOOK at the image it returns. Fix every error finding (or " +
+                            "horizun_undo) before reporting the work as done.\n\n" +
+
                             "TYPED FIRST, PYTHON AS THE FALLBACK - NOT 'NOT SUPPORTED'. Prefer a typed command " +
                             "whenever one fully covers the operation: typed commands rehearse, verify and " +
                             "re-read their work. When no typed capability exists, do not answer 'not " +

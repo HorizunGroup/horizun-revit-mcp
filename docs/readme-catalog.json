@@ -96,6 +96,11 @@
           "Exportar una vista como imagen para que el cliente pueda revisarla visualmente."
         ],
         [
+          "horizun_verify_changes",
+          "Check what the last write changed for spatial conflicts and return an image with them highlighted.",
+          "Revisar lo que cambió la última escritura en busca de conflictos espaciales y devolver una imagen con ellos resaltados."
+        ],
+        [
           "horizun_delete_verified",
           "Delete explicit IDs or purge unused content; preview cascades and verify removals.",
           "Eliminar IDs explícitos o purgar contenido sin uso; anticipar dependencias y verificar eliminaciones."

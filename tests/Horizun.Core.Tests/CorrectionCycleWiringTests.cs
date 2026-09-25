@@ -307,6 +307,16 @@ namespace Horizun.Core.Tests
                     Assert.Equal(7, Regex.Matches(text, @"=> Cache\.Invalidate\(\);").Count);
                     continue;
                 }
+                if (file.EndsWith("ChangeWatch.cs", StringComparison.Ordinal))
+                {
+                    // The spatial check's observer: DocumentChanged only, attached for the
+                    // duration of one command by the dispatcher and detached in Dispose.
+                    var on = Regex.Matches(text, @"\.(\w+)\s*\+=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
+                    var off = Regex.Matches(text, @"\.(\w+)\s*-=").Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
+                    Assert.Equal(new[] { "DocumentChanged" }, on);
+                    Assert.Equal(on, off);
+                    continue;
+                }
                 foreach (string ev in new[] { "DocumentSaving", "DocumentSavingAs", "DocumentSynchronizingWithCentral",
                                               "DocumentClosing", "FileExporting", "DocumentOpened", "DocumentChanged",
                                               "ViewActivated", "Idling" })
