@@ -52,6 +52,21 @@ namespace Horizun.Revit.Core
         public const string WorksetPlacement = "workset_placement";
 
         /// <summary>
+        /// Model vs. project template (.rte/.rvt) and/or shared parameter file. OPT-IN: it only
+        /// runs when the request carries template_path and/or spf_path, because it opens a second
+        /// document in the background - unlike every other finding here, which reads only the
+        /// document already open.
+        /// </summary>
+        public const string TemplateComparison = "template_comparison";
+
+        /// <summary>
+        /// A wall's edited elevation profile (Wall.SketchId) left behind by a move: the sketch's
+        /// own plane, or the position of its curves within that plane, no longer matches the
+        /// wall's current LocationCurve. See Core/WallSketchDriftRules.cs.
+        /// </summary>
+        public const string WallSketchDrift = "wall_sketch_drift";
+
+        /// <summary>
         /// Not a finding: the file size is measured beside the findings and injected
         /// into the gate's measurements under this name. It is here because the gate
         /// maps a requirement onto it, and the test below has to know that a mapping
@@ -64,7 +79,7 @@ namespace Horizun.Revit.Core
         {
             Warnings, OrphanGroupTypes, InPlaceFamilies, OpenMepConnectors, UnpinnedLinks,
             ViewsWithoutTemplate, ImportedCad, ViewsOffSheets, Rooms, Links, DesignOptions,
-            Coordinates, Datums, Readiness
+            Coordinates, Datums, Readiness, WallSketchDrift, TemplateComparison
         };
 
         /// <summary>Every name the gate may legitimately map a requirement onto.</summary>
