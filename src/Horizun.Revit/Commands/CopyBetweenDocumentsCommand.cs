@@ -339,12 +339,25 @@ namespace Horizun.Revit.Commands
                 {
                     Guard.RollbackResult? rollback = null;
                     try { if (tx.GetStatus() == TransactionStatus.Started) rollback = Guard.RollBack(tx); } catch { }
+                    // MEASURED 2026-09-25 (door type from the Autodesk template into a model
+                    // that already had its materials): abort_on_collision makes Revit throw
+                    // "User cancelled the operation", which names nobody. The recorder knows
+                    // what collided; say it and say the way through.
+                    bool collided = typeCollisions.Collisions.Count > 0 && duplicates == "abort_on_collision";
+                    string why = collided
+                        ? "the copy was refused because " + typeCollisions.Collisions.Count + " type name(s) it brings already exist in '" +
+                          destination.Title + "' (see type_name_collisions) and duplicate_types=abort_on_collision. Pass " +
+                          "duplicate_types=use_destination to keep the destination's own types for those names and copy the rest. Nothing was written."
+                        : "The copy failed and was rolled back: " + ex.Message;
                     return CommandResult.FailWithDetail(
-                        "The copy failed and was rolled back: " + ex.Message,
+                        why,
                         new JObject
                         {
                             ["state"] = rollback.HasValue && rollback.Value.Confirmed ? "rolled_back" : "uncertain",
-                            ["transaction_status"] = rollback.HasValue ? rollback.Value.StatusName : "Error"
+                            ["transaction_status"] = rollback.HasValue ? rollback.Value.StatusName : "Error",
+                            ["code"] = collided ? "type_name_collision" : "copy_failed",
+                            ["type_name_collisions"] = new JArray(typeCollisions.Collisions),
+                            ["revit_said"] = ex.Message
                         });
                 }
             }

@@ -69,7 +69,7 @@ $script:HzProbeModules += [pscustomobject]@{
                     $name = if ($listed.Success) { (($listed.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
                     if (-not $name) { $doorWhy = ' the template listed no door type: ' + (Short $probe) }
                     if ($name) {
-                        $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @($name) } ($run + '-sc-doortype')
+                        $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @($name); duplicate_types = 'use_destination' } ($run + '-sc-doortype')
                         $door = Types 'OST_Doors' | Select-Object -First 1
                         if (-not $door) { $doorWhy = " copying '$name' from $tpl did not give a door type: stage=" + $cp.stage + ' ' + (Short $cp.answer) }
                         if ($door) { [void]$created.Add([long]$door.element_id) }
