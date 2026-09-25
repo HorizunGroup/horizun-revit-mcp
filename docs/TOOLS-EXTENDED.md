@@ -958,3 +958,38 @@ disagreement is compared with `tolerance_mm` (default 10). An unloaded link is
 - `horizun_federation_check`: categorías fuera de lugar por modelo, vínculos
   esperados/faltantes/duplicados, workset y fase, y coordenadas compartidas
   coherentes medidas en tres puntos.
+
+## Field notes: naming side effects and a read-only add-in's own writes
+
+Three usage notes from a 2026-09-25 field session, kept here rather than invented
+into a new tool, per the standing rule that this bridge is organisation-neutral
+and states observed behaviour rather than a company's policy:
+
+- **Renaming a workset takes the whole workset into your ownership.**
+  `horizun_manage_worksets` `rename` calls Revit's `WorksetTable.RenameWorkset`,
+  and on a central/local model that checks the workset out to the caller like any
+  other edit to it - every element already owned by someone else on that workset is
+  unaffected, but the workset itself (and anything not yet owned by anyone) is now
+  borrowed by whoever renamed it, exactly as if they had edited an element on it.
+  This is a Revit workset-ownership behaviour, not something `rename` adds on top;
+  the reply's `owner`/`borrowed_by_other` fields on other operations describe the
+  same mechanism from the element side.
+- **Renaming a level renames its homonymous views.** A newly created level in
+  Revit creates matching plan views named after it (Level 1 -> "Level 1"); Revit's
+  own UI renames a level's floor plan/ceiling plan views along with it when the
+  level is renamed through the normal path. A script or add-in that changes a
+  `Level` element's name through a path that does not trigger that side effect can
+  leave the level and its views out of sync in a way that reads as "the level
+  renamed but the plan didn't". Worth checking after any level rename, typed or
+  via `horizun_execute_python`.
+- **A "read-only" mode is not automatically read-only for an external add-in.** A
+  third-party add-in's own "read-only" or "audit" mode can still open a
+  Transaction and commit it - for example creating a temporary 3D or schedule view
+  to drive its report, then deleting that view when it finishes. From outside, this
+  looks exactly like the kind of side effect `horizun_execute_python`'s own
+  `read_only=true` is built to prevent for OUR scripts (see the top-level tool
+  description): a transient view created and removed within one call. It is not
+  necessarily a defect in that add-in, but a caller auditing "did anything change"
+  around a third-party tool must not assume a name like "read-only" describes what
+  the Revit API actually recorded - re-read the model, the way `read_only_check`
+  does here, rather than trusting the label.
