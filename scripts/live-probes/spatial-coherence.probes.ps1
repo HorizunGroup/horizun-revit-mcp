@@ -90,7 +90,7 @@ $script:HzProbeModules += [pscustomobject]@{
                 else {
                     $doorId = [long]$d.ids[0]
                     # 1. the column in the doorway
-                    $c = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; point = @(($X + 3000), $Y, $E); level_id = $levelId }) 'column-in-door'
+                    $c = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 3000), $Y, $E); level_id = $levelId }) 'column-in-door'
                     $sc = if ($c.reply.answer.data) { $c.reply.answer.data.spatial_check } else { $null }
                     $hit = @($sc.findings | Where-Object { $_.severity -eq 'error' -and ([long]$_.a.id -eq $doorId -or [long]$_.b.id -eq $doorId) })
                     if ($c.ids.Count -eq 0) { Case 0 'unverified' ('the column could not be placed: ' + (Short $c.reply.answer)) }
@@ -111,13 +111,13 @@ $script:HzProbeModules += [pscustomobject]@{
                     else { Case 2 $(if ($before -eq $after -and $rolled -eq 'RolledBack') { 'pass' } else { 'fail' }) ("views before=$before after=$after rollback=$rolled") }
 
                     # 4. a column far from everything
-                    $far = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; point = @(($X + 20000), ($Y + 20000), $E); level_id = $levelId }) 'column-clear'
+                    $far = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 20000), ($Y + 20000), $E); level_id = $levelId }) 'column-clear'
                     $fsc = if ($far.reply.answer.data) { $far.reply.answer.data.spatial_check } else { $null }
                     if ($far.ids.Count -eq 0) { Case 3 'unverified' ('the clear column could not be placed: ' + (Short $far.reply.answer)) }
                     else { Case 3 $(if ($fsc -and [int]$fsc.errors -eq 0 -and [int]$fsc.warnings -eq 0 -and -not $far.reply.answer.data.attention) { 'pass' } else { 'fail' }) ('status=' + $fsc.status + ' errors=' + $fsc.errors + ' warnings=' + $fsc.warnings) }
 
                     # 5. a column 700 mm in front of the door: no shared solid, still in the way
-                    $front = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; point = @(($X + 3000), ($Y + 700), $E); level_id = $levelId }) 'column-front'
+                    $front = Create @(@{ kind = 'structural_column'; type_id = $column.element_id; coordinate_mode = 'absolute'; point = @(($X + 3000), ($Y + 700), $E); level_id = $levelId }) 'column-front'
                     $psc = if ($front.reply.answer.data) { $front.reply.answer.data.spatial_check } else { $null }
                     $pass = @($psc.findings | Where-Object { $_.severity -eq 'error' -and ([long]$_.a.id -eq $doorId -or [long]$_.b.id -eq $doorId) -and [string]$_.reason -match 'passage' })
                     if ($front.ids.Count -eq 0) { Case 4 'unverified' ('the front column could not be placed: ' + (Short $front.reply.answer)) }
