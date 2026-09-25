@@ -29,6 +29,13 @@ namespace Horizun.Revit.Commands
             JArray input = request["operations"] as JArray;
             if (input == null || input.Count == 0) return CommandResult.Fail("operations is required and must be non-empty.");
             if (input.Count > 500) return CommandResult.Fail("operations exceeds 500 entries.");
+            // rename_level rehearses and reports Copy/Monitor alerts for the WHOLE
+            // transaction (RevitErrorRecorder has no per-operation scope), so mixing it
+            // with anything else would blur which operation raised what.
+            if (input.Count != 1 && input.OfType<JObject>().Any(x => (x.Value<string>("operation") ?? "").ToLowerInvariant() == "rename_level"))
+                return CommandResult.Fail("rename_level must be the sole operation in its batch: the Copy/Monitor " +
+                    "rehearsal and the view census read the whole transaction, and mixing operations would blur " +
+                    "which one raised them.");
             double scale;
             if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))
                 return CommandResult.Fail("units must be mm, m or feet.");
@@ -112,6 +119,28 @@ namespace Horizun.Revit.Commands
                 }
             }
 
+            // rename_level: the dry run must show BOTH which plan views will rename
+            // (a deterministic read - Revit only renames a plan view whose name exactly
+            // matches the level's, before the rename) and which Copy/Monitor alerts the
+            // rename would raise (NOT deterministic: Revit's coordination engine is the
+            // only source of truth for those). The second half needs an actual rename,
+            // so this performs one inside its OWN transaction and rolls it back -
+            // "no transaction was opened" below is still true of the real dry-run path;
+            // this is a separate, self-contained rehearsal.
+            if (dryRun && errors.Count == 0)
+            {
+                Plan renamePlan = plans.FirstOrDefault(p => p.Operation == "rename_level");
+                if (renamePlan != null)
+                {
+                    JObject rehearsal = RehearseRenameLevel(doc, renamePlan);
+                    if (rehearsal.Value<bool>("rollback_confirmed") != true)
+                        return CommandResult.FailWithDetail(
+                            "Level rename rehearsal rollback was not confirmed; model state is uncertain.",
+                            new JObject { ["state"] = "uncertain", ["rehearsal"] = rehearsal, ["write_started"] = true });
+                    renamePlan.Summary["level_rename_rehearsal"] = rehearsal;
+                }
+            }
+
             if (dryRun)
             {
                 var result = new JObject
@@ -153,9 +182,14 @@ namespace Horizun.Revit.Commands
             var undoBefore = plans.ToDictionary(p => p, p => UndoCapture.States(doc, p.Ids.Select(Rid.Value)));
             string txName = request.Value<string>("transaction_name");
             if (string.IsNullOrWhiteSpace(txName)) txName = "Horizun: transform elements";
+            // rename_level is the sole operation whenever it appears (refused above
+            // otherwise), so capturing warnings for the whole transaction is exactly
+            // capturing them for that one operation.
+            bool captureLevelWarnings = plans.Any(p => p.Operation == "rename_level");
+            RevitErrorRecorder revitSaid = null;
             using (var tx = new Transaction(doc, txName))
             {
-                RevitErrorRecorder revitSaid = RevitErrorRecorder.On(tx);
+                revitSaid = RevitErrorRecorder.On(tx, captureWarnings: captureLevelWarnings);
                 tx.Start();
                 try
                 {
@@ -189,6 +223,8 @@ namespace Horizun.Revit.Commands
             {
                 bool ok = Verify(doc, p, out JObject detail);
                 detail["index"] = p.Index; detail["operation"] = p.Operation; detail["verified"] = ok;
+                if (p.Operation == "rename_level")
+                    detail["copy_monitor_alerts"] = new JArray(revitSaid?.Warnings ?? new List<string>());
                 verification.Add(detail); if (ok) verified++;
             }
             if (plans.Count == 0 || verified != plans.Count)
@@ -253,12 +289,13 @@ namespace Horizun.Revit.Commands
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "mirror" && op != "pin" && op != "unpin" &&
                     op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join" &&
-                    op != "array_linear" && op != "array_radial")
+                    op != "array_linear" && op != "array_radial" && op != "rename_level")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head, set_tag_leader, array_linear and array_radial only. Nothing was written.",
+                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head, set_tag_leader, array_linear, array_radial and rename_level only. Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
                 var allowed = new HashSet<string>(new[] { "operation", "element_ids" });
+                if(op=="rename_level") allowed.Add("name");
                 if(op=="move" || op=="copy") allowed.Add("vector");
                 if(op=="rotate") allowed.UnionWith(new[] { "axis_start", "axis_end", "angle_degrees" });
                 if(op=="mirror") allowed.UnionWith(new[] { "plane_origin", "plane_normal" });
@@ -347,6 +384,39 @@ namespace Horizun.Revit.Commands
                                 "element, so this would report a failed verification rather than a refusal. " +
                                 "Unpin it deliberately first.");
                         p.Samples[raw] = Samples(element);
+                    }
+                }
+                if (op == "rename_level")
+                {
+                    if (p.Ids.Count != 1)
+                        throw new ArgumentException("rename_level takes exactly one element_id: the level being renamed.");
+                    Element el = doc.GetElement(p.Ids[0]);
+                    var level = el as Level;
+                    if (level == null)
+                        throw new ArgumentException("ElementId " + Rid.Value(p.Ids[0]) + " is a " + el.GetType().Name +
+                            ", not a Level; rename_level only renames levels.");
+                    string newName = (o.Value<string>("name") ?? "").Trim();
+                    if (string.IsNullOrEmpty(newName))
+                        throw new ArgumentException("rename_level requires a non-empty name.");
+                    if (string.Equals(newName, level.Name, StringComparison.Ordinal))
+                        throw new ArgumentException("level " + Rid.Value(level.Id) + " is already named '" + newName + "'; a no-op is refused.");
+                    bool collision = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>()
+                        .Any(l => l.Id != level.Id && string.Equals(l.Name, newName, StringComparison.OrdinalIgnoreCase));
+                    if (collision)
+                        throw new ArgumentException("the name '" + newName + "' is already used by another level (Revit level names must be unique).");
+                    p.OldLevelName = level.Name;
+                    p.NewLevelName = newName;
+                    // WHICH plan views Revit will rename SOLA - a deterministic read, not a
+                    // guess: Revit only renames a plan view whose name exactly matches the
+                    // level's, and only non-template ones (a template has no GenLevel to
+                    // match with in the first place).
+                    foreach (ViewPlan vp in new FilteredElementCollector(doc).OfClass(typeof(ViewPlan)).Cast<ViewPlan>())
+                    {
+                        if (vp.IsTemplate) continue;
+                        Level gl = null;
+                        try { gl = vp.GenLevel; } catch { }
+                        if (gl != null && gl.Id == level.Id && string.Equals(vp.Name, level.Name, StringComparison.Ordinal))
+                            p.LevelCandidateViewIds.Add(Rid.Value(vp.Id));
                     }
                 }
                 if(op=="wall_join")
@@ -452,6 +522,14 @@ namespace Horizun.Revit.Commands
                     }
                 }
                 p.Summary = new JObject { ["index"] = index, ["operation"] = op, ["targets"] = p.Ids.Count, ["verifiable"] = true };
+                if (op == "rename_level")
+                {
+                    p.Summary["from"] = p.OldLevelName;
+                    p.Summary["to"] = p.NewLevelName;
+                    p.Summary["views_expected_to_rename"] = new JArray(p.LevelCandidateViewIds.Select(id => (JToken)id));
+                    // level_rename_rehearsal (Copy/Monitor alerts) is added by the caller,
+                    // which alone knows whether this is the dry-run path.
+                }
                 return p;
             }
             catch (Exception ex)
@@ -495,6 +573,7 @@ namespace Horizun.Revit.Commands
                     }
                     break;
                 case "change_type": foreach (ElementId id in p.Ids) doc.GetElement(id).ChangeTypeId(p.TypeId); break;
+                case "rename_level": ((Level)doc.GetElement(p.Ids[0])).Name = p.NewLevelName; break;
                 case "set_curve":
                     foreach (ElementId id in p.Ids)
                     {
@@ -529,6 +608,26 @@ namespace Horizun.Revit.Commands
                 detail["copies_geometry_verified"]=matched;
                 // An operation over no source proves nothing: 0 == 0 is not a copy.
                 return p.Ids.Count > 0 && present == p.Ids.Count && matched==p.Ids.Count;
+            }
+            if (p.Operation == "rename_level")
+            {
+                Level level = doc.GetElement(p.Ids[0]) as Level;
+                string nowName = null; try { nowName = level?.Name; } catch { }
+                var renamedViews = new JArray();
+                int viewsRenamed = 0;
+                foreach (long vid in p.LevelCandidateViewIds)
+                {
+                    View v = doc.GetElement(Rid.Make(vid)) as View;
+                    string nowViewName = null; try { nowViewName = v?.Name; } catch { }
+                    bool renamed = nowViewName == p.NewLevelName;
+                    if (renamed) viewsRenamed++;
+                    renamedViews.Add(new JObject { ["view_id"] = vid, ["from"] = p.OldLevelName, ["to"] = nowViewName, ["renamed"] = renamed });
+                }
+                detail["level_name"] = nowName;
+                detail["views_candidate"] = p.LevelCandidateViewIds.Count;
+                detail["views_renamed"] = renamedViews;
+                detail["views_renamed_count"] = viewsRenamed;
+                return nowName == p.NewLevelName;
             }
             int good = 0;
             var tagRows = new JArray();
@@ -1044,6 +1143,61 @@ namespace Horizun.Revit.Commands
             // array_linear / array_radial
             public int Count; public bool AnchorLast, Grouped; public XYZ Step; public double StepAngle; public XYZ AxisDirection, AxisOrigin;
             public long? ArrayId;
+            // rename_level
+            public string OldLevelName, NewLevelName;
+            public readonly List<long> LevelCandidateViewIds = new List<long>();
+        }
+
+        /// <summary>
+        /// The ONLY way to know which Copy/Monitor alerts a level rename raises: perform
+        /// the rename inside a transaction whose failure preprocessor captures every
+        /// message (errors AND warnings - Copy/Monitor alerts are warnings), regenerate
+        /// so Revit's coordination engine actually runs, then roll back. Which plan views
+        /// will rename is NOT measured here - that is a deterministic read done once at
+        /// plan time (p.LevelCandidateViewIds), because Revit's rule (exact name match)
+        /// needs no rehearsal.
+        /// </summary>
+        private static JObject RehearseRenameLevel(Document doc, Plan p)
+        {
+            var views = new JArray();
+            RevitErrorRecorder log = null;
+            Guard.RollbackResult? rb = null; string rbError = null; string error = null;
+            using (var tx = new Transaction(doc, "Horizun: rehearse rename_level"))
+            {
+                try
+                {
+                    log = RevitErrorRecorder.On(tx, captureWarnings: true);
+                    tx.Start();
+                    Level level = doc.GetElement(p.Ids[0]) as Level;
+                    level.Name = p.NewLevelName;
+                    doc.Regenerate();
+                    foreach (long vid in p.LevelCandidateViewIds)
+                    {
+                        View v = doc.GetElement(Rid.Make(vid)) as View;
+                        string now = null; try { now = v?.Name; } catch { }
+                        views.Add(new JObject { ["view_id"] = vid, ["from"] = p.OldLevelName, ["to"] = now, ["will_rename"] = now == p.NewLevelName });
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+                try { rb = Guard.RollBack(tx); } catch (Exception ex) { rbError = ex.Message; }
+            }
+            return new JObject
+            {
+                ["level_id"] = Rid.Value(p.Ids[0]),
+                ["from"] = p.OldLevelName,
+                ["to"] = p.NewLevelName,
+                ["views_expected_to_rename"] = views,
+                ["copy_monitor_alerts"] = new JArray(log?.Warnings ?? new List<string>()),
+                ["errors_raised"] = new JArray(log?.Errors ?? new List<string>()),
+                ["error"] = error,
+                ["rollback_status"] = rb.HasValue ? rb.Value.StatusName : "exception: " + rbError,
+                ["rollback_confirmed"] = rb.HasValue && rb.Value.Confirmed,
+                ["means"] = "views_expected_to_rename is a deterministic read: Revit renames a plan view only " +
+                            "when its name exactly matches the level's, before the rename. copy_monitor_alerts " +
+                            "and errors_raised come from an ACTUAL rename performed inside this rolled-back " +
+                            "transaction, because Revit's Copy/Monitor coordination engine is the only source of " +
+                            "truth for what it will raise."
+            };
         }
     }
 }
