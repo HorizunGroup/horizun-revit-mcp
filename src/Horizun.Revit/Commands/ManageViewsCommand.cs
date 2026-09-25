@@ -62,6 +62,10 @@ namespace Horizun.Revit.Commands
                     if (string.Equals(a.Value<string>("operation"), "explain_graphics", StringComparison.OrdinalIgnoreCase) &&
                         a["view_id"] != null && doc.GetElement(Rid.Make(a.Value<long>("view_id"))) is View explained)
                         planRow["report"] = ExplainGraphics(doc, explained, ReadElementIds(doc, a, "element_ids"));
+                    // So is the sheet-set census (measured 2026-09-25: a list asked as a
+                    // rehearsal came back without the sets it exists to list).
+                    if (string.Equals(a.Value<string>("operation"), "sheet_set_list", StringComparison.OrdinalIgnoreCase))
+                        planRow["report"] = SheetSetCensus(doc);
                     plans.Add(planRow);
                 }
             }

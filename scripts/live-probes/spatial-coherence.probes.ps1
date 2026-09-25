@@ -53,6 +53,7 @@ $script:HzProbeModules += [pscustomobject]@{
             $levelId = if ($lv.ids.Count -gt 0) { $lv.ids[0] } else { $null }
             $basic = @(Types 'OST_Walls' | Where-Object { -not ($_.family -match 'Curtain|cortina|Stacked|apilad' -or $_.type -match 'Curtain|cortina') }) | Select-Object -First 1
             $door = Types 'OST_Doors' | Select-Object -First 1
+            $doorWhy = ''
             if (-not $door) {
                 # The write fixture carries no door family. Bring ONE door type from the
                 # Autodesk template of this very Revit (copy_between_documents source_path:
@@ -61,20 +62,23 @@ $script:HzProbeModules += [pscustomobject]@{
                 $tplRoot = 'C:\ProgramData\Autodesk\RVT ' + $Ctx.Year + '\Templates'
                 $tpl = @('English\DefaultMetric.rte', 'Default_M_ENU.rte', 'English-Imperial\Default-Multi-Discipline.rte', 'English\Default-Multi-Discipline_Metric.rte') |
                     ForEach-Object { Join-Path $tplRoot $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+                if (-not $tpl) { $doorWhy = ' no Autodesk template found under ' + $tplRoot }
                 if ($tpl) {
                     $probe = & $Ctx.Call 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @('__hz_probe_no_such_type__') }
                     $listed = [regex]::Match([string]$probe.text, 'Types there[^:]*:\s*(.+)$', 'Singleline')
                     $name = if ($listed.Success) { (($listed.Groups[1].Value -split ' \| ')[0] -replace '\s*(\.\.\.)?\.?\s*$', '').Trim() } else { $null }
+                    if (-not $name) { $doorWhy = ' the template listed no door type: ' + (Short $probe) }
                     if ($name) {
                         $cp = & $Ctx.Apply 'horizun_copy_between_documents' @{ target_document = $doc; source_path = $tpl; category = 'OST_Doors'; type_names = @($name) } ($run + '-sc-doortype')
                         $door = Types 'OST_Doors' | Select-Object -First 1
+                        if (-not $door) { $doorWhy = " copying '$name' from $tpl did not give a door type: stage=" + $cp.stage + ' ' + (Short $cp.answer) }
                         if ($door) { [void]$created.Add([long]$door.element_id) }
                     }
                 }
             }
             $column = Types 'OST_StructuralColumns' | Select-Object -First 1
             if (-not $levelId -or -not $basic -or -not $door -or -not $column) {
-                $why = "the fixture lacks what the probe stages (level=$levelId, basic wall=" + $basic.element_id + ', door=' + $door.element_id + ', structural column=' + $column.element_id + ')'
+                $why = "the fixture lacks what the probe stages (level=$levelId, basic wall=" + $basic.element_id + ', door=' + $door.element_id + ', structural column=' + $column.element_id + ')' + $doorWhy
                 foreach ($i in 0..4) { Case $i 'not_covered' $why }
             }
             else {

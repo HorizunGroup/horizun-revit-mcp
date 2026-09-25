@@ -184,8 +184,18 @@ namespace Horizun.Revit.Commands
 
         private static JObject ToJson(SortedDictionary<string, long> d)
         {
+            // MEASURED 2026-09-25: a model had categories "Center Line" and "Center line".
+            // Two keys differing only in case are legal JSON and break every client that
+            // reads objects case-insensitively (PowerShell refuses the whole reply). The
+            // second one is kept, but under a key that says it is a separate entry.
             var o = new JObject();
-            foreach (var kv in d) o[kv.Key] = kv.Value;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in d)
+            {
+                string key = kv.Key;
+                for (int n = 2; !seen.Add(key); n++) key = kv.Key + " (" + n + ")";
+                o[key] = kv.Value;
+            }
             return o;
         }
     }
