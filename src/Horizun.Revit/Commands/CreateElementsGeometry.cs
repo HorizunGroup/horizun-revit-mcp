@@ -48,6 +48,29 @@ namespace Horizun.Revit.Commands
                     throw new ArgumentException("host_id requires a hosted or work-plane-based family.");
                 if (p.Host == null && placement != FamilyPlacementType.OneLevelBased && placement != FamilyPlacementType.TwoLevelsBased)
                     throw new ArgumentException("This family placement requires an explicit compatible host or a different placement route.");
+                if (placement == FamilyPlacementType.TwoLevelsBased)
+                {
+                    // A column's TOP, stated rather than left to Revit's default (which puts it at
+                    // whatever level happens to be above, or nowhere useful on the top level).
+                    if (p.Level == null) throw new ArgumentException("a column (two-level family) needs level_id: its base level.");
+                    p.TopLevel = Optional<Level>(doc, p.Input, "top_level_id");
+                    if (p.Input["top_offset"] != null && p.TopLevel == null) throw new ArgumentException("top_offset requires top_level_id.");
+                    double? height = p.Input["height"] == null ? (double?)null : GeometryInput.Number(p.Input["height"], "height") * p.Scale;
+                    if (height.HasValue && height.Value <= 0) throw new ArgumentException("height must be positive.");
+                    if (p.TopLevel != null)
+                    {
+                        p.TopOffset = (p.Input.Value<double?>("top_offset") ?? 0) * p.Scale;
+                        double top = p.TopLevel.ProjectElevation + p.TopOffset;
+                        if (top - p.Start.Z <= GeometryInput.Tolerance) throw new ArgumentException("the column's top (top_level_id + top_offset) is not above its base.");
+                        if (height.HasValue && Math.Abs(top - p.Start.Z - height.Value) > GeometryInput.Tolerance)
+                            throw new ArgumentException("height disagrees with top_level_id/top_offset and the base.");
+                    }
+                    else if (height.HasValue)
+                    {
+                        p.TopLevel = p.Level;
+                        p.TopOffset = p.Offset + height.Value;
+                    }
+                }
             }
         }
         private static void CheckOffset(Plan p, JToken offset)
@@ -111,6 +134,26 @@ namespace Horizun.Revit.Commands
         // So the translation is confined to XY and the elevation goes through the
         // parameter that governs it; an instance with no such parameter keeps the
         // whole-vector move it always had.
+        /// <summary>
+        /// A column's top, when the row stated one: FAMILY_TOP_LEVEL_PARAM and
+        /// FAMILY_TOP_LEVEL_OFFSET_PARAM set and READ BACK in the same transaction - a
+        /// Set that Revit ignores fails the row here instead of leaving a column of
+        /// whatever height it chose.
+        /// </summary>
+        private static void SetTop(Document doc, Plan p, FamilyInstance placed)
+        {
+            if (p.TopLevel == null || placed == null) return;
+            Parameter topLevel = placed.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_PARAM);
+            Parameter topOffset = placed.get_Parameter(BuiltInParameter.FAMILY_TOP_LEVEL_OFFSET_PARAM);
+            if (topLevel == null || topOffset == null || topLevel.IsReadOnly || topOffset.IsReadOnly)
+                throw new InvalidOperationException("this column exposes no writable top level/offset, so the top that was asked for cannot be set.");
+            if (!topLevel.Set(p.TopLevel.Id) || !topOffset.Set(p.TopOffset))
+                throw new InvalidOperationException("Revit refused the column's top level/offset.");
+            doc.Regenerate();
+            if (topLevel.AsElementId() != p.TopLevel.Id || Math.Abs(topOffset.AsDouble() - p.TopOffset) > 1e-6)
+                throw new InvalidOperationException("the column's top did not read back as set.");
+        }
+
         private static void PositionInstance(Document doc, Plan p, FamilyInstance instance)
         {
             doc.Regenerate();

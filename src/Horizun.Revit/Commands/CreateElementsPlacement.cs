@@ -87,6 +87,11 @@ namespace Horizun.Revit.Commands
             switch (t)
             {
                 case FamilyPlacementType.OneLevelBased: return CadPlacementRoute.Level;
+                // A column: base level + top constraint. Placed like a level family, then its
+                // top is set from top_level_id/top_offset or height (CreateElementsCommand.SetTop).
+                // MEASURED 2026-09-25: an architectural column from Revit's own template was
+                // refused outright, so a modelling session had no typed way to place one.
+                case FamilyPlacementType.TwoLevelsBased: return CadPlacementRoute.Level;
                 case FamilyPlacementType.OneLevelBasedHosted: return CadPlacementRoute.HostedOnElement;
                 case FamilyPlacementType.WorkPlaneBased: return CadPlacementRoute.Face;
                 default: return CadPlacementRoute.Unsupported;

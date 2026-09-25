@@ -1442,6 +1442,7 @@ namespace Horizun.Revit.Commands
                             ? doc.Create.NewFamilyInstance(p.Start, symbol, p.StructuralType)
                             : doc.Create.NewFamilyInstance(p.Start, symbol, p.Level, p.StructuralType);
                         PositionInstance(doc, p, placed);
+                        SetTop(doc, p, placed);
                     }
 
                     // THE MIRROR, BY WHICHEVER OPERATION THIS FAMILY SUPPORTS.
@@ -1513,6 +1514,7 @@ namespace Horizun.Revit.Commands
                     if (!column.IsActive) { column.Activate(); doc.Regenerate(); }
                     FamilyInstance placedColumn = doc.Create.NewFamilyInstance(p.Start, column, p.Level, StructuralType.Column);
                     PositionInstance(doc, p, placedColumn);
+                    SetTop(doc, p, placedColumn);
                     return placedColumn;
                 case "wall_opening":
                     return doc.Create.NewOpening(p.OpeningHost, p.Start, p.End);
