@@ -12,10 +12,10 @@ using Horizun.Revit.Core;
 
 namespace Horizun.Revit.Commands
 {
-    public sealed class TransformElementsCommand : ICommand
+    public sealed partial class TransformElementsCommand : ICommand
     {
         public string Name => "horizun_transform_elements";
-        public string Description => "Move, copy, rotate, pin or change type atomically and verify from the committed model.";
+        public string Description => "Move, copy, rotate, pin, change type (by id or by a per-instance rule) or realign an edited wall profile; atomic, verified from the committed model.";
 
         public CommandResult Execute(UIApplication app, string paramsJson)
         {
@@ -29,6 +29,21 @@ namespace Horizun.Revit.Commands
             JArray input = request["operations"] as JArray;
             if (input == null || input.Count == 0) return CommandResult.Fail("operations is required and must be non-empty.");
             if (input.Count > 500) return CommandResult.Fail("operations exceeds 500 entries.");
+
+            // realign_wall_sketch takes its own path (see TransformElementsCommand.RealignWallSketch.cs):
+            // it opens a SketchEditScope, which cannot nest inside the single Transaction every other
+            // operation below shares, and its dry_run is a REAL rehearsal rather than a read-only one.
+            // Mixing it with another operation in one call is refused rather than silently split.
+            bool anyRealign = input.Any(t => string.Equals((t as JObject)?.Value<string>("operation"), RealignOp, StringComparison.OrdinalIgnoreCase));
+            if (anyRealign)
+            {
+                if (!input.All(t => string.Equals((t as JObject)?.Value<string>("operation"), RealignOp, StringComparison.OrdinalIgnoreCase)))
+                    return CommandResult.Fail(RealignOp + " cannot be mixed with other operations in one call: it opens its own " +
+                        "SketchEditScope per wall and its dry_run actually rehearses the move, unlike every other operation " +
+                        "here. Send it alone.");
+                return ExecuteRealignWallSketch(app, gate, request, input);
+            }
+
             double scale;
             if (!Scale((request.Value<string>("units") ?? "mm").ToLowerInvariant(), out scale))
                 return CommandResult.Fail("units must be mm, m or feet.");
@@ -108,6 +123,8 @@ namespace Horizun.Revit.Commands
                     };
                     if (p.Operation == "pin" || p.Operation == "unpin") planned.ProposedValues["pinned"] = (p.Operation == "pin").ToString();
                     if (p.TypeId != null) planned.ProposedValues["type_id"] = Rid.Value(p.TypeId).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    if (p.Operation == "change_type_by_rule" && p.RuleTargets.TryGetValue(Rid.Value(id), out ElementId ruleType))
+                        planned.ProposedValues["type_id"] = Rid.Value(ruleType).ToString(System.Globalization.CultureInfo.InvariantCulture);
                     resolvedPlan.Elements.Add(planned);
                 }
             }
@@ -232,6 +249,7 @@ namespace Horizun.Revit.Commands
                         })); break;
                     case "pin": case "unpin": entries.Add(UndoCapture.Entry(doc, "pin", ids, before[p], null)); break;
                     case "change_type": entries.Add(UndoCapture.Entry(doc, "type", ids, before[p], null)); break;
+                    case "change_type_by_rule": entries.Add(UndoCapture.Entry(doc, "type", ids, before[p], null)); break;
                     case "set_curve":
                         if (before[p].Properties().Any(x => x.Value["line"]?.Value<bool>() != true)) blocked = "set_curve replaced a non-line curve";
                         else entries.Add(UndoCapture.Entry(doc, "curve", ids, before[p], null));
@@ -252,17 +270,20 @@ namespace Horizun.Revit.Commands
             {
                 string op = (o.Value<string>("operation") ?? "").ToLowerInvariant();
                 if (op != "move" && op != "copy" && op != "rotate" && op != "mirror" && op != "pin" && op != "unpin" &&
-                    op != "change_type" && op != "set_curve" && op != "move_tag_head" && op != "set_tag_leader" && op != "wall_join" &&
-                    op != "array_linear" && op != "array_radial")
+                    op != "change_type" && op != "change_type_by_rule" && op != "set_curve" && op != "move_tag_head" &&
+                    op != "set_tag_leader" && op != "wall_join" && op != "array_linear" && op != "array_radial")
                     throw new UnsupportedCapability(
                         "unsupported operation '" + op + "' - horizun_transform_elements does move, copy, " +
-                        "rotate, mirror, pin, unpin, change_type, set_curve, move_tag_head, set_tag_leader, array_linear and array_radial only. Nothing was written.",
+                        "rotate, mirror, pin, unpin, change_type, change_type_by_rule, set_curve, move_tag_head, " +
+                        "set_tag_leader, array_linear and array_radial only (realign_wall_sketch is a separate call, " +
+                        "not mixable with these). Nothing was written.",
                         FallbackSignal.ReasonUnsupportedOperation);
                 var allowed = new HashSet<string>(new[] { "operation", "element_ids" });
                 if(op=="move" || op=="copy") allowed.Add("vector");
                 if(op=="rotate") allowed.UnionWith(new[] { "axis_start", "axis_end", "angle_degrees" });
                 if(op=="mirror") allowed.UnionWith(new[] { "plane_origin", "plane_normal" });
                 if(op=="change_type") allowed.Add("type_id");
+                if(op=="change_type_by_rule") allowed.Add("rule");
                 if(op=="wall_join") allowed.UnionWith(new[] { "join_end", "allow" });
                 if(op=="set_curve") allowed.UnionWith(new[] { "start", "end" });
                 if(op=="array_linear") allowed.UnionWith(new[] { "vector", "count", "anchor", "group" });
@@ -395,6 +416,32 @@ namespace Horizun.Revit.Commands
                         if (!doc.GetElement(id).IsValidType(p.TypeId))
                             throw new ArgumentException("type_id " + typeId + " is not valid for ElementId " + Rid.Value(id));
                 }
+                if (op == "change_type_by_rule")
+                {
+                    TypeChangeRuleSet ruleSet = TypeChangeRuleRules.Parse(o["rule"] as JArray);
+                    if (!ruleSet.Ok) throw new ArgumentException(ruleSet.Error);
+                    foreach (TypeChangeRule r in ruleSet.Rules)
+                        if (!Rid.CanRepresent(r.TypeId) || !(doc.GetElement(Rid.Make(r.TypeId)) is ElementType))
+                            throw new ArgumentException("rule[" + r.Index + "].type_id " + r.TypeId + " must identify an ElementType");
+                    p.RuleSet = ruleSet;
+                    foreach (ElementId id in p.Ids)
+                    {
+                        Element e = doc.GetElement(id);
+                        Dictionary<string, double> measured = MeasureInstance(e);
+                        p.RuleMeasured[Rid.Value(id)] = measured;
+                        TypeChangeMatch match = TypeChangeRuleRules.Evaluate(ruleSet, measured);
+                        if (!match.Matched)
+                            throw new ArgumentException("ElementId " + Rid.Value(id) + " matched no rule and no 'else' " +
+                                "was declared (measured: " + (measured.Count == 0 ? "nothing - this element's face " +
+                                "could not be measured" : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
+                        ElementId typeId2 = Rid.Make(match.TypeId);
+                        if (!e.IsValidType(typeId2))
+                            throw new ArgumentException("rule[" + match.RuleIndex + "] matched type_id " + match.TypeId +
+                                " for ElementId " + Rid.Value(id) + ", which is not a valid type for it.");
+                        p.RuleTargets[Rid.Value(id)] = typeId2;
+                        p.RuleMatches[Rid.Value(id)] = match;
+                    }
+                }
                 if (op == "move_tag_head")
                 {
                     bool hasPoint = o["point"] != null, hasVector = o["vector"] != null;
@@ -452,6 +499,21 @@ namespace Horizun.Revit.Commands
                     }
                 }
                 p.Summary = new JObject { ["index"] = index, ["operation"] = op, ["targets"] = p.Ids.Count, ["verifiable"] = true };
+                if (op == "change_type_by_rule")
+                {
+                    p.Summary["by_type"] = new JArray(p.RuleTargets.Values.GroupBy(t => Rid.Value(t))
+                        .Select(g => (JToken)new JObject { ["type_id"] = g.Key, ["instances"] = g.Count() }));
+                    // WHICH INSTANCE GOES TO WHICH TYPE, AND WHY - the field ask this exists for:
+                    // a caller reviewing 1,000 rows before committing to any of them.
+                    p.Summary["instances"] = new JArray(p.Ids.Select(id => (JToken)new JObject
+                    {
+                        ["element_id"] = Rid.Value(id),
+                        ["type_id"] = Rid.Value(p.RuleTargets[Rid.Value(id)]),
+                        ["matched_rule_index"] = p.RuleMatches[Rid.Value(id)].RuleIndex,
+                        ["reason"] = p.RuleMatches[Rid.Value(id)].Reason,
+                        ["measured"] = JObject.FromObject(p.RuleMeasured[Rid.Value(id)])
+                    }));
+                }
                 return p;
             }
             catch (Exception ex)
@@ -495,6 +557,9 @@ namespace Horizun.Revit.Commands
                     }
                     break;
                 case "change_type": foreach (ElementId id in p.Ids) doc.GetElement(id).ChangeTypeId(p.TypeId); break;
+                case "change_type_by_rule":
+                    foreach (ElementId id in p.Ids) doc.GetElement(id).ChangeTypeId(p.RuleTargets[Rid.Value(id)]);
+                    break;
                 case "set_curve":
                     foreach (ElementId id in p.Ids)
                     {
@@ -620,6 +685,7 @@ namespace Horizun.Revit.Commands
                 if (p.Operation == "pin" && e.Pinned) good++;
                 else if (p.Operation == "unpin" && !e.Pinned) good++;
                 else if (p.Operation == "change_type" && e.GetTypeId() == p.TypeId) good++;
+                else if (p.Operation == "change_type_by_rule" && p.RuleTargets.TryGetValue(Rid.Value(id), out ElementId wantType) && e.GetTypeId() == wantType) good++;
                 else if (p.Operation == "set_curve")
                 {
                     // RE-READ THE CURVE, and accept what a JOIN legitimately does
@@ -805,6 +871,58 @@ namespace Horizun.Revit.Commands
                 return new[] { t.BasisX, t.BasisZ };
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// change_type_by_rule's measures: short_side_mm/long_side_mm/area_m2, read from a face's
+        /// OWN UV bounding box (see Core/TypeChangeRuleRules.ShortLong) - which for a PlanarFace is
+        /// metric along the face's own orthonormal basis, so this is the real width and length, not
+        /// an axis-aligned proxy for them. The face is the wall's own exterior side face for a Wall,
+        /// or the largest top face for any other HostObject (Floor, RoofBase, Ceiling); anything else
+        /// is left unmeasured rather than approximated from a bounding box, so a rule requiring these
+        /// measures is refused for it by name rather than silently mismeasured.
+        /// </summary>
+        private static Dictionary<string, double> MeasureInstance(Element e)
+        {
+            var m = new Dictionary<string, double>(StringComparer.Ordinal);
+            try
+            {
+                PlanarFace face = PrimaryFace(e) as PlanarFace;
+                if (face != null)
+                {
+                    BoundingBoxUV bb = face.GetBoundingBox();
+                    Tuple<double, double> sl = TypeChangeRuleRules.ShortLong(
+                        (bb.Max.U - bb.Min.U) * 304.8, (bb.Max.V - bb.Min.V) * 304.8);
+                    m["short_side_mm"] = sl.Item1;
+                    m["long_side_mm"] = sl.Item2;
+                    try { m["area_m2"] = face.Area * 0.09290304; } catch { }
+                }
+            }
+            catch { }
+            return m;
+        }
+
+        private static Face PrimaryFace(Element e)
+        {
+            IList<Reference> refs = null;
+            var wall = e as Wall;
+            if (wall != null) { try { refs = HostObjectUtils.GetSideFaces(wall, ShellLayerType.Exterior); } catch { } }
+            else
+            {
+                var host = e as HostObject;
+                if (host != null) { try { refs = HostObjectUtils.GetTopFaces(host); } catch { } }
+            }
+            if (refs == null || refs.Count == 0) return null;
+            Face best = null; double bestArea = -1;
+            foreach (Reference r in refs)
+            {
+                Face f;
+                try { f = e.GetGeometryObjectFromReference(r) as Face; } catch { f = null; }
+                if (f == null) continue;
+                double a; try { a = f.Area; } catch { a = 0; }
+                if (a > bestArea) { bestArea = a; best = f; }
+            }
+            return best;
         }
 
         private static List<XYZ> Samples(Element e)
@@ -1025,6 +1143,12 @@ namespace Horizun.Revit.Commands
             public int JoinEnd; public bool JoinAllowed;
             public int Index; public string Operation; public List<ElementId> Ids, Created; public XYZ Vector;
             public Line Axis; public double Angle; public Transform Rotation; public ElementId TypeId;
+            /// <summary>change_type_by_rule: the rule set, and per-instance the type it resolved to,
+            /// the measures it was resolved from, and the match itself (for the plan/reply).</summary>
+            public TypeChangeRuleSet RuleSet;
+            public readonly Dictionary<long, ElementId> RuleTargets = new Dictionary<long, ElementId>();
+            public readonly Dictionary<long, Dictionary<string, double>> RuleMeasured = new Dictionary<long, Dictionary<string, double>>();
+            public readonly Dictionary<long, TypeChangeMatch> RuleMatches = new Dictionary<long, TypeChangeMatch>();
             /// <summary>mirror: the plane reflected about. Rotation then holds the reflection, for verification.</summary>
             public Plane MirrorPlane;
             /// <summary>set_curve: the line this element's LocationCurve is being set to.</summary>
