@@ -51,14 +51,17 @@ namespace Horizun.Revit.Commands
             => File.Exists(path) ? ParameterClassificationRules.ReadSpf(File.ReadAllText(path)) : new List<ParameterClassificationRules.SpfEntry>();
 
         /// <summary>
-        /// Open <paramref name="path"/> as the SPF, reuse or create the definition, and put the
-        /// user's SharedParametersFilename back whatever happens.
+        /// Open <paramref name="path"/> as the SPF and reuse or create the definition. The
+        /// SPF stays the application's until <see cref="Run"/> puts the user's back in its
+        /// finally: MEASURED 2026-09-25 on Revit 2026, restoring it here - before the binding
+        /// was inserted - left the ExternalDefinition "not valid" and the rehearsal failed.
         /// </summary>
-        private static ExternalDefinition SpfDefinition(UIApplication uiapp, string path, string groupName, string name, ForgeTypeId spec, out bool created)
+        private static ExternalDefinition SpfDefinition(UIApplication uiapp, string path, string groupName, string name, ForgeTypeId spec, Scratch s, out bool created)
         {
             created = false;
             var app = uiapp.Application;
             string previous = app.SharedParametersFilename;
+            bool ok = false;
             try
             {
                 if (!File.Exists(path)) File.WriteAllText(path, "");
@@ -70,16 +73,20 @@ namespace Horizun.Revit.Commands
                         {
                             if (g.Name != groupName) throw new InvalidOperationException("'" + name + "' already exists in SPF group '" + g.Name + "', not '" + groupName + "'");
                             if (d.GetDataType().TypeId != spec.TypeId) throw new InvalidOperationException("'" + name + "' already exists in the SPF with data type " + d.GetDataType().TypeId);
+                            ok = true;
                             return (ExternalDefinition)d;
                         }
                 DefinitionGroup group = file.Groups.get_Item(groupName) ?? file.Groups.Create(groupName);
                 var def = group.Definitions.Create(new ExternalDefinitionCreationOptions(name, spec) { Visible = true }) as ExternalDefinition;
                 created = def != null;
-                return def ?? throw new InvalidOperationException("Revit did not create the definition");
+                if (def == null) throw new InvalidOperationException("Revit did not create the definition");
+                ok = true;
+                return def;
             }
             finally
             {
-                try { app.SharedParametersFilename = previous ?? ""; } catch { }
+                if (ok) { s.SpfSwitched = true; s.PreviousSpf = previous ?? ""; }
+                else try { app.SharedParametersFilename = previous ?? ""; } catch { }
             }
         }
 
@@ -122,7 +129,7 @@ namespace Horizun.Revit.Commands
                         if (File.Exists(spf)) File.Copy(spf, s.TempSpf); else File.WriteAllText(s.TempSpf, "");
                         path = s.TempSpf;
                     }
-                    ExternalDefinition def = SpfDefinition(app, path, groupName, name, spec, out bool created);
+                    ExternalDefinition def = SpfDefinition(app, path, groupName, name, spec, s, out bool created);
                     s.SpfDefinitionCreated = created;
                     return def;
                 },

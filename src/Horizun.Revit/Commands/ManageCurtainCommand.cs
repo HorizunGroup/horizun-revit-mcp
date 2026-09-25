@@ -331,9 +331,20 @@ namespace Horizun.Revit.Commands
                     long cur = now.TryGetValue(id, out long x) ? x : id;
                     Element e = d.GetElement(Rid.Make(cur));
                     bool ok = e != null && Rid.Value(e.GetTypeId()) == typeId;
-                    if (ok) typed++; if (inGrid.Contains(cur)) present++;
+                    if (ok) typed++;
+                    // MEASURED 2026-09-25 on Revit 2026: swapping a panel to a wall type gave a new
+                    // element that GetPanelIds does not list; the grid can keep the original Panel,
+                    // whose FindHostPanel names the wall displayed in its place. Either counts.
+                    long hostPanel = -1;
+                    if (cur != id && inGrid.Contains(id) && d.GetElement(Rid.Make(id)) is Panel orig)
+                    {
+                        try { hostPanel = Rid.Value(orig.FindHostPanel()); } catch { }
+                    }
+                    bool inPlace = inGrid.Contains(cur) || hostPanel == cur;
+                    if (inPlace) present++;
                     rows.Add(new JObject { ["requested_id"] = id, ["element_id"] = cur, ["type_id"] = e == null ? null : (JToken)Rid.Value(e.GetTypeId()),
-                        ["category"] = e?.Category?.Name, ["replaced"] = cur != id });
+                        ["category"] = e?.Category?.Name, ["replaced"] = cur != id,
+                        ["listed_by_grid"] = inGrid.Contains(cur), ["original_listed"] = inGrid.Contains(id), ["host_panel_of_original"] = hostPanel });
                 }
                 edit.Evidence["panels"] = rows;
                 check.Compare("panel_type", targets.Count, typed);

@@ -136,6 +136,9 @@ namespace Horizun.Revit.Commands
         {
             public string SpfPath, TempSpf;
             public bool SpfDefinitionCreated;
+            /// <summary>The SPF was switched for this run; Run's finally puts <see cref="PreviousSpf"/> back.</summary>
+            public bool SpfSwitched;
+            public string PreviousSpf;
             public ElementId CreatedId;
         }
 
@@ -211,6 +214,9 @@ namespace Horizun.Revit.Commands
             {
                 if (o.Report == null) o.Report = new JObject();
                 if (s.SpfPath != null && !rehearse) o.Report["spf_definition_created"] = s.SpfDefinitionCreated;
+                if (s.SpfSwitched)
+                    try { uiapp.Application.SharedParametersFilename = s.PreviousSpf; }
+                    catch (Exception ex) { o.Report["spf_restore_error"] = ex.Message; }
                 if (s.TempSpf != null) try { System.IO.File.Delete(s.TempSpf); } catch { }
             }
         }
