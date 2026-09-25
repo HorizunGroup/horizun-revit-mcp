@@ -108,7 +108,8 @@ $script:HzProbeModules += [pscustomobject]@{
             $ex = & $Ctx.Call $T @{ operation = 'explain'; target_document = $doc }
             $ok = -not $ex.isError -and [long]$ex.data.model_elements -gt 0 -and [string]$ex.data.narrative.en -match 'model elements' -and
                   $ex.data.iso19650.status -eq 'not_requested'
-            $cases += Out 3 $(if ($ok) { 'pass' } else { 'fail' }) ([string]$ex.data.narrative.en)
+            $exText = [string]$ex.text; if ($exText.Length -gt 400) { $exText = $exText.Substring(0, 400) }
+            $cases += Out 3 $(if ($ok) { 'pass' } else { 'fail' }) ('error=' + $ex.isError + ' model_elements=' + $ex.data.model_elements + ' iso=' + $ex.data.iso19650.status + ' narrative=' + [string]$ex.data.narrative.en + ' text=' + $exText)
 
             # ---- 4: record_quality + quality_trend --------------------------------------------
             $project = 'hz-live-' + $Ctx.RunId

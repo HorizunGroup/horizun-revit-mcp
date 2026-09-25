@@ -65,11 +65,14 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             # type_id 0 is a placeholder that will not resolve; read what it measured/refused
             # to learn the wall's OWN current type, then rebuild the rule against it for real.
-            $currentType = $null
-            if ($dry1.isError -and $dry1.text -match 'is not a valid type for it') {
-                # expected: type_id 0 refused. Read the wall's real type from list_elements.
-                $row = @($walls.data.rows) | Where-Object { [long]$_.element_id -eq $wid } | Select-Object -First 1
-                $currentType = [long]$row.type_id
+            # The wall's own type, read - not provoked out of an error message (the refusal
+            # wording for type_id 0 is not a contract; measured 2026-09-25).
+            $row = @($walls.data.rows) | Where-Object { [long]$_.element_id -eq $wid } | Select-Object -First 1
+            $currentType = if ($row -and $row.type_id) { [long]$row.type_id } else { $null }
+            if (-not $currentType) {
+                $q = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Walls'); element_ids = @($wid); include_links = $false; max_rows = 5 }
+                $qr = @($q.data.rows) | Where-Object { [long]$_.element_id -eq $wid } | Select-Object -First 1
+                if ($qr -and $qr.type_id) { $currentType = [long]$qr.type_id }
             }
             if ($currentType) {
                 $dry2 = & $Ctx.Call $T @{
@@ -103,7 +106,11 @@ $script:HzProbeModules += [pscustomobject]@{
 
             # ---- 4: realign_wall_sketch refuses a wall with no edited profile, by name.
             $r4 = & $Ctx.Call $T @{ target_document = $doc; dry_run = $true; operations = @(@{ operation = 'realign_wall_sketch'; element_ids = @($wid) }) }
-            $refused4 = $r4.isError -and $r4.text -match 'no edited profile'
+            # A rehearsal whose only row is invalid answers with the row's error, not a tool
+            # error (same shape as every other transform operation).
+            $refused4 = ($r4.isError -and $r4.text -match 'no edited profile') -or
+                        (-not $r4.isError -and [int]$r4.data.invalid_targets -eq 1 -and [int]$r4.data.valid_targets -eq 0 -and
+                         [string](@($r4.data.errors)[0].error) -match 'no edited profile')
             Case $allNames[3] $T $(if ($refused4) { 'pass' } else { 'fail' }) ("isError=$($r4.isError) text=$($r4.text)")
 
             # ---- 5: realign_wall_sketch mixed with another operation is refused outright.

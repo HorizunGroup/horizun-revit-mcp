@@ -311,10 +311,18 @@ namespace Horizun.Revit.Commands
                         if (a["view_ids"] != null)
                         {
                             ViewSet vs = ReadSheetSetViews(doc, a);
-                            vss.CurrentViewSheetSet.Views = vs;
-                            if (!vss.Save())
-                                throw new InvalidOperationException("Revit refused to save sheet set '" + target.Name + "' (ViewSheetSetting.Save returned false).");
-                            a["__view_ids"] = new JArray(vs.Cast<View>().Select(v => Rid.Value(v.Id)));
+                            var wantedIds = new HashSet<long>(vs.Cast<View>().Select(v => Rid.Value(v.Id)));
+                            var haveIds = new HashSet<long>(target.Views.Cast<View>().Select(v => Rid.Value(v.Id)));
+                            // MEASURED 2026-09-25 on Revit 2026: Save() of a set whose membership did
+                            // not change throws "Save of the setting was unsuccessful". Unchanged
+                            // membership is not a write; only a real change is saved.
+                            if (!wantedIds.SetEquals(haveIds))
+                            {
+                                vss.CurrentViewSheetSet.Views = vs;
+                                if (!vss.Save())
+                                    throw new InvalidOperationException("Revit refused to save sheet set '" + target.Name + "' (ViewSheetSetting.Save returned false).");
+                            }
+                            a["__view_ids"] = new JArray(wantedIds);
                         }
                         if (a["name"] != null && !string.Equals(a.Value<string>("name"), doc.GetElement(targetId)?.Name, StringComparison.Ordinal))
                         {

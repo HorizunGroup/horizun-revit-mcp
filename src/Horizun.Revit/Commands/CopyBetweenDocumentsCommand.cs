@@ -209,14 +209,26 @@ namespace Horizun.Revit.Commands
                     if (!seenNames.Add(name)) return CommandResult.Fail("type_names repeats '" + name + "'.");
                     var collector = new FilteredElementCollector(source).WhereElementIsElementType();
                     if (bic.HasValue) collector = collector.OfCategory(bic.Value);
-                    List<Element> matches = collector.Where(e => string.Equals(SafeName(e), name, StringComparison.Ordinal)).ToList();
+                    List<Element> candidates = collector.ToList();
+                    // "Family: Type" as Revit shows it, or the bare type name. Type names repeat
+                    // across families (every door family has its own "0915 x 2134mm"), so the
+                    // qualified form is how a caller names ONE of them.
+                    List<Element> matches = candidates.Where(e => string.Equals(SafeName(e), name, StringComparison.Ordinal) ||
+                                                                   string.Equals(QualifiedName(e), name, StringComparison.Ordinal)).ToList();
                     if (matches.Count == 0)
-                        return CommandResult.Fail("no type named '" + name + "' in '" + source.Title + "'" +
-                            (bic.HasValue ? " under category " + category : "") + ". type_names matches EXACTLY, so a " +
-                            "typo or a wrong category produces this refusal rather than a guess.");
+                    {
+                        // Say what IS there, so the next call can name it - a refusal that only
+                        // says "no" sends the caller guessing.
+                        List<string> there = candidates.Select(QualifiedName).Where(n => !string.IsNullOrEmpty(n)).Distinct().OrderBy(n => n, StringComparer.Ordinal).Take(25).ToList();
+                        return CommandResult.FailWithDetail("no type named '" + name + "' in '" + source.Title + "'" +
+                            (bic.HasValue ? " under category " + category : "") + ". type_names matches EXACTLY (bare type name or 'Family: Type'), so a " +
+                            "typo or a wrong category produces this refusal rather than a guess." +
+                            (there.Count > 0 ? " Types there" + (bic.HasValue ? "" : " (name a category to narrow)") + ": " + string.Join(" | ", there) + (candidates.Count > there.Count ? " ..." : "") + "." : ""),
+                            new JObject { ["code"] = "type_not_found", ["available_types"] = new JArray(there), ["write_started"] = false });
+                    }
                     if (matches.Count > 1)
                         return CommandResult.Fail("'" + name + "' names " + matches.Count + " types in '" + source.Title +
-                            "' (ids " + string.Join(", ", matches.Select(m => Rid.Value(m.Id))) + "); narrow with category.");
+                            "' (" + string.Join(", ", matches.Select(m => QualifiedName(m) + " #" + Rid.Value(m.Id))) + "); name one as 'Family: Type' or narrow with category.");
                     ids.Add(matches[0].Id);
                     elements.Add(matches[0]);
                 }
@@ -586,6 +598,14 @@ namespace Horizun.Revit.Commands
                 return type == null ? "<none>" : SafeName(type);
             }
             catch { return "<unreadable>"; }
+        }
+
+        private static string QualifiedName(Element e)
+        {
+            string type = SafeName(e);
+            string family = null;
+            try { family = (e as ElementType)?.FamilyName; } catch { }
+            return string.IsNullOrEmpty(family) ? type : family + ": " + type;
         }
 
         private static string SafeName(Element element)
