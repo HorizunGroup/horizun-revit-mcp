@@ -386,6 +386,9 @@
     <!-- Comment/string masking for the typed-overlap advisory. A live run advised a
          script whose only mention of the API was in a comment. -->
     <Compile Include="..\..\src\Horizun.Revit\Core\PythonSourceMask.cs" />
+    <!-- horizun_execute_python read_only=true: the static Save/SaveAs/Close/open-
+         document refusal scan and the pure before/after census comparison. -->
+    <Compile Include="..\..\src\Horizun.Revit\Core\ReadOnlyPythonGuard.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\Measurement.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashLedger.cs" />
     <!-- The materialised plan: what a dry run RESOLVED, so an apply can tell that the

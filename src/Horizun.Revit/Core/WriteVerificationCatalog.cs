@@ -195,7 +195,8 @@ namespace Horizun.Revit.Core
                 "SplitMultilayerWallsCommand.cs ~l.316: unexpected warnings set all_verified=false but are not folded into the application declaration."),
 
             // ---- counts ---------------------------------------------------------------------
-            Row("horizun_delete_verified", VerificationMechanism.CountReconciliation, E("verification", "application"), F(C + "DeleteCommand.cs")),
+            Row("horizun_delete_verified", VerificationMechanism.CountReconciliation, E("verification", "application"), F(C + "DeleteCommand.cs"),
+                "DeleteCommand.cs VerifyParameterBindingsRemoved: a deleted ParameterElement/SharedParameterElement is re-confirmed absent from the BindingMap by NAME (the deleted id no longer resolves to compare against), which cannot distinguish it from a DIFFERENT parameter later bound under the same name."),
             Row("horizun_split_floor_loops", VerificationMechanism.CountReconciliation, E("all_verified", "application"), Recipe),
             Row("horizun_split_multilayer_slabs", VerificationMechanism.CountReconciliation, E("all_verified", "application"), Recipe),
             Row("horizun_ungroup_and_mark", VerificationMechanism.CountReconciliation, E("all_verified", "application"), Recipe),

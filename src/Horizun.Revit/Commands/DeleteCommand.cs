@@ -65,7 +65,14 @@ namespace Horizun.Revit.Commands
             "against the document AFTER the commit — never from the return of Delete(); the last two are the cases " +
             "where we could not look, and they are never folded into a failure or a survival. Elements Revit cascaded away that you did not " +
             "name are reported explicitly, attributed to the id that took them. A rolled-back transaction is an " +
-            "error, not a count. dry_run defaults to TRUE in purge mode; this is destructive and it is a client's model.";
+            "error, not a count. dry_run defaults to TRUE in purge mode; this is destructive and it is a client's model. " +
+            "mode='ids' also accepts a ParameterElement/SharedParameterElement/GlobalParameter id: each row then " +
+            "carries parameter_kind and, before deletion, parameter_info (bound categories, instance/type, and " +
+            "values_at_risk — how many elements will lose a stored value). After the commit, " +
+            "parameter_binding_confirmed_removed additionally re-reads Document.ParameterBindings (by name) or " +
+            "GlobalParametersManager to confirm the definition is really gone, beside the usual re-resolve. " +
+            "horizun_manage_parameters remove_binding un-binds a parameter WITHOUT deleting it " +
+            "(parameter_element_kept=true); this deletes the definition itself.";
 
         // Verdicts. Deliberately explicit strings: "I could not look" and "there is
         // nothing there" must never collapse into the same value downstream.
@@ -392,6 +399,10 @@ namespace Horizun.Revit.Commands
             // ONLY now do the verdicts exist. Everything above was intent.
             ResolveVerdicts(doc, targets);
             ResolveCascades(doc, cascades);
+            // Runs AFTER the commit, over the SAME targets ResolveVerdicts just settled -
+            // a no-op for every target whose ParamKind is null (everything that is not a
+            // parameter), and the second confirmation for every one that is.
+            VerifyParameterBindingsRemoved(doc, targets);
             var after = Census(doc);
 
             return CommandResult.Ok(Report(doc, "ids", false, txName, before, after, targets, cascades,
@@ -875,6 +886,12 @@ namespace Horizun.Revit.Commands
                 {
                     t.Name = SafeName(elem); t.Category = SafeCategory(elem);
                     t.UniqueId = SafeUniqueId(elem); t.TypeName = SafeTypeName(doc, elem);
+                    // Explicit ids only (mode="ids"): CaptureParameterInfo's binding scan
+                    // walks every element of every category the parameter is bound to
+                    // (ManageParametersCommand.Bindings.cs CountValues does the same for
+                    // the same reason), which is fine for the handful of ids a caller
+                    // names and wrong to pay on every purge_unused pass.
+                    CaptureParameterInfo(doc, elem, t);
                 }
 
                 if (prot.Contains(raw))
@@ -1056,7 +1073,12 @@ namespace Horizun.Revit.Commands
                 ["existed_before"] = t.ExistedBefore,
                 ["verdict"] = t.Verdict,
                 ["reason"] = t.Reason,
-                ["cascaded_by"] = t.CascadedBy.HasValue ? (JToken)t.CascadedBy.Value : null
+                ["cascaded_by"] = t.CascadedBy.HasValue ? (JToken)t.CascadedBy.Value : null,
+                // null on every row that is not a parameter - see ParameterDeletionsBlock.
+                ["parameter_kind"] = t.ParamKind,
+                ["parameter_info"] = t.ParamInfo,
+                ["parameter_binding_confirmed_removed"] = t.ParamKind == null ? null : (t.ParamBindingConfirmedRemoved.HasValue ? (JToken)t.ParamBindingConfirmedRemoved.Value : null),
+                ["parameter_binding_check_error"] = t.ParamBindingCheckError
             }));
 
             var casc = new JArray(cascades.Take(idCap).Select(c => (JToken)new JObject
@@ -1290,6 +1312,7 @@ namespace Horizun.Revit.Commands
             };
 
             o["warnings_dismissed"] = WarningsBlock(ledger, idCap);
+            o["parameter_deletions"] = ParameterDeletionsBlock(targets);
 
             // WHAT THIS DELETE DID, in the vocabulary a composing caller may branch on. A
             // dry run rolls its transaction back ON PURPOSE, so it declares a rehearsal
@@ -1417,6 +1440,14 @@ namespace Horizun.Revit.Commands
             public string Verdict;      // null until the model says otherwise
             public string Reason;
             public long? CascadedBy;
+
+            // Set only for a target that resolved (before deletion) to a ParameterElement,
+            // SharedParameterElement or GlobalParameter. null for every ordinary element -
+            // this is additive, not a second code path.
+            public string ParamKind;    // null | "project_parameter" | "shared_parameter" | "global_parameter"
+            public JObject ParamInfo;   // binding/categories/values-at-risk, captured BEFORE the delete
+            public bool? ParamBindingConfirmedRemoved;  // re-checked AFTER the commit; null = could not be measured
+            public string ParamBindingCheckError;
         }
 
         private class Cascade
@@ -1506,6 +1537,174 @@ namespace Horizun.Revit.Commands
                 return false;
             }
         }
+
+        // ---------------------------------------------------------------------
+        // Parameters: ParameterElement / SharedParameterElement / GlobalParameter.
+        // horizun_delete_verified always accepted these by id through the generic
+        // doc.Delete(id) path (they are ordinary Elements) - what was missing was the
+        // SAME preview/verify contract every other target gets, tuned for what actually
+        // gets lost when a PARAMETER is deleted: not just "this element is gone" but
+        // "these categories lose this parameter, this many stored values go with it,
+        // and the binding map / global parameter manager agree it is gone afterwards".
+        // horizun_manage_parameters remove_binding un-binds a parameter WITHOUT deleting
+        // its ParameterElement (parameter_element_kept=true); this is the other half -
+        // deleting the definition itself, wherever a caller reaches for delete_verified.
+        // ---------------------------------------------------------------------
+
+        /// <summary>
+        /// Captured BEFORE the delete, from the still-live element: which kind of
+        /// parameter this is, what it is bound to, and how many elements currently carry
+        /// a value that will be lost. Left null for every non-parameter target - existing
+        /// rows are unaffected.
+        /// </summary>
+        private static void CaptureParameterInfo(Document doc, Element elem, Target t)
+        {
+            if (elem is GlobalParameter gp)
+            {
+                t.ParamKind = "global_parameter";
+                int affected = 0;
+                try { affected = gp.GetAffectedElements().Count; } catch { }
+                t.ParamInfo = new JObject
+                {
+                    ["driven_by_formula"] = SafeBoolQ(() => gp.IsDrivenByFormula),
+                    ["reporting"] = SafeBoolQ(() => gp.IsReporting),
+                    ["associated_elements_at_risk"] = affected,
+                    ["note"] = "horizun_manage_parameters operation=global_delete covers the same deletion with " +
+                               "its own dry_run/apply contract; this is the same operation reached through " +
+                               "delete_verified's id-based path."
+                };
+                return;
+            }
+            if (!(elem is ParameterElement pe)) return;
+            t.ParamKind = elem is SharedParameterElement ? "shared_parameter" : "project_parameter";
+            try
+            {
+                InternalDefinition def = pe.GetDefinition() as InternalDefinition;
+                if (def != null)
+                {
+                    DefinitionBindingMapIterator it = doc.ParameterBindings.ForwardIterator();
+                    it.Reset();
+                    while (it.MoveNext())
+                    {
+                        var key = it.Key as InternalDefinition;
+                        if (key == null || !string.Equals(key.Name, def.Name, StringComparison.Ordinal)) continue;
+                        var binding = it.Current as ElementBinding;
+                        bool isType = binding is TypeBinding;
+                        List<Category> cats = binding?.Categories?.Cast<Category>().ToList() ?? new List<Category>();
+                        int valuesAtRisk = 0;
+                        foreach (Category c in cats)
+                        {
+                            try
+                            {
+                                var col = new FilteredElementCollector(doc).OfCategoryId(c.Id);
+                                col = isType ? col.WhereElementIsElementType() : col.WhereElementIsNotElementType();
+                                foreach (Element e2 in col)
+                                {
+                                    Parameter p2 = e2.get_Parameter(def);
+                                    if (p2 != null && p2.HasValue &&
+                                        !(p2.StorageType == StorageType.String && string.IsNullOrEmpty(p2.AsString())))
+                                        valuesAtRisk++;
+                                }
+                            }
+                            catch { /* one category's count must not lose the others */ }
+                        }
+                        t.ParamInfo = new JObject
+                        {
+                            ["bound"] = true,
+                            ["binding_kind"] = isType ? "Type" : "Instance",
+                            ["categories"] = new JArray(cats.Select(c => c.Name).OrderBy(x => x, StringComparer.Ordinal)),
+                            ["values_at_risk"] = valuesAtRisk,
+                            ["note"] = "values_at_risk counts elements in these categories that currently carry a " +
+                                       "value of this parameter; deleting it discards every one."
+                        };
+                        break;
+                    }
+                }
+                if (t.ParamInfo == null)
+                    t.ParamInfo = new JObject { ["bound"] = false, ["note"] = "not currently bound to any category - no values are at risk." };
+            }
+            catch (Exception ex)
+            {
+                t.ParamInfo = new JObject { ["bound"] = (JToken)null, ["error"] = "the binding could not be read before deletion: " + ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// Re-checked AFTER the commit, for parameter targets the model confirms are
+        /// gone: does the BindingMap (project/shared) or GlobalParametersManager (global)
+        /// also agree, by NAME - beside the generic doc.GetElement(id)==null every
+        /// deletion already gets. By name rather than by the now-stale ElementId, because
+        /// the id the binding map indexed no longer resolves to anything to compare against.
+        /// </summary>
+        private static void VerifyParameterBindingsRemoved(Document doc, List<Target> targets)
+        {
+            foreach (Target t in targets)
+            {
+                if (t.ParamKind == null || t.Verdict != V_DELETED) continue;
+                try
+                {
+                    if (t.ParamKind == "global_parameter")
+                    {
+                        if (string.IsNullOrEmpty(t.Name)) { t.ParamBindingConfirmedRemoved = null; t.ParamBindingCheckError = "the parameter's name was not captured before deletion."; continue; }
+                        bool allowed = GlobalParametersManager.AreGlobalParametersAllowed(doc);
+                        ElementId found = allowed ? GlobalParametersManager.FindByName(doc, t.Name) : null;
+                        t.ParamBindingConfirmedRemoved = !allowed || found == null || found == ElementId.InvalidElementId;
+                    }
+                    else
+                    {
+                        bool stillBound = false;
+                        DefinitionBindingMapIterator it = doc.ParameterBindings.ForwardIterator();
+                        it.Reset();
+                        while (it.MoveNext())
+                        {
+                            var key = it.Key as InternalDefinition;
+                            if (key != null && string.Equals(key.Name, t.Name, StringComparison.Ordinal)) { stillBound = true; break; }
+                        }
+                        t.ParamBindingConfirmedRemoved = !stillBound;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    t.ParamBindingConfirmedRemoved = null;
+                    t.ParamBindingCheckError = ex.Message;
+                }
+            }
+        }
+
+        /// <summary>Summary the report attaches beside the generic totals. Null when nothing deleted was a parameter.</summary>
+        private static JObject ParameterDeletionsBlock(List<Target> targets)
+        {
+            List<Target> paramTargets = targets.Where(t => t.ParamKind != null).ToList();
+            if (paramTargets.Count == 0) return null;
+            int confirmedRemoved = paramTargets.Count(t => t.ParamBindingConfirmedRemoved == true);
+            int stillPresent = paramTargets.Count(t => t.Verdict == V_DELETED && t.ParamBindingConfirmedRemoved == false);
+            int unmeasured = paramTargets.Count(t => t.Verdict == V_DELETED && t.ParamBindingConfirmedRemoved == null);
+            return new JObject
+            {
+                ["total"] = paramTargets.Count,
+                ["by_kind"] = new JObject
+                {
+                    ["project_parameter"] = paramTargets.Count(t => t.ParamKind == "project_parameter"),
+                    ["shared_parameter"] = paramTargets.Count(t => t.ParamKind == "shared_parameter"),
+                    ["global_parameter"] = paramTargets.Count(t => t.ParamKind == "global_parameter")
+                },
+                ["binding_confirmed_removed_total"] = confirmedRemoved,
+                ["binding_still_present_total"] = stillPresent,
+                ["binding_check_unmeasured_total"] = unmeasured,
+                ["note"] = "Beside the generic doc.GetElement(id)==null every deletion gets, a deleted parameter " +
+                           "is additionally confirmed absent from Document.ParameterBindings (project/shared, by " +
+                           "name) or GlobalParametersManager (global, by name)." +
+                           (stillPresent > 0
+                               ? " " + stillPresent + " deleted parameter(s) STILL APPEAR there by name - " +
+                                 "investigate before trusting this delete."
+                               : (unmeasured > 0
+                                   ? " " + unmeasured + " could not be re-checked this way; see " +
+                                     "parameter_binding_confirmed_removed=null and its error on each row."
+                                   : ""))
+            };
+        }
+
+        private static bool? SafeBoolQ(Func<bool> read) { try { return read(); } catch { return null; } }
 
         private static string SafeTitle(Document d) { try { return d.Title; } catch { return null; } }
         private static string SafeName(Element e) { try { return e.Name; } catch { return null; } }
