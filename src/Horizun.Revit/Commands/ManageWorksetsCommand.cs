@@ -15,6 +15,15 @@
 //   * set_default (the active workset new elements go to) is a session setting
 //     the rehearsal cannot provisionally change and roll back with certainty, so
 //     its dry run is a MEASURED preview and says so; the apply re-reads it.
+//   * OWNERSHIP IS A SIDE EFFECT, ANNOUNCED. MEASURED field session, 2026-09-25:
+//     renaming a workset silently took ownership of 14,697 elements. create,
+//     rename and move_elements now report ownership_effect - elements and the
+//     target workset newly owned by the caller, measured with
+//     WorksharingUtils.GetCheckoutStatus before/after (the dry run measures it
+//     inside its own rolled-back rehearsal). relinquish_after=true gives
+//     everything the caller owns back afterward (the same call
+//     horizun_relinquish_all makes - Revit has no per-element relinquish scope)
+//     and re-measures this operation's own targets to report what remains.
 // -----------------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
@@ -68,9 +77,15 @@ namespace Horizun.Revit.Commands
                 return CommandResult.FailWithDetail(error + " Nothing was written.",
                     new JObject { ["state"] = "refused", ["operation"] = op, ["write_started"] = false });
 
-            string hash = DocumentGate.PlanHash(request, "operation", "workset_id", "name", "element_ids", "category", "view_ids", "visibility");
+            string hash = DocumentGate.PlanHash(request, "operation", "workset_id", "name", "element_ids", "category", "view_ids", "visibility", "relinquish_after");
             ResolvedPlan resolved = Resolved(gate, app, plan);
             bool dry = request["dry_run"] == null || request.Value<bool>("dry_run");
+            // create/rename/move_elements can silently take ownership of a great many
+            // elements (MEASURED field session, 2026-09-25: renaming a workset took
+            // ownership of 14,697 elements with no warning). relinquish_after is only
+            // meaningful for those three; set_default/visibility touch no element ownership.
+            bool relinquishAfter = (op == "create" || op == "rename" || op == "move_elements") &&
+                                    (request.Value<bool?>("relinquish_after") ?? false);
             string txName = "Horizun: worksets " + op;
 
             if (dry)
@@ -103,6 +118,13 @@ namespace Horizun.Revit.Commands
             if (refusal != null) return refusal;
 
             string txStatus = ApplicationOutcome.Committed;
+            // Measured BEFORE the real transaction, over exactly what this operation's
+            // workset touches - the same scope the dry-run rehearsal uses, so the two
+            // numbers are comparable.
+            List<ElementId> ownershipTargetsBefore = OwnershipTargets(doc, plan);
+            int unreadableOwnedBefore;
+            Dictionary<long, bool> ownedBeforeApply = OwnedByMe(doc, ownershipTargetsBefore, out unreadableOwnedBefore);
+            string worksetOwnerBeforeApply = plan.Workset == null ? null : SafeOwner(doc, plan.Workset);
             if (op == "set_default")
             {
                 try { doc.GetWorksetTable().SetActiveWorksetId(plan.Workset); }
@@ -143,6 +165,18 @@ namespace Horizun.Revit.Commands
 
             PostconditionCheck after = Verify(doc, plan);
             int moved = after.AllVerified ? plan.Movable.Count : 0;
+            // Measured AFTER the real commit. For create, plan.Workset now holds the
+            // newly persisted id (OwnershipTargets recomputes it fresh, since it did not
+            // exist before Apply ran).
+            List<ElementId> ownershipTargetsAfter = OwnershipTargets(doc, plan);
+            int unreadableOwnedAfter;
+            Dictionary<long, bool> ownedAfterApply = OwnedByMe(doc, ownershipTargetsAfter, out unreadableOwnedAfter);
+            string worksetOwnerAfterApply = plan.Workset == null ? null : SafeOwner(doc, plan.Workset);
+            JObject ownershipEffect = op == "set_default" || op == "visibility"
+                ? null
+                : OwnershipEffectJson(Math.Max(ownershipTargetsBefore.Count, ownershipTargetsAfter.Count),
+                    ownedBeforeApply, ownedAfterApply, unreadableOwnedBefore, unreadableOwnedAfter,
+                    worksetOwnerBeforeApply, worksetOwnerAfterApply);
             var done = new JObject
             {
                 ["state"] = after.AllVerified ? "committed_verified" : "uncertain",
@@ -153,6 +187,18 @@ namespace Horizun.Revit.Commands
                 ["skipped"] = SkippedJson(plan),
                 ["worksets"] = Table(doc)
             };
+            if (ownershipEffect != null) done["ownership_effect"] = ownershipEffect;
+            if (relinquishAfter && after.AllVerified)
+            {
+                JObject relinquishResult = RelinquishAfter(doc);
+                int unreadableFinal;
+                Dictionary<long, bool> ownedFinal = OwnedByMe(doc, ownershipTargetsAfter, out unreadableFinal);
+                relinquishResult["elements_examined"] = ownershipTargetsAfter.Count;
+                relinquishResult["elements_still_owned_by_me"] = ownedFinal.Values.Count(v => v);
+                relinquishResult["elements_unreadable"] = unreadableFinal;
+                relinquishResult["workset_owner_after_relinquish"] = plan.Workset == null ? null : SafeOwner(doc, plan.Workset);
+                done["relinquish_after"] = relinquishResult;
+            }
             int requested = plan.Requested;
             int applied = op == "move_elements" ? plan.Movable.Count : 1;
             ApplicationOutcome.StampApplied(done, txStatus, requested, applied, after.AllVerified ? applied : 0,
@@ -352,12 +398,22 @@ namespace Horizun.Revit.Commands
         {
             PostconditionCheck check = null; string error = null; Guard.RollbackResult? rb = null; string rbError = null;
             WorksetId before = p.Workset;
+            List<ElementId> ownershipTargets = OwnershipTargets(doc, p);
+            int unreadableBefore;
+            Dictionary<long, bool> ownedBefore = OwnedByMe(doc, ownershipTargets, out unreadableBefore);
+            string worksetOwnerBefore = p.Workset == null ? null : SafeOwner(doc, p.Workset);
+            Dictionary<long, bool> ownedAfter = null; int unreadableAfter = 0; string worksetOwnerAfter = null;
             using (var tx = new Transaction(doc, name))
             {
                 try
                 {
                     if (tx.Start() != TransactionStatus.Started) throw new InvalidOperationException("transaction did not start");
                     Apply(doc, p); doc.Regenerate(); check = Verify(doc, p);
+                    // MEASURED HERE, before the rollback: this is the only place the real
+                    // ownership impact can be seen. Reading it after rollback would read
+                    // Revit's undo, not its consequence.
+                    ownedAfter = OwnedByMe(doc, ownershipTargets, out unreadableAfter);
+                    worksetOwnerAfter = p.Workset == null ? null : SafeOwner(doc, p.Workset);
                 }
                 catch (Exception ex) { error = ex.Message; }
                 try { rb = Guard.RollBack(tx); } catch (Exception ex) { rbError = ex.Message; }
@@ -369,7 +425,127 @@ namespace Horizun.Revit.Commands
                 ["postconditions"] = check?.ToJson(),
                 ["error"] = error,
                 ["rollback_status"] = rb.HasValue ? rb.Value.StatusName : "exception: " + rbError,
-                ["rollback_confirmed"] = rb.HasValue && rb.Value.Confirmed
+                ["rollback_confirmed"] = rb.HasValue && rb.Value.Confirmed,
+                ["ownership_effect"] = OwnershipEffectJson(ownershipTargets.Count, ownedBefore, ownedAfter,
+                    unreadableBefore, unreadableAfter, worksetOwnerBefore, worksetOwnerAfter)
+            };
+        }
+
+        /// <summary>
+        /// The elements THIS operation's workset touches, so the ownership effect is
+        /// measured over exactly what could change - not a whole-document scan.
+        /// create has none (the workset does not exist until Apply runs); move_elements
+        /// is the elements about to move; rename is every element the renamed workset
+        /// already holds (unbounded - MEASURED at 14,697 in the field, and that scale is
+        /// exactly why this exists).
+        /// </summary>
+        private static List<ElementId> OwnershipTargets(Document doc, Plan p)
+        {
+            switch (p.Op)
+            {
+                case "rename":
+                    if (p.Workset == null) return new List<ElementId>();
+                    try
+                    {
+                        return new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                            .WherePasses(new ElementWorksetFilter(p.Workset)).ToElementIds().ToList();
+                    }
+                    catch { return new List<ElementId>(); }
+                case "move_elements":
+                    return p.Movable ?? new List<ElementId>();
+                default:
+                    return new List<ElementId>();
+            }
+        }
+
+        private static Dictionary<long, bool> OwnedByMe(Document doc, List<ElementId> ids, out int unreadable)
+        {
+            var result = new Dictionary<long, bool>();
+            unreadable = 0;
+            foreach (ElementId id in ids)
+            {
+                try { result[Rid.Value(id)] = WorksharingUtils.GetCheckoutStatus(doc, id) == CheckoutStatus.OwnedByCurrentUser; }
+                catch { unreadable++; }
+            }
+            return result;
+        }
+
+        private static string SafeOwner(Document doc, WorksetId id)
+        { try { return doc.GetWorksetTable().GetWorkset(id).Owner; } catch { return null; } }
+
+        private static JObject OwnershipEffectJson(int targetCount, Dictionary<long, bool> before, Dictionary<long, bool> after,
+            int unreadableBefore, int unreadableAfter, string worksetOwnerBefore, string worksetOwnerAfter)
+        {
+            if (after == null)
+                return new JObject { ["measured"] = false, ["reason"] = "the operation did not reach the point where ownership could be re-measured." };
+            int newlyOwned = 0; var sample = new JArray();
+            foreach (KeyValuePair<long, bool> kv in after)
+            {
+                bool wasOwned = before.TryGetValue(kv.Key, out bool b) && b;
+                if (kv.Value && !wasOwned)
+                {
+                    newlyOwned++;
+                    if (sample.Count < 50) sample.Add(kv.Key);
+                }
+            }
+            return new JObject
+            {
+                ["measured"] = true,
+                ["elements_examined"] = targetCount,
+                ["elements_unreadable_before"] = unreadableBefore,
+                ["elements_unreadable_after"] = unreadableAfter,
+                ["elements_newly_owned_by_me"] = newlyOwned,
+                ["elements_newly_owned_sample"] = sample,
+                ["workset_owner_before"] = worksetOwnerBefore,
+                ["workset_owner_after"] = worksetOwnerAfter,
+                ["means"] = "measured with WorksharingUtils.GetCheckoutStatus before the operation and again, " +
+                            "over the elements this operation's workset touches, right after Apply+Regenerate " +
+                            "(for a dry run, still inside the rolled-back rehearsal transaction; for an apply, " +
+                            "after the real commit). A count above zero is ownership this call took, not a " +
+                            "side effect somebody merely suspected."
+            };
+        }
+
+        /// <summary>
+        /// Give back EVERYTHING this user owns (the same call horizun_relinquish_all
+        /// makes - WorksharingUtils.RelinquishOwnership has no per-element scope), then
+        /// report what Revit itself said it released. The caller re-measures the
+        /// operation's own targets afterward, which is the honest "did THIS get let go".
+        /// </summary>
+        private static JObject RelinquishAfter(Document doc)
+        {
+            var apiElements = new List<long>();
+            var apiWorksets = new List<long>();
+            try
+            {
+                var options = new RelinquishOptions(true)
+                {
+                    CheckedOutElements = true, FamilyWorksets = true, StandardWorksets = true,
+                    UserWorksets = true, ViewWorksets = true
+                };
+                using (RelinquishedItems apiResult = WorksharingUtils.RelinquishOwnership(doc, options, new TransactWithCentralOptions()))
+                {
+                    if (apiResult != null)
+                    {
+                        ICollection<ElementId> ids = apiResult.GetRelinquishedElements();
+                        if (ids != null) foreach (ElementId id in ids) apiElements.Add(Rid.Value(id));
+                        ICollection<WorksetId> worksets = apiResult.GetRelinquishedWorksets();
+                        if (worksets != null) foreach (WorksetId w in worksets) apiWorksets.Add(w.IntegerValue);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return new JObject { ["attempted"] = true, ["error"] = ex.Message };
+            }
+            return new JObject
+            {
+                ["attempted"] = true,
+                ["api_reported_relinquished_elements"] = apiElements.Count,
+                ["api_reported_relinquished_worksets"] = apiWorksets.Count,
+                ["means"] = "this releases EVERY workset and element the current user owns in the document - the " +
+                            "same call horizun_relinquish_all makes - not only what this operation took. Anything " +
+                            "else you had checked out before this call is released too."
             };
         }
 

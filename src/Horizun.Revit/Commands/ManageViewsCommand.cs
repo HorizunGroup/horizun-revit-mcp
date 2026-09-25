@@ -275,7 +275,8 @@ namespace Horizun.Revit.Commands
             "apply_template", "place_view", "place_schedule",
             "convert_placeholder_sheet", "set_phase", "assign_scope_box", "set_view_range",
             "set_crop", "set_annotation_crop", "set_viewport_type", "align_viewports",
-            "edit_filter", "order_filters", "set_template_controls", "explain_graphics"
+            "edit_filter", "order_filters", "set_template_controls", "explain_graphics",
+            "sheet_set_list", "sheet_set_update", "sheet_set_delete"
         };
 
         /// <summary>
@@ -1250,6 +1251,8 @@ namespace Horizun.Revit.Commands
                 case "edit_filter": return typeof(ParameterFilterElement);
                 case "order_filters": case "explain_graphics": case "create_template": case "set_template_controls":
                     return typeof(View);
+                case "sheet_set_create": return typeof(ViewSheetSet);
+                case "sheet_set_list": case "sheet_set_update": case "sheet_set_delete": return typeof(Element);
                 case "place_legend_component": return typeof(Element);
                 default: return typeof(Element);
             }
