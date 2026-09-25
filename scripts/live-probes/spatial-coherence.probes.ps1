@@ -83,7 +83,7 @@ $script:HzProbeModules += [pscustomobject]@{
             }
             else {
                 $w = Create @(@{ kind = 'wall'; start = @($X, $Y, $E); end = @(($X + 6000), $Y, $E); level_id = $levelId; type_id = $basic.element_id; height = 3000 }) 'wall'
-                $d = if ($w.ids.Count -gt 0) { Create @(@{ kind = 'family_instance'; type_id = $door.element_id; point = @(($X + 3000), $Y, $E); level_id = $levelId; host_id = $w.ids[0] }) 'door' } else { @{ ids = @() } }
+                $d = if ($w.ids.Count -gt 0) { Create @(@{ kind = 'family_instance'; type_id = $door.element_id; point = @(($X + 3000), $Y, $E); coordinate_mode = 'absolute'; level_id = $levelId; host_id = $w.ids[0] }) 'door' } else { @{ ids = @() } }
                 if ($d.ids.Count -eq 0) {
                     foreach ($i in 0..4) { Case $i 'unverified' ('the wall and door could not be staged: ' + (Short $w.reply.answer) + ' | ' + (Short $d.reply.answer)) }
                 }

@@ -3,24 +3,26 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "392b29b93f7c4f14d7ac960a746c999a527a3ef346f00cf8bcb30f8978565fb8",
-  "generated_from_contract_hash": "5fe3076cbafb41f05bbedfd2",
+  "generated_from_server_sha": "e1f4d55305109f39aac9f7443e8943e950c249cea28ba84e813d7ebd0e410f0f",
+  "generated_from_contract_hash": "f8300201e7dd6f0297ded0b0",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "033eceadba05cc0b95896da04a92e6ba33bfbcfe",
+  "code_candidate_commit": "ca61be2708de1ea819c11ffacd9d461f45dfca1e-dirty",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "033eceadba05cc0b95896da04a92e6ba33bfbcfe",
-  "docs_only_commits_after_candidate": [],
-  "code_differs_from_candidate": false,
+  "source_tree_head_at_generation": "1a49bc1fbc65e31cc1ed1476b3df8d3b33985529",
+  "docs_only_commits_after_candidate": [
+    "1a49bc1fbc65 docs(changelog): spatial check, operations pane, field-session fixes, harness"
+  ],
+  "code_differs_from_candidate": true,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
-    "tools": 121,
+    "tools": 122,
     "reads": 48,
-    "writes": 73,
+    "writes": 74,
     "destructive": 20,
-    "operations": 395,
-    "enumerated_variants": 1492
+    "operations": 403,
+    "enumerated_variants": 1504
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -93,6 +95,15 @@
       "open_world": true,
       "operations": 0,
       "enumerated_variants": 11,
+      "operation_detail": []
+    },
+    {
+      "tool": "horizun_verify_changes",
+      "read_only": false,
+      "destructive": false,
+      "open_world": true,
+      "operations": 0,
+      "enumerated_variants": 4,
       "operation_detail": []
     },
     {
@@ -270,8 +281,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 13,
-      "enumerated_variants": 22,
+      "operations": 16,
+      "enumerated_variants": 25,
       "operation_detail": [
         {
           "property": "operation",
@@ -285,11 +296,14 @@
             "pin",
             "unpin",
             "change_type",
+            "change_type_by_rule",
+            "realign_wall_sketch",
             "set_curve",
             "move_tag_head",
             "set_tag_leader",
             "array_linear",
-            "array_radial"
+            "array_radial",
+            "rename_level"
           ],
           "source_read_confirmed": true
         }
@@ -419,8 +433,8 @@
       "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 46,
-      "enumerated_variants": 72,
+      "operations": 50,
+      "enumerated_variants": 76,
       "operation_detail": [
         {
           "property": "operation",
@@ -464,7 +478,11 @@
             "order_filters",
             "explain_graphics",
             "create_template",
-            "set_template_controls"
+            "set_template_controls",
+            "sheet_set_list",
+            "sheet_set_create",
+            "sheet_set_update",
+            "sheet_set_delete"
           ],
           "source_read_confirmed": true
         },
@@ -1799,14 +1817,15 @@
       "read_only": true,
       "destructive": false,
       "open_world": true,
-      "operations": 6,
-      "enumerated_variants": 6,
+      "operations": 7,
+      "enumerated_variants": 7,
       "operation_detail": [
         {
           "property": "operation",
           "path": "operation",
           "values": [
             "leaf",
+            "search",
             "bsdd_search",
             "bsdd_search_dictionary",
             "bsdd_class",
