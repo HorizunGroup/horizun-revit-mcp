@@ -66,27 +66,52 @@ namespace Horizun.Revit.Core
             {
                 int added = 0, modified = 0, deleted = 0;
                 var docs = new JArray();
+                var sample = new JArray();
                 foreach (ChangeWatch.DocChanges d in watch.Documents)
                 {
                     if (d.Added.Count + d.Modified.Count + d.Deleted.Count == 0) continue;
                     added += d.Added.Count; modified += d.Modified.Count; deleted += d.Deleted.Count;
                     string title = null; try { title = d.Document.Title; } catch { }
                     docs.Add(title);
+                    foreach (long id in d.Added.Take(SampleSize - sample.Count)) sample.Add(Describe(d.Document, id, "added"));
+                    foreach (long id in d.Modified.Take(SampleSize - sample.Count)) sample.Add(Describe(d.Document, id, "modified"));
                 }
                 if (added + modified + deleted == 0) return;
                 JObject data = result.Data as JObject ?? (result.Data == null ? new JObject() : JObject.FromObject(result.Data));
                 if (data["model_changes"] == null)
                     data["model_changes"] = new JObject { ["added"] = added, ["modified"] = modified, ["deleted"] = deleted, ["documents"] = docs,
-                        ["source"] = "Revit DocumentChanged during this call, after its own rollbacks" };
+                        ["sample"] = sample, ["sample_limit"] = SampleSize,
+                        ["source"] = "Revit DocumentChanged during this call, reconciled against the model after its own rollbacks" };
                 result.ReplaceData(data);
             }
             catch { }
+        }
+
+        private const int SampleSize = 12;
+
+        /// <summary>What a changed id IS, so a count is not the only thing a reader gets.</summary>
+        private static JObject Describe(Document doc, long id, string change)
+        {
+            var row = new JObject { ["id"] = id, ["change"] = change };
+            try
+            {
+                Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                if (e != null)
+                {
+                    row["category"] = e.Category?.Name;
+                    row["class"] = e.GetType().Name;
+                    row["name"] = e.Name;
+                }
+            }
+            catch { }
+            return row;
         }
 
         public static void Attach(string tool, ChangeWatch watch, CommandResult result)
         {
             if (watch == null) return;
             if (result == null || !result.Success) return;
+            watch.Settle();
             foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             StampChanges(watch, result);
             if (!Enabled) return;

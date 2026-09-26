@@ -55,7 +55,8 @@ namespace Horizun.Revit.Core
                 string key = Key(doc);
                 if (!_docs.TryGetValue(key, out DocChanges d)) _docs[key] = d = new DocChanges { Document = doc };
                 ICollection<ElementId> added = e.GetAddedElementIds(), modified = e.GetModifiedElementIds(), deleted = e.GetDeletedElementIds();
-                bool reverted = e.Operation == UndoOperation.TransactionUndone || e.Operation == UndoOperation.TransactionGroupRolledBack;
+                bool reverted = e.Operation == UndoOperation.TransactionUndone || e.Operation == UndoOperation.TransactionGroupRolledBack ||
+                                e.Operation == UndoOperation.TransactionRolledBack;
                 if (reverted)
                 {
                     // An undo or rollback reports what it touched while taking the change back.
@@ -72,6 +73,50 @@ namespace Horizun.Revit.Core
                 foreach (string t in e.GetTransactionNames()) if (!d.Transactions.Contains(t)) d.Transactions.Add(t);
             }
             catch { /* never let an observer break the command it observes */ }
+        }
+
+        /// <summary>
+        /// Reconcile the event tally with the model as the call leaves it. The events alone
+        /// over-count: measured 2026-09-26, horizun_verify_changes rolled its temporary view
+        /// back (status RolledBack) and still reported 11 elements added. An id counted as
+        /// added or modified that no longer resolves is gone; an id counted as deleted that
+        /// still resolves came back. What the model answers wins over what the events said.
+        /// </summary>
+        public void Settle()
+        {
+            foreach (DocChanges d in _docs.Values)
+            {
+                try
+                {
+                    if (d.Document == null || !d.Document.IsValidObject) continue;
+                    d.Added.RemoveWhere(v => !Exists(d.Document, v));
+                    d.Modified.RemoveWhere(v => !Exists(d.Document, v) || Bookkeeping(d.Document, v));
+                    d.Deleted.RemoveWhere(v => Exists(d.Document, v));
+                }
+                catch { /* an unreadable document keeps the event tally, never a guess */ }
+            }
+        }
+
+        /// <summary>
+        /// Revit's own bookkeeping: no category, no name, the bare Element class. Measured
+        /// 2026-09-26: one such element (id 23741 in a metric template) is reported modified
+        /// by every call, a read-only one whose group rolled back included - so it says
+        /// nothing about what the call did. Only MODIFIED is filtered; an added element exists.
+        /// </summary>
+        private static bool Bookkeeping(Document doc, long id)
+        {
+            try
+            {
+                Element e = Rid.CanRepresent(id) ? doc.GetElement(Rid.Make(id)) : null;
+                return e != null && e.GetType() == typeof(Element) && e.Category == null && string.IsNullOrEmpty(e.Name);
+            }
+            catch { return false; }
+        }
+
+        private static bool Exists(Document doc, long id)
+        {
+            if (!Rid.CanRepresent(id)) return true;
+            try { return doc.GetElement(Rid.Make(id)) != null; } catch { return true; }
         }
 
         public void Dispose()

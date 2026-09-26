@@ -619,6 +619,25 @@ and a bounded sample of the overrides - the ledger file itself stays untouched b
 A finding side that lives in a link is painted at the LINK INSTANCE level (Revit has
 no per-element override across a link boundary) and `link_level_overrides` says so.
 
+**Measured end to end on 2026-09-26** (Navisworks Manage 2026 + Revit 2026, one pipe
+Ø150 through one 457x475 column): Navisworks found the clash (112 mm penetration),
+`navis_handoff` named Revit ids 1352627/1352136, `import_navisworks` reproduced it
+here (8.66 L shared), `show` painted it, `resolve_clash` moved the pipe 363 mm with the
+column kept immovable, re-detection on solids cleared the pair with no new clash, and
+the SAME Navisworks test re-run against the saved `.rvt` (through the `.nwf` that keeps
+the sets and tests) reported the result Resolved - 0 active issues. Two traps it cost:
+
+- **Detail level decides what Navisworks sees.** Navisworks reads a `.rvt` through its
+  3D view; at Coarse a pipe is a single LINE (1 primitive) and a Hard test between
+  solids reports **zero** clashes against it. The same pipe at Fine was 1587 triangles
+  and clashed. Before a model goes to Navisworks, its 3D view (`{3D}`, or the one named
+  `Navisworks`) must be Fine - otherwise "0 clashes" means "MEP was never tested".
+- **A view camera is not an obstacle.** Revit files every 3D view's camera under the
+  MODEL category `OST_Cameras`, with a bounding box the size of the view. The resolver
+  counted three of them as elements a move "would touch" and refused every lateral
+  shift; cameras, viewers, section boxes and MEP system elements are now outside what
+  both the spatial check and the resolver treat as physical.
+
 #### Resumen (español)
 
 `navis_handoff` de naviscoord-mcp escribe `coordination_handoff.json`;
@@ -634,6 +653,12 @@ el lado inmóvil es el único que podría moverse) sobre su propia elección nat
 debe moverse en rojo y el inmóvil en naranja, para mirar antes de aplicar; es la
 única operación de `horizun_coordination` que escribe el modelo, con el mismo
 dry_run -> token -> apply -> verificación releída del resto del producto.
+
+Probado de punta a punta el 2026-09-26 (Navisworks 2026 + Revit 2026): choque
+detectado en Navisworks, reproducido en Revit, tubería movida 363 mm con la columna
+inmóvil, y el mismo test de Navisworks lo marcó Resuelto al re-correrlo. Ojo: la vista
+3D que Navisworks lee debe estar en detalle **Fino**; en Grueso la tubería llega como
+una línea y el test Hard reporta cero choques contra ella.
 
 ## Parameters and classification
 

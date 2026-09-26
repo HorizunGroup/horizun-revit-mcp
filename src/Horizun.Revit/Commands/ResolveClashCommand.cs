@@ -241,7 +241,7 @@ namespace Horizun.Revit.Commands
                 new XYZ((box.MaxX + growMm) / MmPerFoot, (box.MaxY + growMm) / MmPerFoot, (box.MaxZ + growMm) / MmPerFoot));
             return new FilteredElementCollector(doc).WhereElementIsNotElementType()
                 .WherePasses(new BoundingBoxIntersectsFilter(outline))
-                .Where(e => { try { return e.Category != null && e.Category.CategoryType == CategoryType.Model && !(e is RevitLinkInstance); } catch { return false; } })
+                .Where(e => !(e is RevitLinkInstance) && SpatialCoherence.IsPhysical(e))
                 .ToList();
         }
 

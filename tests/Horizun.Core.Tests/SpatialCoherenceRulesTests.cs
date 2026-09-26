@@ -25,6 +25,17 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_view_camera_is_not_a_physical_element_even_though_Revit_files_it_as_model()
+        {
+            Assert.False(SpatialCoherenceRules.Considered("OST_Cameras"));
+            Assert.False(SpatialCoherenceRules.Considered("OST_Viewers"));
+            Assert.False(SpatialCoherenceRules.Considered("OST_SectionBox"));
+            Assert.False(SpatialCoherenceRules.Considered("OST_PipingSystem"));
+            Assert.True(SpatialCoherenceRules.Considered("OST_PipeCurves"));
+            Assert.Equal(K.None, V("OST_Cameras", "OST_PipeCurves").Kind);
+        }
+
+        [Fact]
         public void A_door_in_its_own_host_wall_is_expected_but_in_another_wall_is_not()
         {
             Assert.Equal(K.Expected, V("OST_Doors", "OST_Walls", host: true).Kind);

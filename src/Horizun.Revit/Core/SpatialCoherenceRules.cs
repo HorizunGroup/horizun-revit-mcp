@@ -82,7 +82,13 @@ namespace Horizun.Revit.Core
             "OST_FabricReinforcement", "OST_Mass", "OST_Topography", "OST_Toposolid", "OST_Site", "OST_Rooms",
             "OST_MEPSpaces", "OST_Areas", "OST_ShaftOpening", "OST_SWallRectOpening", "OST_FloorOpening",
             "OST_RoofOpening", "OST_ColumnOpening", "OST_StructConnections", "OST_StructuralStiffener",
-            "OST_Parts", "OST_Assemblies", "OST_RvtLinks", "OST_Lines", "OST_CLines", "OST_SketchLines");
+            "OST_Parts", "OST_Assemblies", "OST_RvtLinks", "OST_Lines", "OST_CLines", "OST_SketchLines",
+            // Revit files a 3D view's camera under a MODEL category with a bounding box the
+            // size of the view: measured 2026-09-26, three view cameras blocked every lateral
+            // move a clash resolution tried around the origin.
+            "OST_Cameras", "OST_Viewers", "OST_SectionBox",
+            // A system's geometry is its members'; the system element itself has no solid.
+            "OST_PipingSystem", "OST_DuctSystem", "OST_ElectricalCircuit");
         /// <summary>Pairs that meet by construction: the structural frame, and walls standing on slabs.</summary>
         private static readonly HashSet<string> ExpectedPairs = PairSet(
             "OST_StructuralFraming|OST_StructuralColumns", "OST_StructuralFraming|OST_Floors",
