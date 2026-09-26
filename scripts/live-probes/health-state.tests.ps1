@@ -14,7 +14,7 @@ function Reply($data) { [pscustomobject]@{ isError = $false; data = $data; text 
 function New-Health([bool]$Workshared, [int]$Batches) {
     $ws = if ($Workshared) {
         [pscustomobject]@{
-            workshared = $true; username = 'pablo'; owned_worksets = @('Workset1')
+            workshared = $true; username = 'user1'; owned_worksets = @('Workset1')
             borrowed_by_me = [pscustomobject]@{ complete = $true; elements_checked = 120; elements_total_candidates = 120; owned_by_current_user_count = 4; elapsed_ms = 12 }
         }
     }
