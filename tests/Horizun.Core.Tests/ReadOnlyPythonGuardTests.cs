@@ -16,6 +16,9 @@ namespace Horizun.Core.Tests
     {
         [Theory]
         [InlineData("doc.Save()", "Document.Save()")]
+        [InlineData("doc.SynchronizeWithCentral(t, s)", "Document.SynchronizeWithCentral()")]
+        [InlineData("WorksharingUtils.RelinquishOwnership(doc, r, o)", "WorksharingUtils.RelinquishOwnership()")]
+        [InlineData("link_type.Unload(None)", "RevitLinkType/CADLinkType load state")]
         [InlineData("doc.SaveAs(path)", "Document.SaveAs()")]
         [InlineData("doc.Close(False)", "Document.Close()")]
         [InlineData("app.OpenDocumentFile(mp)", "Application.OpenDocumentFile()")]

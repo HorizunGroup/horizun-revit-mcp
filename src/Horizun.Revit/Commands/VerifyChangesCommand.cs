@@ -112,6 +112,14 @@ namespace Horizun.Revit.Commands
             {
                 JObject picture = Picture(doc, subjects, outcome, pixel, request.Value<string>("orientation") ?? "isometric");
                 foreach (JProperty p in picture.Properties()) result[p.Name] = p.Value;
+                // The temporary view must be GONE. A rollback that did not confirm leaves a
+                // view in somebody's model; that is a failure of this call, not a footnote.
+                string rolled = picture["image"]?.Value<string>("temporary_view_rollback");
+                if (rolled != null && rolled != TransactionStatus.RolledBack.ToString() && rolled != "not_attempted")
+                    return CommandResult.FailWithDetail(
+                        "The spatial check ran, but the temporary verification view was not rolled back (" + rolled +
+                        "): a view may remain in the model. Inspect it and delete it with horizun_delete_verified.",
+                        new JObject { ["code"] = "temporary_view_not_rolled_back", ["write_started"] = true, ["result"] = result });
             }
             else if (capture) result["image"] = new JObject { ["captured"] = false, ["why"] = "no model element with geometry in scope" };
             result["next"] = outcome.Errors + outcome.Warnings > 0

@@ -66,6 +66,9 @@ if (-not $forward.Contains('ClosedWorksetDocument') -and (Test-Path -LiteralPath
             $forward['ClosedWorksetDocument'] = [string]$entry.release_title
             $forward['ClosedWorksetName'] = [string]$entry.closed_workset
         }
+        if ($entry -and $entry.inactive_model -and -not $forward.Contains('InactiveFixturePath')) {
+            $forward['InactiveFixturePath'] = [string]$entry.inactive_model
+        }
     } catch { Write-Warning "release-runner-fixtures.json could not be read: $($_.Exception.Message)" }
 }
 & $verifyLive @forward

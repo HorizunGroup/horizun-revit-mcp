@@ -318,7 +318,8 @@ namespace Horizun.Revit.Core
 
         public static JObject ToJson(Outcome o, int maxFindings = 50)
         {
-            string status = o.Errors > 0 ? "conflicts" : o.Warnings > 0 ? "warnings" : o.Partial ? "partial" : o.Subjects == 0 ? "nothing_to_check" : "clean";
+            string status = o.Errors > 0 ? "conflicts" : o.Warnings > 0 ? "warnings" : o.Partial ? "partial" : o.Subjects == 0 ? "nothing_to_check"
+                          : o.Checked > 0 && o.WithoutSolid == o.Checked ? "not_measured" : "clean";
             var list = new JArray();
             foreach (Finding f in o.Findings.OrderBy(f => f.Verdict.Severity == "error" ? 0 : 1).Take(maxFindings))
                 list.Add(new JObject
@@ -425,19 +426,22 @@ namespace Horizun.Revit.Core
         private static double? Shared(List<Solid> a, List<Solid> b)
         {
             if (a.Count == 0 || b.Count == 0) return null;
-            double total = 0; bool any = false;
+            double total = 0; bool any = false, failed = false;
             foreach (Solid x in a)
                 foreach (Solid y in b)
                 {
                     try
                     {
                         Solid i = BooleanOperationsUtils.ExecuteBooleanOperation(x, y, BooleanOperationsType.Intersect);
-                        if (i != null) { total += Math.Abs(i.Volume); any = true; }
-                        else any = true;
+                        if (i != null) total += Math.Abs(i.Volume);
+                        any = true;
                     }
-                    catch { }
+                    catch { failed = true; }
                 }
-            return any ? total : (double?)null;
+            // A pair Revit could not intersect may be exactly the overlapping one: below the
+            // touch threshold with any failure, the size is UNKNOWN, never "no overlap".
+            if (!any || (failed && total < SpatialCoherenceRules.TouchVolumeFt3)) return null;
+            return total;
         }
 
         private static double? Volume(List<Solid> s)

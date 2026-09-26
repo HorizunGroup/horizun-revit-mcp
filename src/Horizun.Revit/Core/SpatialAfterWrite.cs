@@ -86,8 +86,8 @@ namespace Horizun.Revit.Core
         public static void Attach(string tool, ChangeWatch watch, CommandResult result)
         {
             if (watch == null) return;
-            foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             if (result == null || !result.Success) return;
+            foreach (ChangeWatch.DocChanges d in watch.Documents) ChangeLedger.Record(tool, d);
             StampChanges(watch, result);
             if (!Enabled) return;
             if (tool == "horizun_verify_changes" || DataOnlyTools.Contains(tool)) return;

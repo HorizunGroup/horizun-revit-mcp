@@ -96,6 +96,10 @@ param(
     # distinction it claimed to test was never tested. It needs a document that
     # really is open and really is not active; without one, say so.
     [string]$InactiveDocument,
+    # A SAME-YEAR model to open as the small (S) scan workload when -InactiveDocument
+    # is not already open. It is COPIED into this run's scratch folder first, so the
+    # original is never touched and the year driver closes it as a harness document.
+    [string]$InactiveFixturePath,
     # A real shared parameter file and a definition inside it, for the
     # bind_shared_param rehearsal probe. Without them that probe is NOT COVERED:
     # a rehearsal that refuses because the SPF does not exist proves nothing about
@@ -10429,6 +10433,22 @@ __output__ = {'status': 'self_reported_verified', 'cover_id': cid, 'name': name}
         if ($sizeHealth.data) { $openFacts = @($sizeHealth.data.open_documents) }
         $releaseFact = $openFacts | Where-Object { [string]$_.title -eq $wDoc } | Select-Object -First 1
         $inactiveFact = $openFacts | Where-Object { [string]$_.title -eq $InactiveDocument } | Select-Object -First 1
+        # MEASURED 2026-09-25: under the year driver only the write document is open, so
+        # the S workload was never measured ("only 2 of 3 sizes"). Open a scratch COPY of
+        # this year's small fixture - never the original - and use it as S.
+        if (-not $inactiveFact -and $InactiveFixturePath -and (Test-Path -LiteralPath $InactiveFixturePath)) {
+            New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
+            $sCopy = Join-Path $scratchDir ('HZ_S_' + $probeRun + '.rvt')
+            Copy-Item -LiteralPath $InactiveFixturePath -Destination $sCopy -Force
+            $sOpen = Invoke-Write 'horizun_open_document' @{ path = $sCopy.Replace([char]92, '/'); expected_version = [string]$Year
+                                                              idempotency_key = ('live-w14-open-s-' + $probeRun) }
+            if (-not $sOpen.isError) {
+                $sizeHealth = Invoke-Write 'horizun_health' @{}
+                if ($sizeHealth.data) { $openFacts = @($sizeHealth.data.open_documents) }
+                $inactiveFact = $openFacts | Where-Object { [string]$_.title -eq [IO.Path]::GetFileNameWithoutExtension($sCopy) } | Select-Object -First 1
+                $releaseFact = $openFacts | Where-Object { [string]$_.title -eq $wDoc } | Select-Object -First 1
+            }
+        }
         $sizePlan = @()
         if ($inactiveFact -and $inactiveFact.path) {
             $sizePlan += @{ size='S'; title=[string]$inactiveFact.title; path=[string]$inactiveFact.path

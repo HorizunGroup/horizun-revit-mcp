@@ -407,6 +407,28 @@ namespace Horizun.Revit.Commands
             int requestedCount = Math.Max(ids.Count, created.Count);
             ApplicationState copyState = ApplicationOutcome.Applied(ApplicationOutcome.Committed,
                                                                     requestedCount, present, present, 0, 0, 0);
+            // EVERY REQUESTED ELEMENT MUST BE REPRESENTED, not just every created one present:
+            // Revit can skip a requested element and bring two dependents, and a count of
+            // created-and-present would then read verified (review 2026-09-26). A requested
+            // TYPE is represented by an arrived type of the same category and name, or - under
+            // use_destination - by the destination's own type of that name; an instance by a
+            // created element of the same category and type name.
+            var createdElements = created.Select(destination.GetElement).Where(e => e != null).ToList();
+            var missing = new JArray();
+            foreach (Element req in elements)
+            {
+                string cat = SafeCategory(req), name = SafeName(req);
+                bool isType = req is ElementType;
+                bool represented = isType
+                    ? createdElements.Any(c => c is ElementType && SafeCategory(c) == cat && SafeName(c) == name) ||
+                      (duplicates == "use_destination" && new FilteredElementCollector(destination).WhereElementIsElementType()
+                          .Any(t => SafeCategory(t) == cat && SafeName(t) == name))
+                    : createdElements.Any(c => !(c is ElementType) && SafeCategory(c) == cat &&
+                                               TypeNameOf(destination, c) == TypeNameOf(source, req));
+                if (!represented)
+                    missing.Add(new JObject { ["source_id"] = Rid.Value(req.Id), ["category"] = cat, ["name"] = name });
+            }
+            if (missing.Count > 0 && copyState == ApplicationState.VerifiedApplied) copyState = ApplicationState.Partial;
             bool copyVerified = copyState == ApplicationState.VerifiedApplied;
             var done = new JObject
             {
@@ -418,6 +440,7 @@ namespace Horizun.Revit.Commands
                 ["created"] = created.Count,
                 ["rows"] = rows,
                 ["types_that_arrived"] = arrived,
+                ["requested_not_represented"] = missing,
                 ["duplicate_types"] = duplicates,
                 ["type_name_collisions"] = new JArray(typeCollisions.Collisions),
                 ["source_open"] = sourceOpenInfo,

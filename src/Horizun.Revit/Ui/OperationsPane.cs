@@ -574,7 +574,11 @@ namespace Horizun.Revit.Ui
         private void CancelQueued()
         {
             int removed;
-            try { removed = AsyncQueue.DrainForShutdown().Count; }
+            // Through the pump, which FINISHES each removed job's record as not_started -
+            // draining the queue alone left horizun_job_status saying "queued" forever
+            // (review 2026-09-26). Only background jobs wait here; a synchronous call in
+            // the FIFO is not in this queue and is not touched.
+            try { removed = AsyncPump.FailEverythingWaiting("Cancelled from the operations pane before it started. It NEVER RAN."); }
             catch (Exception ex)
             {
                 _summary.Text = "The queue could not be drained: " + ex.Message;
@@ -583,7 +587,7 @@ namespace Horizun.Revit.Ui
 
             _summary.Text = removed == 0
                 ? "Nothing was waiting. Anything running now cannot be interrupted."
-                : removed + " queued item(s) were removed before they started. Anything already running " +
+                : removed + " background job(s) were cancelled before they started (their status says not_started). Anything already running " +
                   "continues: Revit offers no way to interrupt a command on its UI thread.";
             Refresh();
         }

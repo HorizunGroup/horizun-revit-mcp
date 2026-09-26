@@ -62,7 +62,7 @@ namespace Horizun.Revit.Core
                     foreach (ElementId id in added.Concat(modified).Concat(deleted))
                     {
                         long v = Rid.Value(id);
-                        d.Added.Remove(v); d.Modified.Remove(v);
+                        d.Added.Remove(v); d.Modified.Remove(v); d.Deleted.Remove(v);
                     }
                     return;
                 }
@@ -85,7 +85,8 @@ namespace Horizun.Revit.Core
             try
             {
                 string path = doc.PathName;
-                return string.IsNullOrEmpty(path) ? "title:" + doc.Title : "path:" + path.ToLowerInvariant();
+                // Two unsaved "Project1" documents share a title; the runtime hash keeps them apart.
+                return string.IsNullOrEmpty(path) ? "title:" + doc.Title + "#" + doc.GetHashCode() : "path:" + path.ToLowerInvariant();
             }
             catch { return "unknown"; }
         }
@@ -108,7 +109,10 @@ namespace Horizun.Revit.Core
 
         public static void Record(string tool, ChangeWatch.DocChanges d)
         {
-            if (d == null || (d.Added.Count == 0 && d.Modified.Count == 0 && d.Deleted.Count == 0)) return;
+            // Only what added or reshaped something is a "last write" worth checking: a
+            // delete-only or failed call must not replace the previous write and leave
+            // horizun_verify_changes with nothing to look at (review 2026-09-26).
+            if (d == null || (d.Added.Count == 0 && d.Modified.Count == 0)) return;
             var entry = new Entry
             {
                 Tool = tool, AtUtc = DateTime.UtcNow,

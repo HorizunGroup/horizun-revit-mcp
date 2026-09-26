@@ -46,6 +46,12 @@ namespace Horizun.Revit.Core
             (new Regex(@"\bOpenDocumentFile\s*\(", RegexOptions.Compiled), "Application.OpenDocumentFile()"),
             (new Regex(@"\bOpenAndActivateDocument\s*\(", RegexOptions.Compiled), "UIApplication.OpenAndActivateDocument()"),
             (new Regex(@"\bNewProjectDocument\s*\(", RegexOptions.Compiled), "Application.NewProjectDocument()"),
+            // Worksharing and link loading act on files and servers no rollback reaches
+            // (review 2026-09-26): a sync to central or a relinquish is not undone by
+            // rolling the group back.
+            (new Regex(@"\bSynchronizeWithCentral\s*\(", RegexOptions.Compiled), "Document.SynchronizeWithCentral()"),
+            (new Regex(@"\bRelinquishOwnership\s*\(", RegexOptions.Compiled), "WorksharingUtils.RelinquishOwnership()"),
+            (new Regex(@"\.\s*(Unload|Reload|LoadFrom|ReloadFrom)\s*\(", RegexOptions.Compiled), "RevitLinkType/CADLinkType load state"),
         };
 
         /// <summary>Every forbidden API this masked source mentions, in table order. Empty when none.</summary>
