@@ -975,7 +975,10 @@ how the two relate. The rules (`Core/SpatialCoherenceRules.cs`, unit-tested) jud
 
 | Situation | Verdict |
 |---|---|
-| door or window sharing solid with a column, beam, another wall, MEP, furniture, stair | error — blocked opening |
+| door or window sharing **3 L or more** of solid with a column, beam, another wall, MEP, furniture, stair | error — blocked opening |
+| a door's frame touching its floor or the wall beside it (**under 3 L**; measured 0.1–1.1 L on a real model) | expected, not a finding |
+| a wall, column or stair filling **10 L or more** of the 0.6 m clear zone in front of or behind a walk-through door (**1.80 m or taller**) | error — passage blocked |
+| an intersection Revit could not measure | at most a warning, never silently clean |
 | two elements of the same type occupying ≥95 % of the same volume | error — duplicate |
 | duct/pipe/tray/conduit through a structural column, beam or foundation | error — clash |
 | MEP against MEP without a connector between them | warning |
@@ -1036,3 +1039,12 @@ and states observed behaviour rather than a company's policy:
   around a third-party tool must not assume a name like "read-only" describes what
   the Revit API actually recorded - re-read the model, the way `read_only_check`
   does here, rather than trusting the label.
+
+**Calibration on a real model (2026-09-26).** A read-only pass over a detached copy of a
+real architecture model (Revit 2025, 234 doors) first reported 157 errors: door frames
+embedded 0.1–1.1 L in floors and adjacent walls, a clear zone as deep as the door is wide
+(a 2.6 m balcony door "saw" its parapet), and a gas-meter niche door "blocked" by its own
+back wall. With the 3 L opening threshold, a fixed 0.6 m zone, walk-through doors only
+(≥ 1.80 m) and a bounding-box prefilter, the same pass finished in 24 s with one finding -
+a chute hatch against its hopper whose volume Revit could not measure, now a warning.
+A column in a doorway (51 L) and one 0.7 m in front of a door still come back as errors.

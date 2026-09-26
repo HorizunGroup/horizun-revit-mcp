@@ -24,6 +24,16 @@ namespace Horizun.Revit.Core
     {
         /// <summary>Below this shared volume two solids are treated as touching, not overlapping (about 28 cm³).</summary>
         public const double TouchVolumeFt3 = 1e-3;
+        /// <summary>
+        /// CALIBRATED on a real architecture model (2026-09-26, 234 doors): a door's frame
+        /// embedded in its floor or in the wall beside it shares 0.1-1.1 L, while a column
+        /// in a doorway shares ~51 L. Below 3 L an opening's contact is its frame, not a block.
+        /// </summary>
+        public const double OpeningMinSharedFt3 = 0.003 / 0.028316846592;
+        /// <summary>A door lower than this is an access door, cabinet or hatch: no walk-through clear zone.</summary>
+        public const double WalkThroughMinHeightFt = 1.8 / 0.3048;
+        /// <summary>An obstacle must fill at least 10 L of a door's clear zone (a wall at the jamb corner grazes it).</summary>
+        public const double ClearanceMinFt3 = 0.010 / 0.028316846592;
         /// <summary>A duplicate shares at least this fraction of the smaller solid.</summary>
         public const double DuplicateShare = 0.95;
 
@@ -93,6 +103,20 @@ namespace Horizun.Revit.Core
 
         public static Verdict Classify(Pair p)
         {
+            Verdict v = ClassifyMeasured(p);
+            // An intersection Revit could not measure stays a finding, but never an ERROR on
+            // its own: calibrated on a real model (2026-09-26), the one survivor among 234
+            // doors was a chute hatch against its hopper, where the boolean failed.
+            if (v.Severity == "error" && !p.SharedVolume.HasValue)
+            {
+                v.Severity = "warning";
+                v.Reason += " (shared volume could not be measured)";
+            }
+            return v;
+        }
+
+        private static Verdict ClassifyMeasured(Pair p)
+        {
             if (p == null) throw new ArgumentNullException(nameof(p));
             if (!Considered(p.CategoryA) || !Considered(p.CategoryB)) return None();
             if (p.HostRelation || p.SameAssembly) return new Verdict { Kind = Kind.Expected, Reason = "host or same assembly" };
@@ -117,6 +141,8 @@ namespace Horizun.Revit.Core
             if (Openings.Contains(a) || Openings.Contains(b))
             {
                 string opening = Openings.Contains(a) ? a : b, other = opening == a ? b : a;
+                if (!unmeasured && shared < OpeningMinSharedFt3)
+                    return new Verdict { Kind = Kind.Expected, Reason = "the " + Label(opening) + "'s frame touches the " + Label(other) + " (less than 3 L shared)" };
                 if (Openings.Contains(other) || Structure.Contains(other) || Enclosure.Contains(other) || Mep.Contains(other) ||
                     Contents.Contains(other) || other == "OST_Stairs" || other == "OST_Railings")
                     return new Verdict
@@ -174,7 +200,7 @@ namespace Horizun.Revit.Core
             };
         }
 
-        /// <summary>Clear depth kept free in front of and behind a door, as a share of its width (min 0.6 m).</summary>
+        /// <summary>Clear depth kept free in front of and behind a door: 0.6 m, whatever its width.</summary>
         public const double ClearanceMinFt = 0.6 / 0.3048;
         /// <summary>Clear height checked above the door's base, so beams and ceilings overhead are not obstacles.</summary>
         public const double ClearanceHeightFt = 2.0 / 0.3048;

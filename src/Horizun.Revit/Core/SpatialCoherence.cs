@@ -245,7 +245,14 @@ namespace Horizun.Revit.Core
                     IList<Element> hits;
                     try
                     {
+                        // Box first: the solid filter alone scanned the whole model twice per
+                        // door (a real model's 234 doors ran out of a 5-minute budget).
+                        BoundingBoxXYZ zb = zone.GetBoundingBox();
+                        XYZ z0 = zb.Transform.OfPoint(zb.Min), z1 = zb.Transform.OfPoint(zb.Max);
+                        var zoneOutline = new Outline(new XYZ(Math.Min(z0.X, z1.X), Math.Min(z0.Y, z1.Y), Math.Min(z0.Z, z1.Z)),
+                                                      new XYZ(Math.Max(z0.X, z1.X), Math.Max(z0.Y, z1.Y), Math.Max(z0.Z, z1.Z)));
                         hits = new FilteredElementCollector(doc).WhereElementIsNotElementType()
+                            .WherePasses(new BoundingBoxIntersectsFilter(zoneOutline))
                             .WherePasses(new ElementIntersectsSolidFilter(zone)).ToElements();
                     }
                     catch { continue; }
@@ -258,7 +265,7 @@ namespace Horizun.Revit.Core
                         SpatialCoherenceRules.Verdict v = SpatialCoherenceRules.Clearance(CategoryKey(b), ib == hostId || Hosts(b, door));
                         if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
                         double? shared = Shared(new List<Solid> { zone }, Solids(b, cache));
-                        if (shared.HasValue && shared.Value < SpatialCoherenceRules.TouchVolumeFt3) continue;
+                        if (shared.HasValue && shared.Value < SpatialCoherenceRules.ClearanceMinFt3) continue;
                         if (!pairs.Add("clear:" + doorId + "|" + ib)) continue;
                         o.Findings.Add(new Finding { Verdict = v, A = door, B = b, SharedVolumeFt3 = shared });
                     }
@@ -278,8 +285,15 @@ namespace Horizun.Revit.Core
                 hand = new XYZ(hand.X, hand.Y, 0).Normalize(); facing = new XYZ(facing.X, facing.Y, 0).Normalize();
                 double width = DoorWidth(door);
                 if (width <= 0) return zones;
+                // Only a door a person WALKS through needs a clear passage. Calibrated on a real
+                // model (2026-09-26): a 0.90 x 0.85 m gas-meter niche door was "blocked" by the
+                // niche's own back wall. Below 1.80 m it is an access door, cabinet or hatch.
+                double height = DoorHeight(door);
+                if (height > 0 && height < SpatialCoherenceRules.WalkThroughMinHeightFt) return zones;
                 double half = width * 0.45;   // narrower than the leaf: a wall at the jamb is not an obstacle
-                double depth = Math.Max(SpatialCoherenceRules.ClearanceMinFt, width);
+                // A fixed 0.6 m of passage, NOT the door width: a 2.6 m balcony door "saw" the parapet at
+                // the balcony edge as an obstacle (calibrated on a real model, 2026-09-26).
+                double depth = SpatialCoherenceRules.ClearanceMinFt;
                 double wall = door.Host is Wall w ? w.Width : 0;
                 double z0 = p.Z + 0.05;
                 foreach (int side in new[] { 1, -1 })
@@ -293,6 +307,21 @@ namespace Horizun.Revit.Core
             }
             catch { }
             return zones;
+        }
+
+        private static double DoorHeight(FamilyInstance door)
+        {
+            foreach (BuiltInParameter bip in new[] { BuiltInParameter.DOOR_HEIGHT, BuiltInParameter.FAMILY_HEIGHT_PARAM, BuiltInParameter.GENERIC_HEIGHT })
+            {
+                try
+                {
+                    Parameter q = door.get_Parameter(bip) ?? door.Symbol?.get_Parameter(bip);
+                    if (q != null && q.StorageType == StorageType.Double && q.AsDouble() > 0.3) return q.AsDouble();
+                }
+                catch { }
+            }
+            try { BoundingBoxXYZ b = door.get_BoundingBox(null); if (b != null) return b.Max.Z - b.Min.Z; } catch { }
+            return 0;
         }
 
         private static double DoorWidth(FamilyInstance door)

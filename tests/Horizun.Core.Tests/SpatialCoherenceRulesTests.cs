@@ -38,6 +38,7 @@ namespace Horizun.Core.Tests
         {
             Assert.Equal(K.None, V("OST_Doors", "OST_StructuralColumns", shared: 1e-5).Kind);
             Assert.Equal(K.Conflict, V("OST_Doors", "OST_StructuralColumns", shared: null).Kind);
+            Assert.Equal("warning", V("OST_Doors", "OST_StructuralColumns", shared: null).Severity);
         }
 
         [Fact]
@@ -97,6 +98,19 @@ namespace Horizun.Core.Tests
             Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_Floors", false).Kind);
             Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_StructuralFraming", false).Kind);
             Assert.Equal(K.None, SpatialCoherenceRules.Clearance("OST_Doors", false).Kind);
+        }
+
+        [Fact]
+        public void A_door_frame_in_its_floor_or_beside_wall_is_contact_calibrated_on_a_real_model()
+        {
+            const double L = 1 / 28.316846592;   // one litre in ft3
+            // Measured on a real architecture model: 0.12 L (door/wall), 0.21 L (door/floor), 1.1 L max.
+            Assert.Equal(K.Expected, V("OST_Doors", "OST_Walls", shared: 0.12 * L).Kind);
+            Assert.Equal(K.Expected, V("OST_Doors", "OST_Floors", shared: 0.21 * L).Kind);
+            Assert.Equal(K.Expected, V("OST_Doors", "OST_Walls", shared: 1.1 * L).Kind);
+            // Measured in Revit 2026: a column in a doorway shares 51 L.
+            Assert.Equal("error", V("OST_Doors", "OST_Columns", shared: 51 * L).Severity);
+            Assert.Equal("error", V("OST_Windows", "OST_Walls", shared: 4 * L).Severity);
         }
 
         [Fact]

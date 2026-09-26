@@ -168,6 +168,29 @@ namespace Horizun.Revit.Commands
                             Orient(view, orientation);
                             view.SetSectionBox(box);
                             view.IsSectionBoxActive = true;
+                            // FRAME THE PICTURE TO THE BOX. ZoomFitType.FitToPage fits the view's
+                            // extents, and datums and far elements outside the section box still
+                            // widen them: measured on a real model, the checked door came out as a
+                            // speck in one corner. The crop box is set to the section box's corners
+                            // expressed in view coordinates.
+                            try
+                            {
+                                doc.Regenerate();
+                                BoundingBoxXYZ crop = view.CropBox;
+                                Transform toView = crop.Transform.Inverse;
+                                var pts = new List<XYZ>();
+                                for (int c = 0; c < 8; c++)
+                                    pts.Add(toView.OfPoint(new XYZ((c & 1) == 0 ? box.Min.X : box.Max.X,
+                                                                   (c & 2) == 0 ? box.Min.Y : box.Max.Y,
+                                                                   (c & 4) == 0 ? box.Min.Z : box.Max.Z)));
+                                double pad = 0.5;
+                                crop.Min = new XYZ(pts.Min(q => q.X) - pad, pts.Min(q => q.Y) - pad, crop.Min.Z);
+                                crop.Max = new XYZ(pts.Max(q => q.X) + pad, pts.Max(q => q.Y) + pad, crop.Max.Z);
+                                view.CropBox = crop;
+                                view.CropBoxActive = true;
+                                view.CropBoxVisible = false;
+                            }
+                            catch { /* the section box alone still limits what is drawn */ }
                             foreach (Category c in doc.Settings.Categories)
                                 if (c.CategoryType == CategoryType.Annotation && view.CanCategoryBeHidden(c.Id))
                                     try { view.SetCategoryHidden(c.Id, true); } catch { }
