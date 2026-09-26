@@ -126,34 +126,42 @@ namespace Horizun.Server
         }
 
         /// <summary>
-        /// Mark a state as used. False when it already was: a replay. Called only once the
-        /// state is about to be acted on, so a retry that merely lacked its answer (and is
-        /// asked again with the same state) does not burn it.
+        /// Mark a state as used. False when it could not be, with <paramref name="refusalReason"/>
+        /// naming why: "replayed" (this nonce was already consumed - single use, spent) or
+        /// "capacity" (the table is full of OTHER still-valid nonces and none could be forgotten
+        /// safely). Called only once the state is about to be acted on, so a retry that merely
+        /// lacked its answer (and is asked again with the same state) does not burn it.
         /// </summary>
-        public static bool TryConsume(JObject payload)
+        public static bool TryConsume(JObject payload, out string refusalReason)
         {
+            refusalReason = null;
             string nonce = (string)payload["nonce"];
             long exp = (long)payload["exp"];
             Prune();
-            return Consumed.TryAdd(nonce, exp);
+            if (Consumed.ContainsKey(nonce)) { refusalReason = "replayed"; return false; }
+            // THE CAPACITY GATE. A full table used to evict the oldest-expiring LIVE nonce to
+            // make room - which forgets a state that is still within its single-use replay
+            // window, exactly the guarantee this whole file exists to hold. An attacker (or an
+            // accidental retry storm) filling the table with unrelated requests could evict a
+            // target's still-valid nonce and then replay the target's own original state.
+            // Refuse the new consume instead: the caller is told plainly and can retry once the
+            // table has room (expiry, not eviction, is the only thing that frees a slot).
+            if (Consumed.Count >= MaxConsumed) { refusalReason = "capacity"; return false; }
+            bool added = Consumed.TryAdd(nonce, exp);
+            if (!added) refusalReason = "replayed";   // lost a race with a concurrent consume of the same nonce
+            return added;
         }
 
+        /// <summary>Removes only EXPIRED entries, and only bothers scanning once the table is
+        /// near its cap (the common case never pays for this at all). Never evicts a live
+        /// (unexpired) one - see TryConsume's capacity gate for why a full table refuses
+        /// instead of forgetting.</summary>
         private static void Prune()
         {
             if (Consumed.Count < MaxConsumed) return;
             long now = Now().ToUnixTimeMilliseconds();
             foreach (var kv in Consumed)
                 if (kv.Value < now) Consumed.TryRemove(kv.Key, out _);
-            // Still full of live states: the oldest-expiring go. They are the ones whose
-            // replay window closes first, so forgetting them opens the smallest gap.
-            while (Consumed.Count >= MaxConsumed)
-            {
-                string oldest = null;
-                long min = long.MaxValue;
-                foreach (var kv in Consumed)
-                    if (kv.Value < min) { min = kv.Value; oldest = kv.Key; }
-                if (oldest == null || !Consumed.TryRemove(oldest, out _)) break;
-            }
         }
 
         internal static void ResetForTests() => Consumed.Clear();
