@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**121 herramientas** <!--inventory:tools--> con **395 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**122 herramientas** <!--inventory:tools--> con **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -29,8 +29,8 @@ el runtime del servidor y los add-ins.
 
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
-| Entradas MCP | **121 herramientas** <!--inventory:tools-->, incluidas **48 de solo lectura** <!--inventory:reads--> y **73 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **395 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Entradas MCP | **122 herramientas** <!--inventory:tools-->, incluidas **48 de solo lectura** <!--inventory:reads--> y **74 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Acciones internas | **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -223,6 +223,7 @@ La [referencia detallada](docs/TOOLS.md) documenta argumentos y límites.
 | `horizun_audit_access` | Reportar qué puede hacer este puente en esta máquina y quién lo decidió. |
 | `horizun_audit_model` | Evaluar requisitos proporcionados del modelo con hallazgos, cobertura y evidencia de controles previos. |
 | `horizun_capture_view` | Exportar una vista como imagen para que el cliente pueda revisarla visualmente. |
+| `horizun_verify_changes` | Revisar lo que cambió la última escritura en busca de conflictos espaciales y devolver una imagen con ellos resaltados. |
 | `horizun_delete_verified` | Eliminar IDs explícitos o purgar contenido sin uso; anticipar dependencias y verificar eliminaciones. |
 | `horizun_list_elements` | Listar y paginar elementos del anfitrión y vínculos cargados, identificando su modelo. |
 | `horizun_model_scan` | Medir salud del modelo, advertencias, worksets, vínculos, familias, vistas y candidatos de limpieza. |
@@ -376,7 +377,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **395 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -400,7 +401,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_create_elements` | `fitting` | `elbow`, `union`, `transition`, `tee`, `takeoff`, `cross` |
 | `horizun_create_family` | `kind` | `extrusion`, `blend`, `revolution`, `sweep`, `swept_blend`, `pipe`, `duct`, `electrical`, `conduit`, `cable_tray`, `symbolic`, `model` |
 | `horizun_manage_materials` | `operation` | `create`, `duplicate`, `update` |
-| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `mirror`, `pin`, `unpin`, `change_type`, `set_curve`, `move_tag_head`, `set_tag_leader`, `array_linear`, `array_radial` |
+| `horizun_transform_elements` | `operation` | `wall_join`, `move`, `copy`, `rotate`, `mirror`, `pin`, `unpin`, `change_type`, `change_type_by_rule`, `realign_wall_sketch`, `set_curve`, `move_tag_head`, `set_tag_leader`, `array_linear`, `array_radial`, `rename_level` |
 | `horizun_manage_parameters` | `operation` | `list_bindings`, `create_shared`, `create_project`, `rebind`, `remove_binding`, `global_list`, `global_create`, `global_set`, `global_delete` |
 | `horizun_manage_curtain` | `operation` | `read`, `add_grid_line`, `remove_grid_line`, `set_mullions`, `set_panel_type` |
 | `horizun_manage_curtain` | `mode` | `add`, `remove` |
@@ -409,7 +410,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_manage_assemblies_parts` | `operation` | `list`, `create_parts`, `divide_parts`, `exclude_parts`, `restore_parts`, `dissolve_parts`, `create_assembly`, `assembly_views`, `disassemble` |
 | `horizun_manage_styles` | `operation` | `list_object_styles`, `set_object_style`, `create_subcategory`, `list_line_styles`, `create_line_style`, `list_line_patterns`, `create_line_pattern`, `list_fill_patterns`, `create_fill_pattern` |
 | `horizun_manage_units` | `operation` | `read`, `set`, `project_information`, `base_points` |
-| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports`, `create_filter`, `apply_filter`, `color_by_value`, `set_element_overrides`, `hide_elements`, `isolate_elements`, `reset_temporary`, `set_category_visibility`, `create_legend`, `place_legend_component`, `edit_filter`, `order_filters`, `explain_graphics`, `create_template`, `set_template_controls` |
+| `horizun_manage_views` | `operation` | `create_floor_plan`, `create_ceiling_plan`, `create_structural_plan`, `create_area_plan`, `create_3d`, `create_drafting`, `create_section`, `create_elevation`, `create_callout`, `duplicate_view`, `apply_template`, `set_phase`, `assign_scope_box`, `set_view_range`, `set_crop`, `set_annotation_crop`, `create_sheet`, `create_placeholder_sheet`, `convert_placeholder_sheet`, `duplicate_sheet`, `place_view`, `place_schedule`, `set_viewport_type`, `align_viewports`, `create_filter`, `apply_filter`, `color_by_value`, `set_element_overrides`, `hide_elements`, `isolate_elements`, `reset_temporary`, `set_category_visibility`, `create_legend`, `place_legend_component`, `edit_filter`, `order_filters`, `explain_graphics`, `create_template`, `set_template_controls`, `sheet_set_list`, `sheet_set_create`, `sheet_set_update`, `sheet_set_delete` |
 | `horizun_manage_views` | `mode` | `center`, `center_x`, `center_y`, `left`, `right`, `top`, `bottom` |
 | `horizun_plan_views` | `operation` | `room_views`, `deliverable_set`, `delivery_open`, `delivery_status`, `delivery_record`, `delivery_approve`, `delivery_invalidate` |
 | `horizun_query_planimetry` | `mode` | `inventory`, `sheets`, `views`, `placements`, `annotations`, `references` |
@@ -438,7 +439,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_manage_groups` | `operation` | `list`, `create`, `add_members`, `remove_members`, `rename_type`, `duplicate_type`, `swap_type`, `ungroup`, `convert_to_link` |
 | `horizun_manage_worksets` | `operation` | `list`, `create`, `rename`, `move_elements`, `set_default`, `visibility` |
 | `horizun_quantities` | `mode` | `volume`, `takeoff` |
-| `horizun_catalog_lookup` | `operation` | `leaf`, `bsdd_search`, `bsdd_search_dictionary`, `bsdd_class`, `bsdd_property`, `bsdd_dictionaries` |
+| `horizun_catalog_lookup` | `operation` | `leaf`, `search`, `bsdd_search`, `bsdd_search_dictionary`, `bsdd_class`, `bsdd_property`, `bsdd_dictionaries` |
 | `horizun_link_schedule` | `operation` | `import`, `match`, `write`, `status_view` |
 | `horizun_execute_plan` | `kind` | `plan`, `section`, `elevation` |
 | `horizun_promote_script` | `operation` | `list`, `show`, `propose`, `review`, `approve`, `activate`, `deactivate`, `source`, `resolve`, `invocation` |
@@ -450,7 +451,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1492 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1504 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 
