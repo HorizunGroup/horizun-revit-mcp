@@ -17,6 +17,12 @@ function New-Fake([string]$mode) {
             'horizun_list_elements' { return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 1 }) }) }
             'horizun_query_model' { return & $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = 7; is_element_type = $true }) }) }
             'horizun_coordination' {
+                if ($a.operation -eq 'import_navisworks' -and $a.dry_run -eq $false) {
+                    # The real tool issues no token: the apply is a plain call.
+                    $s.Calls += 'horizun_coordination:apply:import_navisworks'
+                    $s.Recorded = $true
+                    return & $reply ([pscustomobject]@{ recorded = 1; verified_by_reread = $true })
+                }
                 if ($a.operation -eq 'import_navisworks') {
                     if ($s.Mode -eq 'not-reproduced') { return & $reply ([pscustomobject]@{ reproduced = 0; not_reproduced = 1; would_record = 0 }) }
                     return & $reply ([pscustomobject]@{ reproduced = 1; not_reproduced = 0; would_record = 1 })
@@ -42,8 +48,8 @@ function New-Fake([string]$mode) {
             'horizun_create_elements' { $id = $s.Next; $s.Next++; return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ rows = @([pscustomobject]@{ element_id = $id }) })) } }
             'horizun_coordination' {
                 if ($a.operation -eq 'import_navisworks') {
-                    $s.Recorded = $true
-                    return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ recorded = 1; verified_by_reread = $true })) }
+                    # Mirrors the real tool: its dry run carries no confirmation_token.
+                    return @{ stage = 'dry_run'; answer = (& $reply ([pscustomobject]@{ reproduced = 1; would_record = 1 })) }
                 }
                 if ($a.operation -eq 'show') {
                     return @{ stage = 'apply'; answer = (& $reply ([pscustomobject]@{ postconditions = [pscustomobject]@{ all_verified = $true }; view_id = $s.ViewId })) }
@@ -78,6 +84,7 @@ $cases2 = @(& $module.Run $g.Ctx)
 Check 'a dry run that reproduces nothing fails case 0 and stops before recording' (
     $cases2[0].Outcome -eq 'fail' -and -not ($g.State.Calls -contains 'horizun_coordination:apply:import_navisworks'))
 Check 'the staged pipes are still deleted after a failed dry run' ($g.State.Calls -contains 'horizun_delete_verified:apply:')
+Check 'a failed dry run still reports every catalogued case' ($cases2.Count -eq $module.Catalog.Count)
 
 $h = New-Fake 'ok'; $h.Ctx.WriteGate = $true
 $cases3 = @(& $module.Run $h.Ctx)

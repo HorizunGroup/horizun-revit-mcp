@@ -89,17 +89,20 @@ $script:HzProbeModules += [pscustomobject]@{
             $dryOk = -not $dry.isError -and $dry.data -and [int]$dry.data.reproduced -ge 1 -and $dry.data.would_record -ge 1
             $cases = @()
             $cases += Out-Case 0 $(if ($dryOk) { 'pass' } else { 'fail' }) (($dry.data | ConvertTo-Json -Depth 6 -Compress) -as [string])
-            if (-not $dryOk) { return $cases }
+            if (-not $dryOk) { foreach ($i in 1..3) { $cases += Out-Case $i 'not_covered' 'the import dry run did not reproduce the synthetic issue' }; return $cases }
 
             # ---- 1: apply records with origin navisworks ---------------------------
-            $ap = & $Ctx.Apply 'horizun_coordination' @{ operation = 'import_navisworks'; target_document = $doc; path = $path; dry_run = $false } ($Ctx.RunId + '-nh-import')
-            $recorded = $ap.stage -eq 'apply' -and -not $ap.answer.isError -and [int]$ap.answer.data.recorded -ge 1 -and $ap.answer.data.verified_by_reread -eq $true
+            # import_navisworks writes the ledger, never the model: it issues no
+            # confirmation_token (measured live 2026-09-26 - through Apply the probe stopped
+            # at the dry run on every year). It is applied with dry_run=false directly.
+            $ap = & $Ctx.Call 'horizun_coordination' @{ operation = 'import_navisworks'; target_document = $doc; path = $path; dry_run = $false; idempotency_key = ($Ctx.RunId + '-nh-import') }
+            $recorded = -not $ap.isError -and $ap.data -and [int]$ap.data.recorded -ge 1 -and $ap.data.verified_by_reread -eq $true
             $open = & $Ctx.Call 'horizun_coordination' @{ operation = 'list'; max_rows = 500 }
             $row = @($open.data.rows | Where-Object { $_.external_issue_id -eq $issueId }) | Select-Object -First 1
             $fid = if ($row) { [string]$row.finding_id } else { $null }
             $recordOk = $recorded -and $row -and $row.external_source -eq 'navisworks' -and $row.priority -eq 'high' -and $row.responsible -eq 'Mechanical'
             $cases += Out-Case 1 $(if ($recordOk) { 'pass' } else { 'fail' }) ("finding=$fid recorded=$recorded row=" + (($row | ConvertTo-Json -Depth 4 -Compress) -as [string]))
-            if (-not $recordOk) { return $cases }
+            if (-not $recordOk) { foreach ($i in 2..3) { $cases += Out-Case $i 'not_covered' 'the imported finding was not recorded' }; return $cases }
 
             # ---- 2: show creates + re-reads the view --------------------------------
             $viewName = 'Horizun - Navisworks probe ' + $Ctx.RunId

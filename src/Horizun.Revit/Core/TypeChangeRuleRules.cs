@@ -171,25 +171,40 @@ namespace Horizun.Revit.Core
         /// <summary>
         /// Whether a face's own UV bounding box can be TRUSTED as its true short/long side and
         /// area - i.e. the face is a plain rectangle, not merely convex-hulled into looking like
-        /// one. Three independent checks, ALL of which must hold:
+        /// one. The checks, ALL of which must hold:
         ///   * exactly one edge loop (a second loop is an opening/hole - the bounding box still
         ///     spans the outer boundary, but the face is not a solid rectangle);
-        ///   * exactly four edges in that loop (an L-shape, a triangle or a hexagon can still
-        ///     have a bounding box that LOOKS square);
-        ///   * its own area agrees with uExtent*vExtent within toleranceFraction (default 2%) -
-        ///     a parallelogram, trapezoid or chamfered rectangle can pass the first two checks
-        ///     yet have a bounding box bigger than its true area.
+        ///   * at least four edges in that loop;
+        ///   * its own area agrees with uExtent*vExtent within toleranceFraction (default 2%).
+        /// The AREA is what proves the shape: a polygon lying inside its own bounding box with
+        /// the same area IS that box, so an L-shape, a triangle, a trapezoid or a chamfer fails
+        /// here whatever its edge count. The edge count is NOT required to be four: measured
+        /// live 2026-09-26 in all four Revit years, a plain wall's exterior face comes back with
+        /// its sides split where other walls and floors meet it (collinear edges), and "exactly
+        /// four" left every such wall unmeasured.
         /// Any failure means MeasureInstance leaves the instance UNMEASURED rather than reporting
         /// a short/long side that looks precise but is not the element's real geometry.
         /// </summary>
         public static bool IsRectangularFace(int edgeLoopCount, int outerLoopEdgeCount, double areaFt2,
+            double uExtentFt, double vExtentFt, double toleranceFraction = 0.02) =>
+            WhyNotRectangular(edgeLoopCount, outerLoopEdgeCount, areaFt2, uExtentFt, vExtentFt, toleranceFraction) == null;
+
+        /// <summary>Null when the face is a plain rectangle; otherwise the reason, in words, with the numbers.</summary>
+        public static string WhyNotRectangular(int edgeLoopCount, int outerLoopEdgeCount, double areaFt2,
             double uExtentFt, double vExtentFt, double toleranceFraction = 0.02)
         {
-            if (edgeLoopCount != 1 || outerLoopEdgeCount != 4) return false;
+            if (edgeLoopCount != 1)
+                return edgeLoopCount + " edge loops (an opening or hole in the face)";
+            if (outerLoopEdgeCount < 4)
+                return "only " + outerLoopEdgeCount + " edges";
             double bboxAreaFt2 = Math.Abs(uExtentFt * vExtentFt);
-            if (bboxAreaFt2 <= 0) return false;
+            if (bboxAreaFt2 <= 0) return "an empty bounding box";
             double diff = Math.Abs(areaFt2 - bboxAreaFt2);
-            return diff <= bboxAreaFt2 * toleranceFraction;
+            if (diff > bboxAreaFt2 * toleranceFraction)
+                return string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                    "its area is {0:0.###} m2 against {1:0.###} m2 for its bounding box (not a rectangle, or rotated in its own UV frame)",
+                    areaFt2 * 0.09290304, bboxAreaFt2 * 0.09290304);
+            return null;
         }
     }
 }

@@ -170,10 +170,28 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_non_quadrilateral_outer_loop_fails_even_with_a_matching_area()
+        public void A_rectangle_whose_sides_are_split_into_collinear_edges_still_passes()
         {
-            // A hexagon can still have a bounding box whose area happens to equal u*v.
-            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 6, 15.0, 3.0, 5.0));
+            // Measured live 2026-09-26: a wall's exterior face has its sides split where other
+            // walls and floors meet it. Six edges, one loop, area exactly u*v: a rectangle.
+            Assert.True(TypeChangeRuleRules.IsRectangularFace(1, 6, 15.0, 3.0, 5.0));
+            Assert.True(TypeChangeRuleRules.IsRectangularFace(1, 8, 15.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void An_L_shape_fails_on_area_whatever_its_edge_count()
+        {
+            // 3x5 box with a 1x4 notch: six edges, area 11 against 15.
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 6, 11.0, 3.0, 5.0));
+            Assert.Contains("area", TypeChangeRuleRules.WhyNotRectangular(1, 6, 11.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void Fewer_than_four_edges_or_a_hole_is_named_in_the_reason()
+        {
+            Assert.Contains("only 3 edges", TypeChangeRuleRules.WhyNotRectangular(1, 3, 7.5, 3.0, 5.0));
+            Assert.Contains("2 edge loops", TypeChangeRuleRules.WhyNotRectangular(2, 4, 15.0, 3.0, 5.0));
+            Assert.Null(TypeChangeRuleRules.WhyNotRectangular(1, 4, 15.0, 3.0, 5.0));
         }
 
         [Fact]

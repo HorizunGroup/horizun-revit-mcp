@@ -497,15 +497,15 @@ namespace Horizun.Revit.Commands
                     foreach (ElementId id in p.Ids)
                     {
                         Element e = doc.GetElement(id);
-                        Dictionary<string, double> measured = MeasureInstance(e);
+                        Dictionary<string, double> measured = MeasureInstance(e, out string whyUnmeasured);
                         p.RuleMeasured[Rid.Value(id)] = measured;
                         TypeChangeMatch match = TypeChangeRuleRules.Evaluate(ruleSet, measured);
                         if (!match.Matched)
                             // match.Reason distinguishes "unmeasured" (rejected even when an 'else' rule exists -
                             // see TypeChangeRuleRules.Evaluate) from "no rule matched and no else was declared".
                             throw new ArgumentException("ElementId " + Rid.Value(id) + ": " + match.Reason +
-                                " (measured: " + (measured.Count == 0 ? "nothing - this element's face " +
-                                "could not be measured, or was not a plain rectangle" : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
+                                " (measured: " + (measured.Count == 0 ? "nothing - " + (whyUnmeasured ?? "this element's face " +
+                                "could not be measured") : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
                         ElementId typeId2 = Rid.Make(match.TypeId);
                         if (!e.IsValidType(typeId2))
                             throw new ArgumentException("rule[" + match.RuleIndex + "] matched type_id " + match.TypeId +
@@ -987,13 +987,17 @@ namespace Horizun.Revit.Commands
         /// TypeChangeRuleRules.IsRectangularFace gates it and an unmeasured instance stays unmeasured
         /// rather than silently mismeasured - see its own doc comment for the three checks.
         /// </summary>
-        private static Dictionary<string, double> MeasureInstance(Element e)
+        private static Dictionary<string, double> MeasureInstance(Element e, out string whyUnmeasured)
         {
             var m = new Dictionary<string, double>(StringComparer.Ordinal);
+            whyUnmeasured = null;
             try
             {
-                PlanarFace face = PrimaryFace(e) as PlanarFace;
-                if (face != null)
+                Face primary = PrimaryFace(e);
+                PlanarFace face = primary as PlanarFace;
+                if (primary == null) whyUnmeasured = "no exterior side face (wall) or top face (floor, roof, ceiling) to measure";
+                else if (face == null) whyUnmeasured = "its face is not planar";
+                else
                 {
                     BoundingBoxUV bb = face.GetBoundingBox();
                     double uExtentFt = bb.Max.U - bb.Min.U, vExtentFt = bb.Max.V - bb.Min.V;
@@ -1001,7 +1005,8 @@ namespace Horizun.Revit.Commands
                     EdgeArrayArray loops = face.EdgeLoops;
                     int loopCount = loops?.Size ?? 0;
                     int outerLoopEdgeCount = loopCount == 1 ? loops.get_Item(0).Size : -1;
-                    if (TypeChangeRuleRules.IsRectangularFace(loopCount, outerLoopEdgeCount, areaFt2, uExtentFt, vExtentFt))
+                    whyUnmeasured = TypeChangeRuleRules.WhyNotRectangular(loopCount, outerLoopEdgeCount, areaFt2, uExtentFt, vExtentFt);
+                    if (whyUnmeasured == null)
                     {
                         Tuple<double, double> sl = TypeChangeRuleRules.ShortLong(uExtentFt * 304.8, vExtentFt * 304.8);
                         m["short_side_mm"] = sl.Item1;
@@ -1011,7 +1016,7 @@ namespace Horizun.Revit.Commands
                     // else: not a plain rectangle - left unmeasured on purpose, see the doc comment above.
                 }
             }
-            catch { }
+            catch (Exception ex) { whyUnmeasured = "reading its face threw: " + ex.Message; }
             return m;
         }
 
