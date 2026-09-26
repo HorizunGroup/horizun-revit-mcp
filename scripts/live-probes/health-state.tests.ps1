@@ -14,8 +14,11 @@ function Reply($data) { [pscustomobject]@{ isError = $false; data = $data; text 
 function New-Health([bool]$Workshared, [int]$Batches) {
     $ws = if ($Workshared) {
         [pscustomobject]@{
-            workshared = $true; username = 'user1'; owned_worksets = @('Workset1')
-            borrowed_by_me = [pscustomobject]@{ complete = $true; elements_checked = 120; elements_total_candidates = 120; owned_by_current_user_count = 4; elapsed_ms = 12 }
+            # No username: HealthCommand.cs deliberately does not publish the account name.
+            # No elements_total_candidates: an upfront GetElementCount() was itself an
+            # unbounded pass over the model, so only "at least N scanned" is reported.
+            workshared = $true; owned_worksets = @('Workset1')
+            borrowed_by_me = [pscustomobject]@{ complete = $true; elements_checked = 120; owned_by_current_user_count = 4; elapsed_ms = 12 }
         }
     }
     else {
