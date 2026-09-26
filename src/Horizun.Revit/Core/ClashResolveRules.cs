@@ -81,6 +81,7 @@ namespace Horizun.Revit.Core
         public const string CodeNoGeometry = "no_run_geometry";
         public const string CodeSloped = "sloped_or_vertical_run";
         public const string CodePinned = "pinned";
+        public const string CodeImmovableSide = "immovable_side_blocks_resolution";
 
         private static readonly string[] Movable =
         {
@@ -137,6 +138,46 @@ namespace Horizun.Revit.Core
                 return sectionA < sectionB ? 0 : 1;
             }
             return a ? 0 : 1;
+        }
+
+        /// <summary>
+        /// Apply an external tool's immovable-side rule (e.g. a navisworks issue's
+        /// `immovable_side`) on top of the natural mover ChooseMover already picked.
+        ///
+        ///   * No preference, or ChooseMover found no mover at all: unchanged.
+        ///   * The natural mover already respects the preference (it is not the marked
+        ///     side): unchanged.
+        ///   * The natural mover IS the marked-immovable side: invert to the other side,
+        ///     but ONLY if that other side is itself a movable, host run - otherwise there
+        ///     is nothing left that may move, and the finding is refused rather than moved
+        ///     against the rule that named it.
+        ///
+        /// `forcedImmovableSide` and the eligibility flags are 0=A, 1=B throughout, the same
+        /// indexing ChooseMover returns.
+        /// </summary>
+        public static bool EnforceImmovableSide(int naturalMover, bool aEligible, bool bEligible,
+                                                int? forcedImmovableSide, out int finalMover,
+                                                out string code, out string reason)
+        {
+            code = null; reason = null; finalMover = naturalMover;
+            if (forcedImmovableSide == null || naturalMover < 0) return true;
+            if (naturalMover != forcedImmovableSide.Value) return true;
+            int alt = 1 - naturalMover;
+            bool altEligible = alt == 0 ? aEligible : bEligible;
+            string immovableLetter = forcedImmovableSide.Value == 0 ? "A" : "B";
+            if (altEligible)
+            {
+                finalMover = alt;
+                reason = "inverted: the coordination issue marks side " + immovableLetter +
+                          " immovable, so side " + (alt == 0 ? "A" : "B") + " moves instead of the naturally " +
+                          "smaller/only-eligible side.";
+                return true;
+            }
+            finalMover = -1;
+            code = CodeImmovableSide;
+            reason = "side " + immovableLetter + " is immovable per the coordination issue, and the other side is " +
+                      "not a movable, host, unconnected MEP run - report only.";
+            return false;
         }
 
         /// <summary>

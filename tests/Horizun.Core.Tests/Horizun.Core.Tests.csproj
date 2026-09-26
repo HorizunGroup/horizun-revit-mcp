@@ -85,6 +85,7 @@
     <Compile Include="..\..\src\Horizun.Revit\Core\PenetrationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\CoordinationRules.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\ClashResolveRules.cs" />
+    <Compile Include="..\..\src\Horizun.Revit\Core\NavisworksHandoff.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\UndoJournal.cs" />
     <Compile Include="..\..\src\Horizun.Revit\Core\StructuralLayoutRules.cs" />
     <!-- The rebar layout arithmetic. Provable at a desk, and it HAS to be: the
