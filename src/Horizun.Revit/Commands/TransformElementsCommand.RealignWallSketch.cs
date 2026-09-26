@@ -172,18 +172,39 @@ namespace Horizun.Revit.Commands
             {
                 if (group.Start() != TransactionStatus.Started)
                     return CommandResult.Fail("the transaction group would not start. Nothing was changed.");
-                foreach (RealignRow r in rows)
+                try
                 {
-                    JObject detail; string err;
-                    bool ok = TryRealign(doc, r.Wall, r.SketchId, ToXyzFeet(r.Drift.CorrectionVectorMm), commit: true, out detail, out err);
-                    if (!ok)
+                    foreach (RealignRow r in rows)
                     {
-                        try { group.RollBack(); } catch { }
-                        return CommandResult.Fail("Realigning wall " + r.Id + " failed: " + err +
-                            " " + PlanFailure.SingleTransactionOutcome(true, "RolledBack", "the whole batch was rolled back; nothing was changed"));
+                        JObject detail; string err;
+                        bool ok = TryRealign(doc, r.Wall, r.SketchId, ToXyzFeet(r.Drift.CorrectionVectorMm), commit: true, out detail, out err);
+                        if (!ok)
+                        {
+                            // REPORT what RollBack() actually returned - never assume RolledBack. See
+                            // Guard.RollBack and PlanFailure.SingleTransactionOutcome: anything other
+                            // than a confirmed RolledBack keeps its uncertainty in the message rather
+                            // than claiming a clean model nobody re-read.
+                            Guard.RollbackResult rb = Guard.RollBack(group);
+                            return CommandResult.Fail("Realigning wall " + r.Id + " failed: " + err + " " +
+                                PlanFailure.SingleTransactionOutcome(true, rb.StatusName, "the whole batch was rolled back; nothing was changed"));
+                        }
                     }
+                    // Guard.Assimilate throws SilentRollbackException when the group did not actually
+                    // commit - the "758 lie" this whole file exists to prevent (see Guard.cs).
+                    Guard.Assimilate(group, RealignOp);
                 }
-                group.Assimilate();
+                catch (SilentRollbackException)
+                {
+                    if (group.HasStarted()) Guard.RollBack(group);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    bool attempted = false; string rbStatus = PlanFailure.NotAttempted;
+                    if (group.HasStarted()) { attempted = true; rbStatus = Guard.RollBack(group).StatusName; }
+                    return CommandResult.Fail("Realigning wall sketch failed: " + ex.Message + ". " +
+                        PlanFailure.SingleTransactionOutcome(attempted, rbStatus, "nothing was changed"));
+                }
             }
 
             var verification = new JArray();
