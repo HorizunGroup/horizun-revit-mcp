@@ -505,7 +505,7 @@ namespace Horizun.Revit.Commands
                             // see TypeChangeRuleRules.Evaluate) from "no rule matched and no else was declared".
                             throw new ArgumentException("ElementId " + Rid.Value(id) + ": " + match.Reason +
                                 " (measured: " + (measured.Count == 0 ? "nothing - " + (whyUnmeasured ?? "this element's face " +
-                                "could not be measured") : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
+                                "could not be measured") : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)))) + ").");
                         ElementId typeId2 = Rid.Make(match.TypeId);
                         if (!e.IsValidType(typeId2))
                             throw new ArgumentException("rule[" + match.RuleIndex + "] matched type_id " + match.TypeId +

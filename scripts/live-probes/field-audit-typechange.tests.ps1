@@ -22,7 +22,7 @@ function New-Fake([string]$mode) {
             if ($op.operation -eq 'realign_wall_sketch') { return & $reply $null $true 'wall 11 has no edited profile' }
             $rule = $op.rule[0]
             if ($rule.type_id -eq 0) { return & $reply $null $true 'type 0 is not a valid type for it' }
-            if ($rule.when) { return & $reply $null $true 'instance 11 matched no rule and there is no else' }
+            if ($rule.when) { return & $reply $null $true "ElementId 11: no rule matched and no 'else' was declared (measured: short_side_mm=3000, long_side_mm=6000, area_m2=18)." }
             return & $reply ([pscustomobject]@{ confirmation_token = 't'; plan = @([pscustomobject]@{ instances = @([pscustomobject]@{ element_id = 11; measured = @{ short_side_mm = 200 } }) }) })
         }
         if ($tool -eq 'horizun_audit_model') {

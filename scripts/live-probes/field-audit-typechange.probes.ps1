@@ -98,9 +98,9 @@ $script:HzProbeModules += [pscustomobject]@{
                     target_document = $doc; dry_run = $true
                     operations      = @(@{ operation = 'change_type_by_rule'; element_ids = @($wid); rule = @(@{ when = @{ short_side_mm = @{ lt = -1 } }; type_id = $currentType }) })
                 }
-                $refused3 = ($dry3.isError -and $dry3.text -match 'matched no rule') -or
+                $refused3 = ($dry3.isError -and $dry3.text -match 'matched no rule|no rule matched') -or
                             (-not $dry3.isError -and [int]$dry3.data.valid_operations -eq 0 -and [int]$dry3.data.invalid_operations -eq 1 -and
-                             [string](@($dry3.data.errors)[0].error) -match 'matched no rule' -and -not $dry3.data.confirmation_token)
+                             [string](@($dry3.data.errors)[0].error) -match 'matched no rule|no rule matched' -and -not $dry3.data.confirmation_token)
                 Case $allNames[2] $T $(if ($refused3) { 'pass' } else { 'fail' }) ("isError=$($dry3.isError) text=$($dry3.text)")
             } else {
                 foreach ($n in @($allNames[0], $allNames[1], $allNames[2])) { Case $n $T 'unverified' ("could not learn the wall's own current type: " + $dry1.text) }
