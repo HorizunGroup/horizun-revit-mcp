@@ -54,5 +54,19 @@ for ($i = 0; $i -lt $tokens.Count; $i++) {
     if ($i + 1 -lt $tokens.Count -and -not $tokens[$i + 1].StartsWith('-')) { $forward[$name] = $tokens[$i + 1]; $i++ }
     else { $forward[$name] = $true }
 }
+# THE CLOSED-WORKSET FIXTURE BELONGS TO A YEAR. live-fixtures.json names one title for
+# every year (the 2026 file), so Revit 2023 refused it ("saved in Revit 2026") and
+# 2027 refused to upgrade it - measured 2026-09-25. The machine's release-runner map
+# names one per year; use it unless the caller passed the fixture explicitly.
+$runnerMap = Join-Path (Join-Path $env:USERPROFILE '.horizun') 'release-runner-fixtures.json'
+if (-not $forward.Contains('ClosedWorksetDocument') -and (Test-Path -LiteralPath $runnerMap)) {
+    try {
+        $entry = (Get-Content -LiteralPath $runnerMap -Raw | ConvertFrom-Json).years.("$yearNumber")
+        if ($entry -and $entry.release_title -and $entry.closed_workset) {
+            $forward['ClosedWorksetDocument'] = [string]$entry.release_title
+            $forward['ClosedWorksetName'] = [string]$entry.closed_workset
+        }
+    } catch { Write-Warning "release-runner-fixtures.json could not be read: $($_.Exception.Message)" }
+}
 & $verifyLive @forward
 exit $LASTEXITCODE

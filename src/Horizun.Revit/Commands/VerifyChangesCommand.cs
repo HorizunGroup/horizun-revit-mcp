@@ -133,12 +133,14 @@ namespace Horizun.Revit.Commands
                 foreach (var f in outcome.Findings)
                 {
                     var set = f.Verdict.Severity == "error" ? errorIds : warnIds;
-                    set.Add(Rid.Value(f.A.Id)); set.Add(Rid.Value(f.B.Id));
+                    set.Add(Rid.Value(f.A.Id)); if (f.LinkB == null) set.Add(Rid.Value(f.B.Id));
                 }
                 // Frame the subjects plus everything a finding names.
                 var framed = new Dictionary<long, Element>();
                 foreach (Element e in subjects) framed[Rid.Value(e.Id)] = e;
-                foreach (var f in outcome.Findings) { framed[Rid.Value(f.A.Id)] = f.A; framed[Rid.Value(f.B.Id)] = f.B; }
+                // A finding's B side in a LINK has link coordinates and a link id: it is
+                // framed and coloured through its host-side partner, never by its own id.
+                foreach (var f in outcome.Findings) { framed[Rid.Value(f.A.Id)] = f.A; if (f.LinkB == null) framed[Rid.Value(f.B.Id)] = f.B; }
                 BoundingBoxXYZ box = Frame(framed.Values);
                 using (var group = new TransactionGroup(doc, "Horizun: verify changes (temporary view)"))
                 {

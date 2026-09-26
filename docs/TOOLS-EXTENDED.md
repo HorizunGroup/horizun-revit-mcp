@@ -987,8 +987,10 @@ how the two relate. The rules (`Core/SpatialCoherenceRules.cs`, unit-tested) jud
 It never rolls anything back — the write already committed and verified what was
 asked. It is bounded (800 elements, 8 s) and says `partial` when a bound stopped it.
 Data-only tools (parameters, keynotes, worksets, materials, schedules, views…) are
-skipped: `DocumentChanged` cannot tell a moved element from a renamed one. Links are
-not examined (use `horizun_clash`). `HORIZUN_SPATIAL_CHECK=off` disables it for a
+skipped: `DocumentChanged` cannot tell a moved element from a renamed one. Loaded Revit
+links are examined too: each changed solid is carried into the link's coordinates and
+judged by category (host/join/connector relations do not cross files); an unloaded link
+is listed in `links_skipped`, never counted as clear. `HORIZUN_SPATIAL_CHECK=off` disables it for a
 process, for a bulk import that checks once at the end.
 
 **On demand.** `horizun_verify_changes` checks the elements the LAST Horizun write in

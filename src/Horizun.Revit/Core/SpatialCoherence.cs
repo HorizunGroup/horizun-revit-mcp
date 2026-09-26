@@ -31,12 +31,15 @@ namespace Horizun.Revit.Core
             public SpatialCoherenceRules.Verdict Verdict;
             public Element A, B;
             public double? SharedVolumeFt3;
+            /// <summary>B lives in this loaded link (its name), or null for the host.</summary>
+            public string LinkB;
         }
 
         public sealed class Outcome
         {
             public readonly List<Finding> Findings = new List<Finding>();
-            public int Subjects, Checked, WithoutSolid, Candidates, Expected;
+            public int Subjects, Checked, WithoutSolid, Candidates, Expected, LinksExamined, LinkCandidates;
+            public readonly List<string> LinksSkipped = new List<string>();
             public bool Partial;
             public string PartialWhy;
             public long Ms;
@@ -72,7 +75,7 @@ namespace Horizun.Revit.Core
             catch { return false; }
         }
 
-        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs)
+        public static Outcome Check(Document doc, IList<Element> subjects, int maxSubjects = DefaultMaxSubjects, int budgetMs = DefaultBudgetMs, bool includeLinks = true)
         {
             var o = new Outcome { Subjects = subjects.Count };
             var clock = Stopwatch.StartNew();
@@ -111,7 +114,92 @@ namespace Horizun.Revit.Core
                 }
             }
             if (!o.Partial) DoorClearance(doc, subjects, o, pairs, solidCache, clock, budgetMs);
+            if (!o.Partial && includeLinks) AgainstLinks(doc, subjects, o, solidCache, clock, budgetMs);
             o.Ms = clock.ElapsedMilliseconds;
+            return o;
+        }
+
+        // ---- loaded links ---------------------------------------------------------------
+        // A column in the linked STRUCTURE model standing in a door of THIS architecture
+        // model is the same defect as two host elements - it is just split across files,
+        // which is how real projects are built. Each changed solid is carried into the
+        // link's own coordinates (inverse of the instance's total transform), the link is
+        // queried there, and the shared volume is measured in the link. Relations the host
+        // could read (host, join, connector) do not cross files, so a link pair is judged
+        // by category only - which is what an expert looking at the federated view does.
+        private static void AgainstLinks(Document doc, IList<Element> subjects, Outcome o,
+                                         Dictionary<long, List<Solid>> cache, Stopwatch clock, int budgetMs)
+        {
+            List<RevitLinkInstance> links;
+            try { links = new FilteredElementCollector(doc).OfClass(typeof(RevitLinkInstance)).Cast<RevitLinkInstance>().ToList(); }
+            catch { return; }
+            foreach (RevitLinkInstance link in links)
+            {
+                Document linked = null;
+                try { linked = link.GetLinkDocument(); } catch { }
+                string linkName = SafeName(link);
+                if (linked == null) { o.LinksSkipped.Add(linkName + " (not loaded)"); continue; }
+                Transform toLink;
+                try { toLink = link.GetTotalTransform().Inverse; } catch { o.LinksSkipped.Add(linkName + " (no transform)"); continue; }
+                o.LinksExamined++;
+                var linkCache = new Dictionary<long, List<Solid>>();
+                foreach (Element a in subjects)
+                {
+                    if (clock.ElapsedMilliseconds > budgetMs) { o.Partial = true; o.PartialWhy = "the time budget ran out while examining link '" + linkName + "'"; return; }
+                    List<Solid> sa = Solids(a, cache);
+                    if (sa.Count == 0) continue;
+                    var moved = new List<Solid>();
+                    foreach (Solid x in sa)
+                        try { moved.Add(SolidUtils.CreateTransformed(x, toLink)); } catch { }
+                    if (moved.Count == 0) continue;
+                    var hits = new Dictionary<long, Element>();
+                    foreach (Solid m in moved)
+                    {
+                        try
+                        {
+                            BoundingBoxXYZ bb = m.GetBoundingBox();
+                            Transform t = bb.Transform;
+                            XYZ p0 = t.OfPoint(bb.Min), p1 = t.OfPoint(bb.Max);
+                            var outline = new Outline(new XYZ(Math.Min(p0.X, p1.X), Math.Min(p0.Y, p1.Y), Math.Min(p0.Z, p1.Z)),
+                                                      new XYZ(Math.Max(p0.X, p1.X), Math.Max(p0.Y, p1.Y), Math.Max(p0.Z, p1.Z)));
+                            foreach (Element b in new FilteredElementCollector(linked).WhereElementIsNotElementType()
+                                         .WherePasses(new BoundingBoxIntersectsFilter(outline))
+                                         .WherePasses(new ElementIntersectsSolidFilter(m)))
+                                hits[Rid.Value(b.Id)] = b;
+                        }
+                        catch { }
+                    }
+                    foreach (Element b in hits.Values)
+                    {
+                        if (!IsPhysical(b)) continue;
+                        o.LinkCandidates++;
+                        List<Solid> sb = Solids(b, linkCache);
+                        double? shared = Shared(moved, sb);
+                        var pair = new SpatialCoherenceRules.Pair
+                        {
+                            CategoryA = CategoryKey(a), CategoryB = CategoryKey(b),
+                            SameType = false, SharedVolume = shared,
+                            VolumeA = Volume(sa), VolumeB = Volume(sb)
+                        };
+                        SpatialCoherenceRules.Verdict v = SpatialCoherenceRules.Classify(pair);
+                        if (v.Kind == SpatialCoherenceRules.Kind.Expected) { o.Expected++; continue; }
+                        if (v.Kind == SpatialCoherenceRules.Kind.None) continue;
+                        v.Reason += " (in link '" + linkName + "')";
+                        o.Findings.Add(new Finding { Verdict = v, A = a, B = b, SharedVolumeFt3 = shared, LinkB = linkName });
+                    }
+                }
+            }
+        }
+
+        private static string SafeName(Element e)
+        {
+            try { return e.Name; } catch { return "link " + Rid.Value(e.Id); }
+        }
+
+        private static JObject DescribeIn(Element e, string link)
+        {
+            JObject o = Describe(e);
+            if (link != null) { o["link"] = link; o["source"] = "link"; }
             return o;
         }
 
@@ -239,7 +327,7 @@ namespace Horizun.Revit.Core
                     ["severity"] = f.Verdict.Severity,
                     ["reason"] = f.Verdict.Reason,
                     ["suggestion"] = f.Verdict.Suggestion,
-                    ["a"] = Describe(f.A), ["b"] = Describe(f.B),
+                    ["a"] = Describe(f.A), ["b"] = DescribeIn(f.B, f.LinkB),
                     ["shared_volume_m3"] = f.SharedVolumeFt3.HasValue ? (JToken)Math.Round(f.SharedVolumeFt3.Value * M3PerFt3, 6) : JValue.CreateNull()
                 });
             return new JObject
@@ -251,7 +339,9 @@ namespace Horizun.Revit.Core
                 ["partial"] = o.Partial, ["partial_why"] = o.PartialWhy,
                 ["findings"] = list, ["findings_truncated"] = o.Findings.Count > maxFindings,
                 ["ms"] = o.Ms,
-                ["method"] = "solid intersection (ElementIntersectsElementFilter + BooleanOperationsUtils) of each changed model element against every model element in the host document; hosts, joins, MEP connections and same-assembly members are expected, not findings. Links are not examined here - use horizun_clash for them."
+                ["links_examined"] = o.LinksExamined, ["link_neighbours_examined"] = o.LinkCandidates,
+                ["links_skipped"] = new JArray(o.LinksSkipped),
+                ["method"] = "solid intersection (ElementIntersectsElementFilter / ElementIntersectsSolidFilter + BooleanOperationsUtils) of each changed model element against every model element in the host document AND in every loaded Revit link (the changed solid is carried into the link's coordinates); hosts, joins, MEP connections and same-assembly members are expected, not findings. An unloaded link is listed in links_skipped, never counted as clear."
             };
         }
 
