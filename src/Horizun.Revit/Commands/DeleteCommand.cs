@@ -1448,6 +1448,13 @@ namespace Horizun.Revit.Commands
             public JObject ParamInfo;   // binding/categories/values-at-risk, captured BEFORE the delete
             public bool? ParamBindingConfirmedRemoved;  // re-checked AFTER the commit; null = could not be measured
             public string ParamBindingCheckError;
+            // The shared parameter's own GUID (its true identity, stable across a re-import that
+            // creates a NEW ParameterElement/id for what is semantically the same parameter) -
+            // captured BEFORE deletion, null for project/global parameters. See
+            // VerifyParameterBindingsRemoved: matching by name let an UNRELATED same-named
+            // parameter masquerade as "still bound"; matching by Id alone would miss a shared
+            // parameter re-bound under a fresh id with the same guid.
+            public string ParamGuid;
         }
 
         private class Cascade
@@ -1576,7 +1583,9 @@ namespace Horizun.Revit.Commands
                 return;
             }
             if (!(elem is ParameterElement pe)) return;
-            t.ParamKind = elem is SharedParameterElement ? "shared_parameter" : "project_parameter";
+            bool isShared = elem is SharedParameterElement;
+            t.ParamKind = isShared ? "shared_parameter" : "project_parameter";
+            if (isShared) { try { t.ParamGuid = ((SharedParameterElement)elem).GuidValue.ToString(); } catch { } }
             try
             {
                 InternalDefinition def = pe.GetDefinition() as InternalDefinition;
@@ -1632,9 +1641,18 @@ namespace Horizun.Revit.Commands
         /// <summary>
         /// Re-checked AFTER the commit, for parameter targets the model confirms are
         /// gone: does the BindingMap (project/shared) or GlobalParametersManager (global)
-        /// also agree, by NAME - beside the generic doc.GetElement(id)==null every
-        /// deletion already gets. By name rather than by the now-stale ElementId, because
-        /// the id the binding map indexed no longer resolves to anything to compare against.
+        /// also agree - beside the generic doc.GetElement(id)==null every deletion already
+        /// gets. Project/shared parameters are matched by IDENTITY, not by name: two
+        /// DIFFERENT parameters can share one name, which either hides a survivor behind
+        /// an unrelated match, or (the opposite direction) reports "still bound" against an
+        /// unrelated parameter that happens to carry the same name as the one just deleted.
+        /// A project parameter's identity is its InternalDefinition.Id, which equals the
+        /// deleted ParameterElement's own ElementId - stable and unambiguous. A shared
+        /// parameter's true identity is its GUID: re-importing the same .txt shared
+        /// parameter file can bind it again under a FRESH ElementId, so an id-only check
+        /// would miss that survivor; GuidValue catches it. GlobalParameter has no
+        /// InternalDefinition/binding-map entry at all - GlobalParametersManager.FindByName
+        /// is the API's own (name-based) way to ask "does one by this name exist".
         /// </summary>
         private static void VerifyParameterBindingsRemoved(Document doc, List<Target> targets)
         {
@@ -1658,7 +1676,14 @@ namespace Horizun.Revit.Commands
                         while (it.MoveNext())
                         {
                             var key = it.Key as InternalDefinition;
-                            if (key != null && string.Equals(key.Name, t.Name, StringComparison.Ordinal)) { stillBound = true; break; }
+                            if (key == null) continue;
+                            if (t.ParamKind == "shared_parameter" && !string.IsNullOrEmpty(t.ParamGuid))
+                            {
+                                if (doc.GetElement(key.Id) is SharedParameterElement stillSpe &&
+                                    string.Equals(stillSpe.GuidValue.ToString(), t.ParamGuid, StringComparison.OrdinalIgnoreCase))
+                                { stillBound = true; break; }
+                            }
+                            else if (key.Id == t.Id) { stillBound = true; break; }
                         }
                         t.ParamBindingConfirmedRemoved = !stillBound;
                     }
