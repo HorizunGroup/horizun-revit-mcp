@@ -480,4 +480,96 @@ namespace Horizun.Server.Tests
             finally { File.Delete(path); }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // catalog_path used to accept ANY path/extension/size and load it fully into
+    // memory with File.ReadAllBytes — a caller could point it at an unrelated,
+    // arbitrarily large file. ValidateCatalogPath/ValidateCatalogSize are pure
+    // (no I/O), so the rules are proven here without touching disk.
+    // -------------------------------------------------------------------------
+    public sealed class CatalogLookupPathValidationTests
+    {
+        [Theory]
+        [InlineData(@"C:\catalogs\classification.csv")]
+        [InlineData(@"C:\catalogs\classification.CSV")]
+        [InlineData(@"C:\catalogs\classification.tsv")]
+        [InlineData(@"C:\catalogs\classification.txt")]
+        public void ValidateCatalogPath_AbsoluteAllowedExtension_DoesNotThrow(string path)
+        {
+            CatalogLookup.ValidateCatalogPath(path);   // no exception == pass
+        }
+
+        [Fact]
+        public void ValidateCatalogPath_Relative_Throws()
+        {
+            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.ValidateCatalogPath(@"catalogs\classification.csv"));
+            Assert.Contains("absolute", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Theory]
+        [InlineData(@"C:\catalogs\classification.xlsx")]
+        [InlineData(@"C:\catalogs\classification.exe")]
+        [InlineData(@"C:\catalogs\classification")]
+        public void ValidateCatalogPath_DisallowedExtension_Throws(string path)
+        {
+            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.ValidateCatalogPath(path));
+            Assert.Contains(".csv", ex.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void ValidateCatalogPath_Empty_Throws()
+        {
+            Assert.Throws<ArgumentException>(() => CatalogLookup.ValidateCatalogPath(""));
+        }
+
+        [Fact]
+        public void ValidateCatalogSize_AtLimit_DoesNotThrow()
+        {
+            CatalogLookup.ValidateCatalogSize(CatalogLookup.MaxCatalogBytes, @"C:\catalogs\classification.csv");
+        }
+
+        [Fact]
+        public void ValidateCatalogSize_OverLimit_Throws()
+        {
+            var ex = Assert.Throws<ArgumentException>(() =>
+                CatalogLookup.ValidateCatalogSize(CatalogLookup.MaxCatalogBytes + 1, @"C:\catalogs\classification.csv"));
+            Assert.Contains("50 MB", ex.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Handle_DisallowedExtension_ThrowsBeforeReadingFile()
+        {
+            // The extension is checked BEFORE File.Exists/ReadAllBytes, so a wrong-extension
+            // path that does not even exist still fails with the extension message, not
+            // "file not found" — proving the order (validate first, read never happens).
+            var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
+            {
+                ["operation"] = "leaf",
+                ["catalog_path"] = @"C:\catalogs\does-not-exist.xlsx",
+                ["code"] = "D01"
+            }));
+            Assert.Contains(".csv", ex.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void Handle_OversizedCatalog_ThrowsWithoutBufferingBytes()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "hz_oversized_" + Guid.NewGuid().ToString("N") + ".csv");
+            try
+            {
+                using (FileStream fs = File.Create(path))
+                {
+                    fs.SetLength(CatalogLookup.MaxCatalogBytes + 1);   // sparse: no 50 MB actually written
+                }
+                var ex = Assert.Throws<ArgumentException>(() => CatalogLookup.Handle(new JObject
+                {
+                    ["operation"] = "leaf",
+                    ["catalog_path"] = path,
+                    ["code"] = "D01"
+                }));
+                Assert.Contains("50 MB", ex.Message, StringComparison.Ordinal);
+            }
+            finally { File.Delete(path); }
+        }
+    }
 }
