@@ -54,7 +54,9 @@ namespace Horizun.Core.Tests
                                           "horizun_regroup_by_param", "horizun_copy_slab_elevations", "horizun_embed_floors_in_toposolid",
                                           "horizun_grade_toposolid_around_floors", "horizun_rectangularize_walls" } },
             // the shared one-edit runner behind three single-operation tools
-            { "ModelEditRunner.cs", new[] { "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing" } }
+            { "ModelEditRunner.cs", new[] { "horizun_manage_curtain", "horizun_slab_shape", "horizun_create_railing" } },
+            // partial class CoordinationCommand: operation=show is the only mutating one
+            { "CoordinationShow.cs", new[] { "horizun_coordination" } }
         };
 
         private static string RepoRoot()

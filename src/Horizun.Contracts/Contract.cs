@@ -5435,7 +5435,7 @@ namespace Horizun.Contracts
             {
                 Name = "horizun_coordination",
                 Command = "horizun_coordination",
-                Description = @"List, update and export the durable clash-finding ledger that horizun_clash record_findings=true maintains per document. A finding is a clash pair with a stable order-normalized identity, a state and a history: open, assigned, accepted_risk, closed_by_decision are the states people set; resolved_by_model is MEASURED - only a complete detection run of the finding's own scope can set it, a partial run resolves nothing, and a resolved finding that returns is flagged as a regression. The ledger is bridge state under the Horizun data root, not model state: no Revit transaction opens here, and every update is re-read from disk before success is claimed. Every state change, assignment and comment lands in an APPEND-ONLY history the export carries. Export writes csv, json or bcf and reports the re-read byte count and SHA-256; the BCF claim is exactly STRUCTURAL - the zip is re-read and every markup.bcf re-parsed as XML against the ledger, and no consumer round-trip is proven. operation=import reads a returned .bcfzip back into the ledger: topics match by the GUID this ledger MINTED (not by title, which a coordinator is free to edit), a closed topic becomes closed_by_decision and NEVER resolved_by_model - an external tool saying Closed means a person decided, not that the geometry moved - comments are folded in without duplicating on a re-import, and a topic this ledger does not know is REPORTED rather than invented into it as a finding no detection run could ever resolve. Import is a dry run by default. operation=import_navisworks reads naviscoord-mcp's navis_handoff output (coordination_handoff.json; revit_worklist.json carries one side only and is reported untraceable-by-design): elements are matched by normalized source_file against the active document and loaded rvt links, and the pair is RE-DETECTED - solid intersection, or a measured distance otherwise. Only a REPRODUCED pair is folded into the ledger (origin navisworks; priority/responsible/immovable_side/suggested_action carried) with runComplete=false always - it never resolves a finding by itself. Reports issues_total/traceable/matched/reproduced/not_reproduced/not_traceable. Dry run by default. operation=evidence returns a ready manage_views section over one finding's clash point, to capture with horizun_capture_view.",
+                Description = @"List, update and export the durable clash-finding ledger that horizun_clash record_findings=true maintains per document. A finding is a clash pair with a stable order-normalized identity, a state and a history: open, assigned, accepted_risk, closed_by_decision are the states people set; resolved_by_model is MEASURED - only a complete detection run of the finding's own scope can set it, a partial run resolves nothing, and a resolved finding that returns is flagged as a regression. The ledger is bridge state under the Horizun data root, not model state: no Revit transaction opens here, and every update is re-read from disk before success is claimed. Every state change, assignment and comment lands in an APPEND-ONLY history the export carries. Export writes csv, json or bcf and reports the re-read byte count and SHA-256; the BCF claim is exactly STRUCTURAL - the zip is re-read and every markup.bcf re-parsed as XML against the ledger, and no consumer round-trip is proven. operation=import reads a returned .bcfzip back into the ledger: topics match by the GUID this ledger MINTED (not by title, which a coordinator is free to edit), a closed topic becomes closed_by_decision and NEVER resolved_by_model - an external tool saying Closed means a person decided, not that the geometry moved - comments are folded in without duplicating on a re-import, and a topic this ledger does not know is REPORTED rather than invented into it as a finding no detection run could ever resolve. Import is a dry run by default. operation=import_navisworks reads naviscoord-mcp's navis_handoff output (coordination_handoff.json; revit_worklist.json carries one side only and is reported untraceable-by-design): elements are matched by normalized source_file against the active document and loaded rvt links, and the pair is RE-DETECTED - solid intersection, or a measured distance otherwise. Only a REPRODUCED pair is folded into the ledger (origin navisworks; priority/responsible/immovable_side/suggested_action carried) with runComplete=false always - it never resolves a finding by itself. Reports issues_total/traceable/matched/reproduced/not_reproduced/not_traceable. Dry run by default. operation=show creates a PERSISTENT 3D view (section box + overrides: red = must move, orange = immovable, blue = unknown) over selected findings - the one operation here that WRITES the model, dry_run -> token -> apply, verified by re-reading the view/box/overrides; a link-only side is painted at the link level (link_level_overrides says so). operation=evidence returns a ready manage_views section over one finding's clash point, to capture with horizun_capture_view.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"",
   ""properties"": {
@@ -5447,10 +5447,18 @@ namespace Horizun.Contracts
         ""export"",
         ""import"",
         ""import_navisworks"",
+        ""show"",
         ""evidence""
       ],
       ""default"": ""list""
     },
+    ""target_document"": { ""type"": ""string"", ""description"": ""show: required - the document the view is created in.""},
+    ""finding_ids"": { ""type"": ""array"", ""maxItems"": 300, ""items"": { ""type"": ""string"" }, ""description"": ""show: scope to these findings; omitted uses status (or every open/assigned/accepted_risk finding).""},
+    ""view_name"": { ""type"": ""string"", ""description"": ""show: the persistent view's name; refused if one already exists with it.""},
+    ""per_issue"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: one view per finding instead of one aggregate view. Not yet implemented - refused.""},
+    ""max_views"": { ""type"": ""integer"", ""default"": 10, ""description"": ""show: reserved for per_issue.""},
+    ""select"": { ""type"": ""boolean"", ""default"": false, ""description"": ""show: also select the painted elements (best-effort, not part of the verified postconditions).""},
+    ""confirmation_token"": { ""type"": ""string"", ""description"": ""show apply: from the dry run.""},
     ""status"": {
       ""type"": ""string"",
       ""description"": ""list: filter by status. update: the new status (open, assigned, accepted_risk, closed_by_decision - resolved_by_model is detection's verdict and refuses).""
@@ -6572,7 +6580,7 @@ namespace Horizun.Contracts
             var dryRun = new HashSet<string>(StringComparer.Ordinal)
             {
                 "horizun_create_schedule", "horizun_write_params_verified", "horizun_delete_verified",
-                "horizun_manage_links",
+                "horizun_manage_links", "horizun_coordination",
                 "horizun_create_elements", "horizun_apply_reinforcement",
                 "horizun_apply_cad_plan",
                 "horizun_apply_ifc_plan",
