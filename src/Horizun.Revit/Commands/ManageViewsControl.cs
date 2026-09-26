@@ -284,6 +284,12 @@ namespace Horizun.Revit.Commands
                     PrintManager pm = doc.PrintManager;
                     ViewSheetSetting vss = pm.ViewSheetSetting;
                     ElementId originalNamedId = CurrentNamedSheetSetId(vss);
+                    // InSession is the SAME transient set every caller shares (a print dialog, another
+                    // action in this same batch). Assigning to CurrentViewSheetSet.Views below OVERWRITES
+                    // its membership, not merely selects it - RestoreCurrentSheetSet only restores WHICH
+                    // set is current, so without this snapshot/restore a caller who had views staged in
+                    // InSession before this call would find them silently replaced by this create.
+                    ViewSet originalInSessionViews = CloneViewSet(vss.InSession.Views);
                     try
                     {
                         vss.CurrentViewSheetSet = vss.InSession;
@@ -291,7 +297,11 @@ namespace Horizun.Revit.Commands
                         if (!vss.SaveAs(name))
                             throw new InvalidOperationException("Revit refused to save sheet set '" + name + "' (ViewSheetSetting.SaveAs returned false).");
                     }
-                    finally { RestoreCurrentSheetSet(doc, vss, originalNamedId); }
+                    finally
+                    {
+                        RestoreInSessionViews(vss, originalInSessionViews);
+                        RestoreCurrentSheetSet(doc, vss, originalNamedId);
+                    }
                     ViewSheetSet created = FindSheetSet(doc, name);
                     if (created == null) throw new InvalidOperationException("sheet set '" + name + "' was saved but does not re-read from the document.");
                     a["__view_ids"] = new JArray(vs.Cast<View>().Select(v => Rid.Value(v.Id)));
@@ -525,6 +535,28 @@ namespace Horizun.Revit.Commands
                     vss.CurrentViewSheetSet = again;
                 else
                     vss.CurrentViewSheetSet = vss.InSession;
+            }
+            catch { /* best-effort restore: the operation's own result still stands */ }
+        }
+
+        /// <summary>An independent copy of a ViewSet's membership, so mutating the original later
+        /// (or the source going out of scope) cannot change what was captured here.</summary>
+        private static ViewSet CloneViewSet(ViewSet source)
+        {
+            var clone = new ViewSet();
+            if (source != null)
+                foreach (View v in source) clone.Insert(v);
+            return clone;
+        }
+
+        /// <summary>Puts InSession's own membership back to what it was before this operation
+        /// overwrote it. Must select InSession as current first - same requirement as writing it.</summary>
+        private static void RestoreInSessionViews(ViewSheetSetting vss, ViewSet originalViews)
+        {
+            try
+            {
+                vss.CurrentViewSheetSet = vss.InSession;
+                vss.CurrentViewSheetSet.Views = originalViews;
             }
             catch { /* best-effort restore: the operation's own result still stands */ }
         }

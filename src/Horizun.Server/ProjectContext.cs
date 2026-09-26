@@ -732,7 +732,8 @@ namespace Horizun.Server
                         ["requestState"] = client.RequestState
                     });
                 }
-                if (!MrtrRequestState.TryConsume(state)) throw StateRejected("replayed", null);
+                string consumeRefusal;
+                if (!MrtrRequestState.TryConsume(state, out consumeRefusal)) throw StateRejected(consumeRefusal ?? "replayed", null);
 
                 var ready = new List<Question>();
                 foreach (JToken t in (JArray)pendingForm["ids"])
@@ -810,6 +811,7 @@ namespace Horizun.Server
                 case "mismatch": meaning = "it was issued for different arguments (path, dry_run, overwrite, language or answers must be sent unchanged on the retry)"; break;
                 case "principal_mismatch": meaning = "it was issued to a different client"; break;
                 case "replayed": meaning = "it was already used; each state carries one answer once"; break;
+                case "capacity": meaning = "the server's single-use tracking table is full of other still-valid states; retry shortly once some expire"; break;
                 default: meaning = "it is not a state this server issued"; break;
             }
             var detail = new JObject

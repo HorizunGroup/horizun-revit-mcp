@@ -267,21 +267,26 @@ namespace Horizun.Revit.Commands
                 catch (Exception ex) { worksetError = "user worksets could not be enumerated: " + ex.Message; }
 
                 const int BudgetMs = 500;
-                int scanned = 0, borrowedByMe = 0, totalCandidates = 0;
+                int scanned = 0, borrowedByMe = 0;
                 bool complete = false;
                 string scanNote;
                 var sw = Stopwatch.StartNew();
                 try
                 {
+                    // NO FilteredElementCollector.GetElementCount() up front: that call is itself
+                    // an unbounded pass over the whole collection - on a large model it could take
+                    // far longer than BudgetMs all by itself, defeating the very budget it was
+                    // meant to inform. The only bounded work here is the foreach below; elements_checked
+                    // is reported as "at least this many", never alongside a total the code never
+                    // actually counted.
                     var collector = new FilteredElementCollector(active).WhereElementIsNotElementType();
-                    totalCandidates = collector.GetElementCount();
                     string stopReason = null;
                     foreach (Element e in collector)
                     {
                         if (sw.ElapsedMilliseconds > BudgetMs)
                         {
-                            stopReason = "time budget of " + BudgetMs + "ms reached after checking " + scanned +
-                                         " of " + totalCandidates + " candidate element(s)";
+                            stopReason = "time budget of " + BudgetMs + "ms reached after checking at least " +
+                                         scanned + " candidate element(s)";
                             break;
                         }
                         scanned++;
@@ -293,7 +298,9 @@ namespace Horizun.Revit.Commands
                     complete = stopReason == null;
                     scanNote = complete
                         ? "Every non-type element candidate was checked with WorksharingUtils.GetCheckoutStatus."
-                        : stopReason + "; owned_by_current_user_count below is a LOWER BOUND, not the total.";
+                        : stopReason + "; owned_by_current_user_count below is a LOWER BOUND, not the total. " +
+                          "elements_checked is 'at least N scanned', not the model's total candidate count - " +
+                          "counting that upfront would itself be another unbounded pass over the model.";
                 }
                 catch (Exception ex)
                 {
@@ -303,14 +310,17 @@ namespace Horizun.Revit.Commands
                 return new
                 {
                     workshared = true,
-                    username = me,
+                    // username is deliberately NOT published: this block already answers "which
+                    // worksets/elements are mine" without naming the account, and there is no
+                    // horizun_health argument to opt back in - adding one would grow this
+                    // command's contract (it currently takes no arguments at all) for a field
+                    // nothing else in this codebase reads.
                     owned_worksets = ownedWorksets,
                     owned_worksets_note = worksetError,
                     borrowed_by_me = new
                     {
                         complete,
                         elements_checked = scanned,
-                        elements_total_candidates = totalCandidates,
                         owned_by_current_user_count = borrowedByMe,
                         elapsed_ms = sw.ElapsedMilliseconds,
                         note = scanNote

@@ -1467,8 +1467,9 @@ namespace Horizun.Contracts
                 Command = "horizun_manage_curtain",
                 Description =
                     "Curtain wall/system grids: read (u/v lines with offsets and segments, mullions, panels), " +
-                    "add_grid_line, remove_grid_line (deletes it), set_mullions (add/remove on a line's segments) and " +
-                    "set_panel_type (panel ids or a point; door/window panel types included). One edit per call, " +
+                    "add_grid_line, remove_grid_line (deletes it and merges its bordering cells; refused if a bordering " +
+                    "panel is a door unless accept_panel_merge=true), set_mullions (add/remove on a line's segments) " +
+                    "and set_panel_type (panel ids or a point; door/window panel types included). One edit per call, " +
                     "re-read from the committed grid; a disagreement rolls back.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""element_id""],
@@ -1487,6 +1488,7 @@ namespace Horizun.Contracts
     ""segment_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""Omit for every segment."" },
     ""panel_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
     ""type_id"": { ""type"": ""integer"" },
+    ""accept_panel_merge"": { ""type"": ""boolean"", ""default"": false, ""description"": ""remove_grid_line only: proceed even though a bordering panel is a door, which the cell merge would replace or discard."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")
@@ -3310,7 +3312,9 @@ namespace Horizun.Contracts
                     "Model/detail groups: list types, instances, members, nesting and attached detail groups; create from " +
                     "element_ids; add_members/remove_members (ungroup+regroup - Revit has no edit-group API; with other " +
                     "instances scope is required); rename_type, duplicate_type, swap_type, ungroup. convert_to_link is " +
-                    "refused: no API. Dry run rehearses; apply needs the token; members and instance counts are re-read.",
+                    "refused: no API. scope=all_instances regenerates every other instance member with a new id, losing " +
+                    "Mark/Comments and orphaning tags/dimensions; refused unless accept_member_regeneration=true. Dry " +
+                    "run rehearses; apply needs the token; members and instance counts are re-read.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
@@ -3321,6 +3325,7 @@ namespace Horizun.Contracts
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
     ""name"": { ""type"": ""string"" },
     ""scope"": { ""type"": ""string"", ""enum"": [""all_instances"", ""this_instance""] },
+    ""accept_member_regeneration"": { ""type"": ""boolean"", ""default"": false, ""description"": ""add_members/remove_members, scope=all_instances only: proceed even though another instance has a member with a non-empty Mark/Comments value that regeneration would lose."" },
     ""max_rows"": { ""type"": ""integer"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false

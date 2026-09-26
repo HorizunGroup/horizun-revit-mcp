@@ -68,6 +68,45 @@ namespace Horizun.Server
 
     internal static class CatalogLookup
     {
+        // catalog_path is a file path the CALLER names at call time (see the file header):
+        // an unrestricted path/extension/size would let one call read an arbitrary file off
+        // disk (any extension, any size) and load it fully into memory via ReadAllBytes.
+        // Restricting to absolute + a text-table extension + a size ceiling — checked from
+        // FileInfo.Length BEFORE the read — keeps this a catalog lookup, not a generic file
+        // reader, and fails fast on a huge file instead of buffering it first.
+        private static readonly string[] AllowedCatalogExtensions = { ".csv", ".tsv", ".txt" };
+        internal const long MaxCatalogBytes = 50L * 1024 * 1024; // 50 MB
+
+        /// <summary>
+        /// Pure precondition on the path string: absolute, and one of the allowed text-table
+        /// extensions. No I/O — unit-testable without a real file.
+        /// </summary>
+        internal static void ValidateCatalogPath(string catalogPath)
+        {
+            if (string.IsNullOrEmpty(catalogPath))
+                throw new ArgumentException("catalog_path is required.");
+            if (!Path.IsPathRooted(catalogPath))
+                throw new ArgumentException("catalog_path must be an absolute path. Got a relative path: '" + catalogPath + "'.");
+            string ext = Path.GetExtension(catalogPath);
+            bool allowed = false;
+            foreach (string candidate in AllowedCatalogExtensions)
+            {
+                if (string.Equals(ext, candidate, StringComparison.OrdinalIgnoreCase)) { allowed = true; break; }
+            }
+            if (!allowed)
+                throw new ArgumentException("catalog_path must end in .csv, .tsv or .txt. Got '" + ext + "' for '" + catalogPath + "'.");
+        }
+
+        /// <summary>
+        /// Pure size gate: rejects a file BEFORE its bytes are read into memory. Takes the
+        /// length rather than a FileInfo so it is unit-testable without touching disk.
+        /// </summary>
+        internal static void ValidateCatalogSize(long lengthBytes, string catalogPath)
+        {
+            if (lengthBytes > MaxCatalogBytes)
+                throw new ArgumentException("Catalog file '" + catalogPath + "' is " + lengthBytes +
+                                            " bytes, which exceeds the " + MaxCatalogBytes + "-byte (50 MB) limit for horizun_catalog_lookup.");
+        }
         // When the caller gives no explicit separator, a code is treated as opaque and a
         // descendant is any OTHER code that begins with it followed by one of these common
         // hierarchy delimiters. This is the documented default rule; pass 'separator' to
@@ -405,12 +444,12 @@ namespace Horizun.Server
             bool hasHeader = args?["has_header"] != null && args["has_header"].Type == JTokenType.Boolean && (bool)args["has_header"];
             JToken codeColumn = args?["code_column"];
 
-            if (string.IsNullOrEmpty(catalogPath))
-                throw new ArgumentException("catalog_path is required.");
+            ValidateCatalogPath(catalogPath);
             if (code == null)
                 throw new ArgumentException("code is required.");
             if (!File.Exists(catalogPath))
                 throw new FileNotFoundException("Catalog file not found: " + catalogPath);
+            ValidateCatalogSize(new FileInfo(catalogPath).Length, catalogPath);
 
             byte[] bytes = File.ReadAllBytes(catalogPath);
             cancellationToken.ThrowIfCancellationRequested();
@@ -473,8 +512,7 @@ namespace Horizun.Server
             JToken descriptionColumn = args?["description_column"];
             int maxResults = args?["max_results"] != null ? (int)args["max_results"] : 10;
 
-            if (string.IsNullOrEmpty(catalogPath))
-                throw new ArgumentException("catalog_path is required.");
+            ValidateCatalogPath(catalogPath);
             if (string.IsNullOrWhiteSpace(query))
                 throw new ArgumentException("query is required and must not be blank.");
             if (maxResults <= 0)
@@ -482,6 +520,7 @@ namespace Horizun.Server
             if (maxResults > 200) maxResults = 200;   // a lookup aid, not a bulk export
             if (!File.Exists(catalogPath))
                 throw new FileNotFoundException("Catalog file not found: " + catalogPath);
+            ValidateCatalogSize(new FileInfo(catalogPath).Length, catalogPath);
 
             byte[] bytes = File.ReadAllBytes(catalogPath);
             cancellationToken.ThrowIfCancellationRequested();

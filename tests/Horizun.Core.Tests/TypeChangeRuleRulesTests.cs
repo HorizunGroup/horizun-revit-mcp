@@ -60,8 +60,29 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
-        public void A_missing_measure_does_not_match_rather_than_throwing()
+        public void An_instance_missing_only_ONE_named_measure_falls_through_to_else()
         {
+            // Two named measures exist for OTHER instances, but this one only has area_m2 -
+            // its short_side_mm/long_side_mm rule cannot hold, yet it is NOT unmeasured (the
+            // dictionary is non-empty), so 'else' is a legitimate catch for it.
+            var rule = new JArray
+            {
+                new JObject { ["when"] = new JObject { ["short_side_mm"] = new JObject { ["lt"] = 300 } }, ["type_id"] = 1 },
+                new JObject { ["else"] = true, ["type_id"] = 2 }
+            };
+            TypeChangeRuleSet set = TypeChangeRuleRules.Parse(rule);
+            TypeChangeMatch m = TypeChangeRuleRules.Evaluate(set, new Dictionary<string, double> { ["area_m2"] = 4.2 });
+            Assert.True(m.Matched);
+            Assert.Equal(2, m.TypeId);   // fell through to else, not a crash
+        }
+
+        [Fact]
+        public void An_UNMEASURED_instance_matches_NOTHING_not_even_else()
+        {
+            // This is the 2026-09-25 review fix: an instance whose face could not be measured
+            // at all (measured is EMPTY, not merely missing one named key) must be rejected,
+            // never silently classified by a catch-all 'else' - that would hide a mismeasured
+            // element behind a type change that looks deliberate.
             var rule = new JArray
             {
                 new JObject { ["when"] = new JObject { ["short_side_mm"] = new JObject { ["lt"] = 300 } }, ["type_id"] = 1 },
@@ -69,8 +90,17 @@ namespace Horizun.Core.Tests
             };
             TypeChangeRuleSet set = TypeChangeRuleRules.Parse(rule);
             TypeChangeMatch m = TypeChangeRuleRules.Evaluate(set, new Dictionary<string, double>());
-            Assert.True(m.Matched);
-            Assert.Equal(2, m.TypeId);   // fell through to else, not a crash
+            Assert.False(m.Matched);
+            Assert.Contains("unmeasured", m.Reason);
+        }
+
+        [Fact]
+        public void A_null_measured_dictionary_also_matches_nothing()
+        {
+            var rule = new JArray { new JObject { ["else"] = true, ["type_id"] = 1 } };
+            TypeChangeRuleSet set = TypeChangeRuleRules.Parse(rule);
+            TypeChangeMatch m = TypeChangeRuleRules.Evaluate(set, null);
+            Assert.False(m.Matched);
         }
 
         [Fact]
@@ -120,5 +150,57 @@ namespace Horizun.Core.Tests
         }
 
         private static (double, double) ToPair(System.Tuple<double, double> t) => (t.Item1, t.Item2);
+
+        // ---------------------------------------------------------------------
+        // IsRectangularFace: the gate MeasureInstance applies before trusting a
+        // face's UV bounding box as its true short/long side and area. Pure
+        // math - no Revit Face needed to prove the three independent checks.
+        // ---------------------------------------------------------------------
+        [Fact]
+        public void A_plain_rectangle_passes()
+        {
+            // 3m x 5m rectangle: area exactly u*v.
+            Assert.True(TypeChangeRuleRules.IsRectangularFace(1, 4, 15.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void A_face_with_a_hole_fails_on_loop_count_even_with_a_matching_area()
+        {
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(2, 4, 15.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void A_non_quadrilateral_outer_loop_fails_even_with_a_matching_area()
+        {
+            // A hexagon can still have a bounding box whose area happens to equal u*v.
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 6, 15.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void A_parallelogram_shaped_like_its_bbox_fails_on_area_tolerance()
+        {
+            // 4 edges, 1 loop, but its real area is well under u*v (a skewed parallelogram).
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 4, 10.0, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void Area_comfortably_within_the_default_2_percent_tolerance_passes()
+        {
+            // u*v = 15.0; 14.85 is 1% under - well inside the 2% band.
+            Assert.True(TypeChangeRuleRules.IsRectangularFace(1, 4, 14.85, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void Area_comfortably_outside_the_default_2_percent_tolerance_fails()
+        {
+            // u*v = 15.0; 14.5 is over 3% under - clearly outside the 2% band.
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 4, 14.5, 3.0, 5.0));
+        }
+
+        [Fact]
+        public void A_zero_area_bounding_box_fails_rather_than_dividing_by_zero()
+        {
+            Assert.False(TypeChangeRuleRules.IsRectangularFace(1, 4, 0.0, 0.0, 5.0));
+        }
     }
 }

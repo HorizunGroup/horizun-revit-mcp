@@ -61,8 +61,20 @@ namespace Horizun.Revit.Commands
                     {
                         p.TopOffset = (p.Input.Value<double?>("top_offset") ?? 0) * p.Scale;
                         double top = p.TopLevel.ProjectElevation + p.TopOffset;
-                        if (top - p.Start.Z <= GeometryInput.Tolerance) throw new ArgumentException("the column's top (top_level_id + top_offset) is not above its base.");
-                        if (height.HasValue && Math.Abs(top - p.Start.Z - height.Value) > GeometryInput.Tolerance)
+                        // The base plane is p.Level.ProjectElevation + p.Offset, NOT p.Start.Z read
+                        // directly - even though they hold the same value right here. p.Start.Z was
+                        // set two lines above (line 42) to z = GeometryInput.AbsoluteZ(...), and
+                        // p.Offset was computed FROM that same z as z - p.Level.ProjectElevation
+                        // (line 43), so today base == p.Start.Z exactly. p.Offset is the quantity
+                        // that actually governs the instance - it is what gets written to the
+                        // family instance's own Level Offset parameter - while p.Start is a working
+                        // XYZ that a future change (a host projection, a snap) could legitimately
+                        // update without also touching p.Offset. Anchoring this check to p.Offset
+                        // keeps it correct against what will actually be placed, not against a
+                        // coordinate that happens to agree with it today.
+                        double baseZ = p.Level.ProjectElevation + p.Offset;
+                        if (top - baseZ <= GeometryInput.Tolerance) throw new ArgumentException("the column's top (top_level_id + top_offset) is not above its base.");
+                        if (height.HasValue && Math.Abs(top - baseZ - height.Value) > GeometryInput.Tolerance)
                             throw new ArgumentException("height disagrees with top_level_id/top_offset and the base.");
                     }
                     else if (height.HasValue)
