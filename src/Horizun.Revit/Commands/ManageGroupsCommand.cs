@@ -306,9 +306,60 @@ namespace Horizun.Revit.Commands
             foreach (Group o in p.Others) p.OtherCounts[o.Id] = o.GetMemberIds().Count;
             p.OtherIds = p.Others.Select(o => o.Id).ToList();
             if (p.Scope == GroupRedefinitionRules.ScopeAll)
+            {
                 foreach (Group o in p.Others) p.SigsBefore[o.Id] = Signatures(doc, o.GetMemberIds());
+                // scope=all swaps EVERY other instance onto the redefined type (Apply: o.GroupType = ...).
+                // Revit does not "edit" that instance's members in place - it deletes the old ones and
+                // instantiates fresh ones from the type definition, so EVERY member gets a NEW element id,
+                // not only the ones actually added/removed. An instance-level override on an old member
+                // (Mark, Comments) has nowhere to land on its replacement, and any tag or dimension that
+                // referenced the old member is orphaned. Refuse when that would discard a real value,
+                // unless the caller explicitly accepts it.
+                if (p.Others.Count > 0 && r.Value<bool?>("accept_member_regeneration") != true)
+                {
+                    var atRisk = new List<string>();
+                    foreach (Group o in p.Others)
+                    {
+                        List<string> found = MembersWithValuesAtRisk(doc, o);
+                        if (found.Count > 0) atRisk.Add("group " + Rid.Value(o.Id) + ": " + string.Join("; ", found));
+                    }
+                    if (atRisk.Count > 0)
+                    {
+                        error = p.Others.Count + " other instance(s) of this type will be swapped to the redefined type " +
+                            "(scope=all): every member of each is REGENERATED with a new element id, which discards any " +
+                            "instance-level Mark/Comments on the old member and orphans any tag or dimension that " +
+                            "referenced it. " + atRisk.Count + " instance(s) currently carry a non-empty Mark or " +
+                            "Comments value on a member that would be lost this way: " + string.Join(" | ", atRisk) +
+                            ". Refused; pass accept_member_regeneration=true to proceed anyway. Nothing was written.";
+                        return null;
+                    }
+                }
+            }
             p.TypeInstancesBefore = p.Others.Count + 1;
             return p;
+        }
+
+        /// <summary>Members of "other" that currently carry a non-empty Mark or Comments instance value -
+        /// both lost when scope=all regenerates every member as a fresh element (see PlanMembers). A
+        /// member whose parameters cannot be read is skipped: this is a warning gate, not a full audit,
+        /// and a read failure must never manufacture a false "nothing at risk".</summary>
+        private static List<string> MembersWithValuesAtRisk(Document doc, Group other)
+        {
+            var found = new List<string>();
+            foreach (ElementId mid in Safe(() => other.GetMemberIds()) ?? new List<ElementId>())
+            {
+                Element m = doc.GetElement(mid);
+                if (m == null) continue;
+                string mark = null, comments = null;
+                try { mark = m.get_Parameter(BuiltInParameter.ALL_MODEL_MARK)?.AsString(); } catch { }
+                try { comments = m.get_Parameter(BuiltInParameter.ALL_MODEL_INSTANCE_COMMENTS)?.AsString(); } catch { }
+                if (string.IsNullOrEmpty(mark) && string.IsNullOrEmpty(comments)) continue;
+                string what = (string.IsNullOrEmpty(mark) ? "" : "Mark='" + mark + "'") +
+                              (string.IsNullOrEmpty(mark) || string.IsNullOrEmpty(comments) ? "" : " ") +
+                              (string.IsNullOrEmpty(comments) ? "" : "Comments='" + comments + "'");
+                found.Add(Rid.Value(mid) + " " + what);
+            }
+            return found;
         }
 
         // ----------------------------------------------------------------- apply
@@ -594,7 +645,11 @@ namespace Horizun.Revit.Commands
             ["note"] = p.Op == "add_members" || p.Op == "remove_members"
                 ? "Revit has no edit-group API: the reference instance is ungrouped and regrouped (it gets a NEW group id; its instance parameters are not carried). " +
                   (p.Scope == GroupRedefinitionRules.ScopeAll && p.Others.Count > 0
-                      ? "Every other instance listed is swapped to the new type: its member ids change, and members removed from it are deleted."
+                      ? p.Others.Count + " other instance(s) of this type are swapped to the redefined type. Revit " +
+                        "does not edit their members in place: it deletes the old ones and instantiates fresh ones " +
+                        "from the type definition, so EVERY member of each of these " + p.Others.Count + " instance(s) " +
+                        "gets a NEW element id - not only the members actually added or removed. Any instance-level " +
+                        "Mark/Comments on an old member, and any tag or dimension that referenced it, is lost/orphaned."
                       : "No other instance is touched.")
                 : null
         };

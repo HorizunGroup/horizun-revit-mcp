@@ -3310,7 +3310,9 @@ namespace Horizun.Contracts
                     "Model/detail groups: list types, instances, members, nesting and attached detail groups; create from " +
                     "element_ids; add_members/remove_members (ungroup+regroup - Revit has no edit-group API; with other " +
                     "instances scope is required); rename_type, duplicate_type, swap_type, ungroup. convert_to_link is " +
-                    "refused: no API. Dry run rehearses; apply needs the token; members and instance counts are re-read.",
+                    "refused: no API. scope=all_instances regenerates every other instance member with a new id, losing " +
+                    "Mark/Comments and orphaning tags/dimensions; refused unless accept_member_regeneration=true. Dry " +
+                    "run rehearses; apply needs the token; members and instance counts are re-read.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""operation""],
   ""properties"": {
@@ -3321,6 +3323,7 @@ namespace Horizun.Contracts
     ""element_ids"": { ""type"": ""array"", ""items"": { ""type"": ""integer"" } },
     ""name"": { ""type"": ""string"" },
     ""scope"": { ""type"": ""string"", ""enum"": [""all_instances"", ""this_instance""] },
+    ""accept_member_regeneration"": { ""type"": ""boolean"", ""default"": false, ""description"": ""add_members/remove_members, scope=all_instances only: proceed even though another instance has a member with a non-empty Mark/Comments value that regeneration would lose."" },
     ""max_rows"": { ""type"": ""integer"" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
