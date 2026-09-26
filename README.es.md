@@ -4,7 +4,7 @@
 
 Horizun Revit MCP es un servidor MCP y add-in de Windows gratuito y de código
 abierto para **Autodesk Revit 2023–2027**. Su catálogo completo contiene
-**122 herramientas** <!--inventory:tools--> con **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+**122 herramientas** <!--inventory:tools--> con **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 para modelado arquitectónico y estructural, MEP, familias paramétricas, planos,
 CAD a BIM, auditoría, cantidades, Excel, Power BI y exportación.
 
@@ -29,8 +29,8 @@ el runtime del servidor y los add-ins.
 
 | Superficie | Qué ofrece | Dónde comprobarlo |
 |---|---|---|
-| Entradas MCP | **122 herramientas** <!--inventory:tools-->, incluidas **48 de solo lectura** <!--inventory:reads--> y **74 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
-| Acciones internas | **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
+| Entradas MCP | **122 herramientas** <!--inventory:tools-->, incluidas **47 de solo lectura** <!--inventory:reads--> y **75 con posibles efectos** <!--inventory:writes--> | [Inventario generado](docs/inventory.json) y catálogo completo más abajo |
+| Acciones internas | **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations--> dentro de herramientas compuestas | Valores exactos de los selectores más abajo |
 | Cobertura Revit | 2023, 2024, 2025, 2026 y 2027 | Cinco add-ins y sus informes de pruebas versionados |
 | Contenido nuevo | 26 clases de creación de elementos; autoría RFA paramétrica; planificación estructural y MEP | [Referencia de familias](docs/FAMILY-AUTHORING.md) |
 | Planos y entregables | 24 acciones de vistas/láminas, 10 acciones de anotación, tablas nativas y distribución de láminas | [Producción de planos](docs/PLANIMETRY-PRODUCTION.md) |
@@ -377,7 +377,7 @@ Una herramienta MCP puede ejecutar muchas acciones. Crear un muro, una tubería
 y una escalera son opciones de `horizun_create_elements`; crear una sección y
 colocar una tabla son acciones diferentes de `horizun_manage_views`.
 
-La tabla contiene **403 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
+La tabla contiene **405 suboperaciones y modos de despacho nombrados** <!--inventory:operations-->
 en 26 herramientas compuestas. Cada opción se cuenta una vez por herramienta,
 propiedad selectora y valor, incluidos selectores anidados. Las rutas repetidas
 del esquema `oneOf` se cuentan una sola vez. Algunos selectores afinan otra
@@ -426,7 +426,7 @@ herramientas MCP adicionales de primer nivel.
 | `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
 | `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile`, `blocks` |
 | `horizun_connect_mep` | `operation` | `connect`, `disconnect` |
-| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `evidence` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `import_navisworks`, `show`, `evidence` |
 | `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
 | `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
@@ -451,7 +451,7 @@ herramientas MCP adicionales de primer nivel.
 
 Otras opciones tipadas incluyen los siete valores de `horizun_export.format`:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. El inventario también
-registra **1504 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
+registra **1506 apariciones de valores de argumentos enumerados** <!--inventory:enumerated_variants-->
 entre todas las propiedades y rutas; incluye configuraciones y rutas repetidas,
 por lo que esa cifra no se utiliza como número de herramientas.
 

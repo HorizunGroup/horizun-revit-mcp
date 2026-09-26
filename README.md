@@ -4,7 +4,7 @@
 
 Horizun Revit MCP is a free, open-source Windows MCP server and Revit add-in for
 **Autodesk Revit 2023–2027**. Its complete catalog contains **122 tools** <!--inventory:tools-->
-with **403 named suboperations and dispatch modes** <!--inventory:operations-->
+with **405 named suboperations and dispatch modes** <!--inventory:operations-->
 for architectural and structural modeling, MEP, parametric families, drawings,
 CAD-to-BIM, model audits, quantities, Excel, Power BI and exports.
 
@@ -28,8 +28,8 @@ The downloadable Windows installer includes the server runtime and Revit add-ins
 
 | Surface | What is available | Inspect it |
 |---|---|---|
-| MCP entry points | **122 tools** <!--inventory:tools-->, including **48 read-only** <!--inventory:reads--> and **74 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
-| Internal actions | **403 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
+| MCP entry points | **122 tools** <!--inventory:tools-->, including **47 read-only** <!--inventory:reads--> and **75 with possible effects** <!--inventory:writes--> | [Generated inventory](docs/inventory.json) and full catalog below |
+| Internal actions | **405 named suboperations and dispatch modes** <!--inventory:operations--> inside multi-operation tools | Exact selector values below |
 | Revit coverage | 2023, 2024, 2025, 2026 and 2027 | Five matching add-ins and versioned live reports |
 | New model content | 26 element kinds; parametric RFA authoring; structural and MEP planning | [Creation and family reference](docs/FAMILY-AUTHORING.md) |
 | Drawings and deliverables | 24 view/sheet actions, 10 annotation actions, native schedules and sheet layout | [Planimetry production](docs/PLANIMETRY-PRODUCTION.md) |
@@ -367,7 +367,7 @@ A named MCP tool can dispatch many actions. For example, creating a wall, a pipe
 and a stair are choices under `horizun_create_elements`; creating a section and
 placing a schedule are different actions under `horizun_manage_views`.
 
-The table contains **403 named suboperations and dispatch modes** <!--inventory:operations-->
+The table contains **405 named suboperations and dispatch modes** <!--inventory:operations-->
 across 26 multi-operation tools. A choice is counted once per tool, selector
 property and value, including nested selectors. Repeated `oneOf` schema paths
 are deduplicated. Some selectors refine another action: these numbers describe
@@ -415,7 +415,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 | `horizun_manage_cad_links` | `operation` | `list`, `add`, `reload`, `repoint` |
 | `horizun_query_cad` | `mode` | `instances`, `layers`, `geometry`, `coverage`, `profile`, `blocks` |
 | `horizun_connect_mep` | `operation` | `connect`, `disconnect` |
-| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `evidence` |
+| `horizun_coordination` | `operation` | `list`, `update`, `export`, `import`, `import_navisworks`, `show`, `evidence` |
 | `horizun_manage_links` | `operation` | `list`, `unload`, `reload`, `pin`, `unpin`, `add`, `add_instance`, `change_path` |
 | `horizun_plan_mep` | `operation` | `route_run`, `network_census` |
 | `horizun_plan_mep` | `kind` | `pipe`, `duct` |
@@ -440,7 +440,7 @@ the exposed operation vocabulary, not 208 additional top-level tools.
 
 Other typed options include the seven `horizun_export.format` values:
 `pdf`, `dwg`, `ifc`, `nwc`, `fbx`, `image`, `schedule_csv`. The schema inventory
-also records **1504 enumerated argument occurrences** <!--inventory:enumerated_variants-->
+also records **1506 enumerated argument occurrences** <!--inventory:enumerated_variants-->
 across all properties and paths; that figure includes configuration choices and
 repeated paths, so it is not used as a tool count.
 

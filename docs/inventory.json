@@ -3,24 +3,24 @@
   "generated_by": "scripts/generate-inventory.ps1",
   "generated_from": "tools/list answered by the built server binary",
   "generated_from_server_exe": "<repo>\\src\\Horizun.Server\\bin\\Release\\net8.0\\horizun-mcp.exe",
-  "generated_from_server_sha": "b79d967c5b88429162a4a5dc78fe677ae368ba76b25d11d8cd06c5dd54aaae6a",
-  "generated_from_contract_hash": "41c9a71f47aa0096ca146ec1",
+  "generated_from_server_sha": "28606cc81969096f910b0fefd988d196bcee73991d91e555886fce9e031824a9",
+  "generated_from_contract_hash": "3d09a122643fb1319c7968bd",
   "measurement_profile": "isolated data root; permission_profile=unsafe_code; execute_python enabled; all tool packs",
-  "code_candidate_commit": "8c986998d0e72eee57d84afe69b456397b99ff1f",
+  "code_candidate_commit": "2fee37dda19eca37d571dd86beb972b22e15696e",
   "code_candidate_version": "2.0.5",
   "code_candidate_stamp_source": "product_version",
   "source_tree_clean_at_generation": true,
-  "source_tree_head_at_generation": "8c986998d0e72eee57d84afe69b456397b99ff1f",
+  "source_tree_head_at_generation": "2fee37dda19eca37d571dd86beb972b22e15696e",
   "docs_only_commits_after_candidate": [],
   "code_differs_from_candidate": false,
   "provenance_means": "code_candidate_commit is read from the SERVER BINARY's own version stamp, so it names the code that was measured no matter what HEAD has moved on to since. docs_only_commits_after_candidate lists the commits between that candidate and HEAD that touch documentation ONLY - they are why HEAD can differ from the candidate without the tools changing. code_differs_from_candidate is true when a commit after the candidate touched src/ or tests/: then this inventory describes a binary that is no longer the tree, and must be regenerated.",
   "counts": {
     "tools": 122,
-    "reads": 48,
-    "writes": 74,
+    "reads": 47,
+    "writes": 75,
     "destructive": 20,
-    "operations": 403,
-    "enumerated_variants": 1504
+    "operations": 405,
+    "enumerated_variants": 1506
   },
   "definitions": {
     "tools": "MCP tool names the built server lists.",
@@ -1635,11 +1635,11 @@
     },
     {
       "tool": "horizun_coordination",
-      "read_only": true,
+      "read_only": false,
       "destructive": false,
       "open_world": false,
-      "operations": 5,
-      "enumerated_variants": 11,
+      "operations": 7,
+      "enumerated_variants": 13,
       "operation_detail": [
         {
           "property": "operation",
@@ -1649,6 +1649,8 @@
             "update",
             "export",
             "import",
+            "import_navisworks",
+            "show",
             "evidence"
           ],
           "source_read_confirmed": true
