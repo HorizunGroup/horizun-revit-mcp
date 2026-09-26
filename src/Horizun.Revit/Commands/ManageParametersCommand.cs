@@ -138,6 +138,8 @@ namespace Horizun.Revit.Commands
             public bool SpfDefinitionCreated;
             /// <summary>The SPF was switched for this run; Run's finally puts <see cref="PreviousSpf"/> back.</summary>
             public bool SpfSwitched;
+            /// <summary>create_shared: the definition's GUID, copied before the transaction (see BuildCreateShared).</summary>
+            public Guid DefinitionGuid;
             public string PreviousSpf;
             public ElementId CreatedId;
         }

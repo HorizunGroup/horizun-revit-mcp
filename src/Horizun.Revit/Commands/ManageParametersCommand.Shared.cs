@@ -131,6 +131,10 @@ namespace Horizun.Revit.Commands
                     }
                     ExternalDefinition def = SpfDefinition(app, path, groupName, name, spec, s, out bool created);
                     s.SpfDefinitionCreated = created;
+                    // The GUID, read NOW. MEASURED 2026-09-25 on Revit 2023: after the commit the
+                    // ExternalDefinition object was no longer valid, and the post-commit re-read
+                    // threw although the binding was there. Everything after Apply uses this copy.
+                    s.DefinitionGuid = def.GUID;
                     return def;
                 },
                 Apply = (app, d, def, s) =>
@@ -145,7 +149,7 @@ namespace Horizun.Revit.Commands
                 Verify = (d, def, s) =>
                 {
                     var c = new PostconditionCheck(required.ToArray());
-                    Bound now = AllBindings(d).FirstOrDefault(b => b.Guid == def.GUID);
+                    Bound now = AllBindings(d).FirstOrDefault(b => b.Guid == s.DefinitionGuid);
                     CheckBinding(c, now, type, cats, group);
                     if (now == null) c.Unreadable("data_type", spec.TypeId, "the binding is absent");
                     else c.Compare("data_type", spec.TypeId, SafeId(() => now.Def.GetDataType()));
@@ -155,13 +159,13 @@ namespace Horizun.Revit.Commands
                         else c.Compare("varies_across_groups", true, now.Def.VariesAcrossGroups);
                     }
                     // Re-read the FILE, not the object that wrote it.
-                    var entry = ReadSpfFile(s.TempSpf ?? s.SpfPath).FirstOrDefault(e => e.Guid == def.GUID);
+                    var entry = ReadSpfFile(s.TempSpf ?? s.SpfPath).FirstOrDefault(e => e.Guid == s.DefinitionGuid);
                     c.Compare("spf_on_disk", name + "|" + groupName, entry == null ? null : entry.Name + "|" + entry.Group);
                     return c;
                 },
                 Report = (d, def, s) =>
                 {
-                    Bound now = AllBindings(d).FirstOrDefault(b => b.Guid == def.GUID);
+                    Bound now = AllBindings(d).FirstOrDefault(b => b.Guid == s.DefinitionGuid);
                     JObject o = now == null ? new JObject() : BindingJson(now);
                     o["spf_path"] = s.SpfPath; o["spf_definition_reused"] = !s.SpfDefinitionCreated;
                     return o;
