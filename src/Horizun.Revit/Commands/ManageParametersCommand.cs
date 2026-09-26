@@ -100,9 +100,28 @@ namespace Horizun.Revit.Commands
 
             Outcome a = Run(uiapp, doc, plan, false);
             if (!a.Committed)
-                return CommandResult.FailWithDetail(op + " was not committed: " + (a.Error ?? "postcondition failed") + ".",
-                    new JObject { ["state"] = a.RollbackConfirmed ? "rolled_back" : "uncertain", ["result"] = a.Json(),
-                                  ["write_started"] = true });
+            {
+                string message = op + " was not committed: " + (a.Error ?? "postcondition failed") + ".";
+                var failDetail = new JObject { ["state"] = a.RollbackConfirmed ? "rolled_back" : "uncertain", ["result"] = a.Json(),
+                                                ["write_started"] = true };
+                // create_shared writes the definition to the SPF file BEFORE the binding transaction
+                // (a file is not transactional, see this file's own header comment) - if the binding
+                // then fails, that write is NOT rolled back with everything else. Report.spf_definition_created
+                // already carries this fact nested in result.read_back; state it here too, prominently
+                // and in the error text itself, so a caller reading only the message does not retry
+                // create_shared believing nothing happened, when the SPF already has the definition.
+                if (op == "create_shared" && a.Report?["spf_definition_created"]?.Type == JTokenType.Boolean &&
+                    a.Report.Value<bool>("spf_definition_created"))
+                {
+                    string sideEffect = "EXTERNAL SIDE EFFECT: the shared parameter's definition was already " +
+                        "written to the SPF file before this failure. A file write is not transactional and was " +
+                        "NOT undone by the binding's rollback - the SPF now already contains this definition, " +
+                        "even though no binding was created in this document.";
+                    message += " " + sideEffect;
+                    failDetail["external_side_effect"] = sideEffect;
+                }
+                return CommandResult.FailWithDetail(message, failDetail);
+            }
             if (!a.Verified)
                 return CommandResult.FailWithDetail(op + " committed but the re-read after the commit did not confirm it; state is uncertain.",
                     new JObject { ["state"] = "uncertain", ["host_verified"] = false, ["result"] = a.Json() });
