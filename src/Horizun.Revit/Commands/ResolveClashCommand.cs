@@ -109,6 +109,20 @@ namespace Horizun.Revit.Commands
             string roleA = Role(a, hostA, f.CategoryA), roleB = Role(b, hostB, f.CategoryB);
             int mover = ClashResolveRules.ChooseMover(roleA, hostA, Section(a), roleB, hostB, Section(b), out code, out reason);
             row["roles"] = new JArray(roleA, roleB);
+            // An external tool (e.g. a navisworks issue) may name one side immovable. That
+            // preference is enforced HERE, on top of the natural choice above, never inside
+            // ChooseMover: ChooseMover is the arithmetic over roles and sections alone, and
+            // stays testable without knowing where a finding came from.
+            int? forcedImmovable = f.ImmovableSideIsA.HasValue ? (f.ImmovableSideIsA.Value ? 0 : 1) : (int?)null;
+            if (forcedImmovable.HasValue)
+            {
+                bool aEligible = roleA == ClashResolveRules.RoleMovable && hostA;
+                bool bEligible = roleB == ClashResolveRules.RoleMovable && hostB;
+                if (!ClashResolveRules.EnforceImmovableSide(mover, aEligible, bEligible, forcedImmovable,
+                        out mover, out string immovCode, out string immovReason))
+                { code = immovCode; reason = immovReason; return null; }
+                if (immovReason != null) row["immovable_side_note"] = immovReason;
+            }
             if (mover < 0) return null;
             Element m = mover == 0 ? a : b, other = mover == 0 ? b : a;
             row["mover_id"] = Rid.Value(m.Id);

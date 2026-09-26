@@ -121,6 +121,8 @@ namespace Horizun.Revit.Core
             Row("horizun_manage_worksets", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"),
                 F(C + "ManageWorksetsCommand.cs", "Horizun.Revit/Core/GroupWorksetRules.cs"),
                 "ManageWorksetsCommand.cs set_default: the dry run is a measured preview, not a provisional change - the active workset is a session setting."),
+            Row("horizun_coordination", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "CoordinationShow.cs"),
+                "CoordinationShow.cs: only a bounded sample (20 host + 10 link overrides) is re-read per apply, not every painted element."),
             Row("horizun_resolve_clash", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "ResolveClashCommand.cs"),
                 "ResolveClashCommand.cs Detect: re-detection covers the host neighbourhood of the moved runs only, not linked models; a clash the move creates against a link is not seen."),
             Row("horizun_undo", VerificationMechanism.PostconditionChecklist, E("postconditions", "application"), F(C + "UndoCommand.cs"),

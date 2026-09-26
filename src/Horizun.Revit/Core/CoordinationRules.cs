@@ -45,12 +45,42 @@ namespace Horizun.Revit.Core
         public bool Regression;
         /// <summary>Append-only. A finding's story is evidence; an overwritten note is not.</summary>
         public List<CoordinationEvent> History = new List<CoordinationEvent>();
+
+        // ---- external coordination provenance (e.g. navis_handoff import) -----------
+        // A finding this ledger did not detect itself: an external tool named a pair,
+        // this document RE-DETECTED it, and only then does it become a finding here -
+        // never invented from the external file alone. These fields are the external
+        // tool's testimony, carried for reporting and for horizun_resolve_clash's
+        // immovable-side rule; they never let an external source resolve a finding -
+        // that stays MEASURED, exactly as CoordinationRules.Merge already enforces.
+        public string ExternalSource;          // e.g. "navisworks"
+        public string ExternalIssueId;
+        public string Priority;
+        public string Responsible;             // discipline expected to move, per the external tool
+        public string ImmovableDiscipline;      // discipline that must not move, per the external tool
+        /// <summary>
+        /// Which LEDGER side (A or B, after order-normalization) the external tool marks
+        /// immovable - null when the external tool named no immovable discipline, or when
+        /// both sides share one discipline and the letter cannot be told apart.
+        /// </summary>
+        public bool? ImmovableSideIsA;
+        public string SuggestedAction;
     }
 
     public sealed class CoordinationDetected
     {
         public string SideA, SideB, CategoryA, CategoryB;
         public double[] PointMm;
+
+        // External provenance, propagated onto the finding by Merge - see CoordinationFinding.
+        public string ExternalSource;
+        public string ExternalIssueId;
+        public string Priority;
+        public string Responsible;
+        public string ImmovableDiscipline;
+        /// <summary>True/false against SideA/SideB AS GIVEN HERE (before NormalizePair's swap); Merge flips it if the pair gets swapped.</summary>
+        public bool? ImmovableSideIsA;
+        public string SuggestedAction;
     }
 
     public sealed class CoordinationMergeOutcome
@@ -175,6 +205,10 @@ namespace Horizun.Revit.Core
             foreach (CoordinationDetected hit in detected ?? new List<CoordinationDetected>())
             {
                 string a = hit.SideA, b = hit.SideB, ca = hit.CategoryA, cb = hit.CategoryB;
+                // Computed from the SAME comparison NormalizePair makes, before it runs -
+                // so the immovable-side letter flips exactly when the pair does.
+                bool swapped = string.CompareOrdinal(a, b) > 0;
+                bool? immovableIsA = (swapped && hit.ImmovableSideIsA.HasValue) ? !hit.ImmovableSideIsA.Value : hit.ImmovableSideIsA;
                 NormalizePair(ref a, ref b, ref ca, ref cb);
                 string id = FindingId(a, b);
                 if (!seen.Add(id)) continue;
@@ -185,7 +219,11 @@ namespace Horizun.Revit.Core
                     {
                         Id = id, Scope = scopeKey, SideA = a, SideB = b, CategoryA = ca, CategoryB = cb,
                         PointMm = hit.PointMm, Status = StatusOpen,
-                        FirstSeenUtc = nowUtc, LastSeenUtc = nowUtc, TimesSeen = 1
+                        FirstSeenUtc = nowUtc, LastSeenUtc = nowUtc, TimesSeen = 1,
+                        ExternalSource = hit.ExternalSource, ExternalIssueId = hit.ExternalIssueId,
+                        Priority = hit.Priority, Responsible = hit.Responsible,
+                        ImmovableDiscipline = hit.ImmovableDiscipline, ImmovableSideIsA = immovableIsA,
+                        SuggestedAction = hit.SuggestedAction
                     };
                     AppendEvent(opened, "opened", "detected as a clash", nowUtc);
                     ledger[id] = opened;
@@ -195,6 +233,16 @@ namespace Horizun.Revit.Core
                 finding.LastSeenUtc = nowUtc;
                 finding.TimesSeen++;
                 if (hit.PointMm != null) finding.PointMm = hit.PointMm;
+                // External provenance is refreshed only when THIS hit carries it - a plain
+                // horizun_clash re-detection (no navis fields at all) must not blank out what
+                // an earlier navis import recorded.
+                if (hit.ExternalSource != null) finding.ExternalSource = hit.ExternalSource;
+                if (hit.ExternalIssueId != null) finding.ExternalIssueId = hit.ExternalIssueId;
+                if (hit.Priority != null) finding.Priority = hit.Priority;
+                if (hit.Responsible != null) finding.Responsible = hit.Responsible;
+                if (hit.ImmovableDiscipline != null) finding.ImmovableDiscipline = hit.ImmovableDiscipline;
+                if (immovableIsA.HasValue) finding.ImmovableSideIsA = immovableIsA;
+                if (hit.SuggestedAction != null) finding.SuggestedAction = hit.SuggestedAction;
                 if (finding.Status == StatusResolvedByModel)
                 {
                     // It was measured gone and it is BACK. That is a regression, and

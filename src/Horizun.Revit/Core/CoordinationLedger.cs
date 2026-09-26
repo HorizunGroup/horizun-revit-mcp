@@ -91,6 +91,13 @@ namespace Horizun.Revit.Core
             if (f.ResolvedUtc != null) row["resolved_utc"] = f.ResolvedUtc;
             if (f.UpdatedUtc != null) row["updated_utc"] = f.UpdatedUtc;
             if (f.PointMm != null) row["point_mm"] = new JArray(f.PointMm);
+            if (f.ExternalSource != null) row["external_source"] = f.ExternalSource;
+            if (f.ExternalIssueId != null) row["external_issue_id"] = f.ExternalIssueId;
+            if (f.Priority != null) row["priority"] = f.Priority;
+            if (f.Responsible != null) row["responsible"] = f.Responsible;
+            if (f.ImmovableDiscipline != null) row["immovable_discipline"] = f.ImmovableDiscipline;
+            if (f.ImmovableSideIsA.HasValue) row["immovable_side_is_a"] = f.ImmovableSideIsA.Value;
+            if (f.SuggestedAction != null) row["suggested_action"] = f.SuggestedAction;
             if (f.History != null && f.History.Count > 0)
                 row["history"] = new JArray(f.History.Select(entry => (JToken)new JObject
                 {
@@ -117,7 +124,14 @@ namespace Horizun.Revit.Core
                 ResolvedUtc = row.Value<string>("resolved_utc"),
                 UpdatedUtc = row.Value<string>("updated_utc"),
                 TimesSeen = row.Value<int?>("times_seen") ?? 0,
-                Regression = row.Value<bool?>("regression") == true
+                Regression = row.Value<bool?>("regression") == true,
+                ExternalSource = row.Value<string>("external_source"),
+                ExternalIssueId = row.Value<string>("external_issue_id"),
+                Priority = row.Value<string>("priority"),
+                Responsible = row.Value<string>("responsible"),
+                ImmovableDiscipline = row.Value<string>("immovable_discipline"),
+                ImmovableSideIsA = row.Value<bool?>("immovable_side_is_a"),
+                SuggestedAction = row.Value<string>("suggested_action")
             };
             if (row["point_mm"] is JArray point && point.Count == 3)
                 f.PointMm = new[] { (double)point[0], (double)point[1], (double)point[2] };

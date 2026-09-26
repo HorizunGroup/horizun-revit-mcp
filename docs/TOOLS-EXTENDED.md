@@ -562,7 +562,78 @@ todo; solo entonces el hallazgo pasa a `resolved_by_model`. `horizun_undo` desha
 último lote Horizun registrado, y se niega si el documento se guardó o sincronizó desde
 entonces o si esos elementos cambiaron.
 
+### Handoff from naviscoord-mcp (Navisworks coordination)
 
+naviscoord-mcp's `navis_handoff` writes `coordination_handoff.json` (schema
+`naviscoord.coordination/1`) and `revit_worklist.json` (schema
+`naviscoord.coordination.worklist/1`) after a Navisworks clash analysis. The Revit
+side of that handoff is two `horizun_coordination` operations plus the existing
+`horizun_resolve_clash`/`horizun_verify_changes` - no new tool, because the ledger
+they read and write is the same one `horizun_clash record_findings=true` already
+maintains:
+
+```
+navis_handoff (Navisworks)
+   -> coordination_handoff.json
+   -> horizun_coordination operation=import_navisworks   (RE-DETECTS, then records)
+   -> horizun_resolve_clash propose / apply               (moves the responsible side)
+      -or- horizun_coordination operation=show             (paints the pair in a persistent view)
+   -> horizun_verify_changes                               (picture + spatial check of the result)
+   -> re-run the clash test in Navisworks
+```
+
+**`operation=import_navisworks`** never takes Navisworks' word for a clash. Every
+issue's `targets` (each an `{side, revit_element_id, source_file, discipline, ...}`)
+are matched against the ACTIVE document and every LOADED rvt link by `source_file`,
+normalized (extension and NWC/export/copy decoration stripped, case-insensitive -
+`Core/NavisworksHandoff.cs`), then the pair is **RE-DETECTED here**: a solid
+intersection (volume reported), or a measured bounding-box gap when it does not
+reproduce. Only a REPRODUCED pair becomes or refreshes a ledger finding, tagged
+`external_source=navisworks` with the issue's `priority`, `responsible`,
+`immovable_side` (resolved to the ledger's A/B letter from the issue's own
+`side_a_discipline`/`side_b_discipline`) and `suggested_action` carried along - and
+`runComplete` is always false, so an import never marks anything `resolved_by_model`
+by itself; that stays a measured, complete `horizun_clash` run's job, exactly as
+`CoordinationRules.Merge` already enforces for every other source. `revit_worklist.json`
+keeps only the responsible side per issue (naviscoord's own filter), so it carries no
+fixed-side element to pair against; imported anyway, every one of its issues reports
+`not_traceable` naming that reason rather than inventing a one-sided finding. Reports
+`issues_total`/`traceable`/`matched`/`reproduced`/`not_reproduced`/`not_traceable`
+(the last covering both "no Element Id" and "Element Id resolves in no loaded
+document"), dry run by default.
+
+**`horizun_resolve_clash`** needs no change to accept these findings: `propose` reads
+the imported `immovable_side` off the finding and enforces it ON TOP of its own
+natural choice (`Core/ClashResolveRules.EnforceImmovableSide`) - unchanged when the
+natural mover already respects it, inverted to the other side when that side is
+itself a movable host run, and refused (`immovable_side_blocks_resolution`) when the
+marked-immovable side is the only one that could move. `apply` re-detects on solids
+exactly as it does for a `horizun_clash`-detected finding.
+
+**`operation=show`** creates a PERSISTENT 3D view (section box around the selected
+findings; the side that must move painted red, the immovable side orange, an unknown
+preference blue) so a coordinator can see what a proposal is about to move without
+leaving Revit. This is the one `horizun_coordination` operation that writes the
+model - `dry_run` -> token -> apply, verified by re-reading the view, its section box
+and a bounded sample of the overrides - the ledger file itself stays untouched by it.
+A finding side that lives in a link is painted at the LINK INSTANCE level (Revit has
+no per-element override across a link boundary) and `link_level_overrides` says so.
+
+#### Resumen (español)
+
+`navis_handoff` de naviscoord-mcp escribe `coordination_handoff.json`;
+`horizun_coordination operation=import_navisworks` empareja cada elemento por
+`source_file` normalizado contra el documento activo y los vínculos cargados, y
+**vuelve a medir el choque aquí mismo** (intersección de sólidos, o la distancia
+medida si no se reproduce) antes de tocar el ledger - solo un par REPRODUCIDO entra
+o se refresca como hallazgo, con origen `navisworks` y `runComplete=false` siempre,
+así que nunca resuelve un hallazgo por sí solo. `horizun_resolve_clash` no cambió:
+ya respeta el `immovable_side` importado (invierte el lado que mueve o se niega si
+el lado inmóvil es el único que podría moverse) sobre su propia elección natural.
+`horizun_coordination operation=show` crea una vista 3D persistente con el lado que
+debe moverse en rojo y el inmóvil en naranja, para mirar antes de aplicar; es la
+única operación de `horizun_coordination` que escribe el modelo, con el mismo
+dry_run -> token -> apply -> verificación releída del resto del producto.
 
 ## Parameters and classification
 
