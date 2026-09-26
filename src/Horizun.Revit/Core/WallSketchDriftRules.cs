@@ -61,7 +61,11 @@ namespace Horizun.Revit.Core
     {
         /// <summary>Below this, a wall's sketch and its location line are read as still aligned - the
         /// tolerance a modeller's own snap/rounding leaves behind, not drift.</summary>
-        public const double DefaultToleranceMm = 2.0;
+        // CALIBRATED on a real architecture model (2026-09-26): 2 mm flagged 64 walls, every
+        // one at exactly 12.5 mm - the gap between where a joined wall's location line ends and
+        // where its profile was drawn, not a move. A wall that was really moved shifts tens of
+        // millimetres or more; 30 mm keeps those and drops the join geometry.
+        public const double DefaultToleranceMm = 30.0;
 
         public static readonly string StrandedMeans =
             "the wall was moved after its elevation profile was edited; moving a wall does not move its " +

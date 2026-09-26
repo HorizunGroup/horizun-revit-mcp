@@ -28,6 +28,17 @@ namespace Horizun.Core.Tests
         }
 
         [Fact]
+        public void A_join_gap_of_twelve_and_a_half_mm_is_not_drift_calibrated_on_a_real_model()
+        {
+            // Measured 2026-09-26: 64 walls on a real model, every one at exactly 12.5 mm in plane.
+            var r = WallSketchDriftRules.Evaluate(
+                PlaneOrigin, PlaneNormal,
+                wallLineStart: new Vec3(12.5, 0, 0), wallLineEnd: new Vec3(5012.5, 0, 0),
+                sketchFootprintMin: new Vec3(0, 0, 0), sketchFootprintMax: new Vec3(5000, 0, 3000));
+            Assert.False(r.Stranded);
+        }
+
+        [Fact]
         public void Wall_slid_along_its_own_run_is_stranded_but_correctable()
         {
             // The wall now runs from 2000 to 7000; the sketch's footprint is still at 0..5000.
