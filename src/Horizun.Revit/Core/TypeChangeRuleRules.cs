@@ -108,9 +108,17 @@ namespace Horizun.Revit.Core
             return set;
         }
 
-        /// <summary>Evaluates the ordered rules against one instance's measured values, first match wins.</summary>
+        /// <summary>Evaluates the ordered rules against one instance's measured values, first match wins.
+        /// An UNMEASURED instance (measured is null/empty - its face could not be measured, or was not
+        /// a plain rectangle) matches NO rule, not even 'else': 'else' exists to catch an instance whose
+        /// measures were read but did not satisfy any 'when', not one that was never measured at all. A
+        /// silent 'else' would classify a mismeasured instance exactly like a deliberately-caught one,
+        /// with nothing in the reply distinguishing the two.</summary>
         public static TypeChangeMatch Evaluate(TypeChangeRuleSet set, IDictionary<string, double> measured)
         {
+            if (measured == null || measured.Count == 0)
+                return new TypeChangeMatch { Matched = false, Reason = "unmeasured: this instance's face could not be measured " +
+                    "(no short_side_mm/long_side_mm/area_m2), so no rule applies to it - not even 'else'" };
             foreach (TypeChangeRule r in set.Rules)
             {
                 if (r.IsElse)
@@ -158,6 +166,30 @@ namespace Horizun.Revit.Core
         {
             double a = Math.Abs(uExtent), b = Math.Abs(vExtent);
             return a <= b ? Tuple.Create(a, b) : Tuple.Create(b, a);
+        }
+
+        /// <summary>
+        /// Whether a face's own UV bounding box can be TRUSTED as its true short/long side and
+        /// area - i.e. the face is a plain rectangle, not merely convex-hulled into looking like
+        /// one. Three independent checks, ALL of which must hold:
+        ///   * exactly one edge loop (a second loop is an opening/hole - the bounding box still
+        ///     spans the outer boundary, but the face is not a solid rectangle);
+        ///   * exactly four edges in that loop (an L-shape, a triangle or a hexagon can still
+        ///     have a bounding box that LOOKS square);
+        ///   * its own area agrees with uExtent*vExtent within toleranceFraction (default 2%) -
+        ///     a parallelogram, trapezoid or chamfered rectangle can pass the first two checks
+        ///     yet have a bounding box bigger than its true area.
+        /// Any failure means MeasureInstance leaves the instance UNMEASURED rather than reporting
+        /// a short/long side that looks precise but is not the element's real geometry.
+        /// </summary>
+        public static bool IsRectangularFace(int edgeLoopCount, int outerLoopEdgeCount, double areaFt2,
+            double uExtentFt, double vExtentFt, double toleranceFraction = 0.02)
+        {
+            if (edgeLoopCount != 1 || outerLoopEdgeCount != 4) return false;
+            double bboxAreaFt2 = Math.Abs(uExtentFt * vExtentFt);
+            if (bboxAreaFt2 <= 0) return false;
+            double diff = Math.Abs(areaFt2 - bboxAreaFt2);
+            return diff <= bboxAreaFt2 * toleranceFraction;
         }
     }
 }

@@ -501,9 +501,11 @@ namespace Horizun.Revit.Commands
                         p.RuleMeasured[Rid.Value(id)] = measured;
                         TypeChangeMatch match = TypeChangeRuleRules.Evaluate(ruleSet, measured);
                         if (!match.Matched)
-                            throw new ArgumentException("ElementId " + Rid.Value(id) + " matched no rule and no 'else' " +
-                                "was declared (measured: " + (measured.Count == 0 ? "nothing - this element's face " +
-                                "could not be measured" : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
+                            // match.Reason distinguishes "unmeasured" (rejected even when an 'else' rule exists -
+                            // see TypeChangeRuleRules.Evaluate) from "no rule matched and no else was declared".
+                            throw new ArgumentException("ElementId " + Rid.Value(id) + ": " + match.Reason +
+                                " (measured: " + (measured.Count == 0 ? "nothing - this element's face " +
+                                "could not be measured, or was not a plain rectangle" : string.Join(", ", measured.Select(kv => kv.Key + "=" + kv.Value.ToString("0.#")))) + ").");
                         ElementId typeId2 = Rid.Make(match.TypeId);
                         if (!e.IsValidType(typeId2))
                             throw new ArgumentException("rule[" + match.RuleIndex + "] matched type_id " + match.TypeId +
@@ -979,7 +981,11 @@ namespace Horizun.Revit.Commands
         /// an axis-aligned proxy for them. The face is the wall's own exterior side face for a Wall,
         /// or the largest top face for any other HostObject (Floor, RoofBase, Ceiling); anything else
         /// is left unmeasured rather than approximated from a bounding box, so a rule requiring these
-        /// measures is refused for it by name rather than silently mismeasured.
+        /// measures is refused for it by name rather than silently mismeasured. The same holds for a
+        /// face that IS planar but not a plain rectangle (a hole, an L-shape, a chamfer): its bounding
+        /// box would report a short/long side that is not the element's real geometry, so
+        /// TypeChangeRuleRules.IsRectangularFace gates it and an unmeasured instance stays unmeasured
+        /// rather than silently mismeasured - see its own doc comment for the three checks.
         /// </summary>
         private static Dictionary<string, double> MeasureInstance(Element e)
         {
@@ -990,11 +996,19 @@ namespace Horizun.Revit.Commands
                 if (face != null)
                 {
                     BoundingBoxUV bb = face.GetBoundingBox();
-                    Tuple<double, double> sl = TypeChangeRuleRules.ShortLong(
-                        (bb.Max.U - bb.Min.U) * 304.8, (bb.Max.V - bb.Min.V) * 304.8);
-                    m["short_side_mm"] = sl.Item1;
-                    m["long_side_mm"] = sl.Item2;
-                    try { m["area_m2"] = face.Area * 0.09290304; } catch { }
+                    double uExtentFt = bb.Max.U - bb.Min.U, vExtentFt = bb.Max.V - bb.Min.V;
+                    double areaFt2 = face.Area;
+                    EdgeArrayArray loops = face.EdgeLoops;
+                    int loopCount = loops?.Size ?? 0;
+                    int outerLoopEdgeCount = loopCount == 1 ? loops.get_Item(0).Size : -1;
+                    if (TypeChangeRuleRules.IsRectangularFace(loopCount, outerLoopEdgeCount, areaFt2, uExtentFt, vExtentFt))
+                    {
+                        Tuple<double, double> sl = TypeChangeRuleRules.ShortLong(uExtentFt * 304.8, vExtentFt * 304.8);
+                        m["short_side_mm"] = sl.Item1;
+                        m["long_side_mm"] = sl.Item2;
+                        m["area_m2"] = areaFt2 * 0.09290304;
+                    }
+                    // else: not a plain rectangle - left unmeasured on purpose, see the doc comment above.
                 }
             }
             catch { }
