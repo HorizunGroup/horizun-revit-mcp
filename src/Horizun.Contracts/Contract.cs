@@ -1467,8 +1467,9 @@ namespace Horizun.Contracts
                 Command = "horizun_manage_curtain",
                 Description =
                     "Curtain wall/system grids: read (u/v lines with offsets and segments, mullions, panels), " +
-                    "add_grid_line, remove_grid_line (deletes it), set_mullions (add/remove on a line's segments) and " +
-                    "set_panel_type (panel ids or a point; door/window panel types included). One edit per call, " +
+                    "add_grid_line, remove_grid_line (deletes it and merges its bordering cells; refused if a bordering " +
+                    "panel is a door unless accept_panel_merge=true), set_mullions (add/remove on a line's segments) " +
+                    "and set_panel_type (panel ids or a point; door/window panel types included). One edit per call, " +
                     "re-read from the committed grid; a disagreement rolls back.",
                 InputSchema = JObject.Parse(@"{
   ""type"": ""object"", ""required"": [""target_document"", ""operation"", ""element_id""],
@@ -1487,6 +1488,7 @@ namespace Horizun.Contracts
     ""segment_index"": { ""type"": ""integer"", ""minimum"": 0, ""description"": ""Omit for every segment."" },
     ""panel_ids"": { ""type"": ""array"", ""minItems"": 1, ""maxItems"": 500, ""items"": { ""type"": ""integer"" } },
     ""type_id"": { ""type"": ""integer"" },
+    ""accept_panel_merge"": { ""type"": ""boolean"", ""default"": false, ""description"": ""remove_grid_line only: proceed even though a bordering panel is a door, which the cell merge would replace or discard."" },
     ""dry_run"": { ""type"": ""boolean"", ""default"": true }, ""confirmation_token"": { ""type"": ""string"" }, ""transaction_name"": { ""type"": ""string"" }
   }, ""additionalProperties"": false
 }")

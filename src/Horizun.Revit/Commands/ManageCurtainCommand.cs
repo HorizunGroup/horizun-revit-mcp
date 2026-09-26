@@ -180,8 +180,30 @@ namespace Horizun.Revit.Commands
             CurtainGridLine gl = LineOf(doc, grid, lineId);
             bool isU = gl.IsUGridLine;
             int countBefore = LineIds(grid, isU).Count;
+            List<Curve> segments = Segments(gl);
+            var allSegments = Enumerable.Range(0, segments.Count).ToList();
+            // Removing a grid line does not just delete it: Revit merges the cells on either side
+            // of it into one, which can silently replace or discard whatever panel used to sit
+            // there. The plan names both casualties explicitly - the mullions riding this line
+            // (deleted along with it, since their segments disappear) and the panels the merge
+            // touches - and refuses outright when a bordering panel is a DOOR, unless the caller
+            // says accept_panel_merge=true.
+            List<Mullion> mullionsOnLine = MullionsOn(doc, grid, segments, allSegments);
+            List<long> adjacentPanelIds = AdjacentPanels(doc, grid, segments, allSegments);
+            var doorPanels = adjacentPanelIds.Where(id => IsDoorPanel(doc.GetElement(Rid.Make(id)))).ToList();
+            if (doorPanels.Count > 0 && r.Value<bool?>("accept_panel_merge") != true)
+            {
+                string named = string.Join(", ", doorPanels.Select(id =>
+                    id + " (" + (TypeName(doc, doc.GetElement(Rid.Make(id))) ?? "unnamed type") + ")"));
+                throw new ArgumentException("grid line " + lineId + " borders door panel(s) " + named +
+                    "; removing this line merges its adjacent cells, which replaces or discards the door. Refused; " +
+                    "pass accept_panel_merge=true to proceed anyway. Nothing was written.");
+            }
             edit.Planned.Add(ModelEditRunner.Planned(gl, PlannedAction.Delete, r));
             edit.Summary["grid_line_id"] = lineId;
+            edit.Summary["mullions_on_line"] = new JArray(mullionsOnLine.Select(m => Rid.Value(m.Id)));
+            edit.Summary["adjacent_panels"] = new JArray(adjacentPanelIds);
+            edit.Summary["adjacent_door_panels"] = new JArray(doorPanels);
             edit.Apply = d => d.Delete(Rid.Make(lineId));
             edit.Verify = d =>
             {
@@ -190,6 +212,47 @@ namespace Horizun.Revit.Commands
                 check.Compare("grid_line_count", countBefore - 1, LineIds(Fresh(d, hostId, gridIndex), isU).Count);
                 return check;
             };
+        }
+
+        /// <summary>The panels of this grid bordering any of the named segments - found the same
+        /// way PlanPanels finds "the panel at this point": a tolerance-expanded bounding-box
+        /// containment test, here against each segment's own midpoint (which lies exactly on the
+        /// boundary between the cells the line separates).</summary>
+        private static List<long> AdjacentPanels(Document doc, CurtainGrid grid, List<Curve> segments, List<int> targets)
+        {
+            var panelIds = grid.GetPanelIds().Select(Rid.Value).ToList();
+            double tol = ArchitecturalEditRules.PositionToleranceFeet * 2;
+            var found = new List<long>();
+            foreach (int i in targets)
+            {
+                XYZ mid;
+                try { mid = segments[i].Evaluate(0.5, true); } catch { continue; }
+                foreach (long id in panelIds)
+                {
+                    if (found.Contains(id)) continue;
+                    BoundingBoxXYZ b = SafeBox(doc.GetElement(Rid.Make(id)));
+                    if (b == null) continue;
+                    if (mid.X >= b.Min.X - tol && mid.Y >= b.Min.Y - tol && mid.Z >= b.Min.Z - tol &&
+                        mid.X <= b.Max.X + tol && mid.Y <= b.Max.Y + tol && mid.Z <= b.Max.Z + tol)
+                        found.Add(id);
+                }
+            }
+            return found;
+        }
+
+        /// <summary>A panel that functions as a door: categorized OST_Doors, or a curtain panel
+        /// whose FAMILY name marks it as a door style (e.g. a "Curtain Wall Door" family ships
+        /// under OST_CurtainWallPanels, not OST_Doors, so the category alone under-reports these).</summary>
+        private static bool IsDoorPanel(Element e)
+        {
+            if (e == null) return false;
+            if (IsCategory(e, BuiltInCategory.OST_Doors)) return true;
+            try
+            {
+                string familyName = (e as FamilyInstance)?.Symbol?.Family?.Name;
+                return familyName != null && familyName.IndexOf("door", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { return false; }
         }
 
         // ---- mullions ----------------------------------------------------------------------
