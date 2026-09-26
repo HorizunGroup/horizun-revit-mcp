@@ -166,6 +166,15 @@ $script:HzProbeModules += [pscustomobject]@{
         if ($levelId -and $basicType) { $bw = Create @(@{ kind = 'wall'; start = @(($X + 10000), $Y, $E); end = @(($X + 11000), $Y, $E); level_id = $levelId; type_id = $basicType.element_id; height = 1000 }) 'arch-bw' }
         if (-not $bw) { foreach ($n in $catalog[8..9]) { Case $n 'horizun_transform_elements' 'not_covered' 'no own basic wall could be staged' } }
         else {
+            # Arrays are made in the ACTIVE view, and an earlier section may have left a
+            # sheet active (measured 2026-09-26 after the S scan reactivated this model):
+            # open a plan or 3D view first, trying candidates until Revit accepts one.
+            $vq = & $Ctx.Call 'horizun_query_model' @{ categories = @('OST_Views'); include_links = $false; max_rows = 200 }
+            $cands = @($vq.data.rows | Where-Object { -not $_.is_element_type -and ([string]$_.family + ' ' + [string]$_.type + ' ' + [string]$_.name) -match 'Floor Plan|Planta|3D' })
+            foreach ($cv in ($cands | Select-Object -First 8)) {
+                $ov = & $Ctx.Call 'horizun_navigate' @{ operation = 'open_view'; view_id = [long]$cv.element_id }
+                if (-not $ov.isError) { break }
+            }
             $la = & $Ctx.Apply 'horizun_transform_elements' @{ target_document = $doc; units = 'mm'; operations = @(@{ operation = 'array_linear'; element_ids = @($bw[0]); count = 3; vector = @(0, 2000, 0) }) } 'arch-array-linear'
             $laRow = if ($la.answer.data) { @($la.answer.data.rows) | Select-Object -First 1 }
             if ($la.stage -eq 'apply' -and -not $la.answer.isError -and $laRow.verified -eq $true) {
