@@ -5911,6 +5911,31 @@ else:
                 code = $unloadCode; target_document = $wDoc
                 idempotency_key = "live-plm-unload-$probeRun"
             }
+            # A write document with no link at all (the 2023 one, measured 2026-09-25)
+            # cannot degrade coverage by unloading one. Stage one typed: a scratch COPY
+            # of the write document itself, linked in, then unloaded as above. The
+            # document is disposable and never saved; the copy lives in the scratch dir.
+            if (-not $unload.isError -and [string]$unload.text -match 'no RevitLinkType exists') {
+                $covStage = $null
+                $hCov = Invoke-Write 'horizun_health' @{}
+                $meCov = @($hCov.data.open_documents | Where-Object { $_.title -eq $wDoc }) | Select-Object -First 1
+                if ($meCov -and $meCov.path -and (Test-Path -LiteralPath ([string]$meCov.path))) {
+                    New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
+                    $covCopy = Join-Path $scratchDir ("HZ_COVLINK_{0}.rvt" -f ($probeRun -replace '[^A-Za-z0-9]', ''))
+                    Copy-Item -LiteralPath ([string]$meCov.path) -Destination $covCopy -Force
+                    $covStage = Invoke-WriteApply 'horizun_manage_links' @{ operation = 'add'; target_document = $wDoc; path = $covCopy.Replace([char]92, '/') } 'plm-covlink'
+                }
+                if ($covStage -and $covStage.stage -eq 'apply' -and -not $covStage.answer.isError) {
+                    $unload = Invoke-Write 'horizun_execute_python' @{
+                        code = $unloadCode; target_document = $wDoc
+                        idempotency_key = "live-plm-unload2-$probeRun"
+                    }
+                }
+                else {
+                    $unload = @{ isError = $true; data = $null; text = ('the write document has no link and one could not be staged: ' +
+                        $(if ($covStage) { Get-DimShortText $covStage.answer.text } else { "the write document's path is not readable from health: " + $meCov.path })) }
+                }
+            }
             if ($unload.isError -or -not $unload.data -or $unload.data.evidence_status -ne 'self_reported_verified') {
                 Complete-PlanCase 15 $t0 'unverified' ('the coverage fixture (an unloaded link) could not be staged: ' + (Get-DimShortText $unload.text))
             }
