@@ -55,6 +55,35 @@ $clientTools = Join-Path $env:LOCALAPPDATA 'Programs\Horizun\MCP\server\client-t
 & (Join-Path $clientTools 'register-client.ps1') -Client Both
 ```
 
+### No duplicate registrations
+
+Registering `horizun-revit` also removes what an earlier install left behind **for
+this same product** in the same client, so two entries can never start two
+instances. An entry goes only when it is not the current name and either runs the
+very same `horizun-mcp.exe` being registered (any name) or carries a retired name
+(`horizun`, `horizun-next`) and launches a `horizun-mcp` executable. A retired
+name that launches some other program is kept and reported; no other server is
+ever touched.
+
+- **Codex:** the `[mcp_servers.<old>]` table and its `[mcp_servers.<old>.*]`
+  subtables are cut from `config.toml` in the same write that adds the current
+  entry, after a dated backup. The result is checked to be the original minus
+  those tables (nothing added, every other table present) and, when a Python with
+  `tomllib` is available, to still parse; otherwise nothing is written. BOM and
+  line endings are kept.
+- **Claude Code:** removed with `claude mcp remove <old> --scope user`, never by
+  editing `~/.claude.json` (Claude Code rewrites it while it runs). If the CLI is
+  not on PATH, or fails, the registration still completes and the exact command
+  to run is printed. Entries scoped to a project are reported, not changed.
+- **Claude Desktop:** removed from `claude_desktop_config.json` (backup first)
+  by the extension helper; while Claude Desktop is running the entry is kept and
+  the helper says so.
+
+The run prints what it removed and is idempotent. `-KeepOtherEntries` (on
+`register-client.ps1` and `install-claude-desktop-extension.ps1`) keeps them, for
+running two builds side by side on purpose; `-WhatIfOnly` shows the change
+without writing.
+
 Manual CLI registration is also available after the client closes:
 
 ```powershell

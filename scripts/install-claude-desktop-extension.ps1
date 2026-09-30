@@ -65,6 +65,9 @@ param(
     [switch]$Rollback,
     # Write under a running Claude Desktop anyway. It will probably be lost.
     [switch]$Force,
+    # Keep other entries of this product (retired names, same executable under
+    # another name) instead of removing them when the configuration is written.
+    [switch]$KeepOtherEntries,
     [string]$PackagePath,
     [string]$ServerPath,
     [string]$Json,
@@ -74,6 +77,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'mcp-clients.lib.ps1')
+. (Join-Path $PSScriptRoot 'mcp-legacy-registrations.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcpb-manifest.lib.ps1')
 . (Join-Path $PSScriptRoot 'mcp-stdio.lib.ps1')
 . (Join-Path $PSScriptRoot 'integration-status.lib.ps1')
@@ -425,6 +429,52 @@ if ($writeConfig -or $Configure) {
         }
         catch { Act 'write mcpServers.horizun-revit' $false $_.Exception.Message }
     }
+}
+
+# --- the same product under another name ------------------------------------------
+# An earlier install may have left `horizun` (the retired name) or this same
+# executable under another name in the same file: two entries, two instances.
+# Removed here, in this file only, with a backup and a read-back; any other
+# server is left exactly as it is. A running Claude Desktop is a warning, not a
+# failure: the installation itself is fine and the cleanup is repeated next run.
+if (-not $KeepOtherEntries -and $cd.config_path -and (Test-Path -LiteralPath $cd.config_path -PathType Leaf)) {
+    try {
+        $legacyCfg = Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json
+        $legacyServers = if ($legacyCfg.PSObject.Properties['mcpServers']) { $legacyCfg.mcpServers } else { $null }
+        $legacyFound = @(Get-HorizunJsonLegacyEntries -Servers $legacyServers -CurrentName $NAME -ServerPath $ServerPath)
+        foreach ($k in @($legacyFound | Where-Object { $_.skipped })) {
+            Say "kept '$($k.name)': a retired name, but it launches another program" 'Yellow'
+        }
+        $legacyTargets = @($legacyFound | Where-Object { $_.remove })
+        if ($legacyTargets.Count -gt 0) {
+            $legacyList = ($legacyTargets | ForEach-Object { "$($_.name) [$($_.reason)]" }) -join ', '
+            if ($cd.running -and -not $Force) {
+                Say "legacy entries NOT removed ($legacyList): Claude Desktop is RUNNING and would restore them. Close it and run this again." 'Yellow'
+            }
+            else {
+                $legacyBackup = "$($cd.config_path).horizun-bak-" + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N')
+                Copy-Item -LiteralPath $cd.config_path -Destination $legacyBackup -Force
+                $legacyNamesBefore = @($legacyCfg.mcpServers.PSObject.Properties.Name)
+                $legacyTopBefore = @($legacyCfg.PSObject.Properties.Name)
+                foreach ($t in $legacyTargets) { $legacyCfg.mcpServers.PSObject.Properties.Remove($t.name) }
+                $legacyOut = $legacyCfg | ConvertTo-Json -Depth 100
+                $null = $legacyOut | ConvertFrom-Json
+                Set-Content -LiteralPath $cd.config_path -Value $legacyOut -Encoding UTF8
+                $legacyAfter = Get-Content -LiteralPath $cd.config_path -Raw | ConvertFrom-Json
+                $legacyNamesAfter = @($legacyAfter.mcpServers.PSObject.Properties.Name)
+                $legacyGone = @($legacyTargets | ForEach-Object { $_.name })
+                $legacyLost = @($legacyNamesBefore | Where-Object { $_ -notin $legacyNamesAfter -and $_ -notin $legacyGone }) +
+                              @($legacyTopBefore | Where-Object { $_ -notin @($legacyAfter.PSObject.Properties.Name) })
+                $legacyLeft = @($legacyGone | Where-Object { $_ -in $legacyNamesAfter })
+                if ($legacyLost.Count -gt 0 -or $legacyLeft.Count -gt 0) {
+                    Copy-Item -LiteralPath $legacyBackup -Destination $cd.config_path -Force
+                    Act 'remove legacy entries' $false 'the result was not what was expected - restored the backup and changed nothing'
+                }
+                else { Act ("removed legacy entries: $legacyList; backup " + (Split-Path -Leaf $legacyBackup)) $true $null }
+            }
+        }
+    }
+    catch { Act 'remove legacy entries' $false $_.Exception.Message }
 }
 
 # --- record the state, and name the one step nobody else can take ----------------

@@ -173,7 +173,8 @@ foreach ($tool in @(
     'mcp-clients.lib.ps1',
     'mcpb-manifest.lib.ps1',
     'mcp-stdio.lib.ps1',
-    'integration-status.lib.ps1')) {
+    'integration-status.lib.ps1',
+    'mcp-legacy-registrations.lib.ps1')) {
     Copy-Item (Join-Path $repo "scripts\$tool") $clientTools -Force
 }
 foreach ($tool in @('chatgpt-tunnel.ps1', 'chatgpt-tunnel.lib.ps1', 'chatgpt-secret.lib.ps1', 'process.lib.ps1')) {

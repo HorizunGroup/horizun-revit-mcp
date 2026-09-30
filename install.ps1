@@ -296,7 +296,7 @@ try {
         }
         $clientTools = Join-Path $serverStage 'client-tools'
         New-Item -ItemType Directory -Path $clientTools -Force | Out-Null
-        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1') {
+        foreach ($helper in 'register-client.ps1','verify-clients.ps1','verify-install.ps1','complete-install.ps1','stop-installed-server.ps1','hz-call.ps1','uninstall-cleanup.ps1','toml-section.lib.ps1','mcp-legacy-registrations.lib.ps1') {
             Copy-Item (Join-Path $PSScriptRoot "scripts\$helper") $clientTools -Force
         }
         Write-Host "    staged  self-contained server"
@@ -664,6 +664,9 @@ Write-Host "expanded - do not retype it with %LOCALAPPDATA%, which PowerShell do
 Write-Host ""
     Write-Host "  Claude Code:"
     Write-Host "    claude mcp add --scope user horizun-revit -- `"$serverExe`""
+    Write-Host "  If an older 'horizun' entry is still registered, remove it first so two entries do not launch two instances:"
+    Write-Host "    claude mcp remove horizun --scope user"
+    Write-Host "    (Codex: delete the [mcp_servers.horizun] table, and any [mcp_servers.horizun.*] below it, from config.toml)"
 Write-Host ""
 # TOML literal strings (single quotes) take Windows paths as they are; the
 # double-quoted form would need every backslash doubled, and one missed pair is

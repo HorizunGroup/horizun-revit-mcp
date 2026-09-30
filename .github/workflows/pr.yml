@@ -92,6 +92,7 @@ jobs:
             'scripts/uninstall-cleanup.tests.ps1'
             'scripts/manifest-integrity.tests.ps1'
             'scripts/register-client.tests.ps1'
+            'scripts/register-client-legacy.tests.ps1'
             'scripts/scan-sensitive.tests.ps1'
             'scripts/server-update.tests.ps1'
             'scripts/public-consistency.tests.ps1'
